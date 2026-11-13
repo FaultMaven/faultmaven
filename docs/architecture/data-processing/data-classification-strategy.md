@@ -250,7 +250,7 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
 - `lscpu` (§Command-Output Classification) is config because it is a flat YAML mapping, not because it is key-value.
 - A shape whose extractor cannot read it, such as a whitespace metrics table, gets no rule.
 
-**Measured** on a frozen, hand-labelled set of 274 simulated-user pastes, kept in the internal docs repository. Rules were written on a development half and gated on a held-out half (22 cases, 115 pastes), against bars stated in advance:
+**Measured** on a frozen, hand-labelled set of 274 synthetic pastes: data from simulated incident scenarios, handed to FaultMaven by a test rig and kept in a private repository. Rules were written on a development half and gated on a held-out half (22 cases, 115 pastes), against bars stated in advance:
 
 | Gate (held-out half) | Before | After | Bar |
 |---|---:|---:|---|
@@ -258,6 +258,8 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
 | Logs, command output or metrics confidently typed config or code | 0 | 0 | 0 |
 | Right and confident, single-shape pastes | 20% | 44% | ≥ 50% (missed; shipped on the owner's ruling) |
 | A rule that adds a wrong-and-confident paste on either half ships | — | none does | none |
+
+**The held-out half was not independent.** It was split by FaultMaven case, but the 44 cases are runs of four or five scenarios, each with runs in both halves, so 52 of the 115 held-out pastes repeat a development paste once digits are masked. On the 63 it had not seen, wrong and confident fell from 92% to 3% and right and confident rose from 10% to 34%. With near repeats removed as well (20 pastes), the figures are 75% → 5% and 31% → 12%. Precision holds; the recall gain on unseen pastes is uncertain. The next measurement splits by scenario.
 
 Two rules failed the last gate and do not exist: a `vault read` `Key  Value` table and a Prometheus exposition. Each stays uncertain. Recall is the open side: a paste no rule claims is uncertain, which under 200 lines means it reaches the model as text and at 200+ lines that the user is asked.
 
