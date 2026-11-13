@@ -117,7 +117,7 @@ protection_enabled = False
 sanitize_pii = False
 ```
 
-Metrics are recorded only with the environment variable `ENABLE_METRICS=true`. They are exposed at `/metrics` only with `METRICS_EXPORTER=prometheus_http`. Both are off by default.
+`METRICS_EXPORTER=prometheus_http` serves `/metrics`. The environment variable `ENABLE_METRICS=true` makes the collectors created through the metrics shim record. A few collectors (tracing, OAuth, evidence) still record whenever `prometheus_client` is installed, until #2748. Both variables are off by default.
 
 ### Running the Server
 

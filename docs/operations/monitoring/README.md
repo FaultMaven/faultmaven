@@ -4,8 +4,10 @@ Logging, observability, and metrics documentation.
 
 ## Prometheus metrics
 
-`/metrics` is mounted when `METRICS_EXPORTER=prometheus_http` (recording also
-requires `ENABLE_METRICS=true`). Key first-party metric families:
+`/metrics` is mounted when `METRICS_EXPORTER=prometheus_http`. Collectors
+created through the metrics shim record only with `ENABLE_METRICS=true`; a few
+(tracing, OAuth, evidence) record whenever `prometheus_client` is installed,
+until #2748. Key first-party metric families:
 
 - `http_requests_total` / `http_request_duration_seconds` — HTTP traffic
 - `llm_requests_total{provider,model,status}` (status: success/error/cached),
@@ -63,8 +65,8 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
 - `faultmaven_event_loop_lag_seconds` — a histogram of how late the API's event
   loop woke from a 0.25 s tick. It records while the app is serving, from the
   end of startup until shutdown begins, in a process that mounts the Prometheus
-  exporter, and only when `ENABLE_METRICS=true` as well, as for every
-  first-party metric. A loop held for H seconds reads as at least H minus one
+  exporter, and only when `ENABLE_METRICS=true` as well, as for a metric
+  created through the shim. A loop held for H seconds reads as at least H minus one
   interval (0.25 s). A hold is recorded when it ends, so a hold that ends in a
   restart (a liveness kill) is never recorded: read
   `kube_pod_container_status_restarts_total` beside it. Ticks that woke more

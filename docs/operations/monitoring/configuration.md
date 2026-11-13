@@ -25,7 +25,7 @@ This document provides a comprehensive reference for configuring the FaultMaven 
 | `LOG_LEVEL` | `INFO` | Global log level | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `LOG_FORMAT` | `json` | Renderer for structured log output | `json`, `console` |
 | `LOG_ENABLE_TRACING` | `true` | Enable OpenTelemetry tracing integration | `true`, `false` |
-| `ENABLE_METRICS` | `false` | Enable metrics recording (`METRICS_EXPORTER=prometheus_http` exposes it at `/metrics`) | `true`, `false` |
+| `ENABLE_METRICS` | `false` | Make shim-created collectors record (see the Metrics table) | `true`, `false` |
 | `LOG_ENABLE_REQUEST_CONTEXT` | `true` | Enable request context management | `true`, `false` |
 | `LOG_ENABLE_DEDUPLICATION` | `true` | Enable operation deduplication | `true`, `false` |
 
@@ -332,8 +332,10 @@ OPIK_ENABLED=false
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `ENABLE_METRICS` | `false` | Record metrics. Read from the environment when collectors are created |
-| `METRICS_EXPORTER` | `none` | `prometheus_http` mounts `/metrics`. Both variables are needed to scrape |
+| `ENABLE_METRICS` | `false` | Make shim-created collectors record. Read from the environment when collectors are created |
+| `METRICS_EXPORTER` | `none` | `prometheus_http` serves `/metrics` |
+
+`METRICS_EXPORTER=prometheus_http` serves `/metrics`. `ENABLE_METRICS=true` makes the collectors created through the metrics shim record. A few collectors (tracing, OAuth, evidence) still record whenever `prometheus_client` is installed, until #2748.
 
 ### External Log Aggregation
 

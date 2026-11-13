@@ -194,7 +194,7 @@ There is no per-file deletion-failure counter; failures are logged
 > incremented inside the short-lived `python -m faultmaven.jobs.run` process,
 > which starts no HTTP exporter and pushes to no Pushgateway. The Prometheus
 > `/metrics` endpoint is mounted by `faultmaven/main.py` on the FastAPI app
-> only, and only when `METRICS_EXPORTER=prometheus_http` (recording needs `ENABLE_METRICS=true`, on the CronJob too, for its counters to record at all) — the CronJob never
+> only, and only when `METRICS_EXPORTER=prometheus_http` — the CronJob never
 > builds that app. So the counters rise and die with the pod, and any alert
 > expression over them **cannot fire from the scheduled sweep**. Detect orphan
 > problems from the job's logs instead (below). Making the counters alertable
@@ -1033,8 +1033,7 @@ rule_files:
 
 scrape_configs:
   # The API app is the only process that exposes /metrics, and only when
-  # METRICS_EXPORTER=prometheus_http and ENABLE_METRICS=true (set in the API
-  # Deployment). In-cluster it
+  # METRICS_EXPORTER=prometheus_http (set in the API Deployment). In-cluster it
   # listens on 8000; the local dev/compose port is 8090.
   - job_name: 'faultmaven'
     static_configs:
