@@ -189,6 +189,22 @@ client = {{
         assert secret not in result.file_extract
         assert "[REDACTED]" in result.file_extract
 
+    def test_toml_integer_past_digit_limit_falls_back_redacted(self, extractor):
+        """tomli refuses an integer past CPython's 4300-digit limit with a
+        ValueError; the extractor falls back and still redacts (#2773)."""
+        content = '[db]\npassword = "hunter2hunter2"\nseed = ' + "1" * 4400 + "\n"
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "toml"
+        assert "hunter2hunter2" not in result.file_extract
+        assert "[REDACTED]" in result.file_extract
+
+    def test_toml_nesting_past_limit_falls_back(self, extractor):
+        """tomli refuses an inline array nested 500 deep with a RecursionError;
+        the extractor falls back instead of raising (#2773)."""
+        content = "deep = " + "[" * 500 + "]" * 500 + "\n"
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "toml"
+
     # --- False-positive prevention (tightened key patterns) ---
 
     def test_auth_type_not_redacted(self, extractor):

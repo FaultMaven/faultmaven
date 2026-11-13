@@ -186,7 +186,9 @@ class StructuredConfigExtractor:
         try:
             tomli.loads(content)
             return "toml"
-        except tomli.TOMLDecodeError:
+        except (ValueError, RecursionError):
+            # TOMLDecodeError subclasses ValueError, as does an integer past
+            # CPython's digit limit; RecursionError is tomli's nesting limit.
             pass
         return "ini/env"
 
@@ -224,7 +226,7 @@ class StructuredConfigExtractor:
         # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
             return tomli.loads(content)
-        except tomli.TOMLDecodeError:
+        except (ValueError, RecursionError):  # see _detect_format
             pass
 
         return None
