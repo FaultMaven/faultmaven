@@ -542,6 +542,9 @@ class TestTheEditBound:
 
         assert [d.title for d in response.drafts] == ["Postgres Pool Exhausted"]
         assert response.status.value == "partial"
+        # Preparation's slot is admitted for the user who asked (#2645).
+        call = pod.service._preprocessor.preprocess.call_args
+        assert call.kwargs["principal"] == "u1"
         assert any(
             "fm-0" in w and f"at most {DRAFT_CONTENT_MAX_CHARS}" in w
             for w in response.warnings

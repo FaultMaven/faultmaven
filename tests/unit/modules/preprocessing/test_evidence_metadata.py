@@ -136,7 +136,9 @@ class TestPreprocessingServiceWritesMetadata:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="some log data")
+        result = await service.classify_and_extract(
+            content="some log data", principal="u1"
+        )
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert ev_meta["classification"]["confidence"] == pytest.approx(0.92)
@@ -151,7 +153,9 @@ class TestPreprocessingServiceWritesMetadata:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="some shaky data")
+        result = await service.classify_and_extract(
+            content="some shaky data", principal="u1"
+        )
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert ev_meta["classification"]["confidence"] == pytest.approx(0.4)
@@ -164,7 +168,7 @@ class TestPreprocessingServiceWritesMetadata:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="data")
+        result = await service.classify_and_extract(content="data", principal="u1")
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert ev_meta["extractor"]["chosen_type"] == DataType.LOGS_AND_ERRORS.value
@@ -182,7 +186,9 @@ class TestPreprocessingServiceWritesMetadata:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="ambiguous content")
+        result = await service.classify_and_extract(
+            content="ambiguous content", principal="u1"
+        )
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert ev_meta["classification"]["failed"] is True
@@ -198,7 +204,7 @@ class TestPreprocessingServiceWritesMetadata:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="data")
+        result = await service.classify_and_extract(content="data", principal="u1")
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
         assert "entities" not in ev_meta
@@ -223,7 +229,7 @@ class TestReclassifyEvidence:
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
         )
-        result = await service.classify_and_extract(content="data")
+        result = await service.classify_and_extract(content="data", principal="u1")
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
             "attempts"
@@ -246,6 +252,7 @@ class TestReclassifyEvidence:
             filename="evidence.log",
             user_override=DataType.LOGS_AND_ERRORS,
             previous_metadata=None,
+            principal="u1",
         )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
@@ -287,6 +294,7 @@ class TestReclassifyEvidence:
             filename="evidence.log",
             user_override=DataType.LOGS_AND_ERRORS,
             previous_metadata=previous_metadata,
+            principal="u1",
         )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
@@ -326,6 +334,7 @@ class TestReclassifyEvidence:
             filename="evidence.log",
             user_override=DataType.LOGS_AND_ERRORS,
             previous_metadata=previous_metadata,
+            principal="u1",
         )
 
         attempts = result.extraction_metadata["evidence_metadata"]["extractor"][
@@ -358,6 +367,7 @@ class TestReclassifyEvidence:
             content="data",
             filename="evidence.log",
             user_override=DataType.LOGS_AND_ERRORS,
+            principal="u1",
         )
 
         cls = result.extraction_metadata["evidence_metadata"]["classification"]

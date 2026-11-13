@@ -57,7 +57,9 @@ STANDING_STALL = 4
 
 
 class _PreprocessingDouble:
-    async def classify_and_extract(self, content, filename, source_metadata=None):
+    async def classify_and_extract(
+        self, content, filename, source_metadata=None, *, principal
+    ):
         return SimpleNamespace(
             summary="Pod restart loop.",
             structural_index="ERROR x 42",

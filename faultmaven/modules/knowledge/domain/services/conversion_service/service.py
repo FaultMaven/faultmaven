@@ -373,7 +373,7 @@ class ConversionService:
         )
 
         preprocessing = await self._preprocessor.preprocess(
-            file_path, content_type, conversion_id=conversion_id
+            file_path, content_type, conversion_id=conversion_id, principal=user_id
         )
 
         if preprocessing.is_rejected:
