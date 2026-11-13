@@ -112,10 +112,12 @@ vector_storage_type = "chromadb"
 opik_enabled = False
 prometheus_enabled = False
 tracing_enabled = False
-# Metrics: set ENABLE_METRICS=true in the environment (default false)
+# Metrics: off by default (see below)
 protection_enabled = False
 sanitize_pii = False
 ```
+
+Metrics are recorded only with the environment variable `ENABLE_METRICS=true`. They are exposed at `/metrics` only with `METRICS_EXPORTER=prometheus_http`. Both are off by default.
 
 ### Running the Server
 
@@ -197,7 +199,6 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 | `OPIK_ENABLED` | `false` | Enable Opik LLM tracing |
 | `PROMETHEUS_ENABLED` | `false` | Enable Prometheus metrics |
 | `TRACING_ENABLED` | `false` | Enable distributed tracing |
-| `ENABLE_METRICS` | `false` | Enable metrics collection (environment variable) |
 | `PROTECTION_ENABLED` | `false` | Enable PII protection |
 | `SANITIZE_PII` | `false` | Enable PII sanitization |
 

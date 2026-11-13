@@ -308,12 +308,14 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `Gauge`, `Histogram` and `Summary` in `faultmaven/`, read for its label names);
   OAuth metrics label the OAuth client, not a tenant:
   `modules/auth/infrastructure/metrics/oauth_metrics.py:81`.
-- Every label's values are bounded by code or by operator configuration
-  (principles §7). A request-supplied identifier is mapped onto the bounded set
-  first. The OAuth client label is the validated client mapped onto the
-  configured clients plus `unknown`, not the request's `client_id`. A value
-  outside the set is `other` in production.
-- One switch, `ENABLE_METRICS`, read by the metrics shim (principles §7).
+- The OAuth client label is the request's client id kept only when it is a
+  configured client, else `unknown`
+  (`modules/auth/infrastructure/metrics/oauth_metrics.py:253-260`).
+- The rule that every label's values are bounded by code or by operator
+  configuration, with `other` for a value outside the set in production, is
+  principles §7's. It is pending: #2749 (S2).
+- The one switch, `ENABLE_METRICS`, read by the metrics shim, is principles
+  §7's rule too. It is pending: #2748 (S1).
 
 ### Logs
 

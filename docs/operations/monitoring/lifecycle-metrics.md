@@ -80,7 +80,7 @@ sum(rate(faultmaven_inquiry_turn_total[1h])) > 0
 
 **Note on `gate2` / `gate3`.** These labels are historical. Gate 2 (investigation path selection) and Gate 3 (post-mitigation continuation) were removed in redesign R5 — there is no prospective path fork — so neither label is emitted any more. The live gate labels are `disposition`, `gate1`, `insufficient_evidence`, `insufficient_evidence_restatement_held`, `restatement_held`, `not_yet_productive` and `treatment_blocked`.
 
-**Enable the endpoint.** This counter only exposes via `/metrics` when `METRICS_EXPORTER=prometheus_http` is set in `.env`. With the default (`METRICS_EXPORTER=none`), the counter still records in-process — but `curl http://localhost:8090/metrics` returns 404. Set the env var and restart FM to expose.
+**Enable the endpoint.** This counter records only with `ENABLE_METRICS=true`, and is exposed via `/metrics` only with `METRICS_EXPORTER=prometheus_http`. With the default (`METRICS_EXPORTER=none`), `curl http://localhost:8090/metrics` returns 404. Set both and restart FM.
 
 ## INV-29: independent-support bar + prior-cap telemetry
 

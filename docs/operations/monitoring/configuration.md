@@ -25,7 +25,7 @@ This document provides a comprehensive reference for configuring the FaultMaven 
 | `LOG_LEVEL` | `INFO` | Global log level | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `LOG_FORMAT` | `json` | Renderer for structured log output | `json`, `console` |
 | `LOG_ENABLE_TRACING` | `true` | Enable OpenTelemetry tracing integration | `true`, `false` |
-| `ENABLE_METRICS` | `false` | Enable metrics collection and export | `true`, `false` |
+| `ENABLE_METRICS` | `false` | Enable metrics recording (`METRICS_EXPORTER=prometheus_http` exposes it at `/metrics`) | `true`, `false` |
 | `LOG_ENABLE_REQUEST_CONTEXT` | `true` | Enable request context management | `true`, `false` |
 | `LOG_ENABLE_DEDUPLICATION` | `true` | Enable operation deduplication | `true`, `false` |
 
@@ -332,10 +332,8 @@ OPIK_ENABLED=false
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `ENABLE_METRICS` | `false` | Enable metrics collection |
-| `LOG_METRICS_ENDPOINT` | `http://localhost:9090/metrics` | Prometheus metrics endpoint |
-| `LOG_METRICS_INTERVAL` | `15` | Metrics collection interval (seconds) |
-| `LOG_METRICS_PREFIX` | `faultmaven_logging` | Metrics name prefix |
+| `ENABLE_METRICS` | `false` | Record metrics. Read from the environment when collectors are created |
+| `METRICS_EXPORTER` | `none` | `prometheus_http` mounts `/metrics`. Both variables are needed to scrape |
 
 ### External Log Aggregation
 
@@ -362,8 +360,7 @@ export LOG_OTEL_TRACE_CORRELATION=true
 
 # Metrics export
 export ENABLE_METRICS=true
-export LOG_METRICS_ENDPOINT=http://prometheus:9090/metrics
-export LOG_METRICS_INTERVAL=15
+export METRICS_EXPORTER=prometheus_http
 
 # Elasticsearch integration
 export LOG_ELASTICSEARCH_ENABLED=true
@@ -475,7 +472,7 @@ LOG_ELASTICSEARCH_URL=http://elasticsearch-staging:9200
 LOG_ELASTICSEARCH_INDEX=faultmaven-staging-logs-%{+YYYY.MM.dd}
 
 ENABLE_METRICS=true
-LOG_METRICS_ENDPOINT=http://prometheus-staging:9090/metrics
+METRICS_EXPORTER=prometheus_http
 
 OTEL_EXPORTER_OTLP_ENDPOINT=http://opik-staging.faultmaven.local:30080
 OTEL_SERVICE_NAME=faultmaven-staging
@@ -513,8 +510,7 @@ LOG_ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
 
 # Metrics and tracing
 ENABLE_METRICS=true
-LOG_METRICS_ENDPOINT=http://prometheus:9090/metrics
-LOG_METRICS_INTERVAL=30
+METRICS_EXPORTER=prometheus_http
 
 OTEL_EXPORTER_OTLP_ENDPOINT=http://opik.faultmaven.local:30080
 OTEL_SERVICE_NAME=faultmaven
@@ -697,6 +693,7 @@ data:
   OPIK_TRACK_DISABLE: "false"
   LOG_ELASTICSEARCH_URL: "http://elasticsearch:9200"
   ENABLE_METRICS: "true"
+  METRICS_EXPORTER: "prometheus_http"
   LOG_ENABLE_DATA_SANITIZATION: "true"
 ---
 apiVersion: v1

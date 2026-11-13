@@ -1030,10 +1030,9 @@ export LOG_ENABLE_OPERATION_TRACKING=false
 
 # Disable boundary logging
 export LOG_ENABLE_BOUNDARY_LOGGING=false
-
-# Disable metric collection
-export ENABLE_METRICS=false
 ```
+
+To disable metric recording, set `ENABLE_METRICS=false` in the Deployment's environment and restart (roll) the pods. The variable is read when collectors are created at import, so an `export` in a running shell does nothing.
 
 2. **Scale application resources:**
 ```bash

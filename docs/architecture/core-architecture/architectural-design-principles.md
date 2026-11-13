@@ -188,10 +188,9 @@ CHROMADB_URL=http://chromadb:8000
 STORAGE_BACKEND=s3
 TENANT_PROVIDER=multi
 OPIK_ENABLED=true
-METRICS_EXPORTER=prometheus_http
 ```
 
-No preset sets metrics. Metrics are switched by `ENABLE_METRICS` (default off), outside the presets (see §7).
+No preset sets metrics. Recording is `ENABLE_METRICS` and exposition is `METRICS_EXPORTER`, both default off, outside the presets (see §7).
 
 **Key Insight**: Both configurations run the **SAME codebase** with **ZERO conditional logic** in business services.
 
@@ -645,7 +644,7 @@ faultmaven_knowledge_search_results_count
 
 ### Key Rules
 
-**One switch, one path.** Every first-party collector, of every type, is created through the metrics shim. The shim returns a real collector only when `ENABLE_METRICS` is `true` and `prometheus_client` imports, and a no-op otherwise. It reads `ENABLE_METRICS` from the environment when a collector is created. The one dotenv loader, `load_settings_dotenv`, fills the environment before any module that creates a collector is imported, so `.env` sets the switch in both run modes. No other variable switches metrics.
+**One switch, one path.** Every first-party collector, of every type, is created through the metrics shim. The shim returns a real collector only when `ENABLE_METRICS` is `true` and `prometheus_client` imports, and a no-op otherwise. It reads `ENABLE_METRICS` from the environment when a collector is created. The one dotenv loader, `load_settings_dotenv`, fills the environment before any module that creates a collector is imported, so `.env` sets the switch in both run modes. No other variable switches recording. `METRICS_EXPORTER` selects how recorded metrics are exposed (`prometheus_http` mounts `/metrics`; the default is `none`). It switches no collector. Both are needed to scrape.
 
 **Every label is bounded by code or by operator configuration.** A label's values are declared with the collector, and tied by a test to the code that produces them, or bounded by configuration. A request-supplied identifier is mapped onto the bounded set first: a client id onto the configured clients plus `unknown`. A value outside the set raises under tests. In production it is recorded as `other` and logged once per collector and value. A label left "open, with a reason" (`declare_lazy`) is not allowed. A collector with no writer is removed.
 
