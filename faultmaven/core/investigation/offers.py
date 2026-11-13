@@ -63,7 +63,9 @@ very turn a new confirmation arrives. ``lapse_offers`` also stamps
 disqualification of the new row does not revive it; and it widens the
 premise of a decline given on the current turn to cover what that turn
 recorded, so the model's same-turn updates never un-answer it (#1895). It runs at step 3b of a turn, before the
-automatic transitions read the record, and again on every save.
+automatic transitions read the record, again after the turn's final recompute
+(#2636), and on every save. An open deferred close whose M5 licence fell
+lapses there (INV-32).
 
 **The turn quiet** (fm#1122, #2471). An offer the user set aside stays quiet
 for the rest of that turn: ``open_offer`` refuses a resolve or close offer of
@@ -640,10 +642,23 @@ def answer_offer(
 
 
 def _premise_gone(case: "Case", offer: Offer) -> bool:
-    """Whether an open terminal offer's premise has gone: the case is terminal,
-    or a false-alarm close's finding was withdrawn, edited away or replaced."""
+    """Whether an open terminal offer's premise has gone: the case is terminal;
+    a false-alarm close's finding was withdrawn, edited away or replaced; or a
+    deferred close, which says the root cause and fix are documented, has lost
+    the M5 licence the deferred proposer opened it on (INV-32, #2636). A
+    deferred resolve stands: resolve readiness needs no cause leg (ruled
+    2026-11-12, R1)."""
     if case.is_terminal:
         return True
+    if offer.basis == OfferBasis.DEFERRED and offer.kind == OfferKind.CLOSE:
+        # M5's predicate (``stage_gates._solution_cause_validated``), read at
+        # its source: ``terminal_transitions`` imports this module.
+        from faultmaven.core.investigation.terminal_transitions import (
+            cause_identification_leg,
+        )
+
+        if cause_identification_leg(case) is None:
+            return True
     if _is_false_alarm(offer.kind, offer.closure_reason):
         finding = _finding_turn(case)
         return finding is None or finding > offer.opened_at_turn
@@ -654,8 +669,9 @@ def lapse_offers(case: "Case") -> OfferRecord:
     """The record with what no longer holds lapsed. Idempotent.
 
     - An open resolve or close offer whose premise has gone is answered
-      ``lapsed`` (``_premise_gone``). A revision is never touched: only
-      ``problem_status`` opens and answers it.
+      ``lapsed`` (``_premise_gone``), a deferred close whose M5 licence fell
+      included. A revision is never touched: only ``problem_status`` opens
+      and answers it.
     - A decline given on the current turn has its premise widened to cover
       the case as it stands, so the turn's own updates never un-answer it.
       Widened, never narrowed: a row the turn disqualified is still one the

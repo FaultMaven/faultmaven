@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from faultmaven.core.investigation.narration.codes import DECISIONS_KEY
 from faultmaven.core.investigation.offers import open_revision
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import (
@@ -36,6 +37,7 @@ from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatu
 from .stage_gates import (
     CARRIED_FIX_KEY,
     REPLAY_HELD_SINCE_KEY,
+    REPLAYED_DECISION,
     _add_system_feedback,
     merge_decisions,
     merge_system_notices,
@@ -203,6 +205,9 @@ async def confirm_revision(
         # "yes" to the revised statement (#722). The apply path's proposers
         # stand down under ``REPLAY_METADATA_KEY``; the stage-gate side effects
         # do not, and their offer reaches the user with its reason this way.
+        # Marked replayed: the final recompute replaces only the live cycle's.
+        for entry in bundle_metadata.get(DECISIONS_KEY) or []:
+            entry[REPLAYED_DECISION] = True
         merge_decisions(metadata, bundle_metadata)
 
     metadata["statement_commit"] = {

@@ -5,11 +5,10 @@ Step 2 drops the model's ``proposed_transition`` while the engine's offer is
 open (INV-43, #1885) and records ``ENGINE_OFFER_STANDS``. The narration step
 reads the offer record: while the offer stands, the existing text and
 ``transition_superseded_by_engine``; once it lapsed, the ruled lapsed text with
-the MODEL's target and ``transition_dropped_for_lapsed_offer``. No lapse within
-the decision cycle follows step 2 on ``main`` (B1e adds one; the save-time lapse
-only repeats step 3b's), so these whole turns inject
-the lapse just before the narration step, with the real ``lapse_offers`` on a
-false-alarm close whose finding the user withdrew. No live LLM: the generator
+the MODEL's target and ``transition_dropped_for_lapsed_offer``. B1e's lapse of a
+deferred close is pinned in ``test_final_recompute_b1e_2636.py``; these whole
+turns inject the lapse just before the narration step, with the real
+``lapse_offers`` on a false-alarm close whose finding the user withdrew. No live LLM: the generator
 is stubbed.
 """
 

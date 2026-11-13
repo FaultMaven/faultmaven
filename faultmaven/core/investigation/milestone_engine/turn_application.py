@@ -30,11 +30,21 @@ from faultmaven.core.investigation.state_validator import ValidationSeverity
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
 )
-from faultmaven.modules.case.contracts import HypothesisState, TurnOutcome
+from faultmaven.modules.case.contracts import (
+    AnswerKind,
+    CauseState,
+    HypothesisState,
+    TurnOutcome,
+)
 
 from .affordances import engine_owned_affordances
+from .cause_state import (
+    _kb_prefetch_query_on_identification,
+    _recompute_assessment_state,
+    _resolve_chat_provider_name,
+)
 from .progress import restatement_stall_notice, score_progress
-from .response_application import FIX_CAUSE_AT_START_KEY
+from .response_application import ASSESSMENT_RECOMPUTED_KEY, FIX_CAUSE_AT_START_KEY
 from .response_synthesis import is_agent_response_synthesized
 from .stage_gates import (
     SYSTEM_NOTICE_KEYS,
@@ -56,8 +66,8 @@ logger = logging.getLogger(__name__)
 
 
 class TurnRecordInputs(NamedTuple):
-    """What the turn record takes from the decision cycle, read at step 6 as
-    ``main`` read it: ``fields`` holds every ``_create_turn_record`` argument
+    """What the turn record takes from the decision cycle, read at step 6,
+    after the final recompute: ``fields`` holds every ``_create_turn_record`` argument
     but ``system_notices``, which is read after the narration step, where the
     record is created (``_finalize_turn``, #2636). ``stagnation_str`` and
     ``validation_repairs`` (the state validator's alone) also feed the reply."""
@@ -98,6 +108,66 @@ def record_turn(case, metadata: dict, inputs: TurnRecordInputs) -> None:
 _NOT_OPEN = frozenset(
     {HypothesisState.RETIRED, HypothesisState.REFUTED, HypothesisState.VALIDATED}
 )
+
+
+def _lapse_and_record(case, metadata: dict) -> None:
+    """The offer record's lapse rule (``offers.lapse_offers``), and, when it
+    lapses the open offer, ``OFFER_LAPSED`` with its ``proposal_id``: a
+    deferred close whose M5 licence fell is lapsed on the record, never
+    silently (INV-32, #2636)."""
+    offer = case.offer_record.open
+    case.offer_record = lapse_offers(case)
+    if offer is None or case.offer_record.open is not None:
+        return
+    answer = next(
+        a
+        for a in reversed(case.offer_record.answers)
+        if a.proposal_id == offer.proposal_id
+    )
+    if answer.answer == AnswerKind.LAPSED:
+        record_decision(
+            metadata, NoticeCode.OFFER_LAPSED, proposal_id=offer.proposal_id
+        )
+
+
+async def _final_recompute(responses, case, metadata: dict) -> None:
+    """The cycle's last recompute (#2615 Q8 (a), #2636): the pool after
+    housekeeping, the stall counter, the monitor's repair and the needs
+    sweeps. Its notices are codes, so they deduplicate against step 1's, and
+    its two flags replace step 1's (``replace_flags``).
+
+    Either edge of identification it moves is taken as step 1 takes it: a
+    ``root_cause_identified`` this turn added and this recompute dropped
+    leaves the turn's milestones (the falling edge); one it raises gets the
+    milestone (the recompute writes it) and step 1's KB remediation warm-up
+    (INV-35). Either way the turn's outcome is re-derived; ``progress_made``
+    keeps the step-1 reading (A12). The deferred proposer is not re-run on a
+    rising edge. The offer record's lapse rule then runs on the pool it left
+    (INV-32)."""
+    before = case.progress.cause_state
+    _recompute_assessment_state(
+        case,
+        exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
+        rcc_authored_this_turn=False,
+        metadata=metadata,
+        provider_name=_resolve_chat_provider_name(responses.deps.llm_provider),
+        replace_flags=True,
+    )
+    after = case.progress.cause_state
+    milestones = metadata.get("milestones_completed") or []
+    if "root_cause_identified" in milestones and after != CauseState.IDENTIFIED:
+        milestones.remove("root_cause_identified")
+    if (before == CauseState.IDENTIFIED) != (after == CauseState.IDENTIFIED):
+        # The reported outcome is not read (``_determine_turn_outcome``).
+        metadata["outcome"] = _determine_turn_outcome(
+            case, metadata, TurnOutcome.CONVERSATION
+        )
+    query = _kb_prefetch_query_on_identification(
+        before, after, case.root_cause_conclusion, case.working_conclusion
+    )
+    if query:
+        await responses.kb_prefetcher.prefetch_kb_context(case, query, "root_cause")
+    _lapse_and_record(case, metadata)
 
 
 def _record_hypotheses_closed_later(case, metadata: dict) -> None:
@@ -206,7 +276,7 @@ async def _apply_turn_response(
     # proposal on the user's "not yet"; an older decline whose premise moved
     # (a new solution or confirmation) is stamped lapsed, and the backstop
     # re-offers on this turn.
-    case_updated.offer_record = lapse_offers(case_updated)
+    _lapse_and_record(case_updated, metadata)
 
     # 4. Check for automatic status transitions
     case_updated = await transitions.check_automatic_transitions(
@@ -246,16 +316,6 @@ async def _apply_turn_response(
     # ``_finish_deterministic_turn``.
     score_progress(metadata)
 
-    # 4c. Resolution backstop (INV-43). LAST of the openers, which is
-    # what makes it a backstop rather than a fourth competing proposer:
-    # step 4 has just run the LLM's own ``proposed_transition`` and the
-    # deferred proposer ran inside the apply step before it, so anything
-    # they opened is open on the offer record and this bails on it. Only a resolution-READY case that NOBODY offered reaches the
-    # proposal. Placed after 4b rather than before it because the offer
-    # is engine action, not case progress — it writes none of the arms
-    # ``score_progress`` reads.
-    _maybe_propose_confirmed_resolution(case_updated, metadata)
-
     # 5. Phase 4: Hypothesis Housekeeping (Decay & Anchoring)
     # This happens after transitions but before recording the turn
     # Paused while the case holds on the user or on new evidence (a revision
@@ -287,27 +347,6 @@ async def _apply_turn_response(
             "Working conclusion updated: likelihood="
             f"{case_updated.working_conclusion.likelihood:.2f}"
         )
-
-    # Step 5.7: Validate state consistency
-    is_valid, validation_issues = state_validator.is_valid(case_updated)
-    validation_repairs: list[str] = []
-    if validation_issues:
-        # Log validation issues and collect repairs
-        for issue in validation_issues:
-            if issue.severity == ValidationSeverity.ERROR:
-                logger.warning(
-                    f"State validation error: {issue.code} - {issue.message}"
-                )
-                if issue.suggested_fix:
-                    validation_repairs.append(f"{issue.code}: {issue.suggested_fix}")
-            elif issue.severity == ValidationSeverity.WARNING:
-                logger.debug(
-                    f"State validation warning: {issue.code} - {issue.message}"
-                )
-        metadata["validation_issues"] = [
-            {"code": i.code, "message": i.message, "severity": i.severity.value}
-            for i in validation_issues
-        ]
 
     # Step 5.8: Update progress tracking (before stagnation check). Frozen
     # during a hold, or the turn the hold lifts would read as a stall.
@@ -354,7 +393,91 @@ async def _apply_turn_response(
             log_msg += f", repair: {progress_result.repair_type.value}"
         logger.info(log_msg)
 
-    # Step 6: what the turn record takes, read here; the record itself is
+    # Evidence-needs Phase 3: run the supersession rule for
+    # causal-purpose needs anchored to any TERMINAL hypothesis. Covers
+    # every terminal write path without threading ``case`` through
+    # their APIs:
+    #   - hypothesis_manager.py (low-confidence retirement)
+    #   - hypothesis_manager.py (anchoring-prevention retirement)
+    #   - hypothesis_manager.py (``refute_hypothesis``)
+    #   - progress_monitor.py (INCONCLUSIVE → RETIRED)
+    #   - milestone_engine/engine.py (LLM-emitted refutation / retirement)
+    #
+    # The FULL terminal set is swept, not a newly-terminal diff. The
+    # helper is idempotent — it removes the id from every motivating
+    # list on the first pass, so later sweeps hit its ``continue`` and
+    # change nothing — which makes the steady-state cost a no-op and
+    # removes the need for a pre-turn snapshot. The diff form could
+    # only ever supersede needs whose motivator turned terminal in the
+    # same turn, so a need already carrying a terminal id (a motivator
+    # that went terminal before this rule existed, or one left in the
+    # list beside a still-active motivator) stayed PENDING for the life
+    # of the case with nothing able to clear it. Sweeping everything
+    # self-heals those instead of requiring a backfill.
+    #
+    # Runs BEFORE save() so the supersession lands in the same turn's
+    # persisted state, and before the final recompute and the backstop, which
+    # read the need a pending check names.
+    _sweep_needs_for_terminal_hypotheses(case_updated)
+
+    # GC for engine-inferred needs. They are the orphan shape the
+    # terminal-hypothesis sweep above cannot reach (no motivator to key
+    # off) — the same shape ``_apply_evidence_need_updates`` refuses to
+    # let the MODEL create, for that exact reason. Run before linking so
+    # an ask repeated THIS turn is refreshed rather than swept a moment
+    # early, and unconditionally (not inside the suggestion branch) so a
+    # case that stops emitting suggestions still gets its pool cleaned.
+    try:
+        sweep_silent_inferred_needs(case_updated, case_updated.current_turn)
+    except Exception as sweep_err:  # noqa: BLE001
+        logger.warning(
+            "Inferred-need sweep failed on case %s: %s",
+            case_updated.case_id,
+            sweep_err,
+        )
+
+    # The final recompute (#2615 Q8 (a), #2636): the pool every decider above
+    # left, read once more, and the lapse rule on it, so the backstop and the
+    # record read one pool. Only where the apply step ran the first; then the
+    # terminal-need sweep once more, on the states it wrote.
+    if metadata.get(ASSESSMENT_RECOMPUTED_KEY):
+        await _final_recompute(responses, case_updated, metadata)
+        _sweep_needs_for_terminal_hypotheses(case_updated)
+
+    # 4c. Resolution backstop (INV-43). LAST of the openers, which is
+    # what makes it a backstop rather than a fourth competing proposer:
+    # step 4 has run the LLM's own ``proposed_transition`` and the
+    # deferred proposer ran inside the apply step before it, so anything
+    # they opened is open on the offer record and this bails on it. Only a resolution-READY case that NOBODY offered reaches the
+    # proposal. After the final recompute, so it reads the pool the record
+    # reads; the offer is engine action, not case progress — it writes none
+    # of the arms ``score_progress`` reads.
+    _maybe_propose_confirmed_resolution(case_updated, metadata)
+
+    # Step 5.7: Validate state consistency
+    is_valid, validation_issues = state_validator.is_valid(case_updated)
+    validation_repairs: list[str] = []
+    if validation_issues:
+        # Log validation issues and collect repairs
+        for issue in validation_issues:
+            if issue.severity == ValidationSeverity.ERROR:
+                logger.warning(
+                    f"State validation error: {issue.code} - {issue.message}"
+                )
+                if issue.suggested_fix:
+                    validation_repairs.append(f"{issue.code}: {issue.suggested_fix}")
+            elif issue.severity == ValidationSeverity.WARNING:
+                logger.debug(
+                    f"State validation warning: {issue.code} - {issue.message}"
+                )
+        metadata["validation_issues"] = [
+            {"code": i.code, "message": i.message, "severity": i.severity.value}
+            for i in validation_issues
+        ]
+
+    # Step 6: what the turn record takes, read here, after the final
+    # recompute: its milestones, validated hypotheses and outcome; its
+    # ``progress_made`` stays step 1's (A12). The record itself is
     # created in ``_finalize_turn``, after the narration step, with the
     # notices it rendered (#2636). The cause a fix run in this turn acts on is
     # the one the live investigation apply took when it started (#2036 D2.3);
@@ -401,32 +524,6 @@ async def _apply_turn_response(
         validation_repairs=validation_repairs,
     )
 
-    # Evidence-needs Phase 3: run the supersession rule for
-    # causal-purpose needs anchored to any TERMINAL hypothesis. Covers
-    # every terminal write path without threading ``case`` through
-    # their APIs:
-    #   - hypothesis_manager.py (low-confidence retirement)
-    #   - hypothesis_manager.py (anchoring-prevention retirement)
-    #   - hypothesis_manager.py (``refute_hypothesis``)
-    #   - progress_monitor.py (INCONCLUSIVE → RETIRED)
-    #   - milestone_engine/engine.py (LLM-emitted refutation / retirement)
-    #
-    # The FULL terminal set is swept, not a newly-terminal diff. The
-    # helper is idempotent — it removes the id from every motivating
-    # list on the first pass, so later sweeps hit its ``continue`` and
-    # change nothing — which makes the steady-state cost a no-op and
-    # removes the need for a pre-turn snapshot. The diff form could
-    # only ever supersede needs whose motivator turned terminal in the
-    # same turn, so a need already carrying a terminal id (a motivator
-    # that went terminal before this rule existed, or one left in the
-    # list beside a still-active motivator) stayed PENDING for the life
-    # of the case with nothing able to clear it. Sweeping everything
-    # self-heals those instead of requiring a backfill.
-    #
-    # Runs BEFORE save() so the supersession lands in the same turn's
-    # persisted state.
-    _sweep_needs_for_terminal_hypotheses(case_updated)
-
     # #1079: give every EVIDENCE suggestion a need to hang on, and
     # record the ask on it. Both anti-nagging mechanisms (the
     # obtainability wall and mention decay) act on an EvidenceNeed, so
@@ -444,22 +541,6 @@ async def _apply_turn_response(
     # branches, the closure ack). Those turns never render the model's
     # EVIDENCE asks, and recording an ask the user never saw would decay
     # it toward "stop surfacing" for the wrong reason.
-    # GC for engine-inferred needs. They are the orphan shape the
-    # terminal-hypothesis sweep above cannot reach (no motivator to key
-    # off) — the same shape ``_apply_evidence_need_updates`` refuses to
-    # let the MODEL create, for that exact reason. Run before linking so
-    # an ask repeated THIS turn is refreshed rather than swept a moment
-    # early, and unconditionally (not inside the suggestion branch) so a
-    # case that stops emitting suggestions still gets its pool cleaned.
-    try:
-        sweep_silent_inferred_needs(case_updated, case_updated.current_turn)
-    except Exception as sweep_err:  # noqa: BLE001
-        logger.warning(
-            "Inferred-need sweep failed on case %s: %s",
-            case_updated.case_id,
-            sweep_err,
-        )
-
     if getattr(response_obj, "suggested_follow_ups", None):
         try:
             gate_pending = engine_owned_affordances(case_updated) is not None
@@ -501,7 +582,8 @@ async def _apply_turn_response(
 
     # The case outcome record (#2615 stage S1), folded over the prior one
     # after every decider of the cycle, the progress monitor's repair, the
-    # needs sweeps and the need linking included, and before the save. The
+    # needs sweeps, the final recompute, the backstop and the need linking
+    # included, and before the save. The
     # narration step reads it (``_finalize_turn``), and only then is the turn
     # recorded (#2636).
     metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case_updated, at="cycle")

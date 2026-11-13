@@ -24,9 +24,10 @@ recorded can answer it:
 * ``grounding_assessment`` (``milestone_engine._log_grounding_assessment``) is
   the right SHAPE but unusable as a stall signal: it is ``logger.debug`` behind
   an ``isEnabledFor`` guard (pods run at INFO), it is emitted from
-  ``_recompute_assessment_state`` — inside response application, BEFORE the
-  progress decision and the counter update — so its ``turns_without_progress``
-  is last turn's, and it fires only on the generation path. It stays as-is: it
+  ``_recompute_assessment_state`` — once inside response application, BEFORE
+  the progress decision and the counter update, so its
+  ``turns_without_progress`` is last turn's there, and once more at the final
+  recompute (#2636) — and it fires only on the generation path. It stays as-is: it
   is a grounding/seam trace, not a progress ledger, and this module does not
   replace it.
 

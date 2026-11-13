@@ -568,7 +568,7 @@ def test_a_token_left_unrendered_is_stripped_in_production(caplog, monkeypatch):
 
 
 def test_the_codes_are_append_only():
-    """B1c appended its fourteen after B1b's seven, B1d its one after these;
+    """B1c appended its fourteen after B1b's seven, B1d and B1e one each;
     ``OfferCode`` (B1d) is append-only from its nine."""
     assert [m.value for m in NoticeCode] == [
         "solution_offer_withdrawn",
@@ -595,6 +595,8 @@ def test_the_codes_are_append_only():
         "fix_report_ignored",
         # B1d's
         "engine_offer_stands",
+        # B1e's
+        "offer_lapsed",
     ]
     assert [m.value for m in OfferCode] == [
         "rca_infeasible_close",

@@ -363,8 +363,9 @@ correctives and is asked to restate a problem it has already confirmed resolved.
 It is a backstop and not a fourth proposer by three rules:
 
 - **Last.** It runs at step 4c of `_apply_turn_response` (the
-  `_process_turn_impl` phase that applies the turn's response), after `_check_automatic_transitions`, and bails on any
-  offer an earlier opener left open.
+  `_process_turn_impl` phase that applies the turn's response), after `_check_automatic_transitions`,
+  housekeeping and the final recompute, and bails on any offer an earlier
+  opener left open.
 - **Same bar.** Its trigger is `assess_resolution_readiness` READY — a
   qualifying `causal_absence_evidence` row and a `symptom_absence_evidence` row
   at or after it — not a looser reading of "looks finished". A stabilized case
@@ -576,7 +577,7 @@ on gate turns remain engine-owned **replacements** — that is the separate
 suggestion-ownership decision (#428's "augment" was reverted by #430) and is
 deliberately unchanged.
 
-> **Loop-bound (the engine's same-turn offer stands).** The "suggests Close instead" offer above is opened by step 0, early in `check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn. Before the record, the later LLM-proposal step **replaced the pending proposal wholesale**, clobbering the CLOSE and re-arming RESOLVED+`needs_info` every turn → the gate looped to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The guard is the general same-turn rule (INV-43, #1885), now structural: the record has one slot (`open_offer` raises while it is taken), so while an offer is open the LLM's same-turn `proposed_transition` is **ignored** and reported superseded. If that offer lapses later in the decision cycle (no lapse within the cycle follows step 2 until B1e, #2636; the save-time lapse in `CaseRepository.prepare_for_save` only repeats step 3b's), the proposal is reported dropped for a lapsed offer instead (`transition_dropped_for_lapsed_offer`, INV-43). This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
+> **Loop-bound (the engine's same-turn offer stands).** The "suggests Close instead" offer above is opened by step 0, early in `check_automatic_transitions`. But the user typically re-confirms ("yes, it's resolved") and the LLM dutifully re-emits `proposed_transition=resolved` on the **same** turn. Before the record, the later LLM-proposal step **replaced the pending proposal wholesale**, clobbering the CLOSE and re-arming RESOLVED+`needs_info` every turn → the gate looped to max_turns ([project-resolution-gate-stuck-loop]; Run 36). The guard is the general same-turn rule (INV-43, #1885), now structural: the record has one slot (`open_offer` raises while it is taken), so while an offer is open the LLM's same-turn `proposed_transition` is **ignored** and reported superseded. If that offer lapses later in the decision cycle (a deferred close whose M5 licence fell lapses after the final recompute, #2636), the proposal is reported dropped for a lapsed offer instead (`transition_dropped_for_lapsed_offer`, INV-43). This is what makes "no re-ask loop" actually hold — independent of *why* the case is in resolution `NEEDS_INFO` (instant/index resolution, mitigation-first, or any desync that leaves 0 `Solution` records).
 >
 > **Gate strictness — absence-driven.** `assess_resolution_readiness` gates RESOLVED on gone ⇒ gone, two rows (`_resolution_confirmed` → `cause_assurance.resolution_confirmation_rows`, INV-30): a **qualifying** `causal_absence_evidence` row (the cause seen removed, `cause_elimination_rows`) and a non-engine-authored `symptom_absence_evidence` row collected at or after the fix — the recorded execution of the latest fix, or the earliest such cause row when the fix was made out of band — and after the latest failed-fix window (the reported problem seen gone, `symptom_elimination_rows`). The cause row qualifies when it is non-engine-authored (the engine only mints absence rows as M6 failed-fix *dis*confirmations), not itself a failed-fix disconfirmation (REFUTES-linked, on either belief axis, to the cause the engine marked disconfirmed — a sibling-scoped REFUTES is proof-by-exclusion and does not disqualify), at-or-after the latest engine-known failed-fix disconfirmation, and from the latest observed **fix window** — the latest whose fix's outcome was looked at (the cause re-checked, or the problem seen persisting after the fix) — not a failed one (`fix_windows` / `confirming_window`: a resolution confirms the latest fix, so rows from before a newer observed fix confirm nothing about it; a fix seen failing — the cause shown removed, then the problem seen again — confirms nothing afterwards, and only a new recorded fix opens a window that can; only a **remediation** opens one: a fix whose target, settled in the turn the user runs it, meets neither the cause pool recorded at the start of that turn (`TurnProgress.cause_at_start`; with no root identified or count-held, a pool that also admits every standing rooted hypothesis's root) nor a ROOT of the licence M5 recorded on the fix when it was proposed (`ProposedAction.licence_ids`) is an interception, which relieves but never resolves; an unnamed fix takes the roots identified or count-held at the start of that turn, else the licence's cause read from those two records, never rebuilt; a remediation's window binds to its targets and to the roots that fell and are not the cause now, and confirms nothing once its targets have left the pool, so readiness asks for "a fix of the root cause"; an unkinded fix's window ends at the first later attempt by which it has FAILED (#2036 D2.3, `ProposedAction.fix_kind`); the gate and M6 read that one predicate, methodology §7.3, #1927) — the same metadata bar the RESOLVED confirm-stamp's candidate filter uses. The cause row must also be about the case's cause (#2036): none qualifies while identification is held on an open root (a validated cause whose why-stopping verdict is not given, or a root its hypothesis marked not terminal, methodology §9.2), and none recorded before that cause was posited as a hypothesis's root (the identified root, else the one the root-cause conclusion names, else the latest-attached). Without it, a renewed credential's "issuer Ready again" row read as the root cause removed, and the readiness gate went READY with no cause identified at all.
 >
@@ -1030,15 +1031,46 @@ State updates occur at specific points within a turn to ensure consistency:
 - **Progress indicators** (`symptom_verified`, `solution_proposed`): Provide LLM context and analytics. Do NOT drive stage transitions. `symptom_verified` is LLM-set; `solution_proposed` is engine-derived from live SOLUTION offers (INV-32) and can flip back to False when the standing offer leaves liveness.
 - **Assessment variables** (`cause_state`, `solution_state`, `solution_feasible`): Engine-derived truth signals recomputed each turn. `cause_state` (not a gate, not a path) is what drives whether the diagnostic machinery runs. Never path-stripped.
 
-**Order of Operations Within a Turn**:
+**Order of Operations Within a Turn** (`_process_turn_impl`; the decision
+cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
 
-1. **Receive user message**
-2. **LLM processes** and generates response + `state_updates`
-3. **Apply state updates**: progress milestones, gate milestones, evidence, hypotheses (all from LLM structured output)
-4. **Gate milestone side effects**: When a gate milestone is set, mark the corresponding ProposedAction as accepted; stage transition takes effect next turn
-5. **Record turn progress** (detect what changed)
-6. **Check disposition actions** (RESOLVED/CLOSED) if conditions met
-7. **Return response to user**
+1. **Step 0** — the user's answer to an open offer (section 0b), a confirmed
+   revision's staged-work replay, and the re-check of a remembered resolution
+   request; then the model generates its response.
+2. **Step 1** — the response applied (`process_response_structured`): state
+   updates, gate milestones and their side effects, the apply-step openers
+   (deferred, false-alarm, rca-infeasible), and the first recompute
+   (`_recompute_assessment_state`).
+3. **The apply step's refusals and repairs**, merged with the accumulators
+   written before the model was called.
+4. **Step 3b** — the offer record's lapse rule (`_lapse_and_record`).
+5. **Step 4** — automatic transitions (`check_automatic_transitions`): the
+   model's `proposed_transition`.
+6. **Step 4b** — progress scored (`score_progress`).
+7. **Housekeeping** (`_perform_hypothesis_housekeeping`), metrics and the
+   working conclusion, **the stall counter** and **the progress monitor**.
+8. **The need sweeps** — terminal hypotheses' needs, then silent inferred
+   needs.
+9. **The final recompute and its lapse** (`_final_recompute`), only where
+   step 1 recomputed; the terminal-need sweep runs again after it.
+10. **Step 4c** — the resolution backstop (`_maybe_propose_confirmed_resolution`).
+11. **Validation** (`state_validator`), and the turn record's inputs read.
+12. **The need linking** (`link_evidence_suggestions_to_needs`), and the
+    refusals whose hypothesis the cycle ended not open.
+13. **The outcome record** (`record_case_outcome`).
+14. **The narration** (`_finalize_turn` → `narrate_turn`).
+15. **The turn record** (`record_turn`).
+16. **The save**, once, at the service (`CaseRepository.prepare_for_save`
+    repeats the lapse rule).
+
+**Invariant**: no outcome text is composed before the last decider has run
+and the outcome record is written. The backstop and the record read the pool
+the final recompute left after housekeeping, the stall counter, the monitor's
+repair and the need sweeps; an offer whose licence fell inside the cycle is
+lapsed before the narration (INV-32), shows no card, and a proposal dropped
+for it is reported against the lapse (INV-43). The record's
+`milestones_completed`, `hypotheses_validated` and `outcome` are the final
+recompute's; its `progress_made` stays step 4b's.
 
 **Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
 
@@ -1117,10 +1149,9 @@ close from the status menu (`_close_on_explicit_intent`, which derives
 revision is the exit limited to the engine's own close. On the turn the finding
 is made, the engine's signed offer is the one the user answers even when the
 model proposed a transition beside it (INV-43's same-turn rule, #1885): replaced
-by the model's, it lost the signature, so a decline recorded nothing. Should the
-close lapse later in the decision cycle (no lapse within the cycle follows step
-2 until B1e, #2636), the drop is reported against the lapse (the loop-bound
-note above). (On a chat
+by the model's, it lost the signature, so a decline recorded nothing. Should an
+engine offer lapse later in the decision cycle (the final recompute's lapse,
+#2636), the drop is reported against the lapse (the loop-bound note above). (On a chat
 turn section 0b withdraws a pending close before the model is called, so the
 revision gate's refusal of an unsigned close is reached only where the apply
 step meets the close still standing; it is the backstop there, not a chat-path

@@ -136,9 +136,22 @@ def _count(code: str, what: str, decided: Any, recorded: Any) -> None:
     case_outcome_conflicts_total.labels(field=f"narration.{code}").inc()
 
 
+def _lapsed(case: Any, proposal_id: Optional[str]) -> bool:
+    """Whether the offer ``proposal_id`` names was answered LAPSED: for an
+    offer code's, in the cycle that opened it."""
+    return proposal_id is not None and any(
+        a.proposal_id == proposal_id and a.answer == AnswerKind.LAPSED
+        for a in case.offer_record.answers
+    )
+
+
 def _narrate_offer(case: Any, metadata: dict, code: str, params: dict) -> None:
     """Publish the offer's prose under its key, and write it as the summary
-    of the offer it opened while that offer is open."""
+    of the offer it opened while that offer is open. An offer that lapsed in
+    the cycle that opened it shows nothing: no prose, so no confirmation pair
+    (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
+    if _lapsed(case, params.get("proposal_id")):
+        return
     text = render_offer(code, params)
     if code in PROSE_KEYS:
         metadata[PROSE_KEYS[code]] = text
@@ -189,7 +202,11 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     log = metadata.get(DECISIONS_KEY) or []
     outcome = _outcome(case, metadata, log)
     if metadata.get(OUTCOME_WRITTEN_KEY) and outcome is not None:
-        _conflicts(log, outcome)
+        # An offer that lapsed in its cycle showed nothing: not compared.
+        _conflicts(
+            [e for e in log if not _lapsed(case, e["params"].get("proposal_id"))],
+            outcome,
+        )
     for entry in log:
         code, params = entry["code"], entry["params"]
         if code in _OFFER_CODES:

@@ -294,6 +294,9 @@ FIX_NODE_REFS_KEY = "fix_node_refs"
 #: ``fix_cause`` at the start of this apply (#2036 D2.3): the turn record's
 #: ``cause_at_start`` on a live apply; a replayed bundle's own, not written back.
 FIX_CAUSE_AT_START_KEY = "fix_cause_at_start"
+#: Set where this apply ran the assessment recompute: the turn's final
+#: recompute runs only then (#2636, ``turn_application._final_recompute``).
+ASSESSMENT_RECOMPUTED_KEY = "assessment_recomputed"
 #: The SOLUTIONs this apply minted, as ``(action_id, leg, subject)``: the leg
 #: M5 licensed each on (``cause_identification_leg``) and what it read there
 #: (``licence_subject``), taken at the mint.
@@ -1958,6 +1961,7 @@ class ResponseApplier:
         # deployment (no provider_name) — the helper reads the configured chat
         # provider off it; a partially constructed engine (some fixtures omit
         # llm_provider) degrades to "unknown" rather than raising.
+        metadata[ASSESSMENT_RECOMPUTED_KEY] = True
         prior_cause_state = _recompute_assessment_state(
             case,
             exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),

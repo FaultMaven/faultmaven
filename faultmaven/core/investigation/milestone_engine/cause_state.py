@@ -482,6 +482,7 @@ def _recompute_assessment_state(
     rcc_authored_this_turn: bool = False,
     metadata: "dict[str, Any] | None" = None,
     provider_name: "str | None" = None,
+    replace_flags: bool = False,
 ) -> "CauseState":
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -578,8 +579,10 @@ def _recompute_assessment_state(
     # M6 demotion can refute the very hypothesis a license rests on (fm#1679).
     _refresh_working_conclusion(case)
     _withdraw_unlicensed_solution_offers(case, metadata)
-    _flag_absence_inside_a_failed_fix_window(case, metadata)
-    _flag_unbound_post_fix_rows(case, metadata)
+    # The turn's final recompute (``replace_flags``) restates these two flags
+    # at the end-of-cycle reading, in place of step 1's (#2636).
+    _flag_absence_inside_a_failed_fix_window(case, metadata, replace=replace_flags)
+    _flag_unbound_post_fix_rows(case, metadata, replace=replace_flags)
     derive_solution_surface(case)
 
     # Assurance grade + verification status LAST — after the cause_state
@@ -681,10 +684,11 @@ def _log_grounding_assessment(case: "Case") -> None:
     the whole body is failure-isolated: a diagnostic trace must never break the
     turn pipeline it runs inside, whatever shape the case is in.
 
-    **Not the progress ledger.** This runs inside response application — before
-    the turn's progress decision and before the counter update at Step 5.8 — so
-    its ``turns_without_progress`` / ``is_progress_stalled`` are the PREVIOUS
-    turn's values, and it fires only on the generation path. Those fields are
+    **Not the progress ledger.** This runs at each recompute: step 1's, inside
+    response application, before the turn's progress decision and the counter
+    update at Step 5.8, so its ``turns_without_progress`` /
+    ``is_progress_stalled`` are the PREVIOUS turn's values; and the final
+    recompute's, after them (#2636). It fires only on the generation path. Those fields are
     kept because they are useful context for the grounding readings around them,
     not because they are authoritative. Anything asking "did the engine stall
     this case?" wants the always-on per-turn stream in

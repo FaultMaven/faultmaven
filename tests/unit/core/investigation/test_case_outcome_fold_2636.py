@@ -1032,7 +1032,8 @@ def test_two_close_offers_on_one_case_each_read_the_case_as_it_stands():
 
 async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
     """The needs sweeps, then the record; the narration step then renders the
-    cycle's notices from it, and only then is the turn recorded (#2636 B1b)."""
+    cycle's notices from it, and only then is the turn recorded (#2636 B1b).
+    The terminal-need sweep runs again after the final recompute (B1e)."""
     from faultmaven.core.investigation.milestone_engine import (
         turn_application,
         turn_completion,
@@ -1066,6 +1067,7 @@ async def test_a_turn_writes_the_record_last_in_its_cycle(monkeypatch):
     assert order == [
         "_sweep_needs_for_terminal_hypotheses",
         "sweep_silent_inferred_needs",
+        "_sweep_needs_for_terminal_hypotheses",
         "cycle",
         "narrate_turn",
         "record_turn",

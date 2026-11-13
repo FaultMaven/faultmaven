@@ -250,8 +250,10 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
         # ``cause_identification_contested``). ``identification_held_open``
         # carries ``progress.cause_identification_held_open``, the withdrawal
         # notice's variant (#2636), which the next prompt's readers also read.
-        # After a later step retires the holding hypothesis, these and
-        # ``held_open_root_ids`` can disagree until B1e's final recompute.
+        # The turn's final recompute (#2636) re-derives these flags after
+        # every decider, so the cycle's record reads them agreeing with
+        # ``held_open_root_ids``; a replayed bundle's record reads them as
+        # that bundle left them.
         pool_empty_reason=cause_pool_empty_reason(case),
         identification_leg=cause_identification_leg(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),
