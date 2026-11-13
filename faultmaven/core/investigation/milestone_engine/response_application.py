@@ -299,8 +299,9 @@ FIX_CAUSE_AT_START_KEY = "fix_cause_at_start"
 #: Set where this apply ran the assessment recompute: the turn's final
 #: recompute runs only then (#2636, ``turn_application._final_recompute``).
 ASSESSMENT_RECOMPUTED_KEY = "assessment_recomputed"
-#: ``cause_state`` as step 1's recompute found it: the turn's identification
-#: edge is measured from it (``ResponseApplier.recompute_assessment``).
+#: ``cause_state`` captured before step 1's recompute (on a revision-confirm
+#: turn, after the replay): the turn's identification edge is measured from it
+#: (``ResponseApplier.recompute_assessment``).
 CAUSE_STATE_AT_START_KEY = "cause_state_at_start"
 #: The SOLUTIONs this apply minted, as ``(action_id, leg, subject)``: the leg
 #: M5 licensed each on (``cause_identification_leg``) and what it read there
@@ -495,14 +496,19 @@ class ResponseApplier:
         """Recompute the engine-owned assessment and react to the identification
         edge: step 1's call, and the turn's final recompute (``final``, #2636).
 
-        The edge is measured from the turn's start (``CAUSE_STATE_AT_START_KEY``,
-        captured at step 1), so ``root_cause_identified`` and the KB-remediation
-        pre-fetch (INV-35; terminal recompute paths deliberately do not warm
-        KB) fire once, on a turn that starts unidentified and ends identified.
-        The final recompute removes the milestone only on a falling edge
-        across itself, drops from ``hypotheses_validated`` what the cycle ends
-        not VALIDATED, and re-derives the outcome when the milestones moved;
-        its flags replace step 1's and it re-runs no per-evaluation counter or
+        The edge is measured from the turn's start (``CAUSE_STATE_AT_START_KEY``),
+        so ``root_cause_identified`` records the net start-to-end
+        identification edge: a turn that dips at step 1 and recovers records
+        none. The final recompute removes the milestone only on a falling edge
+        across itself, so a replay's milestone, folded in by
+        ``merge_statement_commit``, is kept, as ``main`` keeps it. The
+        KB-remediation pre-fetch (INV-35; terminal recompute paths deliberately
+        do not warm KB) fires at most once per turn, on the first recompute
+        that crosses to IDENTIFIED from an unidentified start; step 1's can
+        fire on a turn the final recompute then un-identifies. The final
+        recompute also drops from ``hypotheses_validated`` what the cycle ends
+        not VALIDATED and re-derives the outcome when the milestones moved;
+        its flags replace step 1's, and it re-runs no per-evaluation counter or
         trace. This turn's deductive survivors feed proof-by-exclusion. The
         DF-6 provider (INV-39) is resolved off the engine's LLM provider, the
         router in a real deployment ("unknown" when a fixture omits it)."""
