@@ -25,7 +25,7 @@ This document provides a comprehensive reference for configuring the FaultMaven 
 | `LOG_LEVEL` | `INFO` | Global log level | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `LOG_FORMAT` | `json` | Renderer for structured log output | `json`, `console` |
 | `LOG_ENABLE_TRACING` | `true` | Enable OpenTelemetry tracing integration | `true`, `false` |
-| `ENABLE_METRICS` | `true` | Enable metrics collection and export | `true`, `false` |
+| `ENABLE_METRICS` | `false` | Enable metrics collection and export | `true`, `false` |
 | `LOG_ENABLE_REQUEST_CONTEXT` | `true` | Enable request context management | `true`, `false` |
 | `LOG_ENABLE_DEDUPLICATION` | `true` | Enable operation deduplication | `true`, `false` |
 
@@ -332,7 +332,7 @@ OPIK_ENABLED=false
 
 | Environment Variable | Default Value | Description |
 |---------------------|---------------|-------------|
-| `ENABLE_METRICS` | `true` | Enable metrics collection |
+| `ENABLE_METRICS` | `false` | Enable metrics collection |
 | `LOG_METRICS_ENDPOINT` | `http://localhost:9090/metrics` | Prometheus metrics endpoint |
 | `LOG_METRICS_INTERVAL` | `15` | Metrics collection interval (seconds) |
 | `LOG_METRICS_PREFIX` | `faultmaven_logging` | Metrics name prefix |
