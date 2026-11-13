@@ -181,9 +181,9 @@ dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjso
   | ($a | group_by(.r) | map({r: .[0].r, k: (map(.k) | min)}) | sort_by(.k)) as $ranked
   | [$all[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | ($p | map(.r) | unique) as $pr
   | (if $lim then 0 else [($ranked | length), (if $hp > 0 then 3 else 4 end)] | min end) as $k
-  | ([$ranked[] | select(.r | IN($pr[])) | .k] | max // "P0") as $worst
+  | ($p | map(.k) | max // "P0") as $worst
   | [$ranked[] | select((.r | IN($pr[]) | not) and .k < $worst) | .r] as $skip
-  | "design lanes: roots picked \($pr | length) of \($k) offered, stages picked \($p | length) (design cap \(if $hp > 0 then 3 else 4 end)),"
+  | "design lanes: roots picked \([$ranked[] | select(.r | IN($pr[]))] | length) of \($k) offered, stages picked \($p | length) (design cap \(if $hp > 0 then 3 else 4 end)),"
   + " higher-priority roots skipped: \($skip | map("#\(.)") | join(" ") | if . == "" then "none" end), stages with no root: \($all
     | map(select(.r == "?") | "#\(.n)") | join(" ") | if . == "" then "none" end), roots with two: \($p
     | map(select(.r != "?")) | group_by(.r) | map(select(length > 1) | "#\(.[0].r)") | join(" ") | if . == "" then "none" end)"
@@ -292,10 +292,10 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        owner last approved. While any ready `P0`–`P2` defect exists, design takes at most three of the round's lanes
        (the design cap: the stages this round dispatches, **Next** included; stage PRs carried from earlier rounds do
        not count), so at least one lane fixes defects; with none, it may take all four (owner ruling, 2026-11-13). The
-       health block offers one lane per root with a ready stage, up to the design cap, ranked by the stages' priority (a
+       health block offers one lane per root with a ready stage, up to the design cap (the second run's `lanes` lists the **Next** stages too), ranked by the stages' priority (a
        stage carries its root's); within a priority the proposal follows the owner's last approved order. Design lanes are offered down to the number
        the round's agent-count limit admits, highest-ranked roots first, and the proposal says which root waited.
-     - **A root's second stage** takes a lane only after every offered root has one, within the cap, and only when the
+     - **A root's second stage** takes a lane only after every offered root has one, within the design cap, and only when the
        two stages are independent: on different seams, neither's pins needing the other's merge, and neither the docs
        stage of a root whose docs stage has not merged. The block does not offer it (a root with a stage PR open offers
        none); the proposal adds it to `lanes` by hand, the block counts it in `stages picked`, and its *Building* row
