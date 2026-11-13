@@ -112,7 +112,7 @@ vector_storage_type = "chromadb"
 opik_enabled = False
 prometheus_enabled = False
 tracing_enabled = False
-metrics_enabled = False
+# Metrics: set ENABLE_METRICS=true in the environment (default false)
 protection_enabled = False
 sanitize_pii = False
 ```
@@ -197,7 +197,7 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 | `OPIK_ENABLED` | `false` | Enable Opik LLM tracing |
 | `PROMETHEUS_ENABLED` | `false` | Enable Prometheus metrics |
 | `TRACING_ENABLED` | `false` | Enable distributed tracing |
-| `METRICS_ENABLED` | `false` | Enable metrics collection |
+| `ENABLE_METRICS` | `false` | Enable metrics collection (environment variable) |
 | `PROTECTION_ENABLED` | `false` | Enable PII protection |
 | `SANITIZE_PII` | `false` | Enable PII sanitization |
 

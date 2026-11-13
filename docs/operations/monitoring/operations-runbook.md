@@ -1032,7 +1032,7 @@ export LOG_ENABLE_OPERATION_TRACKING=false
 export LOG_ENABLE_BOUNDARY_LOGGING=false
 
 # Disable metric collection
-export LOG_ENABLE_METRICS=false
+export ENABLE_METRICS=false
 ```
 
 2. **Scale application resources:**

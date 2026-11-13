@@ -173,7 +173,6 @@ DATABASE_URL=sqlite+aiosqlite:///./faultmaven.db
 TENANT_PROVIDER=single
 STORAGE_BACKEND=filesystem
 VECTOR_BACKEND=chroma
-METRICS_ENABLED=false
 TRACING_ENABLED=false
 ```
 
@@ -189,9 +188,10 @@ CHROMADB_URL=http://chromadb:8000
 STORAGE_BACKEND=s3
 TENANT_PROVIDER=multi
 OPIK_ENABLED=true
-METRICS_ENABLED=true
 METRICS_EXPORTER=prometheus_http
 ```
+
+No preset sets metrics. Metrics are switched by `ENABLE_METRICS` (default off), outside the presets (see §7).
 
 **Key Insight**: Both configurations run the **SAME codebase** with **ZERO conditional logic** in business services.
 
@@ -643,6 +643,19 @@ faultmaven_llm_request_duration_seconds
 faultmaven_knowledge_search_results_count
 ```
 
+### Key Rules
+
+**One switch, one path.** Every first-party collector, of every type, is created through the metrics shim. The shim returns a real collector only when `ENABLE_METRICS` is `true` and `prometheus_client` imports, and a no-op otherwise. It reads `ENABLE_METRICS` from the environment when a collector is created. The one dotenv loader, `load_settings_dotenv`, fills the environment before any module that creates a collector is imported, so `.env` sets the switch in both run modes. No other variable switches metrics.
+
+**Every label is bounded by code or by operator configuration.** A label's values are declared with the collector, and tied by a test to the code that produces them, or bounded by configuration. A request-supplied identifier is mapped onto the bounded set first: a client id onto the configured clients plus `unknown`. A value outside the set raises under tests. In production it is recorded as `other` and logged once per collector and value. A label left "open, with a reason" (`declare_lazy`) is not allowed. A collector with no writer is removed.
+
+### Enforcement
+
+| Rule | Check that fails on the next violation | Status |
+|---|---|---|
+| One switch, one path | Importing each collector-defining module with the switch off registers nothing (#2745, S1's pin 2). | Pending: #2748 |
+| Bounded labels | S2's pins 4-6: each label's vocabulary tied to its producer, an out-of-set value raising under tests, and no collector without a writer. | Pending: #2749 |
+
 ---
 
 ## 8. Architectural Boundary Enforcement
@@ -1003,7 +1016,7 @@ One check per clause. This table's Status column is the principle's only status 
 
 | Clause | Check that fails on the next violation | Precedent | Status |
 |---|---|---|---|
-| 13.1 Stores | A census of the store client constructors in `faultmaven/` (ChromaDB, Redis, the trace SDK, object storage, metrics, files under the data root), kept equal to the registry's writer column. An in-process cache cannot be censused this way; it gets its row by review. | `tests/unit/architecture/test_server_written_rows_census_1660.py`, `tests/unit/architecture/test_llm_call_metering_census.py` | Pending: a stage of #2616 |
+| 13.1 Stores | A census of the store client constructors in `faultmaven/` (ChromaDB, Redis, the trace SDK, object storage, metrics, files under the data root; for metrics, a collector created outside the shim), kept equal to the registry's writer column. An in-process cache cannot be censused this way; it gets its row by review. | `tests/unit/architecture/test_server_written_rows_census_1660.py`, `tests/unit/architecture/test_llm_call_metering_census.py` | Pending: a stage of #2616 |
 | 13.2 Derived facts | #2615's pins: a narration package that may not import the derivations; a purity test over a case whose every other attribute raises; a census of derivation calls per function. | `tests/unit/architecture/test_message_rows_have_one_constructor.py` | Pending: #2615 |
 | 13.3 Statements | A turn-order test driven through `process_turn`: outcome text is written only by the renderer, after the record. | `tests/unit/architecture/test_turn_commits_once_1882.py` | Pending: #2615 |
 | 13.4 Resources, SDK policy and work in flight | Resources: compose, shut down, and the process's file descriptors and threads return to their baseline. Work in flight: the drain waits for work within its bound, cancels the cancellable work past it, awaits a settlement to its end, and the last release drains before the stores close. SDK policy: the trace SDK is imported in one module only, and a subprocess probe shows no crash reporter active. | Resources: `tests/integration/container/test_a_composition_closes_what_it_opened.py`. Work in flight: `tests/unit/infrastructure/test_inflight_record_2096.py`, `tests/unit/container/test_container_shutdown.py` (`test_the_last_release_drains_then_resets_then_closes_then_stops_the_process`). SDK policy: `tests/unit/architecture/test_opik_imported_in_one_module_2620.py`, and `tests/unit/infrastructure/observability/test_opik_fail_closed.py` (`TestCrashReporting`) | Resources: built (#2503). Work in flight: built (#2505). SDK policy (the trace SDK): built (#2620) |
@@ -1105,6 +1118,7 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 | 2.10 | 2026-11-12 | P13.4: the TLS root set enforced in the core image ([#2692](https://github.com/FaultMaven/faultmaven/issues/2692) S1.2): grpcio's `roots.pem` linked to the OS bundle, the image check reading every `roots.pem` and the bundle of every pip and pip wheel ([#2665](https://github.com/FaultMaven/faultmaven/issues/2665)), the handshake check run in the built image, and `features.tls_root_set` on the config status. |
 | 2.11 | 2026-11-12 | P13.4 states the ruled pip mechanism: every pip's vendored bundle linked to the OS bundle, no pip wheel holding a banned root, an image check that judges every pip bundle whatever its version or `legacy-certs`; with the reinstall, `--user`, later-venv and operator `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE` limit ([ruling on #2756](https://github.com/FaultMaven/faultmaven/issues/2756); S1.3a, #2758). To be built by S1.3b (#2759). |
 | 2.12 | 2026-11-12 | P13.4: the pip mechanism built in the core image (S1.3b, [#2759](https://github.com/FaultMaven/faultmaven/issues/2759)): every pip's vendored bundle linked to the OS bundle, the ensurepip pip wheel removed, the image check judging every pip bundle whatever its version, and `pip --isolated` and a pip without `PIP_CERT` measured from pip's own session at the image build. |
+| 2.13 | 2026-11-13 | P7 states the metrics switch and the label rules ([#2747](https://github.com/FaultMaven/faultmaven/issues/2747), stage D of [#2745](https://github.com/FaultMaven/faultmaven/issues/2745)): one switch, `ENABLE_METRICS`, read by the shim; every label bounded by code or by operator configuration. §1's presets no longer list a metrics variable. |
 
 ### Key Changes Across Versions
 
