@@ -33,6 +33,9 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     RevocationStateUnknownError,
     TokenRevocationError,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    REVOCATION_ENTRY_MARGIN_SECONDS,
+)
 from tests.utils import (
     InMemoryRevocationStore,
     forge_access_token,
@@ -404,7 +407,9 @@ class TestTokenRevocation:
 
         await auth_service_with_store.revoke_token(jti, exp)
 
-        assert 595 <= revocation_store.revoked[jti] <= 605
+        # Plus the margin every jti entry outlives its token by (#2764).
+        margin = REVOCATION_ENTRY_MARGIN_SECONDS
+        assert 595 + margin <= revocation_store.revoked[jti] <= 605 + margin
 
     @pytest.mark.asyncio
     async def test_revoked_tokens_fail_verification(

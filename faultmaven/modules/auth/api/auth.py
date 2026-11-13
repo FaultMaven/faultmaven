@@ -81,6 +81,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    RefreshClaim,
     capture_state_read_at,
 )
 from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
@@ -720,6 +721,18 @@ async def local_register(
         )
 
 
+def _invalid_refresh_token() -> HTTPException:
+    """The 401 every unredeemable refresh token gets, a claim lost included."""
+    return HTTPException(
+        status_code=401,
+        detail={
+            "error": "invalid_refresh_token",
+            "message": "Refresh token is invalid, expired, or revoked. Please log in again.",
+        },
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 @router.post(
     "/refresh",
     response_model=TokenRefreshResponse,
@@ -736,7 +749,10 @@ async def refresh_tokens(
     The short-lived access token cannot be extended (it is a stateless JWT),
     so an active client must mint a new one before expiry rather than being
     forced to re-login. Refresh tokens rotate: the presented token is revoked
-    and a fresh one is returned alongside the new access token.
+    and a fresh one is returned alongside the new access token. A token is
+    redeemed at most once while its revocation entry stands: of concurrent
+    refreshes of one token, at most one succeeds and the others get 401
+    `invalid_refresh_token`.
 
     Mode-aware (ADR-015 D6): local mode validates and mints with the HS256
     generator; oauth/cloud mode uses the RS256 generator that issued the
@@ -747,7 +763,7 @@ async def refresh_tokens(
     1. Validate the refresh token (signature, expiry, type, revocation)
     2. Load the current user (rejects deactivated/deleted accounts)
     3. Mint a new access + refresh token pair
-    4. Revoke the old refresh token (rotation)
+    4. Claim the old refresh token: revoke it only if no other refresh has
     """
     # #831: before the refresh-token validation, not just the user load —
     # the presented token's still-unrevoked status is itself state this
@@ -777,14 +793,7 @@ async def refresh_tokens(
         # 1. Validate the presented refresh token (None => invalid/expired/revoked)
         claims = await jwt_generator.validate_refresh_token(request_body.refresh_token)
         if not claims:
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "error": "invalid_refresh_token",
-                    "message": "Refresh token is invalid, expired, or revoked. Please log in again.",
-                },
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise _invalid_refresh_token()
 
         # 2. Load the current user — a token for a since-deleted/deactivated
         #    account must not be refreshable.
@@ -857,9 +866,21 @@ async def refresh_tokens(
             user, state_read_at=state_read_at, client_id=claims.get("client_id")
         )
 
-        # 4. Rotation: revoke the old refresh token so a leaked/replayed token
-        #    cannot be reused after a successful refresh.
-        await jwt_generator.revoke_refresh_token(request_body.refresh_token)
+        # 4. Rotation: claim the old refresh token, so a leaked/replayed token
+        #    cannot be reused after a successful refresh. The claim revokes it
+        #    only if no concurrent refresh or revocation has: at most one caller
+        #    receives a pair, and a loser's minted pair is discarded unsent
+        #    (#2764). The mint stays first, so a failed mint leaves the token
+        #    redeemable. The claim reads the validated claims, never expiry.
+        claim = await jwt_generator.claim_refresh_token(claims)
+        if claim is not RefreshClaim.CLAIMED:
+            logger.warning(
+                "Token refresh refused: refresh token not claimed (%s); "
+                "a minted pair was discarded",
+                claim.value,
+                extra={"user_id": user.user_id, "claim": claim.value},
+            )
+            raise _invalid_refresh_token()
 
         # Token response: no-store per RFC 6749 §5.1 (same convention as the
         # SSO exchange endpoint — the body carries fresh credentials).
