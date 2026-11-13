@@ -14999,7 +14999,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "The session kept changing under this write; nothing was written. Retry after `Retry-After`."
+            "description": "The session kept changing under this write; nothing was written. Or the session service or store is unavailable."
           }
         },
         "summary": "Session Heartbeat",

@@ -303,7 +303,7 @@ class DIContainer(BaseDIContainer):
         # fabricated documents for any plausible id (#899). None is the honest
         # answer; every caller of get_knowledge_service() handles it.
         self.knowledge_service = None
-        # None too: a hand-written session service fell behind the real (#1855).
+        # None too: a hand-written session service fell behind the real one (#1855).
         self.session_service = None
 
         logging.getLogger(__name__).info("Created minimal container for testing")

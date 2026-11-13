@@ -560,6 +560,25 @@ async def test_a_write_that_meets_an_expired_session_evicts_it(world):
     assert world.own_id not in world.sync.smembers(f"sessions:user:{OWNER}")
 
 
+async def test_a_resume_landing_between_the_eviction_read_and_delete_survives(
+    world, monkeypatch
+):
+    """The eviction is a compare-and-delete: a session another writer re-armed
+    after the expired read is kept, and the write is applied to it instead."""
+    lapsed = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    _record_edit(world, lambda r: r.update(expires_at=lapsed))()
+    rearmed = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    resume = _record_edit(
+        world, lambda r: r.update(expires_at=rearmed, last_activity=MARKER)
+    )
+    _interleave(monkeypatch, world, 1, resume)
+
+    assert await world.service.update_last_activity(world.own_id) is True
+    stored = json.loads(world.sync.get(world.key))
+    assert parse_utc_timestamp(stored["last_activity"]) > parse_utc_timestamp(MARKER)
+    assert world.own_id in world.sync.smembers(f"sessions:user:{OWNER}")
+
+
 async def test_the_store_refuses_a_session_with_no_user(world):
     """It would be indexed under ``sessions:user:``; nothing creates one."""
     with pytest.raises(ValueError):

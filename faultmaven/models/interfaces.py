@@ -1086,8 +1086,9 @@ class ISessionStore(ABC):
         """Write ``mutate(stored session)`` only while the record is still what
         was read, re-applying it after a concurrent write (#1854); raise
         ``SessionWriteConflict`` when retries run out. None from ``mutate``, or
-        a session absent or deleted meanwhile, writes nothing and returns None.
-        The write re-arms the TTL as ``save`` does.
+        a session absent or deleted meanwhile, writes nothing and returns None;
+        an expired one is deleted unless rewritten since the read. The write
+        re-arms the TTL as ``save`` does.
         """
         pass
 

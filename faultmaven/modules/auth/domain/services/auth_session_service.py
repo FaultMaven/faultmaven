@@ -524,22 +524,12 @@ class AuthSessionService:
     ) -> Optional[SessionContext]:
         """Every write of an existing session: ``change`` sets its own fields on
         the stored record by compare-and-set, so concurrent writers all land
-        (#1854). An expired session is deleted, not written. Returns the session
-        written, or None.
+        (#1854). The store deletes an expired session, not writing it. Returns
+        the session written, or None.
         """
         if not self.session_store:
             raise ServiceException("Session store not configured")
-        lapsed = []
-
-        def mutate(session: SessionContext) -> Optional[SessionContext]:
-            if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
-                lapsed.append(session)
-                return None
-            return change(session)
-
-        written = await self.session_store.mutate_session(session_id, mutate)
-        if lapsed:
-            await self.delete_session(session_id)
+        written = await self.session_store.mutate_session(session_id, change)
         if written:
             await self._rearm_client_index(written)
         return written

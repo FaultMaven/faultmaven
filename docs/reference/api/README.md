@@ -4102,7 +4102,7 @@ Returns:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `503` — The session kept changing under this write; nothing was written. Retry after `Retry-After`.
+- `503` — The session kept changing under this write; nothing was written. Or the session service or store is unavailable.
 
 ---
 

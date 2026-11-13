@@ -159,18 +159,20 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "`archived` (#1853, #1854)."
         ),
         body=r"""`POST /api/v1/sessions` and `PUT /api/v1/sessions/{session_id}` refuse 400,
-writing nothing, client `metadata` nested deeper than 32 levels or holding a
-value that is not JSON (NaN, ±Infinity, a lone surrogate). Those bodies were
-accepted before, or answered 500 from about depth 500. Those two, the
-heartbeat and the archive answer 503 with `Retry-After` when concurrent writes
-beat every attempt at the session's compare-and-set; nothing is written. A
-session's status is server-owned: only the archive sets it, and
+writing nothing, client `metadata` nested deeper than 32 levels: depth 33 to
+about 500 was accepted on both, and deeper answered 500. The mint also refuses
+a value that is not JSON (NaN, ±Infinity, a lone surrogate), as `PUT` already
+did; it stored them. Those two, the heartbeat and the archive answer 503 with
+`Retry-After` when concurrent writes beat every attempt at the session's
+compare-and-set; nothing is written. `PUT` and the archive answer 404 for a
+session deleted while they ran (`PUT` wrote it back; the archive answered
+500). A session's status is server-owned: only the archive sets it, and
 `GET .../{session_id}` reports it. Archived sessions no longer carry
 `metadata.status`.
 
 MINOR because every existing client survives it: none sends nested or
 non-JSON session metadata, none calls the archive or the session read, and
-the 503 answers only a write that was silently lost before.""",
+the 503 answers only a write that overwrote a concurrent one before.""",
     ),
     ContractChange(
         version="14.22.0",

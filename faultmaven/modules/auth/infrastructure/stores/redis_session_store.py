@@ -238,10 +238,10 @@ class RedisSessionStore(ISessionStore):
         return deleted
 
     # High-level session management methods. Every session write goes through
-    # ``_write_session`` and every session delete through ``delete_session``,
-    # so the user index and the record's ``expires_at`` follow them. ``set``,
-    # ``extend_ttl`` and ``delete`` above are plain key operations and touch
-    # neither.
+    # ``_write_session`` and every session delete through ``delete_session`` or
+    # ``mutate_session``'s eviction, so the user index and the record's
+    # ``expires_at`` follow them. ``set``, ``extend_ttl`` and ``delete`` above
+    # are plain key operations and touch neither.
 
     async def _write_session(
         self,
@@ -333,7 +333,8 @@ class RedisSessionStore(ISessionStore):
         mutate: Callable[[SessionContext], Optional[SessionContext]],
     ) -> Optional[SessionContext]:
         """``ISessionStore.mutate_session``: retried from the read while a
-        concurrent write lands first, ``_MUTATE_ATTEMPTS`` attempts in all."""
+        concurrent write lands first, ``_MUTATE_ATTEMPTS`` attempts in all. An
+        expired record is deleted by compare-and-delete, never written."""
         key = f"{self.prefix}{session_id}"
         for _ in range(_MUTATE_ATTEMPTS):
             try:
@@ -347,7 +348,15 @@ class RedisSessionStore(ISessionStore):
                 stored = json.loads(raw)
             except json.JSONDecodeError:
                 return None
-            session = mutate(self._to_session_context(stored))
+            session = self._to_session_context(stored)
+            if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
+                if not await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, raw):
+                    continue  # rewritten since the read: apply to that
+                await self.redis_client.srem(
+                    self._user_index_key(session.user_id), session_id
+                )
+                return None
+            session = mutate(session)
             if session is None:
                 return None
             expires_at = await self._write_session(
