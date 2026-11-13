@@ -171,6 +171,9 @@ dependencies = [
 
     # Document processing
     "python-frontmatter>=1.0.0",
+    # TOML config evidence (the config extractor). Not the stdlib tomllib:
+    # Python 3.11's reads TOML 1.0 only; tomli >=2.4 reads TOML 1.1.
+    "tomli>=2.4",
 
     # Background task scheduling
     "apscheduler>=3.10.4",
