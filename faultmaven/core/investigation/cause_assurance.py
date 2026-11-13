@@ -2183,10 +2183,10 @@ def unbound_post_fix_rows(
     case: "Case", subjects: SubjectIndex, windows: list
 ) -> list[UnboundPostFixRow]:
     """Every post-fix row that binds to nothing, in the case's order, whatever
-    turn recorded it and whatever the problem's status: what
-    ``stage_gates._flag_unbound_post_fix_rows`` selects for its notice from this
-    turn's rows on a verified problem, and what the case outcome records (#2615,
-    ``unbound_rechecks``). Post-fix and bound-to-nothing as that notice's
+    turn recorded it and whatever the problem's status: what the case outcome
+    records (#2615, ``unbound_rechecks``), whose rows not yet narrated the
+    unbound notice names on a verified problem
+    (``stage_gates._flag_unbound_post_fix_rows``, #2555). Post-fix and bound-to-nothing as that notice's
     docstring states. ``subjects`` and ``windows`` are the caller's
     ``subject_index(case)`` and ``fix_windows(case, subjects)``."""
     fix_turn = fix_application_turn(case)

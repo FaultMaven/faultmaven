@@ -255,7 +255,11 @@ class UnboundRecheck(BaseModel):
     )
     after_mitigation: bool = False
     narrated_turn: Optional[int] = Field(
-        default=None, description="The turn the row was last narrated"
+        default=None,
+        description=(
+            "The turn the row was narrated in this continuous unbound stretch "
+            "(#2555), or None while it is still to be told"
+        ),
     )
 
 
@@ -321,11 +325,19 @@ class CaseOutcome(BaseModel):
     mitigation: Optional[MitigationOutcome] = None
     milestones_shown: List[str] = Field(default_factory=list)
     closure: ClosureOutcome
+    narration_since: Optional[int] = Field(
+        default=None,
+        description=(
+            "The turn the first record that narrates its unbound re-checks "
+            "was folded (#2555); None on a record stored before that, whose "
+            "rows the next fold marks narrated, unrendered"
+        ),
+    )
     disagreements: Dict[str, int] = Field(
         default_factory=dict,
         description=(
             "Each carried verdict a fresh derivation disagrees with, by field "
             "and entry, and the turn the disagreement was first read: counted "
-            "once, when it first appears"
+            "once, when a saved record first carries it (#2689)"
         ),
     )

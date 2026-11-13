@@ -34,13 +34,14 @@ cancels the statement first, and a cancelled statement commits nothing.
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List
 
 from faultmaven.core.investigation.case_telemetry import TurnPath, emit_case_turn
 from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
 )
+from faultmaven.core.investigation.outcome import report_saved_disagreements
 from faultmaven.core.investigation.schemas import TurnPayload
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.models.api_models import TurnResponse
@@ -76,6 +77,11 @@ class PreparedTurn:
     preprocess_results: List[Any] = field(default_factory=list)
     """The turn's ``_PreprocessedAttachment`` results: whose blobs are marked
     linked once the turn's rows are committed (#1878)."""
+
+    loaded_disagreements: FrozenSet[str] = frozenset()
+    """The disagreement keys of the outcome record the turn loaded
+    (``outcome.disagreement_keys``): those the committed record carries
+    beyond them are counted after the commit (#2689)."""
 
     committed_turn_row: Dict[str, Any] = field(default_factory=dict)
     """Keyword arguments for ``_emit_committed_turn``: the #1748 counters and
@@ -139,6 +145,14 @@ async def settle_turn(
        not wait for a storage backend: what follows the commit on the response
        path stays bounded by CPU, not I/O;
     3. the #1748 counters and the #1142 turn row.
+
+    Right after the commit, before them: each disagreement the committed
+    outcome record first carries, and each of the narration's conflicts, is
+    counted once (``report_saved_disagreements``, #2689). Here, under the
+    shield, so a handler cancelled while the settlement commits still counts
+    a turn that committed; a turn that did not commit counts nothing. The
+    #2280 window above (a commit that lands, then raises on timeout)
+    undercounts: accepted.
     """
     try:
         await commit_turn_plan(repository, prepared.case, prepared.plan)
@@ -147,6 +161,14 @@ async def settle_turn(
         # commit, so its row is the error row (#1142).
         prepared.emit_error_row()
         raise
+
+    # Never raises (it logs its own failure): a committed turn stays committed.
+    report_saved_disagreements(
+        prepared.case.case_id,
+        prepared.loaded_disagreements,
+        prepared.case.progress.outcome,
+        tuple(prepared.plan.narration_conflicts),
+    )
 
     # (2) The turn is committed, and with it every upload row it carried
     # (#1878): only now may their blobs be marked linked. Best-effort and

@@ -86,9 +86,13 @@ def test_a_decided_notice_is_rendered_where_it_stands(name):
     case, metadata = golden.B1C_SCENARIOS[name]()
     log = list(metadata.get(DECISIONS_KEY) or [])
     notices = narrated(case, metadata)
+    # #2555: the unbound re-checks' rows are the record's, read before the
+    # narration marked them (the scenarios store no record before it).
+    record = outcome_module.compute_case_outcome(None, case)
     for entry in log:
         if entry["code"] in B1C_CODES:
-            texts = render_notice(entry["code"], entry["params"], None, log)
+            outcome = record if entry["code"] == NoticeCode.UNBOUND_RECHECKS else None
+            texts = render_notice(entry["code"], entry["params"], outcome, log)
             assert texts and all(text in notices for text in texts)
 
 

@@ -430,7 +430,13 @@ def _logged_codes(monkeypatch) -> set:
             if entry["code"] in set(OfferCode):
                 assert render_offer(entry["code"], entry["params"])
             elif entry["code"] not in CONTEXT_ONLY:
-                assert render_notice(entry["code"], entry["params"], None, [])
+                # #2555: the unbound re-checks' rows are the stored record's.
+                outcome = (
+                    case.progress.outcome
+                    if entry["code"] == NoticeCode.UNBOUND_RECHECKS
+                    else None
+                )
+                assert render_notice(entry["code"], entry["params"], outcome, [])
         return real(case, metadata)
 
     monkeypatch.setattr(turn_completion, "narrate_turn", _seen)

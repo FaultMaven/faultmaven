@@ -131,7 +131,11 @@ async def backfill_case_outcome(
     flight; by default the container's, composed here (a test passes its own).
     """
     from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
-    from faultmaven.core.investigation.outcome import compute_case_outcome
+    from faultmaven.core.investigation.outcome import (
+        compute_case_outcome,
+        disagreement_keys,
+        report_saved_disagreements,
+    )
     from faultmaven.modules.case.exceptions import CaseNotFoundError
     from faultmaven.modules.case.utils.retry import update_case_with_retry
     from faultmaven.providers.tenancy.factory import (
@@ -179,6 +183,7 @@ async def backfill_case_outcome(
             if busy:
                 raise _Leave("a turn or its task is in flight", skipped=True)
         repairing[case.case_id] = case.progress.outcome is not None
+        loaded[case.case_id] = disagreement_keys(case.progress.outcome)
         # Over the stored record: none for a case without one (ruled on
         # #2636), and for a repair the record the terminal write left, whose
         # final verdicts carry while its open closure does not.
@@ -191,13 +196,16 @@ async def backfill_case_outcome(
     already = 0
     written: list[str] = []
     repairing: dict[str, bool] = {}
+    loaded: dict[str, frozenset[str]] = {}
     skipped: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
     for case_id in case_ids:
         try:
-            await update_case_with_retry(
+            saved = await update_case_with_retry(
                 repository, case_id, _apply, save=repository.save_progress
             )
+            # Counted once, after the save, on the attempt that saved (#2689).
+            report_saved_disagreements(case_id, loaded[case_id], saved.progress.outcome)
             written.append(case_id)
         except _Leave as left:
             if left.skipped:

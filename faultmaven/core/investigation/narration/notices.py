@@ -12,12 +12,18 @@ reads the code's params and the cycle's record (``CaseOutcome``), never the
 case, after the cycle's last decider ran (``render_notice``). With no outcome
 at all (``None``), a renderer falls back on the facts its decider recorded.
 B1c's renderers read no record: their params carry the facts their deciders
-read (decide-time, A4), so each renders the text its decider composed.
+read (decide-time, A4), so each renders the text its decider composed. The
+unbound re-checks are the exception (B2, #2555): their rows are the record's,
+their pool the decider's.
 """
 
 from typing import Callable, Optional
 
-from faultmaven.modules.case.contracts import CaseOutcome, MitigationRefusalReason
+from faultmaven.modules.case.contracts import (
+    CaseOutcome,
+    MitigationRefusalReason,
+    ProblemStatus,
+)
 
 from .codes import NoticeCode
 
@@ -189,6 +195,7 @@ READS_THE_RECORD = frozenset(
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
         NoticeCode.MITIGATION_VERIFY_REFUSED,
         NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+        NoticeCode.UNBOUND_RECHECKS,
     }
 )
 
@@ -429,15 +436,22 @@ def _absence_in_failed(params: dict, outcome, log) -> list:
     ]
 
 
-@_renders(NoticeCode.UNBOUND_RECHECKS)
-def _unbound(params: dict, outcome, log) -> list:
-    """``main``'s row selection, until B2: the rows this turn recorded that
-    bind to nothing, as ``_flag_unbound_post_fix_rows`` selected them, and the
-    ids that WOULD bind (``SubjectIndex.bindable_rows``), its ``why`` and
-    whether the confirmation pool has roots, as it read them. One line for
-    the rows its window binds but the verdict does not cite, then one for the
-    rows that name nothing that binds; five ids each."""
-    uncited, unnamed = params["uncited"], params["unnamed"]
+def unbound_lines(
+    params: dict, outcome: Optional[CaseOutcome]
+) -> list[tuple[str, list[str]]]:
+    """The unbound re-check notice as ``(line, ids it names)`` (#2555). The
+    rows are the record's: every unbound re-check not yet narrated in its
+    unbound stretch (``narrated_turn`` None), whatever turn recorded it,
+    while the record's problem is VERIFIED. What they could name, its ``why``
+    and whether the confirmation pool has roots are the decider's params, as
+    it read them (decide-time, A4). One line for the rows their window binds
+    but the verdict does not cite, then one for the rows that name nothing
+    that binds; five ids each, so a row not named stays to be told."""
+    if outcome is None or outcome.problem.status != ProblemStatus.VERIFIED:
+        return []
+    rows = [u for u in outcome.unbound_rechecks if u.narrated_turn is None]
+    uncited = [u.evidence_id for u in rows if u.uncited][:5]
+    unnamed = [u.evidence_id for u in rows if not u.uncited][:5]
     problem_ids = ", ".join(params["problem_row_ids"][:5])
     cause_ids = ", ".join(params["cause_row_ids"][:5])
     why = params["why"]
@@ -454,29 +468,38 @@ def _unbound(params: dict, outcome, log) -> list:
     lines = []
     if uncited:
         lines.append(
-            f"SYSTEM: {'Post-fix row(s)' if params['fix_dated'] else 'Row(s)'} "
-            f"{', '.join(uncited[:5])} confirm nothing: "
-            + (f"{why}." if cause_ids else cause_text)
+            (
+                f"SYSTEM: {'Post-fix row(s)' if params['fix_dated'] else 'Row(s)'} "
+                f"{', '.join(uncited)} confirm nothing: "
+                + (f"{why}." if cause_ids else cause_text),
+                uncited,
+            )
         )
     if unnamed:
-        by_mitigation = set(params["after_mitigation"])
-        after = (
-            "Post-mitigation" if by_mitigation.issuperset(unnamed[:5]) else "Post-fix"
-        )
+        by_mitigation = {u.evidence_id for u in rows if u.after_mitigation}
+        after = "Post-mitigation" if by_mitigation.issuperset(unnamed) else "Post-fix"
         lines.append(
-            f"SYSTEM: {after} row(s) {', '.join(unnamed[:5])} name nothing they "
-            "re-check that binds, so they confirm and disconfirm nothing. Set "
-            "rechecks — symptom rows: "
-            + (
-                f"one of {problem_ids}"
-                if problem_ids
-                else "none is on record as having shown the problem; cite those "
-                "rows in symptom_verification_evidence_ids"
+            (
+                f"SYSTEM: {after} row(s) {', '.join(unnamed)} name nothing they "
+                "re-check that binds, so they confirm and disconfirm nothing. Set "
+                "rechecks — symptom rows: "
+                + (
+                    f"one of {problem_ids}"
+                    if problem_ids
+                    else "none is on record as having shown the problem; cite "
+                    "those rows in symptom_verification_evidence_ids"
+                )
+                + "; causal_absence rows: "
+                + cause_text,
+                unnamed,
             )
-            + "; causal_absence rows: "
-            + cause_text
         )
     return lines
+
+
+@_renders(NoticeCode.UNBOUND_RECHECKS)
+def _unbound(params: dict, outcome: Optional[CaseOutcome], log) -> list:
+    return [line for line, _ids in unbound_lines(params, outcome)]
 
 
 @_renders(NoticeCode.FAILED_FIX_NOT_REREGISTERED)

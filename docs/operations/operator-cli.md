@@ -61,6 +61,9 @@ the release that first switches a reader onto it.
   is kept, so no user's case list re-sorts; no save-time derivation runs (no
   offer lapses). A write that loses the version race is tried again from a
   fresh load: tried up to three times in all.
+- Each disagreement a written record carries
+  (`faultmaven_case_outcome_conflicts_total`) is counted once, after its save,
+  on the attempt that saved it. A `--dry-run` counts nothing (#2689).
 - It skips a case that needs a record while work on it is in flight: a turn,
   or a task one spawned, holds the case's lease on some replica (the lease a
   case delete reads). A case whose lease cannot be read is skipped too. Both

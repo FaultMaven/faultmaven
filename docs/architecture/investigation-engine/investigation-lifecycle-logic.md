@@ -1062,6 +1062,8 @@ cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
 15. **The turn record** (`record_turn`).
 16. **The save**, once, at the service (`CaseRepository.prepare_for_save`
     repeats the lapse rule).
+17. **The disagreements counted** (`turn_settlement.settle_turn`, right after
+    the commit, under its shield).
 
 **Invariant**: no outcome text is composed before the last decider has run
 and the outcome record is written. The backstop and the record read the pool
@@ -1071,6 +1073,28 @@ lapsed before the narration (INV-32), shows no card, and a proposal dropped
 for it is reported against the lapse (INV-43). The record's
 `milestones_completed`, `hypotheses_validated` and `outcome` are the final
 recompute's; its `progress_made` stays step 4b's.
+
+**Counting rule (i)** (#2689, ruled 2026-11-13): each disagreement on the
+outcome record (`CaseOutcome.disagreements`) is counted once, when a saved
+record first carries it: the keys the committed record holds beyond those of
+the record the turn loaded, and the narration's `narration.<code>` conflicts,
+counted after the commit (`outcome.report_saved_disagreements`). The REST
+close and the backfill count the same diff after their retry helper returns,
+on the attempt that saved. A dry run, a failed or cancelled commit and a
+retried attempt count nothing. Accepted: the #2280 window (the commit lands,
+then the save raises on timeout) undercounts.
+
+**The unbound re-checks** (#2555): the notice names the record's unbound
+re-checks not yet narrated (`narrated_turn` None) while the record's problem is
+VERIFIED, whatever turn recorded them, so a re-check recorded during a
+revision hold is told on the first narrated turn after the hold ends. It
+renders once per narration, from a stored record only, and marks narrated each
+row a line names that the turn record keeps (`recorded_notices`). The mark is
+carried while the row stays unbound, so a row is told once per continuous
+unbound stretch; a failed write or commit discards the marks with the record.
+A record stored before this rule (`narration_since` None) has its rows marked
+narrated, unrendered, by the next fold: accepted, a row held through a hold
+that straddles that deploy stays untold.
 
 **Rationale**: Disposition actions happen last to ensure all state is consistent before case becomes immutable. Gate milestones are applied from the LLM's structured output alongside progress milestones; the new stage's prompt takes effect on the next turn.
 

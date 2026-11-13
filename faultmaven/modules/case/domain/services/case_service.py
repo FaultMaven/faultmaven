@@ -1083,6 +1083,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             NotFoundError: Unknown case, or the caller is not its driver.
             ConflictError: Case is already resolved/closed.
         """
+        from faultmaven.core.investigation.outcome import (
+            disagreement_keys,
+            report_saved_disagreements,
+        )
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,
         )
@@ -1109,11 +1113,15 @@ class CaseService(CaseDriverMixin, ICaseService):
         if case.state.is_terminal:
             raise _already_terminal(case.state)
 
+        loaded: list[frozenset[str]] = [frozenset()]
+
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:
                 raise NotFoundError("Case", case_id)
             if fresh.state.is_terminal:
                 raise _already_terminal(fresh.state)
+            # Per attempt: the record this attempt's write folds over (#2689).
+            loaded[0] = disagreement_keys(fresh.progress.outcome)
             execute_user_closure(fresh, user_id)
 
         # The retry helper's own exceptions subclass CaseException, which no
@@ -1133,6 +1141,8 @@ class CaseService(CaseDriverMixin, ICaseService):
                 resource_id=case_id,
                 conflict_reason="concurrent_update",
             )
+        # Counted once, on the record the saving attempt wrote (#2689).
+        report_saved_disagreements(case_id, loaded[0], updated_case.progress.outcome)
         logger.info(
             f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
         )

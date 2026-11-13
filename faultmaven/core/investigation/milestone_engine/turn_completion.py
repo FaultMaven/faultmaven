@@ -62,7 +62,7 @@ from .terminal_replies import (
     _select_ack_follow_ups,
 )
 from .turn_application import record_turn
-from .turn_narration import narrate_turn
+from .turn_narration import NARRATION_CONFLICTS_KEY, narrate_turn
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,7 @@ async def _finalize_turn(
     ``plan`` and commits with the terminal state.
     """
     narrate_turn(case_updated, metadata)
+    plan.narration_conflicts.extend(metadata.pop(NARRATION_CONFLICTS_KEY, []))
     record_turn(case_updated, metadata, record_inputs)
     case_updated.updated_at = datetime.now(UTC)
     case_updated.last_activity_at = datetime.now(UTC)
