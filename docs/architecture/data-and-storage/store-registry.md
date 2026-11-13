@@ -82,7 +82,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Trace SDK's local buffer** | the Opik SDK's SQLite, in a temporary directory on each pod | as the trace store | case · conversion | as the trace it holds | the Opik SDK | outside |
 | **LLM response cache** | in-process dict, per replica, at most 1,000 entries | customer content: model responses | case | none: the case id is hashed into the key | `LLMRouter`, through `LLMResponseCache` | outside: stored when the call returns |
 | **`cached_content_tokens`** | in-process `lru_cache`, per replica, at most 4,096 entries | customer content: the evidence text is the key; its token set is the value | case | none: keyed by the text alone | `core/investigation/cause_assurance.py` | outside: filled as the turn reads evidence |
-| **Metrics** | the in-process Prometheus registry, scraped | operational metadata: no label carries a case, user or enterprise id | process | none | each module's metric definitions | outside: counters move as work happens |
+| **Metrics** | the in-process Prometheus registry, scraped | operational metadata: no label carries a case, user or enterprise id, and every label's values are bounded by code or by operator configuration | process | none | each module's metric definitions | outside: counters move as work happens |
 | **Logs** | stderr, collected by the deployment's log pipeline | operational metadata, by policy: avoid raw user content | process | none; records carry `user_id` and `correlation_id` | every module | outside |
 | **Secret files under the data root** (`data/.jwt_secret`, `data/.redaction_pseudonym_key`) | local files, standalone | operational metadata: deployment secrets | process | none | `config/settings.py` (JWT secret), `infrastructure/security/pseudonym_key.py` | not written by turns |
 
@@ -308,6 +308,14 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `Gauge`, `Histogram` and `Summary` in `faultmaven/`, read for its label names);
   OAuth metrics label the OAuth client, not a tenant:
   `modules/auth/infrastructure/metrics/oauth_metrics.py:81`.
+- The OAuth client label is the request's client id kept only when it is a
+  configured client, else `unknown`
+  (`modules/auth/infrastructure/metrics/oauth_metrics.py:253-260`).
+- The rule that every label's values are bounded by code or by operator
+  configuration, with `other` for a value outside the set in production, is
+  principles §7's. It is pending: #2749 (S2).
+- The one switch, `ENABLE_METRICS`, read by the metrics shim, is principles
+  §7's rule too. It is pending: #2748 (S1).
 
 ### Logs
 
