@@ -187,8 +187,9 @@ def terminal_offer_opened_this_turn(case: "Case") -> Optional[Offer]:
 
 def terminal_offer_answered_this_turn(case: "Case") -> bool:
     """Whether a resolve or close offer was answered on the current turn: the
-    turn began inside a disposition handshake, or the engine withdrew its own
-    offer. The engine's stricter quiet, beside the same-kind rule
+    turn began inside a disposition handshake, or the engine withdrew or
+    lapsed its own offer (the final recompute's lapse included, #2636). The
+    engine's stricter quiet, beside the same-kind rule
     (``set_aside_this_turn``): ``open_offer`` refuses the backstop's and the
     deferred proposer's offers for the rest of such a turn, so they never put
     an offer back in front of a user who just acted on one."""

@@ -22,6 +22,10 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
 )
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    CAUSE_STATE_AT_START_KEY,
+    ResponseApplier,
+)
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
     _NARRATION_OVERCLAIM_NOTICE,
 )
@@ -36,6 +40,9 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 )
 from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
     _maybe_propose_deferred_close,
+)
+from faultmaven.core.investigation.milestone_engine.turn_records import (
+    _determine_turn_outcome,
 )
 from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, NoticeCode
 from faultmaven.core.investigation.offer_projection import project_offers
@@ -56,8 +63,10 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     EvidenceCategory,
+    EvidenceStance,
     HypothesisCategory,
     HypothesisState,
+    NodeEvidenceLink,
     OfferKind,
     ProblemStatus,
     SolutionFeasible,
@@ -83,7 +92,7 @@ ORACLE = golden.json.loads(golden.GOLDEN.read_text())
 
 
 def _responses():
-    return SimpleNamespace(
+    return ResponseApplier(
         deps=SimpleNamespace(llm_provider=SimpleNamespace(provider_name="stub")),
         kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
     )
@@ -142,6 +151,93 @@ async def test_the_final_recompute_takes_a_rising_edge_as_step_one_does():
     prefetch = responses.kb_prefetcher.prefetch_kb_context
     prefetch.assert_awaited_once()
     assert prefetch.await_args.args[2] == "root_cause"
+
+
+async def test_a_hypothesis_validated_then_retired_leaves_the_record():
+    """Review fix 2: step 1 validates the hypothesis, a later decider retires
+    it; ``hypotheses_validated`` carries the end-of-cycle reading (C3)."""
+    case, _root, hyp = _identified_case()
+    case.progress.cause_state = CauseState.CANDIDATES
+    hyp.state = HypothesisState.ACTIVE
+    metadata = _cycle_metadata()
+    _recompute_assessment_state(case, metadata=metadata)
+    assert metadata["hypotheses_validated"] == [hyp.hypothesis_id]
+    hyp.state = HypothesisState.RETIRED
+    await turn_application._final_recompute(_responses(), case, metadata)
+    assert metadata["hypotheses_validated"] == []
+
+
+async def test_a_replayed_identification_survives_the_final_recompute():
+    """Review fix 1: a replayed bundle's ``root_cause_identified`` (folded by
+    ``merge_statement_commit``) with step 1 at CANDIDATES is kept, as
+    ``main`` keeps it, and the outcome agrees with the milestones."""
+    case, _root, hyp = _identified_case()
+    hyp.state = HypothesisState.RETIRED
+    case.progress.cause_state = CauseState.CANDIDATES
+    metadata = _cycle_metadata(
+        milestones_completed=["root_cause_identified"],
+        outcome=TurnOutcome.MILESTONE_COMPLETED,
+    )
+    metadata[CAUSE_STATE_AT_START_KEY] = CauseState.CANDIDATES
+    await turn_application._final_recompute(_responses(), case, metadata)
+    assert case.progress.cause_state != CauseState.IDENTIFIED, "premise"
+    assert metadata["milestones_completed"] == ["root_cause_identified"]
+    assert metadata["outcome"] == _determine_turn_outcome(
+        case, metadata, TurnOutcome.CONVERSATION
+    )
+
+
+async def test_a_turn_that_dips_and_recovers_identifies_nothing():
+    """Review fix 3: the turn starts IDENTIFIED, step 1 dips to CANDIDATES
+    (a contest a later decider resolves), and the final recompute recovers:
+    no milestone and no second KB prefetch."""
+    case, _root, _hyp = _identified_case()
+    metadata = _cycle_metadata()
+    metadata[CAUSE_STATE_AT_START_KEY] = CauseState.IDENTIFIED
+    case.progress.cause_state = CauseState.CANDIDATES  # step 1's dip
+    responses = _responses()
+    await turn_application._final_recompute(responses, case, metadata)
+    assert case.progress.cause_state == CauseState.IDENTIFIED, "premise"
+    assert metadata["milestones_completed"] == []
+    responses.kb_prefetcher.prefetch_kb_context.assert_not_awaited()
+
+
+async def test_an_m6_refusal_and_the_grounding_trace_count_once_per_turn():
+    """Review fix 4: the final recompute re-runs no per-evaluation counter or
+    trace. The identified root carries a decisive counterfactual refute with
+    no fix applied, so M6 refuses at each recompute that starts IDENTIFIED."""
+    from faultmaven.core.investigation.milestone_engine import cause_state
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _row as _m6_row,
+    )
+
+    case, root, _hyp = _identified_case()
+    _recompute_assessment_state(case, metadata={})
+    row = _m6_row("cf", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, 5, "errors go on")
+    case.evidence.append(row)
+    root.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="the limit was raised and the errors go on",
+            linked_at_turn=5,
+            stance_confidence=0.9,
+        )
+    )
+    case.current_turn = 5
+    with patch(
+        "faultmaven.core.investigation.causal_graph.disconfirmation."
+        "m6_demotion_refused_total"
+    ) as counter:
+        # Step 1's recompute and the final one, each entered IDENTIFIED.
+        _recompute_assessment_state(case.model_copy(deep=True), metadata={})
+        _recompute_assessment_state(case, metadata={}, final=True)
+    counter.labels.assert_called_once_with(reason="no_fix_applied")
+    metadata = _cycle_metadata()
+    with patch.object(cause_state, "_log_grounding_assessment") as trace:
+        _recompute_assessment_state(case, metadata=metadata)
+        await turn_application._final_recompute(_responses(), case, metadata)
+    trace.assert_called_once()
 
 
 def _held_recheck():

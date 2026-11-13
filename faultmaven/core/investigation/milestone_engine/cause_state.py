@@ -251,7 +251,10 @@ def _kb_prefetch_query_on_identification(
 
 
 def _recompute_cause_state_from_chain(
-    case: "Case", *, exclusion_survivors: "set[str] | frozenset[str]" = frozenset()
+    case: "Case",
+    *,
+    exclusion_survivors: "set[str] | frozenset[str]" = frozenset(),
+    count: bool = True,
 ) -> list[str]:
     """Chain-derived ``cause_state`` (Option A, methodology §9.2; flag ON).
 
@@ -306,7 +309,7 @@ def _recompute_cause_state_from_chain(
     # demotion, so M6 tracks the LLM's actual cause (not the identified-root record)
     # and retract_disconfirmed_rcc can reach a disconfirmed LLM conclusion.
     link_llm_rcc_to_cause(case)
-    demote_disconfirmed_cause_via_evidence(case)
+    demote_disconfirmed_cause_via_evidence(case, count=count)
     derive_node_states(case)
     # Deductive validation (§7.1.1, proof-by-exclusion): stamp DEDUCTIVE on any
     # LLM-certified survivor whose differential has now collapsed to it. Runs AFTER
@@ -482,7 +485,8 @@ def _recompute_assessment_state(
     rcc_authored_this_turn: bool = False,
     metadata: "dict[str, Any] | None" = None,
     provider_name: "str | None" = None,
-    replace_flags: bool = False,
+    final: bool = False,
+    edge_from: "CauseState | None" = None,
 ) -> "CauseState":
     """Recompute the engine-owned assessment variables each INVESTIGATING turn.
 
@@ -491,7 +495,10 @@ def _recompute_assessment_state(
     KB-remediation warm-up — and both need the same "before" value. Returning it
     keeps ONE capture: a second read in the caller could drift from this one if
     anything were ever inserted between them, and the two reactions would then
-    disagree about which turn the cause was identified on.
+    disagree about which turn the cause was identified on. ``edge_from`` (the
+    turn's start, #2636) replaces that value for the milestone; ``final`` (the
+    turn's final recompute) replaces step 1's two flag codes and re-runs no
+    per-evaluation counter or trace.
 
     Assessment variables are TRUTH signals the engine derives — never
     path-stripped (redesign R1). Called at the end of
@@ -527,7 +534,7 @@ def _recompute_assessment_state(
     # confirmation (terminal_transitions._execute_resolved_transition).
     prior_cause_state = p.cause_state
     newly_validated = _recompute_cause_state_from_chain(
-        case, exclusion_survivors=exclusion_survivors
+        case, exclusion_survivors=exclusion_survivors, count=not final
     )
     # The cause_state rising edge, recorded as this turn's milestone (#1284).
     # ``record_turn`` models the per-turn list as a before/after diff of
@@ -549,8 +556,9 @@ def _recompute_assessment_state(
     # ``validate_milestone_claims`` review, which exists to revert LLM CLAIMS —
     # this is the engine's own recompute, not a claim, and INV-35 keeps
     # identification off the LLM's authority in both directions.
+    # Measured from ``edge_from`` when given: the turn's start (#2636).
     if metadata is not None and is_identification_edge(
-        prior_cause_state, p.cause_state
+        prior_cause_state if edge_from is None else edge_from, p.cause_state
     ):
         milestones = metadata.setdefault("milestones_completed", [])
         if "root_cause_identified" not in milestones:
@@ -560,8 +568,9 @@ def _recompute_assessment_state(
     # consumers read a permanently-empty list (the momentum bands summed three
     # inputs of which one was always 0, the loop fingerprint carried a constant
     # component, the context-builder line could never render). This is the
-    # writer, at the sole producer of the event. Extends rather than assigns so
-    # a second recompute in the same turn cannot drop the first one's ids.
+    # writer, at the sole producer of the event. Extends rather than assigns;
+    # the turn's final recompute then drops an id the cycle ends not VALIDATED
+    # (``ResponseApplier.recompute_assessment``, #2636).
     if metadata is not None and newly_validated:
         arm = metadata.setdefault("hypotheses_validated", [])
         arm.extend(h for h in newly_validated if h not in arm)
@@ -579,10 +588,10 @@ def _recompute_assessment_state(
     # M6 demotion can refute the very hypothesis a license rests on (fm#1679).
     _refresh_working_conclusion(case)
     _withdraw_unlicensed_solution_offers(case, metadata)
-    # The turn's final recompute (``replace_flags``) restates these two flags
-    # at the end-of-cycle reading, in place of step 1's (#2636).
-    _flag_absence_inside_a_failed_fix_window(case, metadata, replace=replace_flags)
-    _flag_unbound_post_fix_rows(case, metadata, replace=replace_flags)
+    # The turn's final recompute restates these two flags at the end-of-cycle
+    # reading, in place of step 1's (#2636).
+    _flag_absence_inside_a_failed_fix_window(case, metadata, replace=final)
+    _flag_unbound_post_fix_rows(case, metadata, replace=final)
     derive_solution_surface(case)
 
     # Assurance grade + verification status LAST — after the cause_state
@@ -656,7 +665,9 @@ def _recompute_assessment_state(
         )
     p.cause_overclaim = overclaims
 
-    _log_grounding_assessment(case)
+    # A per-evaluation trace: once per turn, at step 1's recompute (#2636).
+    if not final:
+        _log_grounding_assessment(case)
 
     # The caller's KB-remediation warm-up reacts to the same edge as the
     # milestone above, so it reads this rather than re-snapshotting a field this
@@ -684,11 +695,10 @@ def _log_grounding_assessment(case: "Case") -> None:
     the whole body is failure-isolated: a diagnostic trace must never break the
     turn pipeline it runs inside, whatever shape the case is in.
 
-    **Not the progress ledger.** This runs at each recompute: step 1's, inside
-    response application, before the turn's progress decision and the counter
-    update at Step 5.8, so its ``turns_without_progress`` /
-    ``is_progress_stalled`` are the PREVIOUS turn's values; and the final
-    recompute's, after them (#2636). It fires only on the generation path. Those fields are
+    **Not the progress ledger.** This runs inside response application — before
+    the turn's progress decision and before the counter update at Step 5.8 — so
+    its ``turns_without_progress`` / ``is_progress_stalled`` are the PREVIOUS
+    turn's values, and it fires only on the generation path. Those fields are
     kept because they are useful context for the grounding readings around them,
     not because they are authoritative. Anything asking "did the engine stall
     this case?" wants the always-on per-turn stream in

@@ -32,17 +32,11 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 )
 from faultmaven.modules.case.contracts import (
     AnswerKind,
-    CauseState,
     HypothesisState,
     TurnOutcome,
 )
 
 from .affordances import engine_owned_affordances
-from .cause_state import (
-    _kb_prefetch_query_on_identification,
-    _recompute_assessment_state,
-    _resolve_chat_provider_name,
-)
 from .progress import restatement_stall_notice, score_progress
 from .response_application import ASSESSMENT_RECOMPUTED_KEY, FIX_CAUSE_AT_START_KEY
 from .response_synthesis import is_agent_response_synthesized
@@ -133,40 +127,11 @@ def _lapse_and_record(case, metadata: dict) -> None:
 async def _final_recompute(responses, case, metadata: dict) -> None:
     """The cycle's last recompute (#2615 Q8 (a), #2636): the pool after
     housekeeping, the stall counter, the monitor's repair and the needs
-    sweeps. Its notices are codes, so they deduplicate against step 1's, and
-    its two flags replace step 1's (``replace_flags``).
-
-    Either edge of identification it moves is taken as step 1 takes it: a
-    ``root_cause_identified`` this turn added and this recompute dropped
-    leaves the turn's milestones (the falling edge); one it raises gets the
-    milestone (the recompute writes it) and step 1's KB remediation warm-up
-    (INV-35). Either way the turn's outcome is re-derived; ``progress_made``
-    keeps the step-1 reading (A12). The deferred proposer is not re-run on a
-    rising edge. The offer record's lapse rule then runs on the pool it left
-    (INV-32)."""
-    before = case.progress.cause_state
-    _recompute_assessment_state(
-        case,
-        exclusion_survivors=metadata.get("deductive_survivor_ids", frozenset()),
-        rcc_authored_this_turn=False,
-        metadata=metadata,
-        provider_name=_resolve_chat_provider_name(responses.deps.llm_provider),
-        replace_flags=True,
-    )
-    after = case.progress.cause_state
-    milestones = metadata.get("milestones_completed") or []
-    if "root_cause_identified" in milestones and after != CauseState.IDENTIFIED:
-        milestones.remove("root_cause_identified")
-    if (before == CauseState.IDENTIFIED) != (after == CauseState.IDENTIFIED):
-        # The reported outcome is not read (``_determine_turn_outcome``).
-        metadata["outcome"] = _determine_turn_outcome(
-            case, metadata, TurnOutcome.CONVERSATION
-        )
-    query = _kb_prefetch_query_on_identification(
-        before, after, case.root_cause_conclusion, case.working_conclusion
-    )
-    if query:
-        await responses.kb_prefetcher.prefetch_kb_context(case, query, "root_cause")
+    sweeps, through step 1's helper (``ResponseApplier.recompute_assessment``,
+    ``final``). ``progress_made`` keeps the step-1 reading (A12), and the
+    deferred proposer is not re-run. The offer record's lapse rule then runs
+    on the pool it left (INV-32)."""
+    await responses.recompute_assessment(case, metadata, final=True)
     _lapse_and_record(case, metadata)
 
 
