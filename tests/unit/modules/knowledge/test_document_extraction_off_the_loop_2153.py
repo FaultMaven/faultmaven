@@ -538,6 +538,43 @@ async def test_a_request_with_no_free_slot_is_busy_and_starts_no_worker(
     assert spawned == []
 
 
+async def test_another_principal_holding_every_slot_leaves_this_one_busy(
+    tmp_path, monkeypatch, spawned, on_entered
+):
+    """The admission rule (#2645) reserves no slot that does not exist: with
+    one slot held by A, B's request waits its bound and is ``CONVERSION_BUSY``,
+    and no worker starts for it."""
+    _stage(monkeypatch, "never_return")
+    _slots(monkeypatch, 1)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 60)
+    loop, entered = asyncio.get_running_loop(), asyncio.Event()
+    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
+    holder = asyncio.create_task(
+        DocumentPreprocessor().preprocess(
+            _text_file(tmp_path, "a.txt"),
+            "text/plain",
+            conversion_id="conv_a",
+            principal="a",
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 60)
+    monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.2)  # B's slot wait
+
+    result = await DocumentPreprocessor().preprocess(
+        _text_file(tmp_path, "b.txt"),
+        "text/plain",
+        conversion_id="conv_b",
+        principal="b",
+    )
+
+    assert result.error_code == ConversionErrorCode.CONVERSION_BUSY
+    assert len(spawned) == 1, "a worker started for B"
+    holder.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await holder
+    assert not dp._preparation_slots().locked()
+
+
 def test_post_convert_answers_conversion_busy_with_retry_after(tmp_path, monkeypatch):
     _slots(monkeypatch, 0)
     monkeypatch.setattr(dp, "EXTRACTION_TIMEOUT_SECONDS", 0.05)

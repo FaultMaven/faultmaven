@@ -9,6 +9,7 @@ who asked as its principal. The jobs here are plain coroutines.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from unittest.mock import MagicMock
 
 import pytest
@@ -123,6 +124,16 @@ async def test_a_waiter_granted_then_cancelled_releases_its_grant():
 
     assert not slots.locked()
     await asyncio.wait_for(slots.acquire("c"), 1)
+
+
+def test_a_release_for_a_principal_holding_none_is_refused():
+    """As ``asyncio.BoundedSemaphore`` refuses a release past its count."""
+    slots = FairSlots(2)
+
+    with pytest.raises(ValueError):
+        slots.release("ghost")
+
+    assert (slots._free, slots._held) == (2, Counter())
 
 
 async def test_locked_while_none_is_free_or_someone_waits():

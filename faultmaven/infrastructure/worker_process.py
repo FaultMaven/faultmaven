@@ -88,7 +88,9 @@ class FairSlots:
     """Slots under Principle 14's admission rule (#2645): a principal (the user)
     holding none takes one while one is free, one holding some only while two
     are free. Waiters are served fewest-held first, then earliest, as the rule
-    admits them. A waiter granted then cancelled releases its grant."""
+    admits them. A waiter granted then cancelled releases its grant. Releasing
+    for a principal that holds none raises ``ValueError`` and changes nothing,
+    as ``asyncio.BoundedSemaphore`` refuses a release past its count."""
 
     def __init__(self, count: int) -> None:
         self._free, self._held = count, Counter()
@@ -119,6 +121,8 @@ class FairSlots:
             raise
 
     def release(self, principal: str) -> None:
+        if not self._held[principal]:
+            raise ValueError(f"FairSlots released for {principal!r}, which holds none")
         self._held[principal] -= 1
         self._held += Counter()  # drops a principal holding none
         self._free += 1

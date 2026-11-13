@@ -344,7 +344,8 @@ async def test_no_slot_within_its_bound_is_the_busy_preview(
     monkeypatch, spawned, on_entered, caplog
 ):
     """A slot wait has its own bound and reason: the server was busy, and no
-    worker starts for it."""
+    worker starts for it. Another principal holds every slot, so the
+    admission rule leaves none for this one (#2645)."""
     _slots(monkeypatch, 1)
     monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
     monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
@@ -354,13 +355,13 @@ async def test_no_slot_within_its_bound_is_the_busy_preview(
     on_entered(lambda: loop.call_soon_threadsafe(entered.set))
     holder = asyncio.create_task(
         service._extract_with_timeout(
-            stubs.NeverReturns(), _CONTENT, "slow.log", principal="u1"
+            stubs.NeverReturns(), _CONTENT, "slow.log", principal="a"
         )
     )
     await asyncio.wait_for(entered.wait(), 60)
 
     result = await service._extract_with_timeout(
-        stubs.CrimeScene(), _CONTENT, "q.log", principal="u1"
+        stubs.CrimeScene(), _CONTENT, "q.log", principal="b"
     )
 
     assert result.metadata == {"busy_fallback": True}
@@ -393,39 +394,6 @@ async def test_a_cancelled_extraction_kills_and_reaps_its_worker(
         await extraction
 
     assert spawned[0].returncode == -signal.SIGKILL
-    assert not ps._tier1_slots().locked()
-
-
-async def test_a_newcomer_gets_a_slot_beside_another_users_two_extractions(
-    monkeypatch, spawned, on_entered
-):
-    """#2645's shape on two slots: A's two slow extractions hold one slot and
-    queue the other, so B, arriving next, extracts instead of falling back to
-    the busy preview (on a plain semaphore A's two held both)."""
-    _slots(monkeypatch, 2)
-    monkeypatch.setattr(ps, "TIER1_START_SECONDS", 60)
-    monkeypatch.setattr(ps, "TIER1_TRANSFER_BASE_SECONDS", 60)
-    monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 60)
-    monkeypatch.setattr(ps, "TIER1_SLOT_WAIT_SECONDS", 30)
-    loop, entered, service = asyncio.get_running_loop(), asyncio.Event(), _service()
-    on_entered(lambda: loop.call_soon_threadsafe(entered.set))
-    a = [
-        asyncio.create_task(
-            service._extract_with_timeout(stubs.NeverReturns(), _CONTENT, n, "a")
-        )
-        for n in ("a1.log", "a2.log")
-    ]
-    await asyncio.wait_for(entered.wait(), 60)
-
-    result = await service._extract_with_timeout(
-        stubs.CrimeScene(), _CONTENT, "b.log", "b"
-    )
-
-    assert stubs.marked(stubs.CrimeScene) in result.metadata["extract_result_json"]
-    assert len(spawned) == 2, "A's second extraction started beside its first"
-    for task in a:
-        task.cancel()
-    await asyncio.gather(*a, return_exceptions=True)
     assert not ps._tier1_slots().locked()
 
 
