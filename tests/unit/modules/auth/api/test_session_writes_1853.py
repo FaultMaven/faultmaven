@@ -579,6 +579,22 @@ async def test_a_resume_landing_between_the_eviction_read_and_delete_survives(
     assert world.own_id in world.sync.smembers(f"sessions:user:{OWNER}")
 
 
+async def test_an_eviction_missed_on_every_attempt_keeps_the_index_entry(
+    world, monkeypatch
+):
+    """The index entry goes only after the compare-and-delete lands: a miss on
+    the final attempt, with no write after it, leaves the session indexed."""
+    lapsed = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    _record_edit(world, lambda r: r.update(expires_at=lapsed))()
+    _interleave(monkeypatch, world, 1, _stamp(world), every=True)
+
+    with pytest.raises(SessionWriteConflict):
+        await world.service.update_last_activity(world.own_id)
+
+    assert world.sync.get(world.key) is not None
+    assert world.own_id in world.sync.smembers(f"sessions:user:{OWNER}")
+
+
 async def test_the_store_refuses_a_session_with_no_user(world):
     """It would be indexed under ``sessions:user:``; nothing creates one."""
     with pytest.raises(ValueError):
