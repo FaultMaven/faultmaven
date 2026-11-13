@@ -77,7 +77,8 @@ class OutputTruncationError(Exception):
     ``cap_reached`` names the lever that is left:
 
     * ``False`` — the cap was raised, so an identical retry now has room to
-      finish. RETRY.
+      finish. RETRY — unless the attempts or the turn budget are spent, in
+      which case FAIL with ``TOKEN_LIMIT``, as below (#1821).
     * ``True`` — the cap is already at its ceiling; raising it again is a
       no-op, so an identical retry cannot finish. FAIL. The result carries the
       ``TOKEN_LIMIT`` code, which routes the turn to the engine's
@@ -160,14 +161,24 @@ def is_truncated_json_error(error: BaseException, content: Any) -> bool:
 # Reason labels for the degrade-recovery metric. Both classes reach the
 # minimal-prompt recovery as TOKEN_LIMIT, but by different routes and for
 # different reasons. INPUT_OVERFLOW is what that recovery targets directly.
-# OUTPUT_TRUNCATION arrives only once the max_tokens ladder is exhausted
-# (#513) — raising the cap is the targeted fix, and shrinking the prompt is the
-# fallback when the ceiling could not buy enough room. So a rising
+# OUTPUT_TRUNCATION arrives once a truncation's retries stop: the max_tokens
+# ladder spent (#513), or the attempt ceiling or the turn budget reached first
+# (#1821). Raising the cap is the targeted fix, and shrinking the prompt is the
+# fallback when the cap could not buy enough room. So a rising
 # OUTPUT_TRUNCATION share means the ceiling is too low for the schemas in play,
-# not that prompts are too large.
+# or that a truncation's retries are stopped first — other failures spend the
+# attempts, or the turn budget runs out — not that prompts are too large.
 RECOVERY_REASON_INPUT_OVERFLOW = "input_overflow"
 RECOVERY_REASON_OUTPUT_TRUNCATION = "output_truncation"
 RECOVERY_REASON_UNCLASSIFIED = "unclassified"
+
+# The message on every stop that reports a truncation's ``TOKEN_LIMIT`` once
+# the attempt ceiling or the turn budget stops its retries (#1821). It names the
+# truncation and those two stops, not the provider: the message tracks the code.
+TRUNCATION_STOP_MESSAGE = (
+    "Response truncated; the attempt ceiling or the turn budget stopped the "
+    "retries to finish it."
+)
 
 
 def classify_token_limit_reason(error: BaseException) -> str:
@@ -353,6 +364,11 @@ class ErrorResult:
     # function that grants a retry records its class, and ``with_retry`` counts
     # from it, so the cap and the count cannot classify one failure twice.
     deadline_retry: bool = False
+    # Set on a RETRY whose failure names the code to report if the ladder
+    # stops before the retry succeeds: ``TOKEN_LIMIT`` on a truncation retry
+    # (#1821). ``with_retry``'s own stops report it, so the stop the engine
+    # sees does not depend on which ceiling ended the ladder.
+    stop_code: Optional[str] = None
 
 
 class LLMErrorHandler:
@@ -484,7 +500,8 @@ class LLMErrorHandler:
         message. Input overflow only: the prompt is too large for the context
         window, so shrinking the prompt is the direct remedy. Output truncation is a
         different failure with a different first remedy (raise the generation
-        cap) and reaches ``TOKEN_LIMIT`` only after that ladder is spent — it
+        cap) and reaches ``TOKEN_LIMIT`` once its retries stop — the ladder
+        spent, the attempt ceiling or the turn budget reached (#1821) — it
         travels as ``OutputTruncationError`` and is dispatched on type.
 
         The two failures this must never confuse it with are both settled by
@@ -572,14 +589,20 @@ class LLMErrorHandler:
                     retry_count=retry_count,
                 )
             # The cap was raised; the identical call now has room to finish.
-            # If the turn budget refuses that retry, report TOKEN_LIMIT rather
-            # than a budget/availability code: the engine selects its
-            # minimal-prompt degrade on that code, and swapping it out here
-            # would turn a recoverable overflow into a hard failure whose
-            # message blames the provider (#662's NO-COLLAPSE guarantee).
-            return await self._retry_or_exhaust(
-                retry_count, next_attempt_seconds, no_budget_code=TOKEN_LIMIT
+            # If the attempt ceiling or the turn budget refuses that retry,
+            # report TOKEN_LIMIT rather than a retry/budget code (#1821): the
+            # engine selects its minimal-prompt degrade on that code, and
+            # swapping it out here would turn a recoverable overflow into a
+            # hard failure whose message blames the provider (#662's
+            # NO-COLLAPSE guarantee).
+            result = await self._retry_or_exhaust(
+                retry_count, next_attempt_seconds, stop_code=TOKEN_LIMIT
             )
+            if result.action is ErrorAction.RETRY:
+                # And if a stop in with_retry ends the ladder before the
+                # retry succeeds, that stop reports TOKEN_LIMIT too.
+                result.stop_code = TOKEN_LIMIT
+            return result
 
         # Permanent billing / quota exhaustion (non-retryable). The provider
         # account is out of credits or quota; retrying or waiting cannot help —
@@ -803,7 +826,7 @@ class LLMErrorHandler:
         self,
         retry_count: int,
         next_attempt_seconds: float = 0.0,
-        no_budget_code: Optional[str] = None,
+        stop_code: Optional[str] = None,
         *,
         deadline_shaped: bool = False,
         deadline_retries_spent: int = 0,
@@ -827,12 +850,16 @@ class LLMErrorHandler:
         ``deadline_retries_spent`` reaches ``max_deadline_retries``, with the
         same ``RETRY_EXHAUSTED`` a spent full ladder reports.
 
-        ``no_budget_code`` lets a caller name the code to report when the turn
-        budget is what stopped the ladder. Only the truncation branch passes
-        one: its recovery is the engine's minimal-prompt degrade, which is
-        selected by ``TOKEN_LIMIT`` on the raised error, and reporting a
-        budget/availability code there would silently disable the NO-COLLAPSE
-        recovery (#662) instead of degrading.
+        ``stop_code`` lets a caller name the code to report whenever this
+        function stops the ladder: on the attempt ceiling or the turn budget,
+        with ``TRUNCATION_STOP_MESSAGE``. Only the truncation branch passes one:
+        its recovery is the engine's minimal-prompt degrade, which is selected
+        by ``TOKEN_LIMIT`` on the raised error, and reporting a
+        retry/budget/availability code there would silently disable the
+        NO-COLLAPSE recovery (#662) instead of degrading — whichever ceiling
+        stopped it (#1821). Of the attempt ceiling's two caps only
+        ``max_retries`` can stop a truncation: a truncation is never
+        deadline-shaped, so the deadline cap never applies to it.
         """
         # The cap that governs this failure's class, for the check and the logs.
         if deadline_shaped:
@@ -840,6 +867,13 @@ class LLMErrorHandler:
         else:
             granted, cap = retry_count, self.config.max_retries
         if retry_count >= self.config.max_retries or granted >= cap:
+            if stop_code is not None:
+                return ErrorResult(
+                    action=ErrorAction.FAIL,
+                    message=TRUNCATION_STOP_MESSAGE,
+                    error_code=stop_code,
+                    retry_count=retry_count,
+                )
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message="LLM service temporarily unavailable. Please try again in a few minutes.",
@@ -886,8 +920,8 @@ class LLMErrorHandler:
             # ``max_deadline_retries`` would read ``1 < 1`` there.
             lost_a_provider_attempt = retry_count + 1 < self.config.max_retries
             code = (
-                no_budget_code
-                if no_budget_code is not None
+                stop_code
+                if stop_code is not None
                 else (
                     TURN_BUDGET_EXHAUSTED
                     if lost_a_provider_attempt
@@ -912,11 +946,15 @@ class LLMErrorHandler:
                 # back, in prose, the same misdirection this branch removes
                 # from the code.
                 message=(
-                    "LLM service temporarily unavailable and the request budget "
-                    "is spent. Please try again in a few minutes."
-                    if lost_a_provider_attempt
-                    else "LLM service temporarily unavailable. Please try again "
-                    "in a few minutes."
+                    TRUNCATION_STOP_MESSAGE
+                    if stop_code is not None
+                    else (
+                        "LLM service temporarily unavailable and the request "
+                        "budget is spent. Please try again in a few minutes."
+                        if lost_a_provider_attempt
+                        else "LLM service temporarily unavailable. Please try "
+                        "again in a few minutes."
+                    )
                 ),
                 error_code=code,
                 retry_count=retry_count,
@@ -995,7 +1033,11 @@ class LLMErrorHandler:
                     "Turn budget spent (%.1fs); not starting an LLM attempt.",
                     spendable,
                 )
-                exhausted = ErrorResult(
+                # After a granted retry that named its stop code, that code
+                # (#1821); otherwise the budget's own.
+                exhausted = self._granted_stop(
+                    last_error_result, retry_count
+                ) or ErrorResult(
                     action=ErrorAction.FAIL,
                     message=(
                         "The request budget is spent. Please try again in a "
@@ -1060,7 +1102,30 @@ class LLMErrorHandler:
                     # Non-retryable error
                     return None, error_result
 
-        return None, last_error_result
+        return None, (
+            self._granted_stop(last_error_result, retry_count) or last_error_result
+        )
+
+    @staticmethod
+    def _granted_stop(
+        last: Optional[ErrorResult], retry_count: int
+    ) -> Optional[ErrorResult]:
+        """The stop a granted retry named, or ``None`` if it named none (#1821).
+
+        ``last`` is the RETRY the ladder granted before stopping. When it
+        carries a ``stop_code``, the stop reports that code with
+        ``TRUNCATION_STOP_MESSAGE``, keeping the failure's category for the
+        degrade metric.
+        """
+        if last is None or last.stop_code is None:
+            return None
+        return ErrorResult(
+            action=ErrorAction.FAIL,
+            message=TRUNCATION_STOP_MESSAGE,
+            error_code=last.stop_code,
+            retry_count=retry_count,
+            category=last.category,
+        )
 
     def get_error_summary(self) -> dict:
         """Get summary of errors encountered."""

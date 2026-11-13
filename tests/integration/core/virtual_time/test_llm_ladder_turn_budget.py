@@ -718,10 +718,15 @@ class TestATruncationRetryKeepsItsRecoveryCode:
         handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.0))
 
         result = await handler._retry_or_exhaust(
-            0, next_attempt_seconds=5.0, no_budget_code=TOKEN_LIMIT
+            0, next_attempt_seconds=5.0, stop_code=TOKEN_LIMIT
         )
 
         assert result.error_code == TOKEN_LIMIT
+        # The message tracks the code: it names the truncation (#1821).
+        assert result.message == (
+            "Response truncated; the attempt ceiling or the turn budget stopped the "
+            "retries to finish it."
+        )
 
     async def test_without_the_override_it_reports_the_budget(self, monkeypatch):
         """The control: the same refusal on the ordinary retryable branch."""
