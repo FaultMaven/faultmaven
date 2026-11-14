@@ -13,10 +13,12 @@ import re
 from typing import Any
 
 import tomli
+import yaml
 
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     has_content,
     truncate_output,
 )
@@ -55,6 +57,47 @@ _DS_PLUGINS = {
         {"name": "TwilioKeyDetector"},
     ]
 }
+
+
+class _RepeatedKey(ValueError):
+    """A key repeats within one mapping. JSON and YAML parsers keep only its
+    last value, so the parse would drop the others without a word (#2791).
+    TOML parsers refuse a repeated key themselves."""
+
+    def __init__(self, key: object) -> None:
+        super().__init__(key)
+        self.key = key
+
+
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``json.loads``' ``object_pairs_hook``: the object, or ``_RepeatedKey``."""
+    mapping: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in mapping:
+            raise _RepeatedKey(key)
+        mapping[key] = value
+    return mapping
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` that raises ``_RepeatedKey`` instead of keeping a
+    repeated key's last value. A merge key (``<<``) is not a repeat: keys an
+    explicit entry overrides from a merged mapping are YAML's own rule."""
+
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            seen: set = set()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    continue
+                key = self.construct_object(key_node, deep=deep)
+                try:
+                    if key in seen:
+                        raise _RepeatedKey(key)
+                    seen.add(key)
+                except TypeError:
+                    continue  # unhashable: SafeLoader refuses it below
+        return super().construct_mapping(node, deep=deep)
 
 
 class StructuredConfigExtractor:
@@ -127,16 +170,35 @@ class StructuredConfigExtractor:
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
-        # Detect format
-        format_detected = self._detect_format(content)
+        try:
+            parsed = self._parse_config(content)
+        except _RepeatedKey as repeated:
+            return ExtractResult(
+                file_extract=f"[Repeated key {repeated.key!r}: not parsed]",
+                file_meta={
+                    UNPARSED_META_KEY: (
+                        f"the key {repeated.key!r} repeats within one mapping, "
+                        f"and a parser keeps only its last value"
+                    ),
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
+                },
+            )
 
-        # Try to detect format and parse
-        config_data = self._parse_config(content)
-
-        if config_data is None:
+        unparsed = None
+        if parsed is not None:
+            config_data, format_detected = parsed
+        else:
             # Couldn't parse - treat as key=value pairs
-            config_data = self._parse_key_value_pairs(content)
+            config_data, read, total = self._parse_key_value_pairs(content)
             format_detected = "key-value"
+            # The fallback is a reading of the content only where most of it
+            # is key=value pairs; elsewhere (``kubectl describe``) it keeps
+            # the few lines that hold an ``=`` and drops the rest (#2791).
+            if read * 2 < total:
+                unparsed = (
+                    f"only {read} of {total} lines are key=value pairs "
+                    f"or [section] headers"
+                )
 
         # Count keys before redaction
         top_keys = list(config_data.keys()) if isinstance(config_data, dict) else []
@@ -165,32 +227,9 @@ class StructuredConfigExtractor:
                 "total_keys": total_keys,
                 "secrets_redacted": redaction_count,
                 "size_bytes": len(content.encode("utf-8", errors="replace")),
+                **({UNPARSED_META_KEY: unparsed} if unparsed else {}),
             },
         )
-
-    def _detect_format(self, content: str) -> str:
-        """Detect config format without parsing."""
-        try:
-            json.loads(content)
-            return "json"
-        except (json.JSONDecodeError, ValueError):
-            pass
-        try:
-            import yaml
-
-            result = yaml.safe_load(content)
-            if isinstance(result, dict):
-                return "yaml"
-        except (ImportError, Exception):
-            pass
-        try:
-            tomli.loads(content)
-            return "toml"
-        except (ValueError, RecursionError):
-            # TOMLDecodeError subclasses ValueError, as does an integer past
-            # CPython's digit limit; RecursionError is tomli's nesting limit.
-            pass
-        return "ini/env"
 
     def _count_keys(self, data: Any) -> int:
         """Count total keys recursively."""
@@ -200,38 +239,43 @@ class StructuredConfigExtractor:
             return sum(self._count_keys(item) for item in data)
         return 0
 
-    def _parse_config(self, content: str) -> dict[str, Any] | None:
+    def _parse_config(self, content: str) -> tuple[Any, str] | None:
         """
         Try to parse as structured config
 
-        Returns parsed dict or None if parsing fails
+        Returns the parsed data and its format, or None if no parser reads
+        the content. Raises ``_RepeatedKey`` when JSON or YAML that would
+        parse repeats a key in one mapping.
         """
         # Try JSON first
         try:
-            return json.loads(content)
-        except (json.JSONDecodeError, ValueError):
+            return json.loads(content, object_pairs_hook=_unique_pairs), "json"
+        except _RepeatedKey:
+            raise
+        except ValueError:  # JSONDecodeError subclasses it
             pass
 
-        # Try YAML (if available)
         try:
-            import yaml
-
-            result = yaml.safe_load(content)
+            result = yaml.load(content, Loader=_UniqueKeyLoader)
             # YAML might parse plain text as a string - we need a dict
             if isinstance(result, dict):
-                return result
-        except (ImportError, yaml.YAMLError, AttributeError):
+                return result, "yaml"
+        except _RepeatedKey:
+            raise
+        except (yaml.YAMLError, AttributeError):
             pass
 
         # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
-            return tomli.loads(content)
-        except (ValueError, RecursionError):  # see _detect_format
+            return tomli.loads(content), "toml"
+        except (ValueError, RecursionError):
+            # TOMLDecodeError subclasses ValueError, as does an integer past
+            # CPython's digit limit; RecursionError is tomli's nesting limit.
             pass
 
         return None
 
-    def _parse_key_value_pairs(self, content: str) -> dict[str, Any]:
+    def _parse_key_value_pairs(self, content: str) -> tuple[dict[str, Any], int, int]:
         """
         Parse as simple key=value pairs (.env, .ini style)
 
@@ -240,9 +284,13 @@ class StructuredConfigExtractor:
         - KEY="value"
         - [section] headers
         - # comments
+
+        Returns the pairs, how many lines it read (pairs and headers), and how
+        many lines are neither blank nor comments.
         """
         result = {}
         current_section = None
+        read = total = 0
 
         for line in content.split("\n"):
             line = line.strip()
@@ -250,15 +298,18 @@ class StructuredConfigExtractor:
             # Skip empty lines and comments
             if not line or line.startswith("#") or line.startswith(";"):
                 continue
+            total += 1
 
             # Section header [section]
             if line.startswith("[") and line.endswith("]"):
+                read += 1
                 current_section = line[1:-1]
                 result[current_section] = {}
                 continue
 
             # Key=value pair
             if "=" in line:
+                read += 1
                 key, _, value = line.partition("=")
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
@@ -268,7 +319,7 @@ class StructuredConfigExtractor:
                 else:
                     result[key] = value
 
-        return result
+        return result, read, total
 
     def _redact_secrets_counted(self, data: Any, path: str = "") -> tuple[Any, int]:
         """Recursively redact secrets from config data, counting redactions.

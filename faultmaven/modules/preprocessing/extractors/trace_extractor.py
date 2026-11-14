@@ -11,8 +11,12 @@ import re
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     has_content,
 )
+
+#: Why a trace that is not JSON is kept as uploaded (#2791).
+_UNPARSED_TRACE = "not JSON trace data, the one trace format read here"
 
 
 class TraceDataExtractor:
@@ -56,14 +60,18 @@ class TraceDataExtractor:
                     return ExtractResult(
                         file_extract=self._fallback_extraction(content),
                         file_meta={
-                            "size_bytes": len(content.encode("utf-8", errors="replace"))
+                            UNPARSED_META_KEY: _UNPARSED_TRACE,
+                            "size_bytes": len(
+                                content.encode("utf-8", errors="replace")
+                            ),
                         },
                     )
             else:
                 return ExtractResult(
                     file_extract=self._fallback_extraction(content),
                     file_meta={
-                        "size_bytes": len(content.encode("utf-8", errors="replace"))
+                        UNPARSED_META_KEY: _UNPARSED_TRACE,
+                        "size_bytes": len(content.encode("utf-8", errors="replace")),
                     },
                 )
 

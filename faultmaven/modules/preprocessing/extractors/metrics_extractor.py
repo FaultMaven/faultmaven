@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     extract_timestamp,
     has_content,
     truncate_output,
@@ -28,6 +29,14 @@ try:
     PROMETHEUS_CLIENT_AVAILABLE = True
 except ImportError:
     PROMETHEUS_CLIENT_AVAILABLE = False
+
+
+def _is_number(cell: str) -> bool:
+    try:
+        float(cell)
+    except ValueError:
+        return False
+    return True
 
 
 class MetricsAndPerformanceExtractor:
@@ -109,7 +118,14 @@ class MetricsAndPerformanceExtractor:
                     },
                 )
             return ExtractResult(
-                file_extract="[Failed to parse metrics data - unsupported format]"
+                file_extract="[Failed to parse metrics data - unsupported format]",
+                file_meta={
+                    UNPARSED_META_KEY: (
+                        "no metrics format read here (JSON time series, CSV, "
+                        "Prometheus text, whitespace table) reads it"
+                    ),
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
+                },
             )
 
         # Detect format for coverage
@@ -290,6 +306,8 @@ class MetricsAndPerformanceExtractor:
             return "csv"
         if self._parse_prometheus_metrics(content):
             return "prometheus"
+        if self._parse_whitespace_metrics(content):
+            return "whitespace table"
         return "unknown"
 
     def _parse_metrics(
@@ -317,7 +335,8 @@ class MetricsAndPerformanceExtractor:
         if prom_result:
             return prom_result
 
-        return None
+        # Last, a whitespace-aligned table with a header row
+        return self._parse_whitespace_metrics(content)
 
     def _parse_json_metrics(
         self, content: str
@@ -398,7 +417,46 @@ class MetricsAndPerformanceExtractor:
         rather than assuming all non-first columns are numeric.
         Uses csv.reader to correctly handle quoted fields.
         """
-        rows = self._parse_csv_rows(content)
+        return self._metrics_from_rows(self._parse_csv_rows(content))
+
+    def _parse_whitespace_metrics(
+        self, content: str
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
+        """Parse a whitespace-aligned table with a header row, as ``sar``,
+        ``vmstat``-style exporters and dashboard copies write it (#2791).
+
+        A header line of names only, then rows of as many fields. A timestamp
+        written with a space (``2026-11-13 22:00:00``) splits into two fields;
+        a row one field longer than the header whose first two fields read as
+        one timestamp has them joined. Prometheus text has no header line of
+        names, so it never parses here, and is tried first in any case.
+        """
+        lines = [
+            line.split()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if len(lines) < 3:
+            return None
+        header = lines[0]
+        if len(header) < 2 or any(_is_number(cell) for cell in header):
+            return None
+        rows = [header]
+        for parts in lines[1:]:
+            if len(parts) == len(header) + 1 and extract_timestamp(
+                f"{parts[0]} {parts[1]}"
+            ):
+                parts = [f"{parts[0]} {parts[1]}", *parts[2:]]
+            rows.append(parts)
+        if sum(len(row) == len(header) for row in rows[1:]) < 2:
+            return None
+        return self._metrics_from_rows(rows)
+
+    def _metrics_from_rows(
+        self, rows: list[list[str]] | None
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
+        """Series from a table: a header row, then data rows of as many
+        cells. Shared by the CSV and the whitespace-table readers."""
         if not rows or len(rows) < 2:
             return None
 

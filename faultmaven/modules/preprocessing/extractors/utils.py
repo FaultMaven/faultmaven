@@ -201,6 +201,32 @@ def truncate_output(text: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS) -> s
     return text[:keep_start] + marker + text[-keep_end:]
 
 
+#: The ``file_meta`` key an extractor sets, to a short reason, when it cannot
+#: parse the shape it was given (#2791). The dispatch then keeps the content
+#: (``unparsed_preview``) in place of whatever fragment the extractor made.
+UNPARSED_META_KEY = "unparsed"
+
+
+def unparsed_preview(content: str, reason: str) -> str:
+    """The upload as uploaded, under a marker naming what was not parsed.
+
+    Whole when it fits ``MAX_STRUCTURAL_INDEX_CHARS``; otherwise its head and
+    tail, each 40% of the budget, around a marker counting what is not shown.
+    Either way no part of the content is replaced by a summary of it.
+    """
+    header = f"[Not parsed: {reason}. The content follows as uploaded.]\n\n"
+    budget = MAX_STRUCTURAL_INDEX_CHARS - len(header)
+    if len(content) <= budget:
+        return header + content
+    keep = int(budget * 0.4)
+    omitted = len(content) - 2 * keep
+    middle = (
+        f"\n\n... [{omitted} characters not shown here; "
+        f"search_file reads the whole upload] ...\n\n"
+    )
+    return header + content[:keep] + middle + content[-keep:]
+
+
 # ---------------------------------------------------------------------------
 # Timestamp extraction (for coverage time-range detection)
 # ---------------------------------------------------------------------------

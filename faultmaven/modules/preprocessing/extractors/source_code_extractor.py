@@ -15,6 +15,7 @@ from typing import Any
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     has_content,
     truncate_output,
 )
@@ -48,6 +49,13 @@ try:
     )
 except ImportError:
     TREE_SITTER_AVAILABLE = False
+
+
+#: A hunk header and a new-file header: a unified diff (``git diff``,
+#: ``diff -u``), whatever language its lines are in. The file names are the
+#: ``+++`` header's paths.
+_UNIFIED_DIFF_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
+_UNIFIED_DIFF_NEW_FILE = re.compile(r"^\+\+\+ (?:b/)?(\S+)", re.MULTILINE)
 
 
 class SourceCodeExtractor:
@@ -84,6 +92,25 @@ class SourceCodeExtractor:
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         total_lines = len(content.split("\n"))
+
+        # A patch, not code: every changed line is the content, and the
+        # parsers below would keep a class name or two (#2791).
+        if _UNIFIED_DIFF_HUNK.search(content) and _UNIFIED_DIFF_NEW_FILE.search(
+            content
+        ):
+            files = _UNIFIED_DIFF_NEW_FILE.findall(content)
+            return ExtractResult(
+                file_extract="Unified diff of " + ", ".join(files[:10]),
+                file_meta={
+                    UNPARSED_META_KEY: (
+                        "a unified diff; the source parsers here read code, "
+                        "not patches"
+                    ),
+                    "files_changed": len(files),
+                    "lines": total_lines,
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
+                },
+            )
 
         # Try Python AST parsing first
         python_result = self._parse_python_ast(content)

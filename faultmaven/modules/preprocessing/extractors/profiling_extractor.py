@@ -10,6 +10,7 @@ import re
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     has_content,
 )
 
@@ -70,6 +71,8 @@ class ProfilingDataExtractor:
             file_meta["functions_profiled"] = metadata["functions_profiled"]
         if metadata.get("top_function") is not None:
             file_meta["top_function"] = metadata["top_function"]
+        if metadata.get(UNPARSED_META_KEY):
+            file_meta[UNPARSED_META_KEY] = metadata[UNPARSED_META_KEY]
         return ExtractResult(file_extract=result, file_meta=file_meta)
 
     def _detect_format(self, content: str) -> str:
@@ -577,4 +580,8 @@ class ProfilingDataExtractor:
             "\nNote: Unable to fully parse profiling data. Supported formats: cProfile, flame graphs, perf."
         )
 
-        return "\n".join(summary), {}
+        return "\n".join(summary), {
+            UNPARSED_META_KEY: (
+                "not a profile format read here (cProfile, flame graph, perf)"
+            )
+        }

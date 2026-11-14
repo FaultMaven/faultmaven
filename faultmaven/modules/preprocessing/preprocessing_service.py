@@ -39,6 +39,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
     PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
@@ -50,12 +51,19 @@ from faultmaven.modules.preprocessing.entities import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.extractors.protocol import Extractor
+from faultmaven.modules.preprocessing.extractors.protocol import (
+    Extractor,
+    ExtractResult,
+)
 from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
 )
-from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
+from faultmaven.modules.preprocessing.extractors.utils import (
+    UNPARSED_META_KEY,
+    extract_time_range_ts,
+    unparsed_preview,
+)
 
 if TYPE_CHECKING:
     pass
@@ -295,6 +303,37 @@ _NO_BARE_EPOCH_TYPES = frozenset(
         DataType.UNANALYZABLE,
     }
 )
+
+
+def _keep_unparsed_content(
+    extraction: ExtractionResult, content: str, filename: str, extractor: str
+) -> ExtractionResult:
+    """An extract whose extractor could not parse the shape it was given
+    carries the content, not the fragment the extractor made of it (#2791).
+
+    The extractor reports the shape by setting ``file_meta[UNPARSED_META_KEY]``
+    to a reason; this, the one place every extractor's result returns
+    through, puts ``unparsed_preview`` in place of its ``file_extract``. The
+    rest of the result (``search_map``, ``file_meta`` with the reason) stays,
+    so the model reads why the content arrives as uploaded."""
+    result = ExtractResult.from_json(extraction.metadata["extract_result_json"])
+    reason = result.file_meta.get(UNPARSED_META_KEY)
+    if not reason:
+        return extraction
+    logger.info(
+        "Tier 1 %s could not parse %s (%s): keeping the content",
+        extractor,
+        filename,
+        reason,
+    )
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL.labels(extractor=extractor).inc()
+    preview = unparsed_preview(content, reason)
+    kept = dataclasses.replace(result, file_extract=preview)
+    return ExtractionResult(
+        method=extraction.method,
+        content=preview,
+        metadata={"extract_result_json": kept.to_json()},
+    )
 
 
 def _line_count(content: str) -> int:
@@ -1311,10 +1350,15 @@ class PreprocessingService:
             return preview(error_fallback=True, error=str(e)[:200])
         finally:
             slots.release(principal)
-        return ExtractionResult(
-            method=extractor.strategy_name,
-            # content holds file_extract text for sanity checks;
-            # extract_result_json carries the full structured payload.
-            content=file_extract,
-            metadata={"extract_result_json": extract_result_json},
+        return _keep_unparsed_content(
+            ExtractionResult(
+                method=extractor.strategy_name,
+                # content holds file_extract text for sanity checks;
+                # extract_result_json carries the full structured payload.
+                content=file_extract,
+                metadata={"extract_result_json": extract_result_json},
+            ),
+            content,
+            filename,
+            cls.__name__,
         )

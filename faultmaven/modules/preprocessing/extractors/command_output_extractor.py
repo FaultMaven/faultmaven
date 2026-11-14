@@ -11,6 +11,7 @@ import re
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     has_content,
 )
 
@@ -1103,8 +1104,12 @@ class CommandOutputExtractor:
 
         return "\n".join(summary)
 
-    def _fallback_extraction(self, content: str) -> str:
-        """Fallback for unknown command output"""
+    def _fallback_extraction(self, content: str) -> tuple[str, dict]:
+        """Fallback for unknown command output: no parser reads it, so the
+        extract reports that and the dispatch keeps the content (#2791)
+        instead of these first 20 lines."""
         lines = content.split("\n")[:20]
 
-        return "Command Output (unknown format)\n\n" + "\n".join(lines)
+        return "Command Output (unknown format)\n\n" + "\n".join(lines), {
+            UNPARSED_META_KEY: "no parser here reads this command's output"
+        }

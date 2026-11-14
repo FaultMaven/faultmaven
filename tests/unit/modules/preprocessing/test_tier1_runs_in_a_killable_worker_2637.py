@@ -210,11 +210,20 @@ async def test_the_worker_answers_as_the_extractor_does_in_process(monkeypatch, 
     )
 
     in_process = type(extractor)().extract(content)
-    assert result.metadata == {"extract_result_json": in_process.to_json()}
-    assert (result.method, result.content) == (
-        extractor.strategy_name,
-        in_process.file_extract,
+    # The dispatch's own rule applies on top of either answer: an extract
+    # whose extractor reported the shape unparsed carries the content (#2791;
+    # the command-output sample is a command no parser reads).
+    expected = ps._keep_unparsed_content(
+        ps.ExtractionResult(
+            method=extractor.strategy_name,
+            content=in_process.file_extract,
+            metadata={"extract_result_json": in_process.to_json()},
+        ),
+        content,
+        "sample",
+        type(extractor).__name__,
     )
+    assert result == expected
 
 
 def test_an_extractor_the_worker_cannot_import_is_refused_at_construction():
