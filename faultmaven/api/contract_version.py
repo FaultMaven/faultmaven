@@ -151,6 +151,20 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.26.1",
+        level="PATCH",
+        title=(
+            "An INQUIRY turn's symptom search runs only once a problem "
+            "statement is proposed."
+        ),
+        body=r"""Corrects 14.26.0. INQUIRY's symptom search now searches only the
+proposed problem statement. Before one is proposed it does not search, so
+those turns carry no `metadata.trigger` `symptom` sources. 14.26.0
+also searched what the user had said. Over the stored cases, that search put
+off-topic runbooks in the prompt and in `sources` far more often than
+on-topic ones. No field, value or status changed.""",
+    ),
+    ContractChange(
         version="14.26.0",
         level="MINOR",
         title=(

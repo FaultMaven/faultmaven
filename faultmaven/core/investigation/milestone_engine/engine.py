@@ -1352,10 +1352,12 @@ class MilestoneEngine:
             ):
                 # The symptom's runbooks, in this INQUIRY prompt: nothing else
                 # puts a runbook in front of an INQUIRY reply on a case with
-                # no files. Beside a question lookup too: that searched what
-                # the message asked, this the symptom the case describes.
+                # no files. Searched with the proposed statement only, so a
+                # turn before one has none (``inquiry_symptom_query``). Beside
+                # a question lookup too: that searched what the message asked,
+                # this the symptom the case states.
                 await self.kb_prefetcher.prefetch_symptom(
-                    case, inquiry_symptom_query(case, user_message)
+                    case, inquiry_symptom_query(case)
                 )
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(

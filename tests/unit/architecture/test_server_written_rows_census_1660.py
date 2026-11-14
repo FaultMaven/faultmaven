@@ -133,13 +133,6 @@ PROMPT_READERS: dict[tuple[str, str], tuple[int, dict[str, frozenset[str]]]] = {
     # Each also reads the record's ``server_note`` inside its flag branch
     # (#1665): 3 -> 4 and 2 -> 3 when the census began counting that field.
     (_CTX, "_build_turn_summary"): (4, {"_build_turn_summary": _FLAG | _SKIP}),
-    # #2800: what the user said in INQUIRY, newest first, as the symptom
-    # search's query. A search, not a prompt, but its hits are put in front
-    # of the model as matching what the user reported, so the same rule holds.
-    (
-        "faultmaven/core/investigation/milestone_engine/kb_prefetch.py",
-        "inquiry_symptom_query",
-    ): (1, {"inquiry_symptom_query": frozenset({_USER})}),
     (_CTX, "_build_compact_history"): (
         3,
         {"_build_compact_history": _FLAG | _SKIP},

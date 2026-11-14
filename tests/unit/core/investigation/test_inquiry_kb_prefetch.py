@@ -28,10 +28,7 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
 )
 from faultmaven.models.common import SearchResult
-from faultmaven.modules.case.contracts import (
-    MESSAGE_METADATA_USER_EMPTY,
-    is_server_written_user_row,
-)
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
 from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_kb_question_lookup import _investigating
 
@@ -102,57 +99,42 @@ def _said(*texts: str, server_written: bool = False) -> list[dict]:
     return rows
 
 
-async def _inquiry_search(prefetcher, case, message):
-    await prefetcher.prefetch_symptom(case, inquiry_symptom_query(case, message))
+async def _inquiry_search(prefetcher, case, message=""):
+    """An INQUIRY turn's symptom search; ``message`` is what the turn says,
+    which the search never reads."""
+    await prefetcher.prefetch_symptom(case, inquiry_symptom_query(case))
 
 
 class TestTheQuery:
     def test_the_proposed_statement_is_the_symptom(self):
         case = _case(statement="Checkout API exhausts its Postgres connections")
-        assert inquiry_symptom_query(case, "it started at 10am") == (
+        assert inquiry_symptom_query(case) == (
             "Checkout API exhausts its Postgres connections"
         )
 
-    def test_before_a_statement_what_the_user_said_newest_first(self):
+    def test_before_a_statement_nothing_is_searched_whatever_was_said(self):
+        """A first message searched as written showed on-topic sections in
+        0-15% of its entries over the stored corpus: no search beats the
+        wrong runbooks, each of which is also cited."""
         case = _case()
-        case.messages = _said("my pod is crashlooping")
-        assert inquiry_symptom_query(case, "it started at 10am") == (
-            "it started at 10am my pod is crashlooping"
-        )
-
-    def test_earlier_messages_follow_newest_first(self):
-        case = _case()
-        case.messages = _said("pods crashloop", "after the 2.3 deploy")
-        assert inquiry_symptom_query(case, "only in eu-west") == (
-            "only in eu-west after the 2.3 deploy pods crashloop"
-        )
-
-    def test_a_change_of_subject_leads_the_search(self):
-        case = _case()
-        case.messages = _said("how do I tune kafka consumer lag alerts?")
-        query = inquiry_symptom_query(case, "actually our postgres primary is down")
-        assert query.startswith("actually our postgres primary is down")
-
-    def test_a_row_the_server_wrote_is_not_what_the_user_said(self):
-        rows = _said("I've pasted some text. Analyze it.", server_written=True)
-        assert is_server_written_user_row(rows[0]), "premise"
-        case = _case()
-        case.messages = rows
-        assert inquiry_symptom_query(case, "pods OOMKilled") == "pods OOMKilled"
+        case.messages = _said("our checkout API ran out of postgres connections")
+        assert inquiry_symptom_query(case) == ""
+        case.inquiry.proposed_problem_statement = "Checkout API pool exhausted"
+        assert inquiry_symptom_query(case) == "Checkout API pool exhausted"
 
     def test_whitespace_is_normalised_and_the_query_bounded(self):
-        assert inquiry_symptom_query(_case(), "  postgres\n out of  connections ") == (
-            "postgres out of connections"
-        )
-        query = inquiry_symptom_query(_case(), "word " * 200)
+        assert inquiry_symptom_query(
+            _case(statement="  postgres\n out of  connections ")
+        ) == ("postgres out of connections")
+        query = inquiry_symptom_query(_case(statement="word " * 200))
         assert len(query) <= SYMPTOM_QUERY_MAX_CHARS
 
 
 class TestTheSearch:
     async def test_it_searches_and_stores_the_symptoms_runbooks(self):
         service = _service([_hit()])
-        case = _case()
-        await _inquiry_search(_prefetcher(service), case, "postgres pool full")
+        case = _case(statement="postgres pool full")
+        await _inquiry_search(_prefetcher(service), case, "it started at 10am")
         assert _queries(service) == ["postgres pool full"]
         assert [e["parent_document_id"] for e in case.kb_context] == ["rb_pg"]
         assert case.kb_context_origin["query"] == "postgres pool full"
@@ -203,6 +185,17 @@ class TestTheSearch:
         assert len(_queries(service)) == 1
         assert case.kb_context
 
+    async def test_before_a_statement_it_searches_nothing(self):
+        service = _service([_hit()])
+        case = _case()
+        await _inquiry_search(_prefetcher(service), case, "postgres pool full")
+        service.search_knowledge.assert_not_awaited()
+        assert not case.kb_context
+        # Positive control: the same case, once a statement is proposed.
+        case.inquiry.proposed_problem_statement = "postgres pool full"
+        await _inquiry_search(_prefetcher(service), case)
+        assert _queries(service) == ["postgres pool full"]
+
     async def test_the_push_switch_turns_it_off(self, monkeypatch):
         from faultmaven.config.settings import get_settings
 
@@ -210,7 +203,7 @@ class TestTheSearch:
             get_settings().knowledge, "kb_prefetch_enabled", False, raising=False
         )
         service = _service([_hit()])
-        case = _case()
+        case = _case(statement="postgres pool full")
         await _inquiry_search(_prefetcher(service), case, "postgres pool full")
         service.search_knowledge.assert_not_awaited()
         assert not case.kb_context
@@ -284,7 +277,7 @@ class TestTheEngine:
     async def test_an_inquiry_turn_has_the_symptoms_runbooks_in_its_prompt(self):
         engine = _engine(_inquiry_reply(), [_hit()])
         result = await engine.process_turn(
-            case=_case(),
+            case=_case(statement="checkout API out of postgres connections"),
             user_message="our checkout API ran out of postgres connections",
             intent_data={"query_mode": "triage"},
             redaction_ctx=None,
@@ -297,10 +290,23 @@ class TestTheEngine:
             ("rb_pg", "symptom")
         ]
 
+    async def test_a_first_turn_before_any_statement_has_no_block(self):
+        engine = _engine(_inquiry_reply(), [_hit()])
+        result = await engine.process_turn(
+            case=_case(),
+            user_message="our checkout API ran out of postgres connections",
+            intent_data={"query_mode": "triage"},
+            redaction_ctx=None,
+        )
+        engine.deps.knowledge_service.search_knowledge.assert_not_awaited()
+        prompt = engine.generator.generate_structured_output.await_args.args[0]
+        assert BLOCK not in prompt
+        assert result["metadata"][TURN_METADATA_KB_PROMPTED] == []
+
     async def test_a_question_about_the_assistant_searches_nothing(self):
         engine = _engine(_inquiry_reply(), [_hit()])
         await engine.process_turn(
-            case=_case(),
+            case=_case(statement="checkout API out of postgres connections"),
             user_message="how do you decide what to ask me?",
             intent_data={"query_mode": "agent_meta"},
             redaction_ctx=None,
@@ -333,15 +339,15 @@ class TestTheEngine:
         prompt builder does."""
         engine = _engine(_inquiry_reply(), [_hit()])
         await engine.process_turn(
-            case=_case(),
+            case=_case(statement="checkout API out of postgres connections"),
             user_message="how do you work?",
             intent_data={},
             redaction_ctx=None,
         )
         engine.deps.knowledge_service.search_knowledge.assert_not_awaited()
-        # Positive control: a symptom on the same direct path is searched.
+        # Positive control: a stated symptom on the same direct path is searched.
         await engine.process_turn(
-            case=_case(),
+            case=_case(statement="checkout API out of postgres connections"),
             user_message="our checkout API ran out of postgres connections",
             intent_data={},
             redaction_ctx=None,

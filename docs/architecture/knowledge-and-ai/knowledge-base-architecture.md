@@ -303,9 +303,10 @@ found (below), and an empty list is "no citation to show", never a retrieval fai
 root-cause pre-fetch triggers fire while a turn's response is applied, after its answer
 was generated, so their hits first reach the NEXT turn's prompt. INQUIRY's symptom search
 (API contract 14.26.0) runs before the prompt is built, so its hits reach that turn's own
-prompt: the proposed problem statement once there is one, before that what the user has
-said, newest first, to 300 characters (a follow-up is searched beside the description it
-adds to, not in its place, and a change of subject leads the search). Every symptom
+prompt. It searches the proposed problem statement, and before one is proposed nothing:
+over the 99 stored cases of four simulator scenarios, a first message searched as written
+showed on-topic sections in 0-15% of its entries (every entry off topic in 81 cases), and
+the statement in 20-62% (contract 14.26.1). Every symptom
 search, the transition's and a revised statement's included, goes through one bounded
 query and is not run again for the same query and driver, a miss included
 (`KbPrefetcher.prefetch_symptom`), so the confirm turn searches the statement once. A turn's `sources` is therefore what its own prompt
