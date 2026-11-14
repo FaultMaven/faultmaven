@@ -444,5 +444,5 @@ transition itself.
 # response was applied, the symptom one on the very turn the case LEFT
 # inquiry, so no INQUIRY prompt was ever built after one. The engine now runs
 # INQUIRY's symptom search before the prompt is built
-# (``KbPrefetcher.prefetch_for_inquiry``), which is what makes the slot worth
+# (``KbPrefetcher.prefetch_symptom``), which is what makes the slot worth
 # having there.
