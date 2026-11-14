@@ -510,7 +510,7 @@ Probe of an Azure deployment of `gpt-6-luna-2026-09-22`, named `gpt-6-luna-1`, r
 - **Schemas:** strict `json_schema` accepted.
 - **Default reasoning:** reasons when no effort is sent.
 
-Not recorded for it: a context window (an Azure deployment name falls back to `LLM_CONTEXT_WINDOW`), and pricing (it reports as unpriced until rates are set with `LLM_PRICING_OVERRIDES` or added to `pricing.py`).
+Not recorded for it: a context window (no `model_context` entry matches the name, so the window is unknown: the prompt budget is `PROMPT_TARGET_TOKENS` and the context-overflow check is skipped; `MODEL_CONTEXT_WINDOWS` declares one), and pricing (it reports as unpriced until rates are set with `LLM_PRICING_OVERRIDES` or added to `pricing.py`).
 
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling

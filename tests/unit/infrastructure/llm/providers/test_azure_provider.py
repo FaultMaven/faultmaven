@@ -155,6 +155,24 @@ class TestGpt6LunaDeployment:
         )
         assert body["reasoning_effort"] == "medium"
 
+    async def test_extraction_on_a_plain_call_is_none(self, mock_aiohttp_session):
+        from faultmaven.infrastructure.llm.providers import ReasoningIntent
+
+        body = await self._body(
+            mock_aiohttp_session, reasoning_intent=ReasoningIntent.EXTRACTION
+        )
+        assert body["reasoning_effort"] == "none"
+
+    async def test_inference_with_tools_still_sends_none(self, mock_aiohttp_session):
+        from faultmaven.infrastructure.llm.providers import ReasoningIntent
+
+        body = await self._body(
+            mock_aiohttp_session,
+            tools=_TOOLS,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+        )
+        assert body["reasoning_effort"] == "none"
+
     @pytest.mark.parametrize(
         "model, defaults", [("gpt-6-luna-1", True), ("gpt-6-sol", False)]
     )
