@@ -305,6 +305,29 @@ class TestTheConfigExtractorReports:
         assert result.file_meta["format"] == "yaml"
         assert "timeout: 60" in result.file_extract
 
+    def test_a_chained_merge_override_is_not_a_repeat(self):
+        """A mapping merged into another is flattened in place before its own
+        keys could be checked; the check reads the tree before that."""
+        content = (
+            "base: &z {x: 0, y: 0}\n"
+            "defaults: {inner: &a {<<: *z, x: 1}}\n"
+            "c: {<<: *a, y: 5}\n"
+        )
+        result = StructuredConfigExtractor().extract(content)
+        assert UNPARSED_META_KEY not in result.file_meta
+        assert result.file_meta["format"] == "yaml"
+
+    def test_keys_that_construct_equal_are_a_repeat(self):
+        """``yes`` and ``true`` are both True in YAML 1.1: one value is lost."""
+        result = StructuredConfigExtractor().extract("yes: 1\ntrue: 2\n")
+        assert "True" in result.file_meta[UNPARSED_META_KEY]
+
+    def test_a_scalar_yaml_refuses_falls_through_instead_of_raising(self):
+        """``2026-13-45`` is a date its constructor refuses (ValueError); the
+        extractor must not raise, or the upload gets the error preview."""
+        result = StructuredConfigExtractor().extract("a: 2026-13-45\nb: 1\n")
+        assert UNPARSED_META_KEY in result.file_meta
+
     @pytest.mark.parametrize(
         ("content", "fmt"),
         [
@@ -359,6 +382,26 @@ class TestTheMetricsExtractorReadsWhitespaceTables:
         assert result.file_meta["format"] == "whitespace table"
         assert result.file_meta["time_span"].startswith("2026-11-13 22:00:00")
 
+    def test_a_table_with_text_columns_is_not_metrics(self):
+        """``kubectl get pods``: reading only RESTARTS would drop READY and
+        STATUS without a word, so the table is reported, not read."""
+        content = (
+            "NAME     READY   STATUS             RESTARTS   AGE\n"
+            "api-1    0/1     CrashLoopBackOff   12         34m\n"
+            "api-2    1/1     Running            0          2d\n"
+            "api-3    1/1     Running            1          2d\n"
+        )
+        result = MetricsAndPerformanceExtractor().extract(content)
+        assert UNPARSED_META_KEY in result.file_meta
+
+    def test_a_host_keyed_table_keeps_every_column(self):
+        """Read as a table, not as Prometheus lines (``web1 50 60`` would be a
+        sample of ``web1`` with only its first number kept)."""
+        content = "host  cpu  mem\nweb1  50   60\nweb2  70   80\nweb3  95   90\n"
+        result = MetricsAndPerformanceExtractor().extract(content)
+        assert result.file_meta["format"] == "whitespace table"
+        assert result.file_meta["metric_names"] == "cpu, mem"
+
     def test_prometheus_text_is_still_read_as_prometheus(self):
         content = (
             "# HELP http_requests_total Requests.\n"
@@ -381,6 +424,15 @@ class TestTheOtherExtractorsReport:
         result = SourceCodeExtractor().extract(JAVA_DIFF)
         assert "unified diff" in result.file_meta[UNPARSED_META_KEY]
         assert result.file_meta["files_changed"] == 1
+
+    def test_a_diff_names_its_files_deleted_ones_included(self):
+        content = (
+            "--- a/old.conf\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a=1\n-b=2\n"
+            "--- a/app.py\n+++ b/app.py\n@@ -1,1 +1,2 @@\n x = 1\n+++ y\n"
+        )
+        result = SourceCodeExtractor().extract(content)
+        assert result.file_meta["files"] == "old.conf, app.py"
+        assert result.file_meta["files_changed"] == 2
 
     def test_code_is_not_taken_for_a_diff(self):
         content = (

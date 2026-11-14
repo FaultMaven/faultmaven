@@ -321,7 +321,10 @@ def _keep_unparsed_content(
     through, puts ``unparsed_preview`` in place of its ``file_extract``. The
     rest of the result (``search_map``, ``file_meta`` with the reason) stays,
     so the model reads why the content arrives as uploaded."""
-    result = ExtractResult.from_json(extraction.metadata["extract_result_json"])
+    payload = extraction.metadata["extract_result_json"]
+    if f'"{UNPARSED_META_KEY}"' not in payload:
+        return extraction  # no report: skip parsing what the worker sent
+    result = ExtractResult.from_json(payload)
     reason = result.file_meta.get(UNPARSED_META_KEY)
     if not reason:
         return extraction
@@ -332,7 +335,9 @@ def _keep_unparsed_content(
         reason,
     )
     PREPROCESSING_UNPARSED_SHAPE_TOTAL.labels(extractor=extractor).inc()
-    preview = unparsed_preview(content, reason)
+    # Cut here, as the store would, so a multi-MB upload is not serialized
+    # whole only to be parsed and cut again in ``_build_result``.
+    preview = cut_to_budget(unparsed_preview(content, reason), MAX_STORED_EXTRACT_CHARS)
     kept = dataclasses.replace(result, file_extract=preview)
     return ExtractionResult(
         method=extraction.method,

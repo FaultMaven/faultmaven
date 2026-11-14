@@ -591,10 +591,12 @@ Otherwise the type-specific extractor runs under a 2-second deadline (Phase 2 sa
 |---|---|---|
 | `StructuredConfigExtractor` | no structured parser reads the content and fewer than half its lines are `key=value` pairs or `[section]` headers (`kubectl describe`); or JSON/YAML repeats a key within one mapping (a parser keeps only the last value; a YAML merge-key override is not a repeat) | `only N of M lines are key=value pairs…`; `the key 'type' repeats within one mapping…` |
 | `CommandOutputExtractor` | no parser here reads the command's output (anything but `top`/`ps`/`iostat`/`netstat`/`df`/`free`/`vmstat`, e.g. `kubectl get`, `kubectl describe`) | `no parser here reads this command's output` |
-| `MetricsAndPerformanceExtractor` | no format read here (JSON time series, CSV, Prometheus text, whitespace-aligned table) reads it | `no metrics format read here … reads it` |
-| `SourceCodeExtractor` | the content is a unified diff (a `+++` header and an `@@` hunk) | `a unified diff; the source parsers here read code, not patches` |
+| `MetricsAndPerformanceExtractor` | no format read here (JSON time series, CSV, whitespace-aligned table, Prometheus text) reads it. The table reader takes a header of names and rows whose every field but one (the time or key column) is a number, so a table with other text columns (`kubectl get pods`) is reported, not read for its numbers; it runs before the Prometheus line reader, which would take a host-keyed row for one sample | `no metrics format read here … reads it` |
+| `SourceCodeExtractor` | the content is a unified diff (a `---`/`+++` file header and an `@@` hunk); `file_meta` names the files (a deleted one by its old path) | `a unified diff; the source parsers here read code, not patches` |
 | `TraceDataExtractor` | the content is not JSON | `not JSON trace data…` |
 | `ProfilingDataExtractor` | not cProfile, a flame graph or perf | `not a profile format read here…` |
+
+Content kept this way is stored as uploaded. For a config, that means the extractor's secret redaction, which works on what it parses, does not apply; the content reaches the model as a small passthrough's does, with redaction left to the model boundary (`SANITIZE_PII`). A config parser that refuses a value (a YAML date such as `2026-13-45`, nesting past the interpreter's limit) passes the content to the next parser, ending at the key=value reading and its report, rather than failing the extraction.
 
 `faultmaven_preprocessing_unparsed_shape_total{extractor}` counts the shapes kept this way, by extractor class: which shapes the extractors do not read yet. A shape an extractor learns to parse stops being reported (the whitespace metrics table, in this change).
 

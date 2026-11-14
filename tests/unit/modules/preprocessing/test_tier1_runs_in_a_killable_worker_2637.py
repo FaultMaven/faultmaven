@@ -181,10 +181,12 @@ _SAMPLES = {
     "TimeoutError: upstream timed out\n",
     "documentation_extractor": "# Runbook: API latency\n\n## Symptoms\n\n"
     "p99 above 2 s.\n\n## Steps\n\n1. Run `kubectl rollout restart deploy/api`.\n",
-    "command_output_extractor": "NAME                   READY   STATUS"
-    "             RESTARTS   AGE\n"
-    "api-7d9f8b6c5-x2k4l    0/1     CrashLoopBackOff   12         34m\n"
-    "worker-5c6d7e8f9-q8w7  1/1     Running            0          2d\n",
+    # A command its parser reads: a sample reported unparsed would have the
+    # dispatch replace the worker's answer on both sides (#2791).
+    "command_output_extractor": "Filesystem     1K-blocks     Used Available"
+    " Use% Mounted on\n"
+    "/dev/nvme0n1p1  51474912 48967424   2507488  96% /\n"
+    "tmpfs            4021248        0   4021248   0% /dev/shm\n",
 }
 
 
@@ -210,20 +212,15 @@ async def test_the_worker_answers_as_the_extractor_does_in_process(monkeypatch, 
     )
 
     in_process = type(extractor)().extract(content)
-    # The dispatch's own rule applies on top of either answer: an extract
-    # whose extractor reported the shape unparsed carries the content (#2791;
-    # the command-output sample is a command no parser reads).
-    expected = ps._keep_unparsed_content(
-        ps.ExtractionResult(
-            method=extractor.strategy_name,
-            content=in_process.file_extract,
-            metadata={"extract_result_json": in_process.to_json()},
-        ),
-        content,
-        "sample",
-        type(extractor).__name__,
+    assert "unparsed" not in in_process.file_meta, (
+        "a sample the extractor reports unparsed is replaced by the dispatch, "
+        "so it no longer tests the transport"
     )
-    assert result == expected
+    assert result.metadata == {"extract_result_json": in_process.to_json()}
+    assert (result.method, result.content) == (
+        extractor.strategy_name,
+        in_process.file_extract,
+    )
 
 
 def test_an_extractor_the_worker_cannot_import_is_refused_at_construction():

@@ -562,8 +562,9 @@ class ProfilingDataExtractor:
         return any(keyword in location.lower() for keyword in io_keywords)
 
     def _fallback_extraction(self, content: str) -> tuple[str, dict]:
-        """Fallback for unknown profiling formats. No function-level data,
-        so metadata is empty."""
+        """Fallback for unknown profiling formats. No function-level data;
+        the metadata reports the format unparsed, so the dispatch keeps the
+        content instead of this preview (#2791)."""
         lines = content.split("\n")[:30]  # First 30 lines
 
         summary = [

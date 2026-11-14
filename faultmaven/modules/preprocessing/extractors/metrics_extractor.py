@@ -304,10 +304,10 @@ class MetricsAndPerformanceExtractor:
             return "json"
         if self._parse_csv_metrics(content):
             return "csv"
-        if self._parse_prometheus_metrics(content):
-            return "prometheus"
         if self._parse_whitespace_metrics(content):
             return "whitespace table"
+        if self._parse_prometheus_metrics(content):
+            return "prometheus"
         return "unknown"
 
     def _parse_metrics(
@@ -330,13 +330,15 @@ class MetricsAndPerformanceExtractor:
         if csv_result:
             return csv_result
 
-        # Try Prometheus text format
-        prom_result = self._parse_prometheus_metrics(content)
-        if prom_result:
-            return prom_result
+        # A whitespace-aligned table with a header row, before Prometheus
+        # text: the Prometheus line reader takes ``web1 50 60`` for a sample
+        # and keeps one column of a host-keyed table (#2791)
+        table_result = self._parse_whitespace_metrics(content)
+        if table_result:
+            return table_result
 
-        # Last, a whitespace-aligned table with a header row
-        return self._parse_whitespace_metrics(content)
+        # Try Prometheus text format
+        return self._parse_prometheus_metrics(content)
 
     def _parse_json_metrics(
         self, content: str
@@ -425,11 +427,14 @@ class MetricsAndPerformanceExtractor:
         """Parse a whitespace-aligned table with a header row, as ``sar``,
         ``vmstat``-style exporters and dashboard copies write it (#2791).
 
-        A header line of names only, then rows of as many fields. A timestamp
-        written with a space (``2026-11-13 22:00:00``) splits into two fields;
-        a row one field longer than the header whose first two fields read as
-        one timestamp has them joined. Prometheus text has no header line of
-        names, so it never parses here, and is tried first in any case.
+        A header line of names only, then rows of as many fields, every field
+        but one (the time or key column) a number: a table with other text
+        columns (``kubectl get pods``: READY, STATUS) is not metrics, and
+        reading only its numbers would drop the rest without a word. A
+        timestamp written with a space (``2026-11-13 22:00:00``) splits into
+        two fields; a row one field longer than the header whose first two
+        fields read as one timestamp has them joined. Prometheus text has no
+        header line of names, so it never parses here.
         """
         lines = [
             line.split()
@@ -448,7 +453,14 @@ class MetricsAndPerformanceExtractor:
             ):
                 parts = [f"{parts[0]} {parts[1]}", *parts[2:]]
             rows.append(parts)
-        if sum(len(row) == len(header) for row in rows[1:]) < 2:
+        full = [row for row in rows[1:] if len(row) == len(header)]
+        if len(full) < 2:
+            return None
+        text_columns = sum(
+            not all(_is_number(row[col]) for row in full[:10])
+            for col in range(len(header))
+        )
+        if text_columns > 1:
             return None
         return self._metrics_from_rows(rows)
 

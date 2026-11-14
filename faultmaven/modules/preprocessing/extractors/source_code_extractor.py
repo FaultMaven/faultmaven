@@ -51,11 +51,15 @@ except ImportError:
     TREE_SITTER_AVAILABLE = False
 
 
-#: A hunk header and a new-file header: a unified diff (``git diff``,
-#: ``diff -u``), whatever language its lines are in. The file names are the
-#: ``+++`` header's paths.
+#: A hunk header and a file header: a unified diff (``git diff``,
+#: ``diff -u``), whatever language its lines are in. A file header is a
+#: ``---`` line directly followed by a ``+++`` line (an added line reading
+#: ``++ x`` is not one); its path is the ``+++`` side, or the ``---`` side for a
+#: deleted file (``+++ /dev/null``).
 _UNIFIED_DIFF_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
-_UNIFIED_DIFF_NEW_FILE = re.compile(r"^\+\+\+ (?:b/)?(\S+)", re.MULTILINE)
+_UNIFIED_DIFF_FILE = re.compile(
+    r"^--- (?:a/)?(\S+)[^\n]*\n\+\+\+ (?:b/)?(\S+)", re.MULTILINE
+)
 
 
 class SourceCodeExtractor:
@@ -95,10 +99,11 @@ class SourceCodeExtractor:
 
         # A patch, not code: every changed line is the content, and the
         # parsers below would keep a class name or two (#2791).
-        if _UNIFIED_DIFF_HUNK.search(content) and _UNIFIED_DIFF_NEW_FILE.search(
-            content
-        ):
-            files = _UNIFIED_DIFF_NEW_FILE.findall(content)
+        files = [
+            new if new != "/dev/null" else old
+            for old, new in _UNIFIED_DIFF_FILE.findall(content)
+        ]
+        if files and _UNIFIED_DIFF_HUNK.search(content):
             return ExtractResult(
                 file_extract="Unified diff of " + ", ".join(files[:10]),
                 file_meta={
@@ -107,6 +112,7 @@ class SourceCodeExtractor:
                         "not patches"
                     ),
                     "files_changed": len(files),
+                    "files": ", ".join(files[:10]),
                     "lines": total_lines,
                     "size_bytes": len(content.encode("utf-8", errors="replace")),
                 },

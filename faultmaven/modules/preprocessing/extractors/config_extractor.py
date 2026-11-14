@@ -79,25 +79,48 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return mapping
 
 
+_YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     """``yaml.SafeLoader`` that raises ``_RepeatedKey`` instead of keeping a
-    repeated key's last value. A merge key (``<<``) is not a repeat: keys an
-    explicit entry overrides from a merged mapping are YAML's own rule."""
+    repeated key's last value.
 
-    def construct_mapping(self, node, deep=False):
-        if isinstance(node, yaml.MappingNode):
-            seen: set = set()
-            for key_node, _ in node.value:
-                if key_node.tag == "tag:yaml.org,2002:merge":
-                    continue
-                key = self.construct_object(key_node, deep=deep)
-                try:
+    The check walks the composed node tree before anything is constructed:
+    constructing a mapping that merges another (``<<``) flattens the merged
+    node in place, after which a key it inherits sits beside the key that
+    overrides it, which YAML allows. Only a mapping's own explicit keys are
+    compared, by their constructed value (so ``yes`` and ``true`` collide, as
+    they do in the result). A non-scalar key is left to SafeLoader, which
+    refuses it.
+    """
+
+    def construct_document(self, node):
+        self._refuse_repeated_keys(node)
+        return super().construct_document(node)
+
+    def _refuse_repeated_keys(self, root) -> None:
+        visited: set[int] = set()
+        stack = [root]
+        while stack:
+            node = stack.pop()
+            if id(node) in visited:
+                continue
+            visited.add(id(node))
+            if isinstance(node, yaml.SequenceNode):
+                stack.extend(node.value)
+            elif isinstance(node, yaml.MappingNode):
+                seen: set = set()
+                for key_node, value_node in node.value:
+                    stack.append(value_node)
+                    if key_node.tag == _YAML_MERGE_TAG or not isinstance(
+                        key_node, yaml.ScalarNode
+                    ):
+                        continue
+                    key = self.construct_object(key_node)
                     if key in seen:
                         raise _RepeatedKey(key)
                     seen.add(key)
-                except TypeError:
-                    continue  # unhashable: SafeLoader refuses it below
-        return super().construct_mapping(node, deep=deep)
 
 
 class StructuredConfigExtractor:
@@ -252,7 +275,7 @@ class StructuredConfigExtractor:
             return json.loads(content, object_pairs_hook=_unique_pairs), "json"
         except _RepeatedKey:
             raise
-        except ValueError:  # JSONDecodeError subclasses it
+        except (ValueError, RecursionError):  # JSONDecodeError subclasses it
             pass
 
         try:
@@ -262,7 +285,10 @@ class StructuredConfigExtractor:
                 return result, "yaml"
         except _RepeatedKey:
             raise
-        except (yaml.YAMLError, AttributeError):
+        except (yaml.YAMLError, AttributeError, ValueError, RecursionError):
+            # ValueError: a scalar its constructor refuses (``2026-13-45`` as a
+            # date); RecursionError: nesting past the interpreter's limit.
+            # Either way YAML does not read it, so the parsers below try.
             pass
 
         # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
