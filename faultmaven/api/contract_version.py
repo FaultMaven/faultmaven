@@ -159,7 +159,8 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         ),
         body=r"""Before an INQUIRY reply is generated, the engine now searches the knowledge
 base for the symptom: the proposed problem statement once there is one,
-before that the user's message while the case holds no runbooks yet. The
+before that what the user has said, newest first. A search the case already
+ran is not run again, so `sources` changes only when the symptom does. The
 matches enter the INQUIRY prompt, and the turn's `sources`, with
 `metadata.trigger` `symptom`, as the same search has on INVESTIGATING turns
 since 3.3.0. INQUIRY turns used to carry only a question lookup's sources

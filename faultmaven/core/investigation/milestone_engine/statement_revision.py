@@ -144,7 +144,7 @@ async def confirm_revision(
     longer validates is dropped with it.
     """
     pending = commit_revision(case, via=via)
-    await responses.kb_prefetcher.prefetch_kb_context(case, pending.text, "symptom")
+    await responses.kb_prefetcher.prefetch_symptom(case, pending.text)
 
     replayed: dict[str, list] = {key: [] for key in REPLAYED_KEYS}
     fix_slots: list = []

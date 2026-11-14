@@ -296,7 +296,8 @@ class Case(BaseModel):
             "driver is not the case's current effective driver is never shown "
             "(``kb_push.visible_kb_context``) and is re-fetched at the next "
             "turn's start. ``None`` with context present means it was fetched "
-            "for the creator."
+            "for the creator. With no context, the search that found nothing, "
+            "so a symptom search is not run again for the same query."
         ),
     )
 

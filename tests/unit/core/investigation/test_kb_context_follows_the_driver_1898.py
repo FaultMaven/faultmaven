@@ -26,6 +26,9 @@ from faultmaven.core.investigation.kb_push import (
     visible_kb_context,
 )
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
+    retrieval_principal,
+)
 from tests.unit.core.investigation.test_system_feedback_delivery_1688 import (
     SUBSTANTIVE,
     _engine,
@@ -206,7 +209,10 @@ async def test_a_prefetch_records_who_it_fetched_for_and_how():
     }
 
 
-async def test_a_miss_clears_the_origin_with_the_context():
+async def test_a_miss_clears_the_context_and_records_the_search():
+    """No runbook stands after a miss; the origin records the search that
+    found nothing, for the current driver, so it is not run again (#2800).
+    With no context there is nothing a driver change could make stale."""
     knowledge = MagicMock()
 
     async def nothing(*a, **k):
@@ -218,4 +224,10 @@ async def test_a_miss_clears_the_origin_with_the_context():
 
     await engine.kb_prefetcher.prefetch_kb_context(case, "q", "symptom")
 
-    assert case.kb_context is None and case.kb_context_origin is None
+    assert case.kb_context is None
+    assert case.kb_context_origin == {
+        "driver_id": retrieval_principal(case),
+        "query": "q",
+        "trigger": "symptom",
+    }
+    assert not kb_context_is_stale(case)

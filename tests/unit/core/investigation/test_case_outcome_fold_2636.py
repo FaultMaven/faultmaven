@@ -335,7 +335,9 @@ async def test_the_replay_keeps_a_failure_one_bundle_read_after_the_next_re_root
             _deepen(case, hyp, root, turn=12)
 
     responses = SimpleNamespace(
-        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+        kb_prefetcher=SimpleNamespace(
+            prefetch_kb_context=AsyncMock(), prefetch_symptom=AsyncMock()
+        ),
         _apply_investigation_updates=_apply,
     )
     await confirm_revision(responses, case, {}, via=AnswerVia.CLICK)
@@ -414,7 +416,9 @@ async def test_a_replay_adds_nothing_for_a_disagreement_already_counted(conflict
         stage_cause_work(case, updates={}, evidence_added=[])
     case.current_turn = 14
     responses = SimpleNamespace(
-        kb_prefetcher=SimpleNamespace(prefetch_kb_context=AsyncMock()),
+        kb_prefetcher=SimpleNamespace(
+            prefetch_kb_context=AsyncMock(), prefetch_symptom=AsyncMock()
+        ),
         _apply_investigation_updates=AsyncMock(),
     )
     await confirm_revision(responses, case, {}, via=AnswerVia.CLICK)
