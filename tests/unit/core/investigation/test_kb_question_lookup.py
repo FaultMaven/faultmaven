@@ -580,3 +580,76 @@ class TestTheTerminalPath:
         assert KB_LOOKUP_HEADING in prompt
         captured = result["metadata"][TURN_METADATA_KB_PROMPTED]
         assert [e["parent_document_id"] for e in captured] == ["rb_kafka"]
+
+
+# ---------------------------------------------------------------------------
+# Review round (#2797)
+# ---------------------------------------------------------------------------
+
+
+class TestWhatAQuestionWithNoTopicSearches:
+    async def test_inquiry_searches_the_proposed_statement(self):
+        """``description`` is empty throughout INQUIRY."""
+        case = _case(description="")
+        case.inquiry = SimpleNamespace(proposed_problem_statement="nginx 502s")
+        deps = _deps([])
+        lookup = await look_up_kb_question(deps, case, {"kind": "lookup", "topic": ""})
+        assert lookup.query_source == "problem_statement"
+        assert (
+            deps.knowledge_service.search_knowledge.await_args.kwargs["query"]
+            == "nginx 502s"
+        )
+
+
+class TestASearchThatCouldNotRun:
+    async def test_a_service_with_no_store_raises_rather_than_answering_empty(self):
+        from faultmaven.models.exceptions import KnowledgeBaseError
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            KnowledgeService,
+        )
+
+        service = KnowledgeService.__new__(KnowledgeService)
+        service._vector_store = None
+        service._sanitizer = SimpleNamespace(asanitize=AsyncMock(return_value="q"))
+        service._tracer = SimpleNamespace(trace=lambda *_: _NullContext())
+        with pytest.raises(KnowledgeBaseError):
+            await service.search_knowledge("q")
+
+    async def test_teams_with_no_share_repository_cannot_narrow_the_scope(self):
+        deps = _deps([_hit("rb_a", 0.9)])
+        deps.team_service = MagicMock()
+        deps.share_repository = None
+        lookup = await look_up_kb_question(deps, _case(), LOOKUP_QUESTION)
+        assert lookup.status is KbLookupStatus.UNAVAILABLE
+        deps.knowledge_service.search_knowledge.assert_not_awaited()
+
+
+class _NullContext:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestAQuestionNoServiceRecorded:
+    def test_the_engine_classifies_the_message_itself(self):
+        """A typed intent's handler builds its own intent_data, with no key."""
+        question = MilestoneEngine._kb_question(
+            {"value": True}, "go ahead — is there a runbook for DNS failover?"
+        )
+        assert question == {"kind": "lookup", "topic": "DNS failover"}
+
+    def test_a_recorded_none_is_respected(self):
+        question = MilestoneEngine._kb_question(
+            {KB_QUESTION_INTENT_KEY: None}, "is there a runbook for DNS failover?"
+        )
+        assert question is None
+
+
+def test_the_block_is_counted_with_the_reserved_sections():
+    """The starvation check subtracts the reserve; an uncounted reserved
+    block overstates the room left for the variable sections."""
+    from faultmaven.core.investigation.prompts.templates.assembly import _RESERVE_KEYS
+
+    assert "kb_lookup" in _RESERVE_KEYS

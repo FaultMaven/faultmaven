@@ -730,6 +730,7 @@ _RESERVE_KEYS = (
     "exclusions",
     "fix_verification",
     "user_message",
+    "kb_lookup",
 )
 
 

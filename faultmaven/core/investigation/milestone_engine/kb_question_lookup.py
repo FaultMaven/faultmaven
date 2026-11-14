@@ -31,12 +31,24 @@ logger = logging.getLogger(__name__)
 
 
 def _query_for(case: Any, question: dict) -> tuple[str, str]:
-    """What to search with, and where it came from."""
+    """What to search with, and where it came from.
+
+    The question's topic — which the classifier already took from the rest of
+    the message when the question itself named none ("Our nginx returns 502s.
+    Is there a runbook for this?"). Failing that, the case's problem statement:
+    the confirmed one, or in INQUIRY, where ``description`` is still empty, the
+    one proposed to the user.
+    """
     if question["topic"]:
         return question["topic"], "question"
-    statement = (getattr(case, "description", None) or "").strip()
-    if statement:
-        return statement[:KB_QUESTION_QUERY_MAX_CHARS], "problem_statement"
+    inquiry = getattr(case, "inquiry", None)
+    for statement in (
+        getattr(case, "description", None),
+        getattr(inquiry, "proposed_problem_statement", None),
+    ):
+        statement = (statement or "").strip()
+        if statement:
+            return statement[:KB_QUESTION_QUERY_MAX_CHARS], "problem_statement"
     return "", ""
 
 

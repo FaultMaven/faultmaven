@@ -16,7 +16,11 @@ from faultmaven.core.investigation.chat_data import (
 )
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
-from faultmaven.core.investigation.kb_question import KbLookup, kb_question_of
+from faultmaven.core.investigation.kb_question import (
+    KB_QUESTION_INTENT_KEY,
+    KbLookup,
+    kb_question_of,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_deferred_total,
 )
@@ -351,12 +355,36 @@ class MilestoneEngine:
             deps=self.deps, kb_prefetcher=self.kb_prefetcher
         )
 
+    @staticmethod
+    def _kb_question(
+        intent_data: dict[str, Any] | None, user_message: str
+    ) -> dict | None:
+        """The turn's question about the knowledge base, or ``None``.
+
+        The investigation service records it on the conversation route. The
+        handlers that route a typed intent (a confirmation, a hypothesis
+        action, a transition) build their own ``intent_data`` and record none,
+        yet can still reach generation — so where the key is absent the
+        message is classified here, as ``turn_generation`` does for the mode.
+        A recorded ``None`` means the service read the message and found none.
+        """
+        if KB_QUESTION_INTENT_KEY in (intent_data or {}):
+            return kb_question_of(intent_data)
+        from faultmaven.modules.agent.domain.services.query_classifier import (
+            classify_query,
+        )
+
+        derived = classify_query(user_message or "").kb_question
+        return kb_question_of(
+            {KB_QUESTION_INTENT_KEY: derived.as_intent_data() if derived else None}
+        )
+
     async def _kb_lookup(
-        self, case: Case, intent_data: dict[str, Any] | None
+        self, case: Case, intent_data: dict[str, Any] | None, user_message: str
     ) -> KbLookup | None:
         """This turn's knowledge-base question lookup, or ``None`` when the
         message asked none (§5.6 of ``orchestration-capabilities.md``)."""
-        question = kb_question_of(intent_data)
+        question = self._kb_question(intent_data, user_message)
         if question is None:
             return None
         return await look_up_kb_question(self.deps, case, question)
@@ -674,7 +702,7 @@ class MilestoneEngine:
                     plan=plan,
                     user_id=user_id,
                     redaction_ctx=await self._turn_redaction(case, redaction_ctx),
-                    kb_lookup=await self._kb_lookup(case, intent_data),
+                    kb_question=self._kb_question(intent_data, user_message),
                 )
 
             # Set when section 0b or 0b' consumed this turn's confirmation
@@ -1296,7 +1324,7 @@ class MilestoneEngine:
             # one before the prompt is built (ADR-020 D9), or cleared if it
             # cannot be.
             await self.kb_prefetcher.refresh_for_driver(case)
-            kb_lookup = await self._kb_lookup(case, intent_data)
+            kb_lookup = await self._kb_lookup(case, intent_data, user_message)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,

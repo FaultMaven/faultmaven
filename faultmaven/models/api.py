@@ -614,7 +614,9 @@ class Message(BaseModel):
         None,
         description=(
             "On an assistant row: the knowledge-base runbooks that turn's "
-            "prompt carried, exactly as the live `TurnResponse.sources` "
+            "prompt carried — pre-fetched, or found for the user's question "
+            "about the knowledge base (`metadata.trigger`) — exactly as the "
+            "live `TurnResponse.sources` "
             "returned them, `new_this_turn` included, and gated the same way "
             "for the reader making this request: an excerpt of a runbook the "
             "reader cannot open, or one with no `metadata.document_id`, is "

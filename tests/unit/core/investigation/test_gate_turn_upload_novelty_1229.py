@@ -345,7 +345,7 @@ class TestTheTerminalShortCircuit:
             plan: TurnCommitPlan,
             user_id: Optional[str] = None,
             redaction_ctx: Any = None,
-            kb_lookup: Any = None,
+            kb_question: Any = None,
         ) -> dict[str, Any]:
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
@@ -384,7 +384,7 @@ class TestTheTerminalShortCircuit:
             plan,
             user_id=None,
             redaction_ctx=None,
-            kb_lookup=None,
+            kb_question=None,
         ):
             seen.update(metadata)
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
@@ -413,7 +413,7 @@ class TestTheTerminalShortCircuit:
             plan,
             user_id=None,
             redaction_ctx=None,
-            kb_lookup=None,
+            kb_question=None,
         ):
             return {"agent_response": "", "case_updated": case, "metadata": metadata}
 

@@ -89,7 +89,6 @@ def test_a_question_about_the_knowledge_base_is_recognised(message, kind, topic)
     "message",
     [
         "Is there a runbook for this?",
-        "We're seeing 502s at 14:00, is there a runbook for this?",
         "do we have a runbook for this error?",
     ],
 )
@@ -135,7 +134,9 @@ def test_the_flag_leaves_the_mode_alone():
     message = "We're seeing 502s at 14:00, is there a runbook for this?"
     flagged = classify_query(message)
     assert flagged.mode is ProcessingMode.DIRECTED_ANALYSIS
-    assert flagged.kb_question == KbQuestion(kind=LOOKUP, topic="")
+    assert flagged.kb_question == KbQuestion(
+        kind=LOOKUP, topic="We're seeing 502s at 14:00"
+    )
 
 
 def test_the_intent_data_form_is_plain():
@@ -165,3 +166,120 @@ class TestTheOffTopicClassifierIsNotAsked:
         classification = classify_query("What is the runbook for kafka consumer lag?")
         assert classification.mode is ProcessingMode.KNOWLEDGE_QUERY
         assert needs_llm_triage(classification) is False
+
+
+# ---------------------------------------------------------------------------
+# Review round (#2797): precision, topics and cost
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # An Ansible playbook in a debugging question.
+        "what's the playbook task that failed here?",
+        "show me why the playbook failed",
+        "explain the playbook error: fatal: [web1]",
+        "do we have any playbooks running at that time?",
+        "is there a playbook run that touched the db?",
+        # A runbook already in the conversation.
+        "is there a runbook step I missed?",
+        "what is the runbook step 3 doing?",
+        "explain the runbook you gave me earlier",
+        "list the runbooks you used",
+        "is there a reason the runbook didn't work?",
+        # The noun is the object of a preposition.
+        "is there a way to fix this without the runbook?",
+        # Asks which runbooks apply to the case: the investigation's own push.
+        "what runbooks are relevant here?",
+    ],
+)
+def test_a_runbook_named_in_passing_is_not_a_question_about_the_store(message):
+    assert detect_kb_question(message) is None
+
+
+@pytest.mark.parametrize(
+    "message, topic",
+    [
+        (
+            "We ran out of disk space, is there a runbook for that?",
+            "We ran out of disk space",
+        ),
+        ("the jobs won't run, is there a runbook for cron failures?", "cron failures"),
+        (
+            "I need to update the cert, is there a runbook for cert rotation?",
+            "cert rotation",
+        ),
+        (
+            "Can't delete the namespace, is there a runbook for stuck namespaces?",
+            "stuck namespaces",
+        ),
+    ],
+)
+def test_an_action_in_another_clause_does_not_veto_the_question(message, topic):
+    assert detect_kb_question(message) == KbQuestion(kind=LOOKUP, topic=topic)
+
+
+@pytest.mark.parametrize(
+    "message, topic",
+    [
+        (
+            "Our nginx is returning 502s since 14:00. Is there a runbook for this?",
+            "Our nginx is returning 502s since 14:00",
+        ),
+        (
+            "kafka consumers are stuck rebalancing, any runbooks for this?",
+            "kafka consumers are stuck rebalancing",
+        ),
+    ],
+)
+def test_this_points_back_at_the_rest_of_the_message(message, topic):
+    assert detect_kb_question(message) == KbQuestion(kind=LOOKUP, topic=topic)
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("do you have any runbooks?", KbQuestion(kind=LISTING)),
+        ("list all the runbooks", KbQuestion(kind=LISTING)),
+        # Filler words are no topic: the engine falls back.
+        ("can you show me the runbook?", KbQuestion(kind=LOOKUP, topic="")),
+        ("summarize the runbook", KbQuestion(kind=LOOKUP, topic="")),
+        ("what does the runbook say to do next?", KbQuestion(kind=LOOKUP, topic="")),
+    ],
+)
+def test_the_question_frame_is_never_the_topic(message, expected):
+    assert detect_kb_question(message) == expected
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Is there a runbook for postgres replication lag. Also we see errors in "
+        "the logs since 3pm",
+        "is there a runbook for postgres replication lag, and can you check the "
+        "uploaded log too?",
+    ],
+)
+def test_a_topic_ends_at_its_clause(message):
+    assert detect_kb_question(message) == KbQuestion(
+        kind=LOOKUP, topic="postgres replication lag"
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda n: "is there a runbook " + "runbooks do " * (n // 12),
+        lambda n: "which runbooks do " + "runbooks do x " * (n // 14),
+        lambda n: "is there a " + "word " * (n // 5) + "runbook for x?",
+    ],
+)
+def test_detection_cost_does_not_grow_with_the_message(build):
+    """It runs synchronously on every turn, and a turn's text can be
+    megabytes. A quadratic pattern took 13.9 s on an 80k-character message."""
+    import time
+
+    started = time.perf_counter()
+    detect_kb_question(build(1_000_000))
+    assert time.perf_counter() - started < 0.5

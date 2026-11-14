@@ -589,9 +589,14 @@ class KnowledgeService:
                     )
                     return search_results
                 else:
-                    # Fallback when no vector store available
-                    logger.warning("No vector store available, returning empty results")
-                    return []
+                    # No store is a search that did not run, not one that found
+                    # nothing — the contract above: "never an empty result". A
+                    # caller reporting what the knowledge base holds (the
+                    # question lookup) must not read it as a miss.
+                    raise KnowledgeBaseError(
+                        "No knowledge vector store is configured",
+                        error_code="KNOWLEDGE_STORE_UNAVAILABLE",
+                    )
 
             except Exception as e:
                 logger.error(f"Search failed: {e}")
