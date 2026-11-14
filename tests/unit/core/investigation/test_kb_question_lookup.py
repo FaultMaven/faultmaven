@@ -940,14 +940,23 @@ class TestADeploymentWithNoStore:
 
 
 class TestAnEngineCallWithNoRecordedQuestion:
-    def test_reading_the_message_is_bounded(self):
-        """A direct engine call classifies the message; a megabyte paste must
-        not cost what the whole mode classifier costs on it."""
-        import time
+    def test_it_reads_only_the_detection_window(self, monkeypatch):
+        """A direct engine call classifies the message; on a megabyte paste
+        the whole-message classifier cost 1.4 s, so only the bounded window
+        detection reads is handed to it."""
+        from faultmaven.modules.agent.domain.services import query_classifier
 
+        seen: list[int] = []
+        real = query_classifier.classify_query
+
+        def recording(message, *args, **kwargs):
+            seen.append(len(message))
+            return real(message, *args, **kwargs)
+
+        monkeypatch.setattr(query_classifier, "classify_query", recording)
         message = "2026-11-14 10:00:01 ERROR conn refused\n" * 30_000
         message += "\nis there a runbook for postgres connection refused?"
-        started = time.perf_counter()
         question = MilestoneEngine._kb_question({"value": True}, message)
-        assert time.perf_counter() - started < 0.5
         assert question["topic"] == "postgres connection refused"
+        assert seen == [len(query_classifier.kb_detection_window(message))]
+        assert seen[0] < len(message) // 100

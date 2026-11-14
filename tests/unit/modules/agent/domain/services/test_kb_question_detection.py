@@ -18,6 +18,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     classify_query,
     detect_kb_question,
 )
+from tests.wallclock import assert_linear_growth
 
 pytestmark = pytest.mark.unit
 
@@ -274,21 +275,24 @@ def test_a_topic_ends_at_its_clause(message):
 
 
 @pytest.mark.parametrize(
-    "build",
+    "payload_at, label",
     [
-        lambda n: "is there a runbook " + "runbooks do " * (n // 12),
-        lambda n: "which runbooks do " + "runbooks do x " * (n // 14),
-        lambda n: "is there a " + "word " * (n // 5) + "runbook for x?",
+        # The shapes that were quadratic: a frame that never completes.
+        (lambda n: "is there a runbook " + "runbooks do " * n, "unfinished frames"),
+        (lambda n: "which runbooks do " + "runbooks do x " * n, "listing frames"),
+        (lambda n: "is there a " + "word " * n + "runbook for x?", "filler words"),
     ],
+    ids=["unfinished-frames", "listing-frames", "filler-words"],
 )
-def test_detection_cost_does_not_grow_with_the_message(build):
+def test_detection_cost_does_not_grow_with_the_message(payload_at, label):
     """It runs synchronously on every turn, and a turn's text can be
     megabytes. A quadratic pattern took 13.9 s on an 80k-character message."""
-    import time
-
-    started = time.perf_counter()
-    detect_kb_question(build(1_000_000))
-    assert time.perf_counter() - started < 0.5
+    assert_linear_growth(
+        detect_kb_question,
+        payload_at,
+        small=16,
+        label=f"detect_kb_question on {label}",
+    )
 
 
 # ---------------------------------------------------------------------------
