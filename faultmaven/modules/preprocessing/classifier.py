@@ -101,9 +101,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 CONFIDENCE_THRESHOLDS = {
     # Below this → classification_failed=True. Where an extractor would run
     # the upload is put to the user as type choices; where none would (under
-    # MIN_EXTRACTION_LINES and within MAX_STRUCTURAL_INDEX_CHARS, or a
-    # shape-valid page capture) it passes to the model as UNSTRUCTURED_TEXT
-    # (preprocessing_service, #2355, #2789).
+    # MIN_EXTRACTION_LINES, or a shape-valid page capture) it passes to the
+    # model as UNSTRUCTURED_TEXT (preprocessing_service, #2355).
     "classification_failed": 0.50,
     # At or above this → auto-accept without qualification in downstream UX.
     "auto_accept": 0.85,
@@ -948,10 +947,10 @@ class DataClassifier:
         # model raw as UNSTRUCTURED_TEXT and the user is not asked (#2355).
         # Not for a paste: the 0.72 default asserted a type no content signal
         # supports, and for a paste nothing else does either (#2361). A paste
-        # no rule claims ends uncertain: under MIN_EXTRACTION_LINES and within
-        # MAX_STRUCTURAL_INDEX_CHARS it passes to the model as UNSTRUCTURED_TEXT
-        # (#2355); past either bound the user is asked, since there the type
-        # picks the extractor (owner, 2026-11-13; #2789).
+        # no rule claims ends uncertain: under MIN_EXTRACTION_LINES it passes
+        # to the model as UNSTRUCTURED_TEXT (#2355); at or above it the user
+        # is asked, since there the type picks the extractor (owner,
+        # 2026-11-13).
         if not is_paste and (ext in text_exts or markdown_score >= 1):
             ambiguity = self._assess_short_text_ambiguity(content, sample)
             if ambiguity is not None:

@@ -11,12 +11,9 @@ The preview is NOT a re-classification or an extraction — it's a thin orientin
 hint glued onto the existing placeholder text. The classifier's
 ``suggested_types`` and ``classification_failed`` flag are unchanged.
 
-The placeholder exists only for an upload past the small-file passthrough's
-bounds (#2355, #2789): ``MIN_EXTRACTION_LINES`` lines or more, or more than
-``MAX_STRUCTURAL_INDEX_CHARS`` characters on any number of lines. A smaller
-uncertain upload passes through raw, so every fixture here that must reach
-the placeholder is at least ``MIN_EXTRACTION_LINES`` long; the size bound is
-pinned in ``test_passthrough_size_bound_2789.py``. The short path is
+The placeholder exists only for an upload of ``MIN_EXTRACTION_LINES`` lines or
+more (#2355): a shorter uncertain upload passes through raw, so every fixture
+here that must reach the placeholder is at least that long. The short path is
 pinned in ``test_short_uncertain_upload_passthrough_2355.py``.
 
 Run with:

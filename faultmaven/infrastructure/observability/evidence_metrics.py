@@ -174,8 +174,7 @@ if PROMETHEUS_AVAILABLE:
     # (``classification_failed``), by what the pipeline did with it.
     # outcome=clarification: an extractor would run, so the upload is put to
     # the user as type choices; passthrough: none would (under
-    # MIN_EXTRACTION_LINES and within MAX_STRUCTURAL_INDEX_CHARS, or a
-    # shape-valid page capture), so it passes to
+    # MIN_EXTRACTION_LINES, or a shape-valid page capture), so it passes to
     # the model as unstructured_text with no question. Counted at
     # preprocessing, before per-case dedup: a re-sent duplicate counts again,
     # and so does an upload whose turn later fails. It is the lasting record

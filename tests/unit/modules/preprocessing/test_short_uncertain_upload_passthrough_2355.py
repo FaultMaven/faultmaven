@@ -1,10 +1,8 @@
 """#2355: an uncertain upload is put to the user only where its type matters.
 
 No extractor runs, whatever the type, on an upload under
-``MIN_EXTRACTION_LINES`` and within ``MAX_STRUCTURAL_INDEX_CHARS`` (the
-small-file passthrough hands the raw content to the model; the size bound is
-#2789's, pinned in ``test_passthrough_size_bound_2789.py``) or on a
-shape-valid page capture at any length. A clarification
+``MIN_EXTRACTION_LINES`` (the small-file passthrough hands the raw content to
+the model) or on a shape-valid page capture at any length. A clarification
 card there held the upload out of the turn (a three-line preview, no directed
 analysis) over a label that changes nothing the model reads. So a short
 uncertain upload no extractor would read passes through, typed

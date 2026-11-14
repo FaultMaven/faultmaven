@@ -58,6 +58,7 @@ from faultmaven.modules.preprocessing.extractors.sanity_check import (
 from faultmaven.modules.preprocessing.extractors.utils import (
     MAX_STRUCTURAL_INDEX_CHARS,
     extract_time_range_ts,
+    truncate_output,
 )
 
 if TYPE_CHECKING:
@@ -129,11 +130,11 @@ def _tier1_slots() -> worker_process.FairSlots:
 
 # Files smaller than this threshold are passed through raw instead of
 # running extraction — the raw content is already a better "file extract"
-# than any compressed representation would be. The passthrough also needs the
-# content to fit ``MAX_STRUCTURAL_INDEX_CHARS``, the most any extract holds: a
-# few lines can carry megabytes (a one-line JSON export), and that content
-# goes to an extractor, or to the clarification card when its type is
-# uncertain (#2789).
+# than any compressed representation would be. What it stores is held to
+# ``MAX_STRUCTURAL_INDEX_CHARS``, the most any extract holds, because a few
+# lines can carry megabytes (a one-line JSON export): past it a confident
+# upload goes to its extractor and an uncertain one is cut to the budget
+# (Path 4, #2789).
 MIN_EXTRACTION_LINES = 200
 
 
@@ -306,9 +307,8 @@ _NO_BARE_EPOCH_TYPES = frozenset(
 
 def _line_count(content: str) -> int:
     """Lines as an editor counts them: a final newline ends the last line
-    rather than starting another. With the content's size (#2789), decides
-    the small-file passthrough, and with it whether an uncertain upload is
-    put to the user (#2355)."""
+    rather than starting another. Decides the small-file passthrough, and
+    with it whether an uncertain upload is put to the user (#2355)."""
     if not content:
         return 0
     return content.count("\n") + (0 if content.endswith("\n") else 1)
@@ -445,10 +445,10 @@ class PreprocessingService:
           extractor. Returns a placeholder carrying
           suggested types; the turn offers them as clarification choices,
           and a choice re-runs this under ``user_override``. An uncertain
-          upload no extractor would read (under ``MIN_EXTRACTION_LINES`` and
-          within ``MAX_STRUCTURAL_INDEX_CHARS``, or a shape-valid page
-          capture) is not put to the user: it takes its
-          passthrough typed UNSTRUCTURED_TEXT (#2355).
+          upload no extractor would read (under ``MIN_EXTRACTION_LINES``, or
+          a shape-valid page capture) is not put to the user: it takes its
+          passthrough typed UNSTRUCTURED_TEXT (#2355), cut to
+          ``MAX_STRUCTURAL_INDEX_CHARS`` when it is larger (#2789).
 
         Phase 1.5 — Reclassification path: the caller can pass
         ``user_override`` (typically from the ``PATCH /evidence/{id}/classification``
@@ -606,30 +606,42 @@ class PreprocessingService:
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds
         # no value for files that fit in the LLM context window directly.
-        # Small by lines and by size: the raw content stands in for an
-        # extract, so it may not exceed what an extract holds (#2789).
+        # The raw content stands in for an extract, so it may not exceed what
+        # an extract holds (#2789). Past that size a confident upload goes to
+        # its extractor. An uncertain one still passes through, cut to the
+        # extract budget (head and tail, marked): no extractor reads it, so
+        # its type picks nothing and is not put to the user (#2355; owner,
+        # 2026-11-14), and the whole upload stays readable by search_file.
         line_count = _line_count(content)
-        if line_count < MIN_EXTRACTION_LINES and len(content) <= (
-            MAX_STRUCTURAL_INDEX_CHARS
+        over_budget = len(content) > MAX_STRUCTURAL_INDEX_CHARS
+        if line_count < MIN_EXTRACTION_LINES and (
+            not over_budget or classification.classification_failed
         ):
             logger.info(
                 "classify_and_extract: %s has %d lines (< %d) and %d chars "
-                "(<= %d) — raw passthrough, skipping extraction",
+                "(budget %d) — %s passthrough, skipping extraction",
                 filename,
                 line_count,
                 MIN_EXTRACTION_LINES,
                 len(content),
                 MAX_STRUCTURAL_INDEX_CHARS,
+                "truncated" if over_budget else "raw",
             )
             detailed_data_type, unified_data_type, epoch_policy_type = (
                 self._settle_uncertain(
                     classification, filename, content, detailed_data_type
                 )
             )
+            metadata: dict[str, Any] = {
+                "passthrough": True,
+                "source_type": "small_file",
+            }
+            if over_budget:
+                metadata["truncated"] = True
             extraction = ExtractionResult(
                 method="raw_passthrough",
-                content=content,
-                metadata={"passthrough": True, "source_type": "small_file"},
+                content=truncate_output(content, MAX_STRUCTURAL_INDEX_CHARS),
+                metadata=metadata,
             )
             return self._build_result(
                 content=content,

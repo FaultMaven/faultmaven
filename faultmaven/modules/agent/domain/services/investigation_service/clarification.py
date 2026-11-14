@@ -82,8 +82,8 @@ def _clarification_subject(target: "_PreprocessedAttachment") -> str:
     The capture arm: a shape-valid capture never lands here, because no
     extractor reads it and ``classify_and_extract`` passes an uncertain one
     through (#2355). A capture whose shape fails validation is extracted
-    like any upload, so past the small-file passthrough's bounds an
-    uncertain one is carded and lands here. Before this naming rule it
+    like any upload, so at ``MIN_EXTRACTION_LINES`` or more an uncertain
+    one is carded and lands here. Before this naming rule it
     read ``the file you shared ("page-capture-20260709T105531.txt")`` —
     #666 on the Copilot's own channel, with no LLM in the loop (#1198
     review).
