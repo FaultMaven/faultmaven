@@ -564,6 +564,7 @@ class TerminalTurnHandler:
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
         )
 
         await redaction_ctx.save()

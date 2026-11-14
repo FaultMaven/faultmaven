@@ -646,11 +646,13 @@ def get_prompt_for_case(
         model_name,
         given_tools,
         target_tokens=target_tokens,
+        kb_lookup=kb_lookup,
     )
     if kb_rendered is not None and prompt != rendered.get("prompt"):
-        # The overflow/starvation backstop returned the minimal fallback,
-        # which carries no KB context, in place of the assembled prompt.
-        kb_rendered.clear()
+        # The overflow/starvation backstop returned the minimal fallback in
+        # place of the assembled prompt. It carries no pushed KB context, only
+        # the lookup's verdict, which names its candidates by title.
+        kb_rendered[:] = lookup_entries_only(kb_rendered)
     return prompt
 
 
@@ -663,6 +665,7 @@ def _budgeted_prompt(
     model_name: Optional[str],
     given_tools: GivenTools,
     target_tokens: Optional[int] = None,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """Whole-prompt token-budget accountant + overflow/starvation backstop.
 
@@ -717,6 +720,7 @@ def _budgeted_prompt(
         provider_name,
         model_name,
         given_tools,
+        kb_lookup=kb_lookup,
     )
 
 
@@ -746,6 +750,7 @@ def _assemble_allocated(
     provider_name,
     model_name,
     given_tools,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """Allocator assembly: template-aware section budget + backstop (§4/§6/§7).
 
@@ -797,6 +802,7 @@ def _assemble_allocated(
             user_message,
             given_tools=given_tools,
             max_tokens=fallback_budget,
+            kb_lookup=kb_lookup,
         )
         logger.warning(
             "prompt_starvation_fallback",
@@ -839,6 +845,7 @@ def _assemble_allocated(
                 user_message,
                 given_tools=given_tools,
                 max_tokens=fallback_budget,
+                kb_lookup=kb_lookup,
             )
             logger.warning(
                 "prompt_overflow_fallback",

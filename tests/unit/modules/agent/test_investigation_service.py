@@ -203,7 +203,13 @@ class TestEvidenceBearingRerouteToEngine:
             service, case, user_id, "Is there a runbook for redis OOM?", []
         )
 
-        assert intent_data["kb_question"] == {"kind": "lookup", "topic": "redis OOM"}
+        assert intent_data["kb_question"] == {
+            "kind": "lookup",
+            "topic": "redis OOM",
+            "from_context": False,
+        }
+        # Nothing in it to investigate (F4): no forced tools for the question.
+        assert intent_data["query_mode"] == "knowledge_query"
 
     @pytest.mark.asyncio
     async def test_an_ordinary_message_carries_no_question(self):
@@ -241,6 +247,7 @@ class TestEvidenceBearingRerouteToEngine:
         assert intent_data["kb_question"] == {
             "kind": "lookup",
             "topic": "connection resets",
+            "from_context": False,
         }
 
 

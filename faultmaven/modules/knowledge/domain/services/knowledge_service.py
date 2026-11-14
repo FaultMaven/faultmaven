@@ -64,7 +64,12 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import (
+    KNOWLEDGE_STORE_UNAVAILABLE,
+    IndexAdmissionRefused,
+    KnowledgeBaseError,
+    is_knowledge_store_unavailable,
+)
 from faultmaven.models.interfaces import (
     IKnowledgeVectorStore,
     ILLMProvider,
@@ -595,11 +600,14 @@ class KnowledgeService:
                     # question lookup) must not read it as a miss.
                     raise KnowledgeBaseError(
                         "No knowledge vector store is configured",
-                        error_code="KNOWLEDGE_STORE_UNAVAILABLE",
+                        error_code=KNOWLEDGE_STORE_UNAVAILABLE,
                     )
 
             except Exception as e:
-                logger.error(f"Search failed: {e}")
+                # A deployment without a store is not a failed search: every
+                # turn would log it as one.
+                if not is_knowledge_store_unavailable(e):
+                    logger.error(f"Search failed: {e}")
                 raise
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:

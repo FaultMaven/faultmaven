@@ -3,6 +3,7 @@ import functools
 import logging
 from typing import Optional
 
+from faultmaven.core.investigation.kb_question import KbLookup, kb_lookup_verdict
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
@@ -70,7 +71,7 @@ STATE: INQUIRY
 {fence_preamble}
 PROBLEM: {problem_summary}
 {current_turn_evidence}
-{system_feedback}USER: {user_message}
+{system_feedback}{kb_lookup}USER: {user_message}
 
 SAFETY: Only reference data from uploads or conversation history. Do not confabulate.
 Respond in JSON: {{"agent_response": "...", "state_updates": {{...}}}}
@@ -90,7 +91,7 @@ PROBLEM: {problem_summary}
 MILESTONES COMPLETED: {milestones_summary}
 HYPOTHESES: {hypotheses_summary}
 {journal_digest}{current_turn_evidence}
-{system_feedback}USER: {user_message}
+{system_feedback}{kb_lookup}USER: {user_message}
 
 SAFETY RULES (always apply):
 - Only reference data from uploaded evidence or conversation history. Do not confabulate.
@@ -107,7 +108,7 @@ FALLBACK_TERMINAL_TEMPLATE = """You are FaultMaven. Case is {state}.
 PROBLEM: {problem_summary}
 RESOLUTION: {resolution_summary}
 
-USER: {user_message}
+{kb_lookup}USER: {user_message}
 
 SAFETY: This case is closed. Answer questions about findings only. Do not accept new evidence.
 Respond in JSON: {{"agent_response": "..."}}
@@ -419,12 +420,18 @@ def get_fallback_prompt_for_case(
     *,
     given_tools: GivenTools = NO_TOOLS,
     max_tokens: Optional[int] = None,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """Build simplified fallback prompt for token limit or error recovery.
 
     ``given_tools`` is the tool set the turn sending this prompt gives the
     model (#1939): the assembled turn's own set when the allocator falls back,
     ``NO_TOOLS`` on the #662 retry, which drops the tools.
+
+    ``kb_lookup`` is the turn's knowledge-base question lookup (§5.6 of
+    ``orchestration-capabilities.md``), carried as its verdict
+    (:func:`kb_lookup_verdict`): the user asked about the knowledge base, and
+    the reply has to report the answer even from this prompt.
 
     Fenced as one assembly (#1242). The mint lives HERE rather than at
     ``get_prompt_for_case`` level because this function has a second caller —
@@ -468,7 +475,9 @@ def get_fallback_prompt_for_case(
     def render(caps: _FallbackCaps) -> str:
         tokens = iter((solve_token,))
         return render_fenced(
-            lambda fence: _fallback_body(case, user_message, fence, caps, given_tools),
+            lambda fence: _fallback_body(
+                case, user_message, fence, caps, given_tools, kb_lookup
+            ),
             token_source=lambda: next(tokens, None) or mint_token(),
         )
 
@@ -503,6 +512,7 @@ def _fallback_body(
     fence: PromptFence,
     caps: _FallbackCaps,
     given: GivenTools,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """One fence's worth of fallback prompt — see :func:`get_fallback_prompt_for_case`.
 
@@ -588,6 +598,9 @@ def _fallback_body(
     # the closing delimiter — the truncation hole ``fence.reseal`` exists for
     # on the main path, which does not reach here.
     problem_block = _fenced("problem_context", problem_summary[: caps.problem])
+    kb_lookup_block = kb_lookup_verdict(
+        kb_lookup, lambda name, text: _fenced(name, text, inline=False)
+    )
 
     def _notices() -> str:
         """The previous turn's notices, whole within ``caps.notice_tokens``
@@ -629,6 +642,7 @@ def _fallback_body(
             user_message=user_block,
             current_turn_evidence=stub_block,
             system_feedback=feedback_block,
+            kb_lookup=kb_lookup_block,
         )
 
     elif case.state == CaseState.INVESTIGATING:
@@ -707,6 +721,7 @@ def _fallback_body(
             journal_digest=journal_block,
             current_turn_evidence=stub_block,
             system_feedback=feedback_block,
+            kb_lookup=kb_lookup_block,
             user_message=user_block,
         )
 
@@ -723,6 +738,7 @@ def _fallback_body(
             state=case.state.value,
             problem_summary=problem_block,
             resolution_summary=_guarded(resolution),
+            kb_lookup=kb_lookup_block,
             user_message=user_block,
         )
 

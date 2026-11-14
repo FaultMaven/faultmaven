@@ -15,6 +15,9 @@ from faultmaven.core.investigation.kb_question import (
     KB_QUESTION_MAX_PER_RUNBOOK,
     KB_QUESTION_QUERY_MAX_CHARS,
     KB_QUESTION_TRIGGER,
+    QUERY_FROM_MESSAGE,
+    QUERY_FROM_PROBLEM_STATEMENT,
+    QUERY_FROM_QUESTION,
     KbLookup,
     KbLookupStatus,
     excerpt_of,
@@ -40,7 +43,10 @@ def _query_for(case: Any, question: dict) -> tuple[str, str]:
     one proposed to the user.
     """
     if question["topic"]:
-        return question["topic"], "question"
+        source = (
+            QUERY_FROM_MESSAGE if question.get("from_context") else QUERY_FROM_QUESTION
+        )
+        return question["topic"], source
     inquiry = getattr(case, "inquiry", None)
     for statement in (
         getattr(case, "description", None),
@@ -48,7 +54,7 @@ def _query_for(case: Any, question: dict) -> tuple[str, str]:
     ):
         statement = (statement or "").strip()
         if statement:
-            return statement[:KB_QUESTION_QUERY_MAX_CHARS], "problem_statement"
+            return statement[:KB_QUESTION_QUERY_MAX_CHARS], QUERY_FROM_PROBLEM_STATEMENT
     return "", ""
 
 

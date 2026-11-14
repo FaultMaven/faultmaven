@@ -135,7 +135,7 @@ def test_the_flag_leaves_the_mode_alone():
     flagged = classify_query(message)
     assert flagged.mode is ProcessingMode.DIRECTED_ANALYSIS
     assert flagged.kb_question == KbQuestion(
-        kind=LOOKUP, topic="We're seeing 502s at 14:00"
+        kind=LOOKUP, topic="We're seeing 502s at 14:00", from_context=True
     )
 
 
@@ -143,18 +143,21 @@ def test_the_intent_data_form_is_plain():
     assert KbQuestion(kind=LOOKUP, topic="kafka lag").as_intent_data() == {
         "kind": "lookup",
         "topic": "kafka lag",
+        "from_context": False,
     }
 
 
 class TestTheOffTopicClassifierIsNotAsked:
     def test_a_flagged_question_skips_it(self):
         classification = classify_query("What runbooks do you have?")
-        # Positive control: this is the open bucket the classifier would
-        # otherwise be asked about.
-        assert classification.mode is ProcessingMode.DIRECTED_ANALYSIS
-        assert classification.confidence <= 0.6
         assert classification.kb_question is not None
         assert needs_llm_triage(classification) is False
+        # Positive control: the same mode and confidence without the flag is
+        # the open bucket the classifier is asked about.
+        unflagged = QueryClassification(
+            mode=classification.mode, confidence=classification.confidence
+        )
+        assert needs_llm_triage(unflagged) is True
 
     def test_the_same_bucket_without_the_flag_still_asks(self):
         open_bucket = QueryClassification(
@@ -217,7 +220,8 @@ def test_a_runbook_named_in_passing_is_not_a_question_about_the_store(message):
     ],
 )
 def test_an_action_in_another_clause_does_not_veto_the_question(message, topic):
-    assert detect_kb_question(message) == KbQuestion(kind=LOOKUP, topic=topic)
+    question = detect_kb_question(message)
+    assert (question.kind, question.topic) == (LOOKUP, topic)
 
 
 @pytest.mark.parametrize(
@@ -234,7 +238,9 @@ def test_an_action_in_another_clause_does_not_veto_the_question(message, topic):
     ],
 )
 def test_this_points_back_at_the_rest_of_the_message(message, topic):
-    assert detect_kb_question(message) == KbQuestion(kind=LOOKUP, topic=topic)
+    assert detect_kb_question(message) == KbQuestion(
+        kind=LOOKUP, topic=topic, from_context=True
+    )
 
 
 @pytest.mark.parametrize(
@@ -283,3 +289,118 @@ def test_detection_cost_does_not_grow_with_the_message(build):
     started = time.perf_counter()
     detect_kb_question(build(1_000_000))
     assert time.perf_counter() - started < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (#2797)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "message, topic",
+    [
+        # A full stop ends the clause an action verb governs.
+        (
+            "We run postgres 15. Is there a runbook for replication lag?",
+            "replication lag",
+        ),
+        # The headline phrasing.
+        ("what does our runbook on postgres replication say?", "postgres replication"),
+        (
+            "what does our runbook on postgres replication say about failover?",
+            "postgres replication failover",
+        ),
+        # The runbook's name stays in the search beside the subject.
+        (
+            "what does the nginx 502 runbook say about upstream timeouts?",
+            "nginx 502 upstream timeouts",
+        ),
+        # An error message keeps its colon.
+        (
+            "is there a runbook for Error: ECONNREFUSED 10.0.0.1:5432",
+            "Error: ECONNREFUSED 10.0.0.1:5432",
+        ),
+        # A topic may open with a word the question frame also uses.
+        (
+            "is there a runbook for open file descriptor exhaustion?",
+            "open file descriptor exhaustion",
+        ),
+        ("do we have a runbook on list index out of range", "list index out of range"),
+        # A second knowledge-base noun inside the topic is the topic's.
+        (
+            "is there a runbook for ansible playbook failed tasks",
+            "ansible playbook failed tasks",
+        ),
+        ("is there a runbook for the v1.2 upgrade?", "v1.2 upgrade"),
+        ("give me a link to the kafka runbook", "kafka"),
+    ],
+)
+def test_round_two_topics(message, topic):
+    question = detect_kb_question(message)
+    assert (question.kind, question.topic) == (LOOKUP, topic)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # The noun belongs to another clause's subject.
+        "is there a reason the runbook restarts the broker first?",
+        # A runbook already in the conversation.
+        "what's in the runbook you just showed me, step 3?",
+        "explain the runbook from earlier",
+        "is the runbook above still right?",
+    ],
+)
+def test_round_two_messages_that_are_not_questions_about_the_store(message):
+    assert detect_kb_question(message) is None
+
+
+def test_a_pasted_log_is_not_the_topic():
+    """The engine searches with the problem statement instead (code review
+    #6): 300 characters of log find nothing useful."""
+    log = "2026-11-14 10:00:01 ERROR conn refused to db host\n" * 40
+    assert detect_kb_question(log + "\nis there a runbook for this?") == KbQuestion(
+        kind=LOOKUP, topic=""
+    )
+    # A paste in the question's own paragraph is refused whole, never cut to
+    # a prefix of log.
+    same_paragraph = log.rstrip("\n") + "\nis there a runbook for this?"
+    assert detect_kb_question(same_paragraph) == KbQuestion(kind=LOOKUP, topic="")
+    # Positive control: a short description in the question's paragraph is
+    # still the topic.
+    assert detect_kb_question(
+        "Our nginx is returning 502s.\nIs there a runbook for this?"
+    ) == KbQuestion(kind=LOOKUP, topic="Our nginx is returning 502s", from_context=True)
+
+
+class TestAPureKnowledgeBaseQuestionIsNotDiagnostic:
+    """F4: a question that reports nothing about the case is a knowledge
+    query, so tools are not forced on a case with files to answer it."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Is there a runbook for redis OOM?",
+            # The topic's own anchors (a status code) do not count.
+            "Is there a runbook for nginx 502?",
+            "What runbooks do you have?",
+            "is there a runbook for this?",
+        ],
+    )
+    def test_it_is_a_knowledge_query(self, message):
+        assert classify_query(message).mode is ProcessingMode.KNOWLEDGE_QUERY
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # The report is in the rest of the message.
+            "We're seeing 502s at 14:00, is there a runbook for this?",
+            "kafka consumers are stuck rebalancing, any runbooks for this?",
+            # An anchor outside the topic.
+            "the logs show errors since 14:00 — is there a runbook for redis OOM?",
+        ],
+    )
+    def test_one_that_also_reports_the_case_stays_diagnostic(self, message):
+        classification = classify_query(message)
+        assert classification.kb_question is not None
+        assert classification.mode is not ProcessingMode.KNOWLEDGE_QUERY

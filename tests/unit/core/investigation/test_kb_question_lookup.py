@@ -24,6 +24,9 @@ from faultmaven.core.investigation.kb_question import (
     KB_QUESTION_INTENT_KEY,
     KB_QUESTION_MAX_ENTRIES,
     KB_QUESTION_TRIGGER,
+    QUERY_FROM_MESSAGE,
+    QUERY_FROM_PROBLEM_STATEMENT,
+    QUERY_FROM_QUESTION,
     KbLookup,
     KbLookupStatus,
     kb_question_of,
@@ -35,6 +38,9 @@ from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.prompts.templates.assembly import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates.fallback import (
+    get_fallback_prompt_for_case,
+)
 from faultmaven.core.investigation.schemas import (
     InquiryResponse,
     InvestigationResponse_Diagnosis,
@@ -104,7 +110,22 @@ def _case(description: str = "consumers fall behind on the orders topic"):
 class TestTheRecordedQuestion:
     def test_a_well_formed_question_is_read(self):
         data = {KB_QUESTION_INTENT_KEY: {"kind": "lookup", "topic": " lag "}}
-        assert kb_question_of(data) == {"kind": "lookup", "topic": "lag"}
+        assert kb_question_of(data) == {
+            "kind": "lookup",
+            "topic": "lag",
+            "from_context": False,
+        }
+
+    @pytest.mark.parametrize("flag, read", [(True, True), ("yes", False), (1, False)])
+    def test_from_context_is_read_only_as_a_true_bool(self, flag, read):
+        data = {
+            KB_QUESTION_INTENT_KEY: {
+                "kind": "lookup",
+                "topic": "x",
+                "from_context": flag,
+            }
+        }
+        assert kb_question_of(data)["from_context"] is read
 
     @pytest.mark.parametrize(
         "raw",
@@ -638,7 +659,11 @@ class TestAQuestionNoServiceRecorded:
         question = MilestoneEngine._kb_question(
             {"value": True}, "go ahead — is there a runbook for DNS failover?"
         )
-        assert question == {"kind": "lookup", "topic": "DNS failover"}
+        assert question == {
+            "kind": "lookup",
+            "topic": "DNS failover",
+            "from_context": False,
+        }
 
     def test_a_recorded_none_is_respected(self):
         question = MilestoneEngine._kb_question(
@@ -653,3 +678,276 @@ def test_the_block_is_counted_with_the_reserved_sections():
     from faultmaven.core.investigation.prompts.templates.assembly import _RESERVE_KEYS
 
     assert "kb_lookup" in _RESERVE_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (#2797): what a miss says, duplicates, the fallback, no store
+# ---------------------------------------------------------------------------
+
+
+class TestWhereTheQueryCameFrom:
+    async def test_a_topic_from_the_rest_of_the_message_is_a_description(self):
+        question = {"kind": "lookup", "topic": "nginx 502s", "from_context": True}
+        lookup = await look_up_kb_question(_deps([]), _case(), question)
+        assert (lookup.status, lookup.query_source) == (
+            KbLookupStatus.NOTHING,
+            QUERY_FROM_MESSAGE,
+        )
+
+    async def test_a_named_topic_is_the_question(self):
+        lookup = await look_up_kb_question(_deps([]), _case(), LOOKUP_QUESTION)
+        assert lookup.query_source == QUERY_FROM_QUESTION
+
+
+def _nothing(source: str) -> str:
+    return _render(
+        KbLookup(status=KbLookupStatus.NOTHING, query="q", query_source=source)
+    )
+
+
+class TestWhatAMissSays:
+    def test_a_named_topic_gets_the_plain_not_found(self):
+        block = _nothing(QUERY_FROM_QUESTION)
+        assert "couldn't find a runbook for that" in block
+        assert "that description" not in block
+
+    @pytest.mark.parametrize(
+        "source", [QUERY_FROM_MESSAGE, QUERY_FROM_PROBLEM_STATEMENT]
+    )
+    def test_a_described_problem_gets_no_close_match(self, source):
+        """The floor was calibrated on bare topics: a sentence that misses is
+        weaker evidence, so the reply offers to look again."""
+        block = _nothing(source)
+        assert "came close to that description" in block
+        assert "offer to look again" in block
+        assert "couldn't find a runbook for that in" not in block
+        # Positive control: still never invents one.
+        assert "Never suggest that a runbook exists" in block
+
+    @pytest.mark.parametrize(
+        "lookup",
+        [
+            _candidates(),
+            KbLookup(status=KbLookupStatus.NOTHING, query="q", query_source="question"),
+        ],
+    )
+    def test_a_search_the_model_runs_itself_may_still_report_a_hit(self, lookup):
+        assert "a knowledge-base search you run yourself" in _render(lookup)
+
+    def test_general_guidance_is_offered_only_on_engineering_topics(self):
+        assert "engineering or operations one" in _nothing(QUERY_FROM_QUESTION)
+
+    def test_a_message_that_only_mentions_a_runbook_may_be_disregarded(self):
+        assert "disregard this section" in _render(_candidates())
+
+
+def _same_section_pushed() -> dict:
+    asked = _candidates().entries[0]
+    return {
+        **_PUSHED,
+        "parent_document_id": asked["parent_document_id"],
+        # The push carries the section's snippet (its head plus "..."), the
+        # lookup its content.
+        "summary": asked["summary"][:200] + "...",
+        "trigger": "symptom",
+    }
+
+
+class TestASectionBothChannelsFound:
+    def test_it_is_cited_once_as_the_lookups(self):
+        rendered: list = []
+        get_prompt_for_case(
+            _investigating(kb_context=[_same_section_pushed(), _PUSHED]),
+            "is there a runbook?",
+            kb_lookup=_candidates(),
+            kb_rendered=rendered,
+        )
+        assert [(e["parent_document_id"], e["trigger"]) for e in rendered] == [
+            ("rb_pushed", "symptom"),
+            ("rb_kafka", KB_QUESTION_TRIGGER),
+        ]
+
+    def test_without_a_lookup_the_push_keeps_it(self):
+        rendered: list = []
+        get_prompt_for_case(
+            _investigating(kb_context=[_same_section_pushed()]),
+            "what next?",
+            kb_rendered=rendered,
+        )
+        assert [e["trigger"] for e in rendered] == ["symptom"]
+
+    def test_the_next_turn_does_not_call_it_new(self):
+        """Turn 3 cited it as the lookup's; turn 4's push still carries it."""
+        pushed = _same_section_pushed()
+        earlier = [_row(3, _published(_PUSHED, _ASKED))]
+        turn_meta = {TURN_METADATA_KB_PROMPTED: [_PUSHED, pushed]}
+        _record_turn_kb_sources(turn_meta, SimpleNamespace(messages=earlier))
+        assert _flags(turn_meta) == {
+            ("rb_pushed", "symptom"): False,
+            ("rb_kafka", "symptom"): False,
+        }
+
+    def test_a_section_never_shown_is_new(self):
+        earlier = [_row(3, _published(_PUSHED))]
+        turn_meta = {TURN_METADATA_KB_PROMPTED: [_PUSHED, _same_section_pushed()]}
+        _record_turn_kb_sources(turn_meta, SimpleNamespace(messages=earlier))
+        assert _flags(turn_meta)[("rb_kafka", "symptom")] is True
+
+
+def _nothing_lookup() -> KbLookup:
+    return KbLookup(status=KbLookupStatus.NOTHING, query="SAP HANA backups")
+
+
+class TestTheMinimalFallbackPrompt:
+    @pytest.mark.parametrize("build", [_inquiry, _investigating])
+    def test_it_carries_the_verdict(self, build):
+        prompt = get_fallback_prompt_for_case(
+            build(),
+            "is there a runbook for SAP HANA backups?",
+            kb_lookup=_nothing_lookup(),
+        )
+        assert f"{KB_LOOKUP_HEADING}:" in prompt
+        assert "never suggest one exists" in prompt
+        # Positive control: without a lookup, nothing.
+        bare = get_fallback_prompt_for_case(build(), "hello")
+        assert KB_LOOKUP_HEADING not in bare
+
+    def test_candidates_are_named_by_fenced_title_only(self):
+        prompt = get_fallback_prompt_for_case(
+            _investigating(), "is there a runbook?", kb_lookup=_candidates()
+        )
+        assert "Kafka Consumer Lag" in prompt
+        assert "Check partition assignment" not in prompt
+        # The trust rule names the block that rendered.
+        rule = prompt[prompt.index("PROMPT FENCE") :]
+        rule = rule[: rule.index("These instructions")]
+        assert "kb_runbook_titles" in rule
+
+    def test_the_terminal_fallback_carries_it(self):
+        from tests.unit.core.investigation.test_terminal_qa_tools_1964 import (
+            terminal_case,
+        )
+
+        prompt = get_fallback_prompt_for_case(
+            terminal_case(CaseState.CLOSED),
+            "any runbook on this?",
+            kb_lookup=_nothing_lookup(),
+        )
+        assert f"{KB_LOOKUP_HEADING}:" in prompt
+
+    def test_a_starved_turn_keeps_the_lookup_and_its_sources(self):
+        rendered: list = []
+        prompt = get_prompt_for_case(
+            _investigating(kb_context=[_PUSHED]),
+            "is there a runbook for kafka consumer lag?",
+            kb_lookup=_candidates(),
+            kb_rendered=rendered,
+            target_tokens=600,
+        )
+        assert "FaultMaven's reduced prompt" in prompt  # the fallback ran
+        assert f"{KB_LOOKUP_HEADING}:" in prompt
+        assert [e["parent_document_id"] for e in rendered] == ["rb_kafka"]
+
+    async def test_the_runtime_overflow_retry_carries_it(self):
+        from faultmaven.core.investigation.milestone_engine.errors import (
+            MilestoneEngineError,
+        )
+        from faultmaven.exceptions import TOKEN_LIMIT
+        from tests.model_content import disabled_redaction
+
+        engine = MilestoneEngine(
+            MagicMock(), MagicMock(), investigation_tools=MagicMock()
+        )
+        overflow = MilestoneEngineError("too long", error_code=TOKEN_LIMIT)
+        inner = AsyncMock(side_effect=[overflow, MagicMock(name="degraded")])
+        engine.generator._generate_structured_output_inner = inner
+        await engine.generator.generate_structured_output(
+            "huge",
+            MagicMock(),
+            case=_investigating(),
+            user_message="is there a runbook for SAP HANA backups?",
+            redaction_ctx=disabled_redaction(),
+            kb_lookup=_nothing_lookup(),
+        )
+        retry_prompt = inner.await_args_list[1].args[0]
+        assert f"{KB_LOOKUP_HEADING}:" in retry_prompt
+
+
+class TestADeploymentWithNoStore:
+    async def test_the_push_clears_stale_context_quietly(self, caplog):
+        from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
+            KbPrefetcher,
+        )
+        from faultmaven.models.exceptions import (
+            KNOWLEDGE_STORE_UNAVAILABLE,
+            KnowledgeBaseError,
+        )
+
+        deps = _deps(
+            raises=KnowledgeBaseError(
+                "no store", error_code=KNOWLEDGE_STORE_UNAVAILABLE
+            )
+        )
+        case = _investigating(kb_context=[_PUSHED])
+        with caplog.at_level("WARNING"):
+            completed = await KbPrefetcher(deps=deps).prefetch_kb_context(
+                case, "consumers falling behind", "symptom"
+            )
+        assert completed is True
+        assert case.kb_context is None
+        assert not [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+
+    async def test_any_other_failure_still_leaves_the_context(self):
+        from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
+            KbPrefetcher,
+        )
+        from faultmaven.models.exceptions import KnowledgeBaseError
+
+        case = _investigating(kb_context=[_PUSHED])
+        completed = await KbPrefetcher(
+            deps=_deps(raises=KnowledgeBaseError("embedder down"))
+        ).prefetch_kb_context(case, "consumers falling behind", "symptom")
+        assert completed is False
+        assert case.kb_context == [_PUSHED]
+
+    async def test_the_lookup_still_reports_it_could_not_search(self):
+        from faultmaven.models.exceptions import (
+            KNOWLEDGE_STORE_UNAVAILABLE,
+            KnowledgeBaseError,
+        )
+
+        deps = _deps(
+            raises=KnowledgeBaseError(
+                "no store", error_code=KNOWLEDGE_STORE_UNAVAILABLE
+            )
+        )
+        lookup = await look_up_kb_question(deps, _case(), LOOKUP_QUESTION)
+        assert lookup.status is KbLookupStatus.UNAVAILABLE
+
+    async def test_the_service_does_not_log_it_as_a_failed_search(self, caplog):
+        from faultmaven.models.exceptions import KnowledgeBaseError
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            KnowledgeService,
+        )
+
+        service = KnowledgeService.__new__(KnowledgeService)
+        service._vector_store = None
+        service._sanitizer = SimpleNamespace(asanitize=AsyncMock(return_value="q"))
+        service._tracer = SimpleNamespace(trace=lambda *_: _NullContext())
+        with caplog.at_level("ERROR"), pytest.raises(KnowledgeBaseError):
+            await service.search_knowledge("q")
+        assert not [r for r in caplog.records if "Search failed" in r.getMessage()]
+
+
+class TestAnEngineCallWithNoRecordedQuestion:
+    def test_reading_the_message_is_bounded(self):
+        """A direct engine call classifies the message; a megabyte paste must
+        not cost what the whole mode classifier costs on it."""
+        import time
+
+        message = "2026-11-14 10:00:01 ERROR conn refused\n" * 30_000
+        message += "\nis there a runbook for postgres connection refused?"
+        started = time.perf_counter()
+        question = MilestoneEngine._kb_question({"value": True}, message)
+        assert time.perf_counter() - started < 0.5
+        assert question["topic"] == "postgres connection refused"

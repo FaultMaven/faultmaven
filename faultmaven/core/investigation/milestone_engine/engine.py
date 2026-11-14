@@ -361,20 +361,20 @@ class MilestoneEngine:
     ) -> dict | None:
         """The turn's question about the knowledge base, or ``None``.
 
-        The investigation service records it on the conversation route. The
-        handlers that route a typed intent (a confirmation, a hypothesis
-        action, a transition) build their own ``intent_data`` and record none,
-        yet can still reach generation — so where the key is absent the
-        message is classified here, as ``turn_generation`` does for the mode.
-        A recorded ``None`` means the service read the message and found none.
+        The investigation service records it on every path into the engine,
+        a recorded ``None`` meaning it read the message and found none. Only a
+        direct engine call carries no key; the message is then read here, over
+        the same bounded window detection reads, so a megabyte paste costs
+        what a short message does.
         """
         if KB_QUESTION_INTENT_KEY in (intent_data or {}):
             return kb_question_of(intent_data)
         from faultmaven.modules.agent.domain.services.query_classifier import (
             classify_query,
+            kb_detection_window,
         )
 
-        derived = classify_query(user_message or "").kb_question
+        derived = classify_query(kb_detection_window(user_message or "")).kb_question
         return kb_question_of(
             {KB_QUESTION_INTENT_KEY: derived.as_intent_data() if derived else None}
         )

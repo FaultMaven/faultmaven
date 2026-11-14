@@ -7,6 +7,10 @@ from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
     retrieval_principal,
 )
+from faultmaven.models.exceptions import (
+    KnowledgeBaseError,
+    is_knowledge_store_unavailable,
+)
 from faultmaven.modules.case.contracts import (
     Case,
 )
@@ -237,17 +241,26 @@ class KbPrefetcher:
             # rank 1 for the same query, and pure vector search cannot: the
             # fetch limit is applied to CHUNKS before any floor, so no
             # threshold value can admit a chunk ranked 369th.
-            results = await self.deps.knowledge_service.search_knowledge(
-                query=query,
-                limit=KB_PREFETCH_FETCH_LIMIT,
-                filters=scope_filter,
-                # The floor goes in at ADMISSION, not after ranking. Hybrid
-                # results are ordered by the reranker's blend, so the filter
-                # below would thin this window from the middle: on a measured
-                # query it left 2 hits where 10 were asked for. The filter
-                # below stays as the authority.
-                min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
-            )
+            try:
+                results = await self.deps.knowledge_service.search_knowledge(
+                    query=query,
+                    limit=KB_PREFETCH_FETCH_LIMIT,
+                    filters=scope_filter,
+                    # The floor goes in at ADMISSION, not after ranking. Hybrid
+                    # results are ordered by the reranker's blend, so the
+                    # filter below would thin this window from the middle: on
+                    # a measured query it left 2 hits where 10 were asked for.
+                    # The filter below stays as the authority.
+                    min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
+                )
+            except KnowledgeBaseError as exc:
+                # A deployment with no store holds no runbooks: for the push
+                # that is an empty result, which clears stale context below.
+                # (The question lookup reads the same refusal as "could not
+                # search", because it reports on the knowledge base.)
+                if not is_knowledge_store_unavailable(exc):
+                    raise
+                results = []
             relevant = [
                 r for r in results or [] if r.score >= KB_PREFETCH_RELEVANCE_THRESHOLD
             ]

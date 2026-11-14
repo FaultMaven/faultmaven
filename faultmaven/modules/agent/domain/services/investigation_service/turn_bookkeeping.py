@@ -10,7 +10,7 @@ the published attachment result and the reclassification metric's label.
 from typing import Any
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
-from faultmaven.core.investigation.kb_question import KB_QUESTION_TRIGGER
+from faultmaven.core.investigation.kb_question import KB_QUESTION_TRIGGER, section_key
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
@@ -204,9 +204,9 @@ def _from_question(source: dict) -> bool:
 
 
 def _source_key(source: dict) -> tuple[str, str]:
-    """One runbook excerpt: its document and the matched text."""
+    """One runbook section, whichever channel carried it (``section_key``)."""
     metadata = source.get("metadata") or {}
-    return (str(metadata.get("document_id") or ""), str(source.get("content") or ""))
+    return section_key(metadata.get("document_id"), str(source.get("content") or ""))
 
 
 def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
@@ -226,12 +226,14 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     renumbered history, none of which a turn-number stamp survives. Call it
     BEFORE the turn's own row is appended.
 
-    That comparison is per ORIGIN. The push's entries are compared only with
-    the push's entries of that earlier row: a turn that answered a question
-    about the knowledge base records the lookup's runbooks too, and comparing
-    against those would mark every standing push entry of the next turn as
-    new. A question lookup's own entries are always new — they answer what
-    this turn asked, whatever an earlier turn showed.
+    The earlier row is the most recent one that recorded PUSHED entries: a
+    row holding only a question lookup's runbooks would otherwise stand in for
+    the push context and mark every standing entry of the next turn as new.
+    That row's lookup entries count as shown too — they were in its prompt, and
+    a section both channels found is recorded once, as the lookup's. Keyed by
+    ``section_key``, so a section matches whichever channel carried it. A
+    question lookup's own entries are always new — they answer what this turn
+    asked, whatever an earlier turn showed.
     """
     sources = _kb_sources(turn_meta.pop(TURN_METADATA_KB_PROMPTED, None) or [])
     if not sources:
@@ -241,9 +243,9 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
         recorded = (row.get("metadata") or {}).get(MESSAGE_METADATA_KB_SOURCES)
         if row.get("role") != "assistant" or not recorded:
             continue
-        pushed = [s for s in recorded if isinstance(s, dict) and not _from_question(s)]
-        if pushed:
-            earlier = {_source_key(s) for s in pushed}
+        entries = [s for s in recorded if isinstance(s, dict)]
+        if any(not _from_question(s) for s in entries):
+            earlier = {_source_key(s) for s in entries}
             break
     published = []
     for source in sources:

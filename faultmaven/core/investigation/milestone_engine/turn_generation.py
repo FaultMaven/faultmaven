@@ -255,6 +255,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
             reasoning_intent=ReasoningIntent.INFERENCE,
             min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
         )
@@ -272,6 +273,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
             # The non-tool fallback rebuilds for no tools: no tool names,
             # full evidence. Nothing to rebuild when nothing was given.
             fallback_prompt_builder=(
@@ -286,6 +288,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
         )
 
     # Debug: Log what type was actually returned
