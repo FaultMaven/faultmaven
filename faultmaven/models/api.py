@@ -128,9 +128,10 @@ class Source(BaseModel):
             "stands in every prompt from the turn it is fetched until the next "
             "fetch replaces it, so a client shows the list where something is "
             "new rather than under every answer. Always true on a source whose "
-            "`metadata.trigger` is `question`: the runbooks a lookup found for "
-            "the user's own question about the knowledge base answer that "
-            "turn. Null on any other source."
+            "`metadata.trigger` is `question` (the runbooks a lookup found for "
+            "the user's own question about the knowledge base) or `kb_qa` (a "
+            "section the assistant's own knowledge-base search answered "
+            "from): those answer that turn. Null on any other source."
         ),
     )
 

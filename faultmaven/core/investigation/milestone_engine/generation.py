@@ -1711,6 +1711,7 @@ class StructuredOutputGenerator:
         *,
         redaction_ctx: CaseRedactionContext,
         kb_lookup: Optional[Any] = None,
+        kb_rendered: Optional[list] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -1723,6 +1724,9 @@ class StructuredOutputGenerator:
         not supplied the recovery is skipped and the error propagates.
         ``kb_lookup`` is the turn's knowledge-base question lookup, whose
         verdict the fallback carries (§5.6 of ``orchestration-capabilities.md``).
+        ``kb_rendered`` is the turn's report of the KB entries its prompt
+        carried; the fallback carries only the lookup's, so the retry narrows
+        the report to them, as the budget fallback does.
         """
         refusal = RefusalState()  # one per engine call (#1770)
         try:
@@ -1747,6 +1751,9 @@ class StructuredOutputGenerator:
                 and case is not None
                 and _is_context_length_error(exc)
             ):
+                from faultmaven.core.investigation.kb_question import (
+                    lookup_entries_only,
+                )
                 from faultmaven.core.investigation.prompts.templates.fallback import (
                     DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
@@ -1774,6 +1781,10 @@ class StructuredOutputGenerator:
                     case, user_message, given_tools=NO_TOOLS, kb_lookup=kb_lookup
                 )
                 fb_prompt += DEGRADED_NO_TOOLS_NOTICE
+                if kb_rendered is not None:
+                    # The minimal prompt carries no pushed runbook; citing one
+                    # the reply was not shown is worse than citing none.
+                    kb_rendered[:] = lookup_entries_only(kb_rendered)
                 # Minimal retry: drop tools to shrink the request further.
                 return await self._generate_structured_output_inner(
                     fb_prompt,
@@ -1861,7 +1872,7 @@ class StructuredOutputGenerator:
             else:
                 # Layer 2: Runtime fallback for unknown incompatibilities
                 try:
-                    return await self._tool_augmented_generate(
+                    response = await self._tool_augmented_generate(
                         prompt,
                         schema_model,
                         investigation_tools,
@@ -1872,6 +1883,13 @@ class StructuredOutputGenerator:
                         base_prompt_builder=base_prompt_builder,
                         refusal=refusal,
                     )
+                    # This reply saw the loop's tool results, so what kb_qa
+                    # answered from is cited; a reply from any fallback below
+                    # or above never confirms them (kb_tool_citations.py).
+                    citations = getattr(tool_context, "kb_citations", None)
+                    if citations is not None:
+                        citations.confirm()
+                    return response
                 except ToolCallingUnsupportedError as e:
                     if refusal.seen:  # no no-tools fallback after it (#1770)
                         raise _refused(f"tool loop: {e}") from None

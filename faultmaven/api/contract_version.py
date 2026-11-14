@@ -151,6 +151,29 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.25.0",
+        level="MINOR",
+        title=(
+            "A turn's `sources` can carry the runbook sections the assistant's "
+            "own knowledge-base search answered from (`metadata.trigger` "
+            "`kb_qa`)."
+        ),
+        body=r"""When the assistant searches the knowledge base itself while it works (its
+`kb_qa` tool), the sections that search's answer cited enter
+`TurnResponse.sources` and the assistant row's `Message.sources` with
+`metadata.trigger` `kb_qa`, beside `symptom`, `root_cause` and `question`.
+Until now that search reached the reply only as runbook titles in its text,
+and was never cited. They are cited only when the reply came from the turn
+that ran the search: a reply from a fallback without tools cites none of them.
+`new_this_turn` is always true on them. A section a pre-fetch also carried is
+cited once, as `kb_qa`; one the question lookup also found stays `question`.
+Read back through the same per-viewer gate as every other source.
+
+MINOR because every existing client survives it: no field is added or
+removed, `metadata` was already free-form, and a client that ignores
+`trigger` shows these entries as runbooks the turn drew on, which they are.""",
+    ),
+    ContractChange(
         version="14.24.0",
         level="MINOR",
         title=(

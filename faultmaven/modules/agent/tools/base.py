@@ -53,6 +53,27 @@ class Tool:
 
 
 @dataclass
+class KbCitations:
+    """The runbook sections ``kb_qa`` answered from on one turn.
+
+    ``add`` holds them as pending; ``confirm`` is called when the reply the
+    turn returns came from the tool loop that saw them, and only confirmed
+    entries are cited (``core/investigation/kb_tool_citations.py``). A reply
+    from any fallback leaves them pending, so they are never cited.
+    """
+
+    pending: list[dict[str, Any]] = field(default_factory=list)
+    confirmed: list[dict[str, Any]] = field(default_factory=list)
+
+    def add(self, entries: list[dict[str, Any]]) -> None:
+        self.pending.extend(entries)
+
+    def confirm(self) -> None:
+        self.confirmed.extend(self.pending)
+        self.pending.clear()
+
+
+@dataclass
 class ToolContext:
     """Context passed to tool execution.
 
@@ -92,6 +113,9 @@ class ToolContext:
             on an empty search points at ``search_file``) names it only when it
             is in this set. Empty (a tool-less turn, or a context built without
             a turn) means name none.
+        kb_citations: What ``kb_qa`` answered from on this turn, for the
+            turn's ``sources`` (``KbCitations``). One object per turn, shared
+            by every copy of the context.
 
     No KB context metadata (#1880). The reranker's metadata signal reads a
     runbook's ``service``, which is the technology; the case records no
@@ -115,6 +139,7 @@ class ToolContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
     given_tools: frozenset[str] = frozenset()
+    kb_citations: KbCitations = field(default_factory=KbCitations)
     redaction_ctx: CaseRedactionContext = field(kw_only=True)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
@@ -131,6 +156,7 @@ class ToolContext:
             in_memory_case=self.in_memory_case,
             redaction_ctx=self.redaction_ctx,
             given_tools=self.given_tools,
+            kb_citations=self.kb_citations,
         )
 
 

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
+from faultmaven.core.investigation.kb_tool_citations import add_kb_qa_entries
 from faultmaven.core.investigation.lifecycle_metrics import terminal_summary_total
 from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
     look_up_kb_question,
@@ -565,7 +566,13 @@ class TerminalTurnHandler:
             case=case,
             user_message=user_message,
             kb_lookup=kb_lookup,
+            kb_rendered=kb_rendered,
         )
+        if "tool_context" in tools_kwargs:
+            # What kb_qa answered from, if the reply came from the tool loop.
+            add_kb_qa_entries(
+                kb_rendered, tools_kwargs["tool_context"].kb_citations.confirmed
+            )
 
         await redaction_ctx.save()
 

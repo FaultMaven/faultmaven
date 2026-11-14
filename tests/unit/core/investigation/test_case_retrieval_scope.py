@@ -274,14 +274,14 @@ async def test_pull_the_kb_tool_searches_exactly_the_context_scope():
         given_tools=NO_TOOLS,
     )
     wrapped = MagicMock()
-    wrapped._arun = AsyncMock(return_value="answer")
+    wrapped.answer = AsyncMock(return_value=("answer", []))
 
     result = await KBToolAdapter(
         wrapped, admit=admit_every_parent
     ).execute_with_context({"question": "q"}, context)
 
     assert result.success, result.error
-    wrapped._arun.assert_awaited_once_with(
+    wrapped.answer.assert_awaited_once_with(
         question="q",
         scope_filter=DRIVER_SCOPE,
         k=5,

@@ -3,6 +3,7 @@
 import logging
 from typing import Optional
 
+from faultmaven.core.investigation.kb_tool_citations import add_kb_qa_entries
 from faultmaven.core.investigation.milestone_engine.generation import (
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
@@ -256,6 +257,7 @@ async def _generate_turn_response(
             case=case,
             user_message=user_message,
             kb_lookup=kb_lookup,
+            kb_rendered=kb_rendered,
             reasoning_intent=ReasoningIntent.INFERENCE,
             min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
         )
@@ -274,6 +276,7 @@ async def _generate_turn_response(
             case=case,
             user_message=user_message,
             kb_lookup=kb_lookup,
+            kb_rendered=kb_rendered,
             # The non-tool fallback rebuilds for no tools: no tool names,
             # full evidence. Nothing to rebuild when nothing was given.
             fallback_prompt_builder=(
@@ -281,6 +284,9 @@ async def _generate_turn_response(
             ),
             base_prompt_builder=_build_tool_loop_base,
         )
+        if kb_rendered is not None:
+            # What kb_qa answered from, if the reply came from the tool loop.
+            add_kb_qa_entries(kb_rendered, da_context.kb_citations.confirmed)
     else:
         response_obj = await generator.generate_structured_output(
             prompt,
@@ -289,6 +295,7 @@ async def _generate_turn_response(
             case=case,
             user_message=user_message,
             kb_lookup=kb_lookup,
+            kb_rendered=kb_rendered,
         )
 
     # Debug: Log what type was actually returned

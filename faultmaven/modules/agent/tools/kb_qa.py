@@ -80,7 +80,23 @@ global documentation, your personal runbooks, and your team's shared procedures.
         Returns:
             Relevant documentation with citations from the case's scope
         """
-        return await super()._arun(
+        text, _cited = await self.answer(
+            question, scope_filter, k, redaction_ctx=redaction_ctx, admit=admit
+        )
+        return text
+
+    async def answer(
+        self,
+        question: str,
+        scope_filter: Dict[str, Any],
+        k: int = 5,
+        *,
+        redaction_ctx: Any,
+        admit: AdmitParents,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """As :meth:`_arun`, plus the chunks the answer cites
+        (``DocumentQATool.answer_with_citations``)."""
+        return await self.answer_with_citations(
             question,
             scope_id=None,
             k=k,
