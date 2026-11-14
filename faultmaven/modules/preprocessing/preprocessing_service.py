@@ -342,7 +342,8 @@ def _keep_unparsed_content(
     return ExtractionResult(
         method=extraction.method,
         content=preview,
-        metadata={"extract_result_json": kept.to_json()},
+        # Read by the sanity retry: kept content is not a degenerate extract.
+        metadata={"extract_result_json": kept.to_json(), "unparsed": reason},
     )
 
 
@@ -881,7 +882,14 @@ class PreprocessingService:
         # Phase 2 retry path. Record each attempt's sanity result so the
         # final ``extractor.attempts`` list tells the full story.
         attempts: list[ExtractorAttempt] = []
-        initial_sanity = run_sanity_check(initial_data_type, content, initial.content)
+        # Content kept because its extractor could not parse it is the
+        # content, not a degenerate extract: no alternative replaces it, and
+        # the all-failed drop-through (a short head) never does (#2791).
+        initial_sanity = (
+            SanityResult(passed=True, reason="unparsed_content_kept")
+            if initial.metadata.get("unparsed")
+            else run_sanity_check(initial_data_type, content, initial.content)
+        )
         attempts.append(
             ExtractorAttempt(
                 data_type=initial_data_type.value,

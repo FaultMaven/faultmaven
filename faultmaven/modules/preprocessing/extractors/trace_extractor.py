@@ -85,7 +85,13 @@ class TraceDataExtractor:
             return ExtractResult(
                 file_extract=f"Trace Analysis (traceId: {trace_id})\n\nNo spans found in trace data.",
                 file_meta={
-                    "size_bytes": len(content.encode("utf-8", errors="replace"))
+                    # JSON in a schema the span reader does not know (a
+                    # Zipkin v2 array, a vendor export): keep it (#2791).
+                    UNPARSED_META_KEY: (
+                        "JSON with no spans in a trace schema read here "
+                        "(OpenTelemetry, Jaeger)"
+                    ),
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
                 },
             )
 

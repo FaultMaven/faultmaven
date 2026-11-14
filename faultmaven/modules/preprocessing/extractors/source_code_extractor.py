@@ -56,6 +56,55 @@ except ImportError:
 #: ``---`` line directly followed by a ``+++`` line (an added line reading
 #: ``++ x`` is not one); its path is the ``+++`` side, or the ``---`` side for a
 #: deleted file (``+++ /dev/null``).
+#: A patch is content mostly of diff lines; code that embeds a diff (a test
+#: fixture, patch tooling) is not, and keeps its code analysis. Diff lines are
+#: counted by following each hunk header's line counts, so indented code is
+#: never taken for context lines.
+_DIFF_LINE_SHARE = 0.5
+_DIFF_HEADER_PREFIXES = (
+    "diff ",
+    "index ",
+    "--- ",
+    "+++ ",
+    "new file mode",
+    "deleted file mode",
+    "old mode",
+    "new mode",
+    "similarity index",
+    "rename ",
+    "Binary files",
+)
+_HUNK_COUNTS = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+
+
+def _diff_line_count(lines: list[str]) -> int:
+    """How many of ``lines`` are a unified diff's: headers, hunk headers and
+    the lines each hunk header says follow it."""
+    count = 0
+    old = new = 0
+    for line in lines:
+        if old > 0 or new > 0:
+            if line.startswith(" "):
+                old, new = old - 1, new - 1
+            elif line.startswith("-"):
+                old -= 1
+            elif line.startswith("+"):
+                new -= 1
+            elif not line.startswith("\\"):
+                old = new = 0  # the hunk ended early: not one of its lines
+                count -= 1
+            count += 1
+            continue
+        hunk = _HUNK_COUNTS.match(line)
+        if hunk:
+            old = int(hunk.group(1) or 1)
+            new = int(hunk.group(2) or 1)
+            count += 1
+        elif line.startswith(_DIFF_HEADER_PREFIXES):
+            count += 1
+    return count
+
+
 _UNIFIED_DIFF_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
 _UNIFIED_DIFF_FILE = re.compile(
     r"^--- (?:a/)?(\S+)[^\n]*\n\+\+\+ (?:b/)?(\S+)", re.MULTILINE
@@ -103,7 +152,12 @@ class SourceCodeExtractor:
             new if new != "/dev/null" else old
             for old, new in _UNIFIED_DIFF_FILE.findall(content)
         ]
-        if files and _UNIFIED_DIFF_HUNK.search(content):
+        lines = content.splitlines()
+        if (
+            files
+            and _UNIFIED_DIFF_HUNK.search(content)
+            and _diff_line_count(lines) >= _DIFF_LINE_SHARE * len(lines)
+        ):
             return ExtractResult(
                 file_extract="Unified diff of " + ", ".join(files[:10]),
                 file_meta={
@@ -142,14 +196,19 @@ class SourceCodeExtractor:
         # Fall back to pattern-based extraction
         result = self._pattern_based_extraction(content)
         language = self._detect_language(content)
-        return ExtractResult(
-            file_extract=result,
-            file_meta={
-                "language": language,
-                "lines": total_lines,
-                "size_bytes": len(content.encode("utf-8", errors="replace")),
-            },
-        )
+        file_meta: dict[str, Any] = {
+            "language": language,
+            "lines": total_lines,
+            "size_bytes": len(content.encode("utf-8", errors="replace")),
+        }
+        # No class and no function: the content is not code these patterns
+        # read (the sanity check's own test, ``no_code_structures_found``), so
+        # the analysis is a header with nothing under it (#2791).
+        if "## Classes" not in result and "## Functions" not in result:
+            file_meta[UNPARSED_META_KEY] = (
+                f"no class or function found (language: {language})"
+            )
+        return ExtractResult(file_extract=result, file_meta=file_meta)
 
     def _parse_python_ast(self, content: str) -> str | None:
         """Parse Python code using AST"""

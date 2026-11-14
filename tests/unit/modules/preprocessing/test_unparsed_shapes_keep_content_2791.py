@@ -462,3 +462,106 @@ class TestTheOtherExtractorsReport:
         )
         result = TraceDataExtractor().extract(content)
         assert UNPARSED_META_KEY not in result.file_meta
+
+
+class TestTheOwnersReviewOf2796:
+    """The shapes the owner's review of #2796 found still lost."""
+
+    @pytest.mark.parametrize(
+        ("content", "named"),
+        [
+            (
+                "[Service]\nEnvironment=A=1\nEnvironment=B=2\nExecStart=/bin/x\n"
+                "[Install]\nWantedBy=multi-user.target\n",
+                "'Environment'",
+            ),
+            ("DB_HOST=a\nDB_PORT=5432\nDB_HOST=b\n", "'DB_HOST'"),
+            ("[s]\nx=1\n[t]\ny=2\n[s]\nz=3\n", "[s]"),
+        ],
+        ids=["systemd-unit", "env-set-twice", "section-twice"],
+    )
+    def test_a_repeat_in_the_key_value_reading_is_reported(self, content, named):
+        result = StructuredConfigExtractor().extract(content)
+        assert result.file_meta["format"] == "key-value"
+        assert named in result.file_meta[UNPARSED_META_KEY]
+
+    def test_an_iso_timestamp_is_not_joined_to_the_number_after_it(self):
+        """pandas ``to_string`` of a time-indexed frame: an unnamed index
+        column, so every row is one field longer than the header."""
+        content = "                     cpu  mem\n" + "".join(
+            f"2026-11-13T22:{i:02d}:00   {50 + i}   {60 + i}\n" for i in range(5)
+        )
+        series, fmt = MetricsAndPerformanceExtractor()._parse_metrics(content)
+        assert fmt == "whitespace table"
+        assert sorted(series) == ["cpu", "mem"]
+        assert series["cpu"][0] == ("2026-11-13T22:00:00", 50.0)
+
+    def test_code_that_embeds_a_diff_keeps_its_code_analysis(self):
+        content = (
+            'import textwrap\n\nPATCH = textwrap.dedent("""\n'
+            "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n"
+            '""")\n\n'
+            + "".join(f"def check_{i}():\n    return PATCH\n\n" for i in range(20))
+        )
+        result = SourceCodeExtractor().extract(content)
+        assert UNPARSED_META_KEY not in result.file_meta
+        assert result.file_meta["functions"] == 20
+
+    def test_a_short_diff_inside_command_output_is_kept(self):
+        """A rig answer: a command's output with a diff in it, typed as code;
+        no class or function is found, so it is reported, not summarized."""
+        content = (
+            "$ systemd-delta --type=overridden\n"
+            "[OVERRIDDEN] /etc/systemd/system/x.service -> /lib/systemd/system/x.service\n\n"
+            "--- /lib/systemd/system/x.service\n+++ /etc/systemd/system/x.service\n"
+            "@@ -1,2 +1,2 @@\n [Service]\n-Restart=on-failure\n+Restart=always\n\n"
+            "$ systemctl status x --no-pager\n"
+            + "".join(
+                f"Nov 14 05:09:{i:02d} host x[42]: listening on :9188\n"
+                for i in range(20)
+            )
+        )
+        result = SourceCodeExtractor().extract(content)
+        assert UNPARSED_META_KEY in result.file_meta
+
+    def test_json_in_a_trace_schema_not_read_here_is_reported(self):
+        """A Zipkin v2 array parses as JSON, and no span reader knows it."""
+        content = json.dumps(
+            [
+                {"traceId": "4bf92f3577b34da6", "id": f"s{i}", "name": "charge"}
+                for i in range(5)
+            ]
+        )
+        result = TraceDataExtractor().extract(content)
+        assert UNPARSED_META_KEY in result.file_meta
+
+    @pytest.mark.asyncio
+    async def test_kept_content_survives_the_sanity_retry(self):
+        """With the retry on, kept content passes: no alternative and no
+        short drop-through head replaces it."""
+        from unittest.mock import patch
+
+        class _Prep:
+            extractor_retry_enabled = True
+            confidence_marker_enabled = False
+            reclassify_enabled = False
+
+        class _Settings:
+            preprocessing = _Prep()
+
+        content = "NAME     READY   STATUS             RESTARTS   AGE\n" + "".join(
+            f"api-{i:03d}  0/1     CrashLoopBackOff   {i}         34m\n"
+            for i in range(300)
+        )
+        service = _service()
+        with patch("faultmaven.config.settings.get_settings", return_value=_Settings()):
+            result = await service.classify_and_extract(
+                content=content,
+                filename="pods.txt",
+                principal="u1",
+                user_override=DataType.METRICS_AND_PERFORMANCE,
+            )
+
+        kept = _extract_of(result.structural_index).file_extract
+        assert kept.startswith("[Not parsed: ")
+        assert "api-299" in kept

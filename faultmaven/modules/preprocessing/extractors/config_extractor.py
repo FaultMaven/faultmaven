@@ -212,7 +212,7 @@ class StructuredConfigExtractor:
             config_data, format_detected = parsed
         else:
             # Couldn't parse - treat as key=value pairs
-            config_data, read, total = self._parse_key_value_pairs(content)
+            config_data, read, total, repeated = self._parse_key_value_pairs(content)
             format_detected = "key-value"
             # The fallback is a reading of the content only where most of it
             # is key=value pairs; elsewhere (``kubectl describe``) it keeps
@@ -221,6 +221,11 @@ class StructuredConfigExtractor:
                 unparsed = (
                     f"only {read} of {total} lines are key=value pairs "
                     f"or [section] headers"
+                )
+            elif repeated:
+                unparsed = (
+                    f"the {repeated} repeats, and a key=value reading keeps "
+                    f"only one value per key"
                 )
 
         # Count keys before redaction
@@ -301,7 +306,9 @@ class StructuredConfigExtractor:
 
         return None
 
-    def _parse_key_value_pairs(self, content: str) -> tuple[dict[str, Any], int, int]:
+    def _parse_key_value_pairs(
+        self, content: str
+    ) -> tuple[dict[str, Any], int, int, str | None]:
         """
         Parse as simple key=value pairs (.env, .ini style)
 
@@ -311,12 +318,17 @@ class StructuredConfigExtractor:
         - [section] headers
         - # comments
 
-        Returns the pairs, how many lines it read (pairs and headers), and how
-        many lines are neither blank nor comments.
+        Returns the pairs, how many lines it read (pairs and headers), how
+        many lines are neither blank nor comments, and the first key or
+        section that repeats (``None`` when none does): this reading keeps one
+        value per key, so a repeat (a systemd unit's several ``Environment=``,
+        an ``.env`` that sets a name twice, a section opened twice) loses the
+        others (#2791).
         """
         result = {}
         current_section = None
         read = total = 0
+        repeated: str | None = None
 
         for line in content.split("\n"):
             line = line.strip()
@@ -330,7 +342,9 @@ class StructuredConfigExtractor:
             if line.startswith("[") and line.endswith("]"):
                 read += 1
                 current_section = line[1:-1]
-                result[current_section] = {}
+                if current_section in result:
+                    repeated = repeated or f"section [{current_section}]"
+                result.setdefault(current_section, {})
                 continue
 
             # Key=value pair
@@ -340,12 +354,12 @@ class StructuredConfigExtractor:
                 key = key.strip()
                 value = value.strip().strip('"').strip("'")
 
-                if current_section:
-                    result[current_section][key] = value
-                else:
-                    result[key] = value
+                target = result[current_section] if current_section else result
+                if key in target:
+                    repeated = repeated or f"key {key!r}"
+                target[key] = value
 
-        return result, read, total
+        return result, read, total, repeated
 
     def _redact_secrets_counted(self, data: Any, path: str = "") -> tuple[Any, int]:
         """Recursively redact secrets from config data, counting redactions.
