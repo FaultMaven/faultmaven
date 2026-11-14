@@ -131,7 +131,7 @@ PAGE_CAPTURE_CONFIDENCE_BOOST = 0.02
 #
 # KNOWN GAP (ISS-053 in fm-data-exam): a paste shaped like SOURCE_CODE that
 # sits below MIN_EXTRACTION_LINES (200, in preprocessing_service.py) and
-# within MAX_STRUCTURAL_INDEX_CHARS takes the raw-passthrough route,
+# within MAX_STORED_EXTRACT_CHARS takes the raw-passthrough route,
 # suppressing both extraction AND sanity checks.
 # Mitigation paths if this becomes a problem in production:
 #   1. Add a TEXT_PASTE-specific MIN_EXTRACTION_LINES (e.g., 50) so pastes

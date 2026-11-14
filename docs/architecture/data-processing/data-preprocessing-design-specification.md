@@ -6,9 +6,9 @@
 
 ## Change Summary
 
-### v5.8 → v5.9 (The small-file passthrough stores no more than an extract, #2789)
+### v5.8 → v5.9 (A bound on every stored extract, #2789)
 
-The small-file passthrough no longer stores more than `MAX_STRUCTURAL_INDEX_CHARS` (10,000 characters), the most any extract holds. A few lines can carry megabytes: a one-line, 3.5 MB JSON export was stored whole as its extract. Under 200 lines and past that size, a confident upload goes to its extractor; an uncertain one still passes through with no card, its extract cut to the budget, head and tail, marked (owner, 2026-11-14). Where the clarification card appears is unchanged (§2.4, §2.5, Appendix B). The page-capture passthrough's head-only cap reads the same constant instead of a literal.
+What is stored as an upload's extract is now bounded, whichever path made it: `MAX_STORED_EXTRACT_CHARS` (64 KiB) holds for every `file_extract` and `search_map`, enforced once where every result is assembled (`_build_result`), by a head-and-tail cut that keeps what the prompt shows (Appendix B, "Output budget"). Two paths broke it. The small-file passthrough, sized by lines alone, stored a one-line, 3.5 MB JSON export whole; and five extractors never cap their own output (the logs extractor stored a 150-line, 63K log as an 85K extract). The passthrough's size rule is the same bound: under 200 lines and past it, a confident upload goes to its extractor, and an uncertain one still passes through with no card, cut like any extract (owner, 2026-11-14). Where the clarification card appears is unchanged (§2.4, §2.5, §5.6). The page-capture passthrough's head-only cap reads `MAX_STRUCTURAL_INDEX_CHARS` instead of a literal.
 
 ### v5.7 → v5.8 (Clarification only where the type picks the extractor, #2355)
 
@@ -573,11 +573,9 @@ investigation_service.process_turn(payload: TurnPayload)
 - `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
 - `line_count < MIN_EXTRACTION_LINES` (200) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`), within the size rule below.
 
-**The size rule (#2789).** The passthrough's raw content stands in for an extract, so it does not exceed what an extract holds, `MAX_STRUCTURAL_INDEX_CHARS` (10,000 characters; Appendix B, "Output budget"). A few lines can carry megabytes: a one-line, 3.5 MB JSON export was stored whole as its extract and read back on every later turn. Under 200 lines and past the budget:
+**The size rule (#2789).** A few lines can carry megabytes: a one-line, 3.5 MB JSON export was stored whole as its extract and read back on every later turn. So the passthrough's size rule is the stored-extract bound, `MAX_STORED_EXTRACT_CHARS` (64 KiB; Appendix B, "Output budget"). Under 200 lines and past it:
   - a **confident** upload skips the passthrough and goes to its type's extractor, like any upload of 200 lines or more;
-  - an **uncertain** upload still passes through, with no card, because no extractor reads it, so its type would pick nothing (owner, 2026-11-14). Its `file_extract` is the content cut to the budget, head and tail (`truncate_output`), marked, with `truncated` in the extraction metadata; `search_file` reads the whole raw upload.
-
-  Measured offline on rendered rig output: of the 726 pastes under 200 lines in a development database, 13 are over the budget (8 of about 50K characters at 143–187 lines of multi-command `kubectl` output), all uncertain. They keep the passthrough, cut to the budget. The other 713, and every paste of the stored paste-typing set (281, largest 6,774 characters), are unchanged.
+  - an **uncertain** upload still passes through, with no card, by ruling (owner, 2026-11-14): the card would hold it out of the turn. Its content is cut like any stored extract, head and tail, marked, with `truncated` in the extraction metadata; `search_file` reads the whole raw upload.
 
 Otherwise the type-specific extractor runs under a 2-second deadline (Phase 2 sanity-retry may run on top — see §2.6). The reclassification entry point (§2.6) reuses this same method via `user_override`.
 
@@ -599,7 +597,7 @@ The `extraction_metadata["evidence_metadata"]` slot carries a structured `Eviden
 When the heuristic classifier returns `classification_failed=True`, it populates `ClassificationResult.suggested_types` with up to 3 candidate types, which `PreprocessingService` forwards via `extraction_metadata["suggested_types"]`. What happens next depends on the upload's length:
 
 - **An extractor would run** (200 lines or more, and not a shape-valid page capture; the type picks the extractor): the placeholder short-circuit of §2.4. The turn runs on the placeholder and its preview, and `InvestigationService` then injects DECIDE choices (one per suggested type plus "Something else"). A choice is resolved mechanically, with no LLM call: `_handle_file_reclassification` re-runs preprocessing under `user_override`, and an "Analyze it now" follow-up starts the analysis.
-- **No extractor would run** (under 200 lines, or a shape-valid page capture): no question. The upload passes to the model as `UNSTRUCTURED_TEXT` via its passthrough, cut to `MAX_STRUCTURAL_INDEX_CHARS` past that size (§2.4, #2789). The verdict is recorded as uncertain on the result's `evidence_metadata.classification`, which intake does not persist (#1710); `faultmaven_preprocessing_uncertain_classification_total` counts it (#2355).
+- **No extractor would run** (under 200 lines, or a shape-valid page capture): no question. The upload passes to the model as `UNSTRUCTURED_TEXT` via its passthrough, cut head and tail past `MAX_STORED_EXTRACT_CHARS` (§2.4, #2789). The verdict is recorded as uncertain on the result's `evidence_metadata.classification`, which intake does not persist (#1710); `faultmaven_preprocessing_uncertain_classification_total` counts it (#2355).
 
 ### 2.6 Reclassification and Sanity-Retry
 
@@ -1027,7 +1025,7 @@ async def vectorize_file(
 
 ### 5.6 What Gets Vectorized
 
-The Tier 1 **structural index** — not the raw file content. This is unchanged from v3.2 Section 5.
+The Tier 1 **structural index** — not the raw file content. This is unchanged from v3.2 Section 5. The stored index is bounded (`MAX_STORED_EXTRACT_CHARS` for each of `file_extract` and `search_map`, #2789), so a raw passthrough is embedded whole up to 64 KiB, and an upload past that is embedded as its stored head and tail.
 
 - 10MB log file → Structural index (~50KB) → ~100 chunks
 - 5MB metrics CSV → Statistical profile (~30KB) → ~60 chunks
@@ -1561,7 +1559,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 | Marker | Triggered when |
 | --- | --- |
 | `page_capture_passthrough` | `source_type == "page_capture"` — content is already structured markdown from the copilot; extractor is skipped |
-| `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped. Past `MAX_STRUCTURAL_INDEX_CHARS` a confident upload goes to its extractor instead, and an uncertain one is stored cut to the budget, head and tail (§2.4, #2789) |
+| `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped. Past `MAX_STORED_EXTRACT_CHARS` a confident upload goes to its extractor instead, and an uncertain one is stored cut, head and tail (§2.4, #2789) |
 | `structure_extraction` | Tier 1 timed out (its worker killed at the deadline), found no slot, or ended without a result — falls back to a truncated preview with `timeout_fallback=True`, `busy_fallback=True` or `error_fallback=True` in metadata |
 | `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
 | `classification_failed` | The classifier could not decide the type and an extractor would run — placeholder returned with `suggested_types` in metadata; the turn offers type choices (§2.5). An uncertain upload no extractor would read ends in `page_capture_passthrough` or `raw_passthrough` instead |
@@ -1569,10 +1567,12 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 ### Output budget (uniform across extractors)
 
 - `MAX_STRUCTURAL_INDEX_TOKENS = 2500`
-- `MAX_STRUCTURAL_INDEX_CHARS = 10000`
-- **Two truncation strategies, applied at different stages:**
-  - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced `file_extract` content so both file headers and tails remain visible. Applied when an extractor's output exceeds the cap.
-  - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `MAX_STRUCTURAL_INDEX_CHARS` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator when no extractor runs (`page_capture_passthrough`, `UNANALYZABLE`, `classification_failed`, Tier 1 timeout/error `structure_extraction` fallback) — there's no extractor output to preserve a tail from, just raw content.
+- `MAX_STRUCTURAL_INDEX_CHARS = 10000` — each extractor's own **target**. Not every extractor holds to it: the logs, command-output, trace, error-report and profiling extractors never call `truncate_output`.
+- `MAX_STORED_EXTRACT_CHARS = 65536` — the **hard bound** on what is stored, whichever path made it (#2789). `PreprocessingService._build_result`, which assembles every result, holds `file_extract` and `search_map` to it. It is sized to keep the extracts §5.6 vectorizes whole, and it is the small-file passthrough's size rule (§2.4).
+- **Three truncation strategies, applied at different stages:**
+  - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced `file_extract` content so both file headers and tails remain visible. Applied by the extractors that call it, when their output exceeds `MAX_STRUCTURAL_INDEX_CHARS`.
+  - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `MAX_STRUCTURAL_INDEX_CHARS` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator where it makes the extract itself from raw content (`page_capture_passthrough`, whose captures put errors first; `UNANALYZABLE`; Tier 1 timeout/error `structure_extraction` fallback; the all-failed retry drop-through).
+  - `cut_to_budget()` (`extractors/utils.py`) — the store's cut to `MAX_STORED_EXTRACT_CHARS` in `_build_result`: head and tail filling the budget around a marker that counts what is cut and names `search_file`. Its head is far longer than what the prompt shows of an extract (`EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM`), so a cut never changes the model's view. It applies to every path, the raw passthrough included, and records `truncated` in the extraction metadata.
 
 ### Shared utilities (`extractors/utils.py`)
 
