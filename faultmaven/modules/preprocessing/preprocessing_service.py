@@ -50,12 +50,20 @@ from faultmaven.modules.preprocessing.entities import (
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
-from faultmaven.modules.preprocessing.extractors.protocol import Extractor
+from faultmaven.modules.preprocessing.extractors.protocol import (
+    Extractor,
+    ExtractResult,
+)
 from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
 )
-from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
+from faultmaven.modules.preprocessing.extractors.utils import (
+    MAX_STORED_EXTRACT_CHARS,
+    MAX_STRUCTURAL_INDEX_CHARS,
+    cut_to_budget,
+    extract_time_range_ts,
+)
 
 if TYPE_CHECKING:
     pass
@@ -126,7 +134,9 @@ def _tier1_slots() -> worker_process.FairSlots:
 
 # Files smaller than this threshold are passed through raw instead of
 # running extraction — the raw content is already a better "file extract"
-# than any compressed representation would be.
+# than any compressed representation would be. A few lines can carry
+# megabytes (a one-line JSON export), so the passthrough's size rule is the
+# stored-extract bound, ``MAX_STORED_EXTRACT_CHARS`` (Path 4, #2789).
 MIN_EXTRACTION_LINES = 200
 
 
@@ -297,6 +307,57 @@ _NO_BARE_EPOCH_TYPES = frozenset(
 )
 
 
+def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
+    """The extraction with what will be stored held to
+    ``MAX_STORED_EXTRACT_CHARS`` (#2789).
+
+    Every path's result is assembled through ``_build_result``, which calls
+    this, so the bound holds whichever path made the extract: a passthrough's
+    raw content, or an extractor's ``file_extract`` and ``search_map`` (not
+    every extractor holds to ``MAX_STRUCTURAL_INDEX_CHARS``). A cut part
+    keeps its head and tail around a marker counting what was cut; a cut
+    extractor result also names the parts cut in its ``file_meta``
+    (``stored_cut``), which the prompt renders, beside the extractor's own
+    keys."""
+    payload = extraction.metadata.get("extract_result_json")
+    if payload:
+        if len(payload) <= MAX_STORED_EXTRACT_CHARS:
+            return extraction  # both parts fit inside the whole
+        result = ExtractResult.from_json(payload)
+        file_extract = cut_to_budget(result.file_extract, MAX_STORED_EXTRACT_CHARS)
+        search_map = result.search_map and cut_to_budget(
+            result.search_map, MAX_STORED_EXTRACT_CHARS
+        )
+        if (file_extract, search_map) == (result.file_extract, result.search_map):
+            return extraction
+        parts = [
+            name
+            for name, stored, made in (
+                ("file_extract", file_extract, result.file_extract),
+                ("search_map", search_map, result.search_map),
+            )
+            if stored != made
+        ]
+        cut = dataclasses.replace(
+            result,
+            file_extract=file_extract,
+            search_map=search_map,
+            file_meta={**result.file_meta, "stored_cut": ", ".join(parts)},
+        )
+        return ExtractionResult(
+            method=extraction.method,
+            content=file_extract,
+            metadata={**extraction.metadata, "extract_result_json": cut.to_json()},
+        )
+    if len(extraction.content) <= MAX_STORED_EXTRACT_CHARS:
+        return extraction
+    return ExtractionResult(
+        method=extraction.method,
+        content=cut_to_budget(extraction.content, MAX_STORED_EXTRACT_CHARS),
+        metadata=extraction.metadata,
+    )
+
+
 def _line_count(content: str) -> int:
     """Lines as an editor counts them: a final newline ends the last line
     rather than starting another. Decides the small-file passthrough, and
@@ -439,7 +500,8 @@ class PreprocessingService:
           and a choice re-runs this under ``user_override``. An uncertain
           upload no extractor would read (under ``MIN_EXTRACTION_LINES``, or
           a shape-valid page capture) is not put to the user: it takes its
-          passthrough typed UNSTRUCTURED_TEXT (#2355).
+          passthrough typed UNSTRUCTURED_TEXT (#2355). Every stored extract
+          is held to ``MAX_STORED_EXTRACT_CHARS``, head and tail (#2789).
 
         Phase 1.5 — Reclassification path: the caller can pass
         ``user_override`` (typically from the ``PATCH /evidence/{id}/classification``
@@ -597,14 +659,25 @@ class PreprocessingService:
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds
         # no value for files that fit in the LLM context window directly.
+        # Its size rule is the stored-extract bound (#2789): past
+        # ``MAX_STORED_EXTRACT_CHARS`` a confident upload goes to its
+        # extractor, while an uncertain one still passes through, cut by
+        # ``_build_result`` like any extract. It is not put to the user, by
+        # ruling (owner, 2026-11-14): the card would hold it out of the turn,
+        # and the whole upload stays readable by search_file.
         line_count = _line_count(content)
-        if line_count < MIN_EXTRACTION_LINES:
+        over_bound = len(content) > MAX_STORED_EXTRACT_CHARS
+        if line_count < MIN_EXTRACTION_LINES and (
+            not over_bound or classification.classification_failed
+        ):
             logger.info(
-                "classify_and_extract: %s has %d lines (< %d threshold) — "
-                "raw passthrough, skipping extraction",
+                "classify_and_extract: %s has %d lines (< %d) and %d chars "
+                "(stored bound %d) — raw passthrough, skipping extraction",
                 filename,
                 line_count,
                 MIN_EXTRACTION_LINES,
+                len(content),
+                MAX_STORED_EXTRACT_CHARS,
             )
             detailed_data_type, unified_data_type, epoch_policy_type = (
                 self._settle_uncertain(
@@ -1051,6 +1124,11 @@ class PreprocessingService:
                 data_type=detailed_data_type.value
             ).observe(index_size / content_size)
 
+        # The yield above, and the compression ratio, measure what the
+        # extractor made, so its drift stays visible; what is stored is held
+        # to the bound from here on (#2789).
+        extraction = _cap_stored_extract(extraction)
+
         # Phase 3 — case-level timeline. Parse timestamps from the raw
         # content and attach them to the result so the investigation
         # service can lift them onto the Evidence row's
@@ -1227,7 +1305,9 @@ class PreprocessingService:
             start_time=start_time,
         )
 
-    def _fallback_direct_extraction(self, content: str, max_chars: int = 10000) -> str:
+    def _fallback_direct_extraction(
+        self, content: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS
+    ) -> str:
         """Fallback extraction for types without extractors: truncate to max_chars."""
         if len(content) <= max_chars:
             return content
@@ -1258,10 +1338,11 @@ class PreprocessingService:
         phases, memory_bytes, output_limit_bytes = tier1_limits(self._upload_mb)
 
         def preview(**metadata) -> ExtractionResult:
-            # Fallback: truncated preview (always fast)
+            # Fallback: the content itself, held to the stored-extract bound
+            # (head and tail) by ``_build_result`` like any extract (#2789).
             return ExtractionResult(
                 method="structure_extraction",
-                content=self._fallback_direct_extraction(content),
+                content=content,
                 metadata=metadata,
             )
 

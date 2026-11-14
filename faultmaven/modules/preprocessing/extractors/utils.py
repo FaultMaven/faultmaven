@@ -32,6 +32,17 @@ MAX_STRUCTURAL_INDEX_CHARS = (
     MAX_STRUCTURAL_INDEX_TOKENS * 4
 )  # ~10000 chars at 4 chars/token
 
+# The hard bound on each part stored as an upload's extract, ``file_extract``
+# and ``search_map`` alike (so a stored index is at most about twice this, plus
+# its ``file_meta``), whichever path made it (#2789). The budget above is
+# each extractor's own target, and not every extractor holds to it; this
+# bound is enforced once, where every result is assembled
+# (``PreprocessingService._build_result``), and it is the small-file
+# passthrough's size rule. Sized to hold the largest extracts the design
+# vectorizes (data-preprocessing-design-specification.md §5.6) whole, while a
+# multi-MB upload is no longer copied onto its row and read back each turn.
+MAX_STORED_EXTRACT_CHARS = 64 * 1024
+
 # Standardized response for empty/degenerate input
 EMPTY_CONTENT_RESPONSE = "[No content to analyze]"
 
@@ -199,6 +210,28 @@ def truncate_output(text: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS) -> s
     marker = f"\n\n... [Truncated {removed} characters for context budget] ...\n\n"
 
     return text[:keep_start] + marker + text[-keep_end:]
+
+
+def cut_to_budget(text: str, max_chars: int) -> str:
+    """Text of at most ``max_chars``: unchanged when it fits, otherwise its
+    head and tail, filling the budget, around a marker counting what is cut.
+
+    The marker names no tool: stored text reaches prompts whatever tools a
+    turn is given, and the prompt says itself where a raw file can be read.
+    """
+    if len(text) <= max_chars:
+        return text
+
+    def marker(omitted: int) -> str:
+        return f"\n\n... [{omitted} characters of the upload cut here] ...\n\n"
+
+    # Sized for the longest count first: the real one is no longer.
+    room = max_chars - len(marker(len(text)))
+    if room <= 0:  # a budget too small for the marker: the head alone
+        return text[:max_chars]
+    head = room // 2
+    tail = room - head
+    return text[:head] + marker(len(text) - head - tail) + text[len(text) - tail :]
 
 
 # ---------------------------------------------------------------------------
