@@ -3,10 +3,12 @@
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from faultmaven.core.investigation.lifecycle_metrics import (
+    inference_starved_total,
     prompt_context_recovery_total,
 )
 from faultmaven.core.investigation.llm_error_handler import (
@@ -59,7 +61,11 @@ from faultmaven.core.investigation.turn_budget import (
     clamp_to_turn_budget,
     spendable_turn_budget,
 )
-from faultmaven.exceptions import PROVIDER_REFUSED, RawModelContentRefused
+from faultmaven.exceptions import (
+    PROVIDER_REFUSED,
+    LLMOutputFloorError,
+    RawModelContentRefused,
+)
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
     send_to_model,
@@ -71,7 +77,11 @@ from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
     record_provider_call,
 )
-from faultmaven.infrastructure.llm.providers import StopReason, normalize_stop_reason
+from faultmaven.infrastructure.llm.providers import (
+    ReasoningIntent,
+    StopReason,
+    normalize_stop_reason,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
@@ -140,6 +150,15 @@ class RefusalState:
     is reduced, and the call takes neither the no-tools fallback nor #662."""
 
     seen: bool = False
+
+
+@dataclass
+class StarveState:
+    """One engine call's starved INFERENCE call (#2802). Once ``lowered``,
+    every later request of the call, #662's degrade included, is sent without
+    the reasoning intent and its floor: the re-issue runs once per engine call."""
+
+    lowered: bool = False
 
 
 def _is_refusal(response: Any, schema_model: Any) -> bool:
@@ -226,6 +245,26 @@ def _schema_answer(response: Any, schema_tool_name: str, schema_model: Any) -> A
 # body and well under STRUCTURED_OUTPUT_MAX_TOKENS, so the floor never raises
 # the cap and only forbids a starvable partition.
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
+
+
+# A starved INFERENCE call (#2802): hidden reasoning took the whole cap. It
+# surfaces three ways, all read as one signal (``LLMOutputFloorError``) while the
+# intent is on: the router's floor check, a provider that reports the cut itself
+# (Gemini raises on finishReason=MAX_TOKENS before the router sees a body), and
+# a returned body cut at the cap. Instead of doubling the cap, the call is
+# re-issued once per engine call without the intent, at the provider's default
+# for a structured call ("low" effort on the OpenAI reasoning families, the
+# capped thinkingLevel on Gemini 3.x), when the turn budget affords this
+# fraction of the starved attempt's own duration. Measured 2026-11-14 on Azure
+# gpt-6-luna-1 over three replayed single-shot turns: a starved attempt took
+# 52-63 s, and the same turns at "low" took at most 32 s and never starved (48
+# calls). The estimate only decides whether to try: the router clamps the
+# attempt to what is left. Not the retry ladder's own rule (the worst attempt
+# observed, i.e. the starved one): the lowered attempt is cheaper by
+# construction, and that rule would refuse nearly every re-issue in a 120 s
+# turn. Not a bigger cap: at ~140 output tokens/s a doubled 16,000-token attempt
+# takes about the whole 120 s turn budget.
+STARVED_INFERENCE_RETRY_COST_FRACTION = 0.6
 
 
 def _reads_as_cut(text: str) -> bool:
@@ -1748,6 +1787,7 @@ class StructuredOutputGenerator:
         the report to them, as the budget fallback does.
         """
         refusal = RefusalState()  # one per engine call (#1770)
+        starve = StarveState()  # one per engine call (#2802)
         try:
             return await self._generate_structured_output_inner(
                 prompt,
@@ -1762,6 +1802,7 @@ class StructuredOutputGenerator:
                 min_output_tokens=min_output_tokens,
                 base_prompt_builder=base_prompt_builder,
                 refusal=refusal,
+                starve=starve,
             )
         except Exception as exc:
             if (
@@ -1812,6 +1853,7 @@ class StructuredOutputGenerator:
                     reasoning_intent=reasoning_intent,
                     min_output_tokens=min_output_tokens,
                     refusal=refusal,
+                    starve=starve,
                 )
                 if kb_rendered is not None:
                     # The reply came from the minimal prompt, which carries no
@@ -1836,6 +1878,7 @@ class StructuredOutputGenerator:
         *,
         redaction_ctx: CaseRedactionContext,
         refusal: Optional[RefusalState] = None,
+        starve: Optional[StarveState] = None,
     ) -> BaseInteractionResponse:
         """
         Generate structured output from LLM using provider-agnostic capability system.
@@ -1988,7 +2031,7 @@ class StructuredOutputGenerator:
         # #662's minimal-prompt degrade is a call of its own.
         reask_state = {"used": False}
 
-        def _on_truncation(exc: Exception) -> OutputTruncationError:
+        def _on_truncation(exc: Exception) -> Exception:
             """Raise the cap for the next attempt and return the typed signal.
 
             Both truncation sites — the provider reporting the cut, and the
@@ -2002,6 +2045,12 @@ class StructuredOutputGenerator:
             recovery metric downstream reads exactly this text to attribute the
             degrade.
             """
+            if _inference_on():
+                # Reasoning starved the answer (#2802): lower it, not the cap.
+                return LLMOutputFloorError(
+                    f"INFERENCE call cut at max_tokens={max_tokens_state['value']}: "
+                    f"{exc}"
+                )
             old_max = max_tokens_state["value"]
             new_max = min(old_max * 2, STRUCTURED_OUTPUT_MAX_TOKENS_CEILING)
             if new_max <= old_max:
@@ -2028,6 +2077,12 @@ class StructuredOutputGenerator:
                 cap_reached=False,
             )
 
+        starve = starve or StarveState()
+        last_attempt = {"seconds": 0.0}
+
+        def _inference_on() -> bool:
+            return reasoning_intent is ReasoningIntent.INFERENCE and not starve.lowered
+
         # Define the LLM operation for retry; ``reask_of``: a re-ask (#1755).
         # ``reissue``: the one reduced re-issue of a refused call (#1770).
         async def llm_operation(reask_of: Any = None, reissue: bool = False):
@@ -2052,10 +2107,16 @@ class StructuredOutputGenerator:
             # fm#1116: the tool-less diagnostic call declares its reasoning
             # intent and output floor (#1117/#1118). Only ever set on the
             # single-shot path — the tool loop cannot carry effort on gpt-5.x.
-            if reasoning_intent is not None:
-                generate_params["reasoning_intent"] = reasoning_intent
-            if min_output_tokens is not None:
-                generate_params["min_output_tokens"] = min_output_tokens
+            # A starved call's re-issue (#2802) drops both: the floor exists
+            # to buy the INFERENCE lift, and is never cached or served.
+            if starve.lowered and reasoning_intent is not None:
+                generate_params["bypass_cache"] = True
+                generate_params["store_in_cache"] = False
+            else:
+                if reasoning_intent is not None:
+                    generate_params["reasoning_intent"] = reasoning_intent
+                if min_output_tokens is not None:
+                    generate_params["min_output_tokens"] = min_output_tokens
 
             # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
             # when set, so operators running a weak-structured-output
@@ -2136,6 +2197,7 @@ class StructuredOutputGenerator:
                     else [{"role": "user", "content": final_prompt + nudge}]
                 )
 
+            sent_at = time.monotonic()
             try:
                 response = await route_model_call(
                     self.deps.llm_provider, **generate_params
@@ -2153,6 +2215,8 @@ class StructuredOutputGenerator:
                 if is_output_truncation_error(gen_exc):
                     raise _on_truncation(gen_exc) from None
                 raise
+            finally:
+                last_attempt["seconds"] = time.monotonic() - sent_at
 
             # The provider's own truncation signal, kept for the parse block
             # below rather than acted on here.
@@ -2353,6 +2417,35 @@ class StructuredOutputGenerator:
         if result is not None:
             return result
 
+        starved = (
+            error_result.original_exception
+            if error_result is not None
+            and isinstance(error_result.original_exception, LLMOutputFloorError)
+            and reasoning_intent is ReasoningIntent.INFERENCE
+            and not starve.lowered
+            and not refusal.seen
+            else None
+        )
+        if starved is not None:
+            cost = last_attempt["seconds"] * STARVED_INFERENCE_RETRY_COST_FRACTION
+            if not can_afford_next_attempt(spendable_turn_budget(), 0.0, cost):
+                inference_starved_total.labels(outcome="unaffordable").inc()
+            else:
+                inference_starved_total.labels(outcome="reissued").inc()
+                logger.warning(
+                    "Structured output: reasoning starved the answer (%s); "
+                    "re-issuing once without the reasoning intent (#2802)",
+                    starved,
+                )
+                starve.lowered = True
+                result, error_result = await self.deps.llm_error_handler.with_retry(
+                    operation=llm_operation
+                )
+                if result is not None:
+                    inference_starved_total.labels(outcome="recovered").inc()
+                    return result
+                inference_starved_total.labels(outcome="failed").inc()
+
         # All retries exhausted or non-retryable error
         if error_result:
             error_msg = error_result.message
@@ -2367,6 +2460,8 @@ class StructuredOutputGenerator:
             # authoritative signal for this failure.
             orig = error_result.original_exception
             detail = f"{error_msg} ({orig})" if orig is not None else error_msg
+            if starved is not None and orig is not starved:
+                detail += f"; after the INFERENCE attempt starved ({starved})"
             logger.error(f"Structured generation failed after retries: {detail}")
             raise MilestoneEngineError(
                 f"Structured output generation failed: {detail}",

@@ -943,6 +943,22 @@ prompt_context_recovery_total = Counter(
 )
 
 
+# #2802: a tool-less INFERENCE call whose hidden reasoning took the whole output
+# cap. ``reissued`` counts each re-issue without the intent; ``recovered`` the
+# ones that answered; ``failed`` the ones that did not; ``unaffordable`` a
+# starved call the turn budget could not re-issue. Read the starve rate as
+# ``reissued + unaffordable`` against the single-shot turn rate.
+INFERENCE_STARVED_OUTCOMES = ("reissued", "recovered", "failed", "unaffordable")
+
+inference_starved_total = Counter(
+    "faultmaven_inference_starved_total",
+    "Tool-less INFERENCE calls whose reasoning took the whole output cap, by "
+    "``outcome`` (reissued | recovered | failed | unaffordable).",
+    ["outcome"],
+    label_values={"outcome": INFERENCE_STARVED_OUTCOMES},
+)
+
+
 # #1096 trust-grant observability. Since a conjunction is no longer a MECE
 # contest (§7.1.2), an ``and_group`` the model emits over two ALREADY-VALIDATED
 # rivals dissolves an arbitration hold: identification is granted, the
