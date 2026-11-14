@@ -297,9 +297,9 @@ class GeminiProvider(BaseLLMProvider):
           request for reasoning here would protect nothing.
 
           The router raises on INFERENCE-without-floor, but the router is not
-          the only door: ``milestone_engine`` binds a concrete provider and
-          sends to it directly (``dispatch.send_to_model``), bypassing that
-          check entirely.
+          the only door: ``milestone_engine``'s tool loop binds a concrete
+          provider (the DA provider) and sends to it directly
+          (``dispatch.send_to_model``), bypassing that check entirely.
           An invariant enforced at one of two entry points is not enforced, so
           the mechanism it guards refuses on its own here.
         """

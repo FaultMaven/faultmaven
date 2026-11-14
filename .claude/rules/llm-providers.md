@@ -361,8 +361,10 @@ property of the serving stack rather than of the model's or the host's name).
 
 **A caller can declare what a call needs from reasoning, and the minimum
 output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
-(#1118 / #1117) — and, since `milestone_engine` binds a concrete provider
-rather than routing, on the provider `_generate()` signatures underneath it.
+(#1118 / #1117) — and, since `milestone_engine`'s tool loop sends to a
+concrete provider (the DA provider) rather than routing, on the provider
+`_generate()` signatures underneath it. Its single shot goes through the
+router (the engine's `llm_provider` is the `LLMRouter`).
 Both default to absent, and where a call site passes neither the shape-based
 provider defaults above are what runs. **Five call sites ship declaring
 them**, four `EXTRACTION` and one `INFERENCE`:
@@ -394,15 +396,20 @@ provider refuses to lift a structured call's cap unless a floor is declared,
 and 2048 sits above every completion body measured on the replayed turn while
 staying well under `STRUCTURED_OUTPUT_MAX_TOKENS`, so it forbids a starvable
 partition without ever raising the cap. The engine's `llm_provider` is the
-`LLMRouter` (`container/providers/infrastructure.create_llm_provider`), so the
-router enforces the floor on this path too: a call whose hidden reasoning takes
-the whole cap raises `LLMOutputFloorError`. The generator then re-issues it
-once without the intent and its floor, at the provider's default for a
-structured call, never from or into the cache, when the turn budget affords
-`STARVED_INFERENCE_RETRY_COST_FRACTION` of the starved attempt's duration
-(#2802). Measured on Azure gpt-6-luna-1: `"medium"` starved 7 of 60 replayed
-attempts (52-63 s each), `"low"` none of 48. Raising the cap does not fit the
-turn: a doubled cap at ~140 output tokens/s takes about the whole 120 s budget.
+`LLMRouter` (`container/providers/infrastructure.create_llm_provider`), and the
+single shot goes through it. A call whose hidden reasoning takes the whole cap
+surfaces three ways: the router's floor check (`LLMOutputFloorError`), a
+provider that reports the cut itself (Gemini raises on `MAX_TOKENS` before the
+router sees a body), and a returned body cut at the cap. While the intent is
+on, the generator reads all three as one starvation signal and, instead of
+doubling the cap, re-issues the call once per engine call without the intent
+and its floor, at the provider's default for a structured call, outside the
+cache, when the turn budget affords `STARVED_INFERENCE_RETRY_COST_FRACTION` of
+the starved attempt's own duration (#2802; outcomes on
+`faultmaven_inference_starved_total`). Measured on Azure gpt-6-luna-1:
+`"medium"` starved 7 of 60 replayed attempts (52-63 s each), `"low"` none of
+48. Raising the cap does not fit the turn: a doubled cap at ~140 output
+tokens/s takes about the whole 120 s budget.
 
 The knobs themselves:
 
@@ -442,8 +449,8 @@ The knobs themselves:
 Two invariants worth knowing before adopting them: **`INFERENCE` requires
 `min_output_tokens`** (it lifts starvation guards, and the floor is what makes
 that safe — the router raises `ValueError`, and the Gemini provider independently
-refuses the lift, because `milestone_engine` reaches providers without going
-through the router); and the **floor is unenforceable on a provider reporting no
+refuses the lift, because `milestone_engine`'s tool loop reaches its provider
+without going through the router); and the **floor is unenforceable on a provider reporting no
 stop reason** (`UNKNOWN`) — a starved-looking body is warned about and returned,
 since "cut" and "short" are indistinguishable there. The pre-call bump raises
 `max_tokens` only *to* the floor, leaving no room for hidden reasoning: on a

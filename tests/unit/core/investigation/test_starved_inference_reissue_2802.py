@@ -1,12 +1,15 @@
 """A starved INFERENCE call is re-issued once without the intent (#2802).
 
 The tool-less single shot declares ``ReasoningIntent.INFERENCE`` with an output
-floor (fm#1116/#1117). When hidden reasoning takes the whole cap, the router
-raises ``LLMOutputFloorError``. The error is non-retryable (an identical retry
-starves identically), so the turn used to fail. Now the call is re-issued once
-without the intent and its floor, at the provider's default for a structured
-call, never from or into the cache, when the turn budget affords it. Measured
-on Azure gpt-6-luna-1: the starved turns at "low" never starved (48 calls).
+floor (fm#1116/#1117). When hidden reasoning takes the whole cap the call is
+starved, and that surfaces three ways: the router's floor check
+(``LLMOutputFloorError``), a provider that reports the cut itself (Gemini raises
+``OUTPUT_TRUNCATION`` before the router sees a body), and a body returned cut at
+the cap. Before, the first failed the turn and the other two doubled the cap
+with the intent kept. Now all three are one signal: the call is re-issued once
+per engine call without the intent and its floor, at the same cap, never from
+or into the cache, when the turn budget affords a fraction of the starved
+attempt's duration. After that a cut follows the ordinary truncation ladder.
 
 Entered at ``generate_structured_output``, the router a send recorder.
 """
@@ -21,10 +24,11 @@ from faultmaven.core.investigation.milestone_engine import generation
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.generation import (
+    STRUCTURED_OUTPUT_MAX_TOKENS,
     TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.exceptions import LLMOutputFloorError
+from faultmaven.exceptions import LLMErrorCategory, LLMException, LLMOutputFloorError
 from faultmaven.infrastructure.llm.providers import ReasoningIntent, StopReason
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -35,22 +39,45 @@ from tests.model_content import disabled_redaction
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
-ANSWER = LLMResponse(
-    content='{"agent_response": "the clock on app-02 is ahead", "state_updates": {}}',
-    confidence=0.9,
-    provider="azure",
-    model="gpt-6-luna-1",
-    tokens_used=10,
-    response_time_ms=1,
-    stop_reason=StopReason.STOP,
+INFERENCE = dict(
+    reasoning_intent=ReasoningIntent.INFERENCE,
+    min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
 )
 
 
-def _starved() -> LLMOutputFloorError:
+def _response(content: str, stop: StopReason = StopReason.STOP) -> LLMResponse:
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="azure",
+        model="gpt-6-luna-1",
+        tokens_used=10,
+        response_time_ms=1,
+        stop_reason=stop,
+    )
+
+
+ANSWER = _response(
+    '{"agent_response": "the clock on app-02 is ahead", "state_updates": {}}'
+)
+CUT = _response('{"agent_response": "the clock on app-02 is', StopReason.MAX_TOKENS)
+
+
+def _floor() -> LLMOutputFloorError:
+    """What the router raises (router.py, the post-call floor check)."""
     return LLMOutputFloorError(
         "LLM response starved below the declared output floor: ~0 visible output "
         "tokens < min_output_tokens=2048, with stop_reason=MAX_TOKENS at "
         "max_tokens=8000 (provider=azure model=gpt-6-luna-1)"
+    )
+
+
+def _gemini_cut() -> LLMException:
+    """What Gemini raises on finishReason=MAX_TOKENS for a structured call."""
+    return LLMException(
+        "Response truncated due to token limit (finishReason=MAX_TOKENS).",
+        retryable=True,
+        category=LLMErrorCategory.OUTPUT_TRUNCATION,
     )
 
 
@@ -82,17 +109,9 @@ def _engine():
     return engine
 
 
-async def _single_shot(engine, *, inference=True):
+async def _single_shot(engine, **intent):
     case = MagicMock()
     case.case_id = "case_2802"
-    kwargs = (
-        dict(
-            reasoning_intent=ReasoningIntent.INFERENCE,
-            min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
-        )
-        if inference
-        else {}
-    )
     with patch(
         "faultmaven.core.investigation.prompts.templates.fallback."
         "get_fallback_prompt_for_case",
@@ -104,74 +123,149 @@ async def _single_shot(engine, *, inference=True):
             case=case,
             user_message="first requests after login get 401",
             redaction_ctx=disabled_redaction(),
-            **kwargs,
+            **intent,
         )
 
 
-async def test_a_starved_call_is_reissued_once_without_the_intent():
-    engine = _engine()
-    engine.deps.llm_provider.route, sent = _queue([_starved(), ANSWER])
+def _intent(call):
+    return call.get("reasoning_intent"), call.get("min_output_tokens")
 
-    result = await _single_shot(engine)
+
+@pytest.mark.parametrize(
+    "starved",
+    [_floor, _gemini_cut, lambda: CUT],
+    ids=["router_floor", "provider_reported_cut", "cut_body"],
+)
+async def test_every_form_of_starvation_is_reissued_once_without_the_intent(
+    starved, monkeypatch
+):
+    counter = MagicMock()
+    monkeypatch.setattr(generation, "inference_starved_total", counter)
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _queue([starved(), ANSWER])
+
+    result = await _single_shot(engine, **INFERENCE)
 
     assert result.agent_response == "the clock on app-02 is ahead"
     first, second = sent
-    assert first["reasoning_intent"] is ReasoningIntent.INFERENCE
-    assert first["min_output_tokens"] == TOOLLESS_INFERENCE_OUTPUT_FLOOR
-    assert "reasoning_intent" not in second and "min_output_tokens" not in second
+    assert _intent(first) == (
+        ReasoningIntent.INFERENCE,
+        TOOLLESS_INFERENCE_OUTPUT_FLOOR,
+    )
+    assert _intent(second) == (None, None)
+    # The same cap: reasoning is lowered, not the cap raised.
+    assert first["max_tokens"] == second["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
     assert second["bypass_cache"] is True and second["store_in_cache"] is False
     assert second["prompt"] == first["prompt"]
-    assert second["max_tokens"] == first["max_tokens"]
+    outcomes = [c.kwargs["outcome"] for c in counter.labels.call_args_list]
+    assert outcomes == ["reissued", "recovered"]
 
 
-async def test_starved_again_fails_after_two_calls():
+async def test_after_the_reissue_a_cut_follows_the_ordinary_ladder():
+    """The realistic second failure: the lowered call returns a cut body. It
+    raises the cap; the intent is never put back."""
     engine = _engine()
-    engine.deps.llm_provider.route, sent = _queue([_starved(), _starved(), ANSWER])
+    engine.deps.llm_provider.route, sent = _queue([_floor(), CUT, ANSWER])
 
-    with pytest.raises(MilestoneEngineError, match="starved"):
-        await _single_shot(engine)
+    await _single_shot(engine, **INFERENCE)
 
-    assert len(sent) == 2
+    assert [_intent(c) for c in sent] == [
+        (ReasoningIntent.INFERENCE, TOOLLESS_INFERENCE_OUTPUT_FLOOR),
+        (None, None),
+        (None, None),
+    ]
+    assert [c["max_tokens"] for c in sent] == [
+        STRUCTURED_OUTPUT_MAX_TOKENS,
+        STRUCTURED_OUTPUT_MAX_TOKENS,
+        STRUCTURED_OUTPUT_MAX_TOKENS * 2,
+    ]
 
 
-async def test_a_call_without_the_intent_is_not_reissued():
-    """The floor buys the INFERENCE lift; without the lift there is nothing to
-    lower, so a starved call stays a failure."""
+async def test_the_reissue_runs_once_per_engine_call_the_degrade_included():
+    """Lowered, then cut to the cap ceiling: #662's minimal-prompt degrade runs,
+    and it too is sent without the intent: nothing re-arms it."""
     engine = _engine()
-    engine.deps.llm_provider.route, sent = _queue([_starved(), ANSWER])
+    engine.deps.llm_provider.route, sent = _queue([_floor(), CUT, CUT, ANSWER])
 
+    await _single_shot(engine, **INFERENCE)
+
+    assert sent[-1]["prompt"].startswith("MINIMAL FALLBACK PROMPT")
+    assert [_intent(c)[0] for c in sent] == [
+        ReasoningIntent.INFERENCE,
+        None,
+        None,
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        {},
+        dict(reasoning_intent=ReasoningIntent.EXTRACTION, min_output_tokens=512),
+    ],
+    ids=["no_intent", "extraction"],
+)
+async def test_only_an_inference_call_is_lowered(intent):
+    """Without INFERENCE nothing lifted the reasoning, so a cut raises the cap
+    as before (positive control: the bump), and a floor error stays final."""
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _queue([CUT, ANSWER])
+    await _single_shot(engine, **intent)
+    assert [c["max_tokens"] for c in sent] == [
+        STRUCTURED_OUTPUT_MAX_TOKENS,
+        STRUCTURED_OUTPUT_MAX_TOKENS * 2,
+    ]
+
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _queue([_floor(), ANSWER])
     with pytest.raises(MilestoneEngineError):
-        await _single_shot(engine, inference=False)
-
+        await _single_shot(engine, **intent)
     assert len(sent) == 1
 
 
-@pytest.mark.parametrize("affordable", [False, True])
-async def test_the_reissue_is_made_only_when_the_turn_budget_affords_it(
-    affordable, monkeypatch
+@pytest.mark.parametrize("spendable, reissued", [(30.0, False), (40.0, True)])
+async def test_the_budget_is_judged_on_the_starved_attempts_own_duration(
+    spendable, reissued, monkeypatch
 ):
-    """Within a bound turn, the estimate is a fraction of the starved attempt's
-    duration: an unaffordable estimate makes no second call; a cheap one,
-    under the same deadline, does (the positive control)."""
+    """The real fraction (0.6) of a 60 s starved attempt is 36 s: under 30 s
+    spendable it is not re-issued, under 40 s it is."""
+    assert generation.STARVED_INFERENCE_RETRY_COST_FRACTION == 0.6
+    ticks = iter([0.0, 60.0])
     monkeypatch.setattr(
-        generation, "STARVED_INFERENCE_RETRY_COST_FRACTION", 0.0 if affordable else 1e9
+        generation, "time", MagicMock(monotonic=lambda: next(ticks, 60.0))
     )
-    clock = iter([0.0, 60.0])
-    monkeypatch.setattr(
-        generation, "time", MagicMock(monotonic=lambda: next(clock, 60.0))
-    )
+    counter = MagicMock()
+    monkeypatch.setattr(generation, "inference_starved_total", counter)
     engine = _engine()
-    engine.deps.llm_provider.route, sent = _queue([_starved(), ANSWER])
+    engine.deps.llm_provider.route, sent = _queue([_floor(), ANSWER])
     reserves = (
         turn_budget.TURN_BUDGET_RESERVE_SECONDS
         + turn_budget.TURN_COMMIT_RESERVE_SECONDS
     )
 
-    with turn_budget.bind_turn_deadline(reserves + 30.0):
-        if affordable:
-            await _single_shot(engine)
+    with turn_budget.bind_turn_deadline(reserves + spendable):
+        if reissued:
+            await _single_shot(engine, **INFERENCE)
         else:
-            with pytest.raises(MilestoneEngineError):
-                await _single_shot(engine)
+            with pytest.raises(MilestoneEngineError, match="starved"):
+                await _single_shot(engine, **INFERENCE)
 
-    assert len(sent) == (2 if affordable else 1)
+    assert len(sent) == (2 if reissued else 1)
+    outcomes = [c.kwargs["outcome"] for c in counter.labels.call_args_list]
+    assert outcomes == (["reissued", "recovered"] if reissued else ["unaffordable"])
+
+
+async def test_a_failed_reissue_still_names_the_starvation(monkeypatch):
+    counter = MagicMock()
+    monkeypatch.setattr(generation, "inference_starved_total", counter)
+    engine = _engine()
+    engine.deps.llm_provider.route, sent = _queue([_floor(), ValueError("boom")])
+
+    with pytest.raises(MilestoneEngineError) as raised:
+        await _single_shot(engine, **INFERENCE)
+
+    assert len(sent) == 2
+    assert "after the INFERENCE attempt starved" in str(raised.value)
+    outcomes = [c.kwargs["outcome"] for c in counter.labels.call_args_list]
+    assert outcomes == ["reissued", "failed"]
