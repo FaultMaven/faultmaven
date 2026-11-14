@@ -55,7 +55,10 @@ from faultmaven.modules.preprocessing.extractors.sanity_check import (
     SanityResult,
     run_sanity_check,
 )
-from faultmaven.modules.preprocessing.extractors.utils import extract_time_range_ts
+from faultmaven.modules.preprocessing.extractors.utils import (
+    MAX_STRUCTURAL_INDEX_CHARS,
+    extract_time_range_ts,
+)
 
 if TYPE_CHECKING:
     pass
@@ -126,7 +129,11 @@ def _tier1_slots() -> worker_process.FairSlots:
 
 # Files smaller than this threshold are passed through raw instead of
 # running extraction — the raw content is already a better "file extract"
-# than any compressed representation would be.
+# than any compressed representation would be. The passthrough also needs the
+# content to fit ``MAX_STRUCTURAL_INDEX_CHARS``, the most any extract holds: a
+# few lines can carry megabytes (a one-line JSON export), and that content
+# goes to an extractor, or to the clarification card when its type is
+# uncertain (#2789).
 MIN_EXTRACTION_LINES = 200
 
 
@@ -299,8 +306,9 @@ _NO_BARE_EPOCH_TYPES = frozenset(
 
 def _line_count(content: str) -> int:
     """Lines as an editor counts them: a final newline ends the last line
-    rather than starting another. Decides the small-file passthrough, and
-    with it whether an uncertain upload is put to the user (#2355)."""
+    rather than starting another. With the content's size (#2789), decides
+    the small-file passthrough, and with it whether an uncertain upload is
+    put to the user (#2355)."""
     if not content:
         return 0
     return content.count("\n") + (0 if content.endswith("\n") else 1)
@@ -437,8 +445,9 @@ class PreprocessingService:
           extractor. Returns a placeholder carrying
           suggested types; the turn offers them as clarification choices,
           and a choice re-runs this under ``user_override``. An uncertain
-          upload no extractor would read (under ``MIN_EXTRACTION_LINES``, or
-          a shape-valid page capture) is not put to the user: it takes its
+          upload no extractor would read (under ``MIN_EXTRACTION_LINES`` and
+          within ``MAX_STRUCTURAL_INDEX_CHARS``, or a shape-valid page
+          capture) is not put to the user: it takes its
           passthrough typed UNSTRUCTURED_TEXT (#2355).
 
         Phase 1.5 — Reclassification path: the caller can pass
@@ -597,14 +606,20 @@ class PreprocessingService:
         # Path 4: small-file passthrough — raw content is a better file
         # extract than any compressed representation, and extraction adds
         # no value for files that fit in the LLM context window directly.
+        # Small by lines and by size: the raw content stands in for an
+        # extract, so it may not exceed what an extract holds (#2789).
         line_count = _line_count(content)
-        if line_count < MIN_EXTRACTION_LINES:
+        if line_count < MIN_EXTRACTION_LINES and len(content) <= (
+            MAX_STRUCTURAL_INDEX_CHARS
+        ):
             logger.info(
-                "classify_and_extract: %s has %d lines (< %d threshold) — "
-                "raw passthrough, skipping extraction",
+                "classify_and_extract: %s has %d lines (< %d) and %d chars "
+                "(<= %d) — raw passthrough, skipping extraction",
                 filename,
                 line_count,
                 MIN_EXTRACTION_LINES,
+                len(content),
+                MAX_STRUCTURAL_INDEX_CHARS,
             )
             detailed_data_type, unified_data_type, epoch_policy_type = (
                 self._settle_uncertain(
@@ -1227,7 +1242,9 @@ class PreprocessingService:
             start_time=start_time,
         )
 
-    def _fallback_direct_extraction(self, content: str, max_chars: int = 10000) -> str:
+    def _fallback_direct_extraction(
+        self, content: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS
+    ) -> str:
         """Fallback extraction for types without extractors: truncate to max_chars."""
         if len(content) <= max_chars:
             return content

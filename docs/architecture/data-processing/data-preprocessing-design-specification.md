@@ -6,6 +6,10 @@
 
 ## Change Summary
 
+### v5.8 → v5.9 (The small-file passthrough is small by size as well as lines, #2789)
+
+The small-file passthrough now also needs the content to fit `MAX_STRUCTURAL_INDEX_CHARS` (10,000), the most any extract holds. A few lines can carry megabytes: a one-line, 3.5 MB JSON export was stored whole as its extract, and the model saw only its first 4,000 characters. Content past the bound reaches the extractor dispatch like any larger upload: a confident type goes to its extractor, an uncertain one to the clarification card (owner, 2026-11-14). The byte bound adds to the line count; it does not replace it (§2.4, §2.5, Appendix B). The page-capture passthrough's head-only cap reads the same constant instead of a literal.
+
 ### v5.7 → v5.8 (Clarification only where the type picks the extractor, #2355)
 
 An upload whose type the classifier cannot decide is put to the user only where an extractor would read it. An upload under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture, takes its passthrough typed `UNSTRUCTURED_TEXT`, with no card; the rest keep the cooperative clarification (§2.4, §2.5). The small-file passthrough's line count no longer counts a final newline as a line. New counter `faultmaven_preprocessing_uncertain_classification_total{outcome}`. §2.5 now defers to the owning document instead of restating it.
@@ -565,9 +569,9 @@ investigation_service.process_turn(payload: TurnPayload)
 **Single entry point**: `PreprocessingService.classify_and_extract(content, filename, source_metadata, user_override)`. The service short-circuits extraction for **four** special paths (in evaluation order):
 
 - `data_type == UNANALYZABLE` → placeholder with `extraction_method="none"`.
-- `classification_failed=True` where an extractor would run → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below). An uncertain upload no extractor would read (a shape-valid page capture, or under `MIN_EXTRACTION_LINES`) is retyped `UNSTRUCTURED_TEXT` and continues to the paths below, ending in `page_capture_passthrough` or `raw_passthrough` (#2355).
+- `classification_failed=True` where an extractor would run → placeholder with `extraction_method="classification_failed"` plus `suggested_types` in `extraction_metadata` for the cooperative-clarification UX (see §2.5 below). An uncertain upload no extractor would read (a shape-valid page capture, or a small file as defined below) is retyped `UNSTRUCTURED_TEXT` and continues to the paths below, ending in `page_capture_passthrough` or `raw_passthrough` (#2355).
 - `source_type == "page_capture"` → `page_capture_passthrough` (copilot already produced structured markdown).
-- `line_count < MIN_EXTRACTION_LINES` (200) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`).
+- `line_count < MIN_EXTRACTION_LINES` (200) **and** `len(content) <= MAX_STRUCTURAL_INDEX_CHARS` (10,000 characters) → `raw_passthrough` (the raw content is itself a better orientation than any compressed structural index for files this small; extractors are skipped and the raw bytes are stored as `file_extract`). The size bound is the most any extract holds (Appendix B, "Output budget"): the raw content stands in for an extract, so it may not exceed one. Without it a few-line, multi-MB upload (a one-line JSON export) was stored whole as its extract, though the prompt shows at most `EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM` of it. Content past either bound goes on to the clarification check and the extractor dispatch (#2789). Every paste in the stored paste-typing set (281 pastes, largest 6,774 characters) stays under the size bound.
 
 Otherwise the type-specific extractor runs under a 2-second deadline (Phase 2 sanity-retry may run on top — see §2.6). The reclassification entry point (§2.6) reuses this same method via `user_override`.
 
@@ -588,8 +592,8 @@ The `extraction_metadata["evidence_metadata"]` slot carries a structured `Eviden
 
 When the heuristic classifier returns `classification_failed=True`, it populates `ClassificationResult.suggested_types` with up to 3 candidate types, which `PreprocessingService` forwards via `extraction_metadata["suggested_types"]`. What happens next depends on the upload's length:
 
-- **An extractor would run** (200 lines or more, and not a shape-valid page capture; the type picks the extractor): the placeholder short-circuit of §2.4. The turn runs on the placeholder and its preview, and `InvestigationService` then injects DECIDE choices (one per suggested type plus "Something else"). A choice is resolved mechanically, with no LLM call: `_handle_file_reclassification` re-runs preprocessing under `user_override`, and an "Analyze it now" follow-up starts the analysis.
-- **No extractor would run** (under 200 lines, or a shape-valid page capture): no question. The upload passes to the model as `UNSTRUCTURED_TEXT` via its passthrough. The verdict is recorded as uncertain on the result's `evidence_metadata.classification`, which intake does not persist (#1710); `faultmaven_preprocessing_uncertain_classification_total` counts it (#2355).
+- **An extractor would run** (200 lines or more, or over 10,000 characters, and not a shape-valid page capture; the type picks the extractor): the placeholder short-circuit of §2.4. The turn runs on the placeholder and its preview, and `InvestigationService` then injects DECIDE choices (one per suggested type plus "Something else"). A choice is resolved mechanically, with no LLM call: `_handle_file_reclassification` re-runs preprocessing under `user_override`, and an "Analyze it now" follow-up starts the analysis.
+- **No extractor would run** (under 200 lines and within 10,000 characters, or a shape-valid page capture): no question. The upload passes to the model as `UNSTRUCTURED_TEXT` via its passthrough. The verdict is recorded as uncertain on the result's `evidence_metadata.classification`, which intake does not persist (#1710); `faultmaven_preprocessing_uncertain_classification_total` counts it (#2355).
 
 ### 2.6 Reclassification and Sanity-Retry
 
@@ -635,7 +639,7 @@ Best-effort throughout: extraction errors degrade to `None`; the field is Option
 
 Four behaviours that the §2.4 entry-point flow doesn't surface but are load-bearing in production. All have inline `ISS-…` rationale anchors in the source.
 
-**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (a `[captured_at:` preamble, a `## ` heading) on the incoming markdown. A capture that fails the shape check does not get the passthrough: it is logged and falls through to the paths any upload takes (the small-file passthrough under 200 lines; at 200 lines or more, its type's extractor, or the clarification placeholder of §2.5 when its type is uncertain), since it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each fall-through so operators can alert on a sudden spike. Implementation: `PreprocessingService.classify_and_extract`, Path 3.
+**Page-capture shape validation (security gate).** Before dispatching `source_type=page_capture` content to its passthrough branch, `PreprocessingService` validates structural markers (a `[captured_at:` preamble, a `## ` heading) on the incoming markdown. A capture that fails the shape check does not get the passthrough: it is logged and falls through to the paths any upload takes (the small-file passthrough under 200 lines and within 10,000 characters; past either bound, its type's extractor, or the clarification placeholder of §2.5 when its type is uncertain), since it indicates either a misbehaving copilot build or a content-injection attempt. The `PAGE_CAPTURE_SHAPE_INVALID_TOTAL` Prometheus counter increments on each fall-through so operators can alert on a sudden spike. Implementation: `PreprocessingService.classify_and_extract`, Path 3.
 
 **Placeholder content preview.** When `classification_failed=True` short-circuits to a placeholder result (where an extractor would run, §2.4), `_build_content_preview()` attaches a truncated preview of the original content to the placeholder so the agent has something concrete to reason about on the same turn (instead of just the literal "classification uncertain" string). ISS-030. Implementation: `preprocessing_service.py:152–212`.
 
@@ -1551,7 +1555,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 | Marker | Triggered when |
 | --- | --- |
 | `page_capture_passthrough` | `source_type == "page_capture"` — content is already structured markdown from the copilot; extractor is skipped |
-| `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped |
+| `raw_passthrough` | `line_count < MIN_EXTRACTION_LINES` (200) and `len(content) <= MAX_STRUCTURAL_INDEX_CHARS` (10,000) — small file, raw content stored directly as `file_extract` (no compression value); extractor is skipped |
 | `structure_extraction` | Tier 1 timed out (its worker killed at the deadline), found no slot, or ended without a result — falls back to a truncated preview with `timeout_fallback=True`, `busy_fallback=True` or `error_fallback=True` in metadata |
 | `none` | `detailed_data_type == UNANALYZABLE` — placeholder returned, no extractor runs |
 | `classification_failed` | The classifier could not decide the type and an extractor would run — placeholder returned with `suggested_types` in metadata; the turn offers type choices (§2.5). An uncertain upload no extractor would read ends in `page_capture_passthrough` or `raw_passthrough` instead |
@@ -1562,7 +1566,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 - `MAX_STRUCTURAL_INDEX_CHARS = 10000`
 - **Two truncation strategies, applied at different stages:**
   - `truncate_output()` (extractors, `extractors/utils.py`) — preserves the first 40 % + last 40 % of the produced `file_extract` content so both file headers and tails remain visible. Applied when an extractor's output exceeds the cap.
-  - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `max_chars=10000` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator when no extractor runs (`page_capture_passthrough`, `UNANALYZABLE`, `classification_failed`, Tier 1 timeout/error `structure_extraction` fallback) — there's no extractor output to preserve a tail from, just raw content.
+  - `_fallback_direct_extraction()` (`PreprocessingService`, `preprocessing_service.py`) — **head-only** cap at `MAX_STRUCTURAL_INDEX_CHARS` with a trailing `... [Truncated N chars]` marker. Used by the orchestrator when no extractor runs (`page_capture_passthrough`, `UNANALYZABLE`, `classification_failed`, Tier 1 timeout/error `structure_extraction` fallback) — there's no extractor output to preserve a tail from, just raw content.
 
 ### Shared utilities (`extractors/utils.py`)
 
