@@ -230,6 +230,12 @@ OTHER_READERS: dict[tuple[str, str], tuple[int, str]] = {
     ("faultmaven/infrastructure/llm/dispatch.py", "send_to_model"): (2, _WIRE),
     # The routed seam (#1998 P2) reads a call's ``messages`` keyword to check it.
     ("faultmaven/infrastructure/llm/dispatch.py", "route_model_call"): (1, _WIRE),
+    # #2799: which tool results a tool-loop request carries, so a kb_qa
+    # citation is confirmed only for a call still in front of the reply.
+    (
+        "faultmaven/core/investigation/milestone_engine/generation.py",
+        "StructuredOutputGenerator._tool_augmented_generate._tool_loop_call",
+    ): (1, _WIRE),
     # #1748: the terminal follow-up counter compares a turn's text with the
     # confirming turn's own message, to keep a resubmission out of a metric.
     (

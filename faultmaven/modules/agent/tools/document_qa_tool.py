@@ -507,7 +507,8 @@ Answer:"""
             "answer": answer,
             "sources": sources,
             # The chunks behind ``sources``, for a caller that cites them by
-            # document rather than by title (the turn's ``sources``, #2797).
+            # document rather than by title: kb_qa's sections in the turn's
+            # ``sources`` (core/investigation/kb_tool_citations.py).
             "cited_chunks": cited,
             "chunk_count": len(chunks),
             "confidence": avg_score,

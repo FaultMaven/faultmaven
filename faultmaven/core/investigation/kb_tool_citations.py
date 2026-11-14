@@ -15,26 +15,38 @@ runbook the model was not shown is worse than citing none.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from faultmaven.core.investigation.kb_question import (
+    KB_QA_TRIGGER,
     KB_QUESTION_TRIGGER,
     excerpt_of,
     section_key,
+    take_over_pushed,
 )
 
-#: ``metadata.trigger`` of a source ``kb_qa`` answered from.
-KB_QA_TRIGGER = "kb_qa"
+#: At most this many sections are cited from a turn's kb_qa calls, and this
+#: many per runbook: the question lookup's caps, so a turn that calls kb_qa
+#: several times on one topic does not flood the list with one runbook.
+KB_QA_MAX_ENTRIES = 5
+KB_QA_MAX_PER_RUNBOOK = 2
 
 
-def kb_qa_entry(chunk: dict[str, Any]) -> dict[str, Any]:
-    """One cited chunk as a reported entry (the push's and lookup's shape)."""
-    metadata = chunk.get("metadata") or {}
+def kb_qa_entry(chunk: Any) -> Optional[dict[str, Any]]:
+    """One cited chunk as a reported entry (the push's and lookup's shape), or
+    ``None`` for a chunk that cannot be cited: bookkeeping never fails the
+    answer the tool already produced."""
+    if not isinstance(chunk, dict):
+        return None
+    metadata = chunk.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    content = chunk.get("content")
     score = chunk.get("score")
     return {
         "title": metadata.get("title") or metadata.get("document_title"),
         "parent_document_id": metadata.get("parent_document_id"),
-        "summary": excerpt_of(chunk.get("content")),
+        "summary": excerpt_of(content if isinstance(content, str) else None),
         "score": float(score) if isinstance(score, (int, float)) else None,
         "trigger": KB_QA_TRIGGER,
     }
@@ -45,7 +57,9 @@ def _key(entry: dict[str, Any]) -> tuple[str, str]:
 
 
 def add_kb_qa_entries(rendered: list, cited: Iterable[dict[str, Any]]) -> None:
-    """Add ``cited`` to the turn's report ``rendered``, each section once.
+    """Add ``cited`` to the turn's report ``rendered``, each section once, the
+    best-scored first, within ``KB_QA_MAX_ENTRIES`` and
+    ``KB_QA_MAX_PER_RUNBOOK``.
 
     A section the question lookup also carries stays the lookup's: it answers
     what the user asked. A section the push carried becomes ``kb_qa``'s: the
@@ -61,15 +75,19 @@ def add_kb_qa_entries(rendered: list, cited: Iterable[dict[str, Any]]) -> None:
     }
     added: list[dict[str, Any]] = []
     seen = set(lookup)
-    for entry in cited:
+    per_runbook: dict[str, int] = {}
+    best_first = sorted(cited, key=lambda e: -(e.get("score") or 0.0))
+    for entry in best_first:
         key = _key(entry)
-        if not entry.get("parent_document_id") or key in seen:
+        runbook = entry.get("parent_document_id")
+        if not runbook or key in seen:
+            continue
+        if per_runbook.get(runbook, 0) >= KB_QA_MAX_PER_RUNBOOK:
             continue
         seen.add(key)
+        per_runbook[runbook] = per_runbook.get(runbook, 0) + 1
         added.append(entry)
-    if not added:
-        return
-    fetched = {_key(e) for e in added}
-    rendered[:] = [
-        e for e in rendered if not (isinstance(e, dict) and _key(e) in fetched)
-    ] + added
+        if len(added) == KB_QA_MAX_ENTRIES:
+            break
+    if added:
+        rendered[:] = take_over_pushed(rendered, added) + added

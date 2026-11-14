@@ -20,11 +20,14 @@ import pytest
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.kb_question import (
+    KB_ENTRY_ALSO_PUSHED,
+    KB_QA_TRIGGER,
     KB_QUESTION_EXCERPT_CHARS,
     KB_QUESTION_TRIGGER,
+    take_over_pushed,
 )
 from faultmaven.core.investigation.kb_tool_citations import (
-    KB_QA_TRIGGER,
+    KB_QA_MAX_ENTRIES,
     add_kb_qa_entries,
     kb_qa_entry,
 )
@@ -156,10 +159,32 @@ class TestTheCollector:
     def test_entries_are_cited_only_once_confirmed(self):
         citations = KbCitations()
         citations.add([_entry("rb_kafka", KB_QA_TRIGGER)])
+        citations.attribute("call_1")
+        citations.sent(frozenset({"call_1"}))
         assert citations.confirmed == []
         citations.confirm()
         assert [e["parent_document_id"] for e in citations.confirmed] == ["rb_kafka"]
-        assert citations.pending == []
+
+    def test_a_call_the_last_request_did_not_carry_is_not_confirmed(self):
+        """Its exchange was elided to fit the loop's budget: the reply did not
+        have it in front of it."""
+        citations = KbCitations()
+        citations.add([_entry("rb_elided", KB_QA_TRIGGER)])
+        citations.attribute("call_1")
+        citations.add([_entry("rb_kept", KB_QA_TRIGGER)])
+        citations.attribute("call_2")
+        citations.sent(frozenset({"call_2"}))
+        citations.confirm()
+        assert [e["parent_document_id"] for e in citations.confirmed] == ["rb_kept"]
+
+    def test_a_new_loop_drops_what_an_earlier_attempt_fetched(self):
+        citations = KbCitations()
+        citations.add([_entry("rb_discarded", KB_QA_TRIGGER)])
+        citations.attribute("call_1")
+        citations.start_loop()
+        citations.sent(frozenset({"call_1"}))
+        citations.confirm()
+        assert citations.confirmed == []
 
     def test_every_copy_of_a_context_shares_the_turns_collector(self):
         context = ToolContext(
@@ -188,6 +213,14 @@ def _context() -> ToolContext:
     )
 
 
+def _held(citations: KbCitations) -> list[str]:
+    """What the collector holds for the next call, by runbook."""
+    citations.attribute("probe")
+    citations.sent(frozenset({"probe"}))
+    citations.confirm()
+    return [e["parent_document_id"] for e in citations.confirmed]
+
+
 class TestTheAdapter:
     async def test_what_the_answer_cites_is_held_for_the_turn(self):
         wrapped = MagicMock()
@@ -199,10 +232,8 @@ class TestTheAdapter:
             wrapped, admit=admit_every_parent
         ).execute_with_context({"question": "consumer lag?"}, context)
         assert result.success
-        assert [e["parent_document_id"] for e in context.kb_citations.pending] == [
-            "rb_kafka"
-        ]
-        assert context.kb_citations.confirmed == []
+        assert context.kb_citations.confirmed == []  # held, not cited
+        assert _held(context.kb_citations) == ["rb_kafka"]
 
     async def test_a_failed_search_holds_nothing(self):
         wrapped = MagicMock()
@@ -212,7 +243,23 @@ class TestTheAdapter:
             wrapped, admit=admit_every_parent
         ).execute_with_context({"question": "consumer lag?"}, context)
         assert not result.success
-        assert context.kb_citations.pending == []
+        assert _held(context.kb_citations) == []
+
+    async def test_a_chunk_that_cannot_be_cited_does_not_fail_the_answer(self):
+        wrapped = MagicMock()
+        wrapped.answer = AsyncMock(
+            return_value=(
+                "answer",
+                [{"content": "x", "metadata": ["not", "a", "dict"]}, _chunk("rb_ok")],
+            )
+        )
+        context = _context()
+        result = await KBToolAdapter(
+            wrapped, admit=admit_every_parent
+        ).execute_with_context({"question": "consumer lag?"}, context)
+        assert result.success
+        assert result.data == "answer"
+        assert _held(context.kb_citations) == ["rb_ok"]
 
 
 class TestWhatTheAnswerCites:
@@ -353,8 +400,11 @@ class TestTheInvestigatingTurn:
         async def generate(prompt, schema, **kwargs):
             citations = kwargs["tool_context"].kb_citations
             citations.add([kb_qa_entry(_chunk("rb_kafka"))])
+            citations.attribute("call_1")
+            citations.sent(frozenset({"call_1"}))
             citations.confirm()
             citations.add([kb_qa_entry(_chunk("rb_unconfirmed"))])
+            citations.attribute("call_2")
             return SimpleNamespace(agent_response="ok")
 
         generator = MagicMock()
@@ -507,5 +557,145 @@ class TestTheOverflowRetry:
             redaction_ctx=disabled_redaction(),
             kb_rendered=rendered,
         )
+
+        assert [e["parent_document_id"] for e in rendered] == ["rb_pushed"]
+
+
+# ---------------------------------------------------------------------------
+# Review round (#2799)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCap:
+    def test_the_best_sections_are_kept_within_the_caps(self):
+        cited = (
+            [
+                dict(_entry("rb_a", KB_QA_TRIGGER, f"a{i}"), score=0.9 - i / 100)
+                for i in range(4)
+            ]
+            + [
+                dict(_entry("rb_b", KB_QA_TRIGGER, f"b{i}"), score=0.7 - i / 100)
+                for i in range(3)
+            ]
+            + [
+                dict(_entry("rb_c", KB_QA_TRIGGER, f"c{i}"), score=0.5 - i / 100)
+                for i in range(3)
+            ]
+        )
+        rendered: list = []
+        add_kb_qa_entries(rendered, list(reversed(cited)))  # worst first
+        assert [(e["parent_document_id"], e["summary"]) for e in rendered] == [
+            ("rb_a", "a0"),
+            ("rb_a", "a1"),
+            ("rb_b", "b0"),
+            ("rb_b", "b1"),
+            ("rb_c", "c0"),
+        ]
+        assert len(rendered) == KB_QA_MAX_ENTRIES
+
+
+class TestATakeoverIsRecorded:
+    """A turn's own search that takes over a pushed section marks it, so the
+    next turn still compares its standing context against that row."""
+
+    def test_the_kb_qa_entry_is_marked(self):
+        rendered = [_entry("rb_kafka", "symptom")]
+        add_kb_qa_entries(rendered, [_entry("rb_kafka", KB_QA_TRIGGER)])
+        assert rendered[0][KB_ENTRY_ALSO_PUSHED] is True
+
+    def test_a_section_only_the_search_found_is_not_marked(self):
+        rendered = [_entry("rb_other", "symptom")]
+        add_kb_qa_entries(rendered, [_entry("rb_kafka", KB_QA_TRIGGER)])
+        assert KB_ENTRY_ALSO_PUSHED not in rendered[-1]
+
+    @pytest.mark.parametrize("channel", [KB_QA_TRIGGER, KB_QUESTION_TRIGGER])
+    def test_standing_context_a_search_took_over_is_not_new_next_turn(self, channel):
+        """Turn N: the push carries A and this turn's search finds A too, so
+        A is cited as the search's. Turn N+1: the push alone carries A."""
+        rendered = [_entry("rb_a", "symptom")]
+        found = [_entry("rb_a", channel)]
+        rendered[:] = take_over_pushed(rendered, found) + found
+        turn_n = {TURN_METADATA_KB_PROMPTED: rendered}
+        _record_turn_kb_sources(turn_n, SimpleNamespace(messages=[]))
+        rows = [
+            {
+                "role": "assistant",
+                "metadata": {
+                    MESSAGE_METADATA_KB_SOURCES: turn_n[MESSAGE_METADATA_KB_SOURCES]
+                },
+            }
+        ]
+
+        turn_next = {TURN_METADATA_KB_PROMPTED: [_entry("rb_a", "symptom")]}
+        _record_turn_kb_sources(turn_next, SimpleNamespace(messages=rows))
+
+        assert _flags(turn_n) == {("rb_a", channel): True}
+        assert _flags(turn_next) == {("rb_a", "symptom"): False}
+
+
+class TestAnElidedExchangeIsNotCited:
+    async def test_a_kb_qa_result_elided_before_the_reply_is_not_cited(
+        self, monkeypatch
+    ):
+        """The loop elides the oldest exchange, the kb_qa call, before the
+        final request; the reply did not see it."""
+        provider = ScriptedProvider(
+            calls(("kb_qa", {"question": "consumer lag?"})),
+            calls(("search_file", {"evidence_id": "ev_196400000001"})),
+            answer("Answered from the log."),
+        )
+        registry = _KbRegistry("kb_qa", "search_file")
+        engine, _ = terminal_engine(provider, registry)
+        bound = engine.generator._bound_tool_loop_messages
+
+        def eliding(messages, *args, **kwargs):
+            out = bound(messages, *args, **kwargs)
+            if not any(m.get("name") == "search_file" for m in out):
+                return out
+            return [
+                m
+                for m in out
+                if m.get("tool_call_id") != "call_0_kb_qa"
+                and not any(
+                    tc.get("id") == "call_0_kb_qa" for tc in (m.get("tool_calls") or [])
+                )
+            ]
+
+        monkeypatch.setattr(engine.generator, "_bound_tool_loop_messages", eliding)
+
+        result = await run_terminal_qa(engine, terminal_case(CaseState.RESOLVED))
+
+        assert registry.executed == ["kb_qa", "search_file"]  # the search ran
+        assert _cited(result) == []
+
+
+class TestAFailedOverflowRetry:
+    async def test_it_leaves_the_report_as_it_was(self):
+        from faultmaven.core.investigation.milestone_engine.engine import (
+            MilestoneEngine,
+        )
+        from faultmaven.core.investigation.milestone_engine.errors import (
+            MilestoneEngineError,
+        )
+        from faultmaven.exceptions import TOKEN_LIMIT
+
+        engine = MilestoneEngine(
+            MagicMock(), MagicMock(), investigation_tools=MagicMock()
+        )
+        overflow = MilestoneEngineError("too long", error_code=TOKEN_LIMIT)
+        engine.generator._generate_structured_output_inner = AsyncMock(
+            side_effect=[overflow, RuntimeError("retry failed too")]
+        )
+        rendered = [_entry("rb_pushed", "symptom")]
+
+        with pytest.raises(RuntimeError):
+            await engine.generator.generate_structured_output(
+                "huge",
+                MagicMock(),
+                case=investigating_case(),
+                user_message="the consumers are still behind",
+                redaction_ctx=disabled_redaction(),
+                kb_rendered=rendered,
+            )
 
         assert [e["parent_document_id"] for e in rendered] == ["rb_pushed"]

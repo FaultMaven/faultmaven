@@ -111,7 +111,9 @@ class KBToolAdapter(AgentTool):
             )
             # Cited in the turn's ``sources`` once the reply that saw them is
             # the turn's (``kb_tool_citations.py``).
-            context.kb_citations.add([kb_qa_entry(c) for c in cited])
+            context.kb_citations.add(
+                [entry for entry in map(kb_qa_entry, cited) if entry is not None]
+            )
             return ToolResult(success=True, data=result, error=None)
         except RawModelContentRefused:
             # A refusal is a programming error, never a fallback (#1998).

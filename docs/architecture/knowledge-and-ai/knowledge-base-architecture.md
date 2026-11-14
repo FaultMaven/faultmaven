@@ -320,11 +320,15 @@ user's question about the knowledge base (`metadata.trigger` `question`,
 (`trigger` `kb_qa`, `core/investigation/kb_tool_citations.py`). `kb_qa` used to reach the
 user only as runbook titles inside its tool result, so a reply grounded in a runbook the
 model fetched cited nothing. Its sections are cited only when the reply the turn returns
-came from the tool loop that ran the search: a reply from the no-tools fallback, or from
-the minimal prompt after a context-length rejection, did not see them. That minimal
+came from the tool loop that ran the search, and only for calls whose result the loop's
+last request still carried: an exchange elided to fit the loop's budget, a reply from the
+no-tools fallback, and one from the minimal prompt after a context-length rejection did
+not see them. At most five sections, two per runbook, the best-scored first. That minimal
 prompt carries no pushed runbook either, so after it only the question lookup's entries
 are cited. A section two channels carry is cited once: the lookup's over `kb_qa`'s, and
-either over the push's.
+either over the push's. A search that takes a pushed section over marks it
+`metadata.also_pushed`, so the next turn still compares its standing context against
+that row and does not show it as new.
 
 ### Design Principles
 

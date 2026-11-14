@@ -10,7 +10,7 @@ instance.
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import RawModelContentRefused, walk_cause_chain
@@ -56,21 +56,43 @@ class Tool:
 class KbCitations:
     """The runbook sections ``kb_qa`` answered from on one turn.
 
-    ``add`` holds them as pending; ``confirm`` is called when the reply the
-    turn returns came from the tool loop that saw them, and only confirmed
-    entries are cited (``core/investigation/kb_tool_citations.py``). A reply
-    from any fallback leaves them pending, so they are never cited.
+    The tool ``add``s each call's sections; the tool loop ``attribute``s them to
+    the call that ran it, notes which calls' results each request it sends
+    carries (``sent``), and ``confirm``s when the reply the turn returns came
+    from the loop. Only sections of calls the last request carried are
+    confirmed: an exchange the loop elided to fit its budget was not in front
+    of the reply. Only confirmed entries are cited
+    (``core/investigation/kb_tool_citations.py``); a reply from any fallback
+    confirms nothing.
     """
 
-    pending: list[dict[str, Any]] = field(default_factory=list)
     confirmed: list[dict[str, Any]] = field(default_factory=list)
+    _unattributed: list[dict[str, Any]] = field(default_factory=list)
+    _by_call: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    _sent: frozenset[str] = frozenset()
 
     def add(self, entries: list[dict[str, Any]]) -> None:
-        self.pending.extend(entries)
+        self._unattributed.extend(entries)
+
+    def start_loop(self) -> None:
+        """A loop starts: nothing an earlier attempt fetched can be confirmed."""
+        self._unattributed.clear()
+        self._by_call.clear()
+        self._sent = frozenset()
+
+    def attribute(self, call_id: str) -> None:
+        if self._unattributed:
+            self._by_call.setdefault(call_id, []).extend(self._unattributed)
+            self._unattributed.clear()
+
+    def sent(self, call_ids: frozenset[str]) -> None:
+        self._sent = call_ids
 
     def confirm(self) -> None:
-        self.confirmed.extend(self.pending)
-        self.pending.clear()
+        for call_id, entries in self._by_call.items():
+            if call_id in self._sent:
+                self.confirmed.extend(entries)
+        self.start_loop()
 
 
 @dataclass
@@ -143,21 +165,9 @@ class ToolContext:
     redaction_ctx: CaseRedactionContext = field(kw_only=True)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
-        """Create a new context with the execution ID set."""
-        return ToolContext(
-            session_id=self.session_id,
-            case_id=self.case_id,
-            enterprise_id=self.enterprise_id,
-            user_id=self.user_id,
-            kb_scope_filter=self.kb_scope_filter,
-            case_repository=self.case_repository,
-            execution_id=execution_id,
-            metadata=self.metadata,
-            in_memory_case=self.in_memory_case,
-            redaction_ctx=self.redaction_ctx,
-            given_tools=self.given_tools,
-            kb_citations=self.kb_citations,
-        )
+        """Create a new context with the execution ID set; every other field,
+        the turn's shared ``kb_citations`` included, is the same object."""
+        return replace(self, execution_id=execution_id)
 
 
 class AgentTool(BaseTool, ABC):
