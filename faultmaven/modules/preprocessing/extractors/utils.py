@@ -32,8 +32,9 @@ MAX_STRUCTURAL_INDEX_CHARS = (
     MAX_STRUCTURAL_INDEX_TOKENS * 4
 )  # ~10000 chars at 4 chars/token
 
-# The hard bound on what is stored as an upload's extract (``file_extract``
-# and ``search_map``), whichever path made it (#2789). The budget above is
+# The hard bound on each part stored as an upload's extract, ``file_extract``
+# and ``search_map`` alike (so a stored index is at most about twice this, plus
+# its ``file_meta``), whichever path made it (#2789). The budget above is
 # each extractor's own target, and not every extractor holds to it; this
 # bound is enforced once, where every result is assembled
 # (``PreprocessingService._build_result``), and it is the small-file
@@ -245,6 +246,8 @@ def cut_to_budget(text: str, max_chars: int) -> str:
 
     # Sized for the longest count first: the real one is no longer.
     room = max_chars - len(marker(len(text)))
+    if room <= 0:  # a budget too small for the marker: the head alone
+        return text[:max_chars]
     head = room // 2
     tail = room - head
     return text[:head] + marker(len(text) - head - tail) + text[len(text) - tail :]

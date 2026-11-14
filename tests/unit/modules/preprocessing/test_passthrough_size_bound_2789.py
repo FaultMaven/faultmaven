@@ -120,7 +120,16 @@ def _classification(result) -> dict:
 
 
 def _stored(result) -> ExtractResult:
-    return ExtractResult.from_json(result.structural_index)
+    """The stored extract. An extractor's result is its ``ExtractResult`` as
+    JSON; a passthrough, or the preview a loaded runner's busy or timeout
+    fallback stores, is plain text."""
+    try:
+        payload = json.loads(result.structural_index)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and "file_extract" in payload:
+        return ExtractResult.from_json(result.structural_index)
+    return ExtractResult(file_extract=result.structural_index)
 
 
 @pytest.mark.parametrize("content", [EXPORT, LOG_EVENTS], ids=["export", "events"])
@@ -141,6 +150,9 @@ class TestCutToBudget:
         assert cut.startswith(text[:PROMPT_VIEW])
         assert cut.endswith("row 019999\n")
         assert "search_file reads the whole upload" in cut
+
+    def test_a_budget_smaller_than_the_marker_keeps_only_the_head(self):
+        assert cut_to_budget("z" * 1000, 50) == "z" * 50
 
     def test_one_character_over_loses_only_what_the_marker_needs(self):
         text = "y" * (MAX_STORED_EXTRACT_CHARS + 1)
@@ -170,9 +182,12 @@ class TestEveryStoredExtractIsBounded:
             "classification_failed",
         )
         assert len(stored.file_extract) <= MAX_STORED_EXTRACT_CHARS
+        # On a loaded runner the extractor can run past its deadline; the
+        # bound holds for the stored preview too, and the checks of the
+        # extractor's own extract apply when it finished.
         if result.extraction_method == "crime_scene":
             assert stored.file_extract.startswith(alone.file_extract[:PROMPT_VIEW])
-            assert result.extraction_metadata["truncated"] is True
+            assert stored.file_meta["truncated"] is True
 
     @pytest.mark.asyncio
     async def test_an_upload_past_the_line_cutoff_is_bounded_too(self):
@@ -256,7 +271,7 @@ class TestALargeUncertainUploadIsCutNotCarded:
         assert len(result.structural_index) <= MAX_STORED_EXTRACT_CHARS
         assert result.structural_index.startswith(LOG_EVENTS[:PROMPT_VIEW])
         assert result.structural_index.endswith(LOG_EVENTS[-1000:])
-        assert result.extraction_metadata["truncated"] is True
+        assert "search_file reads the whole upload" in result.structural_index
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -315,7 +330,7 @@ async def test_the_same_shapes_small_still_pass_through_whole(content):
 
     assert result.extraction_method == "raw_passthrough"
     assert result.structural_index == content
-    assert "truncated" not in result.extraction_metadata
+    assert "characters not shown here" not in result.structural_index
 
 
 @pytest.mark.skipif(

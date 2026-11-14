@@ -348,10 +348,13 @@ def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
     Every path's result is assembled through ``_build_result``, which calls
     this, so the bound holds whichever path made the extract: a passthrough's
     raw content, or an extractor's ``file_extract`` and ``search_map`` (not
-    every extractor holds to ``MAX_STRUCTURAL_INDEX_CHARS``). A cut extract
-    keeps its head and tail and says so (``truncated`` in the metadata)."""
+    every extractor holds to ``MAX_STRUCTURAL_INDEX_CHARS``). A cut part
+    keeps its head and tail around a marker; a cut extractor result also
+    says so in its ``file_meta`` (``truncated``), which the prompt renders."""
     payload = extraction.metadata.get("extract_result_json")
     if payload:
+        if len(payload) <= MAX_STORED_EXTRACT_CHARS:
+            return extraction  # both parts fit inside the whole
         result = ExtractResult.from_json(payload)
         file_extract = cut_to_budget(result.file_extract, MAX_STORED_EXTRACT_CHARS)
         search_map = result.search_map and cut_to_budget(
@@ -360,23 +363,24 @@ def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
         if (file_extract, search_map) == (result.file_extract, result.search_map):
             return extraction
         cut = dataclasses.replace(
-            result, file_extract=file_extract, search_map=search_map
+            result,
+            file_extract=file_extract,
+            search_map=search_map,
+            # The extractor's own "truncated" described its output; the
+            # stored extract is now cut, whatever it said.
+            file_meta={**result.file_meta, "truncated": True},
         )
         return ExtractionResult(
             method=extraction.method,
             content=file_extract,
-            metadata={
-                **extraction.metadata,
-                "extract_result_json": cut.to_json(),
-                "truncated": True,
-            },
+            metadata={**extraction.metadata, "extract_result_json": cut.to_json()},
         )
     if len(extraction.content) <= MAX_STORED_EXTRACT_CHARS:
         return extraction
     return ExtractionResult(
         method=extraction.method,
         content=cut_to_budget(extraction.content, MAX_STORED_EXTRACT_CHARS),
-        metadata={**extraction.metadata, "truncated": True},
+        metadata=extraction.metadata,
     )
 
 
