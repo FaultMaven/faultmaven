@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.25.0",
+  "contractVersion": "14.26.0",
   "entries": [
+    {
+      "body": "Before an INQUIRY reply is generated, the engine now searches the knowledge\nbase for the symptom: the proposed problem statement once there is one,\nbefore that the user's message while the case holds no runbooks yet. The\nmatches enter the INQUIRY prompt, and the turn's `sources`, with\n`metadata.trigger` `symptom`, as the same search has on INVESTIGATING turns\nsince 3.3.0. INQUIRY turns used to carry only a question lookup's sources\n(14.24.0). `KB_PREFETCH_ENABLED=false` switches this off with the rest of the\npre-fetch. `new_this_turn` follows the same rule as on INVESTIGATING turns.\n\nMINOR because every existing client survives it: no field is added or\nremoved, and a client already shows `sources` on any turn.",
+      "level": "MINOR",
+      "title": "An INQUIRY turn's `sources` can carry the runbooks pre-fetched for the reported symptom (`metadata.trigger` `symptom`).",
+      "version": "14.26.0"
+    },
     {
       "body": "When the assistant searches the knowledge base itself while it works (its\n`kb_qa` tool), the sections that search's answer cited enter\n`TurnResponse.sources` and the assistant row's `Message.sources` with\n`metadata.trigger` `kb_qa`, beside `symptom`, `root_cause` and `question`.\nUntil now that search reached the reply only as runbook titles in its text,\nand was never cited. They are cited only when the reply came from the tool\nloop that ran the search, and only for calls whose result was still in front\nof that reply: a reply from a fallback without tools cites none of them. At\nmost five per turn, two per runbook. `new_this_turn` is always true on them. A\nsection a pre-fetch also carried is cited once, as `kb_qa`; one the question\nlookup also found stays `question`. A `question` or `kb_qa` entry that took\nover a pre-fetched section carries `metadata.also_pushed: true`: that section\nwas standing context too, so the next turn's `new_this_turn` treats it as\nshown. Read back through the same per-viewer gate as every other source.\n\nMINOR because every existing client survives it: no field is added or\nremoved, `metadata` was already free-form, and a client that ignores\n`trigger` shows these entries as runbooks the turn drew on, which they are.",
       "level": "MINOR",

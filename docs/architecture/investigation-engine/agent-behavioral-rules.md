@@ -287,14 +287,17 @@ and state what specific data or input would unblock you.
 
 **Injection point**: INQUIRY template (step 2 of the YOUR TASK list) and INVESTIGATING base template (DIAGNOSIS instructions, scoped to Zone 2). Also enforced via the DA system instruction's TYPE B question routing (see [DA System Instruction](#da-system-instruction) below). There is no free-standing "KNOWLEDGE FIRST" prompt block — the rule is realized by the two template excerpts below.
 
-**Prompt realization (INQUIRY)** — mandatory KB check as a numbered task step (`templates/inquiry.py`, `INQUIRY_TEMPLATE`):
+**Prompt realization (INQUIRY)** — mandatory KB check as a numbered task step (`templates/inquiry.py`, `INQUIRY_TEMPLATE`). It reads the runbooks the engine pre-fetched for the symptom before the prompt was built (`KbPrefetcher.prefetch_for_inquiry`), so it holds on every INQUIRY route, the single shot with no `kb_qa` included:
 
 ```text
-2. KNOWLEDGE BASE CHECK. Call kb_qa once for the symptom.
-   - Match found: record it for later use; do NOT propose the fix here
-     (solutions are emitted during INVESTIGATING, not INQUIRY).
-     Set knowledge_match in state_updates: ...
-   - No match: proceed without mentioning the search.
+2. KNOWLEDGE BASE CHECK. Runbooks the engine matched to the symptom, if
+   any, are in <knowledge_context> above.
+   - One plainly covers this symptom: say in agent_response that related
+     guidance exists, without describing the fix (solutions come during
+     INVESTIGATING, not INQUIRY) ...
+   - None does, or there is no <knowledge_context>: proceed without
+     mentioning the knowledge base. Never tell the user a lookup found
+     nothing, and do not claim to have checked it.
 ```
 
 **Prompt realization (INVESTIGATING)** — scoped to Zone 2, not unconditional (`templates/diagnosis.py`):

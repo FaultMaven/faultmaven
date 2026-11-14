@@ -434,15 +434,18 @@ class TestWhatThePromptReportsItCarried:
         )
         assert [e["parent_document_id"] for e in rendered] == ["rb_pushed", "rb_kafka"]
 
-    def test_inquiry_reports_only_the_lookup_entries(self):
-        """INQUIRY has no push slot; it does have the lookup's."""
+    def test_inquiry_reports_push_then_lookup_entries(self):
+        """INQUIRY carries the push's slot and the lookup's (A1)."""
         case = _inquiry()
         case.kb_context = [_PUSHED]
         rendered: list = []
         get_prompt_for_case(
             case, "is there a runbook?", kb_lookup=_candidates(), kb_rendered=rendered
         )
-        assert [e["parent_document_id"] for e in rendered] == ["rb_kafka"]
+        assert [e["parent_document_id"] for e in rendered] == [
+            "rb_pushed",
+            "rb_kafka",
+        ]
 
 
 # ---------------------------------------------------------------------------

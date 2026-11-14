@@ -18,6 +18,30 @@ from faultmaven.modules.case.contracts import (
 logger = logging.getLogger(__name__)
 
 KB_PREFETCH_FETCH_LIMIT = 10
+
+#: An INQUIRY symptom query is cut here: the question lookup's bound, for the
+#: same reason (a long message or statement dilutes the search).
+INQUIRY_QUERY_MAX_CHARS = 300
+
+
+def inquiry_symptom_query(case: "Case", user_message: str) -> str:
+    """What an INQUIRY turn searches the knowledge base for, or ``""``.
+
+    The proposed problem statement once there is one: it is the symptom as the
+    case states it, and a change to it replaces the context (a miss clears
+    it). Before that, the user's message, but only while the case holds no
+    context: a later message ("it started at 10am") is not a description of
+    the symptom, and searching it would clear what the description found.
+    """
+    inquiry = getattr(case, "inquiry", None)
+    statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
+    if statement:
+        return statement[:INQUIRY_QUERY_MAX_CHARS]
+    if getattr(case, "kb_context", None):
+        return ""
+    return " ".join((user_message or "").split())[:INQUIRY_QUERY_MAX_CHARS]
+
+
 KB_CONTEXT_MAX_ENTRIES = 5
 
 # How many chunks from ONE runbook are admitted BEFORE other runbooks get a
@@ -361,6 +385,29 @@ class KbPrefetcher:
                 exc_info=True,
             )
             return False
+
+    async def prefetch_for_inquiry(self, case: "Case", user_message: str) -> None:
+        """INQUIRY's symptom search, run before the prompt is built.
+
+        The other pre-fetch triggers fire while a response is applied, and the
+        symptom one on the turn the case LEAVES inquiry, so without this an
+        INQUIRY prompt never carried a runbook, and on a case with no files
+        (the single-shot route, which has no ``kb_qa``) nothing reached one at
+        all. Same channel, gate and storage as the transition's pre-fetch:
+        ``KB_PREFETCH_ENABLED`` switches it off with the rest of the push.
+
+        The query is the symptom as the case states it so far
+        (:func:`inquiry_symptom_query`). Context already fetched for that
+        query is reused rather than searched again; a driver change was
+        handled by :meth:`refresh_for_driver` before this runs.
+        """
+        query = inquiry_symptom_query(case, user_message)
+        if not query:
+            return
+        origin = case.kb_context_origin or {}
+        if case.kb_context and origin.get("query") == query:
+            return
+        await self.prefetch_kb_context(case, query, "symptom")
 
     async def refresh_for_driver(self, case: "Case") -> None:
         """Re-fetch ``kb_context`` when it was fetched for a different driver.

@@ -159,7 +159,7 @@ def _validate_with_degradation(content_obj, schema_model):
        error ``loc`` paths — general, not per-invariant) and re-validate: the
        list entry for a ``loc`` with an index; for one without, the deepest
        OPTIONAL sub-object on its path (nulled — ``root_cause_conclusion``,
-       ``knowledge_match``, ``milestones``; fm#1502), or else the state field
+       ``milestones``; fm#1502), or else the state field
        it falls under (deleted, so it takes its default — ``outcome``, a
        ``documentation_links`` string). An invalid state field costs that
        field and nothing else, whether it arrived in the object or as a

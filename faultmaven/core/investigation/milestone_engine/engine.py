@@ -1325,6 +1325,17 @@ class MilestoneEngine:
             # cannot be.
             await self.kb_prefetcher.refresh_for_driver(case)
             kb_lookup = await self._kb_lookup(case, intent_data, user_message)
+            if (
+                case.state == CaseState.INQUIRY
+                and kb_lookup is None
+                and (intent_data or {}).get("query_mode") != "agent_meta"
+            ):
+                # The symptom's runbooks, in this INQUIRY prompt: nothing else
+                # puts a runbook in front of an INQUIRY reply on a case with
+                # no files. Not beside a question lookup, which already
+                # searched what this message asked, nor on a question about
+                # the assistant itself.
+                await self.kb_prefetcher.prefetch_for_inquiry(case, user_message)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,

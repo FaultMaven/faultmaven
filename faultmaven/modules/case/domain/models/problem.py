@@ -203,16 +203,6 @@ class PreliminaryUrgency(BaseModel):
     assessed_at_turn: int
 
 
-class KnowledgeMatch(BaseModel):
-    """Records a potential KB match during INQUIRY."""
-
-    match_id: str
-    match_type: str  # "past_case" | "runbook" | "documentation"
-    relevance_score: float  # 0.0-1.0
-    summary: str
-    potential_solution: Optional[str] = None
-
-
 class InquiryData(BaseModel):
     """
     Pre-investigation INQUIRY state data.
@@ -256,10 +246,6 @@ class InquiryData(BaseModel):
 
     inquiry_turns: int = Field(
         default=0, ge=0, description="Number of turns spent in INQUIRY state"
-    )
-
-    knowledge_matches: List[KnowledgeMatch] = Field(
-        default_factory=list, description="Potential solutions found in KB"
     )
 
     preliminary_urgency: Optional[PreliminaryUrgency] = Field(

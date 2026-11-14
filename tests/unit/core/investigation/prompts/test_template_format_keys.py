@@ -115,7 +115,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "reading_uploaded_files",
         "identity",
         "inquiry_state",
-        "kb_check",
+        "kb_results",
         "knowledge_help",
         "page_capture_hint",
         "system_feedback",
