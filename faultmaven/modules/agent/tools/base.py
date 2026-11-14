@@ -10,7 +10,7 @@ instance.
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import RawModelContentRefused, walk_cause_chain
@@ -53,6 +53,49 @@ class Tool:
 
 
 @dataclass
+class KbCitations:
+    """The runbook sections ``kb_qa`` answered from on one turn.
+
+    The tool ``add``s each call's sections; the tool loop ``attribute``s them to
+    the call that ran it, notes which calls' results each request it sends
+    carries (``sent``), and ``confirm``s when the reply the turn returns came
+    from the loop. Only sections of calls the last request carried are
+    confirmed: an exchange the loop elided to fit its budget was not in front
+    of the reply. Only confirmed entries are cited
+    (``core/investigation/kb_tool_citations.py``); a reply from any fallback
+    confirms nothing.
+    """
+
+    confirmed: list[dict[str, Any]] = field(default_factory=list)
+    _unattributed: list[dict[str, Any]] = field(default_factory=list)
+    _by_call: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    _sent: frozenset[str] = frozenset()
+
+    def add(self, entries: list[dict[str, Any]]) -> None:
+        self._unattributed.extend(entries)
+
+    def start_loop(self) -> None:
+        """A loop starts: nothing an earlier attempt fetched can be confirmed."""
+        self._unattributed.clear()
+        self._by_call.clear()
+        self._sent = frozenset()
+
+    def attribute(self, call_id: str) -> None:
+        if self._unattributed:
+            self._by_call.setdefault(call_id, []).extend(self._unattributed)
+            self._unattributed.clear()
+
+    def sent(self, call_ids: frozenset[str]) -> None:
+        self._sent = call_ids
+
+    def confirm(self) -> None:
+        for call_id, entries in self._by_call.items():
+            if call_id in self._sent:
+                self.confirmed.extend(entries)
+        self.start_loop()
+
+
+@dataclass
 class ToolContext:
     """Context passed to tool execution.
 
@@ -92,6 +135,9 @@ class ToolContext:
             on an empty search points at ``search_file``) names it only when it
             is in this set. Empty (a tool-less turn, or a context built without
             a turn) means name none.
+        kb_citations: What ``kb_qa`` answered from on this turn, for the
+            turn's ``sources`` (``KbCitations``). One object per turn, shared
+            by every copy of the context.
 
     No KB context metadata (#1880). The reranker's metadata signal reads a
     runbook's ``service``, which is the technology; the case records no
@@ -115,23 +161,13 @@ class ToolContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     in_memory_case: Optional[Any] = None
     given_tools: frozenset[str] = frozenset()
+    kb_citations: KbCitations = field(default_factory=KbCitations)
     redaction_ctx: CaseRedactionContext = field(kw_only=True)
 
     def with_execution_id(self, execution_id: str) -> "ToolContext":
-        """Create a new context with the execution ID set."""
-        return ToolContext(
-            session_id=self.session_id,
-            case_id=self.case_id,
-            enterprise_id=self.enterprise_id,
-            user_id=self.user_id,
-            kb_scope_filter=self.kb_scope_filter,
-            case_repository=self.case_repository,
-            execution_id=execution_id,
-            metadata=self.metadata,
-            in_memory_case=self.in_memory_case,
-            redaction_ctx=self.redaction_ctx,
-            given_tools=self.given_tools,
-        )
+        """Create a new context with the execution ID set; every other field,
+        the turn's shared ``kb_citations`` included, is the same object."""
+        return replace(self, execution_id=execution_id)
 
 
 class AgentTool(BaseTool, ABC):

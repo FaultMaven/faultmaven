@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
+from faultmaven.core.investigation.kb_tool_citations import kb_qa_entry
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.models.interfaces import AdmitParents, ToolResult, require_admit
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
@@ -101,12 +102,17 @@ class KBToolAdapter(AgentTool):
             )
 
         try:
-            result = await self._wrapped._arun(
+            result, cited = await self._wrapped.answer(
                 question=question,
                 scope_filter=context.kb_scope_filter,
                 k=5,
                 redaction_ctx=context.redaction_ctx,
                 admit=self._admit,
+            )
+            # Cited in the turn's ``sources`` once the reply that saw them is
+            # the turn's (``kb_tool_citations.py``).
+            context.kb_citations.add(
+                [entry for entry in map(kb_qa_entry, cited) if entry is not None]
             )
             return ToolResult(success=True, data=result, error=None)
         except RawModelContentRefused:

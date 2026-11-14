@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.24.0",
+  "contractVersion": "14.25.0",
   "entries": [
+    {
+      "body": "When the assistant searches the knowledge base itself while it works (its\n`kb_qa` tool), the sections that search's answer cited enter\n`TurnResponse.sources` and the assistant row's `Message.sources` with\n`metadata.trigger` `kb_qa`, beside `symptom`, `root_cause` and `question`.\nUntil now that search reached the reply only as runbook titles in its text,\nand was never cited. They are cited only when the reply came from the tool\nloop that ran the search, and only for calls whose result was still in front\nof that reply: a reply from a fallback without tools cites none of them. At\nmost five per turn, two per runbook. `new_this_turn` is always true on them. A\nsection a pre-fetch also carried is cited once, as `kb_qa`; one the question\nlookup also found stays `question`. A `question` or `kb_qa` entry that took\nover a pre-fetched section carries `metadata.also_pushed: true`: that section\nwas standing context too, so the next turn's `new_this_turn` treats it as\nshown. Read back through the same per-viewer gate as every other source.\n\nMINOR because every existing client survives it: no field is added or\nremoved, `metadata` was already free-form, and a client that ignores\n`trigger` shows these entries as runbooks the turn drew on, which they are.",
+      "level": "MINOR",
+      "title": "A turn's `sources` can carry the runbook sections the assistant's own knowledge-base search answered from (`metadata.trigger` `kb_qa`).",
+      "version": "14.25.0"
+    },
     {
       "body": "When a message asks about the knowledge base itself (\"is there a runbook for\nX?\", \"what does our runbook on Y say?\"), the engine searches it before the\nreply, and the runbooks it shows the model enter `TurnResponse.sources` and\nthe assistant row's `Message.sources` with `metadata.trigger` `question`,\nbeside the pre-fetch's `symptom` / `root_cause`. They appear whatever\n`KB_PREFETCH_ENABLED` says, so `sources` is no longer empty whenever the push\nis off. `new_this_turn` is always true on them; on pre-fetched entries it now\ncompares only with the previous pre-fetched context, so a question turn does\nnot make the next turn's standing context read as new. Read back through the\nsame per-viewer gate as every other source.\n\nMINOR because every existing client survives it: no field is added or\nremoved, `metadata` was already free-form, and a client that ignores\n`trigger` shows these entries as the runbooks the turn carried, which they\nare.",
       "level": "MINOR",

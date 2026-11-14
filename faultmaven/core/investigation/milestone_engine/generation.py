@@ -125,6 +125,15 @@ STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 REFUSAL_OMITTED_FIELDS = frozenset({"evidence_trail"})
 
 
+def _tool_call_ids(messages: list[dict]) -> frozenset[str]:
+    """The ids of the tool results ``messages`` carries."""
+    return frozenset(
+        str(m["tool_call_id"])
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    )
+
+
 @dataclass
 class RefusalState:
     """One engine call's refusal (#1770). Once ``seen``, every later request
@@ -633,6 +642,9 @@ class StructuredOutputGenerator:
         # _fit_tool_loop_base / _bound_tool_loop_messages /
         # _resolve_tool_loop_budget).
         tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
+        kb_citations = getattr(tool_context, "kb_citations", None)
+        if kb_citations is not None:
+            kb_citations.start_loop()
         # What this call OFFERED: the dispatch gate below runs no other name
         # (#1964), and it is the label vocabulary for the tool-result budget
         # metrics. The tool name on a tool call is MODEL-SUPPLIED, so it is
@@ -877,6 +889,10 @@ class StructuredOutputGenerator:
                         tools=tools_for_call,
                         window_tokens=tool_loop_budget.hard(cap),
                     )
+                if kb_citations is not None:
+                    # Which kb_qa results this request carries: one an elided
+                    # exchange held is not in front of the reply.
+                    kb_citations.sent(_tool_call_ids(call_kwargs["messages"]))
                 if direct_provider:
                     # A concrete provider: the dispatch checks the call and
                     # hands its ``_generate`` plain values (#1998).
@@ -1227,6 +1243,8 @@ class StructuredOutputGenerator:
                             args,
                             tool_context,
                         )
+                        if kb_citations is not None:
+                            kb_citations.attribute(tc.id)
                         if func_name == "deep_analysis":
                             deep_analysis_count += 1
                         if _attempt_outcome == "ok" and not getattr(
@@ -1711,6 +1729,7 @@ class StructuredOutputGenerator:
         *,
         redaction_ctx: CaseRedactionContext,
         kb_lookup: Optional[Any] = None,
+        kb_rendered: Optional[list] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -1723,6 +1742,9 @@ class StructuredOutputGenerator:
         not supplied the recovery is skipped and the error propagates.
         ``kb_lookup`` is the turn's knowledge-base question lookup, whose
         verdict the fallback carries (§5.6 of ``orchestration-capabilities.md``).
+        ``kb_rendered`` is the turn's report of the KB entries its prompt
+        carried; the fallback carries only the lookup's, so the retry narrows
+        the report to them, as the budget fallback does.
         """
         refusal = RefusalState()  # one per engine call (#1770)
         try:
@@ -1747,6 +1769,9 @@ class StructuredOutputGenerator:
                 and case is not None
                 and _is_context_length_error(exc)
             ):
+                from faultmaven.core.investigation.kb_question import (
+                    lookup_entries_only,
+                )
                 from faultmaven.core.investigation.prompts.templates.fallback import (
                     DEGRADED_NO_TOOLS_NOTICE,
                     get_fallback_prompt_for_case,
@@ -1775,7 +1800,7 @@ class StructuredOutputGenerator:
                 )
                 fb_prompt += DEGRADED_NO_TOOLS_NOTICE
                 # Minimal retry: drop tools to shrink the request further.
-                return await self._generate_structured_output_inner(
+                degraded = await self._generate_structured_output_inner(
                     fb_prompt,
                     schema_model,
                     investigation_tools=None,
@@ -1787,6 +1812,12 @@ class StructuredOutputGenerator:
                     min_output_tokens=min_output_tokens,
                     refusal=refusal,
                 )
+                if kb_rendered is not None:
+                    # The reply came from the minimal prompt, which carries no
+                    # pushed runbook; citing one it was not shown is worse
+                    # than citing none.
+                    kb_rendered[:] = lookup_entries_only(kb_rendered)
+                return degraded
             raise
 
     async def _generate_structured_output_inner(
@@ -1861,7 +1892,7 @@ class StructuredOutputGenerator:
             else:
                 # Layer 2: Runtime fallback for unknown incompatibilities
                 try:
-                    return await self._tool_augmented_generate(
+                    response = await self._tool_augmented_generate(
                         prompt,
                         schema_model,
                         investigation_tools,
@@ -1872,6 +1903,13 @@ class StructuredOutputGenerator:
                         base_prompt_builder=base_prompt_builder,
                         refusal=refusal,
                     )
+                    # This reply saw the loop's tool results, so what kb_qa
+                    # answered from is cited; a reply from any fallback below
+                    # or above never confirms them (kb_tool_citations.py).
+                    citations = getattr(tool_context, "kb_citations", None)
+                    if citations is not None:
+                        citations.confirm()
+                    return response
                 except ToolCallingUnsupportedError as e:
                     if refusal.seen:  # no no-tools fallback after it (#1770)
                         raise _refused(f"tool loop: {e}") from None

@@ -55,7 +55,7 @@ global documentation, your personal runbooks, and your team's shared procedures.
             kb_config=UnifiedKBConfig(),
         )
 
-    async def _arun(
+    async def answer(
         self,
         question: str,
         scope_filter: Dict[str, Any],
@@ -63,9 +63,9 @@ global documentation, your personal runbooks, and your team's shared procedures.
         *,
         redaction_ctx: Any,
         admit: AdmitParents,
-    ) -> str:
+    ) -> tuple[str, list[dict[str, Any]]]:
         """
-        Query knowledge base under the case's scope filter.
+        Query the knowledge base under the case's scope filter.
 
         Args:
             question: Question about troubleshooting, procedures, or best practices
@@ -78,9 +78,11 @@ global documentation, your personal runbooks, and your team's shared procedures.
                 applies to every hit (#2397)
 
         Returns:
-            Relevant documentation with citations from the case's scope
+            The answer with its title citations, and the chunks it cites
+            (``DocumentQATool.answer_with_citations``), which the turn's
+            ``sources`` are built from.
         """
-        return await super()._arun(
+        return await self.answer_with_citations(
             question,
             scope_id=None,
             k=k,

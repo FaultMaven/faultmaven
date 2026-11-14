@@ -10,7 +10,11 @@ the published attachment result and the reclassification metric's label.
 from typing import Any
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
-from faultmaven.core.investigation.kb_question import KB_QUESTION_TRIGGER, section_key
+from faultmaven.core.investigation.kb_question import (
+    KB_ENTRY_ALSO_PUSHED,
+    THIS_TURNS_SEARCH_TRIGGERS,
+    section_key,
+)
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
@@ -147,12 +151,14 @@ _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
 
 
 def _kb_sources(entries: list[dict]) -> list[Source]:
-    """Render pre-fetched runbook entries as citable ``Source`` entries.
+    """Render the turn's runbook entries as citable ``Source`` entries.
 
-    ``entries`` is what the prompt the model answered from carried, as the
-    prompt build reported it (``TURN_METADATA_KB_PROMPTED``: the entries
+    ``entries`` is what the model answered from, as the engine reported it
+    (``TURN_METADATA_KB_PROMPTED``): what the prompt carried, and what a
+    ``kb_qa`` call in the reply's tool loop answered from
+    (``kb_tool_citations.py``). The prompt's are the entries
     ``prompt_kb_entries`` selected, which applies the push gate of fm#1360,
-    whose header survived the section budget). Never
+    whose header survived the section budget. Never
     ``case.kb_context`` read after the turn: a pre-fetch fired while the
     response is applied writes context the answer never saw, and citing a
     runbook the model was not shown is worse than citing none.
@@ -182,10 +188,15 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
             # Which query produced the hit: a pre-fetch — "symptom" (the
             # problem statement) or "root_cause" (remediation) — or "question",
             # the lookup for a question the user asked about the knowledge
-            # base (KB_QUESTION_TRIGGER). A reader measuring retrieval quality
-            # needs to know which.
+            # base (KB_QUESTION_TRIGGER), or "kb_qa", a section the model's own
+            # kb_qa call answered from (KB_QA_TRIGGER). A reader measuring
+            # retrieval quality needs to know which.
             "trigger": entry.get("trigger"),
         }
+        if entry.get(KB_ENTRY_ALSO_PUSHED):
+            # The push carried this section too (``take_over_pushed``): the
+            # row's prompt carried the standing context.
+            metadata[KB_ENTRY_ALSO_PUSHED] = True
         score = entry.get("score")
         sources.append(
             Source(
@@ -198,9 +209,18 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
     return sources
 
 
-def _from_question(source: dict) -> bool:
-    """Whether a published source came from a knowledge-base question lookup."""
-    return (source.get("metadata") or {}).get("trigger") == KB_QUESTION_TRIGGER
+def _from_this_turns_search(source: dict) -> bool:
+    """Whether a published source came from a search run for its own turn
+    (``THIS_TURNS_SEARCH_TRIGGERS``), not the standing pre-fetched context."""
+    return (source.get("metadata") or {}).get("trigger") in THIS_TURNS_SEARCH_TRIGGERS
+
+
+def _carried_pushed_context(source: dict) -> bool:
+    """Whether the row's prompt carried this source as pre-fetched context:
+    a pushed source, or one this turn's search took over from the push."""
+    return not _from_this_turns_search(source) or bool(
+        (source.get("metadata") or {}).get(KB_ENTRY_ALSO_PUSHED)
+    )
 
 
 def _source_key(source: dict) -> tuple[str, str]:
@@ -226,14 +246,18 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     renumbered history, none of which a turn-number stamp survives. Call it
     BEFORE the turn's own row is appended.
 
-    The earlier row is the most recent one that recorded PUSHED entries: a
-    row holding only a question lookup's runbooks would otherwise stand in for
-    the push context and mark every standing entry of the next turn as new.
-    That row's lookup entries count as shown too — they were in its prompt, and
-    a section both channels found is recorded once, as the lookup's. Keyed by
-    ``section_key``, so a section matches whichever channel carried it. A
-    question lookup's own entries are always new — they answer what this turn
-    asked, whatever an earlier turn showed.
+    The earlier row is the most recent one whose prompt carried PUSHED
+    context: a pushed entry, or one this turn's search took over from the push
+    (``also_pushed``, ``take_over_pushed``). A row holding only what its own
+    searches found (a question lookup's runbooks, or what ``kb_qa`` answered
+    from) would otherwise stand in for the push context and mark every
+    standing entry of the next turn as new; and without the takeover mark, a
+    row whose search took over every pushed section would be skipped, and the
+    standing context would read as new on the next turn. That row's other
+    entries count as shown too — they were in its prompt. Keyed by
+    ``section_key``, so a section matches whichever channel carried it. Those
+    searches' own entries are always new — they answer this turn, whatever an
+    earlier turn showed.
     """
     sources = _kb_sources(turn_meta.pop(TURN_METADATA_KB_PROMPTED, None) or [])
     if not sources:
@@ -244,14 +268,15 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
         if row.get("role") != "assistant" or not recorded:
             continue
         entries = [s for s in recorded if isinstance(s, dict)]
-        if any(not _from_question(s) for s in entries):
+        if any(_carried_pushed_context(s) for s in entries):
             earlier = {_source_key(s) for s in entries}
             break
     published = []
     for source in sources:
         row_source = source.model_dump(mode="json")
         source.new_this_turn = (
-            _from_question(row_source) or _source_key(row_source) not in earlier
+            _from_this_turns_search(row_source)
+            or _source_key(row_source) not in earlier
         )
         published.append(source.model_dump(mode="json"))
     turn_meta[MESSAGE_METADATA_KB_SOURCES] = published

@@ -56,6 +56,19 @@ KB_QUESTION_INTENT_KEY = "kb_question"
 #: push's ``symptom`` / ``root_cause`` — and so on the turn's ``sources``.
 KB_QUESTION_TRIGGER = "question"
 
+#: ``metadata.trigger`` of a section a ``kb_qa`` call answered from
+#: (``kb_tool_citations.py``).
+KB_QA_TRIGGER = "kb_qa"
+
+#: The searches run for a turn itself, as against the standing pre-fetched
+#: context: what they find is new that turn, whatever earlier turns showed.
+THIS_TURNS_SEARCH_TRIGGERS = frozenset({KB_QUESTION_TRIGGER, KB_QA_TRIGGER})
+
+#: Set on an entry a turn's own search found whose section the push also
+#: carried in that prompt: the row still records that its prompt carried the
+#: standing context, which the next turn's ``new_this_turn`` compares against.
+KB_ENTRY_ALSO_PUSHED = "also_pushed"
+
 #: Below this cosine nothing is a candidate (see the module docstring for the
 #: measurement). Not the push's 0.5: that floor admits two of six off-topic
 #: negatives, and above this one the reply judges, rather than the score.
@@ -167,23 +180,34 @@ def section_key(document_id: Any, text: Optional[str]) -> tuple[str, str]:
     return (str(document_id or ""), opening.rstrip())
 
 
-def without_lookup_duplicates(pushed: list, lookup: Optional["KbLookup"]) -> list:
-    """The pushed entries ``lookup`` does not also carry.
+def take_over_pushed(rendered: list, found: list) -> list:
+    """``rendered`` without the pushed entries whose section ``found`` carries.
 
-    A section both channels found is cited once, as the lookup's: it answers
-    what the user asked this turn.
+    A section the push and a search run for this turn both carried is cited
+    once, as the search's: it answers this turn. Each entry of ``found`` that
+    took one over is marked ``KB_ENTRY_ALSO_PUSHED`` (in place), so the turn's
+    row still records that its prompt carried that standing section. Entries
+    of this turn's searches already in ``rendered`` are kept.
     """
-    if lookup is None or not lookup.entries:
-        return pushed
-    found = {
-        section_key(e.get("parent_document_id"), e.get("summary"))
-        for e in lookup.entries
+    taken = {
+        section_key(e.get("parent_document_id"), e.get("summary")): e for e in found
     }
-    return [
-        e
-        for e in pushed
-        if section_key(e.get("parent_document_id"), e.get("summary")) not in found
-    ]
+    kept = []
+    for entry in rendered:
+        if (
+            isinstance(entry, dict)
+            and entry.get("trigger") not in THIS_TURNS_SEARCH_TRIGGERS
+            and (
+                key := section_key(
+                    entry.get("parent_document_id"), entry.get("summary")
+                )
+            )
+            in taken
+        ):
+            taken[key][KB_ENTRY_ALSO_PUSHED] = True
+            continue
+        kept.append(entry)
+    return kept
 
 
 def excerpt_of(text: Optional[str]) -> str:

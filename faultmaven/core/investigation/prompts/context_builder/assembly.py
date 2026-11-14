@@ -12,7 +12,7 @@ from faultmaven.core.investigation.kb_push import (
 from faultmaven.core.investigation.kb_question import (
     KbLookup,
     render_kb_lookup_block,
-    without_lookup_duplicates,
+    take_over_pushed,
 )
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
@@ -1158,6 +1158,6 @@ def build_investigation_context(
             ctx.get("kb_results", ""), all_kb_results[:KB_PROMPT_MAX_ENTRIES]
         )
         if ctx.get("kb_lookup") and kb_lookup is not None:
-            kb_rendered[:] = without_lookup_duplicates(kb_rendered, kb_lookup)
-            kb_rendered.extend(dict(entry) for entry in kb_lookup.entries)
+            found = [dict(entry) for entry in kb_lookup.entries]
+            kb_rendered[:] = take_over_pushed(kb_rendered, found) + found
     return ctx

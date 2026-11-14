@@ -295,9 +295,9 @@ Two properties of the gate are worth knowing:
 deployment's ConfigMap on Kubernetes. `GET /admin/config/status` reports a `kb_prefetch`
 entry, and reports whether the push is *effective* rather than merely configured — a
 deployment with no knowledge service shows it off regardless of the flag. Client-visible
-consequence, published in API contract 3.3.0: `TurnResponse.sources` is empty for every
-turn in a deployment with the push disabled, and a client must read that as "no citation
-to show", never as a retrieval failure.
+consequence (API contract 3.3.0, narrowed by 14.24.0 and 14.25.0): with the push disabled
+a turn's `sources` carries no pre-fetched runbook, only what a search run for that turn
+found (below), and an empty list is "no citation to show", never a retrieval failure.
 
 **Which turn a source belongs to** (API contract 11.2.0). Both pre-fetch triggers fire
 while a turn's response is applied, after its answer was generated, so the hits first
@@ -312,6 +312,23 @@ stored sources rather than a turn number, so a failed or retried turn cannot mis
 it. The list is persisted with the assistant row, and `GET /cases/{case_id}/messages`
 returns it as the typed `Message.sources`, so history shows it exactly where the live
 turn did.
+
+**Searches run for the turn itself** (API contracts 14.24.0 and 14.25.0). Two more
+channels add to a turn's `sources`, each entry always `new_this_turn`: the lookup for a
+user's question about the knowledge base (`metadata.trigger` `question`,
+`orchestration-capabilities.md` §5.6), and the sections a `kb_qa` call answered from
+(`trigger` `kb_qa`, `core/investigation/kb_tool_citations.py`). `kb_qa` used to reach the
+user only as runbook titles inside its tool result, so a reply grounded in a runbook the
+model fetched cited nothing. Its sections are cited only when the reply the turn returns
+came from the tool loop that ran the search, and only for calls whose result the loop's
+last request still carried: an exchange elided to fit the loop's budget, a reply from the
+no-tools fallback, and one from the minimal prompt after a context-length rejection did
+not see them. At most five sections, two per runbook, the best-scored first. That minimal
+prompt carries no pushed runbook either, so after it only the question lookup's entries
+are cited. A section two channels carry is cited once: the lookup's over `kb_qa`'s, and
+either over the push's. A search that takes a pushed section over marks it
+`metadata.also_pushed`, so the next turn still compares its standing context against
+that row and does not show it as new.
 
 ### Design Principles
 

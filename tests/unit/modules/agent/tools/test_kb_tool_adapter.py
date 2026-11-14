@@ -44,9 +44,12 @@ def context():
 @pytest.fixture
 def mock_kb_tool():
     tool = AsyncMock()
-    tool._arun = AsyncMock(
-        return_value="**Answer**: Standard approach is to check heap dumps.\n\n"
-        "Sources: Memory Troubleshooting Guide"
+    tool.answer = AsyncMock(
+        return_value=(
+            "**Answer**: Standard approach is to check heap dumps.\n\n"
+            "Sources: Memory Troubleshooting Guide",
+            [],
+        )
     )
     return tool
 
@@ -72,7 +75,7 @@ class TestKBToolAdapter:
         )
 
         assert result.success is True
-        mock_kb_tool._arun.assert_called_once_with(
+        mock_kb_tool.answer.assert_called_once_with(
             question="How to diagnose memory leaks?",
             scope_filter=CASE_SCOPE,
             k=5,
@@ -87,7 +90,7 @@ class TestKBToolAdapter:
 
         await adapter.execute_with_context({"question": "test"}, context)
 
-        call_kwargs = mock_kb_tool._arun.call_args.kwargs
+        call_kwargs = mock_kb_tool.answer.call_args.kwargs
         assert call_kwargs["scope_filter"] == CASE_SCOPE
         assert "user_id" not in call_kwargs
 
@@ -104,7 +107,7 @@ class TestKBToolAdapter:
         assert result.success is False
         assert "no retrieval scope" in result.error
         assert "draw no conclusion" in result.error
-        mock_kb_tool._arun.assert_not_called()
+        mock_kb_tool.answer.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_question_returns_error(self, mock_kb_tool, context):
@@ -166,6 +169,7 @@ async def test_a_failed_search_names_its_class_and_keeps_its_guidance(
     """#2332: the class and the #943 guidance reach the model, the text the log."""
     wrapped = AsyncMock()
     wrapped._arun = AsyncMock(side_effect=leaky_error())
+    wrapped.answer = AsyncMock(side_effect=leaky_error())
 
     admission = {"admit": admit_every_parent} if adapter_cls is KBToolAdapter else {}
     result = await adapter_cls(wrapped_tool=wrapped, **admission).execute_with_context(

@@ -188,6 +188,34 @@ class DocumentQATool:
         Returns:
             Formatted answer with citations
         """
+        text, _cited = await self.answer_with_citations(
+            question,
+            scope_id,
+            k,
+            filters,
+            redaction_ctx=redaction_ctx,
+            empty_result=empty_result,
+            admit=admit,
+        )
+        return text
+
+    async def answer_with_citations(
+        self,
+        question: str,
+        scope_id: Optional[str] = None,
+        k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        *,
+        redaction_ctx: Any,
+        empty_result: Optional[str] = None,
+        admit: Optional[AdmitParents] = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """The formatted answer, and the chunks it cites (``cited_chunks``).
+
+        Arguments as :meth:`_arun`. The chunks are the store's hits, each with
+        its ``content``, ``score`` and ``metadata``; none when nothing was
+        answered from.
+        """
         logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
 
         result = await self.answer_question(
@@ -201,12 +229,13 @@ class DocumentQATool:
         )
 
         # Delegate response formatting to KB config
-        return self._kb_config.format_response(
+        text = self._kb_config.format_response(
             result["answer"],
             result["sources"],
             result["chunk_count"],
             result["confidence"],
         )
+        return text, list(result["cited_chunks"])
 
     async def answer_question(
         self,
@@ -270,6 +299,7 @@ class DocumentQATool:
                     else self._kb_config.empty_result_message
                 ),
                 "sources": [],
+                "cited_chunks": [],
                 "chunk_count": 0,
                 "confidence": 0.0,
                 # Every return from this method carries the same keys. A path
@@ -322,6 +352,7 @@ class DocumentQATool:
                         "summaries, evidence, entity profile)."
                     ),
                     "sources": [],
+                    "cited_chunks": [],
                     "chunk_count": 0,
                     "confidence": 0.0,
                     "truncated": False,
@@ -475,6 +506,10 @@ Answer:"""
         return {
             "answer": answer,
             "sources": sources,
+            # The chunks behind ``sources``, for a caller that cites them by
+            # document rather than by title: kb_qa's sections in the turn's
+            # ``sources`` (core/investigation/kb_tool_citations.py).
+            "cited_chunks": cited,
             "chunk_count": len(chunks),
             "confidence": avg_score,
             "truncated": response.is_truncated,
