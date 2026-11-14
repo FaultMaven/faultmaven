@@ -194,8 +194,9 @@ solving intent is clear.)
    is failing. Do NOT set proposed_problem_statement. Wait for the
    answer. If 1 triggers, stop here.
 
-2. KNOWLEDGE BASE CHECK. Runbooks the engine matched to the symptom, if
-   any, are in <knowledge_context> above.
+2. KNOWLEDGE BASE CHECK. Runbooks the engine matched to the problem
+   statement already proposed, if any, are in <knowledge_context> above;
+   before a statement is proposed there are none.
    - One plainly covers this symptom: say in agent_response that related
      guidance exists, without describing the fix (solutions come during
      INVESTIGATING, not INQUIRY), e.g., "I have a runbook that looks

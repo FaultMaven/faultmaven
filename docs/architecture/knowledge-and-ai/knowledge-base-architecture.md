@@ -303,11 +303,13 @@ found (below), and an empty list is "no citation to show", never a retrieval fai
 root-cause pre-fetch triggers fire while a turn's response is applied, after its answer
 was generated, so their hits first reach the NEXT turn's prompt. INQUIRY's symptom search
 (API contract 14.26.0) runs before the prompt is built, so its hits reach that turn's own
-prompt. It searches the proposed problem statement, and before one is proposed nothing:
-over the 84 stored cases of three simulator scenarios the shipped pack covers, a first
-message searched as written showed on-topic sections in 1-15% of its entries (every entry
-off topic in 66 cases), and the statement in 20-62% (contract 14.26.1). Before a statement,
-context such a search stored under 14.26.0 is cleared (`clear_unstated_symptom_context`). Every symptom
+prompt. It searches the proposed problem statement, and before one is proposed nothing: a
+user's message searched as written found mostly other problems' runbooks, which the turn
+would also cite (the measurement is in `inquiry_symptom_query`'s docstring; contract
+14.26.1). An INQUIRY prompt carries only runbooks found for the current statement:
+context fetched with any other query is dropped before the turn reads it
+(`drop_context_not_for`), so neither a reworded statement nor a 14.26.0 search of the
+user's messages is shown, re-run by a driver change, or cited. Every symptom
 search, the transition's and a revised statement's included, goes through one bounded
 query and is not run again for the same query and driver, a miss included
 (`KbPrefetcher.prefetch_symptom`), so the confirm turn searches the statement once. A turn's `sources` is therefore what its own prompt

@@ -41,24 +41,29 @@ def inquiry_symptom_query(case: "Case") -> str:
     outweigh the symptom. The proposed statement, which the model writes as
     the symptom, put on-topic sections in 20-62%. Every entry shown is also
     cited as a source of the reply, so an INQUIRY turn before a statement
-    shows none rather than the wrong ones.
+    shows none rather than the wrong ones. (This is the one statement of the
+    measurement; the docs and tests refer here.)
     """
     inquiry = getattr(case, "inquiry", None)
     statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
     return symptom_query(statement)
 
 
-def clear_unstated_symptom_context(case: "Case") -> None:
-    """Drop the pre-fetched context of an INQUIRY case with no statement yet.
+def drop_context_not_for(case: "Case", query: str) -> None:
+    """Drop pre-fetched context that was not fetched with ``query``.
 
-    Nothing an INQUIRY turn searches can have put it there now, but a case
-    searched under contract 14.26.0 holds what a search of the user's
-    messages found, and :meth:`KbPrefetcher.refresh_for_driver` would re-run
-    that query. Only a symptom search writes ``kb_context`` in INQUIRY, so
-    nothing else is lost.
+    INQUIRY's rule: its prompt carries only runbooks found for the current
+    statement (:func:`inquiry_symptom_query`). Context fetched with any
+    other query, a statement since reworded, or none at all, is dropped
+    before anything reads it: before :meth:`KbPrefetcher.refresh_for_driver`,
+    which would otherwise re-run the old query, and before a turn that runs
+    no search of its own (a question about the assistant, a failed search),
+    which would otherwise show and cite it.
     """
-    case.kb_context = None
-    case.kb_context_origin = None
+    origin = case.kb_context_origin or {}
+    if (case.kb_context or origin) and (not query or origin.get("query") != query):
+        case.kb_context = None
+        case.kb_context_origin = None
 
 
 KB_CONTEXT_MAX_ENTRIES = 5
