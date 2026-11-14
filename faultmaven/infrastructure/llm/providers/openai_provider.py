@@ -76,13 +76,14 @@ class OpenAIProvider(BaseLLMProvider):
         "gpt-4.1",  # GPT-4.1 family
         "gpt-4.5",  # GPT-4.5 family
         "gpt-5",  # All GPT-5.x — matches "gpt-5", "gpt-5.4", "gpt-5-mini", ...
+        "gpt-6",  # GPT-6 (gpt-6-luna strict json_schema probe-verified 2026-11-14)
         "chatgpt-4o",  # chatgpt-4o-latest
         "o1",  # OpenAI o1 reasoning models
         "o3",  # OpenAI o3 reasoning models
         "o4",  # OpenAI o4 reasoning models
     )
     # INVARIANT: every reasoning family in ``_COMPLETION_TOKENS_MODEL_FAMILIES``
-    # (gpt-5, o1, o3, o4) MUST also appear above as STRICT. Otherwise it routes
+    # (gpt-5, gpt-6, o1, o3, o4) MUST also appear above as STRICT. Otherwise it routes
     # structured extraction through FUNCTION_CALLING (``tools``) instead of
     # ``response_format``, and the reasoning-effort cap below — scoped to
     # ``response_format`` — would silently miss the call that needs it, starving
@@ -95,15 +96,19 @@ class OpenAIProvider(BaseLLMProvider):
     # Kept separate from the STRICT indicators because the two axes don't
     # coincide — gpt-4o is STRICT but still uses ``max_tokens``.
     #
-    # ‼ This list is the OPENING GUESS, not a prediction the request depends on
-    # (#510). Which spelling a model takes is a fact the endpoint owns, and
-    # ``_correct_token_param_and_retry`` below learns it from the endpoint's own
-    # 400: an unlisted family (``gpt-6``, ``o5``) costs ONE extra round trip the
-    # first time it is called and is then remembered for the life of the
-    # provider instance — it does not fail. Adding a family here buys back that
-    # round trip and nothing else, so it is an optimisation, never an outage
-    # fix. Do not grow it speculatively.
-    _COMPLETION_TOKENS_MODEL_FAMILIES = ("gpt-5", "o1", "o3", "o4")
+    # ‼ For the token spelling, this list is the OPENING GUESS, not a
+    # prediction the request depends on (#510). Which spelling a model takes is
+    # a fact the endpoint owns, and ``_correct_token_param_and_retry`` below
+    # learns it from the endpoint's own 400: an unlisted family (``gpt-7``,
+    # ``o5``) costs ONE extra round trip the first time it is called and is
+    # then remembered for the life of the provider instance — it does not fail.
+    # But the same tuple also decides ``_caps_reasoning_effort``: an unlisted
+    # reasoning family is sent no ``reasoning_effort`` at all (uncapped default
+    # reasoning on structured calls, intents ignored). So add a family only
+    # once a probe shows it reasons and takes ``max_completion_tokens``, never
+    # speculatively. gpt-6 probed on gpt-6-luna 2026-11-14: 400 on
+    # ``max_tokens``; efforts none/low/medium/high/xhigh accepted.
+    _COMPLETION_TOKENS_MODEL_FAMILIES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
     # Anchored at the start of the (optionally ``vendor/``-prefixed) id so a
     # family token embedded MID-name (e.g. ``my-gpt-4-o1-test``) does not
     # false-match; the real families always LEAD the id (``o3-mini``,
@@ -288,7 +293,12 @@ class OpenAIProvider(BaseLLMProvider):
     # ships the same constraints it must be added here deliberately — until
     # then it fails loudly with the API's own 400, never a silent behavior
     # change.
-    _DEFAULT_REASONING_MODEL_FAMILIES = ("gpt-5.6",)
+    # gpt-6-luna probe-verified 2026-11-14 (Azure deployment of
+    # gpt-6-luna-2026-09-22): 400 on ``temperature: 0.2`` ("only the default
+    # (1)") and on function tools with any effort but ``"none"``; reasons by
+    # default on a structured call with no effort sent. Listed by its full
+    # family name, not ``gpt-6``: other gpt-6 lines are unprobed.
+    _DEFAULT_REASONING_MODEL_FAMILIES = ("gpt-5.6", "gpt-6-luna")
     _DEFAULT_REASONING_MODEL_RE = re.compile(
         r"(?:^|/)(?:"
         + "|".join(re.escape(f) for f in _DEFAULT_REASONING_MODEL_FAMILIES)
