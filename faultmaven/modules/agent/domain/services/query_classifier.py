@@ -30,6 +30,44 @@ class ProcessingMode(str, Enum):
     AGENT_META = "agent_meta"
 
 
+class KbQuestionKind(str, Enum):
+    """What a question ABOUT the knowledge base asks for."""
+
+    #: Whether a runbook on a topic exists, or what one says.
+    LOOKUP = "lookup"
+    #: What runbooks there are, with no topic to narrow it.
+    LISTING = "listing"
+
+
+@dataclass(frozen=True)
+class KbQuestion:
+    """The user asked about the knowledge base itself.
+
+    A flag beside the processing mode, never a mode of its own: "we're seeing
+    502s at 14:00, is there a runbook for this?" stays a diagnostic turn, and
+    only adds a lookup the reply must report on.
+
+    ``topic`` is what to search for, taken from the message; empty when the
+    message names none ("is there a runbook for this?"), and the engine then
+    decides what to search with.
+    """
+
+    kind: KbQuestionKind
+    topic: str = ""
+    #: The topic is the rest of the message, not a topic the question named
+    #: ("Our nginx returns 502s. Is there a runbook for this?"): a description
+    #: searched as a whole, so a miss is reported more softly.
+    from_context: bool = False
+
+    def as_intent_data(self) -> dict[str, object]:
+        """The plain form the engine reads from ``intent_data``."""
+        return {
+            "kind": self.kind.value,
+            "topic": self.topic,
+            "from_context": self.from_context,
+        }
+
+
 @dataclass
 class QueryClassification:
     """Result of classifying a user message for processing mode routing."""
@@ -37,6 +75,9 @@ class QueryClassification:
     mode: ProcessingMode
     detected_entities: dict[str, list[str]] = field(default_factory=dict)
     confidence: float = 0.0
+    #: Set when the message asks about the knowledge base itself. Orthogonal
+    #: to ``mode``.
+    kb_question: Optional[KbQuestion] = None
 
 
 # --- Entity extraction patterns ---
@@ -398,6 +439,486 @@ _CASE_REFERENCE_PHRASES = [
 ]
 
 
+# --- Questions about the knowledge base itself --------------------------------
+#
+# The user asking ABOUT the knowledge base — does a runbook on X exist, what
+# does runbook Y say, what runbooks are there — as opposed to asking for help
+# that a runbook might supply. The difference is what a miss means: for help,
+# a runbook that is not there is not worth mentioning; for a question about the
+# knowledge base, the miss IS the answer.
+#
+# Precision-first, like the self-reference patterns: a miss falls back to the
+# ordinary handling of the message, while a false positive tells the user
+# something about their knowledge base they did not ask. Every pattern
+# therefore names the knowledge base outright — "runbook" or "knowledge base";
+# a bare "KB" is not one (kilobytes). "Playbook" counts only with a topic
+# complement ("a playbook for DNS outages"): bare, it is as often an Ansible
+# playbook in a debugging question ("the playbook task that failed"). "Do you
+# have anything on etcd quorum loss?" is not caught, by design.
+#
+# Every quantifier is bounded and detection reads a bounded window of the
+# message (``_KB_DETECT_WINDOW``): this runs synchronously on every turn, and a
+# turn's text can be megabytes.
+_KB_NOUN = r"(?:run[- ]?books?|knowledge[- ]base)"
+_KB_PLAYBOOK = r"(?:play[- ]?books?)"
+# Either noun: where the topic sits, and what the vetoes recognise.
+_KB_ANY_NOUN = r"(?:run[- ]?books?|play[- ]?books?|knowledge[- ]base)"
+
+# A word, and the prepositions that make the noun the object of a different
+# phrase ("find the root cause in the runbook" asks about the case; "is there a
+# way to fix this without the runbook" asks about a fix).
+#
+# A word may hold dots ("v1.2", "10.0.0.1") but never ends on one: "We run
+# postgres 15. Is there a runbook for replication lag?" is two sentences, and a
+# word that swallowed the full stop would let the first sentence's "run" govern
+# the second's noun.
+_KB_WORD = r"[\w/'’-]{1,60}(?:\.[\w/'’-]{1,60}){0,4}"
+_KB_PREPOSITIONS = (
+    r"(?:in|from|using|with|without|per|via|by|according|following|after|"
+    r"before|into|against|than|like)"
+)
+# A determiner opens a noun phrase. One may lead the words in front of the
+# noun ("is there a team runbook"); a second one starts another phrase, and the
+# noun then belongs to a different clause ("is there a reason the runbook
+# restarts the broker first?" asks about a runbook's behaviour, not whether one
+# exists).
+_KB_DETERMINERS = r"(?:the|a|an|any|some|this|that|these|those|our|my|your)"
+_KB_PHRASE_DETERMINERS = r"(?:the|a|an|this|that|these|those)"
+# Words that may sit between a verb and the knowledge-base noun ("show me the
+# PostgreSQL Replication Lag runbook").
+_KB_FILLER = (
+    r"(?:"
+    + _KB_DETERMINERS
+    + r"\s+)?(?:(?!(?:"
+    + _KB_PREPOSITIONS
+    + r"|"
+    + _KB_PHRASE_DETERMINERS
+    + r")\b)"
+    + _KB_WORD
+    + r"\s+){0,7}?"
+)
+
+# A quoted runbook title between the noun and its verb ("what does the runbook
+# 'Redis Memory Pressure' say?").
+_KB_QUOTED_GAP = r"(?:\s+[\"'“‘][^\"'”’\n]{1,120}[\"'”’])?"
+
+# The words of a message that is nothing but a noun phrase ending in the noun.
+_KB_BARE_WORDS = (
+    r"(?P<bare>(?:(?!" + _KB_PREPOSITIONS + r"\b)" + _KB_WORD + r"\s+){1,8}?)"
+)
+
+# "which runbooks do we have", "list the runbooks", "do you have any runbooks?"
+_KB_LISTING_SHAPES = (
+    r"\b(?:what|which) " + _KB_NOUN + r"\s+(?:(?:do|does) (?:we|you|i|the team|"
+    r"our team|the knowledge base) (?:have|keep)|are there|exist)\b"
+    r"|\blist (?:the |our |my |your |all |all the |all of the |any )?"
+    + _KB_NOUN
+    + r"\b"
+    r"|\b(?:do|does) (?:we|you|i|the team|our team) (?:have|keep) (?:any )?"
+    + _KB_NOUN
+    + r"\s*\??\s*$"
+)
+
+_KB_QUESTION_PATTERNS = [
+    # "is there a runbook", "do we have any runbooks", "have you got a runbook"
+    re.compile(
+        r"\b(?:is there|are there|do (?:we|you|i) (?:have|keep|maintain)|"
+        r"have (?:we|you) got|does (?:anyone|the team|my team|our team) have)\s+"
+        + _KB_FILLER
+        + _KB_NOUN
+        + r"\b",
+        re.I,
+    ),
+    # "any runbooks for X?"
+    re.compile(r"\bany\s+" + _KB_NOUN + r"\s+(?:for|on|about|covering)\b", re.I),
+    # "show me / find / open / pull up the X runbook"
+    re.compile(
+        r"\b(?:show|give|send|find|fetch|open|pull up|get|share|link|explain|"
+        r"describe|summari[sz]e)\s+(?:me\s+|us\s+)?(?:to\s+)?"
+        + _KB_FILLER
+        + _KB_NOUN
+        + r"\b",
+        re.I,
+    ),
+    # "what does our runbook on X say"
+    re.compile(
+        r"\bwhat (?:does|do|did) (?:the|our|my|your|this|that|any)\s+"
+        + _KB_FILLER
+        + _KB_NOUN
+        + r"\s+(?:on|for|about|covering|regarding)\s+[^?!\n]{1,120}?\s"
+        r"(?:say|cover|recommend|suggest|contain|include|tell|have)\b",
+        re.I,
+    ),
+    # "what does the X runbook say / cover"
+    re.compile(
+        r"\bwhat (?:does|do|did) (?:the|our|my|your|this|that|any)\s+"
+        + _KB_FILLER
+        + _KB_NOUN
+        + _KB_QUOTED_GAP
+        + r"\s+(?:say|cover|recommend|suggest|contain|include|tell|have)\b",
+        re.I,
+    ),
+    # "what's in the X runbook", "what is the runbook for X"
+    re.compile(
+        r"\b(?:what|which)(?:'s|’s| is| are) (?:in )?(?:the|our|my|your|a|an|any)\s+"
+        + _KB_FILLER
+        + _KB_NOUN
+        + r"\b",
+        re.I,
+    ),
+    # "does the knowledge base cover X", "do our runbooks mention X"
+    re.compile(
+        r"\b(?:does|do) (?:the|our|my|your) "
+        + _KB_NOUN
+        + r"\s+(?:have|cover|contain|include|mention|say|address|document|"
+        r"describe|explain)\b",
+        re.I,
+    ),
+    # "anything in the knowledge base on X"
+    re.compile(
+        r"\b(?:anything|something) (?:in|on) (?:the|our|my|your) " + _KB_NOUN + r"\b",
+        re.I,
+    ),
+    re.compile(_KB_LISTING_SHAPES, re.I),
+    # the whole message is a noun phrase naming a runbook: "kafka consumer lag
+    # runbook?"
+    re.compile(r"^\s*" + _KB_BARE_WORDS + _KB_NOUN + r"\s*\??\s*$", re.I),
+    # a playbook only with a topic: "do we have a playbook for DNS outages"
+    re.compile(
+        r"\b(?:is there|are there|do (?:we|you|i) have|any|show me|find|"
+        r"what(?:'s|’s| is| are)|which)\s+"
+        + _KB_FILLER
+        + _KB_PLAYBOOK
+        + r"\s+(?:for|on|about|covering|to (?:handle|fix|resolve|recover from))\s",
+        re.I,
+    ),
+]
+
+# Messages that name a runbook while asking to DO something to one — write,
+# convert, edit, follow it. The verb must govern the noun inside one clause:
+# "we ran out of disk space, is there a runbook for that?" is still a question.
+_KB_ACTION_VETO = re.compile(
+    r"\b(?:create|write|draft|convert|generate|make|build|author|save|turn|"
+    r"update|edit|delete|remove|improve|rewrite|publish|import|upload|follow|"
+    r"run|execute|apply|tried|ran|followed)\s+(?:"
+    + _KB_WORD
+    + r"\s+){0,5}?"
+    + _KB_ANY_NOUN
+    + r"\b",
+    re.I,
+)
+# The noun used as a reference to something already in the conversation — a
+# step of it, its output, the one the assistant gave — not a question about
+# what the knowledge base holds.
+#
+# Only the noun a determiner opens counts ("the runbook step", "a playbook
+# run"): in "a runbook for ansible playbook failed tasks" the second noun is
+# part of the topic.
+_KB_REFERENCE_VETO = re.compile(
+    r"(?:^|\b" + _KB_DETERMINERS + r"\s+)(?:(?!(?:for|on|about|regarding|"
+    r"covering|to)\b|"
+    + _KB_ANY_NOUN
+    + r")"
+    + _KB_WORD
+    + r"\s+){0,3}?"
+    + _KB_ANY_NOUN
+    + r"\s+(?:step|steps|task|tasks|run|runs|output|outputs|error|errors|failed|"
+    r"fails|failing|running|didn't|did not|doesn't|does not|isn't|is not|"
+    r"wasn't|above|earlier|from (?:earlier|before|above)|"
+    r"(?:that\s+|which\s+)?(?:you|we)\s+(?:just\s+|already\s+|previously\s+|"
+    r"earlier\s+)?(?:gave|used|suggested|mentioned|showed|shown|sent|ran|"
+    r"followed|tried|shared|linked|found|pulled|recommended|cited|quoted|"
+    r"referenced|provided|listed|applied))\b",
+    re.I,
+)
+
+_KB_LISTING_PATTERN = re.compile(_KB_LISTING_SHAPES, re.I)
+
+# Where the topic sits, in preference order: a quoted title, after the noun
+# ("a runbook for X"), after a reading verb ("does the knowledge base cover X"),
+# or between a determiner and the noun ("the PostgreSQL Replication Lag
+# runbook").
+_KB_TOPIC_TAIL = r"(?P<topic>[^?!\n]{1,200})"
+_KB_TOPIC_QUOTED = re.compile(
+    _KB_ANY_NOUN
+    + r"\s+(?:(?:titled|called|named)\s+)?[\"'“‘](?P<topic>[^\"'”’\n]{2,120})[\"'”’]"
+    + r"|[\"'“‘](?P<topic2>[^\"'”’\n]{2,120})[\"'”’]\s+"
+    + _KB_ANY_NOUN,
+    re.I,
+)
+_KB_TOPIC_AFTER_LISTING = re.compile(
+    _KB_NOUN
+    + r"\s+(?:do|does|are|have|exist)\b[^?!\n]{0,80}?\b(?:for|on|about|covering)\s+"
+    + _KB_TOPIC_TAIL,
+    re.I,
+)
+_KB_TOPIC_AFTER_NOUN = re.compile(
+    _KB_ANY_NOUN
+    + r"\s+(?:for|on|about|regarding|covering|that covers|titled|called|named|"
+    r"to (?:handle|fix|deal with|resolve|troubleshoot|recover from))\s+"
+    + _KB_TOPIC_TAIL,
+    re.I,
+)
+_KB_TOPIC_AFTER_VERB = re.compile(
+    r"(?P<noun>"
+    + _KB_NOUN
+    + r")\s+(?:say|cover|recommend|suggest|contain|include|tell|have|mention|"
+    r"address|document|describe|explain)s?\s+(?:anything\s+)?(?:about\s+|on\s+|"
+    r"for\s+|regarding\s+|us\s+about\s+|me\s+about\s+)?" + _KB_TOPIC_TAIL,
+    re.I,
+)
+# The words are those of one noun phrase: "give me a link to the kafka
+# runbook" names "kafka", not "link to the kafka".
+_KB_TOPIC_BEFORE_NOUN = re.compile(
+    r"\b(?:the|our|my|your|a|an|any)\s+(?P<topic>(?:(?!(?:"
+    + _KB_PREPOSITIONS
+    + r"|to|"
+    + _KB_PHRASE_DETERMINERS
+    + r")\b)"
+    + _KB_WORD
+    + r"\s+){1,8}?)"
+    + _KB_NOUN,
+    re.I,
+)
+_KB_TOPIC_BARE = re.compile(r"^\s*" + _KB_BARE_WORDS + _KB_NOUN + r"\s*\??\s*$", re.I)
+# The runbook's name in front of the noun a reading verb follows: "what does
+# the nginx 502 runbook say about upstream timeouts?" searches for both.
+# Matched against the text that ends just before the noun.
+_KB_NAME_BEFORE_NOUN = re.compile(
+    r"\b"
+    + _KB_DETERMINERS
+    + r"\s+(?P<name>(?:(?!(?:"
+    + _KB_PREPOSITIONS
+    + r"|"
+    + _KB_PHRASE_DETERMINERS
+    + r")\b)"
+    + _KB_WORD
+    + r"\s+){1,8})$",
+    re.I,
+)
+# A reading verb inside a complement: "our runbook on postgres replication say
+# about failover" is a name, then a subject.
+_KB_READING_VERB_SPLIT = re.compile(
+    r"\s+(?:says?|said|covers?|recommends?|suggests?|contains?|includes?|"
+    r"tells?|mentions?)\b(?:\s+(?:anything\s+)?(?:about|on|for|regarding)\b)?",
+    re.I,
+)
+
+# Leading words that are not the topic: determiners, possessives and the
+# adjectives people put in front of "runbook". Stripped from every topic.
+_KB_TOPIC_DETERMINER_WORDS = (
+    r"the|our|my|your|a|an|any|some|all|of|team(?:'s|’s)?|teams(?:'|’)|"
+    r"company(?:'s|’s)?|existing|official|relevant|specific|current|internal|"
+    r"standard"
+)
+_KB_TOPIC_DETERMINERS = re.compile(
+    r"^(?:(?:" + _KB_TOPIC_DETERMINER_WORDS + r")\s+)+", re.I
+)
+# The question's own frame as well (auxiliaries, pronouns, request verbs):
+# stripped only from a message that is nothing but a noun phrase ("can you show
+# me the runbook?"). Never from a topic after the noun, which can start with
+# one of these words ("a runbook for open file descriptor exhaustion").
+_KB_TOPIC_NOISE = re.compile(
+    r"^(?:(?:"
+    + _KB_TOPIC_DETERMINER_WORDS
+    + r"|can|could|would|will|you|we|i|do|does|did|have|has|is|are|"
+    r"there|show|give|send|find|fetch|open|get|share|list|summari[sz]e|explain|"
+    r"describe|me|us|please|pls|what|which|to)\s+)+",
+    re.I,
+)
+# A topic made only of these names nothing to search ("what does the runbook
+# say to do next?" → "to do next").
+_KB_TOPIC_EMPTY_WORDS = frozenset(
+    {
+        "a", "an", "any", "some", "all", "the", "this", "that", "these", "those", "it", "them", "one",
+        "to", "do", "does", "did", "next", "now", "here", "then", "say", "says",
+        "with", "about", "for", "on", "of", "and", "or", "is", "are", "be",
+        "there", "anything", "something", "stuff", "things", "say", "us", "me",
+        "you", "we", "i", "our", "my", "your",
+    }
+)  # fmt: skip
+# A topic that only points back at the conversation names nothing to search.
+_KB_ANAPHORA = frozenset(
+    {
+        "this error",
+        "that error",
+        "the error",
+        "these errors",
+        "this issue",
+        "that issue",
+        "the issue",
+        "this problem",
+        "that problem",
+        "the problem",
+        "this incident",
+        "the incident",
+        "this alert",
+        "that alert",
+        "this case",
+        "our problem",
+        "my problem",
+        "what we're seeing",
+        "what i'm seeing",
+    }
+)
+# A topic ends at its clause: "postgres lag. Also we see errors since 3pm" is
+# two clauses, and every extra term dilutes the search. Not at a colon: an
+# error message is a topic ("Error: ECONNREFUSED 10.0.0.1:5432").
+_KB_CLAUSE_BREAK = re.compile(
+    r"[.;](?:\s|$)|,\s*(?:and|but|because|also|so|then|while|which|plus)\b|"
+    r"\s+and\s+(?:can|could|would|please|also|then)\b",
+    re.I,
+)
+_KB_TOPIC_MAX_CHARS = 200
+
+# Detection reads at most this much from each end of a long message: a
+# question about the knowledge base opens or closes a message, and a pasted
+# log in between is not one.
+_KB_DETECT_WINDOW = 2000
+
+# A clause of the message, for finding what "this" points back to.
+_KB_CLAUSE_SPLIT = re.compile(r"(?<=[.!?;])\s+|,\s+|\n+")
+#: The rest of a message longer than this is a paste, not a description: it
+#: is not searched, and the engine falls back to the problem statement.
+_KB_CONTEXT_MAX_CHARS = 300
+
+
+def _clean_kb_topic(raw: str, *, frame: bool = False) -> str:
+    """``raw`` as a search topic, or empty when it names nothing.
+
+    ``frame``: ``raw`` may open with the question's own words (a message that
+    is only a noun phrase), so those are stripped as well as determiners.
+    """
+    topic = raw.strip().strip("\"'“”‘’`").strip()
+    topic = _KB_CLAUSE_BREAK.split(topic, maxsplit=1)[0]
+    # Trailing clauses that address the store rather than the topic.
+    topic = re.sub(
+        r"\s+(?:in|from|on) (?:the|our|my|your) (?:" + _KB_NOUN + r"|kb|docs)\b.*$",
+        "",
+        topic,
+        flags=re.I,
+    )
+    topic = re.sub(r"\s+(?:please|pls|thanks|thank you)\b.*$", "", topic, flags=re.I)
+    # The noise words are matched with their trailing space, so the topic is
+    # given one: "do you have any" ends on a noise word too.
+    noise = _KB_TOPIC_NOISE if frame else _KB_TOPIC_DETERMINERS
+    topic = noise.sub("", topic + " ").strip(" ,.;:-\"'“”‘’`")
+    if topic.lower() in _KB_ANAPHORA:
+        return ""
+    words = re.findall(r"[\w'’-]+", topic.lower())
+    if not words or all(w in _KB_TOPIC_EMPTY_WORDS for w in words):
+        return ""
+    return topic[:_KB_TOPIC_MAX_CHARS]
+
+
+def _join_topic(*parts: str) -> str:
+    return " ".join(p for p in parts if p)[:_KB_TOPIC_MAX_CHARS]
+
+
+def _kb_complement_topic(raw: str) -> str:
+    """A complement after the noun: "postgres replication say about failover"
+    is the runbook's subject, then what the user asks of it."""
+    head, *rest = _KB_READING_VERB_SPLIT.split(raw, maxsplit=1)
+    if rest:
+        head = re.sub(r"\s+(?:that|which)$", "", head, flags=re.I)
+    return _join_topic(_clean_kb_topic(head), *(_clean_kb_topic(r) for r in rest))
+
+
+def _kb_question_topic(message: str) -> str:
+    quoted = _KB_TOPIC_QUOTED.search(message)
+    if quoted:
+        topic = _clean_kb_topic(quoted.group("topic") or quoted.group("topic2") or "")
+        if topic:
+            return topic
+    for pattern in (_KB_TOPIC_AFTER_LISTING, _KB_TOPIC_AFTER_NOUN):
+        match = pattern.search(message)
+        if match:
+            # Anaphoric after the noun ("a runbook for this") names nothing,
+            # and a determiner phrase in front of the noun would only be the
+            # verb's object ("is there a runbook"), never a topic.
+            return _kb_complement_topic(match.group("topic"))
+    match = _KB_TOPIC_AFTER_VERB.search(message)
+    if match:
+        # The runbook's name stays in the search: it is what identifies the
+        # runbook, and the subject alone may match a different one.
+        start = match.start("noun")
+        name = _KB_NAME_BEFORE_NOUN.search(message[max(0, start - 600) : start])
+        return _join_topic(
+            _clean_kb_topic(name.group("name")) if name else "",
+            _clean_kb_topic(match.group("topic")),
+        )
+    match = _KB_TOPIC_BEFORE_NOUN.search(message)
+    if match:
+        return _clean_kb_topic(match.group("topic"))
+    bare = _KB_TOPIC_BARE.match(message)
+    return _clean_kb_topic(bare.group("bare"), frame=True) if bare else ""
+
+
+def _kb_context_topic(message: str) -> str:
+    """What the rest of the message describes, for a question that points back
+    at it: "Our nginx returns 502s since 14:00. Is there a runbook for this?"
+    searches "Our nginx returns 502s since 14:00".
+
+    Only the question's own paragraph, and only when it is short: a pasted log
+    above the question is evidence, not a description, and searching 300
+    characters of it finds nothing useful. The engine then searches with the
+    case's problem statement.
+    """
+    noun = re.search(_KB_ANY_NOUN, message, re.I)
+    if noun is None:
+        return ""
+    start = message.rfind("\n\n", 0, noun.start())
+    end = message.find("\n\n", noun.end())
+    paragraph = message[start + 1 if start >= 0 else 0 : end if end >= 0 else None]
+    clauses = [
+        c.strip(" ,.;:!?")
+        for c in _KB_CLAUSE_SPLIT.split(paragraph)
+        if c.strip() and not re.search(_KB_ANY_NOUN, c, re.I)
+    ]
+    context = " ".join(c for c in clauses if c)
+    if len(context) > _KB_CONTEXT_MAX_CHARS:
+        return ""
+    words = re.findall(r"[\w'’-]+", context.lower())
+    if not words or all(w in _KB_TOPIC_EMPTY_WORDS for w in words):
+        return ""
+    return context
+
+
+def kb_detection_window(message: str) -> str:
+    """The part of ``message`` a knowledge-base question is looked for in."""
+    if len(message) <= 2 * _KB_DETECT_WINDOW:
+        return message
+    return message[:_KB_DETECT_WINDOW] + "\n" + message[-_KB_DETECT_WINDOW:]
+
+
+def detect_kb_question(message: str) -> Optional[KbQuestion]:
+    """A question about the knowledge base itself, or ``None``.
+
+    Not called for a question about FaultMaven ("how do you retrieve
+    runbooks?" is ``agent_meta``): :func:`classify_query` checks that first.
+
+    A question that names no topic ("…, is there a runbook for this?") takes
+    the rest of the message as its topic when there is one; with none, the
+    topic is empty and the engine decides what to search with.
+    """
+    if not message:
+        return None
+    text = kb_detection_window(message)
+    if not any(p.search(text) for p in _KB_QUESTION_PATTERNS):
+        return None
+    if _KB_ACTION_VETO.search(text) or _KB_REFERENCE_VETO.search(text):
+        return None
+    topic = _kb_question_topic(text)
+    if not topic and _KB_LISTING_PATTERN.search(text):
+        return KbQuestion(kind=KbQuestionKind.LISTING)
+    if topic:
+        return KbQuestion(kind=KbQuestionKind.LOOKUP, topic=topic)
+    context = _kb_context_topic(text)
+    return KbQuestion(
+        kind=KbQuestionKind.LOOKUP, topic=context, from_context=bool(context)
+    )
+
+
 def _extract_entities(message: str) -> dict[str, list[str]]:
     """Extract technical entities from a user message."""
     entities: dict[str, list[str]] = {}
@@ -513,6 +1034,50 @@ def _has_interrogative_structure(message: str) -> bool:
 
 
 def classify_query(
+    user_message: str, has_attachments: bool = False
+) -> QueryClassification:
+    """Classify a user message: its processing mode, and whether it asks about
+    the knowledge base itself (``kb_question``, orthogonal to the mode).
+
+    A question about FaultMaven is never also a knowledge-base question: "how
+    do you retrieve runbooks?" asks how the assistant works, not what the
+    knowledge base holds.
+    """
+    classification = _classify_mode(user_message, has_attachments)
+    if classification.mode == ProcessingMode.AGENT_META:
+        return classification
+    message = (user_message or "").strip()
+    question = detect_kb_question(message)
+    classification.kb_question = question
+    if question is not None and _is_pure_kb_question(message, question):
+        # Nothing in it to investigate: diagnostic handling would force tools
+        # on a case with files, to answer a question the lookup answers.
+        classification.mode = ProcessingMode.KNOWLEDGE_QUERY
+        classification.detected_entities = {}
+    return classification
+
+
+def _is_pure_kb_question(message: str, question: KbQuestion) -> bool:
+    """A question about the knowledge base that reports nothing about the case.
+
+    The topic it names is not a symptom ("is there a runbook for nginx 502?"
+    names a 502 to look up, not one to investigate), so the case anchors are
+    read with it removed. A question that points back at the rest of the
+    message ("we're seeing 502s, is there a runbook for this?") carries its
+    report there, and keeps its diagnostic handling.
+    """
+    if question.from_context:
+        return False
+    text = kb_detection_window(message)
+    # Word by word: a topic can join a runbook's name and a subject that sit
+    # apart in the message.
+    for word in set(question.topic.split()):
+        text = re.sub(r"(?<!\w)" + re.escape(word) + r"(?!\w)", " ", text)
+    rest = _extract_entities(text)
+    return not _anchored_to_case(text, rest, error_keywords_anchor=True)
+
+
+def _classify_mode(
     user_message: str, has_attachments: bool = False
 ) -> QueryClassification:
     """Classify a user message for processing mode routing.

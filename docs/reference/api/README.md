@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.23.0
+**Version:** 14.24.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -6144,7 +6144,7 @@ Schema matches case-storage-design.md Section 4.7 (case_messages table).
 - `message_id` (string, required)
 - `metadata` (object, optional) — Tools used and other per-turn detail.
 - `role` (string, required)
-- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks that turn's prompt carried, exactly as the live `TurnResponse.sources` returned them, `new_this_turn` included, and gated the same way for the reader making this request: an excerpt of a runbook the reader cannot open, or one with no `metadata.document_id`, is returned with empty `content`, null `confidence` and `metadata` of only `{"access": "restricted"}`. Null on a row whose prompt carried none (and on every user or system row).
+- `sources` (object, optional) — On an assistant row: the knowledge-base runbooks that turn's prompt carried — pre-fetched, or found for the user's question about the knowledge base (`metadata.trigger`) — exactly as the live `TurnResponse.sources` returned them, `new_this_turn` included, and gated the same way for the reader making this request: an excerpt of a runbook the reader cannot open, or one with no `metadata.document_id`, is returned with empty `content`, null `confidence` and `metadata` of only `{"access": "restricted"}`. Null on a row whose prompt carried none (and on every user or system row).
 - `token_count` (object, optional) — Number of tokens in content
 - `turn_number` (integer, required) — Turn number in conversation (user messages increment turn)
 
@@ -6746,7 +6746,7 @@ Represents a single piece of citable evidence to build user trust.
 - `confidence` (object, optional)
 - `content` (string, required)
 - `metadata` (object, optional)
-- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Null on any other source.
+- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried pre-fetched knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Always true on a source whose `metadata.trigger` is `question`: the runbooks a lookup found for the user's own question about the knowledge base answer that turn. Null on any other source.
 - `type` (object, required)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
@@ -6937,7 +6937,7 @@ Response for POST /cases/{id}/turns.
 - `milestones_completed` (array, required)
 - `progress_made` (boolean, required)
 - `progress_transparency` (object, optional) — Progress transparency state. Present when investigation has stalled and agent is surfacing milestone dependencies.
-- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED) that the prompt the model answered from actually carried, after the section budget. A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous turn's prompt did not carry. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when nothing was pre-fetched — including when the push is disabled. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary. The turn retrieves with the case driver's knowledge; each excerpt is checked against the requester when returned, and one of a runbook the requester cannot open (no longer shared with them, or never was), or one with no `metadata.document_id`, is returned redacted: `type` and `new_this_turn` kept, `content` empty, `confidence` null, and `metadata` of only `{"access": "restricted"}`.
+- `sources` (array, optional) — Knowledge the engine put in front of the model for this turn, as the prompt the model answered from actually carried it, after the section budget. Two origins, told apart by `metadata.trigger`. `symptom` / `root_cause`: the runbooks the KB pre-fetch admitted (the PUSH channel, governed by KB_PREFETCH_ENABLED). A pre-fetch that fires while the turn's response is applied first reaches the NEXT turn's prompt, and is listed there. The context stands in every prompt until a pre-fetch replaces it, so it repeats turn to turn; `new_this_turn` marks the excerpts the previous pre-fetched context did not carry. `question`: the runbooks a lookup found for the user's own question about the knowledge base on this turn — present whatever KB_PREFETCH_ENABLED says, and always `new_this_turn`. Each entry carries the matched excerpt as `content`, the retrieval score as `confidence`, and the runbook's `document_id`/`title` under `metadata` so a client can link to it. Empty when the prompt carried neither — the push disabled or nothing pre-fetched, and no question about the knowledge base. Runbooks the model fetched itself via the kb_qa tool are NOT represented: that tool returns a formatted answer string, so per-turn identity is not available at the tool boundary. The turn retrieves with the case driver's knowledge; each excerpt is checked against the requester when returned, and one of a runbook the requester cannot open (no longer shared with them, or never was), or one with no `metadata.document_id`, is returned redacted: `type` and `new_this_turn` kept, `content` empty, `confidence` null, and `metadata` of only `{"access": "restricted"}`.
 - `suggested_actions` (array, optional)
 - `turn_number` (integer, required)
 

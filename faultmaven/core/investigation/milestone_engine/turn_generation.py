@@ -44,6 +44,7 @@ async def _generate_turn_response(
     user_message,
     bare_resolve_decline,
     kb_rendered=None,
+    kb_lookup=None,
 ):
     """Generate the LLM (or single-shot) response for this turn.
 
@@ -59,6 +60,9 @@ async def _generate_turn_response(
 
     ``kb_rendered`` is refilled by every prompt build with the KB entries that
     prompt carries; the last build is the prompt the model answered from.
+
+    ``kb_lookup`` is the turn's knowledge-base question lookup, run once by the
+    engine before this call; every build of this turn's prompt renders it.
     """
 
     # Build prompt using the adaptive template system
@@ -140,6 +144,7 @@ async def _generate_turn_response(
             given_tools=given,
             target_tokens=target_tokens,
             kb_rendered=kb_rendered,
+            kb_lookup=kb_lookup,
         )
 
     def _build_tool_loop_base(
@@ -250,6 +255,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
             reasoning_intent=ReasoningIntent.INFERENCE,
             min_output_tokens=TOOLLESS_INFERENCE_OUTPUT_FLOOR,
         )
@@ -267,6 +273,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
             # The non-tool fallback rebuilds for no tools: no tool names,
             # full evidence. Nothing to rebuild when nothing was given.
             fallback_prompt_builder=(
@@ -281,6 +288,7 @@ async def _generate_turn_response(
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
         )
 
     # Debug: Log what type was actually returned

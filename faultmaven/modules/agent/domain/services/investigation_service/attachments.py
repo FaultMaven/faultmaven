@@ -792,6 +792,9 @@ async def _preprocess_turn_uploads(
             mode=rerouted,
             detected_entities=classification.detected_entities,
             confidence=0.8,
+            # The mode moves; whether the message also asked about the
+            # knowledge base does not.
+            kb_question=classification.kb_question,
         )
         # ``classification.mode.value`` threads to the engine via
         # intent_data["query_mode"] below; the ``processing_mode`` local

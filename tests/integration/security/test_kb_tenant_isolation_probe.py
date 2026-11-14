@@ -1107,6 +1107,12 @@ _KB_READ_SITES = {
     ("modules/knowledge/domain/services/knowledge_service.py", "search_knowledge"),
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
     ("core/investigation/milestone_engine/kb_prefetch.py", "prefetch_kb_context"),
+    # the user's question about the knowledge base (§5.6): case_retrieval_scope,
+    # with raise_on_failure, so a failed team lookup cannot narrow it
+    (
+        "core/investigation/milestone_engine/kb_question_lookup.py",
+        "look_up_kb_question",
+    ),
 }
 
 

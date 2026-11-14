@@ -4,7 +4,11 @@ import logging
 from enum import Enum
 from typing import Any, Optional
 
+from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import terminal_summary_total
+from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
+    look_up_kb_question,
+)
 from faultmaven.core.investigation.milestone_engine.regeneration import (
     _remaining_regens_for,
 )
@@ -252,8 +256,12 @@ class TerminalTurnHandler:
         plan: TurnCommitPlan,
         redaction_ctx: Any,
         user_id: str | None = None,
+        kb_question: dict | None = None,
     ) -> dict[str, Any]:
         """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
+
+        ``kb_question`` is the turn's question about the knowledge base; only
+        the Q&A answer looks it up, so a card action searches nothing.
 
         Writes nothing: a regenerated report row and the runbook conversion's
         gate go into ``plan``, which commits (or releases) with the turn.
@@ -298,6 +306,7 @@ class TerminalTurnHandler:
             plan=plan,
             user_id=user_id,
             redaction_ctx=redaction_ctx,
+            kb_question=kb_question,
         )
 
     async def _handle_report_regeneration(
@@ -419,6 +428,7 @@ class TerminalTurnHandler:
         plan: TurnCommitPlan,
         redaction_ctx: Any,
         user_id: str | None = None,
+        kb_question: dict | None = None,
     ) -> dict[str, Any]:
         """Process a Q&A turn on a terminal case via the LLM.
 
@@ -487,12 +497,25 @@ class TerminalTurnHandler:
             else NO_TOOLS
         )
 
+        # What the prompt the model answers from carries of the knowledge
+        # base: on this path only a question lookup's entries (the terminal
+        # template has no push slot), which become the turn's ``sources``.
+        kb_rendered: list[dict[str, Any]] = []
+        metadata[TURN_METADATA_KB_PROMPTED] = kb_rendered
+        kb_lookup = (
+            await look_up_kb_question(self.deps, case, kb_question)
+            if kb_question
+            else None
+        )
+
         def _build_prompt(given_tools, **sizing) -> str:
             return get_prompt_for_case(
                 case,
                 user_message,
                 given_tools=given_tools,
                 terminal_affordances=offers,
+                kb_rendered=kb_rendered,
+                kb_lookup=kb_lookup,
                 **sizing,
             )
 
@@ -541,6 +564,7 @@ class TerminalTurnHandler:
             redaction_ctx=redaction_ctx,
             case=case,
             user_message=user_message,
+            kb_lookup=kb_lookup,
         )
 
         await redaction_ctx.save()

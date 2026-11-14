@@ -1,0 +1,1716 @@
+{
+ "pack_version": "2026-10-24",
+ "pack_vectors_sha256": "e8beca704458ce5dbb6a00f67e6ada73963f08d206cd8e5124ce66b1f70a798b",
+ "fetch_limit": 10,
+ "admission_floor": 0.45,
+ "rows": [
+  {
+   "topic": "pods OOMKilled with exit code 137",
+   "covered_by": [
+    "OOMKilled",
+    "CrashLoopBackOff"
+   ],
+   "results": [
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.6902,
+     "rerank_score": 0.6473,
+     "head": "# Kubernetes Container OOMKilled\n\n## Symptom Recognition\n\n- Pod status shows `Reason: OOMKilled` and `Exit Code: 137` in `kubectl describe pod` output (the `Sta"
+    },
+    {
+     "title": "GKE Workloads Not Running: Pods Unschedulable or Crashing",
+     "parent_document_id": "kb_505ea65e4303",
+     "score": 0.6652,
+     "rerank_score": 0.6372,
+     "head": "### Cause D: Container OOMKilled because memory limit is below working-set demand\n**Statement:** The container's memory limit is set below its actual working-se"
+    },
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.6189,
+     "rerank_score": 0.6187,
+     "head": "## Sources\n\n- [Kubernetes — Manage Resources for Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/) — Priority 1. Cgrou"
+    },
+    {
+     "title": "Kubernetes Pod CrashLoopBackOff",
+     "parent_document_id": "kb_ace096516d41",
+     "score": 0.5815,
+     "rerank_score": 0.6038,
+     "head": "### Cause B: Container OOMKilled because memory usage exceeds the configured limit\n\n**Statement:** The container's working set exceeds `resources.limits.memory`"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.54,
+     "rerank_score": 0.5871,
+     "head": "### Cause E: Container memory limit below JVM total memory footprint\n\n**Statement:** The Kubernetes container memory limit is set at or below the JVM's total me"
+    },
+    {
+     "title": "GKE Workloads Not Running: Pods Unschedulable or Crashing",
+     "parent_document_id": "kb_505ea65e4303",
+     "score": 0.5373,
+     "rerank_score": 0.5861,
+     "head": "## Symptom Recognition\n\n- Pods stuck in `Pending`, `kubectl get pods` STATUS column shows `Pending` or reason `PodUnschedulable`.\n- Pod event (reason `FailedSch"
+    },
+    {
+     "title": "Kubernetes Pod CrashLoopBackOff",
+     "parent_document_id": "kb_ace096516d41",
+     "score": 0.6344,
+     "rerank_score": 0.5846,
+     "head": "### Step 4: Capture the structured exit code and reason\n\n```bash\nkubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .status.containerStatuses[*]}{.na"
+    },
+    {
+     "title": "GitHub Actions Workflow Failure",
+     "parent_document_id": "kb_c84444322cee",
+     "score": 0.6244,
+     "rerank_score": 0.5806,
+     "head": "### Cause A: Runner Out of Memory\n\n**Statement:** A memory-intensive workflow step exceeded the runner's available RAM, causing the Linux OOM killer to send SIG"
+    },
+    {
+     "title": ".NET High Memory and GC Pressure: Managed Leaks, LOH Fragmentation, Excessive Gen2 GC",
+     "parent_document_id": "kb_10a04f35bfb5",
+     "score": 0.6152,
+     "rerank_score": 0.5769,
+     "head": "## Symptom Recognition\n\n- `System.OutOfMemoryException` thrown in application logs, often during a large allocation.\n- Container OOM-killed: `OOMKilled` reason "
+    },
+    {
+     "title": "Kubernetes Pod CrashLoopBackOff",
+     "parent_document_id": "kb_ace096516d41",
+     "score": 0.6075,
+     "rerank_score": 0.5739,
+     "head": "### Step 7: Measure memory and CPU usage versus configured limits\n\n```bash\nkubectl top pod <pod-name> -n <namespace> --containers\nkubectl get pod <pod-name> -n "
+    }
+   ]
+  },
+  {
+   "topic": "postgres running out of connection slots",
+   "covered_by": [
+    "PostgreSQL Connection Pool",
+    "RDS Connection"
+   ],
+   "results": [
+    {
+     "title": "AWS RDS Connection Exhaustion: max_connections Reached",
+     "parent_document_id": "kb_8741e005e4da",
+     "score": 0.6032,
+     "rerank_score": 0.672,
+     "head": "### Cause A: Application connection pools oversized for the instance limit\n**Statement:** The sum of `pool_max` across all running application instances exceeds"
+    },
+    {
+     "title": "AWS RDS Connection Exhaustion: max_connections Reached",
+     "parent_document_id": "kb_8741e005e4da",
+     "score": 0.5934,
+     "rerank_score": 0.6695,
+     "head": "### Cause D: Sessions pinned open by long-running queries or lock contention\n**Statement:** A blocking lock or a set of long-running queries holds backend sessi"
+    },
+    {
+     "title": "GCP Cloud SQL connection refused or timed out from clients and Auth Proxy",
+     "parent_document_id": "kb_3376ebde38c3",
+     "score": 0.5364,
+     "rerank_score": 0.6553,
+     "head": "## Symptom Recognition\n\n- Client error: `could not connect to server: Connection refused` / `Is the server running on host ... and accepting TCP/IP connections "
+    },
+    {
+     "title": "PostgreSQL Connection Pool Exhaustion",
+     "parent_document_id": "kb_191b82ff68a3",
+     "score": 0.6434,
+     "rerank_score": 0.6194,
+     "head": "### Step 8: Verify reserved slots and emergency access\n\n```bash\npsql -U postgres -h <host> -c \"SHOW superuser_reserved_connections;\"\npsql -U postgres -h <host> "
+    },
+    {
+     "title": "AWS RDS Connection Exhaustion: max_connections Reached",
+     "parent_document_id": "kb_8741e005e4da",
+     "score": 0.6221,
+     "rerank_score": 0.614,
+     "head": "## Symptom Recognition\n\n- MySQL/MariaDB clients fail with: `ERROR 1040 (HY000): Too many connections`\n- PostgreSQL clients fail with: `FATAL: remaining connecti"
+    },
+    {
+     "title": "AWS RDS Connection Exhaustion: max_connections Reached",
+     "parent_document_id": "kb_8741e005e4da",
+     "score": 0.62,
+     "rerank_score": 0.6135,
+     "head": "### Cause B: Leaked / idle-in-transaction connections never returned to the pool\n**Statement:** Application code paths open connections (or begin transactions) "
+    },
+    {
+     "title": "PostgreSQL Connection Pool Exhaustion",
+     "parent_document_id": "kb_191b82ff68a3",
+     "score": 0.6084,
+     "rerank_score": 0.6106,
+     "head": "## Prevention\n\n1. **Deploy a connection pooler in transaction mode.** Put PgBouncer (or an equivalent) in front of PostgreSQL for any deployment with more than "
+    },
+    {
+     "title": "PostgreSQL Connection Pool Exhaustion",
+     "parent_document_id": "kb_191b82ff68a3",
+     "score": 0.573,
+     "rerank_score": 0.6018,
+     "head": "## Applicability\n\n- PostgreSQL 10 or later, including PostgreSQL 14+ for `idle_session_timeout` and 17+ for `transaction_timeout`.\n- Read access to `pg_stat_act"
+    },
+    {
+     "title": "PostgreSQL Streaming Replication Lag",
+     "parent_document_id": "kb_5d6a87f28eec",
+     "score": 0.5384,
+     "rerank_score": 0.5958,
+     "head": "## Prevention\n\n1. **Alert on lag before users notice.** Page when `pg_stat_replication.replay_lag` exceeds 10 s or `pg_wal_lsn_diff(sent_lsn, replay_lsn)` excee"
+    },
+    {
+     "title": "PostgreSQL Connection Pool Exhaustion",
+     "parent_document_id": "kb_191b82ff68a3",
+     "score": 0.612,
+     "rerank_score": 0.5518,
+     "head": "### Cause D: Long-running queries occupy slots beyond budget\n**Statement:** A handful of unbounded queries (analytical scans, missing indexes, accidental cross "
+    }
+   ]
+  },
+  {
+   "topic": "nginx 502 bad gateway",
+   "covered_by": [
+    "NGINX 502"
+   ],
+   "results": [
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6817,
+     "rerank_score": 0.6438,
+     "head": "# NGINX 502 Bad Gateway\n\n## Symptom Recognition\n\n- Clients receive HTTP `502 Bad Gateway` responses; NGINX is the responding server (`Server: nginx` header) and"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6475,
+     "rerank_score": 0.6302,
+     "head": "## Causes\n\n### Cause A: Upstream process not listening on the expected address or port\n\n**Statement:** The backend service that NGINX targets via `proxy_pass`/`"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6406,
+     "rerank_score": 0.6274,
+     "head": "### Cause H: All servers in the upstream group are marked unavailable\n\n**Statement:** Every server in the `upstream` group has exceeded `max_fails` within `fail"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6393,
+     "rerank_score": 0.6269,
+     "head": "### Cause C: Upstream prematurely closes the connection mid-response\n\n**Statement:** The upstream accepts the connection but its worker or handler aborts before"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6262,
+     "rerank_score": 0.6216,
+     "head": "### Cause B: Connect timeout to upstream because the network path is slow or partitioned\n\n**Statement:** NGINX cannot complete the TCP handshake to a healthy up"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.6143,
+     "rerank_score": 0.6169,
+     "head": "## Sources\n\n- [NGINX — ngx_http_proxy_module reference](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) — Priority 1. `proxy_connect_timeout`, `proxy"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.598,
+     "rerank_score": 0.6103,
+     "head": "### Cause D: Read or send timeout because the upstream is slow to respond\n\n**Statement:** The upstream responds but takes longer than `proxy_read_timeout` (or `"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.5978,
+     "rerank_score": 0.6103,
+     "head": "### Cause I: NGINX worker out of file descriptors or connection slots\n\n**Statement:** NGINX workers cannot open new sockets to the upstream because they have hi"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.5938,
+     "rerank_score": 0.6087,
+     "head": "### Cause J: SELinux denying NGINX outbound network connection\n\n**Statement:** SELinux is in `Enforcing` mode and the active policy does not permit the `httpd_t"
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.5917,
+     "rerank_score": 0.6078,
+     "head": "### Cause G: Upstream response headers exceed NGINX proxy/fastcgi buffer size\n\n**Statement:** The upstream returns response headers larger than NGINX's `proxy_b"
+    }
+   ]
+  },
+  {
+   "topic": "kafka consumer lag",
+   "covered_by": [
+    "Kafka Consumer Lag"
+   ],
+   "results": [
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.6813,
+     "rerank_score": 0.6437,
+     "head": "# Kafka Consumer Lag\n\n## Symptom Recognition\n\n- `kafka-consumer-groups.sh --describe --group <g>` shows the `LAG` column rising over time on one or more partiti"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.6269,
+     "rerank_score": 0.6219,
+     "head": "## Prevention\n\n- Alert on `kafka_consumer_fetch_manager_metrics_records_lag_max` exceeding a per-topic budget (records, or wall-clock if produce rate is known) "
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.6227,
+     "rerank_score": 0.6202,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** Lag is confirmed real and the group is the bottleneck, but the indicators for Causes A through I did not match the gat"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.6207,
+     "rerank_score": 0.6194,
+     "head": "### Step 1: Capture per-partition lag and confirm the group is the bottleneck\n\n```bash\nBS=kafka1:9092\nGROUP=my-consumer-group\nkafka-consumer-groups.sh --bootstr"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.6092,
+     "rerank_score": 0.6148,
+     "head": "### Cause B: Consumer count is less than partition count — sustained under-capacity\n\n**Statement:** The consumer group has fewer members than the topic has part"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.5978,
+     "rerank_score": 0.6103,
+     "head": "### Cause G: Producer throughput spike — burst exceeds steady-state consumer capacity\n\n**Statement:** Producer message rate has spiked well above the historical"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.5612,
+     "rerank_score": 0.5956,
+     "head": "### Cause E: Transient consumer restarts trigger rebalances — static membership not configured\n\n**Statement:** Each consumer restart — pod rescheduling, rolling"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.5552,
+     "rerank_score": 0.5932,
+     "head": "### Cause C: Partition count is the ceiling — topic is under-partitioned\n\n**Statement:** The consumer group already has one member per partition, so adding more"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.554,
+     "rerank_score": 0.5927,
+     "head": "### Cause H: Fetch sizing starves the consumer of records per round-trip\n\n**Statement:** `fetch.min.bytes` is set too high or `max.partition.fetch.bytes` is set"
+    },
+    {
+     "title": "Kafka Consumer Lag",
+     "parent_document_id": "kb_dc30379818dc",
+     "score": 0.5475,
+     "rerank_score": 0.5901,
+     "head": "### Cause F: Partition assignment is skewed — hot keys concentrate traffic\n\n**Statement:** Production keys distribute unevenly across partitions, so a few carry"
+    }
+   ]
+  },
+  {
+   "topic": "redis out of memory",
+   "covered_by": [
+    "Redis Out of Memory"
+   ],
+   "results": [
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.7056,
+     "rerank_score": 0.6534,
+     "head": "# Redis Out of Memory (maxmemory exceeded)\n\n## Symptom Recognition\n\n- Write commands return the error string `OOM command not allowed when used memory > 'maxmem"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6741,
+     "rerank_score": 0.6408,
+     "head": "### Cause F: Client output buffers consume memory (slow consumers or replica lag)\n\n**Statement:** One or more clients (typically slow pub/sub subscribers or a l"
+    },
+    {
+     "title": "Redis High Latency",
+     "parent_document_id": "kb_12095a7d3e76",
+     "score": 0.6652,
+     "rerank_score": 0.6372,
+     "head": "### Cause C: Redis process swapping to disk\n\n**Statement:** The Redis process has been partially or fully swapped to disk, so every memory access hitting a swap"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6626,
+     "rerank_score": 0.6362,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** Symptoms confirm an OOM event in Redis (`OOM command not allowed` errors or `used_memory` at `maxmemory`), but Steps 1"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6618,
+     "rerank_score": 0.6359,
+     "head": "### Step 3: Capture Redis's own memory advisory\n\n```bash\nredis-cli MEMORY DOCTOR\n```\n\nExpected output: a free-form advisory string. Phrases such as `high alloca"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6342,
+     "rerank_score": 0.6248,
+     "head": "### Step 9: Check Linux memory overcommit configuration\n\n```bash\ncat /proc/sys/vm/overcommit_memory\ngrep -i swap /proc/$(pgrep -of redis-server)/smaps_rollup 2>"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6222,
+     "rerank_score": 0.62,
+     "head": "## Causes\n\n### Cause A: maxmemory unset or oversized for host RAM headroom\n\n**Statement:** `maxmemory` is `0` (no limit) or sized too close to physical RAM, so "
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6154,
+     "rerank_score": 0.6173,
+     "head": "### Cause G: BGSAVE / AOF rewrite copy-on-write pushes RSS over maxmemory\n\n**Statement:** A child forked for RDB snapshot or AOF rewrite triggers copy-on-write "
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.6019,
+     "rerank_score": 0.6119,
+     "head": "### Cause H: Replication backlog or full-resync buffer enlarged for a lagging replica\n\n**Statement:** `repl-backlog-size` is large (or the primary is buffering "
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.5985,
+     "rerank_score": 0.6106,
+     "head": "## Prevention\n\n- Always set `maxmemory` and `maxmemory-policy` explicitly in `redis.conf`; never run production with `maxmemory=0`. Size `maxmemory` at 50-70% o"
+    }
+   ]
+  },
+  {
+   "topic": "expired TLS certificate",
+   "covered_by": [
+    "TLS Certificate Expiry",
+    "cert-manager"
+   ],
+   "results": [
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.714,
+     "rerank_score": 0.6568,
+     "head": "## Symptom Recognition\n\n- `curl: (60) SSL certificate problem: certificate has expired` on any HTTPS endpoint\n- Browser errors: `NET::ERR_CERT_DATE_INVALID`, `S"
+    },
+    {
+     "title": "Kubernetes Node NotReady",
+     "parent_document_id": "kb_9064cb2e4b69",
+     "score": 0.6549,
+     "rerank_score": 0.6331,
+     "head": "### Cause F: Expired kubelet client certificate\n\n**Statement:** The kubelet's TLS client certificate expired, so it cannot authenticate to the API server even t"
+    },
+    {
+     "title": "Kafka Producer Timeout and Message Loss",
+     "parent_document_id": "kb_32dcfd1a0a18",
+     "score": 0.654,
+     "rerank_score": 0.6327,
+     "head": "### Cause D: SSL/TLS handshake failure or certificate expiry\n\n**Statement:** The producer cannot complete the TLS handshake to broker SSL listeners because of a"
+    },
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.6438,
+     "rerank_score": 0.6287,
+     "head": "## Causes\n\n### Cause A: Leaf certificate passed notAfter and was not renewed\n\n**Statement:** The X.509 leaf certificate served by the endpoint has passed its `n"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.6431,
+     "rerank_score": 0.6284,
+     "head": "### Cause H: Registry TLS certificate not trusted by the container runtime\n\n**Statement:** The registry presents a TLS certificate signed by a CA the node does "
+    },
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.6428,
+     "rerank_score": 0.6283,
+     "head": "### Cause G: Kubernetes TLS Secret updated but Ingress controller did not reload\n\n**Statement:** cert-manager renewed the Certificate and updated the TLS Secret"
+    },
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.6295,
+     "rerank_score": 0.623,
+     "head": "## Prevention\n\n- **Automate renewal with deploy hooks.** Configure certbot with `systemctl enable --now certbot.timer` and a deploy hook that reloads the web se"
+    },
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.6275,
+     "rerank_score": 0.6221,
+     "head": "### Cause E: System clock skew making valid certificates appear expired\n\n**Statement:** The local system clock is significantly ahead of real UTC, so in-date ce"
+    },
+    {
+     "title": "AWS CloudFront 502/504 errors: origin connection, SSL/cipher, timeout, and cache-behavior misrouting",
+     "parent_document_id": "kb_8069927ba5d0",
+     "score": 0.5846,
+     "rerank_score": 0.605,
+     "head": "### Cause B: Origin certificate invalid, self-signed, or incomplete chain\n**Statement:** The origin's certificate is expired, self-signed, or served without the"
+    },
+    {
+     "title": "TLS Certificate Expiry Causing Service Outage",
+     "parent_document_id": "kb_41ab740f6d7b",
+     "score": 0.5843,
+     "rerank_score": 0.6049,
+     "head": "### Cause B: Renewed certificate on disk but web server never reloaded\n\n**Statement:** Automated renewal wrote a valid certificate to disk, but the web server w"
+    }
+   ]
+  },
+  {
+   "topic": "ImagePullBackOff",
+   "covered_by": [
+    "ImagePullBackOff"
+   ],
+   "results": [
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5846,
+     "rerank_score": 0.6673,
+     "head": "# Kubernetes ImagePullBackOff\n\n## Symptom Recognition\n\n- `kubectl get pods` shows `STATUS: ImagePullBackOff` or `STATUS: ErrImagePull` with `READY 0/1` and `RES"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5486,
+     "rerank_score": 0.6583,
+     "head": "## Sources\n\n- [Kubernetes — Images](https://kubernetes.io/docs/concepts/containers/images/) — Priority 1. ImagePullPolicy defaults (Always/IfNotPresent/Never), "
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5364,
+     "rerank_score": 0.6553,
+     "head": "### Cause C: imagePullSecret credentials are revoked or expired\n\n**Statement:** A pull secret exists and is attached to the pod, but the embedded credential has"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5335,
+     "rerank_score": 0.6545,
+     "head": "## Causes\n\n### Cause A: Image tag or repository does not exist in the registry\n\n**Statement:** The image reference in the pod spec points to a tag or repository"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5306,
+     "rerank_score": 0.6538,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** Diagnostic steps did not converge on a known image-pull failure mode; the pull error string does not match the indicat"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5278,
+     "rerank_score": 0.6531,
+     "head": "### Cause B: Missing or unattached imagePullSecret for a private registry\n\n**Statement:** The pod and its ServiceAccount declare no imagePullSecret, so the kube"
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.5195,
+     "rerank_score": 0.651,
+     "head": "## Prevention\n\n- Pin images by immutable digest, not by tag: `image: <registry>/<repo>@sha256:<digest>`. Tag-only references break silently when a tag is moved "
+    },
+    {
+     "title": "Kubernetes Pod CrashLoopBackOff",
+     "parent_document_id": "kb_ace096516d41",
+     "score": 0.5084,
+     "rerank_score": 0.6482,
+     "head": "### Cause D: Container image is missing or its tag/digest does not exist\n\n**Statement:** The image reference in the pod spec is misspelled, points to a deleted "
+    },
+    {
+     "title": "Kubernetes ImagePullBackOff",
+     "parent_document_id": "kb_8a20f91458d4",
+     "score": 0.4692,
+     "rerank_score": 0.6385,
+     "head": "### Cause G: Docker Hub anonymous pull rate limit exhausted\n\n**Statement:** The node's egress IP has consumed its Docker Hub pull quota for the 6-hour window, s"
+    },
+    {
+     "title": "GKE Workloads Not Running: Pods Unschedulable or Crashing",
+     "parent_document_id": "kb_505ea65e4303",
+     "score": 0.4581,
+     "rerank_score": 0.6357,
+     "head": "## Sources\n\n- [Troubleshooting](https://docs.cloud.google.com/kubernetes-engine/docs/troubleshooting) — top-level GKE troubleshooting index; confirmed symptom t"
+    }
+   ]
+  },
+  {
+   "topic": "disk full on a linux server",
+   "covered_by": [
+    "Linux Disk Full"
+   ],
+   "results": [
+    {
+     "title": "AWS EC2 Instance Unreachable via SSH or RDP",
+     "parent_document_id": "kb_302aa3ae3586",
+     "score": 0.5964,
+     "rerank_score": 0.5539,
+     "head": "### Cause H: Root filesystem full, blocking sshd session spawning\n\n**Statement:** The instance's root filesystem has reached 100% capacity, preventing `sshd` fr"
+    },
+    {
+     "title": "Kafka Broker Failure and Partition Unavailability",
+     "parent_document_id": "kb_314e10076ad3",
+     "score": 0.5656,
+     "rerank_score": 0.5326,
+     "head": "## Causes\n\n### Cause A: JVM Heap Exhaustion (OOM-Kill)\n\n**Statement:** The broker's JVM ran out of heap memory, causing the Linux kernel to send SIGKILL to the "
+    },
+    {
+     "title": "Kafka Broker Failure and Partition Unavailability",
+     "parent_document_id": "kb_314e10076ad3",
+     "score": 0.6013,
+     "rerank_score": 0.532,
+     "head": "### Cause B: Disk Full or I/O Error on Log Directory\n\n**Statement:** The broker's Kafka log directory filesystem reached 100% utilisation or a hardware-level I/"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.5207,
+     "rerank_score": 0.5296,
+     "head": "# Redis Out of Memory (maxmemory exceeded)\n\n## Symptom Recognition\n\n- Write commands return the error string `OOM command not allowed when used memory > 'maxmem"
+    },
+    {
+     "title": "Redis High Latency",
+     "parent_document_id": "kb_12095a7d3e76",
+     "score": 0.5612,
+     "rerank_score": 0.5159,
+     "head": "### Cause C: Redis process swapping to disk\n\n**Statement:** The Redis process has been partially or fully swapped to disk, so every memory access hitting a swap"
+    },
+    {
+     "title": "Linux Disk Full",
+     "parent_document_id": "kb_dc601a7a98ff",
+     "score": 0.5568,
+     "rerank_score": 0.4883,
+     "head": "## Sources\n\n- [Linux man pages: df(1)](https://man7.org/linux/man-pages/man1/df.1.html) — Priority 1. Authoritative reference for filesystem disk space reportin"
+    },
+    {
+     "title": "Linux Disk I/O Saturation",
+     "parent_document_id": "kb_ab91b6988c67",
+     "score": 0.5475,
+     "rerank_score": 0.4846,
+     "head": "## Applicability\n\n- Linux kernel 4.18+ with any storage backend: local HDD, SSD, NVMe, AWS EBS, GCP Persistent Disk, Azure Managed Disks, SAN/NAS\n- Requires roo"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.5663,
+     "rerank_score": 0.4831,
+     "head": "### Step 9: Check Linux memory overcommit configuration\n\n```bash\ncat /proc/sys/vm/overcommit_memory\ngrep -i swap /proc/$(pgrep -of redis-server)/smaps_rollup 2>"
+    },
+    {
+     "title": "Linux Disk Full",
+     "parent_document_id": "kb_dc601a7a98ff",
+     "score": 0.6105,
+     "rerank_score": 0.4799,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** The filesystem is full but the cause cannot be determined from the standard diagnostic steps.\n\n**Chain:**\n- root: A le"
+    },
+    {
+     "title": "Linux Disk I/O Saturation",
+     "parent_document_id": "kb_ab91b6988c67",
+     "score": 0.5704,
+     "rerank_score": 0.4788,
+     "head": "### Cause D: Swap thrashing converting memory pressure into I/O saturation\n\n**Statement:** The system is actively paging anonymous memory to and from swap, gene"
+    }
+   ]
+  },
+  {
+   "topic": "JVM heap OutOfMemoryError",
+   "covered_by": [
+    "JVM OutOfMemoryError"
+   ],
+   "results": [
+    {
+     "title": "Jenkins build/agent failures: remoting, controller OOM, full workspace, or plugin mismatch",
+     "parent_document_id": "kb_fcd504b34177",
+     "score": 0.7165,
+     "rerank_score": 0.7003,
+     "head": "### Cause B: Controller JVM heap exhausted (OutOfMemoryError)\n\n**Statement:** The controller heap is too small for the live data set or for transient spikes (la"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6964,
+     "rerank_score": 0.6953,
+     "head": "## Symptom Recognition\n\n- `java.lang.OutOfMemoryError: Java heap space` in application logs or stderr\n- `java.lang.OutOfMemoryError: GC overhead limit exceeded`"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6814,
+     "rerank_score": 0.6915,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** The JVM OutOfMemoryError cannot be attributed to any of the documented causes with available diagnostic data.\n\n**Indic"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6663,
+     "rerank_score": 0.6877,
+     "head": "## Sources\n\n- [Oracle — Troubleshoot Memory Leaks, Java SE 21](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html) — Offic"
+    },
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.6575,
+     "rerank_score": 0.6855,
+     "head": "### Cause C: Runtime heap sized larger than the container memory limit\n\n**Statement:** A JVM, V8, or other managed runtime's max heap (`-Xmx`, `--max-old-space-"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6449,
+     "rerank_score": 0.6824,
+     "head": "### Cause E: Container memory limit below JVM total memory footprint\n\n**Statement:** The Kubernetes container memory limit is set at or below the JVM's total me"
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6431,
+     "rerank_score": 0.6819,
+     "head": "## Diagnostic Steps\n\n### Step 1: Identify the OOM error variant\n\nIdentify the OOM error variant from application logs to determine which memory region is exhaus"
+    },
+    {
+     "title": "Kafka Broker Failure and Partition Unavailability",
+     "parent_document_id": "kb_314e10076ad3",
+     "score": 0.6359,
+     "rerank_score": 0.6801,
+     "head": "## Causes\n\n### Cause A: JVM Heap Exhaustion (OOM-Kill)\n\n**Statement:** The broker's JVM ran out of heap memory, causing the Linux kernel to send SIGKILL to the "
+    },
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.6018,
+     "rerank_score": 0.6716,
+     "head": "## Prevention\n\n- Enable crash diagnostics in all environments: `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/dumps/ -XX:+ExitOnOutOfMemoryError`. `Exit"
+    },
+    {
+     "title": "Jenkins build/agent failures: remoting, controller OOM, full workspace, or plugin mismatch",
+     "parent_document_id": "kb_fcd504b34177",
+     "score": 0.5588,
+     "rerank_score": 0.6609,
+     "head": "## Prevention\n\n- Set the controller heap explicitly (`-Xmx` = `-Xms`) with G1GC and `-XX:+HeapDumpOnOutOfMemoryError`; size heap to live data plus headroom for "
+    }
+   ]
+  },
+  {
+   "topic": "ArgoCD sync failures",
+   "covered_by": [
+    "ArgoCD Application Sync"
+   ],
+   "results": [
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.7244,
+     "rerank_score": 0.7022,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** The ArgoCD sync failure cause cannot be determined from the available diagnostic output produced by Steps 1–7.\n\n**Indi"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.638,
+     "rerank_score": 0.6807,
+     "head": "## Sources\n\n- [ArgoCD Operator Manual — Troubleshooting](https://argo-cd.readthedocs.io/en/stable/operator-manual/troubleshooting/) — Priority 2 (official OSS d"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.5986,
+     "rerank_score": 0.6708,
+     "head": "### Cause G: Overlapping Resource Ownership Between Applications\n\n**Statement:** Two ArgoCD Applications manage the same Kubernetes resource, causing label conf"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.5902,
+     "rerank_score": 0.6687,
+     "head": "## Prevention\n\n- **Pin CRDs to sync-wave -1 or lower.** All CustomResourceDefinitions and Namespace resources must sync before any resources that depend on them"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6713,
+     "rerank_score": 0.5802,
+     "head": "### Cause E: Manifest Generation Failure (Helm or Kustomize)\n\n**Statement:** ArgoCD cannot render the application manifests because a Helm template error or Kus"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6656,
+     "rerank_score": 0.5788,
+     "head": "### Cause D: Resource Version Conflict from Concurrent Controllers\n\n**Statement:** ArgoCD's sync fails with a `resourceVersion` conflict because another control"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6635,
+     "rerank_score": 0.5782,
+     "head": "### Cause F: Git Repository Unreachable or Credentials Expired\n\n**Statement:** ArgoCD cannot fetch manifests because the configured repository credentials are e"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6275,
+     "rerank_score": 0.5692,
+     "head": "### Cause C: Phantom Drift from Server-Side Field Mutations\n\n**Statement:** ArgoCD continuously reports `OutOfSync` because server-side controllers mutate field"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6222,
+     "rerank_score": 0.5679,
+     "head": "### Cause B: Sync Wave Ordering Misconfiguration\n\n**Statement:** A resource is applied before a prerequisite resource because sync wave annotations are missing "
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.6118,
+     "rerank_score": 0.5653,
+     "head": "## Symptom Recognition\n\n- Application status shows `SyncFailed` with message `one or more synchronization tasks are not valid` or `one or more synchronization t"
+    }
+   ]
+  },
+  {
+   "topic": "lambda timeouts",
+   "covered_by": [
+    "Lambda Function Timeout"
+   ],
+   "results": [
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6601,
+     "rerank_score": 0.6352,
+     "head": "## Prevention\n\nSet the function timeout to 2–3x the observed P99 duration, not an arbitrary value:\n\n```bash\naws logs start-query \\\n  --log-group-name /aws/lambd"
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6383,
+     "rerank_score": 0.6265,
+     "head": "## Symptom Recognition\n\n- CloudWatch Logs show `Task timed out after X.XX seconds` in the function's log group\n- REPORT line shows `Duration` equal to the confi"
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6355,
+     "rerank_score": 0.6254,
+     "head": "## Causes\n\n### Cause A: Cold start exhausts the timeout budget\n\n**Statement:** The Init phase (loading code and initializing global state) consumes a large frac"
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6266,
+     "rerank_score": 0.6218,
+     "head": "### Cause B: Downstream service latency blocks the handler\n\n**Statement:** A downstream dependency (database, external API, or AWS service) responds slowly or n"
+    },
+    {
+     "title": "AWS Lambda Runtime Invocation Errors",
+     "parent_document_id": "kb_55f15bd503fc",
+     "score": 0.5749,
+     "rerank_score": 0.6011,
+     "head": "### Cause Z: Unidentified Lambda invocation failure\n\n**Statement:** The invocation error does not match any identified pattern and requires deeper investigation"
+    },
+    {
+     "title": "AWS ALB 504 Gateway Timeout",
+     "parent_document_id": "kb_8f3c354c8b2c",
+     "score": 0.6721,
+     "rerank_score": 0.5113,
+     "head": "### Cause F: Lambda target does not respond before connection timeout\n\n**Statement:** The Lambda function registered as an ALB target does not respond within th"
+    },
+    {
+     "title": "AWS SQS Dead Letter Queue Buildup",
+     "parent_document_id": "kb_440cadc94faf",
+     "score": 0.6665,
+     "rerank_score": 0.5091,
+     "head": "### Step 6: Compare visibility timeout to observed consumer processing duration\n\n```bash\nFUNCTION_NAME=\"my-queue-processor\"\n\n# Check Lambda function timeout con"
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6409,
+     "rerank_score": 0.4988,
+     "head": "## Sources\n\n- [AWS Lambda: Troubleshoot invocation issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) — Priority 1. Official "
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6273,
+     "rerank_score": 0.4934,
+     "head": "### Cause C: Insufficient memory causing CPU starvation\n\n**Statement:** The function is allocated insufficient memory, resulting in proportionally low CPU that "
+    },
+    {
+     "title": "AWS Lambda Function Timeout",
+     "parent_document_id": "kb_9373f5cf8736",
+     "score": 0.6216,
+     "rerank_score": 0.4911,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** The timeout root cause cannot be determined from available logs, metrics, or traces (e.g., EFS mount latency, infreque"
+    }
+   ]
+  },
+  {
+   "topic": "elasticsearch red cluster health",
+   "covered_by": [
+    "Elasticsearch Cluster"
+   ],
+   "results": [
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.6621,
+     "rerank_score": 0.6867,
+     "head": "## Symptom Recognition\n\n- `GET _cluster/health` returns `\"status\": \"yellow\"` or `\"status\": \"red\"` with `unassigned_shards > 0`.\n- Yellow status: all primary sha"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5367,
+     "rerank_score": 0.6553,
+     "head": "### Cause H: Corrupt or unrecoverable shard data\n\n**Statement:** A data node experienced an unclean shutdown or storage fault that corrupted a shard's segment f"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5994,
+     "rerank_score": 0.583,
+     "head": "## Sources\n\n- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-common-cluster-issues) — priority"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5419,
+     "rerank_score": 0.5686,
+     "head": "## Applicability\n\nApplies to self-managed Elasticsearch 7.x and 8.x, Elastic Cloud, and cloud-provider managed services (Amazon OpenSearch Service, GCP Elastic "
+    },
+    {
+     "title": "Elasticsearch Search Latency Spikes",
+     "parent_document_id": "kb_bd6002068e11",
+     "score": 0.5345,
+     "rerank_score": 0.5668,
+     "head": "### Cause D: Search thread pool saturation\n\n**Statement:** The search thread pool is exhausted, causing incoming queries to queue and eventually be rejected, pr"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5232,
+     "rerank_score": 0.564,
+     "head": "## Causes\n\n### Cause A: Disk watermark exceeded\n\n**Statement:** One or more data nodes have exceeded the low (85%) or flood-stage (95%) disk watermark, preventi"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5217,
+     "rerank_score": 0.5636,
+     "head": "## Prevention\n\n1. Implement Index Lifecycle Management (ILM): configure rollover, shrink, and delete phases to control index and shard count proactively. Target"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5131,
+     "rerank_score": 0.5614,
+     "head": "### Cause F: Allocation retry limit exhausted\n\n**Statement:** Elasticsearch attempted to allocate a shard multiple times, exhausted its retry limit (default 5),"
+    },
+    {
+     "title": "Elasticsearch Cluster Yellow or Red Health Status",
+     "parent_document_id": "kb_bd8cd039d094",
+     "score": 0.5055,
+     "rerank_score": 0.5595,
+     "head": "### Cause B: Node failure or departure\n\n**Statement:** A data node left the cluster unexpectedly, leaving its primary or replica shards with no host until Elast"
+    },
+    {
+     "title": "Kubernetes StatefulSet Stuck During Rolling Update",
+     "parent_document_id": "kb_6efda58f9648",
+     "score": 0.4722,
+     "rerank_score": 0.5512,
+     "head": "### Cause G: Headless Service missing or misconfigured\n\n**Statement:** The StatefulSet's required headless Service does not exist or has `clusterIP` set to a re"
+    }
+   ]
+  },
+  {
+   "topic": "CoreDNS resolution failures",
+   "covered_by": [
+    "CoreDNS"
+   ],
+   "results": [
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6879,
+     "rerank_score": 0.6931,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** DNS resolution failures are present but no specific cause above has been confirmed through the diagnostic steps.\n\n**In"
+    },
+    {
+     "title": "Kubernetes Service Unreachable",
+     "parent_document_id": "kb_b167d4e23007",
+     "score": 0.7037,
+     "rerank_score": 0.5855,
+     "head": "### Cause D: DNS Resolution Failure (CoreDNS Down or Misconfigured)\n\n**Statement:** CoreDNS pods are unavailable or misconfigured, preventing pods from resolvin"
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6698,
+     "rerank_score": 0.577,
+     "head": "### Cause G: Upstream DNS forwarder unreachable\n\n**Statement:** The upstream resolver configured in the CoreDNS `forward` plugin is unreachable from the cluster"
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6203,
+     "rerank_score": 0.5646,
+     "head": "## Symptom Recognition\n\n- Pods receive `connection refused` or `timeout` errors when contacting other services by name\n- `nslookup <service-name>` or `dig` from"
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6199,
+     "rerank_score": 0.5645,
+     "head": "## Diagnostic Steps\n\n### Step 1: Check CoreDNS pod status\n\n```bash\nkubectl get pods -n kube-system -l k8s-app=kube-dns -o wide\n```\n\nExpected output: two or more"
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6526,
+     "rerank_score": 0.5589,
+     "head": "## Causes\n\n### Cause A: CoreDNS pods not running\n\n**Statement:** CoreDNS pods are absent, in `CrashLoopBackOff`, or evicted, leaving no DNS server available to "
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.5788,
+     "rerank_score": 0.5543,
+     "head": "## Sources\n\n- [Kubernetes: Debugging DNS Resolution](https://kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/) — Priority 1. Official diagn"
+    },
+    {
+     "title": "Kubernetes Service Unreachable",
+     "parent_document_id": "kb_b167d4e23007",
+     "score": 0.4993,
+     "rerank_score": 0.5344,
+     "head": "## Diagnostic Steps\n\n### Step 1: Confirm the Service exists and inspect its configuration\n\n```bash\nkubectl get svc <service-name> -n <namespace>\nkubectl get svc"
+    },
+    {
+     "title": "AKS cluster/node-pool upgrade fails: PDB eviction, quota, subnet, or allocation",
+     "parent_document_id": "kb_72b0e998acd8",
+     "score": 0.5751,
+     "rerank_score": 0.502,
+     "head": "## Sources\n\n- [Troubleshoot UpgradeFailed errors due to eviction failures caused by PDBs (PodDrainFailure)](https://learn.microsoft.com/en-us/troubleshoot/azure"
+    },
+    {
+     "title": "Kubernetes CoreDNS Resolution Failures",
+     "parent_document_id": "kb_411f0459e060",
+     "score": 0.6723,
+     "rerank_score": 0.4522,
+     "head": "### Cause B: Forwarding loop — CoreDNS resolves back to itself\n\n**Statement:** CoreDNS uses `forward . /etc/resolv.conf` on a node whose `/etc/resolv.conf` name"
+    }
+   ]
+  },
+  {
+   "topic": "S3 403 access denied",
+   "covered_by": [
+    "S3 403",
+    "IAM Access Denied"
+   ],
+   "results": [
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.6792,
+     "rerank_score": 0.6428,
+     "head": "# AWS S3 403 Access Denied\n\n## Symptom Recognition\n\n- AWS SDK or CLI returns `An error occurred (AccessDenied) when calling the <Operation> operation: Access De"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.635,
+     "rerank_score": 0.6252,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** A 403 Access Denied is confirmed but none of the indicators for Causes A through H match the gathered evidence (e.g. O"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.6294,
+     "rerank_score": 0.6229,
+     "head": "## Causes\n\n### Cause A: Caller's identity-based policy does not allow the S3 action\n\n**Statement:** No identity-based policy attached to the calling IAM user, r"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.616,
+     "rerank_score": 0.6176,
+     "head": "### Cause F: VPC endpoint policy implicitly or explicitly denies the request\n\n**Statement:** The request is routed through a VPC endpoint whose policy does not "
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.6113,
+     "rerank_score": 0.6157,
+     "head": "### Cause G: AWS Organizations SCP/RCP or permissions boundary denies the action\n\n**Statement:** An SCP, RCP, or IAM permissions boundary upstream of the caller"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.5957,
+     "rerank_score": 0.6094,
+     "head": "### Cause C: S3 Block Public Access strips a grant the bucket policy or ACL relied on\n\n**Statement:** Account- or bucket-level S3 Block Public Access strips the"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.5787,
+     "rerank_score": 0.6026,
+     "head": "### Cause D: Caller lacks KMS permissions for an SSE-KMS encrypted object\n\n**Statement:** The object is SSE-KMS encrypted and S3 permits the call, but the calle"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.5773,
+     "rerank_score": 0.6021,
+     "head": "## Sources\n\n- [Troubleshoot access denied (403 Forbidden) errors in Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/troubleshoot-403-errors.htm"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.5694,
+     "rerank_score": 0.5989,
+     "head": "### Cause E: Object owned by a different account than the bucket and no policy grants the bucket owner access\n\n**Statement:** An external account uploaded the o"
+    },
+    {
+     "title": "AWS S3 403 Access Denied",
+     "parent_document_id": "kb_156b0852069a",
+     "score": 0.5632,
+     "rerank_score": 0.5964,
+     "head": "### Cause B: Bucket policy contains an explicit Deny matching the request\n\n**Statement:** A `Deny` statement in the bucket policy (or access-point policy) match"
+    }
+   ]
+  },
+  {
+   "topic": "stuck terraform state lock",
+   "covered_by": [
+    "Terraform State Lock"
+   ],
+   "results": [
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.6689,
+     "rerank_score": 0.5721,
+     "head": "### Cause D: Zombie Terraform process on local machine holding the lock\n\n**Statement:** A previously interrupted Terraform process on the local machine is still"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.6587,
+     "rerank_score": 0.5681,
+     "head": "### Cause Z: Unidentified\n\n**Statement:** The state lock failure does not match any of the recognized patterns above and originates from a backend-specific bug,"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.647,
+     "rerank_score": 0.5634,
+     "head": "## Applicability\n\n- Terraform v1.0 through v1.11+ and OpenTofu v1.6+\n- Any backend that supports locking: S3+DynamoDB, Azure Blob Storage, GCS, Consul, Terrafor"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.6393,
+     "rerank_score": 0.5603,
+     "head": "### Cause E: Backend lock release failed after a successful apply\n\n**Statement:** The Terraform apply completed successfully but a transient backend error preve"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.605,
+     "rerank_score": 0.5466,
+     "head": "### Cause B: Concurrent parallel Terraform runs against the same workspace\n\n**Statement:** Multiple CI/CD jobs or developers triggered Terraform operations agai"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.6044,
+     "rerank_score": 0.5463,
+     "head": "## Causes\n\n### Cause A: Orphaned lock from a killed CI/CD pipeline run\n\n**Statement:** A prior CI/CD pipeline run was terminated (runner timeout, spot instance "
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.5872,
+     "rerank_score": 0.5395,
+     "head": "## Diagnostic Steps\n\n### Step 1: Capture the Lock Info block\n\nRecord the full lock metadata from the error output. All downstream steps depend on these values.\n"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.5786,
+     "rerank_score": 0.536,
+     "head": "## Prevention\n\n- **Serialize Terraform operations in CI/CD.** Never allow parallel runs against the same state. Use GitHub Actions `concurrency` groups, GitLab "
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.5753,
+     "rerank_score": 0.5347,
+     "head": "## Symptom Recognition\n\n- `Error acquiring the state lock` with a `Lock Info` block containing `ID`, `Who`, `Operation`, `Created` fields\n- `ConditionalCheckFai"
+    },
+    {
+     "title": "Terraform State Lock Stuck or Orphaned",
+     "parent_document_id": "kb_c23d43f56dc8",
+     "score": 0.5742,
+     "rerank_score": 0.5343,
+     "head": "## Sources\n\n- [Terraform Language: State Locking](https://developer.hashicorp.com/terraform/language/state/locking) — Priority 1. Official documentation on lock"
+    }
+   ]
+  },
+  {
+   "topic": "mysql replication stopped",
+   "covered_by": [
+    "MySQL"
+   ],
+   "results": [
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.6098,
+     "rerank_score": 0.6151,
+     "head": "### Cause F: Disk full on replica stops IO thread\n\n**Statement:** The replica's MySQL data directory filesystem reached 100 % capacity, preventing the IO thread"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.6072,
+     "rerank_score": 0.614,
+     "head": "## Prevention\n\n1. **Set `super_read_only = ON` on all replicas.** This is the single most effective measure — it prevents direct writes that cause data drift (C"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.6027,
+     "rerank_score": 0.6122,
+     "head": "## Causes\n\n### Cause A: Duplicate key error on replica (data drift)\n\n**Statement:** A row inserted directly on the replica conflicts with an incoming replicatio"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.6018,
+     "rerank_score": 0.6119,
+     "head": "## Symptom Recognition\n\nOne or both replication threads on the replica stop:\n\n```text\nReplica_IO_Running: No\nReplica_SQL_Running: No\n```\n\n`Seconds_Behind_Master"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.563,
+     "rerank_score": 0.5964,
+     "head": "### Step 7: Examine Performance Schema for worker errors (MTS)\n\n```bash\nmysql -e \"\nSELECT CHANNEL_NAME, SERVICE_STATE, LAST_ERROR_NUMBER, LAST_ERROR_MESSAGE\nFRO"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.5841,
+     "rerank_score": 0.5229,
+     "head": "### Cause B: Missing row error on replica (error 1032)\n\n**Statement:** A row deleted or modified directly on the replica is later targeted by a source UPDATE/DE"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.5814,
+     "rerank_score": 0.5172,
+     "head": "### Cause G: Network interruption disconnected IO thread\n\n**Statement:** A transient or persistent network failure between the replica and source dropped the IO"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.5663,
+     "rerank_score": 0.5111,
+     "head": "### Cause E: Relay log corruption\n\n**Statement:** Relay log files on the replica are damaged after an unclean shutdown or disk failure, preventing the SQL threa"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.563,
+     "rerank_score": 0.5098,
+     "head": "## Sources\n\n- [MySQL 8.0 Reference Manual — Replication Troubleshooting](https://dev.mysql.com/doc/refman/8.0/en/replication-problems.html) — Priority 1. Diagno"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.5525,
+     "rerank_score": 0.5056,
+     "head": "## Diagnostic Steps\n\n### Step 1: Check replication thread status\n\n```bash\nmysql -e \"SHOW REPLICA STATUS\\G\"\n```\n\nExpected output: a single-row result with approx"
+    }
+   ]
+  },
+  {
+   "topic": "SAP HANA backup failures",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "PostgreSQL Connection Pool Exhaustion",
+     "parent_document_id": "kb_191b82ff68a3",
+     "score": 0.4559,
+     "rerank_score": 0.4252,
+     "head": "### Cause E: PgBouncer pool sizing is the bottleneck (not PostgreSQL itself)\n**Statement:** PostgreSQL has free `max_connections` capacity, but PgBouncer's `def"
+    },
+    {
+     "title": "Amazon RDS instance reaches allocated storage (storage-full)",
+     "parent_document_id": "kb_b2167c89a7de",
+     "score": 0.5057,
+     "rerank_score": 0.3775,
+     "head": "## Sources\n\n- [CHAP Troubleshooting](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Troubleshooting.html) — RDS troubleshooting overview; storage-f"
+    },
+    {
+     "title": "Amazon RDS instance reaches allocated storage (storage-full)",
+     "parent_document_id": "kb_b2167c89a7de",
+     "score": 0.483,
+     "rerank_score": 0.3718,
+     "head": "## Prevention\n\n- Enable storage autoscaling with a sensible ceiling: `aws rds modify-db-instance --db-instance-identifier <db-id> --max-allocated-storage <N>`. "
+    },
+    {
+     "title": "MySQL InnoDB Deadlocks",
+     "parent_document_id": "kb_5833c6fff9f7",
+     "score": 0.4659,
+     "rerank_score": 0.3675,
+     "head": "### Cause B: Gap Locks Under REPEATABLE READ\n\n**Statement:** InnoDB's default REPEATABLE READ isolation uses next-key locks (record + gap) that conflict with co"
+    },
+    {
+     "title": "Node.js Event Loop Blocked",
+     "parent_document_id": "kb_743d6cc54f1e",
+     "score": 0.4599,
+     "rerank_score": 0.366,
+     "head": "### Cause F: V8 garbage collection pauses on oversized heap\n\n**Statement:** V8 Mark-Compact (full GC) pauses exceed 100 ms because the application heap has grow"
+    },
+    {
+     "title": "AWS SQS Dead Letter Queue Buildup",
+     "parent_document_id": "kb_440cadc94faf",
+     "score": 0.4592,
+     "rerank_score": 0.3658,
+     "head": "## Symptom Recognition\n\n- `ApproximateNumberOfMessagesVisible` on the DLQ queue rises steadily in CloudWatch; any non-zero value on a DLQ warrants immediate inv"
+    },
+    {
+     "title": "MySQL Replication Broken",
+     "parent_document_id": "kb_126014d2b2d7",
+     "score": 0.5414,
+     "rerank_score": 0.3365,
+     "head": "### Cause C: GTID gap — source purged required binary logs (error 1236)\n\n**Statement:** The source purged binary logs containing GTIDs the replica has not yet a"
+    },
+    {
+     "title": "Linux Disk I/O Saturation",
+     "parent_document_id": "kb_ab91b6988c67",
+     "score": 0.4829,
+     "rerank_score": 0.3219,
+     "head": "### Cause C: Backup or snapshot job generating sustained sequential I/O\n\n**Statement:** A backup process (rsync, tar, mysqldump, pg_dump, cloud snapshot agent) "
+    },
+    {
+     "title": "NGINX 502 Bad Gateway",
+     "parent_document_id": "kb_717edaec5594",
+     "score": 0.4714,
+     "rerank_score": 0.319,
+     "head": "### Cause H: All servers in the upstream group are marked unavailable\n\n**Statement:** Every server in the `upstream` group has exceeded `max_fails` within `fail"
+    },
+    {
+     "title": "Grafana Dashboard Loading Slowly",
+     "parent_document_id": "kb_1a1b6251c6e8",
+     "score": 0.4697,
+     "rerank_score": 0.3186,
+     "head": "### Cause F: Grafana Backend Database Is SQLite Under Concurrent Load\n\n**Statement:** Grafana's embedded SQLite database serialises writes and creates lock cont"
+    }
+   ]
+  },
+  {
+   "topic": "Oracle RAC interconnect errors",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "Java JVM OutOfMemoryError",
+     "parent_document_id": "kb_67d7849104a4",
+     "score": 0.5286,
+     "rerank_score": 0.4811,
+     "head": "## Sources\n\n- [Oracle — Troubleshoot Memory Leaks, Java SE 21](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html) — Offic"
+    },
+    {
+     "title": "ArgoCD Application Sync Failure",
+     "parent_document_id": "kb_c350de1303f6",
+     "score": 0.5044,
+     "rerank_score": 0.4195,
+     "head": "### Cause D: Resource Version Conflict from Concurrent Controllers\n\n**Statement:** ArgoCD's sync fails with a `resourceVersion` conflict because another control"
+    },
+    {
+     "title": "RabbitMQ Queue Backlog and Dead-Letter Accumulation",
+     "parent_document_id": "kb_3679d7952c30",
+     "score": 0.5017,
+     "rerank_score": 0.4188,
+     "head": "### Step 5: Check consumer application logs for processing errors\n\n```bash\ngrep -E \"error|exception|timeout|nack|reject|failed|refused|OOM\" \\\n  /var/log/consume"
+    },
+    {
+     "title": "Elasticsearch Search Latency Spikes",
+     "parent_document_id": "kb_bd6002068e11",
+     "score": 0.5,
+     "rerank_score": 0.4184,
+     "head": "### Cause C: Circuit breaker tripped\n\n**Statement:** A circuit breaker (`request`, `fielddata`, or `parent`) has tripped, rejecting memory-intensive operations "
+    },
+    {
+     "title": "AWS Lambda Runtime Invocation Errors",
+     "parent_document_id": "kb_55f15bd503fc",
+     "score": 0.4985,
+     "rerank_score": 0.418,
+     "head": "## Sources\n\n- [AWS Lambda — Troubleshoot invocation issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) (Priority 1) — Runtime"
+    },
+    {
+     "title": "Datadog Agent Running but No Metrics Reaching Datadog",
+     "parent_document_id": "kb_3637d971870c",
+     "score": 0.4945,
+     "rerank_score": 0.417,
+     "head": "## Sources\n\n- [Agent Troubleshooting](https://docs.datadoghq.com/agent/troubleshooting/) — top-level no-metrics flow: confirm API key matches the platform, chec"
+    },
+    {
+     "title": "Datadog Agent Running but No Metrics Reaching Datadog",
+     "parent_document_id": "kb_3637d971870c",
+     "score": 0.4925,
+     "rerank_score": 0.4165,
+     "head": "## Diagnostic Steps\n\n### Step 1: Show overall Agent status and the Forwarder section\n\n```bash\nsudo datadog-agent status\n# Container: docker exec -it datadog-age"
+    },
+    {
+     "title": "GCS 403 access denied — IAM, legacy ACL, signed-URL, CORS, and VPC-SC causes",
+     "parent_document_id": "kb_2738a59beed5",
+     "score": 0.4792,
+     "rerank_score": 0.4132,
+     "head": "## Sources\n\n- [Troubleshooting](https://docs.cloud.google.com/storage/docs/troubleshooting) — primary 403 troubleshooting page: exact error strings (`does not h"
+    },
+    {
+     "title": "AWS IAM Role Assumption Failure",
+     "parent_document_id": "kb_13b2c57069b7",
+     "score": 0.5391,
+     "rerank_score": 0.3804,
+     "head": "## Prevention\n\n1. **Use specific principal ARNs in trust policies.** Prefer `arn:aws:iam::111111111111:role/SpecificRole` over `arn:aws:iam::111111111111:root`."
+    },
+    {
+     "title": "AWS RDS Connection Exhaustion: max_connections Reached",
+     "parent_document_id": "kb_8741e005e4da",
+     "score": 0.5023,
+     "rerank_score": 0.3712,
+     "head": "### Cause B: Leaked / idle-in-transaction connections never returned to the pool\n**Statement:** Application code paths open connections (or begin transactions) "
+    }
+   ]
+  },
+  {
+   "topic": "Cisco ASA VPN tunnel flapping",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "GCP Cloud SQL connection refused or timed out from clients and Auth Proxy",
+     "parent_document_id": "kb_3376ebde38c3",
+     "score": 0.5025,
+     "rerank_score": 0.3276,
+     "head": "### Cause B: Auth Proxy lacks IAM permission or the Admin API is disabled\n**Statement:** The identity running the Cloud SQL Auth Proxy is missing `roles/cloudsq"
+    },
+    {
+     "title": "GCE Instance Unreachable via SSH (connection refused / timeout / publickey)",
+     "parent_document_id": "kb_8e2903f84d1e",
+     "score": 0.4928,
+     "rerank_score": 0.3252,
+     "head": "### Cause A: Ingress firewall rule does not allow TCP 22 from the client (or IAP range)\n**Statement:** No VPC ingress firewall rule permits `tcp:22` from the co"
+    },
+    {
+     "title": "Istio 503 Upstream Connect Error",
+     "parent_document_id": "kb_ffed77153bcd",
+     "score": 0.4848,
+     "rerank_score": 0.3232,
+     "head": "# Istio 503 Upstream Connect Error\n\n## Symptom Recognition\n\n- Clients receive HTTP `503 Service Unavailable` and the response header carries `server: istio-envo"
+    },
+    {
+     "title": "AWS EFS mount fails or hangs: connection timeout, access denied, and burst-credit exhaustion",
+     "parent_document_id": "kb_79009fc860f1",
+     "score": 0.4841,
+     "rerank_score": 0.3231,
+     "head": "### Cause Z: Unidentified\n**Statement:** The mount failure or hang does not match Causes A–E (e.g. NFS client kernel/module issue, stale `efs-utils`/stunnel sta"
+    },
+    {
+     "title": "GCP Cloud SQL connection refused or timed out from clients and Auth Proxy",
+     "parent_document_id": "kb_3376ebde38c3",
+     "score": 0.4719,
+     "rerank_score": 0.32,
+     "head": "### Cause A: Client IP is not in the instance authorized networks\n**Statement:** The connecting client's public IP is outside every CIDR range in the instance's"
+    },
+    {
+     "title": "GCE Instance Unreachable via SSH (connection refused / timeout / publickey)",
+     "parent_document_id": "kb_8e2903f84d1e",
+     "score": 0.4515,
+     "rerank_score": 0.3149,
+     "head": "## Diagnostic Steps\n\n### Step 1: Run the built-in SSH troubleshooter\n\n```bash\ngcloud compute ssh VM_NAME --zone=ZONE --troubleshoot --tunnel-through-iap\n```\n\nEx"
+    },
+    {
+     "title": "AWS Route 53 DNS resolution failures: resolver rules, alias records, failover, and PHZ association",
+     "parent_document_id": "kb_a5883d4ea0fe",
+     "score": 0.4676,
+     "rerank_score": 0.307,
+     "head": "## Prevention\n\n- Enforce `enableDnsSupport=true` and `enableDnsHostnames=true` as part of VPC provisioning (Terraform/CloudFormation guardrails); audit with AWS"
+    },
+    {
+     "title": "Envoy returns 503 'no healthy upstream' for a cluster",
+     "parent_document_id": "kb_76566fb53d16",
+     "score": 0.4592,
+     "rerank_score": 0.305,
+     "head": "### Cause C: Outlier detection ejected every endpoint\n**Statement:** Endpoints returned enough consecutive 5xx / gateway failures that outlier detection ejected"
+    },
+    {
+     "title": "Kafka Producer Timeout and Message Loss",
+     "parent_document_id": "kb_32dcfd1a0a18",
+     "score": 0.529,
+     "rerank_score": 0.2534,
+     "head": "### Cause D: SSL/TLS handshake failure or certificate expiry\n\n**Statement:** The producer cannot complete the TLS handshake to broker SSL listeners because of a"
+    },
+    {
+     "title": "AWS EBS Volume Stuck Attaching or Detaching",
+     "parent_document_id": "kb_13fb71c9a2d5",
+     "score": 0.5257,
+     "rerank_score": 0.2526,
+     "head": "### Cause F: API throttling stalling concurrent attach/detach operations\n\n**Statement:** High-volume concurrent attach or detach operations in the same AWS acco"
+    }
+   ]
+  },
+  {
+   "topic": "office printer paper jam",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "Linux Disk I/O Saturation",
+     "parent_document_id": "kb_ab91b6988c67",
+     "score": 0.5077,
+     "rerank_score": 0.2481,
+     "head": "### Cause D: Swap thrashing converting memory pressure into I/O saturation\n\n**Statement:** The system is actively paging anonymous memory to and from swap, gene"
+    },
+    {
+     "title": "PostgreSQL Slow Query Diagnosis",
+     "parent_document_id": "kb_23afe299b6f0",
+     "score": 0.5055,
+     "rerank_score": 0.2475,
+     "head": "### Cause C: Sort or Hash Operation Spilling to Disk\n\n**Statement:** Insufficient `work_mem` causes sort and hash join operations to spill intermediate data to "
+    },
+    {
+     "title": "MongoDB Lock Contention and Slow Operations",
+     "parent_document_id": "kb_d827d82ace5d",
+     "score": 0.5052,
+     "rerank_score": 0.2475,
+     "head": "### Cause E: Large bulk write monopolizing write tickets\n\n**Statement:** A bulk write operation submitting thousands of documents in a single batch holds write "
+    },
+    {
+     "title": "Linux OOM Killer Invocation",
+     "parent_document_id": "kb_9bcf2994e9f0",
+     "score": 0.5049,
+     "rerank_score": 0.2474,
+     "head": "### Cause B: Undersized instance / steady-state demand exceeds RAM\n\n**Statement:** The combined steady-state memory requirement of all workloads on the host per"
+    },
+    {
+     "title": "PostgreSQL Table Bloat from Autovacuum Failure",
+     "parent_document_id": "kb_999921259ccb",
+     "score": 0.5002,
+     "rerank_score": 0.2462,
+     "head": "### Cause C: Insufficient Autovacuum Workers for Database Size\n\n**Statement:** The default three autovacuum workers cannot keep pace with the number and churn r"
+    },
+    {
+     "title": "Linux Disk I/O Saturation",
+     "parent_document_id": "kb_ab91b6988c67",
+     "score": 0.4912,
+     "rerank_score": 0.244,
+     "head": "### Cause C: Backup or snapshot job generating sustained sequential I/O\n\n**Statement:** A backup process (rsync, tar, mysqldump, pg_dump, cloud snapshot agent) "
+    },
+    {
+     "title": "PostgreSQL Streaming Replication Lag",
+     "parent_document_id": "kb_5d6a87f28eec",
+     "score": 0.4902,
+     "rerank_score": 0.2437,
+     "head": "### Cause E: Primary WAL generation rate exceeds replica apply ceiling (write-spike or bulk load)\n**Statement:** A bulk write workload on the primary — `COPY`, "
+    },
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.4863,
+     "rerank_score": 0.2427,
+     "head": "### Cause B: Application memory leak driving unbounded growth\n\n**Statement:** Application code retains references (or fails to free native allocations), so work"
+    },
+    {
+     "title": "Kafka Broker Failure and Partition Unavailability",
+     "parent_document_id": "kb_314e10076ad3",
+     "score": 0.4805,
+     "rerank_score": 0.2413,
+     "head": "## Causes\n\n### Cause A: JVM Heap Exhaustion (OOM-Kill)\n\n**Statement:** The broker's JVM ran out of heap memory, causing the Linux kernel to send SIGKILL to the "
+    },
+    {
+     "title": "Elasticsearch Search Latency Spikes",
+     "parent_document_id": "kb_bd6002068e11",
+     "score": 0.4759,
+     "rerank_score": 0.2401,
+     "head": "### Cause B: JVM heap pressure and GC pauses\n\n**Statement:** Sustained JVM heap utilization above 75% triggers frequent stop-the-world old-generation garbage co"
+    }
+   ]
+  },
+  {
+   "topic": "Salesforce Apex governor limits",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "GKE Workloads Not Running: Pods Unschedulable or Crashing",
+     "parent_document_id": "kb_505ea65e4303",
+     "score": 0.5035,
+     "rerank_score": 0.2974,
+     "head": "### Cause E: Autopilot rejects the workload for violating a resource constraint\n**Statement:** On an Autopilot cluster the workload violates an Autopilot resour"
+    },
+    {
+     "title": "Kubernetes Pods Stuck in Pending State",
+     "parent_document_id": "kb_e6957136f7d3",
+     "score": 0.5013,
+     "rerank_score": 0.2969,
+     "head": "### Cause E: Namespace ResourceQuota blocks the controller from creating the pod\n\n**Statement:** The namespace's ResourceQuota is exhausted, so the API server's"
+    },
+    {
+     "title": "Kafka Producer Timeout and Message Loss",
+     "parent_document_id": "kb_32dcfd1a0a18",
+     "score": 0.5002,
+     "rerank_score": 0.2966,
+     "head": "### Cause F: Message exceeds `max.request.size` or topic `max.message.bytes`\n\n**Statement:** Messages exceed the producer `max.request.size` (default 1 MB) or t"
+    },
+    {
+     "title": ".NET High Memory and GC Pressure: Managed Leaks, LOH Fragmentation, Excessive Gen2 GC",
+     "parent_document_id": "kb_10a04f35bfb5",
+     "score": 0.4963,
+     "rerank_score": 0.2956,
+     "head": "### Cause D: GC heap hard limit set too low for the container memory budget\n**Statement:** `System.GC.HeapHardLimit` (or its percent variant / container default"
+    },
+    {
+     "title": "Kubernetes Pod Eviction Due to Node Resource Pressure",
+     "parent_document_id": "kb_195811eb1838",
+     "score": 0.4895,
+     "rerank_score": 0.2939,
+     "head": "### Cause A: Node memory exhausted by Burstable or BestEffort pods\n\n**Statement:** Pods without a memory limit (or with a limit far above their request) consume"
+    },
+    {
+     "title": "Kafka Producer Timeout and Message Loss",
+     "parent_document_id": "kb_32dcfd1a0a18",
+     "score": 0.4883,
+     "rerank_score": 0.2936,
+     "head": "### Step 4: Check broker-side overload and topic message-size limits\n\n```bash\n# Broker request handler idle percentage (JMX: kafka.server:type=KafkaRequestHandl"
+    },
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.4849,
+     "rerank_score": 0.2928,
+     "head": "### Cause C: Runtime heap sized larger than the container memory limit\n\n**Statement:** A JVM, V8, or other managed runtime's max heap (`-Xmx`, `--max-old-space-"
+    },
+    {
+     "title": "Kafka Broker Failure and Partition Unavailability",
+     "parent_document_id": "kb_314e10076ad3",
+     "score": 0.4797,
+     "rerank_score": 0.2915,
+     "head": "### Step 6: Count partitions per broker to assess overload risk\n\n```bash\n# Total partition replicas assigned to each broker\nkafka-topics.sh --bootstrap-server k"
+    },
+    {
+     "title": "Kubernetes Container OOMKilled",
+     "parent_document_id": "kb_eb43dc4a0ed8",
+     "score": 0.4731,
+     "rerank_score": 0.2898,
+     "head": "### Cause B: Application memory leak driving unbounded growth\n\n**Statement:** Application code retains references (or fails to free native allocations), so work"
+    },
+    {
+     "title": "Prometheus High Cardinality",
+     "parent_document_id": "kb_87186c1ff8f0",
+     "score": 0.4717,
+     "rerank_score": 0.2895,
+     "head": "### Cause F: No per-job sample_limit or target_limit allows a single misbehaving target to dominate\n\n**Statement:** Scrape jobs lack `sample_limit`, `target_lim"
+    }
+   ]
+  },
+  {
+   "topic": "mainframe CICS abend codes",
+   "covered_by": null,
+   "results": [
+    {
+     "title": "AWS EKS Cluster Authentication Failures",
+     "parent_document_id": "kb_48f5b39f408f",
+     "score": 0.4806,
+     "rerank_score": 0.311,
+     "head": "## Sources\n\n- [AWS EKS: Troubleshoot problems with Amazon EKS clusters and nodes](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html) — Offic"
+    },
+    {
+     "title": "AWS ECS tasks repeatedly stop and won't stay running",
+     "parent_document_id": "kb_455caf7121af",
+     "score": 0.4534,
+     "rerank_score": 0.3042,
+     "head": "## Sources\n\n- [Ecs task stopped](https://repost.aws/knowledge-center/ecs-task-stopped) — top-level stopped-task troubleshooting workflow: `aws ecs list-tasks --"
+    },
+    {
+     "title": "AWS IAM Role Assumption Failure",
+     "parent_document_id": "kb_13b2c57069b7",
+     "score": 0.4935,
+     "rerank_score": 0.2445,
+     "head": "## Prevention\n\n1. **Use specific principal ARNs in trust policies.** Prefer `arn:aws:iam::111111111111:role/SpecificRole` over `arn:aws:iam::111111111111:root`."
+    },
+    {
+     "title": "cert-manager Certificate Issuance Failure",
+     "parent_document_id": "kb_6a9e7305a7b7",
+     "score": 0.4877,
+     "rerank_score": 0.2431,
+     "head": "## Prevention\n\n- Use `ClusterIssuer` (not per-namespace `Issuer`) for shared Let's Encrypt configuration so the ACME server URL, account email, and solver defin"
+    },
+    {
+     "title": "Kubernetes Pod CrashLoopBackOff",
+     "parent_document_id": "kb_ace096516d41",
+     "score": 0.4764,
+     "rerank_score": 0.2402,
+     "head": "### Step 5: Verify referenced ConfigMaps and Secrets exist with expected keys\n\n```bash\nkubectl get pod <pod-name> -n <namespace> -o jsonpath='{range .spec.conta"
+    },
+    {
+     "title": "AWS IAM Role Assumption Failure",
+     "parent_document_id": "kb_13b2c57069b7",
+     "score": 0.4756,
+     "rerank_score": 0.2401,
+     "head": "### Cause I: OIDC provider audience does not match the token's `aud` claim\n\n**Statement:** The OIDC provider is registered with the correct issuer URL, but its "
+    },
+    {
+     "title": "AWS EKS Cluster Authentication Failures",
+     "parent_document_id": "kb_48f5b39f408f",
+     "score": 0.475,
+     "rerank_score": 0.2399,
+     "head": "### Cause G: OIDC provider missing or mismatched — IRSA pods cannot authenticate\n\n**Statement:** The EKS cluster's OIDC provider is not registered in IAM, so po"
+    },
+    {
+     "title": "Redis Out of Memory (maxmemory exceeded)",
+     "parent_document_id": "kb_ddeb0ff4ad80",
+     "score": 0.4715,
+     "rerank_score": 0.239,
+     "head": "### Step 3: Capture Redis's own memory advisory\n\n```bash\nredis-cli MEMORY DOCTOR\n```\n\nExpected output: a free-form advisory string. Phrases such as `high alloca"
+    },
+    {
+     "title": "AWS EKS Cluster Authentication Failures",
+     "parent_document_id": "kb_48f5b39f408f",
+     "score": 0.4707,
+     "rerank_score": 0.2388,
+     "head": "## Prevention\n\nUse API-based access management for all clusters at or above EKS platform version `eks.15` on Kubernetes 1.30+. API-based access entries are mana"
+    },
+    {
+     "title": "AWS IAM Role Assumption Failure",
+     "parent_document_id": "kb_13b2c57069b7",
+     "score": 0.4707,
+     "rerank_score": 0.2388,
+     "head": "## Applicability\n\nAWS CLI v2+, all AWS SDKs, EKS IRSA (Pod Identity), EC2 instance profiles using chained roles, GitHub Actions OIDC federation, and any AWS ser"
+    }
+   ]
+  }
+ ]
+}

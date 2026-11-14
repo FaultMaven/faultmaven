@@ -456,7 +456,7 @@ CONVERSATION HISTORY:
 {conversation_history}
 
 {system_feedback}
-{exclusions}CURRENT USER MESSAGE:
+{exclusions}{kb_lookup}CURRENT USER MESSAGE:
 {user_message}
 
 Compose your answer under the ASSISTANT ROLE, ACTION IMPACT, CONCISENESS and EVIDENCE-FIRST rules above, and DIAGNOSTIC REASONING where this prompt includes it.

@@ -20,7 +20,9 @@ def inquiry_knowledge_help(given: GivenTools) -> str:
     return (
         "→ Answer or help. Use kb_qa for technical questions; ground in results\n"
         "    if found, otherwise answer from your own knowledge (no mention of the\n"
-        "    search). What the knowledge base holds is troubleshooting runbooks for\n"
+        "    search; a KNOWLEDGE BASE LOOKUP section, when present, overrides that:\n"
+        "    the user asked about the knowledge base itself). What the knowledge\n"
+        "    base holds is troubleshooting runbooks for\n"
         "    "
         + _TROUBLESHOOTING_DOMAINS
         + " — knowing that is what lets you judge whether a result is\n"
@@ -33,7 +35,9 @@ def inquiry_kb_check(given: GivenTools) -> str:
     if not has(given, "kb_qa"):
         return (
             "2. KNOWLEDGE BASE CHECK. The knowledge base cannot be searched on this "
-            "turn. Do not claim to have checked it and leave knowledge_match unset."
+            "turn. Do not claim to have checked it and leave knowledge_match unset. "
+            "(A KNOWLEDGE BASE LOOKUP section, when present, is a search the engine "
+            "ran for the user's own question: report it as it says.)"
         )
     return """\
 2. KNOWLEDGE BASE CHECK. Call kb_qa once for the symptom.
@@ -48,7 +52,9 @@ def inquiry_kb_check(given: GivenTools) -> str:
      describing the fix, e.g., "I have a runbook that looks relevant —
      I'll bring it in once we confirm the problem and start investigating."
    - No match: proceed without mentioning the search — never tell the user
-     a lookup found nothing; a failed lookup is internal."""
+     a lookup found nothing; a failed lookup is internal. (A KNOWLEDGE BASE
+     LOOKUP section, when present, overrides this: the user asked about the
+     knowledge base itself.)"""
 
 
 def inquiry_reading_uploaded_files(given: GivenTools) -> str:
@@ -107,7 +113,7 @@ CONVERSATION HISTORY:
 {conversation_history}
 
 {system_feedback}
-CURRENT USER MESSAGE:
+{kb_lookup}CURRENT USER MESSAGE:
 {user_message}
 
 """

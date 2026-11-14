@@ -119,6 +119,7 @@ def engine(seen):
     ) -> dict[str, Any]:
         seen["attachments"] = copy.deepcopy(attachments)
         seen["intent_type"] = intent_type
+        seen["intent_data"] = copy.deepcopy(intent_data)
         case.updated_at = datetime.now(timezone.utc)
         return {
             "case_updated": case,
@@ -231,6 +232,43 @@ class TestEachServiceRoutedHandler:
         )
 
         assert seen["attachments"] is None
+
+
+@pytest.mark.parametrize("name", sorted(INTENTS))
+class TestEachServiceRoutedHandlerCarriesTheKbQuestion:
+    """§5.6: the service's reading of the message reaches the engine on every
+    route into it, so the engine never classifies a message again — that cost
+    1.4 s on a 1.2 MB message, and ran on every terminal card action."""
+
+    async def test_a_question_rides_along(self, name, service, repo, case, seen):
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=TurnPayload(
+                query="ok — is there a runbook for etcd quorum loss?",
+                intent=INTENTS[name],
+            ),
+        )
+        assert seen["intent_data"]["kb_question"] == {
+            "kind": "lookup",
+            "topic": "etcd quorum loss",
+            "from_context": False,
+        }
+
+    async def test_no_question_is_recorded_as_none(
+        self, name, service, repo, case, seen
+    ):
+        """Recorded, not absent: an absent key is what makes the engine read
+        the message itself."""
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=TurnPayload(query="here it is", intent=INTENTS[name]),
+        )
+        assert "kb_question" in seen["intent_data"]
+        assert seen["intent_data"]["kb_question"] is None
 
 
 class TestTheGreetingHeuristicDoesNotSwallowData:

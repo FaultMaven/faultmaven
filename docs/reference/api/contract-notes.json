@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.23.0",
+  "contractVersion": "14.24.0",
   "entries": [
+    {
+      "body": "When a message asks about the knowledge base itself (\"is there a runbook for\nX?\", \"what does our runbook on Y say?\"), the engine searches it before the\nreply, and the runbooks it shows the model enter `TurnResponse.sources` and\nthe assistant row's `Message.sources` with `metadata.trigger` `question`,\nbeside the pre-fetch's `symptom` / `root_cause`. They appear whatever\n`KB_PREFETCH_ENABLED` says, so `sources` is no longer empty whenever the push\nis off. `new_this_turn` is always true on them; on pre-fetched entries it now\ncompares only with the previous pre-fetched context, so a question turn does\nnot make the next turn's standing context read as new. Read back through the\nsame per-viewer gate as every other source.\n\nMINOR because every existing client survives it: no field is added or\nremoved, `metadata` was already free-form, and a client that ignores\n`trigger` shows these entries as the runbooks the turn carried, which they\nare.",
+      "level": "MINOR",
+      "title": "A turn's `sources` can carry the runbooks a lookup found for the user's question about the knowledge base (`metadata.trigger` `question`).",
+      "version": "14.24.0"
+    },
     {
       "body": "`POST /api/v1/sessions` and `PUT /api/v1/sessions/{session_id}` refuse 400,\nwriting nothing, client `metadata` nested deeper than 32 levels: depth 33 to\nabout 480 was accepted on both, about 480 to 960 answered 500, and deeper was\nalready refused 400 by the body parser. The mint also refuses a value that is\nnot JSON (NaN, \u00b1Infinity, a lone surrogate), as `PUT` already did; it stored\nthem. Those two, the heartbeat and the archive answer 503 with `Retry-After`\nwhen concurrent writes beat every attempt at the session's compare-and-set;\nnothing is written. `PUT` and the archive answer 404 for a session deleted\nwhile they ran: both wrote it back, or answered 500, depending on when the\ndelete landed. A session's status is server-owned: only the archive sets it, and\n`GET .../{session_id}` reports it. Archived sessions no longer carry\n`metadata.status`.\n\nMINOR because every existing client survives it: none sends nested or\nnon-JSON session metadata, none calls the archive or the session read, and\nthe 503 answers only a write that overwrote a concurrent one before.",
       "level": "MINOR",
