@@ -1124,9 +1124,10 @@ class PreprocessingService:
                 data_type=detailed_data_type.value
             ).observe(index_size / content_size)
 
-        # The yield above, and the compression ratio, measure what the
-        # extractor made, so its drift stays visible; what is stored is held
-        # to the bound from here on (#2789).
+        # The yield above, and the compression ratio, measure the extract as
+        # assembled (an extractor's output, or the preview standing in for
+        # it), before the store's cut, so an extractor's blow-up stays
+        # visible; what is stored is held to the bound from here on (#2789).
         extraction = _cap_stored_extract(extraction)
 
         # Phase 3 — case-level timeline. Parse timestamps from the raw
