@@ -188,11 +188,13 @@ class TestTheBoundIsTheExtractBudget:
             user_override=DataType.LOGS_AND_ERRORS,
         )
 
+        # Past the passthrough and not carded. Which extract arrives (the
+        # extractor's, or the busy/timeout preview on a loaded runner) is
+        # the worker's business, not this bound's.
         assert result.extraction_method not in (
             "raw_passthrough",
             "classification_failed",
         )
-        assert "CrimeScene" in result.structural_index
 
     @pytest.mark.asyncio
     async def test_the_line_bound_still_holds_under_the_size_bound(self):

@@ -457,7 +457,7 @@ Engine follow-ups (confirmation, status transition) are not clarifications and e
 
 When the user clicks a card, the next turn resolves the intent structurally. No re-classification at the classifier layer, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
 
-A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. #2355 re-examined a model tier (the `classifier` role, and a hosted decision model) for the short uploads that #2361 leaves uncertain, and declined it: below `MIN_EXTRACTION_LINES` a better guess changes nothing the model reads, so the passthrough above removes the cost a model tier would only have reduced.
+A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. #2355 re-examined a model tier (the `classifier` role, and a hosted decision model) for the short uploads that #2361 leaves uncertain, and declined it: on an upload the small-file passthrough takes (under `MIN_EXTRACTION_LINES` and `MAX_STRUCTURAL_INDEX_CHARS`) a better guess changes nothing the model reads, so the passthrough above removes the cost a model tier would only have reduced.
 
 A parallel path exists for `UNANALYZABLE`:
 
