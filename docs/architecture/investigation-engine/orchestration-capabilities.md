@@ -290,7 +290,17 @@ The route is decided from case state, not configuration. It stops firing for a c
 
 **What the route gives up is `kb_qa` and `web_search`.** On INQUIRY the knowledge base reaches it anyway: the engine pre-fetches the symptom's runbooks before the prompt is built (`KbPrefetcher.prefetch_symptom`, contract 14.26.0) and the INQUIRY template renders them in `<knowledge_context>`, which its knowledge-base check step reads, on this route and on the loop alike. On INVESTIGATING the route carries the push context fetched at the transition and at the root-cause edge, but nothing searched for that turn.
 
-**Why the effort matters here** (`case_bf484a484a77` turn 9 replayed through the engine, 20 reps per arm): a `causal_evidence` row linked to a hypothesis persisted in 8/20 runs at `"none"`, 19/20 at `"low"`, 17/20 at `"medium"`. Reasoning does not change whether the model *notices* the decisive datum — the prose named it in every run at every effort — it changes whether the model finishes the state emission that records and links it. The visible answer did not shrink at any effort (1,208–2,121 tokens) and no body approached the 8,000-token cap (worst observed 3,636), so the floor guards a misconfiguration rather than an observed squeeze.
+**Why the effort matters here** (`case_bf484a484a77` turn 9 replayed through the engine, 20 reps per arm): a `causal_evidence` row linked to a hypothesis persisted in 8/20 runs at `"none"`, 19/20 at `"low"`, 17/20 at `"medium"`. Reasoning does not change whether the model *notices* the decisive datum — the prose named it in every run at every effort — it changes whether the model finishes the state emission that records and links it. The visible answer did not shrink at any effort (1,208–2,121 tokens) and no body approached the 8,000-token cap (worst observed 3,636), so the floor guards a misconfiguration rather than an observed squeeze. That held for the model it was measured on, not for every model.
+
+**When reasoning starves the answer** (#2802, replayed 2026-11-14 on Azure, three stored INVESTIGATING turns, 20 per arm, rate-limited attempts re-run):
+
+| Model, effort | Starved | Hypothesis-linked evidence row, on the two turns that add evidence | Median time |
+|---|---|---|---|
+| gpt-5.4-mini, `"medium"` | 38 of 97 attempts, 34 of 40 on one turn | (too few replies) | — |
+| gpt-6-luna-1, `"medium"` | 7 of 60, 6 of 20 on one turn; each 52-63 s | 29 of 33 replies | 22-49 s |
+| gpt-6-luna-1, `"low"` | 0 of 48 | 20 of 33 replies (3 of 16 on the turn that asks for the root cause and what rules out the alternatives) | 11-19 s |
+
+`"low"` alone would trade starvation for the evidence links this route exists to protect, and a bigger cap does not fit the turn budget (a doubled 16,000-token attempt takes about the whole 120 s at ~140 output tokens/s). So the call keeps `INFERENCE` and, when the router reports it starved (`LLMOutputFloorError`), is re-issued once without the intent, at the provider's structured default (`"low"` on these models), outside the cache, when the turn budget affords it (`STARVED_INFERENCE_RETRY_COST_FRACTION`, `generation.py`). Before, a starved call failed the turn: the error is non-retryable and the engine did not change the request.
 
 **Degradation parity**: this path validates through `_validate_with_degradation()`, the same ladder the tool path uses. Before that was true, one rejected list entry — for example a `suggested_follow_ups` item carrying `evidence_need_id` under a non-`EVIDENCE` `action_type` — failed the entire turn here while the tool path pruned the entry and continued.
 

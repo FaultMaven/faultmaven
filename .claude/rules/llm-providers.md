@@ -393,12 +393,16 @@ diagnosis is reasoning over candidate causes, not extraction.
 provider refuses to lift a structured call's cap unless a floor is declared,
 and 2048 sits above every completion body measured on the replayed turn while
 staying well under `STRUCTURED_OUTPUT_MAX_TOKENS`, so it forbids a starvable
-partition without ever raising the cap. Note where the floor is and is not
-enforced: this path reaches the provider **directly**, so the router's own
-enforcement (pre-call budget bump, post-call `LLMOutputFloorError`) does not
-run on it — a body cut anyway is caught by the structured-output truncation
-ladder instead. On this path the floor's job is to authorise the lift, not to
-police the result.
+partition without ever raising the cap. The engine's `llm_provider` is the
+`LLMRouter` (`container/providers/infrastructure.create_llm_provider`), so the
+router enforces the floor on this path too: a call whose hidden reasoning takes
+the whole cap raises `LLMOutputFloorError`. The generator then re-issues it
+once without the intent and its floor, at the provider's default for a
+structured call, never from or into the cache, when the turn budget affords
+`STARVED_INFERENCE_RETRY_COST_FRACTION` of the starved attempt's duration
+(#2802). Measured on Azure gpt-6-luna-1: `"medium"` starved 7 of 60 replayed
+attempts (52-63 s each), `"low"` none of 48. Raising the cap does not fit the
+turn: a doubled cap at ~140 output tokens/s takes about the whole 120 s budget.
 
 The knobs themselves:
 

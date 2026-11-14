@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -59,7 +60,11 @@ from faultmaven.core.investigation.turn_budget import (
     clamp_to_turn_budget,
     spendable_turn_budget,
 )
-from faultmaven.exceptions import PROVIDER_REFUSED, RawModelContentRefused
+from faultmaven.exceptions import (
+    PROVIDER_REFUSED,
+    LLMOutputFloorError,
+    RawModelContentRefused,
+)
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
     send_to_model,
@@ -226,6 +231,19 @@ def _schema_answer(response: Any, schema_tool_name: str, schema_model: Any) -> A
 # body and well under STRUCTURED_OUTPUT_MAX_TOKENS, so the floor never raises
 # the cap and only forbids a starvable partition.
 TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
+
+
+# A starved INFERENCE call (#2802): the declared floor (``LLMOutputFloorError``)
+# says hidden reasoning took the whole cap. It is re-issued once without the
+# intent, at the provider's default for a structured call ("low" effort on the
+# reasoning OpenAI families), when the turn budget affords this fraction of the
+# starved attempt's duration. Measured 2026-11-14 on Azure gpt-6-luna-1 over
+# three replayed single-shot turns: a starved attempt took 52-63 s, and the same
+# turns at "low" took at most 32 s and never starved (48 calls). The estimate
+# only decides whether to try: the router clamps the attempt to what is left.
+# Raising the cap instead does not fit the turn: at ~140 output tokens/s a
+# doubled 16,000-token attempt takes about the whole 120 s turn budget.
+STARVED_INFERENCE_RETRY_COST_FRACTION = 0.6
 
 
 def _reads_as_cut(text: str) -> bool:
@@ -2028,6 +2046,8 @@ class StructuredOutputGenerator:
                 cap_reached=False,
             )
 
+        starved_reissue = {"on": False}
+
         # Define the LLM operation for retry; ``reask_of``: a re-ask (#1755).
         # ``reissue``: the one reduced re-issue of a refused call (#1770).
         async def llm_operation(reask_of: Any = None, reissue: bool = False):
@@ -2052,10 +2072,16 @@ class StructuredOutputGenerator:
             # fm#1116: the tool-less diagnostic call declares its reasoning
             # intent and output floor (#1117/#1118). Only ever set on the
             # single-shot path — the tool loop cannot carry effort on gpt-5.x.
-            if reasoning_intent is not None:
-                generate_params["reasoning_intent"] = reasoning_intent
-            if min_output_tokens is not None:
-                generate_params["min_output_tokens"] = min_output_tokens
+            # A starved call's re-issue (#2802) drops both: the floor exists
+            # to buy the INFERENCE lift, and is never cached or served.
+            if starved_reissue["on"]:
+                generate_params["bypass_cache"] = True
+                generate_params["store_in_cache"] = False
+            else:
+                if reasoning_intent is not None:
+                    generate_params["reasoning_intent"] = reasoning_intent
+                if min_output_tokens is not None:
+                    generate_params["min_output_tokens"] = min_output_tokens
 
             # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
             # when set, so operators running a weak-structured-output
@@ -2346,12 +2372,32 @@ class StructuredOutputGenerator:
                 raise
 
         # Execute with retry and error handling
+        started = time.monotonic()
         result, error_result = await self.deps.llm_error_handler.with_retry(
             operation=llm_operation
         )
 
         if result is not None:
             return result
+
+        starved = error_result is not None and isinstance(
+            error_result.original_exception, LLMOutputFloorError
+        )
+        if starved and reasoning_intent is not None and not refusal.seen:
+            cost = (time.monotonic() - started) * STARVED_INFERENCE_RETRY_COST_FRACTION
+            if can_afford_next_attempt(spendable_turn_budget(), 0.0, cost):
+                logger.warning(
+                    "Structured output: reasoning starved the answer at the "
+                    "output cap (%s); re-issuing once without the reasoning "
+                    "intent (#2802)",
+                    error_result.original_exception,
+                )
+                starved_reissue["on"] = True
+                result, error_result = await self.deps.llm_error_handler.with_retry(
+                    operation=llm_operation
+                )
+                if result is not None:
+                    return result
 
         # All retries exhausted or non-retryable error
         if error_result:
