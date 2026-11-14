@@ -202,6 +202,19 @@ if PROMETHEUS_AVAILABLE:
         "was given; the content was kept as uploaded. By extractor class.",
         ["extractor"],
     )
+    create_children(
+        PREPROCESSING_UNPARSED_SHAPE_TOTAL,
+        {
+            "extractor": (
+                "CommandOutputExtractor",
+                "MetricsAndPerformanceExtractor",
+                "ProfilingDataExtractor",
+                "SourceCodeExtractor",
+                "StructuredConfigExtractor",
+                "TraceDataExtractor",
+            )
+        },
+    )
 
     # Triage-to-escalation rate: counts when the agent received a
     # Triage-mode turn with a structural index AND immediately called

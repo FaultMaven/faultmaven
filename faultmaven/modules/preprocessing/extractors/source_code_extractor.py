@@ -106,9 +106,25 @@ def _diff_line_count(lines: list[str]) -> int:
 
 
 _UNIFIED_DIFF_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
-_UNIFIED_DIFF_FILE = re.compile(
-    r"^--- (?:a/)?(\S+)[^\n]*\n\+\+\+ (?:b/)?(\S+)", re.MULTILINE
-)
+
+
+def _diff_files(lines: list[str]) -> list[str]:
+    """The files a unified diff names: each file header is an old-file line
+    directly followed by a new-file line, and its path is the new side, or
+    the old side for a deleted file (``/dev/null``). Read line by line rather
+    than by a regex, which would be one more pattern on ``---`` beside the
+    frontmatter grammar's single definition."""
+
+    def path(line: str, side: str) -> str:
+        token = line[4:].split(maxsplit=1)[0] if line[4:].strip() else ""
+        return token[2:] if token.startswith(side) else token
+
+    files = []
+    for old_line, new_line in zip(lines, lines[1:]):
+        if old_line.startswith("--- ") and new_line.startswith("+++ "):
+            new = path(new_line, "b/")
+            files.append(new if new != "/dev/null" else path(old_line, "a/"))
+    return [name for name in files if name]
 
 
 class SourceCodeExtractor:
@@ -148,11 +164,8 @@ class SourceCodeExtractor:
 
         # A patch, not code: every changed line is the content, and the
         # parsers below would keep a class name or two (#2791).
-        files = [
-            new if new != "/dev/null" else old
-            for old, new in _UNIFIED_DIFF_FILE.findall(content)
-        ]
         lines = content.splitlines()
+        files = _diff_files(lines)
         if (
             files
             and _UNIFIED_DIFF_HUNK.search(content)
