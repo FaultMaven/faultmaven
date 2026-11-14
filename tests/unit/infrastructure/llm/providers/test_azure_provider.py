@@ -96,6 +96,72 @@ class TestTheRequestOnTheWire:
         )
 
 
+_TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestGpt6LunaDeployment:
+    """A deployment named ``gpt-6-luna-1`` gets the request shape its probe
+    showed (2026-11-14, ``gpt-6-luna-2026-09-22``). It takes strict
+    json_schema and ``max_completion_tokens`` only. It accepts the default
+    ``temperature`` only. It 400s on function tools unless
+    ``reasoning_effort`` is ``"none"``. And it reasons by default when no
+    effort is sent. Before its family was listed, it got none of these: no
+    strict schema, no effort at all (so every tool call 400'd), and a
+    temperature it refuses."""
+
+    async def _body(self, mock_aiohttp_session, **kwargs):
+        session = mock_aiohttp_session(_OK)
+        with patch("aiohttp.ClientSession", return_value=session):
+            await send_to_model(
+                _provider("gpt-6-luna-1"), prompt=vetted("hi"), **kwargs
+            )
+        return session.post.call_args.kwargs["json"]
+
+    def test_it_is_strict(self):
+        assert (
+            _provider("gpt-6-luna-1").get_structured_output_capability()
+            is StructuredOutputCapability.STRICT
+        )
+
+    async def test_a_tool_call_sends_effort_none_and_no_temperature(
+        self, mock_aiohttp_session
+    ):
+        body = await self._body(
+            mock_aiohttp_session, tools=_TOOLS, max_tokens=64, temperature=0.2
+        )
+        assert body["reasoning_effort"] == "none"
+        assert "temperature" not in body
+        assert body["max_completion_tokens"] == 64 and "max_tokens" not in body
+
+    async def test_a_structured_call_is_capped_low(self, mock_aiohttp_session):
+        body = await self._body(
+            mock_aiohttp_session, response_format={"type": "json_object"}
+        )
+        assert body["reasoning_effort"] == "low"
+
+    async def test_a_plain_call_is_capped_none(self, mock_aiohttp_session):
+        body = await self._body(mock_aiohttp_session)
+        assert body["reasoning_effort"] == "none"
+
+    async def test_inference_on_a_structured_call_is_medium(self, mock_aiohttp_session):
+        from faultmaven.infrastructure.llm.providers import ReasoningIntent
+
+        body = await self._body(
+            mock_aiohttp_session,
+            response_format={"type": "json_object"},
+            reasoning_intent=ReasoningIntent.INFERENCE,
+        )
+        assert body["reasoning_effort"] == "medium"
+
+    @pytest.mark.parametrize(
+        "model, defaults", [("gpt-6-luna-1", True), ("gpt-6-sol", False)]
+    )
+    def test_only_the_probed_gpt6_line_is_default_reasoning(self, model, defaults):
+        assert AzureProvider._defaults_reasoning(model) is defaults
+
+
 @pytest.mark.unit
 @pytest.mark.llm
 class TestConfiguration:

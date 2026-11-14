@@ -492,6 +492,26 @@ cell. Each response reports `usage.output_tokens_details.thinking_tokens` as
 DEBUG record in `infrastructure/llm/metering.py`; the adapter logs the
 control it sent at DEBUG.
 
+### OpenAI reasoning families: what the request shape keys on
+
+`OpenAIProvider` (and `AzureProvider`, which inherits it) chooses the request shape from the model name. A family missing from these tables does not fail loudly everywhere: it loses its schema enforcement and its reasoning cap without warning. So a new family is added only after a probe.
+
+| Table | Decides | Families |
+|---|---|---|
+| `_STRICT_MODEL_INDICATORS` | strict `json_schema` (STRICT) | … `gpt-5`, `gpt-6`, o1/o3/o4 |
+| `_COMPLETION_TOKENS_MODEL_FAMILIES` | `max_completion_tokens`, and whether `reasoning_effort` is sent at all (`_caps_reasoning_effort`) | `gpt-5`, `gpt-6`, o1/o3/o4 |
+| `_DEFAULT_REASONING_MODEL_FAMILIES` | the model reasons by default: no `temperature`; `reasoning_effort: "none"` on every tool call; plain calls capped at `"none"` | `gpt-5.6`, `gpt-6-luna` |
+
+Probe of an Azure deployment of `gpt-6-luna-2026-09-22`, named `gpt-6-luna-1`, run on 2026-11-14:
+- **Token cap:** 400 on `max_tokens`.
+- **Temperature:** 400 on `temperature: 0.2` ("only the default (1)").
+- **Reasoning effort:** accepts `none`, `low`, `medium`, `high` and `xhigh`; 400 on `minimal`.
+- **Tools:** 400 unless `reasoning_effort` is `"none"`.
+- **Schemas:** strict `json_schema` accepted.
+- **Default reasoning:** reasons when no effort is sent.
+
+Not recorded for it: a context window (an Azure deployment name falls back to `LLM_CONTEXT_WINDOW`), and pricing (it reports as unpriced until rates are set with `LLM_PRICING_OVERRIDES` or added to `pricing.py`).
+
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
 - `supports_tool_calling()` always returns `False`
