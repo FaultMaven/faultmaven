@@ -216,17 +216,14 @@ def cut_to_budget(text: str, max_chars: int) -> str:
     """Text of at most ``max_chars``: unchanged when it fits, otherwise its
     head and tail, filling the budget, around a marker counting what is cut.
 
-    For stored content whose source stays readable (an upload's raw file,
-    which ``search_file`` reads), so the marker says where the rest is.
+    The marker names no tool: stored text reaches prompts whatever tools a
+    turn is given, and the prompt says itself where a raw file can be read.
     """
     if len(text) <= max_chars:
         return text
 
     def marker(omitted: int) -> str:
-        return (
-            f"\n\n... [{omitted} characters not shown here; "
-            f"search_file reads the whole upload] ...\n\n"
-        )
+        return f"\n\n... [{omitted} characters of the upload cut here] ...\n\n"
 
     # Sized for the longest count first: the real one is no longer.
     room = max_chars - len(marker(len(text)))

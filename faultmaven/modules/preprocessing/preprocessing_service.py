@@ -315,8 +315,10 @@ def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
     this, so the bound holds whichever path made the extract: a passthrough's
     raw content, or an extractor's ``file_extract`` and ``search_map`` (not
     every extractor holds to ``MAX_STRUCTURAL_INDEX_CHARS``). A cut part
-    keeps its head and tail around a marker; a cut extractor result also
-    says so in its ``file_meta`` (``truncated``), which the prompt renders."""
+    keeps its head and tail around a marker counting what was cut; a cut
+    extractor result also names the parts cut in its ``file_meta``
+    (``stored_cut``), which the prompt renders, beside the extractor's own
+    keys."""
     payload = extraction.metadata.get("extract_result_json")
     if payload:
         if len(payload) <= MAX_STORED_EXTRACT_CHARS:
@@ -328,13 +330,19 @@ def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
         )
         if (file_extract, search_map) == (result.file_extract, result.search_map):
             return extraction
+        parts = [
+            name
+            for name, stored, made in (
+                ("file_extract", file_extract, result.file_extract),
+                ("search_map", search_map, result.search_map),
+            )
+            if stored != made
+        ]
         cut = dataclasses.replace(
             result,
             file_extract=file_extract,
             search_map=search_map,
-            # The extractor's own "truncated" described its output; the
-            # stored extract is now cut, whatever it said.
-            file_meta={**result.file_meta, "truncated": True},
+            file_meta={**result.file_meta, "stored_cut": ", ".join(parts)},
         )
         return ExtractionResult(
             method=extraction.method,
@@ -1097,7 +1105,6 @@ class PreprocessingService:
         Phase 2 will add ``"sanity_retry"``.
         """
         processing_time_ms = int((time.time() - start_time) * 1000)
-        extraction = _cap_stored_extract(extraction)
         content_size = len(content.encode("utf-8"))
         _index_str = (
             extraction.metadata.get("extract_result_json") or extraction.content
@@ -1116,6 +1123,11 @@ class PreprocessingService:
             PREPROCESSING_EXTRACTION_YIELD_RATIO.labels(
                 data_type=detailed_data_type.value
             ).observe(index_size / content_size)
+
+        # The yield above, and the compression ratio, measure what the
+        # extractor made, so its drift stays visible; what is stored is held
+        # to the bound from here on (#2789).
+        extraction = _cap_stored_extract(extraction)
 
         # Phase 3 — case-level timeline. Parse timestamps from the raw
         # content and attach them to the result so the investigation
@@ -1326,10 +1338,11 @@ class PreprocessingService:
         phases, memory_bytes, output_limit_bytes = tier1_limits(self._upload_mb)
 
         def preview(**metadata) -> ExtractionResult:
-            # Fallback: truncated preview (always fast)
+            # Fallback: the content itself, held to the stored-extract bound
+            # (head and tail) by ``_build_result`` like any extract (#2789).
             return ExtractionResult(
                 method="structure_extraction",
-                content=self._fallback_direct_extraction(content),
+                content=content,
                 metadata=metadata,
             )
 
