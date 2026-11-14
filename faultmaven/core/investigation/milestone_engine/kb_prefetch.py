@@ -11,10 +11,7 @@ from faultmaven.models.exceptions import (
     KnowledgeBaseError,
     is_knowledge_store_unavailable,
 )
-from faultmaven.modules.case.contracts import (
-    Case,
-    is_server_written_user_row,
-)
+from faultmaven.modules.case.contracts import Case
 
 logger = logging.getLogger(__name__)
 
@@ -32,32 +29,41 @@ def symptom_query(text: str) -> str:
     return " ".join((text or "").split())[:SYMPTOM_QUERY_MAX_CHARS]
 
 
-def inquiry_symptom_query(case: "Case", user_message: str) -> str:
-    """What an INQUIRY turn searches the knowledge base for, or ``""``.
+def inquiry_symptom_query(case: "Case") -> str:
+    """What an INQUIRY turn searches the knowledge base for: the proposed
+    problem statement, or ``""`` (no search) before there is one.
 
-    The proposed problem statement once there is one: it is the symptom as
-    the case states it. Before that, what the user has said, newest first:
-    this message, then their earlier ones, to the bound. Newest first so a
-    message that changes the subject leads the search, and every message so
-    a follow-up ("it started at 10am") is searched beside the description it
-    adds to rather than in its place. A row the server wrote in the user's
-    name is not something they said (``is_server_written_user_row``).
+    Not what the user has said. Measured over the 84 stored cases of three
+    simulator scenarios the shipped pack covers (2026-11-14, the real hybrid
+    path), a first message searched as written put on-topic sections in
+    1-15% of the entries it showed, and in 66 cases every one was off topic:
+    a raw description carries timestamps, counts and service names that
+    outweigh the symptom. The proposed statement, which the model writes as
+    the symptom, put on-topic sections in 20-62%. Every entry shown is also
+    cited as a source of the reply, so an INQUIRY turn before a statement
+    shows none rather than the wrong ones. (This is the one statement of the
+    measurement; the docs and tests refer here.)
     """
     inquiry = getattr(case, "inquiry", None)
     statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
-    if statement:
-        return symptom_query(statement)
-    said = [user_message or ""]
-    size = len(said[0])
-    for row in reversed(getattr(case, "messages", None) or []):
-        if size >= SYMPTOM_QUERY_MAX_CHARS:
-            break
-        if row.get("role") != "user" or is_server_written_user_row(row):
-            continue
-        content = str(row.get("content") or "")
-        said.append(content)
-        size += len(content) + 1
-    return symptom_query(" ".join(said))
+    return symptom_query(statement)
+
+
+def drop_context_not_for(case: "Case", query: str) -> None:
+    """Drop pre-fetched context that was not fetched with ``query``.
+
+    INQUIRY's rule: its prompt carries only runbooks found for the current
+    statement (:func:`inquiry_symptom_query`). Context fetched with any
+    other query, a statement since reworded, or none at all, is dropped
+    before anything reads it: before :meth:`KbPrefetcher.refresh_for_driver`,
+    which would otherwise re-run the old query, and before a turn that runs
+    no search of its own (a question about the assistant, a failed search),
+    which would otherwise show and cite it.
+    """
+    origin = case.kb_context_origin or {}
+    if (case.kb_context or origin) and (not query or origin.get("query") != query):
+        case.kb_context = None
+        case.kb_context_origin = None
 
 
 KB_CONTEXT_MAX_ENTRIES = 5
@@ -415,7 +421,7 @@ class KbPrefetcher:
         """The symptom search, unless the case already ran it.
 
         Every symptom search goes through here: INQUIRY's before each prompt
-        (``inquiry_symptom_query``), the INQUIRY→INVESTIGATING transition's on
+        (``inquiry_symptom_query``: the proposed statement), the INQUIRY→INVESTIGATING transition's on
         the confirmed statement, and a revised statement's. ``text`` is
         bounded by :func:`symptom_query`, and a search already run for that
         query under the case's current driver is not run again, whether it

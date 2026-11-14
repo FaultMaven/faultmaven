@@ -180,7 +180,7 @@ Establish a shared understanding of the problem before investigation begins. The
    - HIGH: checkout failing, payments broken, 30%+ requests failing, SLA violation
    - MEDIUM: intermittent, partial failure, degraded experience
    - LOW: historical, post-mortem, optimization, cosmetic
-3. **Check the KB first** — the runbooks the engine pre-fetched for the symptom before the prompt was built (`<knowledge_context>`, `KbPrefetcher.prefetch_symptom`). If one covers the symptom, say related guidance exists without describing the fix; it is brought in once the investigation starts. If none does, proceed without mentioning the search.
+3. **Check the KB first** — the runbooks the engine pre-fetched for the problem statement already proposed (none on the turn that first proposes it, so the check speaks on a later INQUIRY turn, usually the confirm turn) (`<knowledge_context>`, `KbPrefetcher.prefetch_symptom`). If one covers the symptom, say related guidance exists without describing the fix; it is brought in once the investigation starts. If none does, proceed without mentioning the search.
 4. **Propose a problem statement** — one sentence: symptom + scope + temporal state. Set `proposed_problem_statement`.
 5. **Surface mitigation path hint for CRITICAL/HIGH + ONGOING** — "This is actively affecting [scope]. Should I focus on a quick mitigation first while we find the root cause?"
 6. **Await confirmation** — do not transition, request data, or propose next steps on the same turn as the problem statement.

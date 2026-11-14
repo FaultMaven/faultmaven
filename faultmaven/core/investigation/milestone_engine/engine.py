@@ -35,6 +35,7 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
 )
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
     KbPrefetcher,
+    drop_context_not_for,
     inquiry_symptom_query,
 )
 from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
@@ -1345,18 +1346,24 @@ class MilestoneEngine:
             # Context pre-fetched for a previous driver is re-fetched for this
             # one before the prompt is built (ADR-020 D9), or cleared if it
             # cannot be.
+            symptom = (
+                inquiry_symptom_query(case) if case.state == CaseState.INQUIRY else ""
+            )
+            if case.state == CaseState.INQUIRY:
+                # Only runbooks found for the current statement, none before one
+                # (``drop_context_not_for``): ahead of the driver refresh, which
+                # would re-run an older query.
+                drop_context_not_for(case, symptom)
             await self.kb_prefetcher.refresh_for_driver(case)
             kb_lookup = await self._kb_lookup(case, intent_data, user_message)
-            if case.state == CaseState.INQUIRY and not self._asks_about_the_assistant(
+            if symptom and not self._asks_about_the_assistant(
                 case, intent_data, user_message
             ):
-                # The symptom's runbooks, in this INQUIRY prompt: nothing else
+                # The statement's runbooks, in this INQUIRY prompt: nothing else
                 # puts a runbook in front of an INQUIRY reply on a case with
                 # no files. Beside a question lookup too: that searched what
-                # the message asked, this the symptom the case describes.
-                await self.kb_prefetcher.prefetch_symptom(
-                    case, inquiry_symptom_query(case, user_message)
-                )
+                # the message asked, this the symptom the case states.
+                await self.kb_prefetcher.prefetch_symptom(case, symptom)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,

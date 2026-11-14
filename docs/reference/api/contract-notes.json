@@ -1,6 +1,12 @@
 {
-  "contractVersion": "14.26.0",
+  "contractVersion": "14.26.1",
   "entries": [
+    {
+      "body": "Corrects 14.26.0. INQUIRY's symptom search now searches only the\nproposed problem statement. Before one is proposed it does not search, so\nthose turns carry no `metadata.trigger` `symptom` sources. 14.26.0\nalso searched what the user had said. Over the stored cases, that search put\noff-topic runbooks in the prompt and in `sources` far more often than\non-topic ones. No field, value or status changed.",
+      "level": "PATCH",
+      "title": "An INQUIRY turn's symptom search runs only once a problem statement is proposed.",
+      "version": "14.26.1"
+    },
     {
       "body": "Before an INQUIRY reply is generated, the engine now searches the knowledge\nbase for the symptom: the proposed problem statement once there is one,\nbefore that what the user has said, newest first. A search the case already\nran is not run again, so `sources` changes only when the symptom does. The\nmatches enter the INQUIRY prompt, and the turn's `sources`, with\n`metadata.trigger` `symptom`, as the same search has on INVESTIGATING turns\nsince 3.3.0. INQUIRY turns used to carry only a question lookup's sources\n(14.24.0). `KB_PREFETCH_ENABLED=false` switches this off with the rest of the\npre-fetch. `new_this_turn` follows the same rule as on INVESTIGATING turns.\n\nMINOR because every existing client survives it: no field is added or\nremoved, and a client already shows `sources` on any turn.",
       "level": "MINOR",
