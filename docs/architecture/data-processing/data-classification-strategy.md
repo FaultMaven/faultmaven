@@ -246,9 +246,9 @@ A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `
 
 **The taxonomy the rules follow** (recorded on #2361, 2026-11-13). A shape gets the one type whose unified meaning is true of it and whose extractor parses it without dropping content.
 - `STRUCTURED_CONFIG` means a document a config parser reads.
-- A report or table a tool prints for people is `COMMAND_OUTPUT`, even when it is key-value: `kubectl describe`, `vault read` and `openssl x509 -text` lose most of their content in the config extractor (#2791).
+- A report or table a tool prints for people is `COMMAND_OUTPUT`, even when it is key-value: `kubectl describe`, `vault read` and `openssl x509 -text` are not config. The config extractor's key=value fallback read only their lines holding an `=`; since #2791 it reports such content as not parsed and the content is kept as uploaded.
 - `lscpu` (§Command-Output Classification) is config because it is a flat YAML mapping, not because it is key-value.
-- A shape whose extractor cannot read it, such as a whitespace metrics table, gets no rule.
+- A shape whose extractor cannot read it gets no rule. A whitespace metrics table was one until the metrics extractor learned to read it (#2791); a rule for it waits on pastes from new scenarios, since the frozen set's held-out half has been read.
 
 **Measured** on a frozen, hand-labelled set of 274 synthetic pastes: data from simulated incident scenarios, handed to FaultMaven by a test rig and kept in a private repository. Rules were written on a development half and gated on a held-out half (22 cases, 115 pastes), against bars stated in advance:
 

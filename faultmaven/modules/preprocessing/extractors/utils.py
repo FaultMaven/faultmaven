@@ -212,6 +212,22 @@ def truncate_output(text: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS) -> s
     return text[:keep_start] + marker + text[-keep_end:]
 
 
+#: The ``file_meta`` key an extractor sets, to a short reason, when it cannot
+#: parse the shape it was given (#2791). The dispatch then keeps the content
+#: (``unparsed_preview``) in place of whatever fragment the extractor made.
+UNPARSED_META_KEY = "unparsed"
+
+
+def unparsed_preview(content: str, reason: str) -> str:
+    """The upload as uploaded, under a marker naming what was not parsed.
+
+    No part of the content is replaced by a summary of it. Past
+    ``MAX_STORED_EXTRACT_CHARS`` the store cuts it, head and tail, like any
+    extract (``cut_to_budget``, #2789).
+    """
+    return f"[Not parsed: {reason}. The content follows as uploaded.]\n\n{content}"
+
+
 def cut_to_budget(text: str, max_chars: int) -> str:
     """Text of at most ``max_chars``: unchanged when it fits, otherwise its
     head and tail, filling the budget, around a marker counting what is cut.

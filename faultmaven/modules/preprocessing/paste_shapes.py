@@ -24,7 +24,9 @@ an uncertain one, which passes to the model as unstructured text (#2355). So
 a rule speaks only when its shape accounts for at least two thirds of the
 paste's non-empty lines (the same bar the evaluation labels use), and a
 paste no rule claims is left to the classifier's other checks. A shape whose
-extractor cannot read it (a whitespace metrics table, #2791) has no rule.
+extractor cannot read it has no rule. A whitespace metrics table was one until
+the metrics extractor learned to read it (#2791); a rule for it waits on
+pastes from new scenarios, since the frozen set's held-out half has been read.
 
 Every rule reads one bounded sample (``SAMPLE_CHARS``), the YAML loader
 included; the JSON rule alone reads up to ``JSON_PARSE_CHARS``, since the C

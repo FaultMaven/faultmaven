@@ -39,6 +39,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     CASE_ENTITIES_OVERFLOW_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
     PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL,
 )
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.case.contracts import minted_filename_phrase
@@ -61,8 +62,10 @@ from faultmaven.modules.preprocessing.extractors.sanity_check import (
 from faultmaven.modules.preprocessing.extractors.utils import (
     MAX_STORED_EXTRACT_CHARS,
     MAX_STRUCTURAL_INDEX_CHARS,
+    UNPARSED_META_KEY,
     cut_to_budget,
     extract_time_range_ts,
+    unparsed_preview,
 )
 
 if TYPE_CHECKING:
@@ -305,6 +308,43 @@ _NO_BARE_EPOCH_TYPES = frozenset(
         DataType.UNANALYZABLE,
     }
 )
+
+
+def _keep_unparsed_content(
+    extraction: ExtractionResult, content: str, filename: str, extractor: str
+) -> ExtractionResult:
+    """An extract whose extractor could not parse the shape it was given
+    carries the content, not the fragment the extractor made of it (#2791).
+
+    The extractor reports the shape by setting ``file_meta[UNPARSED_META_KEY]``
+    to a reason; this, the one place every extractor's result returns
+    through, puts ``unparsed_preview`` in place of its ``file_extract``. The
+    rest of the result (``search_map``, ``file_meta`` with the reason) stays,
+    so the model reads why the content arrives as uploaded."""
+    payload = extraction.metadata["extract_result_json"]
+    if f'"{UNPARSED_META_KEY}"' not in payload:
+        return extraction  # no report: skip parsing what the worker sent
+    result = ExtractResult.from_json(payload)
+    reason = result.file_meta.get(UNPARSED_META_KEY)
+    if not reason:
+        return extraction
+    logger.info(
+        "Tier 1 %s could not parse %s (%s): keeping the content",
+        extractor,
+        filename,
+        reason,
+    )
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL.labels(extractor=extractor).inc()
+    # Cut here, as the store would, so a multi-MB upload is not serialized
+    # whole only to be parsed and cut again in ``_build_result``.
+    preview = cut_to_budget(unparsed_preview(content, reason), MAX_STORED_EXTRACT_CHARS)
+    kept = dataclasses.replace(result, file_extract=preview)
+    return ExtractionResult(
+        method=extraction.method,
+        content=preview,
+        # Read by the sanity retry: kept content is not a degenerate extract.
+        metadata={"extract_result_json": kept.to_json(), "unparsed": reason},
+    )
 
 
 def _cap_stored_extract(extraction: ExtractionResult) -> ExtractionResult:
@@ -842,7 +882,14 @@ class PreprocessingService:
         # Phase 2 retry path. Record each attempt's sanity result so the
         # final ``extractor.attempts`` list tells the full story.
         attempts: list[ExtractorAttempt] = []
-        initial_sanity = run_sanity_check(initial_data_type, content, initial.content)
+        # Content kept because its extractor could not parse it is the
+        # content, not a degenerate extract: no alternative replaces it, and
+        # the all-failed drop-through (a short head) never does (#2791).
+        initial_sanity = (
+            SanityResult(passed=True, reason="unparsed_content_kept")
+            if initial.metadata.get("unparsed")
+            else run_sanity_check(initial_data_type, content, initial.content)
+        )
         attempts.append(
             ExtractorAttempt(
                 data_type=initial_data_type.value,
@@ -1124,9 +1171,10 @@ class PreprocessingService:
                 data_type=detailed_data_type.value
             ).observe(index_size / content_size)
 
-        # The yield above, and the compression ratio, measure what the
-        # extractor made, so its drift stays visible; what is stored is held
-        # to the bound from here on (#2789).
+        # The yield above, and the compression ratio, measure the extract as
+        # assembled (an extractor's output, or the preview standing in for
+        # it), before the store's cut, so an extractor's blow-up stays
+        # visible; what is stored is held to the bound from here on (#2789).
         extraction = _cap_stored_extract(extraction)
 
         # Phase 3 — case-level timeline. Parse timestamps from the raw
@@ -1392,10 +1440,15 @@ class PreprocessingService:
             return preview(error_fallback=True, error=str(e)[:200])
         finally:
             slots.release(principal)
-        return ExtractionResult(
-            method=extractor.strategy_name,
-            # content holds file_extract text for sanity checks;
-            # extract_result_json carries the full structured payload.
-            content=file_extract,
-            metadata={"extract_result_json": extract_result_json},
+        return _keep_unparsed_content(
+            ExtractionResult(
+                method=extractor.strategy_name,
+                # content holds file_extract text for sanity checks;
+                # extract_result_json carries the full structured payload.
+                content=file_extract,
+                metadata={"extract_result_json": extract_result_json},
+            ),
+            content,
+            filename,
+            cls.__name__,
         )

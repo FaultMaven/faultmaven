@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
     EMPTY_CONTENT_RESPONSE,
+    UNPARSED_META_KEY,
     extract_timestamp,
     has_content,
     truncate_output,
@@ -28,6 +29,14 @@ try:
     PROMETHEUS_CLIENT_AVAILABLE = True
 except ImportError:
     PROMETHEUS_CLIENT_AVAILABLE = False
+
+
+def _is_number(cell: str) -> bool:
+    try:
+        float(cell)
+    except ValueError:
+        return False
+    return True
 
 
 class MetricsAndPerformanceExtractor:
@@ -95,7 +104,7 @@ class MetricsAndPerformanceExtractor:
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 
         # Try to parse as different formats
-        time_series = self._parse_metrics(content)
+        time_series, format_detected = self._parse_metrics(content)
         csv_summary = self._summarize_csv_structure(content)
 
         if not time_series:
@@ -109,11 +118,15 @@ class MetricsAndPerformanceExtractor:
                     },
                 )
             return ExtractResult(
-                file_extract="[Failed to parse metrics data - unsupported format]"
+                file_extract="[Failed to parse metrics data - unsupported format]",
+                file_meta={
+                    UNPARSED_META_KEY: (
+                        "no metrics format read here (JSON time series, CSV, "
+                        "whitespace table, Prometheus text) reads it"
+                    ),
+                    "size_bytes": len(content.encode("utf-8", errors="replace")),
+                },
             )
-
-        # Detect format for coverage
-        format_detected = self._detect_format_name(content)
 
         # Analyze each metric
         summaries = []
@@ -282,42 +295,31 @@ class MetricsAndPerformanceExtractor:
             + output[eol + 1 :]
         )
 
-    def _detect_format_name(self, content: str) -> str:
-        """Detect which format was successfully parsed."""
-        if self._parse_json_metrics(content):
-            return "json"
-        if self._parse_csv_metrics(content):
-            return "csv"
-        if self._parse_prometheus_metrics(content):
-            return "prometheus"
-        return "unknown"
-
     def _parse_metrics(
         self, content: str
-    ) -> dict[str, list[tuple[str | None, float]]] | None:
+    ) -> tuple[dict[str, list[tuple[str | None, float]]] | None, str]:
         """
         Parse metrics data from various formats
 
         Returns:
-            Dict mapping metric_name -> [(timestamp, value), ...]
-            Returns None if parsing fails
+            Dict mapping metric_name -> [(timestamp, value), ...], or None if
+            no format reads the content, and the name of the format that read
+            it ("unknown" when none did)
         """
-        # Try JSON first (time-series format)
-        json_result = self._parse_json_metrics(content)
-        if json_result:
-            return json_result
-
-        # Try CSV format
-        csv_result = self._parse_csv_metrics(content)
-        if csv_result:
-            return csv_result
-
-        # Try Prometheus text format
-        prom_result = self._parse_prometheus_metrics(content)
-        if prom_result:
-            return prom_result
-
-        return None
+        readers = (
+            ("json", self._parse_json_metrics),
+            ("csv", self._parse_csv_metrics),
+            # A whitespace-aligned table with a header row, before Prometheus
+            # text: the Prometheus line reader takes ``web1 50 60`` for a
+            # sample and keeps one column of a host-keyed table (#2791)
+            ("whitespace table", self._parse_whitespace_metrics),
+            ("prometheus", self._parse_prometheus_metrics),
+        )
+        for name, reader in readers:
+            result = reader(content)
+            if result:
+                return result, name
+        return None, "unknown"
 
     def _parse_json_metrics(
         self, content: str
@@ -398,7 +400,64 @@ class MetricsAndPerformanceExtractor:
         rather than assuming all non-first columns are numeric.
         Uses csv.reader to correctly handle quoted fields.
         """
-        rows = self._parse_csv_rows(content)
+        return self._metrics_from_rows(self._parse_csv_rows(content))
+
+    def _parse_whitespace_metrics(
+        self, content: str
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
+        """Parse a whitespace-aligned table with a header row, as exporters,
+        dashboard copies and pandas' ``to_string`` write it (#2791).
+
+        A header line of names only, then rows of as many fields, every field
+        but one (the time or key column) a number: a table with other text
+        columns (``kubectl get pods``: READY, STATUS) is not metrics, and
+        reading only its numbers would drop the rest without a word. A
+        timestamp written with a space (``2026-11-13 22:00:00``) splits into
+        two fields; a row one field longer than the header whose first two
+        fields read as one timestamp has them joined. Prometheus text has no
+        header line of names, so it never parses here.
+        """
+        lines = [
+            line.split()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if len(lines) < 3:
+            return None
+        header = lines[0]
+        if len(header) < 2 or any(_is_number(cell) for cell in header):
+            return None
+        rows = [header]
+        for parts in lines[1:]:
+            # A date and a time split by the space between them; never a
+            # timestamp and the number after it (``2026-11-13T22:00:00 50``).
+            if (
+                len(parts) == len(header) + 1
+                and not _is_number(parts[1])
+                and extract_timestamp(f"{parts[0]} {parts[1]}")
+            ):
+                parts = [f"{parts[0]} {parts[1]}", *parts[2:]]
+            rows.append(parts)
+        if rows[1:] and all(len(row) == len(header) + 1 for row in rows[1:]):
+            # Every row one field longer: an index column with no name, as
+            # pandas' ``to_string`` writes a time index.
+            rows[0] = header = ["index", *header]
+        full = [row for row in rows[1:] if len(row) == len(header)]
+        if len(full) < 2:
+            return None
+        text_columns = sum(
+            not all(_is_number(row[col]) for row in full[:10])
+            for col in range(len(header))
+        )
+        if text_columns > 1:
+            return None
+        return self._metrics_from_rows(rows)
+
+    def _metrics_from_rows(
+        self, rows: list[list[str]] | None
+    ) -> dict[str, list[tuple[str | None, float]]] | None:
+        """Series from a table: a header row, then data rows of as many
+        cells. Shared by the CSV and the whitespace-table readers."""
         if not rows or len(rows) < 2:
             return None
 

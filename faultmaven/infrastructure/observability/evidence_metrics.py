@@ -192,6 +192,30 @@ if PROMETHEUS_AVAILABLE:
         {"outcome": ("clarification", "passthrough")},
     )
 
+    # #2791: one per Tier 1 extraction whose extractor reported that it could
+    # not parse the shape it was given (``file_meta["unparsed"]``), so the
+    # content was kept as uploaded in place of the extractor's fragment. By
+    # extractor class: which shapes the extractors do not read yet.
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL = Counter(
+        "faultmaven_preprocessing_unparsed_shape_total",
+        "Tier 1 extractions whose extractor could not parse the shape it "
+        "was given; the content was kept as uploaded. By extractor class.",
+        ["extractor"],
+    )
+    create_children(
+        PREPROCESSING_UNPARSED_SHAPE_TOTAL,
+        {
+            "extractor": (
+                "CommandOutputExtractor",
+                "MetricsAndPerformanceExtractor",
+                "ProfilingDataExtractor",
+                "SourceCodeExtractor",
+                "StructuredConfigExtractor",
+                "TraceDataExtractor",
+            )
+        },
+    )
+
     # Triage-to-escalation rate: counts when the agent received a
     # Triage-mode turn with a structural index AND immediately called
     # search_file or deep_analysis on the same evidence (within the
@@ -293,6 +317,7 @@ else:
     EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
     PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
     PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = _NoOpMetric()
+    PREPROCESSING_UNPARSED_SHAPE_TOTAL = _NoOpMetric()
     AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
     CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
     PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
@@ -312,6 +337,7 @@ __all__ = [
     "EVIDENCE_RECLASSIFICATION_TOTAL",
     "PREPROCESSING_EXTRACTION_YIELD_RATIO",
     "PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL",
+    "PREPROCESSING_UNPARSED_SHAPE_TOTAL",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
     "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
