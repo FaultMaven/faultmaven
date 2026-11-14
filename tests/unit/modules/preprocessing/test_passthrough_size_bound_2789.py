@@ -149,7 +149,8 @@ class TestCutToBudget:
         assert MAX_STORED_EXTRACT_CHARS - 10 <= len(cut) <= MAX_STORED_EXTRACT_CHARS
         assert cut.startswith(text[:PROMPT_VIEW])
         assert cut.endswith("row 019999\n")
-        assert "search_file reads the whole upload" in cut
+        assert "characters of the upload cut here" in cut
+        assert "search_file" not in cut, "stored text names no tool (#1939)"
 
     def test_a_budget_smaller_than_the_marker_keeps_only_the_head(self):
         assert cut_to_budget("z" * 1000, 50) == "z" * 50
@@ -187,7 +188,10 @@ class TestEveryStoredExtractIsBounded:
         # extractor's own extract apply when it finished.
         if result.extraction_method == "crime_scene":
             assert stored.file_extract.startswith(alone.file_extract[:PROMPT_VIEW])
-            assert stored.file_meta["truncated"] is True
+            assert stored.file_meta["stored_cut"] == "file_extract"
+            assert (
+                stored.file_meta.get("truncated") is not True
+            ), "the extractor's own key is left as it set it"
 
     @pytest.mark.asyncio
     async def test_an_upload_past_the_line_cutoff_is_bounded_too(self):
@@ -251,6 +255,60 @@ class TestEveryStoredExtractIsBounded:
             assert result.extraction_method == "raw_passthrough"
             assert result.structural_index == content
 
+    @pytest.mark.asyncio
+    async def test_a_failed_extraction_keeps_head_and_tail_not_a_short_head(
+        self, monkeypatch
+    ):
+        """The busy, timeout and error previews hand the content to the store's
+        cut like any extract: a confident upload past the bound whose worker
+        fails keeps its tail (the errors at the end of a log)."""
+        from faultmaven.infrastructure import worker_process
+
+        async def fails(*args, **kwargs):
+            raise RuntimeError("the extraction worker exited 1")
+
+        monkeypatch.setattr(worker_process, "run", fails)
+        content = _log(150, 600) + "2026-11-14T08:59:59Z FATAL [api] pool exhausted\n"
+
+        result = await _service().classify_and_extract(
+            content=content, filename="api.log", principal="u1"
+        )
+
+        assert result.extraction_method == "structure_extraction"
+        assert len(result.structural_index) <= MAX_STORED_EXTRACT_CHARS
+        assert result.structural_index.endswith("FATAL [api] pool exhausted\n")
+        assert result.structural_index.startswith(content[:PROMPT_VIEW])
+
+
+@pytest.mark.skipif(
+    not evidence_metrics.PROMETHEUS_AVAILABLE,
+    reason="prometheus_client not installed; the histogram is a no-op",
+)
+@pytest.mark.asyncio
+async def test_the_yield_ratio_measures_the_extract_before_the_cut():
+    """The drift signal reads what the extractor made: a log extract larger
+    than its input observes a ratio above 1, though what is stored is cut."""
+    from prometheus_client import REGISTRY
+
+    def over_one() -> float:
+        bucket = REGISTRY.get_sample_value(
+            "faultmaven_preprocessing_extraction_yield_ratio_bucket",
+            {"data_type": "logs_and_errors", "le": "1.0"},
+        )
+        total = REGISTRY.get_sample_value(
+            "faultmaven_preprocessing_extraction_yield_ratio_count",
+            {"data_type": "logs_and_errors"},
+        )
+        return (total or 0.0) - (bucket or 0.0)
+
+    before = over_one()
+    result = await _service().classify_and_extract(
+        content=_log(150, 600), filename="api.log", principal="u1"
+    )
+
+    if result.extraction_method == "crime_scene":
+        assert over_one() == before + 1
+
 
 class TestALargeUncertainUploadIsCutNotCarded:
     @pytest.mark.asyncio
@@ -271,7 +329,7 @@ class TestALargeUncertainUploadIsCutNotCarded:
         assert len(result.structural_index) <= MAX_STORED_EXTRACT_CHARS
         assert result.structural_index.startswith(LOG_EVENTS[:PROMPT_VIEW])
         assert result.structural_index.endswith(LOG_EVENTS[-1000:])
-        assert "search_file reads the whole upload" in result.structural_index
+        assert "characters of the upload cut here" in result.structural_index
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
