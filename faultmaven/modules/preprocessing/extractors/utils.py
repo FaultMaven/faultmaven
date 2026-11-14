@@ -32,6 +32,16 @@ MAX_STRUCTURAL_INDEX_CHARS = (
     MAX_STRUCTURAL_INDEX_TOKENS * 4
 )  # ~10000 chars at 4 chars/token
 
+# The hard bound on what is stored as an upload's extract (``file_extract``
+# and ``search_map``), whichever path made it (#2789). The budget above is
+# each extractor's own target, and not every extractor holds to it; this
+# bound is enforced once, where every result is assembled
+# (``PreprocessingService._build_result``), and it is the small-file
+# passthrough's size rule. Sized to hold the largest extracts the design
+# vectorizes (data-preprocessing-design-specification.md §5.6) whole, while a
+# multi-MB upload is no longer copied onto its row and read back each turn.
+MAX_STORED_EXTRACT_CHARS = 64 * 1024
+
 # Standardized response for empty/degenerate input
 EMPTY_CONTENT_RESPONSE = "[No content to analyze]"
 
@@ -210,21 +220,34 @@ UNPARSED_META_KEY = "unparsed"
 def unparsed_preview(content: str, reason: str) -> str:
     """The upload as uploaded, under a marker naming what was not parsed.
 
-    Whole when it fits ``MAX_STRUCTURAL_INDEX_CHARS``; otherwise its head and
-    tail, each 40% of the budget, around a marker counting what is not shown.
-    Either way no part of the content is replaced by a summary of it.
+    No part of the content is replaced by a summary of it. Past
+    ``MAX_STORED_EXTRACT_CHARS`` the store cuts it, head and tail, like any
+    extract (``cut_to_budget``, #2789).
     """
-    header = f"[Not parsed: {reason}. The content follows as uploaded.]\n\n"
-    budget = MAX_STRUCTURAL_INDEX_CHARS - len(header)
-    if len(content) <= budget:
-        return header + content
-    keep = int(budget * 0.4)
-    omitted = len(content) - 2 * keep
-    middle = (
-        f"\n\n... [{omitted} characters not shown here; "
-        f"search_file reads the whole upload] ...\n\n"
-    )
-    return header + content[:keep] + middle + content[-keep:]
+    return f"[Not parsed: {reason}. The content follows as uploaded.]\n\n{content}"
+
+
+def cut_to_budget(text: str, max_chars: int) -> str:
+    """Text of at most ``max_chars``: unchanged when it fits, otherwise its
+    head and tail, filling the budget, around a marker counting what is cut.
+
+    For stored content whose source stays readable (an upload's raw file,
+    which ``search_file`` reads), so the marker says where the rest is.
+    """
+    if len(text) <= max_chars:
+        return text
+
+    def marker(omitted: int) -> str:
+        return (
+            f"\n\n... [{omitted} characters not shown here; "
+            f"search_file reads the whole upload] ...\n\n"
+        )
+
+    # Sized for the longest count first: the real one is no longer.
+    room = max_chars - len(marker(len(text)))
+    head = room // 2
+    tail = room - head
+    return text[:head] + marker(len(text) - head - tail) + text[len(text) - tail :]
 
 
 # ---------------------------------------------------------------------------

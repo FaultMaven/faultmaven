@@ -360,7 +360,7 @@ User          API(/turns)    Investigation    Preprocessing    (loaded case)
 
 Triggered when the Tier 0 classifier sets `classification_failed`. The outcome depends on whether an extractor would read the upload (#2355):
 
-- **No extractor would run** (under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture at any length): nothing is asked. The upload is retyped `UNSTRUCTURED_TEXT` and takes its passthrough: the model reads the content in the same turn, and the upload forces directed analysis like any other evidence.
+- **No extractor would run** (under `MIN_EXTRACTION_LINES` (200) lines, or a shape-valid page capture at any length): nothing is asked. The upload is retyped `UNSTRUCTURED_TEXT` and takes its passthrough: the model reads the content in the same turn (past `MAX_STORED_EXTRACT_CHARS`, its stored head and tail, #2789), and the upload forces directed analysis like any other evidence.
 - **An extractor would run:** `classify_and_extract` returns a placeholder (`extraction_method="classification_failed"`, `suggested_types` in metadata). The turn runs on the placeholder and a three-line preview; the upload does not force directed analysis, and the reply says it has not been analyzed yet. `_build_classification_clarification` then puts DECIDE choices ahead of the engine's follow-ups, each carrying a `file_reclassification` intent. A click (or a typed choice resolved by `IntentResolver`) is a mechanical turn with no LLM call that re-runs preprocessing under `user_override`; its reply offers "Analyze it now", which starts the analysis.
 
 ---

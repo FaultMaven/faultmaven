@@ -4,8 +4,9 @@ One rule, in one place. An extractor that meets a shape it does not parse says
 so, setting ``file_meta["unparsed"]`` to a reason; the dispatch
 (``_keep_unparsed_content``, on the way back from every extractor's worker)
 then stores the content as uploaded, under a marker naming the reason, in
-place of the fragment. Whole when it fits ``MAX_STRUCTURAL_INDEX_CHARS``;
-head and tail otherwise, with ``search_file`` reading the rest.
+place of the fragment. Like any stored extract it is held to
+``MAX_STORED_EXTRACT_CHARS`` (#2789): past it, head and tail, with
+``search_file`` reading the rest.
 
 The five shapes the issue measured, each with a test that the content is
 kept, plus the two other extractors whose unknown-format fallback kept a
@@ -33,7 +34,7 @@ from faultmaven.modules.preprocessing.extractors import (
 )
 from faultmaven.modules.preprocessing.extractors.protocol import ExtractResult
 from faultmaven.modules.preprocessing.extractors.utils import (
-    MAX_STRUCTURAL_INDEX_CHARS,
+    MAX_STORED_EXTRACT_CHARS,
     UNPARSED_META_KEY,
     unparsed_preview,
 )
@@ -223,15 +224,22 @@ class TestTheDispatchKeepsWhatWasNotParsed:
 
     @pytest.mark.asyncio
     async def test_a_long_unknown_table_keeps_its_last_rows(self):
-        """Over the budget the content is cut head and tail, never to its first
-        rows: the table's last line, its one load balancer, is kept."""
-        content = _service_table(900)
-        assert len(content) > MAX_STRUCTURAL_INDEX_CHARS
+        """Past the stored bound the content is cut head and tail, never to
+        its first rows: the table's last line, its one load balancer, is
+        kept."""
+        content = _service_table(1200)
+        assert len(content) > MAX_STORED_EXTRACT_CHARS
 
-        result = await _dispatch(CommandOutputExtractor(), content)
+        result = await _service().classify_and_extract(
+            content=content,
+            filename="services.txt",
+            principal="u1",
+            user_override=DataType.COMMAND_OUTPUT,
+        )
 
-        kept = _extract_of(result.metadata["extract_result_json"]).file_extract
-        assert len(kept) <= MAX_STRUCTURAL_INDEX_CHARS
+        kept = _extract_of(result.structural_index).file_extract
+        assert len(kept) <= MAX_STORED_EXTRACT_CHARS
+        assert kept.startswith("[Not parsed: ")
         assert "svc-000-backend" in kept
         assert kept.rstrip().endswith(content.rstrip().splitlines()[-1])
         assert "search_file reads the whole upload" in kept
@@ -270,17 +278,11 @@ class TestTheDispatchKeepsWhatWasNotParsed:
 
 
 class TestUnparsedPreview:
-    def test_content_within_the_budget_is_kept_whole(self):
-        content = "line\n" * 100
-        assert unparsed_preview(content, "why").endswith(content)
-
-    def test_content_past_the_budget_keeps_head_and_tail(self):
-        content = "".join(f"row {i:05d}\n" for i in range(5000))
+    def test_the_content_follows_the_marker_whole(self):
+        content = "row\n" * 50_000
         preview = unparsed_preview(content, "why")
-        assert len(preview) <= MAX_STRUCTURAL_INDEX_CHARS
-        assert "row 00000" in preview
-        assert preview.endswith("row 04999\n")
-        assert "characters not shown here" in preview
+        assert preview.startswith("[Not parsed: why.")
+        assert preview.endswith(content)
 
 
 class TestTheConfigExtractorReports:
