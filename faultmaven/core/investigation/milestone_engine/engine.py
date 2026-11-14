@@ -33,7 +33,10 @@ from faultmaven.core.investigation.milestone_engine.generation import (
 from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_hypothesis_action_intent,
 )
-from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
+    KbPrefetcher,
+    inquiry_symptom_query,
+)
 from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
     look_up_kb_question,
 )
@@ -388,6 +391,24 @@ class MilestoneEngine:
         if question is None:
             return None
         return await look_up_kb_question(self.deps, case, question)
+
+    @staticmethod
+    def _asks_about_the_assistant(
+        case: Case, intent_data: dict[str, Any] | None, user_message: str
+    ) -> bool:
+        """Whether this turn is a question about the assistant itself
+        (``agent_meta``): the service's recorded mode, or on a direct engine
+        call, the classification the prompt builder falls back to."""
+        mode = (intent_data or {}).get("query_mode")
+        if not mode:
+            from faultmaven.modules.agent.domain.services.query_classifier import (
+                classify_query,
+            )
+
+            mode = classify_query(
+                user_message or "", has_attachments=bool(case.evidence)
+            ).mode.value
+        return mode == "agent_meta"
 
     async def _turn_redaction(self, case: Case, redaction_ctx: Any | None) -> Any:
         """The turn's case redaction context: the one the service handed in,
@@ -1297,8 +1318,9 @@ class MilestoneEngine:
             # and is now CLOSED-only.
 
             # 1. Gather Context & Build Prompt
-            # Knowledge reaches this turn three ways: the push already on the
-            # case (``kb_prefetch``, fired at case transitions), the ``kb_qa``
+            # Knowledge reaches this turn three ways: the push on the case
+            # (``kb_prefetch``: fired at case transitions and the root-cause
+            # edge, and on INQUIRY for the symptom just below), the ``kb_qa``
             # pull the model may elect during generation, and — when the user
             # asked about the knowledge base itself — the lookup below, run
             # here so the prompt reports it on every route, the tool-less
@@ -1325,6 +1347,16 @@ class MilestoneEngine:
             # cannot be.
             await self.kb_prefetcher.refresh_for_driver(case)
             kb_lookup = await self._kb_lookup(case, intent_data, user_message)
+            if case.state == CaseState.INQUIRY and not self._asks_about_the_assistant(
+                case, intent_data, user_message
+            ):
+                # The symptom's runbooks, in this INQUIRY prompt: nothing else
+                # puts a runbook in front of an INQUIRY reply on a case with
+                # no files. Beside a question lookup too: that searched what
+                # the message asked, this the symptom the case describes.
+                await self.kb_prefetcher.prefetch_symptom(
+                    case, inquiry_symptom_query(case, user_message)
+                )
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,

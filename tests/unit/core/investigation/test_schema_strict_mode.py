@@ -411,7 +411,6 @@ def test_the_engine_parses_a_fully_populated_strict_response():
                 "problem_confirmation": None,
                 "proposed_problem_statement": None,
                 "preliminary_urgency": None,
-                "knowledge_match": None,
                 "user_confirmed_investigation": None,
             },
         }
@@ -420,7 +419,7 @@ def test_the_engine_parses_a_fully_populated_strict_response():
     # The null restored the default rather than being rejected...
     assert response.state_updates.user_confirmed_investigation is False
     # ...while a genuinely Optional field keeps None as a real value.
-    assert response.state_updates.knowledge_match is None
+    assert response.state_updates.preliminary_urgency is None
 
 
 def test_null_tolerance_does_not_swallow_a_real_value():

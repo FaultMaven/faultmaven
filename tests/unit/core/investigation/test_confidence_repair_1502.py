@@ -93,11 +93,10 @@ ENGINE_SCHEMAS = [
 ]
 
 #: Every [0, 1] confidence field and its ROLE, exactly as the ruling assigns it.
-#: N = 10. ``test_census_*`` fails if a field is added, removed or loses its
+#: N = 9. ``test_census_*`` fails if a field is added, removed or loses its
 #: bound without this map moving with it.
 POLICY = {
     ("EvidenceConclusion", "confidence"): "add",
-    ("KnowledgeMatch", "match_likelihood"): "add",
     ("EvidenceToAdd", "likelihood"): "add",
     ("HypothesisToAdd", "likelihood"): "add",
     # Absence means the 0.7 DEFAULT here, not "keep" — so ADD-shaped.
@@ -207,7 +206,7 @@ def test_census_every_bounded_field_has_a_policy():
     whole-record prune (or worse, the drop-all) is what it silently gets
     otherwise."""
     found = _bounded_fields()
-    assert len(found) == 10, sorted(found)
+    assert len(found) == 9, sorted(found)
     assert set(found) == set(POLICY)
 
 
@@ -439,23 +438,6 @@ CASES: dict[tuple[str, str], _Case] = {
         lambda r: r.confidence,
         lambda p: any(c.observation == "s" for c in p.evidence_trail.conclusions),
     ),
-    ("KnowledgeMatch", "match_likelihood"): _Case(
-        schemas.InquiryResponse,
-        lambda v: {
-            "agent_response": "a",
-            "state_updates": {
-                "knowledge_match": {
-                    "match_type": "runbook",
-                    "match_likelihood": v,
-                    "match_summary": "m",
-                },
-                "user_confirmed_investigation": True,
-            },
-        },
-        lambda p: p.state_updates.knowledge_match,
-        lambda r: r.match_likelihood,
-        lambda p: p.state_updates.user_confirmed_investigation is True,
-    ),
     ("EvidenceToAdd", "likelihood"): _Case(
         D,
         lambda v: _diag({"evidence_to_add": [_ev(v), _ev(0.5, "s")]}),
@@ -630,7 +612,7 @@ def test_add_shaped_repairs_keep_the_record(key, raw, expected, action):
 @pytest.mark.parametrize("key", _keys("add"), ids=lambda k: ".".join(k))
 def test_add_shaped_unrepairable_prunes_its_own_record_only(key, raw):
     """Never a sibling, never every state_updates — the single-object rows
-    (``root_cause_conclusion``, ``knowledge_match``) included, which on
+    (``root_cause_conclusion``) included, which on
     ``main`` fell through to the drop-all rung."""
     case = CASES[key]
     parsed, outcomes, fields = _ladder(case.body(raw), case.schema)

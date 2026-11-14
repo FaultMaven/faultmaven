@@ -214,7 +214,7 @@ class TransitionManager:
         # Deterministic, code-level — not an LLM tool call decision.
         # Results are stored on the case and injected into context by
         # context_builder so the LLM sees relevant runbooks from turn 1.
-        await self.kb_prefetcher.prefetch_kb_context(case, case.description, "symptom")
+        await self.kb_prefetcher.prefetch_symptom(case, case.description)
 
     async def check_automatic_transitions(
         self,

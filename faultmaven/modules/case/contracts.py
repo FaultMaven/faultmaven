@@ -623,7 +623,6 @@ from faultmaven.modules.case.domain.models.outcome import (
 from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
     InvestigationStage,
-    KnowledgeMatch,
     PendingRevision,
     PreliminaryUrgency,
     ProblemInvalidation,
@@ -931,7 +930,6 @@ __all__ = [
     "InvestigationStage",
     "InvestigationStrategy",
     "JournalEntry",
-    "KnowledgeMatch",
     "NeedObtainability",
     "NeedPriority",
     "NeedPurpose",

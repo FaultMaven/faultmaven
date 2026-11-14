@@ -58,8 +58,9 @@ class TestKBAttributionPromptContract:
         assert "No Cause" in rca_diagnosis_block(DEFAULT_GIVEN)
 
     def test_no_knowledge_match_is_asked_for(self):
-        # Only the INQUIRY schema carries knowledge_match (#2513 review): the
-        # DIAGNOSIS attribution records the Cause as the hypothesis instead.
+        # No schema carries knowledge_match since it was removed as never read
+        # (#2800); the DIAGNOSIS attribution records the Cause as the
+        # hypothesis, and must not ask for the removed field either.
         assert "knowledge_match" not in rca_diagnosis_block(DEFAULT_GIVEN)
         assert "match_likelihood" not in rca_diagnosis_block(DEFAULT_GIVEN)
 

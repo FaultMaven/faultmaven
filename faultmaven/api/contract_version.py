@@ -151,6 +151,26 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.26.0",
+        level="MINOR",
+        title=(
+            "An INQUIRY turn's `sources` can carry the runbooks pre-fetched for "
+            "the reported symptom (`metadata.trigger` `symptom`)."
+        ),
+        body=r"""Before an INQUIRY reply is generated, the engine now searches the knowledge
+base for the symptom: the proposed problem statement once there is one,
+before that what the user has said, newest first. A search the case already
+ran is not run again, so `sources` changes only when the symptom does. The
+matches enter the INQUIRY prompt, and the turn's `sources`, with
+`metadata.trigger` `symptom`, as the same search has on INVESTIGATING turns
+since 3.3.0. INQUIRY turns used to carry only a question lookup's sources
+(14.24.0). `KB_PREFETCH_ENABLED=false` switches this off with the rest of the
+pre-fetch. `new_this_turn` follows the same rule as on INVESTIGATING turns.
+
+MINOR because every existing client survives it: no field is added or
+removed, and a client already shows `sources` on any turn.""",
+    ),
+    ContractChange(
         version="14.25.0",
         level="MINOR",
         title=(

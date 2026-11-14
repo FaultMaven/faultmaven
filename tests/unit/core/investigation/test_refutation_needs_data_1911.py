@@ -82,6 +82,9 @@ class _NoKb:
     async def prefetch_kb_context(self, *args, **kwargs) -> None:
         return None
 
+    async def prefetch_symptom(self, *args, **kwargs) -> None:
+        return None
+
 
 def _engine() -> MilestoneEngine:
     eng = MilestoneEngine.__new__(MilestoneEngine)

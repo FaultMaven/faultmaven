@@ -16,45 +16,26 @@ from .tool_text import GivenTools, has
 def inquiry_knowledge_help(given: GivenTools) -> str:
     """``{knowledge_help}``: how to answer a knowledge or how-to question."""
     if not has(given, "kb_qa"):
-        return "→ Answer or help from your own knowledge."
+        return (
+            "→ Answer or help: from a runbook in <knowledge_context> that covers\n"
+            "    the question, when there is one, otherwise from your own knowledge\n"
+            "    (no mention of the knowledge base;\n"
+            "    a KNOWLEDGE BASE LOOKUP section, when present, overrides that:\n"
+            "    the user asked about the knowledge base itself)."
+        )
     return (
-        "→ Answer or help. Use kb_qa for technical questions; ground in results\n"
-        "    if found, otherwise answer from your own knowledge (no mention of the\n"
-        "    search; a KNOWLEDGE BASE LOOKUP section, when present, overrides that:\n"
-        "    the user asked about the knowledge base itself). What the knowledge\n"
-        "    base holds is troubleshooting runbooks for\n"
+        "→ Answer or help. Use kb_qa for technical questions; ground in its\n"
+        "    results, or in a runbook in <knowledge_context> that covers the\n"
+        "    question, otherwise answer from your own knowledge (no mention of\n"
+        "    the search;\n"
+        "    a KNOWLEDGE BASE LOOKUP section, when present, overrides that:\n"
+        "    the user asked about the knowledge base itself). What the\n"
+        "    knowledge base holds is troubleshooting runbooks for\n"
         "    "
         + _TROUBLESHOOTING_DOMAINS
         + " — knowing that is what lets you judge whether a result is\n"
         "    relevant or merely shares its vocabulary."
     )
-
-
-def inquiry_kb_check(given: GivenTools) -> str:
-    """``{kb_check}``: step 2 of the problem-solving task."""
-    if not has(given, "kb_qa"):
-        return (
-            "2. KNOWLEDGE BASE CHECK. The knowledge base cannot be searched on this "
-            "turn. Do not claim to have checked it and leave knowledge_match unset. "
-            "(A KNOWLEDGE BASE LOOKUP section, when present, is a search the engine "
-            "ran for the user's own question: report it as it says.)"
-        )
-    return """\
-2. KNOWLEDGE BASE CHECK. Call kb_qa once for the symptom.
-   - Match found: record it for later use; do NOT propose the fix here
-     (solutions are emitted during INVESTIGATING, not INQUIRY).
-     Set knowledge_match in state_updates:
-       match_type: "runbook" | "past_case" | "documentation"
-       match_likelihood: 0.0–1.0 (your confidence this match applies)
-       match_summary: one-sentence description of what the match covers
-       suggested_solution: the recommended fix steps (optional)
-     In agent_response: mention that related guidance exists without
-     describing the fix, e.g., "I have a runbook that looks relevant —
-     I'll bring it in once we confirm the problem and start investigating."
-   - No match: proceed without mentioning the search — never tell the user
-     a lookup found nothing; a failed lookup is internal. (A KNOWLEDGE BASE
-     LOOKUP section, when present, overrides this: the user asked about the
-     knowledge base itself.)"""
 
 
 def inquiry_reading_uploaded_files(given: GivenTools) -> str:
@@ -108,6 +89,8 @@ STATE: INQUIRY (Pre-Investigation)
 {core_context}
 
 {evidence}
+
+{kb_results}
 
 CONVERSATION HISTORY:
 {conversation_history}
@@ -211,7 +194,18 @@ solving intent is clear.)
    is failing. Do NOT set proposed_problem_statement. Wait for the
    answer. If 1 triggers, stop here.
 
-{kb_check}
+2. KNOWLEDGE BASE CHECK. Runbooks the engine matched to the symptom, if
+   any, are in <knowledge_context> above.
+   - One plainly covers this symptom: say in agent_response that related
+     guidance exists, without describing the fix (solutions come during
+     INVESTIGATING, not INQUIRY), e.g., "I have a runbook that looks
+     relevant — I'll bring it in once we confirm the problem and start
+     investigating."
+   - None does, or there is no <knowledge_context>: proceed without
+     mentioning the knowledge base. Never tell the user a lookup found
+     nothing, and do not claim to have checked it.
+     (A KNOWLEDGE BASE LOOKUP section, when present, overrides this: the
+     user asked about the knowledge base itself.)
 
 3. URGENCY CLASSIFICATION. Classify based on business impact:
      * CRITICAL: revenue loss, production down, data loss, customers affected
@@ -324,8 +318,8 @@ TURN WHERE USER CONFIRMS (user_confirmed_investigation=True):
 - CRITICAL: Check <evidence_collected> BEFORE asking for data.
   * Evidence exists: reference it — do NOT ask for re-upload.
   * No evidence: "What data can you share? Error logs, metrics, deployment diffs?"
-- If a knowledge_match was recorded, surface the runbook now (held
-  back during INQUIRY per design) — see the DIAGNOSIS template's
+- If a runbook in <knowledge_context> covers the symptom, surface it now
+  (held back during INQUIRY per design) — see the DIAGNOSIS template's
   KNOWLEDGE & RUNBOOK AUTHORITY section for Cause-attribution behaviour.
 - Begin the first investigative step directly — usually verifying the
   reported symptom. The investigation unfolds opportunistically from the
@@ -445,10 +439,10 @@ transition itself.
 # the floor, because no template referenced the key — so the push had never
 # reached an investigation prompt.
 #
-# It sits HERE, not in ``INQUIRY_TEMPLATE``. It used to be there and was
-# removed in April 2026 as "always empty", which was a correct observation
-# about a real defect elsewhere: both pre-fetch triggers fire during response
-# application, and the symptom trigger fires on the very turn the case LEAVES
-# inquiry. An INQUIRY prompt is therefore built before any pre-fetch has ever
-# run for that case, and putting the slot back there would restore an
-# always-empty block rather than fix anything.
+# ``INQUIRY_TEMPLATE`` carries it too. It was removed from there in April 2026
+# as "always empty", which was true: the pre-fetch triggers fired only while a
+# response was applied, the symptom one on the very turn the case LEFT
+# inquiry, so no INQUIRY prompt was ever built after one. The engine now runs
+# INQUIRY's symptom search before the prompt is built
+# (``KbPrefetcher.prefetch_symptom``), which is what makes the slot worth
+# having there.

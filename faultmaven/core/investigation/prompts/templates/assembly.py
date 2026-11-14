@@ -37,7 +37,6 @@ from .diagnosis import _CHAIN_EMISSION_BLOCK, rca_diagnosis_block
 from .fallback import get_fallback_prompt_for_case
 from .inquiry import (
     INQUIRY_TEMPLATE,
-    inquiry_kb_check,
     inquiry_knowledge_help,
     inquiry_reading_uploaded_files,
 )
@@ -427,7 +426,7 @@ def get_prompt_for_case(
     ``kb_rendered``, when given, is refilled with the KB entries the returned
     prompt actually carries: the push entries whose header survived the
     section budget — none when the template has no ``{kb_results}`` slot
-    (INQUIRY, terminal) — then the entries of ``kb_lookup``'s block, which
+    (terminal) — then the entries of ``kb_lookup``'s block, which
     every template renders; and nothing at all when the minimal fallback
     replaced the assembled prompt. The engine passes it so a turn's
     ``sources`` name only what the model was shown.
@@ -526,13 +525,8 @@ def get_prompt_for_case(
         )
 
         if case.state == CaseState.INQUIRY:
-            # No ``{kb_results}`` slot: the KB block was built and not shown.
-            # The ``{kb_lookup}`` slot is here, so its entries stay.
-            if kb_rendered is not None:
-                kb_rendered[:] = lookup_entries_only(kb_rendered)
             return INQUIRY_TEMPLATE.format(
                 knowledge_help=inquiry_knowledge_help(given_tools),
-                kb_check=inquiry_kb_check(given_tools),
                 reading_uploaded_files=inquiry_reading_uploaded_files(given_tools),
                 **ctx,
             )

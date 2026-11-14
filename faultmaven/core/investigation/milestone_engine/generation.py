@@ -674,7 +674,8 @@ class StructuredOutputGenerator:
         # calling: BEST_EFFORT semantics. The model could omit a required field,
         # the engine dropped the whole `state_updates` payload, and the turn
         # advanced nothing — observed on the first live cloud turn after #819 as
-        # a missing `state_updates.knowledge_match.match_type`.
+        # a missing `state_updates.knowledge_match.match_type` (a field since
+        # removed as never read, #2800).
         #
         # Scoped to the SCHEMA tool. The investigation tools keep their existing
         # non-strict definitions: several take optional parameters, and strict

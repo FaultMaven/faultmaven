@@ -39,7 +39,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkee
 from faultmaven.modules.agent.domain.services.investigation_service.turn_messages import (
     _append_turn_messages,
 )
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_KB_SOURCES
+from faultmaven.modules.case.contracts import MESSAGE_METADATA_KB_SOURCES, CaseState
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.problem import (
     ProblemStatus,
@@ -445,9 +445,13 @@ class TestThePromptReportsWhatItCarried:
             get_prompt_for_case,
         )
 
+        case = _case(kb_context=[_entry("rb_a")])
+        # The terminal template has no {kb_results} slot. Promoted past the
+        # validators, which want a closure record this prompt does not read.
+        object.__setattr__(case, "state", CaseState.CLOSED)
         rendered: list = []
         prompt = get_prompt_for_case(
-            _case(kb_context=[_entry("rb_a")]),  # INQUIRY: no {kb_results} slot
+            case,
             "what now?",
             provider_name="openai",
             model_name="gpt-4o",

@@ -205,9 +205,11 @@ def test_the_parametrised_guard_is_watching_something():
     """Declare where the rule above CAN be violated, and fail if it is looking
     nowhere.
 
-    Five of the six schemas carry value constraints;
-    ``TerminalResponse`` carries none (it is a closing summary, all free text),
-    so its parametrisation asserts vacuously and is expected to. Pinning the
+    Four of the six schemas carry value constraints; ``TerminalResponse``
+    carries none (it is a closing summary, all free text), and
+    ``InquiryResponse`` none since its one bounded field, ``knowledge_match``,
+    was removed as never read, so their parametrisations assert vacuously and
+    are expected to. Pinning the
     split here means a schema silently losing its ``Field(ge=/le=/max_length=)``
     bounds fails a test instead of quietly emptying the guard.
     """
@@ -217,7 +219,6 @@ def test_the_parametrised_guard_is_watching_something():
         if _count_keywords(m.model_json_schema())
     }
     assert set(declaring) == {
-        "InquiryResponse",
         "InvestigationResponse_Diagnosis",
         "InvestigationResponse_Mitigation",
         "InvestigationResponse_Treatment",

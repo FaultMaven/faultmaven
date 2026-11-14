@@ -89,7 +89,6 @@ from faultmaven.modules.case.contracts import (
     HypothesisState,
     InvestigationActionType,
     JournalEntry,
-    KnowledgeMatch,
     NodeType,
     ProblemStatus,
     ProposedAction,
@@ -947,27 +946,6 @@ class ResponseApplier:
                 f"Urgent incident detected ({updates.preliminary_urgency.level} + ongoing). "
                 f"Agent will present problem statement for user confirmation. "
                 f"has_statement={bool(case.inquiry.proposed_problem_statement)}"
-            )
-
-        # Store KB match on case when LLM identifies one (Gap #5a)
-        # This populates InquiryData.knowledge_matches.
-        if updates.knowledge_match:
-            km = updates.knowledge_match
-            case.inquiry.knowledge_matches.append(
-                KnowledgeMatch(
-                    match_id=km.match_type
-                    + "_"
-                    + str(len(case.inquiry.knowledge_matches)),
-                    match_type=km.match_type,
-                    relevance_score=km.match_likelihood,
-                    summary=km.match_summary,
-                    potential_solution=km.suggested_solution,
-                )
-            )
-            logger.info(
-                f"KB match stored: type={km.match_type}, "
-                f"likelihood={km.match_likelihood:.2f}, "
-                f"summary={km.match_summary[:80]}"
             )
 
     def _apply_verification_updates(

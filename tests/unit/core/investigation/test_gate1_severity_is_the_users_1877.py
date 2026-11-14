@@ -68,6 +68,7 @@ async def _gate1(case: Case) -> ProblemVerification:
     deps = MagicMock()
     prefetcher = MagicMock()
     prefetcher.prefetch_kb_context = AsyncMock()
+    prefetcher.prefetch_symptom = AsyncMock()
     await TransitionManager(
         deps=deps, kb_prefetcher=prefetcher
     )._transition_to_investigating(case)

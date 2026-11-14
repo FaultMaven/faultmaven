@@ -13,11 +13,53 @@ from faultmaven.models.exceptions import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    is_server_written_user_row,
 )
 
 logger = logging.getLogger(__name__)
 
 KB_PREFETCH_FETCH_LIMIT = 10
+
+#: A symptom query is cut here: the question lookup's bound, for the same
+#: reason (a long statement or description dilutes the search).
+SYMPTOM_QUERY_MAX_CHARS = 300
+
+
+def symptom_query(text: str) -> str:
+    """``text`` as a symptom search: whitespace-normalised and bounded. The one
+    form every symptom search uses, so a search the case already ran is
+    recognised as the same one (:meth:`KbPrefetcher.prefetch_symptom`)."""
+    return " ".join((text or "").split())[:SYMPTOM_QUERY_MAX_CHARS]
+
+
+def inquiry_symptom_query(case: "Case", user_message: str) -> str:
+    """What an INQUIRY turn searches the knowledge base for, or ``""``.
+
+    The proposed problem statement once there is one: it is the symptom as
+    the case states it. Before that, what the user has said, newest first:
+    this message, then their earlier ones, to the bound. Newest first so a
+    message that changes the subject leads the search, and every message so
+    a follow-up ("it started at 10am") is searched beside the description it
+    adds to rather than in its place. A row the server wrote in the user's
+    name is not something they said (``is_server_written_user_row``).
+    """
+    inquiry = getattr(case, "inquiry", None)
+    statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
+    if statement:
+        return symptom_query(statement)
+    said = [user_message or ""]
+    size = len(said[0])
+    for row in reversed(getattr(case, "messages", None) or []):
+        if size >= SYMPTOM_QUERY_MAX_CHARS:
+            break
+        if row.get("role") != "user" or is_server_written_user_row(row):
+            continue
+        content = str(row.get("content") or "")
+        said.append(content)
+        size += len(content) + 1
+    return symptom_query(" ".join(said))
+
+
 KB_CONTEXT_MAX_ENTRIES = 5
 
 # How many chunks from ONE runbook are admitted BEFORE other runbooks get a
@@ -353,7 +395,14 @@ class KbPrefetcher:
                 # the search ran and produced nothing worth showing, which is
                 # precisely when stale context should go.
                 case.kb_context = None
-                case.kb_context_origin = None
+                # The search that found nothing, so the same one is not run
+                # again (``prefetch_symptom``). With no context there is
+                # nothing for a driver change to make stale.
+                case.kb_context_origin = {
+                    "driver_id": retrieval_principal(case),
+                    "query": query,
+                    "trigger": trigger,
+                }
             return True
         except Exception:
             logger.warning(
@@ -362,11 +411,37 @@ class KbPrefetcher:
             )
             return False
 
+    async def prefetch_symptom(self, case: "Case", text: str) -> None:
+        """The symptom search, unless the case already ran it.
+
+        Every symptom search goes through here: INQUIRY's before each prompt
+        (``inquiry_symptom_query``), the INQUIRY→INVESTIGATING transition's on
+        the confirmed statement, and a revised statement's. ``text`` is
+        bounded by :func:`symptom_query`, and a search already run for that
+        query under the case's current driver is not run again, whether it
+        found runbooks or nothing (a miss is recorded in
+        ``kb_context_origin``). So the confirm turn, where INQUIRY searched
+        the statement before the reply and the transition would search it
+        again after, searches once.
+        """
+        query = symptom_query(text)
+        if not query:
+            return
+        origin = case.kb_context_origin or {}
+        if (
+            origin.get("trigger") == "symptom"
+            and origin.get("query") == query
+            and origin.get("driver_id") == retrieval_principal(case)
+        ):
+            return
+        await self.prefetch_kb_context(case, query, "symptom")
+
     async def refresh_for_driver(self, case: "Case") -> None:
         """Re-fetch ``kb_context`` when it was fetched for a different driver.
 
         Run at the start of every turn, before the prompt is built (ADR-020
-        D9). The pre-fetch fires only at three edges, so context fetched while
+        D9). The pre-fetch fires only at a few points (the transitions, the
+        root-cause edge, an INQUIRY symptom that changed), so context fetched while
         one account drove would otherwise stand in every later prompt, under
         the next driver, until an edge happened to fire again. Checked here, at
         the consumer, rather than cleared by every writer that can change the

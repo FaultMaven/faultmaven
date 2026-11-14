@@ -537,22 +537,6 @@ class PreliminaryUrgency(NullTolerantModel):
     impact_assessment: str
 
 
-class KnowledgeMatch(BaseModel):
-    """Knowledge base match for potential instant resolution."""
-
-    match_type: Literal["past_case", "runbook", "documentation"]
-    match_likelihood: float = Field(ge=0.0, le=1.0)
-    match_summary: str
-    suggested_solution: Optional[str] = None
-
-    # ADD-shaped (fm#1502): an unrepairable value nulls ``knowledge_match``
-    # alone — the ladder prunes an optional sub-object, not all state_updates.
-    @field_validator("match_likelihood", mode="before")
-    @classmethod
-    def _repair_match_likelihood(cls, v: Any, info: ValidationInfo) -> Any:
-        return _repair_add_confidence(cls, v, info)
-
-
 class MilestoneUpdates(NullTolerantModel):
     """Milestones the LLM can set to True (never False).
 
@@ -2034,7 +2018,6 @@ class InquiryResponse(OpenCaseResponse):
             ),
         )
         preliminary_urgency: Optional[PreliminaryUrgency] = None
-        knowledge_match: Optional[KnowledgeMatch] = None
         user_confirmed_investigation: bool = Field(
             default=False,
             description=(

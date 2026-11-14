@@ -22,8 +22,9 @@ reported it active while it was off.
 
 **Why the gate cannot live only in the pre-fetch.** ``_prefetch_kb_context``
 clears ``case.kb_context`` when the push is disabled, but it is EDGE-triggered:
-one call at the INQUIRY→INVESTIGATING transition and one behind the
-cause-identification edge. A case already past both never re-enters it, so a
+one call at the INQUIRY→INVESTIGATING transition, one behind the
+cause-identification edge, and INQUIRY's symptom search before each INQUIRY
+prompt. A case already past all of them never re-enters it, so a
 value persisted while the push was enabled is never cleared. The same staleness
 reaches a deployment whose knowledge service is ``None``, because that guard
 returns before the flag is even read. The clearing branch is still worth having
