@@ -69,7 +69,7 @@ Tier 1: extractor.extract()                        zero LLM, <2 s
 Evidence created → Context Sliding Window → LLM Inference (Step 2)
 ```
 
-**Pasted text** is submitted via the `pasted_content` form field on `/turns`, wrapped into an attachment with a synthetic filename (`pasted-content-{ts}.txt` or `page-capture-{ts}.txt`), and goes through the same Tier 0+1 pipeline. Pasted content has no filename extension to use as a hint; the classifier falls back to content patterns.
+**Pasted text** is submitted via the `pasted_content` form field on `/turns`, wrapped into an attachment with a synthetic filename (`pasted-content-{ts}.txt` or `page-capture-{ts}.txt`), and goes through the same Tier 0+1 pipeline. A paste's minted extension is ignored, so it is typed by content alone (§"Pasted text", #2361). A page capture's minted name is still read like any file's, after its URL and browser context (Priorities 3 and 4).
 
 ---
 
@@ -221,17 +221,60 @@ The catch-all. Runs when no stronger signal is available. Uses a sample of the f
 
 A `_doc_exts_early` set (`.md`, `.rst`, `.adoc`, `.txt`) is checked at the top of `_classify_with_rules` and, when matched, the STRUCTURED_CONFIG content heuristics are skipped. Without the guard, `.md` files containing YAML-looking fenced blocks or frontmatter would score high on the config detector and outrank the documentation path. The guard is an upstream filter, not a content veto — VISUAL_EVIDENCE / TRACE / PROFILING / etc. still run normally on those extensions.
 
+### Pasted text: content only, by shape (#2361)
+
+A paste's filename is minted by the client (`pasted-content-<ts>.txt`), so for `source_type == "text_paste"` the extension is ignored and the paste is typed by content alone. Three things change for a paste, and nothing changes for a file:
+
+- **Shape rules first.** After the trace/profiling check, `paste_shapes.paste_shape` (`modules/preprocessing/paste_shapes.py`) names the paste by its shape, at 0.80. A rule speaks only when its shape accounts for at least 2/3 of the paste's non-empty lines, so a mixed paste stays uncertain.
+
+  | Shape | Type |
+  |---|---|
+  | `systemctl status`: a unit header, then its fields | `COMMAND_OUTPUT` |
+  | A unified diff: a file header (`diff --git`, or a `---`/`+++` pair) and a hunk; a bare hunk stays uncertain | `SOURCE_CODE` |
+  | A JSON document whose meaning is configuration: not a log event or array of events (time plus level or message keys), a metrics query result or a trace | `STRUCTURED_CONFIG` |
+  | JSON lines, each object with a time key and an event key (level, message, or an audit `type`); a metrics or record dump is not | `LOGS_AND_ERRORS` |
+  | Timestamped log lines, each with a level: ISO or syslog stamp, or logfmt (a line starting `key=value`, with a time and a level key in any order) | `LOGS_AND_ERRORS` |
+  | A column table: all-capitals headers, rows as wide as their header (`kubectl get`; `ps aux` and `df -h` headers are mixed-case and not claimed) | `COMMAND_OUTPUT` |
+  | `curl -v`: `*`, `>` and `<` lines | `COMMAND_OUTPUT` |
+  | A `KEY=value` block (not `Key=True <message>` status lines, not logfmt) | `STRUCTURED_CONFIG` |
+  | A YAML mapping a parser reads whole: no aligned `Key:   value` columns, no repeated top-level key, and either nested or at least five keys, not HTTP-header-style (not a few `Name: value` message lines, not response headers) | `STRUCTURED_CONFIG` |
+
+  Every rule reads at most the first 20,000 characters (`SAMPLE_CHARS`), the YAML loader included; the JSON rule alone parses up to 2,000,000 (`JSON_PARSE_CHARS`), since the C JSON parser is cheap. The classifier runs on the event loop. A JSON document over its limit does not parse and stays uncertain; a YAML document is judged on its first 20,000 characters.
+
+- **The regex config rule and the 0.72 `UNSTRUCTURED_TEXT` default do not apply to a paste.** A paste is config only where a config parser reads it. A paste no rule claims, prose included, stays uncertain. Under 200 lines that costs nothing: the paste passes to the model as `UNSTRUCTURED_TEXT`. A paste of 200+ lines no rule claims is put to the user (§`classification_failed` Path), because there the type picks the extractor (owner, 2026-11-13).
+- **Everything else runs as for an extensionless upload.** That includes the command signatures, the log patterns at the "other" threshold, and the best-effort fallback.
+
+**The taxonomy the rules follow** (recorded on #2361, 2026-11-13). A shape gets the one type whose unified meaning is true of it and whose extractor parses it without dropping content.
+- `STRUCTURED_CONFIG` means a document a config parser reads.
+- A report or table a tool prints for people is `COMMAND_OUTPUT`, even when it is key-value: `kubectl describe`, `vault read` and `openssl x509 -text` lose most of their content in the config extractor (#2791).
+- `lscpu` (§Command-Output Classification) is config because it is a flat YAML mapping, not because it is key-value.
+- A shape whose extractor cannot read it, such as a whitespace metrics table, gets no rule.
+
+**Measured** on a frozen, hand-labelled set of 274 synthetic pastes: data from simulated incident scenarios, handed to FaultMaven by a test rig and kept in a private repository. Rules were written on a development half and gated on a held-out half (22 cases, 115 pastes), against bars stated in advance:
+
+| Gate (held-out half) | Before | After | Bar |
+|---|---:|---:|---|
+| Wrong and confident | 83% | 2% | ≤ 10% |
+| Logs, command output or metrics confidently typed config or code | 0 | 0 | 0 |
+| Right and confident, single-shape pastes | 20% | 44% | ≥ 50% (missed; shipped on the owner's ruling) |
+| A rule that adds a wrong-and-confident paste on either half ships | — | none does | none |
+
+**The held-out half was not independent.** It was split by FaultMaven case, but the 44 cases are runs of four or five scenarios, each with runs in both halves, so 52 of the 115 held-out pastes repeat a development paste once digits are masked. On the 63 it had not seen, wrong and confident fell from 92% to 3% and right and confident rose from 10% to 34%. With near repeats removed as well (20 pastes), the figures are 75% → 5% and 31% → 12%. Precision holds; the recall gain on unseen pastes is uncertain. The next measurement splits by scenario.
+
+Two rules failed the last gate and do not exist: a `vault read` `Key  Value` table and a Prometheus exposition. Each stays uncertain. Recall is the open side: a paste no rule claims is uncertain, which under 200 lines means it reaches the model as text and at 200+ lines that the user is asked.
+
 ### Decision order within Priority 5
 
 1. **`VISUAL_EVIDENCE`** — image extension → 0.98+boost (max 0.99).
 2. **`TRACE_DATA` vs `PROFILING_DATA`** — see [disambiguation helpers](#disambiguation-helpers).
+2b. **A paste's shape** — pastes only, see above.
 3. **Command output** — see [command-output classification](#command-output-classification).
 4. **`ERROR_REPORT` vs `LOGS_AND_ERRORS`** — stack trace *without* timestamps → ERROR_REPORT; timestamps + log-level patterns → LOGS_AND_ERRORS. `.log` extension lowers the required pattern count (1), `.txt` needs more (2), others need strong patterns (≥3).
 5. **`METRICS_AND_PERFORMANCE`** — CSV/TSV with metric-keyword density, or JSON-array time-series shape.
-6. **`STRUCTURED_CONFIG`** — config extension (`.yaml/.yml/.json/.toml/.ini/.env/.config`) → 0.92+boost; or ≥2 config patterns → 0.75+boost.
+6. **`STRUCTURED_CONFIG`** — config extension (`.yaml/.yml/.json/.toml/.ini/.env/.config`) → 0.92+boost; or ≥2 config patterns → 0.75+boost (not for a paste).
 7. **`SOURCE_CODE`** — code extension → 0.95+boost; or ≥2 code patterns → 0.80+boost.
 8. **HTML → `DOCUMENTATION`** — `.html/.htm` extension or ≥3 HTML structural patterns → 0.88+boost. Detected *before* generic documentation/text so page-like content is not misclassified.
-9. **`DOCUMENTATION` vs `UNSTRUCTURED_TEXT`** — `.md/.rst/.adoc` or (≥2 markdown patterns + prose density > 0.1) → DOCUMENTATION. Otherwise `.txt` or ≥1 markdown pattern → UNSTRUCTURED_TEXT at 0.72.
+9. **`DOCUMENTATION` vs `UNSTRUCTURED_TEXT`** — `.md/.rst/.adoc` or (≥2 markdown patterns + prose density > 0.1) → DOCUMENTATION. Otherwise `.txt` or ≥1 markdown pattern → UNSTRUCTURED_TEXT at 0.72 (not for a paste).
 10. **CSV/TSV structural gate** — see [disambiguation helpers](#disambiguation-helpers).
 11. **Best-effort fallback** — if any content score ≥1, return the winning type with confidence 0.50 and `source="rule_based_best_effort"`, `classification_failed=True`.
 12. **True fallback** — nothing matched: `UNSTRUCTURED_TEXT` at 0.30, `classification_failed=True`.
@@ -259,7 +302,7 @@ Commands route to the detailed `DataType` whose extractor produces the best stru
 | `top`, `ps`, `vmstat`, `iostat`, `netstat`, `free`, `df`, `lsof` | `COMMAND_OUTPUT` | CommandOutputExtractor | Tabular resource-monitoring output; extractor parses process tables, IO stats, disk usage |
 | `dmesg`, `journalctl`, `strace`, `ltrace` | `LOGS_AND_ERRORS` | LogsAndErrorsExtractor | Time-ordered log-like output with severity/context |
 | `perf` | `PROFILING_DATA` | ProfilingExtractor | Performance counter / hotspot data |
-| `lscpu` | `STRUCTURED_CONFIG` | ConfigExtractor | Machine-inventory key-value output |
+| `lscpu` | `STRUCTURED_CONFIG` | ConfigExtractor | A flat `Key: value` mapping the YAML parser reads whole (a key-value report a parser cannot read is `COMMAND_OUTPUT`, #2361) |
 
 Pattern table (excerpts — see `COMMAND_OUTPUTS` in `classifier.py` for the authoritative set):
 
@@ -375,7 +418,7 @@ A third trigger — **short-text ambiguity** — also sets the flag:
 | `_SHORT_TEXT_MAX_LINES` | 25 | Upper bound on line count for the guard to fire. |
 | `_AMBIGUITY_MIN_DISTINCT_CATEGORIES` | 3 | Min number of distinct rule-based categories whose patterns scored on the sample for the content to be flagged ambiguous. |
 
-When a `.txt`-extension paste lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True`. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence, a confident verdict the content does not support. Text inside these bounds is always under `MIN_EXTRACTION_LINES`, so since #2355 the guard never puts a card in front of the user: the upload passes to the model raw as `UNSTRUCTURED_TEXT`, recorded as uncertain. ISS-023.
+When a `.txt` file (not a paste, #2361) lands inside both size bounds **and** triggers patterns in 3 or more distinct categories (e.g. a 20-line snippet that matches log, config, and code patterns simultaneously), `_assess_short_text_ambiguity()` forces `confidence = 0.40` and re-emits the result with `classification_failed=True`. Without the guard, the rule-based scorer often returns one of the matched categories at 0.60+ on weak evidence, a confident verdict the content does not support. Text inside these bounds is always under `MIN_EXTRACTION_LINES`, so since #2355 the guard never puts a card in front of the user: the upload passes to the model raw as `UNSTRUCTURED_TEXT`, recorded as uncertain. ISS-023.
 
 Inside the guard, the per-category pattern checks themselves have signal-strength bars: **log-line shape requires at least two line-start datetime matches** before LOGS_AND_ERRORS counts as a candidate (ISS-050). A single datetime inside prose — e.g. a maintenance-window header like "scheduled for 2026-05-14 14:00 UTC" — is too weak; counting it would mis-suggest LOGS for any short notice that mentions a date. URL, email, code-fence, JSON-shape, and key:value patterns each contribute a single category vote on first match.
 

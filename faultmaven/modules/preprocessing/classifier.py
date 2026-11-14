@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.models.api import ClassificationResult, DataType
+from faultmaven.modules.preprocessing.paste_shapes import SHAPE_CONFIDENCE, paste_shape
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
@@ -618,7 +619,11 @@ class DataClassifier:
         """
         # Sample content (first 5KB for performance)
         sample = content[:5000].lower()
-        ext = Path(filename).suffix.lower()
+        # A paste's filename is minted by the client
+        # (``pasted-content-<ts>.txt``), so its extension says nothing about
+        # the content: a paste is classified by content alone (#2361).
+        is_paste = bool(source_metadata and source_metadata.source_type == "text_paste")
+        ext = "" if is_paste else Path(filename).suffix.lower()
 
         # Confidence boost for file uploads (extensions are trustworthy).
         is_file_upload = (
@@ -640,6 +645,20 @@ class DataClassifier:
         trace_result = self._disambiguate_profiling_vs_trace(sample, confidence_boost)
         if trace_result is not None:
             return trace_result
+
+        # 2b. A paste's shape (#2361): the reports, tables, config documents,
+        #     log lines and diffs engineers paste, typed by the
+        #     taxonomy recorded on #2361. Before the command and log checks,
+        #     which read a ``systemctl status`` or a ``curl -v`` as logs.
+        if is_paste:
+            shape = paste_shape(content)
+            if shape is not None:
+                return ClassificationResult(
+                    data_type=shape[0],
+                    confidence=SHAPE_CONFIDENCE,
+                    source="rule_based",
+                    classification_failed=False,
+                )
 
         # 3. COMMAND_OUTPUT — 14 Linux/Unix commands, 2+ pattern match required.
         command_result = self._detect_command_output(sample, confidence_boost)
@@ -799,7 +818,9 @@ class DataClassifier:
         # patterns. Guard against the false-positive before checking
         # DOCUMENTATION (step 7).
         doc_exts_early = {".md", ".rst", ".adoc", ".txt"}
-        if config_score >= 2 and ext not in doc_exts_early:
+        # Not for a paste: a paste is config only where a config parser
+        # reads it, which the shape rules decide (#2361 taxonomy).
+        if config_score >= 2 and ext not in doc_exts_early and not is_paste:
             return ClassificationResult(
                 data_type=DataType.STRUCTURED_CONFIG,
                 confidence=min(0.75 + confidence_boost, 0.85),
@@ -923,7 +944,13 @@ class DataClassifier:
         # uncertain instead of asserting one category on weak evidence. Text
         # this short is always under MIN_EXTRACTION_LINES, so it passes to the
         # model raw as UNSTRUCTURED_TEXT and the user is not asked (#2355).
-        if ext in text_exts or markdown_score >= 1:
+        # Not for a paste: the 0.72 default asserted a type no content signal
+        # supports, and for a paste nothing else does either (#2361). A paste
+        # no rule claims ends uncertain: under MIN_EXTRACTION_LINES it passes
+        # to the model as UNSTRUCTURED_TEXT (#2355); at or above it the user
+        # is asked, since there the type picks the extractor (owner,
+        # 2026-11-13).
+        if not is_paste and (ext in text_exts or markdown_score >= 1):
             ambiguity = self._assess_short_text_ambiguity(content, sample)
             if ambiguity is not None:
                 return ClassificationResult(
