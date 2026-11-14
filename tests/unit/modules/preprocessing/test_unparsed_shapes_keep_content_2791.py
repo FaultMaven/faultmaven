@@ -5,8 +5,7 @@ so, setting ``file_meta["unparsed"]`` to a reason; the dispatch
 (``_keep_unparsed_content``, on the way back from every extractor's worker)
 then stores the content as uploaded, under a marker naming the reason, in
 place of the fragment. Like any stored extract it is held to
-``MAX_STORED_EXTRACT_CHARS`` (#2789): past it, head and tail, with
-``search_file`` reading the rest.
+``MAX_STORED_EXTRACT_CHARS`` (#2789): past it, head and tail.
 
 The five shapes the issue measured, each with a test that the content is
 kept, plus the two other extractors whose unknown-format fallback kept a
@@ -242,7 +241,7 @@ class TestTheDispatchKeepsWhatWasNotParsed:
         assert kept.startswith("[Not parsed: ")
         assert "svc-000-backend" in kept
         assert kept.rstrip().endswith(content.rstrip().splitlines()[-1])
-        assert "search_file reads the whole upload" in kept
+        assert "characters of the upload cut here" in kept
 
     @pytest.mark.asyncio
     async def test_a_parsed_shape_is_left_as_the_extractor_made_it(self):
