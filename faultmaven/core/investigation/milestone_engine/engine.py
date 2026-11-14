@@ -35,6 +35,7 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
 )
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
     KbPrefetcher,
+    clear_unstated_symptom_context,
     inquiry_symptom_query,
 )
 from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
@@ -1345,10 +1346,18 @@ class MilestoneEngine:
             # Context pre-fetched for a previous driver is re-fetched for this
             # one before the prompt is built (ADR-020 D9), or cleared if it
             # cannot be.
+            if case.state == CaseState.INQUIRY and not inquiry_symptom_query(case):
+                # No statement yet: no symptom runbooks, including any a
+                # 14.26.0 search of the user's messages stored, which the
+                # driver refresh below would otherwise re-run.
+                clear_unstated_symptom_context(case)
             await self.kb_prefetcher.refresh_for_driver(case)
             kb_lookup = await self._kb_lookup(case, intent_data, user_message)
-            if case.state == CaseState.INQUIRY and not self._asks_about_the_assistant(
-                case, intent_data, user_message
+            symptom = inquiry_symptom_query(case)
+            if (
+                case.state == CaseState.INQUIRY
+                and symptom
+                and not self._asks_about_the_assistant(case, intent_data, user_message)
             ):
                 # The symptom's runbooks, in this INQUIRY prompt: nothing else
                 # puts a runbook in front of an INQUIRY reply on a case with
@@ -1356,9 +1365,7 @@ class MilestoneEngine:
                 # turn before one has none (``inquiry_symptom_query``). Beside
                 # a question lookup too: that searched what the message asked,
                 # this the symptom the case states.
-                await self.kb_prefetcher.prefetch_symptom(
-                    case, inquiry_symptom_query(case)
-                )
+                await self.kb_prefetcher.prefetch_symptom(case, symptom)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,

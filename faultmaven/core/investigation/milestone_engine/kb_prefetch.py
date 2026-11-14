@@ -33,19 +33,32 @@ def inquiry_symptom_query(case: "Case") -> str:
     """What an INQUIRY turn searches the knowledge base for: the proposed
     problem statement, or ``""`` (no search) before there is one.
 
-    Not what the user has said. Measured over the 99 stored cases of four
-    simulator scenarios (2026-11-14, the shipped pack, the real hybrid path),
-    a first message searched as written put on-topic sections in 0-15% of
-    the entries it showed, and in 81 cases every one was off topic: a raw
-    description carries timestamps, counts and service names that outweigh
-    the symptom. The proposed statement, which the model writes as the
-    symptom, put on-topic sections in 20-62%. Every entry shown is also cited
-    as a source of the reply, so an INQUIRY turn before a statement shows
-    none rather than the wrong ones.
+    Not what the user has said. Measured over the 84 stored cases of three
+    simulator scenarios the shipped pack covers (2026-11-14, the real hybrid
+    path), a first message searched as written put on-topic sections in
+    1-15% of the entries it showed, and in 66 cases every one was off topic:
+    a raw description carries timestamps, counts and service names that
+    outweigh the symptom. The proposed statement, which the model writes as
+    the symptom, put on-topic sections in 20-62%. Every entry shown is also
+    cited as a source of the reply, so an INQUIRY turn before a statement
+    shows none rather than the wrong ones.
     """
     inquiry = getattr(case, "inquiry", None)
     statement = (getattr(inquiry, "proposed_problem_statement", None) or "").strip()
     return symptom_query(statement)
+
+
+def clear_unstated_symptom_context(case: "Case") -> None:
+    """Drop the pre-fetched context of an INQUIRY case with no statement yet.
+
+    Nothing an INQUIRY turn searches can have put it there now, but a case
+    searched under contract 14.26.0 holds what a search of the user's
+    messages found, and :meth:`KbPrefetcher.refresh_for_driver` would re-run
+    that query. Only a symptom search writes ``kb_context`` in INQUIRY, so
+    nothing else is lost.
+    """
+    case.kb_context = None
+    case.kb_context_origin = None
 
 
 KB_CONTEXT_MAX_ENTRIES = 5

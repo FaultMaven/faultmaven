@@ -1,11 +1,12 @@
 """INQUIRY's symptom search, run before the prompt is built.
 
-The bar: an INQUIRY reply on a case with no files has the runbooks matched to
-the reported symptom in front of it (it has no ``kb_qa``, and the pre-fetch
-otherwise fires only when the case leaves INQUIRY), the turn cites them, and
-the knowledge-base check step reads them. A later message that is not a
-description of the symptom never clears what the description found. Every
-"no search" assertion has a positive control that the same set-up searches.
+The bar: once a problem statement is proposed, an INQUIRY reply on a case with
+no files has the runbooks matched to it in front of it (it has no ``kb_qa``,
+and the pre-fetch otherwise fires only when the case leaves INQUIRY), the turn
+cites them, and the knowledge-base check step reads them. Before a statement
+it has none: a search of what the user said finds mostly other problems'
+runbooks. Every "no search" assertion has a positive control that the same
+set-up searches.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from faultmaven.core.investigation.schemas import (
     InvestigationResponse_Diagnosis,
 )
 from faultmaven.models.common import SearchResult
-from faultmaven.modules.case.contracts import MESSAGE_METADATA_USER_EMPTY
 from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_kb_question_lookup import _investigating
 
@@ -88,13 +88,10 @@ def _queries(service) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _said(*texts: str, server_written: bool = False) -> list[dict]:
+def _said(*texts: str) -> list[dict]:
     rows = []
     for text in texts:
-        row = {"role": "user", "content": text, "metadata": {}}
-        if server_written:
-            row["metadata"][MESSAGE_METADATA_USER_EMPTY] = True
-        rows.append(row)
+        rows.append({"role": "user", "content": text, "metadata": {}})
         rows.append({"role": "assistant", "content": "ok", "metadata": {}})
     return rows
 
@@ -302,6 +299,51 @@ class TestTheEngine:
         prompt = engine.generator.generate_structured_output.await_args.args[0]
         assert BLOCK not in prompt
         assert result["metadata"][TURN_METADATA_KB_PROMPTED] == []
+
+    async def test_runbooks_a_message_search_stored_are_dropped_before_a_statement(
+        self,
+    ):
+        """A case searched under 14.26.0 holds what its user's messages found
+        (here a Terraform runbook for a login problem). Before a statement the
+        turn shows and cites none of it, and a driver change does not re-run
+        that query."""
+        engine = _engine(_inquiry_reply(), [_hit()])
+        case = _case(
+            kb_context=[
+                {
+                    "title": "Terraform Plan Failures",
+                    "summary": "Provider authentication...",
+                    "score": 0.6,
+                    "type": "runbook",
+                    "parent_document_id": "rb_tf",
+                    "trigger": "symptom",
+                }
+            ]
+        )
+        case.kb_context_origin = {
+            "driver_id": "someone_else",
+            "query": "login 401s since 10:02",
+            "trigger": "symptom",
+        }
+        result = await engine.process_turn(
+            case=case,
+            user_message="it started at 10:02",
+            intent_data={"query_mode": "triage"},
+            redaction_ctx=None,
+        )
+        engine.deps.knowledge_service.search_knowledge.assert_not_awaited()
+        prompt = engine.generator.generate_structured_output.await_args.args[0]
+        assert BLOCK not in prompt and "Terraform Plan Failures" not in prompt
+        assert result["metadata"][TURN_METADATA_KB_PROMPTED] == []
+        # Positive control: with a statement the same case searches it.
+        case.inquiry.proposed_problem_statement = "login 401s since 10:02"
+        await engine.process_turn(
+            case=case,
+            user_message="yes",
+            intent_data={"query_mode": "triage"},
+            redaction_ctx=None,
+        )
+        assert _queries(engine.deps.knowledge_service) == ["login 401s since 10:02"]
 
     async def test_a_question_about_the_assistant_searches_nothing(self):
         engine = _engine(_inquiry_reply(), [_hit()])
