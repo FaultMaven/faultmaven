@@ -44,6 +44,7 @@ async def _generate_turn_response(
     user_message,
     bare_resolve_decline,
     kb_rendered=None,
+    kb_lookup=None,
 ):
     """Generate the LLM (or single-shot) response for this turn.
 
@@ -59,6 +60,9 @@ async def _generate_turn_response(
 
     ``kb_rendered`` is refilled by every prompt build with the KB entries that
     prompt carries; the last build is the prompt the model answered from.
+
+    ``kb_lookup`` is the turn's knowledge-base question lookup, run once by the
+    engine before this call; every build of this turn's prompt renders it.
     """
 
     # Build prompt using the adaptive template system
@@ -140,6 +144,7 @@ async def _generate_turn_response(
             given_tools=given,
             target_tokens=target_tokens,
             kb_rendered=kb_rendered,
+            kb_lookup=kb_lookup,
         )
 
     def _build_tool_loop_base(

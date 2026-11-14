@@ -191,6 +191,58 @@ class TestEvidenceBearingRerouteToEngine:
         engine.process_turn.assert_awaited_once()
         assert intent_data["query_mode"] == "triage"
 
+    @pytest.mark.asyncio
+    async def test_a_runbook_question_reaches_the_engine_flagged(self):
+        """§5.6: the classification's ``kb_question`` is threaded with the
+        mode, as server-written intent data."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+
+        intent_data = await self._run(
+            service, case, user_id, "Is there a runbook for redis OOM?", []
+        )
+
+        assert intent_data["kb_question"] == {"kind": "lookup", "topic": "redis OOM"}
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_message_carries_no_question(self):
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+
+        intent_data = await self._run(service, case, user_id, "here's the logs", [])
+
+        assert intent_data["kb_question"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_reroute_moves_the_mode_and_keeps_the_question(self):
+        """A runbook question over a fresh upload is rerouted to directed
+        analysis, like any knowledge-phrased cover — and is still a question
+        the reply must answer."""
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = self._investigating_case(user_id)
+        attachment = Attachment(
+            content=b"07:40 ERROR 503 SSLException: Connection reset",
+            filename="user-service.log",
+            content_type="text/plain",
+        )
+
+        intent_data = await self._run(
+            service,
+            case,
+            user_id,
+            "What is the runbook for connection resets?",
+            [attachment],
+        )
+
+        assert intent_data["query_mode"] == "directed_analysis"  # rerouted
+        assert intent_data["kb_question"] == {
+            "kind": "lookup",
+            "topic": "connection resets",
+        }
+
 
 class TestMarkLinkedFailureIsCounted:
     """The sidecar's best-effort flip is observable, not just a log line.

@@ -104,6 +104,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "INQUIRY_TEMPLATE": {
+        "kb_lookup",
         "agent_meta_instructions",
         "conversation_history",
         "core_context",
@@ -120,6 +121,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "TERMINAL_TEMPLATE": {
+        "kb_lookup",
         "conversation_history",
         "core_context",
         "identity",
@@ -132,6 +134,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "INVESTIGATION_BASE": {
+        "kb_lookup",
         "adaptive_instructions",
         "conversation_history",
         "core_context",

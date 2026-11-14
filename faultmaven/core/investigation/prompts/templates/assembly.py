@@ -4,6 +4,7 @@ import dataclasses
 import logging
 from typing import Any, Dict, List, Optional, Sequence
 
+from faultmaven.core.investigation.kb_question import KbLookup, lookup_entries_only
 from faultmaven.core.investigation.narration.notices import (
     RESOLVE_DECLINED_RULE,
     resolve_declined_actions,
@@ -419,14 +420,20 @@ def get_prompt_for_case(
     target_tokens: Optional[int] = None,
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
     terminal_affordances: TerminalAffordances = NO_TERMINAL_AFFORDANCES,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """Build the final prompt based on case state and stage.
 
-    ``kb_rendered``, when given, is refilled with the KB push entries the
-    returned prompt actually carries: those whose header survived the section
-    budget, and none when the template has no ``{kb_results}`` slot (INQUIRY,
-    terminal) or the minimal fallback replaced the assembled prompt. The engine
-    passes it so a turn's ``sources`` name only what the model was shown.
+    ``kb_rendered``, when given, is refilled with the KB entries the returned
+    prompt actually carries: the push entries whose header survived the
+    section budget — none when the template has no ``{kb_results}`` slot
+    (INQUIRY, terminal) — then the entries of ``kb_lookup``'s block, which
+    every template renders; and nothing at all when the minimal fallback
+    replaced the assembled prompt. The engine passes it so a turn's
+    ``sources`` name only what the model was shown.
+
+    ``kb_lookup`` is this turn's knowledge-base question lookup (§5.6 of
+    ``orchestration-capabilities.md``); ``None`` on a turn that asked none.
 
     Args:
         case: Current case
@@ -490,6 +497,7 @@ def get_prompt_for_case(
             entity_highlight_groups=entity_highlight_groups,
             given_tools=given_tools,
             kb_rendered=kb_rendered,
+            kb_lookup=kb_lookup,
         )
 
     rendered: Dict[str, str] = {}
@@ -519,8 +527,9 @@ def get_prompt_for_case(
 
         if case.state == CaseState.INQUIRY:
             # No ``{kb_results}`` slot: the KB block was built and not shown.
+            # The ``{kb_lookup}`` slot is here, so its entries stay.
             if kb_rendered is not None:
-                kb_rendered.clear()
+                kb_rendered[:] = lookup_entries_only(kb_rendered)
             return INQUIRY_TEMPLATE.format(
                 knowledge_help=inquiry_knowledge_help(given_tools),
                 kb_check=inquiry_kb_check(given_tools),
@@ -616,7 +625,7 @@ def get_prompt_for_case(
                 "resolution" if case.state == CaseState.RESOLVED else "closure"
             )
             if kb_rendered is not None:
-                kb_rendered.clear()
+                kb_rendered[:] = lookup_entries_only(kb_rendered)
             return TERMINAL_TEMPLATE.format(
                 state_upper=case.state.value.upper(),
                 state_lower=case.state.value,

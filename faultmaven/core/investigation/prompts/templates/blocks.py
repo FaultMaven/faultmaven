@@ -984,7 +984,8 @@ def knowledge_query_instructions(given: GivenTools) -> str:
         "\n"
         "Search kb_qa first. If relevant results found, ground your answer in them and cite\n"
         "the source. If no relevant results, answer from your own knowledge without mentioning\n"
-        "the search."
+        "the search. (A KNOWLEDGE BASE LOOKUP section, when present, overrides this: the\n"
+        "user asked about the knowledge base itself.)"
     )
 
 

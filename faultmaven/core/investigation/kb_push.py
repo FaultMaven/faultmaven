@@ -4,7 +4,9 @@ Knowledge reaches the model two ways. The PULL channel is the ``kb_qa`` tool,
 which the model elects. The PUSH channel is
 ``MilestoneEngine._prefetch_kb_context``: a deterministic search fired at two
 case transitions whose admitted hits are written to ``case.kb_context``.
-``KB_PREFETCH_ENABLED`` governs the push and nothing else.
+``KB_PREFETCH_ENABLED`` governs the push and nothing else — not the pull,
+and not the lookup for a question the user asks about the knowledge base
+itself (``kb_question.py``), which is a read the user asked for.
 
 **Why this module exists rather than a check at each reader.** The field has
 three consumers — the prompt (``context_builder``), the turn response's

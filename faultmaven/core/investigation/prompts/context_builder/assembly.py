@@ -9,6 +9,7 @@ from faultmaven.core.investigation.kb_push import (
     kb_entries_rendered,
     prompt_kb_entries,
 )
+from faultmaven.core.investigation.kb_question import KbLookup, render_kb_lookup_block
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     render_fenced,
@@ -168,6 +169,8 @@ def _allocate_sections(
     entity_highlights_str: str,
     # reserved, with a fixed budget of its own (#1906 D7)
     fix_verification_str: str = "",
+    # reserved: bounded by construction (kb_question.py)
+    kb_lookup_str: str = "",
 ) -> Dict[str, str]:
     """Priority-greedy allocation of ``budget`` across the prompt sections.
 
@@ -227,6 +230,11 @@ def _allocate_sections(
         cap_fix_verification_block(fix_verification_str, budget)
     )
     ctx["user_message"] = _reserve(user_message_block)
+    # Reserved, not a variable section: it answers what the user asked this
+    # turn, and the variable sections are dropped first under pressure. Bounded
+    # by construction — three excerpts of at most KB_QUESTION_EXCERPT_CHARS and
+    # a few titles.
+    ctx["kb_lookup"] = _reserve(kb_lookup_str)
 
     reserve_tokens = budget.used_tokens
     section_budget = max(0, budget.limit_tokens - reserve_tokens)
@@ -586,14 +594,20 @@ def build_investigation_context(
     entity_highlight_groups: Optional[Sequence["EntityHighlightGroup"]] = None,
     given_tools: GivenTools = NO_TOOLS,
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
+    kb_lookup: Optional[KbLookup] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
 
     ``kb_rendered``, when given, is refilled with the KB entries whose header
     survived the section budget in the returned ``kb_results`` text — what the
-    turn's ``sources`` report. The template decides whether the slot is used;
-    ``get_prompt_for_case`` clears the list when it is not.
+    turn's ``sources`` report — followed by the entries of ``kb_lookup``'s
+    block, which is reserved and so always survives. The template decides
+    whether each slot is used; ``get_prompt_for_case`` drops the entries of a
+    slot it does not render.
+
+    ``kb_lookup`` is this turn's knowledge-base question lookup
+    (``milestone_engine/kb_question.py``), rendered as ``ctx["kb_lookup"]``.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -803,6 +817,10 @@ def build_investigation_context(
         _fenced["user_message"] = (
             fence.element("user_message", capped_user) if capped_user else ""
         )
+        # The query and every runbook title and excerpt are caller-controlled
+        # (a personal or team runbook is user text), so the block is fenced
+        # with the others.
+        _fenced["kb_lookup"] = render_kb_lookup_block(kb_lookup, fence)
         # Checked as one corpus; the parts are what the templates interpolate.
         return "\n\n".join(part for part in _fenced.values() if part)
 
@@ -1129,9 +1147,12 @@ def build_investigation_context(
         evidence_needs_str=evidence_needs_str,
         entity_highlights_str=entity_highlights_str,
         fix_verification_str=fix_verification_str,
+        kb_lookup_str=_fenced["kb_lookup"],
     )
     if kb_rendered is not None:
         kb_rendered[:] = kb_entries_rendered(
             ctx.get("kb_results", ""), all_kb_results[:KB_PROMPT_MAX_ENTRIES]
         )
+        if ctx.get("kb_lookup") and kb_lookup is not None:
+            kb_rendered.extend(dict(entry) for entry in kb_lookup.entries)
     return ctx

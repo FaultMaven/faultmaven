@@ -76,8 +76,16 @@ def _chunk_label(snippet: str) -> str:
     return match.group(2).strip() if match else ""
 
 
-def _admit_diverse(ranked: list) -> list:
-    """Take up to ``KB_CONTEXT_MAX_ENTRIES`` hits, preferring runbook diversity.
+def _admit_diverse(
+    ranked: list,
+    *,
+    limit: int = KB_CONTEXT_MAX_ENTRIES,
+    per_runbook: int = KB_CONTEXT_MAX_PER_RUNBOOK,
+) -> list:
+    """Take up to ``limit`` hits, preferring runbook diversity.
+
+    ``limit`` and ``per_runbook`` default to the push's measured pair (5, 2);
+    the knowledge-base question lookup passes its own smaller ``limit``.
 
     Two passes over one ranked list. The first admits at most
     ``KB_CONTEXT_MAX_PER_RUNBOOK`` hits from any single runbook; the second
@@ -106,18 +114,18 @@ def _admit_diverse(ranked: list) -> list:
     deferred: list = []
 
     for index, hit in enumerate(ranked):
-        if len(chosen) == KB_CONTEXT_MAX_ENTRIES:
+        if len(chosen) == limit:
             break
         parent = getattr(hit, "parent_document_id", None)
         if parent is not None:
-            if seen.get(parent, 0) >= KB_CONTEXT_MAX_PER_RUNBOOK:
+            if seen.get(parent, 0) >= per_runbook:
                 deferred.append((index, hit))
                 continue
             seen[parent] = seen.get(parent, 0) + 1
         chosen.append((index, hit))
 
-    if len(chosen) < KB_CONTEXT_MAX_ENTRIES:
-        chosen.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(chosen)])
+    if len(chosen) < limit:
+        chosen.extend(deferred[: limit - len(chosen)])
 
     # Re-sorted into rank order. The backfill appends what the cap skipped, so
     # without this the returned list is not monotonic in rank — and rank order

@@ -293,6 +293,36 @@ The route is decided from case state, not configuration. It stops firing for a c
 **Degradation parity**: this path validates through `_validate_with_degradation()`, the same ladder the tool path uses. Before that was true, one rejected list entry — for example a `suggested_follow_ups` item carrying `evidence_need_id` under a non-`EVIDENCE` `action_type` — failed the entire turn here while the tool path pruned the entry and continued.
 
 
+### 5.6 User Questions About the Knowledge Base
+
+**Problem**: knowledge reached a turn two ways, both serving the investigation: the push (`kb_prefetch`, runbooks fetched at case transitions) and the pull (`kb_qa`, a lookup the model elects). Both rightly stay silent about a miss — a runbook that is not there is not worth mentioning while solving a problem. Nothing served a user who asks *about* the knowledge base ("is there a runbook for X?", "what does our runbook on Y say?"). Such a question was classified as diagnostic work, so on a case with no files it took the single-shot route and nothing searched at all; where `kb_qa` did run, the "don't mention the search" rules turned a "no" into a generic procedure that read as if a runbook existed.
+
+**Statement**: when the user asks about the knowledge base itself, the knowledge base is searched before the reply is generated, and the reply reports what the search found — a miss included — before anything else. The "don't mention the search" rules keep governing every other turn: troubleshooting lookups and ordinary how-to questions.
+
+**Mechanism**:
+
+| Step | Where | What |
+|---|---|---|
+| Recognise | `query_classifier.detect_kb_question` | A flag on the classification (`kb_question`), orthogonal to the processing mode, so a message that also reports a symptom keeps its diagnostic handling. Precision-first: every pattern names the knowledge base ("runbook", "playbook", "knowledge base"; a bare "KB" is kilobytes), and asking to write, convert, edit or follow a runbook is not a question about what the store holds. A question about FaultMaven (`agent_meta`) is never one. A miss falls back to the message's ordinary handling. |
+| Route | `out_of_band.needs_llm_triage` | A flagged message never goes to the off-topic classifier: it is about the user's own engineering material. |
+| Look up | `milestone_engine/kb_question_lookup.look_up_kb_question` | Run by the engine once per turn before the prompt is built — on the tool loop, the single shot and terminal Q&A alike, since it needs no tool. Searches with the topic the classifier extracted; a question that names none ("is there a runbook for this?") searches with the case's problem statement, and with neither it searches nothing. Scope is the driver's (`case_retrieval_scope`, ADR-020 D9) with `raise_on_failure`, so a failed team lookup cannot narrow the search into a false "not found". Not governed by `KB_PREFETCH_ENABLED`, which switches the push only. |
+| Render | `kb_question.render_kb_lookup_block` | A `KNOWLEDGE BASE LOOKUP` section in the per-turn tail of the INQUIRY, INVESTIGATING and terminal templates (below `CACHE_BOUNDARY` on INVESTIGATING, #613), reserved in the prompt budget and fenced with the other caller-controlled blocks (runbook text is user text). The three "don't mention the search" rules name it as their exception. |
+| Cite | `turn_bookkeeping._record_turn_kb_sources` | The lookup's runbooks enter the turn's `sources` with `metadata.trigger = "question"`, always `new_this_turn`; the push's entries are compared only with earlier push entries, so a question turn does not make the next turn's standing context read as new. |
+
+**What the lookup can establish** (`KbLookupStatus`):
+
+| Status | When | The reply |
+|---|---|---|
+| `candidates` | hits at or above the candidate floor (0.45) | names a runbook only if its title or excerpt is about the topic, answers from the excerpt and points to the Dashboard for the full runbook; if none is about it, says none was found and names the closest |
+| `nothing` | the search ran; nothing reached the floor | says first that no runbook was found in the knowledge base the user can access; any general guidance after that is labelled as such |
+| `unavailable` | no knowledge service, or the scope or search failed | says the knowledge base could not be checked — never that no runbook exists |
+| `no_topic` | no topic, and no problem statement to search with | asks which topic or runbook is meant |
+| `listing` | "what runbooks do you have?" with no topic | says chat cannot list the knowledge base, points to its Dashboard page, never lists titles |
+
+**Why the score does not decide "found"** (measured 2026-11-14 through the real hybrid path, `KnowledgeVectorStore.hybrid_search`, over the shipped pack): 16 topics the pack covers scored 0.585–0.724 at rank 1 when searched as bare topics, while 6 it does not cover scored 0.365–0.529 — two above the push's 0.5 floor ("Oracle RAC interconnect errors" → a JVM runbook at 0.529). A floor alone would assert runbooks that do not exist, so the floor (0.45, under which every negative was noise) only decides what is shown, and the reply judges relevance from titles and excerpts. Searching the extracted topic rather than the whole question matters as much: framed as "Is there a runbook for X?", the same 16 topics lost two rank-1 hits and fell as low as 0.405, because "there" and "runbook" join the query's terms.
+
+**Not covered**: fetching one runbook in full by title (the reply answers from up to three section excerpts and points to the Dashboard), and listing the knowledge base in chat.
+
 ## 6. Terminal Observability
 
 When a case reaches a terminal state (RESOLVED or CLOSED), today's emission surface is:

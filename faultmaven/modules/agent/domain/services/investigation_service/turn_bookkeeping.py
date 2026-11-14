@@ -10,6 +10,7 @@ the published attachment result and the reclassification metric's label.
 from typing import Any
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
+from faultmaven.core.investigation.kb_question import KB_QUESTION_TRIGGER
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
@@ -178,9 +179,11 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
         metadata = {
             "document_id": entry.get("parent_document_id"),
             "title": entry.get("title"),
-            # Which pre-fetch fired — "symptom" (the problem statement) or
-            # "root_cause" (remediation). A reader measuring retrieval quality
-            # needs to know which query produced the hit.
+            # Which query produced the hit: a pre-fetch — "symptom" (the
+            # problem statement) or "root_cause" (remediation) — or "question",
+            # the lookup for a question the user asked about the knowledge
+            # base (KB_QUESTION_TRIGGER). A reader measuring retrieval quality
+            # needs to know which.
             "trigger": entry.get("trigger"),
         }
         score = entry.get("score")
@@ -193,6 +196,11 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
             )
         )
     return sources
+
+
+def _from_question(source: dict) -> bool:
+    """Whether a published source came from a knowledge-base question lookup."""
+    return (source.get("metadata") or {}).get("trigger") == KB_QUESTION_TRIGGER
 
 
 def _source_key(source: dict) -> tuple[str, str]:
@@ -217,6 +225,13 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     turn that failed before its row was written, a retried turn, and a
     renumbered history, none of which a turn-number stamp survives. Call it
     BEFORE the turn's own row is appended.
+
+    That comparison is per ORIGIN. The push's entries are compared only with
+    the push's entries of that earlier row: a turn that answered a question
+    about the knowledge base records the lookup's runbooks too, and comparing
+    against those would mark every standing push entry of the next turn as
+    new. A question lookup's own entries are always new — they answer what
+    this turn asked, whatever an earlier turn showed.
     """
     sources = _kb_sources(turn_meta.pop(TURN_METADATA_KB_PROMPTED, None) or [])
     if not sources:
@@ -224,13 +239,18 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     earlier: set[tuple[str, str]] = set()
     for row in reversed(getattr(case, "messages", None) or []):
         recorded = (row.get("metadata") or {}).get(MESSAGE_METADATA_KB_SOURCES)
-        if row.get("role") == "assistant" and recorded:
-            earlier = {_source_key(s) for s in recorded if isinstance(s, dict)}
+        if row.get("role") != "assistant" or not recorded:
+            continue
+        pushed = [s for s in recorded if isinstance(s, dict) and not _from_question(s)]
+        if pushed:
+            earlier = {_source_key(s) for s in pushed}
             break
     published = []
     for source in sources:
         row_source = source.model_dump(mode="json")
-        source.new_this_turn = _source_key(row_source) not in earlier
+        source.new_this_turn = (
+            _from_question(row_source) or _source_key(row_source) not in earlier
+        )
         published.append(source.model_dump(mode="json"))
     turn_meta[MESSAGE_METADATA_KB_SOURCES] = published
 

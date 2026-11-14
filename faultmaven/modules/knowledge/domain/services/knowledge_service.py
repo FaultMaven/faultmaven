@@ -577,6 +577,7 @@ class KnowledgeService:
                                 :200
                             ]
                             + "...",
+                            content=result.get("content") or None,
                             parent_document_id=parent_document_id,
                             total_chunks=_read_total_chunks(result_meta),
                             rerank_score=result.get("rerank_score"),

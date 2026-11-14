@@ -21,6 +21,7 @@ from faultmaven.core.investigation.case_telemetry import (
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.kb_question import KB_QUESTION_INTENT_KEY
 from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is_pending
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
@@ -1182,6 +1183,14 @@ class InvestigationService:
                 intent_data={
                     **(intent.model_dump(exclude_unset=True) if intent else {}),
                     "query_mode": classification.mode.value,
+                    # The server's reading of the message, like query_mode:
+                    # written after the client's intent, so a client cannot
+                    # set it.
+                    KB_QUESTION_INTENT_KEY: (
+                        classification.kb_question.as_intent_data()
+                        if classification.kb_question
+                        else None
+                    ),
                 },
                 # The turn's authenticated principal. Kept out of
                 # ``intent_data`` deliberately: that dict is built from the

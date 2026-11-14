@@ -16,6 +16,7 @@ from faultmaven.core.investigation.chat_data import (
 )
 from faultmaven.core.investigation.hypothesis_manager import create_hypothesis_manager
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
+from faultmaven.core.investigation.kb_question import KbLookup, kb_question_of
 from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_deferred_total,
 )
@@ -29,6 +30,9 @@ from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
     _apply_hypothesis_action_intent,
 )
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+from faultmaven.core.investigation.milestone_engine.kb_question_lookup import (
+    look_up_kb_question,
+)
 from faultmaven.core.investigation.milestone_engine.response_application import (
     ResponseApplier,
 )
@@ -347,6 +351,16 @@ class MilestoneEngine:
             deps=self.deps, kb_prefetcher=self.kb_prefetcher
         )
 
+    async def _kb_lookup(
+        self, case: Case, intent_data: dict[str, Any] | None
+    ) -> KbLookup | None:
+        """This turn's knowledge-base question lookup, or ``None`` when the
+        message asked none (§5.6 of ``orchestration-capabilities.md``)."""
+        question = kb_question_of(intent_data)
+        if question is None:
+            return None
+        return await look_up_kb_question(self.deps, case, question)
+
     async def _turn_redaction(self, case: Case, redaction_ctx: Any | None) -> Any:
         """The turn's case redaction context: the one the service handed in,
         or, on a direct engine call, the case's own through the shared loader
@@ -660,6 +674,7 @@ class MilestoneEngine:
                     plan=plan,
                     user_id=user_id,
                     redaction_ctx=await self._turn_redaction(case, redaction_ctx),
+                    kb_lookup=await self._kb_lookup(case, intent_data),
                 )
 
             # Set when section 0b or 0b' consumed this turn's confirmation
@@ -1254,11 +1269,13 @@ class MilestoneEngine:
             # and is now CLOSED-only.
 
             # 1. Gather Context & Build Prompt
-            # KB retrieval during turns is handled by the kb_qa tool in the
-            # tool-augmented generation loop. The agent decides when to call
-            # kb_qa based on prompt directives (Rule 6: Knowledge First).
-            # This ensures proper scope filtering via ToolContext (user_id,
-            # team_ids) which the engine doesn't have at this level.
+            # Knowledge reaches this turn three ways: the push already on the
+            # case (``kb_prefetch``, fired at case transitions), the ``kb_qa``
+            # pull the model may elect during generation, and — when the user
+            # asked about the knowledge base itself — the lookup below, run
+            # here so the prompt reports it on every route, the tool-less
+            # single shot included. All three scope through
+            # ``case_retrieval_scope`` (the driver's knowledge, ADR-020 D9).
 
             # Initialize case-scoped PII redaction context.
             # Created fresh each turn — the assembled prompt contains raw
@@ -1279,6 +1296,7 @@ class MilestoneEngine:
             # one before the prompt is built (ADR-020 D9), or cleared if it
             # cannot be.
             await self.kb_prefetcher.refresh_for_driver(case)
+            kb_lookup = await self._kb_lookup(case, intent_data)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
@@ -1292,6 +1310,7 @@ class MilestoneEngine:
                 user_message=user_message,
                 bare_resolve_decline=bare_resolve_decline,
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
+                kb_lookup=kb_lookup,
             )
 
             # 4. Apply state from the final accepted response (exactly once)

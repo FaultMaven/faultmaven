@@ -6746,7 +6746,7 @@ Represents a single piece of citable evidence to build user trust.
 - `confidence` (object, optional)
 - `content` (string, required)
 - `metadata` (object, optional)
-- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Null on any other source.
+- `new_this_turn` (object, optional) — For a knowledge-base source in a turn's `sources`: true when this runbook excerpt was not in the prompt of the case's previous turn that carried pre-fetched knowledge-base context. That context stands in every prompt from the turn it is fetched until the next fetch replaces it, so a client shows the list where something is new rather than under every answer. Always true on a source whose `metadata.trigger` is `question`: the runbooks a lookup found for the user's own question about the knowledge base answer that turn. Null on any other source.
 - `type` (object, required)
 - `verification_reason` (object, optional)
 - `verification_status` (object, optional)
