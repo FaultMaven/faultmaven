@@ -4,7 +4,7 @@
 the legacy ``max_tokens`` or the modern ``max_completion_tokens``. Which one
 a given model accepts is a fact the endpoint owns. Before #510 the provider
 answered it from an enumerated family list, so a family that rejects
-``max_tokens`` but is not listed (``gpt-6``, ``o5``) silently fell back to the
+``max_tokens`` but is not listed (``gpt-7``, ``o5``) silently fell back to the
 legacy name and every call to it 400'd.
 
 The list survives as the OPENING GUESS — right for every shipped
@@ -138,12 +138,12 @@ class TestTokenParamCorrection:
     async def test_unlisted_family_is_corrected_instead_of_failing(self):
         """The #510 regression itself: a model family nobody listed.
 
-        ``gpt-6`` matches no entry in ``_COMPLETION_TOKENS_MODEL_FAMILIES``, so
+        ``gpt-7`` matches no entry in ``_COMPLETION_TOKENS_MODEL_FAMILIES``, so
         the opening guess is the legacy name and the endpoint refuses it.
         Before #510 that 400 was the caller's answer. Now it is an instruction.
         """
-        provider = OpenAIProvider(_config_for("gpt-6"))
-        assert provider._uses_completion_tokens_param("gpt-6") is False  # unlisted
+        provider = OpenAIProvider(_config_for("gpt-7"))
+        assert provider._uses_completion_tokens_param("gpt-7") is False  # unlisted
         session, sent = _sequenced_session(
             [_error(400, _rejects_param(LEGACY, MODERN)), _ok("corrected")]
         )
@@ -158,7 +158,7 @@ class TestTokenParamCorrection:
 
     async def test_resend_differs_in_the_key_and_nothing_else(self):
         """The correction must not smuggle in any other payload change."""
-        provider = OpenAIProvider(_config_for("gpt-6"))
+        provider = OpenAIProvider(_config_for("gpt-7"))
         session, sent = _sequenced_session(
             [_error(400, _rejects_param(LEGACY, MODERN)), _ok()]
         )
@@ -176,7 +176,7 @@ class TestTokenParamCorrection:
 
     async def test_the_answer_is_learned_so_later_calls_pay_nothing(self):
         """One round trip per model per provider instance, not per call."""
-        provider = OpenAIProvider(_config_for("gpt-6"))
+        provider = OpenAIProvider(_config_for("gpt-7"))
         session, sent = _sequenced_session(
             [_error(400, _rejects_param(LEGACY, MODERN)), _ok(), _ok()]
         )
@@ -223,15 +223,15 @@ class TestTokenParamCorrection:
 
     async def test_learned_answer_does_not_leak_between_provider_instances(self):
         """The spelling is a property of the ENDPOINT as much as the model."""
-        taught = OpenAIProvider(_config_for("gpt-6"))
+        taught = OpenAIProvider(_config_for("gpt-7"))
         session, _ = _sequenced_session(
             [_error(400, _rejects_param(LEGACY, MODERN)), _ok()]
         )
         with patch("aiohttp.ClientSession", return_value=session):
             await send_to_model(taught, prompt=vetted("hi"), max_tokens=8)
-        assert taught._token_param_learned == {"gpt-6": MODERN}
+        assert taught._token_param_learned == {"gpt-7": MODERN}
 
-        untaught = OpenAIProvider(_config_for("gpt-6"))
+        untaught = OpenAIProvider(_config_for("gpt-7"))
         assert untaught._token_param_learned == {}
         session2, sent2 = _sequenced_session([_ok()])
         with patch("aiohttp.ClientSession", return_value=session2):
@@ -332,7 +332,7 @@ class TestTokenParamCorrectionDoesNotOverreach:
         second failure into the first would report it as permanent. Nothing is
         learned, so the next call starts from the static expectation again.
         """
-        provider = OpenAIProvider(_config_for("gpt-6"))
+        provider = OpenAIProvider(_config_for("gpt-7"))
         session, sent = _sequenced_session(
             [
                 _error(400, _rejects_param(LEGACY, MODERN)),

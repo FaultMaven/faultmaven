@@ -183,7 +183,7 @@ class TestTemperatureRefusalIsLearned:
 
     async def test_a_model_needing_both_corrections_is_served_on_its_first_call(self):
         """Temperature first, then the token-cap spelling: one re-send each."""
-        provider = OpenAIProvider(_config_for("gpt-6"))  # unlisted: legacy guess
+        provider = OpenAIProvider(_config_for("gpt-7"))  # unlisted: legacy guess
         session, sent = _sequenced_session(
             [
                 _error(400, _refuses_temperature()),
@@ -197,8 +197,8 @@ class TestTemperatureRefusalIsLearned:
         assert result.content == "both"
         assert len(sent) == 3
         assert "temperature" not in sent[2] and MODERN in sent[2]
-        assert provider._temperature_refused == {"gpt-6"}
-        assert provider._token_param_learned == {"gpt-6": MODERN}
+        assert provider._temperature_refused == {"gpt-7"}
+        assert provider._token_param_learned == {"gpt-7": MODERN}
 
 
 @pytest.mark.unit
