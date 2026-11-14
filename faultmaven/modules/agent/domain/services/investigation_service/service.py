@@ -21,6 +21,7 @@ from faultmaven.core.investigation.case_telemetry import (
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.kb_question import KB_QUESTION_INTENT_KEY
 from faultmaven.core.investigation.milestone_engine.affordances import _gate1_is_pending
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
@@ -105,6 +106,7 @@ from faultmaven.modules.agent.domain.services.out_of_band import (
     has_investigation_history,
 )
 from faultmaven.modules.agent.domain.services.query_classifier import (
+    KbQuestion,
     classify_query,
 )
 from faultmaven.modules.case.contracts import (
@@ -196,6 +198,17 @@ _INTENT_DISPATCH: Dict[IntentType, _IntentDispatchKind] = {
     # docs/architecture/investigation-engine/evidence-needs-design.md §9.3.
     IntentType.EVIDENCE_NEED: _IntentDispatchKind.NOT_IMPLEMENTED,
 }
+
+
+def _kb_question_intent(question: Optional[KbQuestion]) -> Dict[str, Any]:
+    """The turn's question about the knowledge base, as ``intent_data`` reads it.
+
+    The server's reading of the message, like ``query_mode``: merged after the
+    client's intent fields, so a client cannot set it. Written on every
+    engine-bound path, a recorded ``None`` included, so the engine never has to
+    classify the message again (§5.6 of ``orchestration-capabilities.md``).
+    """
+    return {KB_QUESTION_INTENT_KEY: question.as_intent_data() if question else None}
 
 
 def _validate_intent_dispatch_completeness() -> None:
@@ -1101,6 +1114,7 @@ class InvestigationService:
                 result = await self._handle_status_transition(
                     case=case,
                     user_message=query or "",
+                    kb_question=classification.kb_question,
                     from_state=intent.from_state if intent else None,
                     to_state=intent.to_state if intent else None,
                     user_confirmed=(
@@ -1115,6 +1129,7 @@ class InvestigationService:
                 result = await self._handle_confirmation(
                     case=case,
                     user_message=query or "",
+                    kb_question=classification.kb_question,
                     confirmation_value=(intent.confirmation_value if intent else None),
                     proposal_id=(intent.proposal_id if intent else None),
                     user_id=user_id,
@@ -1126,6 +1141,7 @@ class InvestigationService:
                 result = await self._handle_hypothesis_action(
                     case=case,
                     user_message=query or "",
+                    kb_question=classification.kb_question,
                     hypothesis_id=intent.hypothesis_id if intent else None,
                     action=intent.action if intent else None,
                     user_id=user_id,
@@ -1182,6 +1198,10 @@ class InvestigationService:
                 intent_data={
                     **(intent.model_dump(exclude_unset=True) if intent else {}),
                     "query_mode": classification.mode.value,
+                    # The server's reading of the message, like query_mode:
+                    # written after the client's intent, so a client cannot
+                    # set it.
+                    **_kb_question_intent(classification.kb_question),
                 },
                 # The turn's authenticated principal. Kept out of
                 # ``intent_data`` deliberately: that dict is built from the
@@ -1221,6 +1241,7 @@ class InvestigationService:
         attachments: Optional[List[Dict[str, Any]]] = None,
         *,
         redaction_ctx: Any,
+        kb_question: Optional[KbQuestion] = None,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1306,6 +1327,7 @@ class InvestigationService:
                 "to_state": to_state,
                 "user_confirmed": user_confirmed,
                 "proposal_id": proposal_id,
+                **_kb_question_intent(kb_question),
             },
             user_id=user_id,
             redaction_ctx=redaction_ctx,
@@ -1324,6 +1346,7 @@ class InvestigationService:
         typed: bool = False,
         *,
         redaction_ctx: Any,
+        kb_question: Optional[KbQuestion] = None,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1360,7 +1383,11 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             intent_type="confirmation",
-            intent_data={"value": confirmation_value, "proposal_id": proposal_id},
+            intent_data={
+                "value": confirmation_value,
+                "proposal_id": proposal_id,
+                **_kb_question_intent(kb_question),
+            },
             user_id=user_id,
             typed=typed,
             redaction_ctx=redaction_ctx,
@@ -1378,6 +1405,7 @@ class InvestigationService:
         attachments: Optional[List[Dict[str, Any]]] = None,
         *,
         redaction_ctx: Any,
+        kb_question: Optional[KbQuestion] = None,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1409,7 +1437,11 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             intent_type="hypothesis_action",
-            intent_data={"hypothesis_id": hypothesis_id, "action": action},
+            intent_data={
+                "hypothesis_id": hypothesis_id,
+                "action": action,
+                **_kb_question_intent(kb_question),
+            },
             user_id=user_id,
             redaction_ctx=redaction_ctx,
         )

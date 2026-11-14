@@ -7,6 +7,10 @@ from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
     retrieval_principal,
 )
+from faultmaven.models.exceptions import (
+    KnowledgeBaseError,
+    is_knowledge_store_unavailable,
+)
 from faultmaven.modules.case.contracts import (
     Case,
 )
@@ -76,8 +80,16 @@ def _chunk_label(snippet: str) -> str:
     return match.group(2).strip() if match else ""
 
 
-def _admit_diverse(ranked: list) -> list:
-    """Take up to ``KB_CONTEXT_MAX_ENTRIES`` hits, preferring runbook diversity.
+def _admit_diverse(
+    ranked: list,
+    *,
+    limit: int = KB_CONTEXT_MAX_ENTRIES,
+    per_runbook: int = KB_CONTEXT_MAX_PER_RUNBOOK,
+) -> list:
+    """Take up to ``limit`` hits, preferring runbook diversity.
+
+    ``limit`` and ``per_runbook`` default to the push's measured pair (5, 2);
+    the knowledge-base question lookup passes its own smaller ``limit``.
 
     Two passes over one ranked list. The first admits at most
     ``KB_CONTEXT_MAX_PER_RUNBOOK`` hits from any single runbook; the second
@@ -106,18 +118,18 @@ def _admit_diverse(ranked: list) -> list:
     deferred: list = []
 
     for index, hit in enumerate(ranked):
-        if len(chosen) == KB_CONTEXT_MAX_ENTRIES:
+        if len(chosen) == limit:
             break
         parent = getattr(hit, "parent_document_id", None)
         if parent is not None:
-            if seen.get(parent, 0) >= KB_CONTEXT_MAX_PER_RUNBOOK:
+            if seen.get(parent, 0) >= per_runbook:
                 deferred.append((index, hit))
                 continue
             seen[parent] = seen.get(parent, 0) + 1
         chosen.append((index, hit))
 
-    if len(chosen) < KB_CONTEXT_MAX_ENTRIES:
-        chosen.extend(deferred[: KB_CONTEXT_MAX_ENTRIES - len(chosen)])
+    if len(chosen) < limit:
+        chosen.extend(deferred[: limit - len(chosen)])
 
     # Re-sorted into rank order. The backfill appends what the cap skipped, so
     # without this the returned list is not monotonic in rank — and rank order
@@ -229,17 +241,26 @@ class KbPrefetcher:
             # rank 1 for the same query, and pure vector search cannot: the
             # fetch limit is applied to CHUNKS before any floor, so no
             # threshold value can admit a chunk ranked 369th.
-            results = await self.deps.knowledge_service.search_knowledge(
-                query=query,
-                limit=KB_PREFETCH_FETCH_LIMIT,
-                filters=scope_filter,
-                # The floor goes in at ADMISSION, not after ranking. Hybrid
-                # results are ordered by the reranker's blend, so the filter
-                # below would thin this window from the middle: on a measured
-                # query it left 2 hits where 10 were asked for. The filter
-                # below stays as the authority.
-                min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
-            )
+            try:
+                results = await self.deps.knowledge_service.search_knowledge(
+                    query=query,
+                    limit=KB_PREFETCH_FETCH_LIMIT,
+                    filters=scope_filter,
+                    # The floor goes in at ADMISSION, not after ranking. Hybrid
+                    # results are ordered by the reranker's blend, so the
+                    # filter below would thin this window from the middle: on
+                    # a measured query it left 2 hits where 10 were asked for.
+                    # The filter below stays as the authority.
+                    min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
+                )
+            except KnowledgeBaseError as exc:
+                # A deployment with no store holds no runbooks: for the push
+                # that is an empty result, which clears stale context below.
+                # (The question lookup reads the same refusal as "could not
+                # search", because it reports on the knowledge base.)
+                if not is_knowledge_store_unavailable(exc):
+                    raise
+                results = []
             relevant = [
                 r for r in results or [] if r.score >= KB_PREFETCH_RELEVANCE_THRESHOLD
             ]

@@ -10,6 +10,7 @@ the published attachment result and the reclassification metric's label.
 from typing import Any
 
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
+from faultmaven.core.investigation.kb_question import KB_QUESTION_TRIGGER, section_key
 from faultmaven.core.investigation.milestone_engine.progress import (
     record_promptless_turn,
     score_progress,
@@ -178,9 +179,11 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
         metadata = {
             "document_id": entry.get("parent_document_id"),
             "title": entry.get("title"),
-            # Which pre-fetch fired — "symptom" (the problem statement) or
-            # "root_cause" (remediation). A reader measuring retrieval quality
-            # needs to know which query produced the hit.
+            # Which query produced the hit: a pre-fetch — "symptom" (the
+            # problem statement) or "root_cause" (remediation) — or "question",
+            # the lookup for a question the user asked about the knowledge
+            # base (KB_QUESTION_TRIGGER). A reader measuring retrieval quality
+            # needs to know which.
             "trigger": entry.get("trigger"),
         }
         score = entry.get("score")
@@ -195,10 +198,15 @@ def _kb_sources(entries: list[dict]) -> list[Source]:
     return sources
 
 
+def _from_question(source: dict) -> bool:
+    """Whether a published source came from a knowledge-base question lookup."""
+    return (source.get("metadata") or {}).get("trigger") == KB_QUESTION_TRIGGER
+
+
 def _source_key(source: dict) -> tuple[str, str]:
-    """One runbook excerpt: its document and the matched text."""
+    """One runbook section, whichever channel carried it (``section_key``)."""
     metadata = source.get("metadata") or {}
-    return (str(metadata.get("document_id") or ""), str(source.get("content") or ""))
+    return section_key(metadata.get("document_id"), str(source.get("content") or ""))
 
 
 def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
@@ -217,6 +225,15 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     turn that failed before its row was written, a retried turn, and a
     renumbered history, none of which a turn-number stamp survives. Call it
     BEFORE the turn's own row is appended.
+
+    The earlier row is the most recent one that recorded PUSHED entries: a
+    row holding only a question lookup's runbooks would otherwise stand in for
+    the push context and mark every standing entry of the next turn as new.
+    That row's lookup entries count as shown too — they were in its prompt, and
+    a section both channels found is recorded once, as the lookup's. Keyed by
+    ``section_key``, so a section matches whichever channel carried it. A
+    question lookup's own entries are always new — they answer what this turn
+    asked, whatever an earlier turn showed.
     """
     sources = _kb_sources(turn_meta.pop(TURN_METADATA_KB_PROMPTED, None) or [])
     if not sources:
@@ -224,13 +241,18 @@ def _record_turn_kb_sources(turn_meta: dict, case: Any) -> None:
     earlier: set[tuple[str, str]] = set()
     for row in reversed(getattr(case, "messages", None) or []):
         recorded = (row.get("metadata") or {}).get(MESSAGE_METADATA_KB_SOURCES)
-        if row.get("role") == "assistant" and recorded:
-            earlier = {_source_key(s) for s in recorded if isinstance(s, dict)}
+        if row.get("role") != "assistant" or not recorded:
+            continue
+        entries = [s for s in recorded if isinstance(s, dict)]
+        if any(not _from_question(s) for s in entries):
+            earlier = {_source_key(s) for s in entries}
             break
     published = []
     for source in sources:
         row_source = source.model_dump(mode="json")
-        source.new_this_turn = _source_key(row_source) not in earlier
+        source.new_this_turn = (
+            _from_question(row_source) or _source_key(row_source) not in earlier
+        )
         published.append(source.model_dump(mode="json"))
     turn_meta[MESSAGE_METADATA_KB_SOURCES] = published
 

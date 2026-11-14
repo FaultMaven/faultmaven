@@ -151,6 +151,30 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="14.24.0",
+        level="MINOR",
+        title=(
+            "A turn's `sources` can carry the runbooks a lookup found for the "
+            "user's question about the knowledge base (`metadata.trigger` "
+            "`question`)."
+        ),
+        body=r"""When a message asks about the knowledge base itself ("is there a runbook for
+X?", "what does our runbook on Y say?"), the engine searches it before the
+reply, and the runbooks it shows the model enter `TurnResponse.sources` and
+the assistant row's `Message.sources` with `metadata.trigger` `question`,
+beside the pre-fetch's `symptom` / `root_cause`. They appear whatever
+`KB_PREFETCH_ENABLED` says, so `sources` is no longer empty whenever the push
+is off. `new_this_turn` is always true on them; on pre-fetched entries it now
+compares only with the previous pre-fetched context, so a question turn does
+not make the next turn's standing context read as new. Read back through the
+same per-viewer gate as every other source.
+
+MINOR because every existing client survives it: no field is added or
+removed, `metadata` was already free-form, and a client that ignores
+`trigger` shows these entries as the runbooks the turn carried, which they
+are.""",
+    ),
+    ContractChange(
         version="14.23.0",
         level="MINOR",
         title=(

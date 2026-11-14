@@ -111,7 +111,7 @@ The case has been {state_lower}.
 CONVERSATION HISTORY:
 {conversation_history}
 
-CURRENT USER MESSAGE:
+{kb_lookup}CURRENT USER MESSAGE:
 {user_message}
 
 YOUR TASK:

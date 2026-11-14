@@ -11,8 +11,9 @@ different matter: they are access-checked per viewer when they are read back
 The driver is the case's EFFECTIVE driver (ADR-020 D1):
 ``COALESCE(driver_id, user_id)`` — the creator unless the case was handed to
 someone. It is keyed HERE, in this one function: the pre-fetch (push),
-``kb_qa`` (pull) and the runbook dedup all take their scope from it, and the
-pre-fetch stamps the same key on ``kb_context_origin`` (ADR-020 D9).
+``kb_qa`` (pull), the lookup for a user's question about the knowledge base
+(``kb_question_lookup``) and the runbook dedup all take their scope from it,
+and the pre-fetch stamps the same key on ``kb_context_origin`` (ADR-020 D9).
 """
 
 import logging
@@ -49,9 +50,12 @@ async def case_retrieval_scope(
     team is not in it.
 
     A failed team lookup narrows the scope to global ∪ the driver's personal
-    KB; it never widens it. ``raise_on_failure`` re-raises instead. The runbook
-    dedup sets it: a narrowed dedup search would back a "checked, nothing
-    similar" claim it did not establish, so its caller takes a caveat branch.
+    KB; it never widens it. ``raise_on_failure`` re-raises instead, and also
+    refuses a team service with no share repository, which would narrow it the
+    same way. The runbook dedup and the knowledge-base question lookup set it: a
+    narrowed search would back a "checked, nothing similar" or "no runbook
+    found" claim it did not establish, so each caller reports that it could not
+    check instead.
     """
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         build_kb_scope_filter,
@@ -60,6 +64,13 @@ async def case_retrieval_scope(
 
     driver_id = retrieval_principal(case)
     shared_kb_ids: List[str] = []
+    if raise_on_failure and team_service is not None and share_repository is None:
+        # Teams exist here but their shares cannot be read: the scope would be
+        # narrowed exactly as a failed team lookup narrows it.
+        raise RuntimeError(
+            "case_retrieval_scope: a team service with no share repository "
+            "cannot resolve the team arm of the scope"
+        )
     if driver_id and team_service is not None and share_repository is not None:
         try:
             team_ids = await team_service.list_all_user_team_ids(driver_id)

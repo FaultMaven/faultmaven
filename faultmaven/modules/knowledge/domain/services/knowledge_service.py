@@ -64,7 +64,12 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import (
+    KNOWLEDGE_STORE_UNAVAILABLE,
+    IndexAdmissionRefused,
+    KnowledgeBaseError,
+    is_knowledge_store_unavailable,
+)
 from faultmaven.models.interfaces import (
     IKnowledgeVectorStore,
     ILLMProvider,
@@ -577,6 +582,7 @@ class KnowledgeService:
                                 :200
                             ]
                             + "...",
+                            content=result.get("content") or None,
                             parent_document_id=parent_document_id,
                             total_chunks=_read_total_chunks(result_meta),
                             rerank_score=result.get("rerank_score"),
@@ -588,12 +594,20 @@ class KnowledgeService:
                     )
                     return search_results
                 else:
-                    # Fallback when no vector store available
-                    logger.warning("No vector store available, returning empty results")
-                    return []
+                    # No store is a search that did not run, not one that found
+                    # nothing — the contract above: "never an empty result". A
+                    # caller reporting what the knowledge base holds (the
+                    # question lookup) must not read it as a miss.
+                    raise KnowledgeBaseError(
+                        "No knowledge vector store is configured",
+                        error_code=KNOWLEDGE_STORE_UNAVAILABLE,
+                    )
 
             except Exception as e:
-                logger.error(f"Search failed: {e}")
+                # A deployment without a store is not a failed search: every
+                # turn would log it as one.
+                if not is_knowledge_store_unavailable(e):
+                    logger.error(f"Search failed: {e}")
                 raise
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:

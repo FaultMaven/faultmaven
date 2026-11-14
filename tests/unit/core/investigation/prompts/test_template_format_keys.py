@@ -76,6 +76,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "blocks",
     },
     "FALLBACK_INQUIRY_TEMPLATE": {
+        "kb_lookup",
         "current_turn_evidence",
         "fence_preamble",
         "problem_summary",
@@ -84,6 +85,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "FALLBACK_INVESTIGATION_TEMPLATE": {
+        "kb_lookup",
         "current_turn_evidence",
         "fence_preamble",
         "hypotheses_summary",
@@ -96,6 +98,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "FALLBACK_TERMINAL_TEMPLATE": {
+        "kb_lookup",
         "fence_preamble",
         "problem_summary",
         "resolution_summary",
@@ -104,6 +107,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "INQUIRY_TEMPLATE": {
+        "kb_lookup",
         "agent_meta_instructions",
         "conversation_history",
         "core_context",
@@ -120,6 +124,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "TERMINAL_TEMPLATE": {
+        "kb_lookup",
         "conversation_history",
         "core_context",
         "identity",
@@ -132,6 +137,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "user_message",
     },
     "INVESTIGATION_BASE": {
+        "kb_lookup",
         "adaptive_instructions",
         "conversation_history",
         "core_context",

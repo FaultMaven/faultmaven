@@ -79,6 +79,21 @@ class KnowledgeBaseError(FaultMavenError):
         super().__init__(message, error_code or "KNOWLEDGE_BASE_ERROR", context)
 
 
+#: ``KnowledgeBaseError.error_code`` of a search with no vector store to run
+#: on: a deployment without one, not a failure. A caller that only wants
+#: runbooks reads it as "none"; one reporting what the knowledge base holds
+#: must not.
+KNOWLEDGE_STORE_UNAVAILABLE = "KNOWLEDGE_STORE_UNAVAILABLE"
+
+
+def is_knowledge_store_unavailable(exc: BaseException) -> bool:
+    """Whether ``exc`` is a search refused for want of a vector store."""
+    return (
+        isinstance(exc, KnowledgeBaseError)
+        and exc.error_code == KNOWLEDGE_STORE_UNAVAILABLE
+    )
+
+
 class IndexAdmissionRefused(FaultMavenError):
     """A KB document refused before anything is written: indexing it would not
     fit the request window (#2055, ``infrastructure.index_slot``).

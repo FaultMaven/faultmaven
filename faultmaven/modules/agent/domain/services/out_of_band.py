@@ -178,8 +178,14 @@ def needs_llm_triage(classification: QueryClassification) -> bool:
     capital of Australia" (not). Low-confidence ``directed_analysis`` is open
     because it is where everything with no entities and no known phrasing
     lands — the haiku request scores 0.6 there. Everything else has a signal
-    that pins it to the case.
+    that pins it to the case, and so does a question about the knowledge base
+    (``kb_question``), whatever its mode.
     """
+    if classification.kb_question is not None:
+        # A question about the knowledge base is about the user's engineering
+        # material by construction; asking a classifier would only spend a call
+        # to reach the same verdict, or risk an aside that skips the lookup.
+        return False
     if classification.mode == ProcessingMode.KNOWLEDGE_QUERY:
         return True
     return (

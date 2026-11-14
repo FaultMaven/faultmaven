@@ -1710,6 +1710,7 @@ class StructuredOutputGenerator:
         base_prompt_builder: Optional[Callable[..., str]] = None,
         *,
         redaction_ctx: CaseRedactionContext,
+        kb_lookup: Optional[Any] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -1720,6 +1721,8 @@ class StructuredOutputGenerator:
         ``FALLBACK_*`` prompt and retries once. See the context-management design
         doc §7.1. ``user_message`` is required to build the fallback; when it is
         not supplied the recovery is skipped and the error propagates.
+        ``kb_lookup`` is the turn's knowledge-base question lookup, whose
+        verdict the fallback carries (§5.6 of ``orchestration-capabilities.md``).
         """
         refusal = RefusalState()  # one per engine call (#1770)
         try:
@@ -1768,7 +1771,7 @@ class StructuredOutputGenerator:
                 # searched, so the user can tell a context-starved answer from
                 # a normal one.
                 fb_prompt = get_fallback_prompt_for_case(
-                    case, user_message, given_tools=NO_TOOLS
+                    case, user_message, given_tools=NO_TOOLS, kb_lookup=kb_lookup
                 )
                 fb_prompt += DEGRADED_NO_TOOLS_NOTICE
                 # Minimal retry: drop tools to shrink the request further.

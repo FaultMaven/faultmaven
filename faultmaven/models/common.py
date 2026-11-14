@@ -195,6 +195,15 @@ class SearchResult(BaseModel):
     tags: List[str] = Field(..., description="Document tags")
     score: float = Field(..., description="Search relevance score")
     snippet: str = Field(..., description="Relevant content snippet")
+    content: Optional[str] = Field(
+        default=None,
+        description=(
+            "The matched chunk's full text, where ``snippet`` is its first 200 "
+            "characters. A chunk is one section of a runbook (chunking is "
+            "structure-aware), so this is what answers 'what does the runbook "
+            "say'. None when the store returned no text."
+        ),
+    )
     parent_document_id: Optional[str] = Field(
         default=None,
         description=(
