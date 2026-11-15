@@ -151,6 +151,36 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.1.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` documents a 500 and names the one that "
+            "may have saved the turn (#2813): `x-error-code: TURN_OUTCOME_UNKNOWN`, "
+            "no `Retry-After`. Any other 500 from the route means nothing of the "
+            "turn committed. MINOR: a newly documented status on a route that "
+            "already answered 500s, with one new code under it; no request or "
+            "schema shape changes."
+        ),
+        body=r"""`TURN_OUTCOME_UNKNOWN` answers a turn whose commit went unanswered (the
+database stopped answering during the COMMIT, or the connection was lost) and
+a turn that committed but whose answer then failed. Recover it by retrying
+with the same `Idempotency-Key`: a committed turn is answered from its
+receipt, one that did not commit runs. Without a key, reload the case before
+sending the turn again.
+
+Until now the commit's database timeout reached the AI-provider error
+mapping and was answered 500 `SERVICE_ERROR`, `Retry-After: 10`, "Please try
+again", the same answer a refusal that saved nothing gets. A client could not
+tell the two apart: re-sending every 500 under its key re-ran failures that
+saved nothing, and following the text without a key could save the turn
+twice. A client may now treat only this code as "may have been saved".
+
+Two answers move with it. A database timeout on a statement BEFORE the
+commit, which saves nothing, is the preparation's 503 `DATABASE_UNAVAILABLE`
+(`Retry-After: 5`) instead of that 500. A failure after the commit that was
+answered 500 `UNEXPECTED_ERROR` is now `TURN_OUTCOME_UNKNOWN`.""",
+    ),
+    ContractChange(
         version="15.0.0",
         level="MAJOR",
         title=(

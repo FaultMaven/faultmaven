@@ -45,6 +45,7 @@ from faultmaven.core.investigation.turn_budget import (
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
     CaseNotDriverError,
+    CommitOutcomeUnknown,
     DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
@@ -709,10 +710,10 @@ class InvestigationService:
         and emits the #1142 error row. This method then only maps what the
         commit raised, and a cancellation of this method reaches its caller
         untouched while the settlement runs to its end. So a 2xx means the
-        whole turn is committed, and an error means none of it is, except when
-        the database stops answering during the commit itself: the commit is
-        bounded by ``DATABASE_COMMAND_TIMEOUT_SECONDS`` (#2280), and the
-        ``ServiceException`` it then raises leaves the outcome unknown.
+        whole turn is committed, and an error means none of it is, except
+        ``CommitOutcomeUnknown``: the COMMIT went unanswered, because the
+        database stopped answering during it (bounded by
+        ``DATABASE_COMMAND_TIMEOUT_SECONDS``, #2280) or the connection was lost.
 
         Raises:
             TurnDeadlineExceeded: Too little budget left to start the commit.
@@ -720,9 +721,12 @@ class InvestigationService:
                 (409); nothing of the turn is committed.
             TurnReceiptExistsError: Another turn under the same key already
                 committed; nothing of this one is (the route replays that one).
-            ServiceException: The commit failed (500); nothing is committed,
-                unless the database timed out during the commit (#2280), which
-                leaves the outcome unknown.
+            CommitOutcomeUnknown: The COMMIT went unanswered, so the turn may
+                have committed (#2813). A keyed turn whose receipt then reads
+                back does not raise (``SessionlessCaseRepository.save``).
+            DatabaseTimeout: The database did not answer a statement before
+                the COMMIT; nothing is committed (#2813).
+            ServiceException: The commit failed; nothing is committed.
         """
         try:
             check_commit_budget()
@@ -754,6 +758,25 @@ class InvestigationService:
             raise
         except Exception as e:
             logger.error(f"Failed to commit turn for case {prepared.case.case_id}: {e}")
+            # Each passes through as itself, found on the chain the session and
+            # the repository wrapped it in, so the route can say whether the
+            # turn may have been saved; never as the ``ServiceException`` below,
+            # which the route reads as the AI provider's failure (#2813). The
+            # unanswered COMMIT first: a COMMIT timeout is a ``DatabaseTimeout``
+            # too, and a statement timeout before the COMMIT saved nothing.
+            chain = list(walk_cause_chain(e))
+            if any(isinstance(cause, CommitOutcomeUnknown) for cause in chain):
+                raise CommitOutcomeUnknown(
+                    f"The commit of the turn on case {prepared.case.case_id} "
+                    f"went unanswered: {e}"
+                ) from e
+            if any(isinstance(cause, DatabaseTimeout) for cause in chain):
+                if isinstance(e, DatabaseTimeout):
+                    raise
+                raise DatabaseTimeout(
+                    f"The database did not answer while the turn on case "
+                    f"{prepared.case.case_id} was committed: {e}"
+                ) from e
             raise ServiceException(
                 f"Turn processing failed: {str(e)}",
                 details={"error_code": getattr(e, "error_code", None)},

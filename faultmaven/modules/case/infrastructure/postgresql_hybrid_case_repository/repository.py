@@ -26,6 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.exceptions import CommitOutcomeUnknown
+from faultmaven.infrastructure.persistence.db_errors import sqlstate
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.driver import (
@@ -200,7 +202,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Raises:
             StaleCaseException: The case changed since it was read
-            RepositoryException: If save fails
+            RepositoryException: If save fails. Chained from
+                ``CommitOutcomeUnknown`` when the COMMIT itself raised without
+                the server's answer, so it may have landed (#2813).
         """
         self.check_turn_rows(case, reports, receipt)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
@@ -329,7 +333,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     await self._raise_if_receipt_exists(case, receipt, refused)
                     raise
 
-            await self.db.commit()
+            try:
+                await self.db.commit()
+            except Exception as failure:
+                if not _server_answered(failure):
+                    raise CommitOutcomeUnknown(
+                        f"The COMMIT of case {case.case_id} was not answered: "
+                        f"{failure!r}"
+                    ) from failure
+                raise
             case.mark_persisted()
             return case
 
@@ -1695,6 +1707,23 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # Agent Execution & Tool Call Persistence (PostgreSQL)
     # Schema reference: docs/architecture/data-and-storage/schemas/case-schema.md §4.11
     # ============================================================
+
+
+#: SQLSTATE class 08, connection exception. asyncpg raises it on the client
+#: side (``ConnectionDoesNotExistError``, 08003) when the connection is gone,
+#: so it is not the server's answer to the statement.
+_CONNECTION_EXCEPTION_CLASS = "08"
+
+
+def _server_answered(failure: BaseException) -> bool:
+    """Whether the server answered the failed COMMIT, which then did not land.
+
+    PostgreSQL's error reply to a COMMIT means it rolled the transaction back,
+    and that reply carries a SQLSTATE. A timeout, or a connection exception,
+    carries none from the server, and the COMMIT may have landed (#2813).
+    """
+    code = sqlstate(failure)
+    return code is not None and not code.startswith(_CONNECTION_EXCEPTION_CLASS)
 
 
 class RepositoryException(Exception):
