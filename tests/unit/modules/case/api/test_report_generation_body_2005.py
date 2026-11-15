@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.exceptions import NotFoundError
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
@@ -66,7 +67,16 @@ def _case_service() -> MagicMock:
             return None
         return SimpleNamespace(case_id=EXISTING, is_terminal=True)
 
+    async def require_case(
+        case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
+        case = await get_case(case_id, user_id)
+        if case is None:
+            raise NotFoundError("Case", case_id)
+        return case
+
     service.get_case = AsyncMock(side_effect=get_case)
+    service.require_case = AsyncMock(side_effect=require_case)
     return service
 
 

@@ -568,6 +568,7 @@ async def _messages_as(
     repo.get = AsyncMock(return_value=case)
     case_service = CaseService(case_repository=repo)
     case_service.get_case = AsyncMock(return_value=case)  # read access: granted
+    case_service.require_case = AsyncMock(return_value=case)
     response = await get_case_messages_enhanced(
         case_id=case.case_id,
         request=_request(world),
@@ -703,6 +704,7 @@ async def _turn_as(
     case = _case()
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=case)
+    case_service.require_case = AsyncMock(return_value=case)
     investigation_service = MagicMock()
     investigation_service.prepare_turn = AsyncMock(return_value=_turn(sources))
     investigation_service.commit_turn = AsyncMock(

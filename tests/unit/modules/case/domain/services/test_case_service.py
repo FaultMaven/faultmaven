@@ -13,6 +13,7 @@ from faultmaven.config.tenant_context import (
     set_current_enterprise_id,
 )
 from faultmaven.exceptions import (
+    CaseNotDriverError,
     NotFoundError,
     ServiceException,
     ValidationException,
@@ -395,10 +396,12 @@ class TestUpdateCase:
             await service.update_case("case_abc123abc123", {})
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_missing_case(self, service, mock_repo):
+    async def test_a_missing_case_is_the_cases_not_found(self, service, mock_repo):
+        """Raised, not answered False: the route labels it CASE_NOT_FOUND (#2806)."""
         mock_repo.get.return_value = None
-        result = await service.update_case("case_abc123abc123", {"title": "X"})
-        assert result is False
+        with pytest.raises(NotFoundError) as absent:
+            await service.update_case("case_abc123abc123", {"title": "X"})
+        assert absent.value.resource_type == "Case"
 
 
 # ============================================================
@@ -752,7 +755,7 @@ class TestTheLinkGatesTheCase:
         mock_repo.get.return_value = case
         svc = self._service_with_share(mock_repo, shared_ids=[case.case_id])
 
-        with pytest.raises(NotFoundError):
+        with pytest.raises(CaseNotDriverError):
             await svc.link_session_to_case("sess_abc", case.case_id, "user_teammate")
         mock_repo.update_activity_timestamp.assert_not_awaited()
         svc.session_store.set.assert_not_awaited()
@@ -1387,13 +1390,18 @@ class TestCaseTeamShareEndpoints:
         )
 
     @pytest.mark.asyncio
-    async def test_share_rejected_for_non_owner(self, mock_repo, mock_session_store):
+    async def test_share_by_a_non_reader_is_the_cases_404(
+        self, mock_repo, mock_session_store
+    ):
         case = _make_case(user_id="owner")
         mock_repo.get = AsyncMock(return_value=case)
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
         )
-        with pytest.raises(ValidationException, match="creator"):
+        # "intruder" cannot read the case: the case's 404, which confirms
+        # nothing (#2806). A reader who is not the creator is refused 403 in
+        # test_case_driver_1898.
+        with pytest.raises(NotFoundError):
             await svc.share_case_with_team(case.case_id, "team_a", "intruder")
         share_repo.share.assert_not_awaited()
 
@@ -1416,8 +1424,9 @@ class TestCaseTeamShareEndpoints:
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
         )
-        with pytest.raises(ValidationException, match="not found"):
+        with pytest.raises(NotFoundError) as absent:
             await svc.share_case_with_team("missing", "team_a", "owner")
+        assert absent.value.resource_type == "Case"
         share_repo.share.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1457,13 +1466,15 @@ class TestCaseTeamShareEndpoints:
         )
 
     @pytest.mark.asyncio
-    async def test_unshare_rejected_for_non_owner(self, mock_repo, mock_session_store):
+    async def test_unshare_by_a_non_reader_is_the_cases_404(
+        self, mock_repo, mock_session_store
+    ):
         case = _make_case(user_id="owner")
         mock_repo.get = AsyncMock(return_value=case)
         svc, _, share_repo = _team_share_service(
             mock_repo, mock_session_store, teams=["team_a"]
         )
-        with pytest.raises(ValidationException, match="creator"):
+        with pytest.raises(NotFoundError):
             await svc.unshare_case_from_team(case.case_id, "team_a", "intruder")
         share_repo.unshare.assert_not_awaited()
 

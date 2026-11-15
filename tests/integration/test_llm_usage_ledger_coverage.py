@@ -655,6 +655,16 @@ class TestOutsideATurn:
                     inquiry=None,
                 )
 
+            async def require_case(
+                self, case_id, user_id, *, driver_only=False, creator_only=False
+            ):
+                return await self.get_case(
+                    case_id,
+                    user_id,
+                    driver_only=driver_only,
+                    creator_only=creator_only,
+                )
+
             async def get_case_conversation_context(self, case_id, limit=10):
                 return conversation
 

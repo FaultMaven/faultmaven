@@ -102,6 +102,9 @@ class TestGenerateReportRouteMapsBillingTo402:
         request.report_types = [MagicMock(value="resolution_summary")]
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_case())
+        case_service.require_case = AsyncMock(
+            return_value=case_service.get_case.return_value
+        )
         generation_service = MagicMock()
         generation_service.generate_reports = AsyncMock(side_effect=service_error)
         current_user = MagicMock()

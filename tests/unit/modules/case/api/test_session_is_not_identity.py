@@ -192,6 +192,8 @@ def _permissive_case_service() -> SimpleNamespace:
     async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
         return SimpleNamespace(case_id=CASE_ID, user_id=CALLER)
 
+    require_case = get_case  # the case routes' gate (#2806); admits too
+
     async def create_case(
         title=None,
         description=None,
@@ -209,6 +211,7 @@ def _permissive_case_service() -> SimpleNamespace:
 
     return SimpleNamespace(
         get_case=get_case,
+        require_case=require_case,
         create_case=create_case,
         resume_case_in_session=resume_case_in_session,
         reached=reached,

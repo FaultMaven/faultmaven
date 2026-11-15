@@ -447,7 +447,9 @@ async def test_the_report_route_answers_503_when_the_check_fails(kb, check_down)
     case = _resolved_content_case().model_copy(
         update={"state": CaseState.RESOLVED, "resolved_at": datetime.now(timezone.utc)}
     )
-    case_service = SimpleNamespace(get_case=AsyncMock(return_value=case))
+    case_service = SimpleNamespace(
+        get_case=AsyncMock(return_value=case), require_case=AsyncMock(return_value=case)
+    )
 
     with pytest.raises(HTTPException) as refused:
         await reports.get_report_recommendations(

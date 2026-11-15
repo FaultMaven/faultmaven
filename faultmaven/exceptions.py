@@ -334,6 +334,22 @@ LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
 # 409 would have turned into a false claim about a live case.
 CASE_TERMINAL = "CASE_TERMINAL"
 
+# Stable ``x-error-code`` of the 404 for a case the caller cannot read: it does
+# not exist, was deleted, or lies outside the caller's read scope (creator ∪
+# shared-to-my-teams), told apart from none of those so it discloses nothing
+# (#2806). Every case route's case lookup answers it, through
+# ``CaseService.require_case`` and the ``NotFoundError`` handler; a 404 for
+# something INSIDE a case (a file, a report, a disabled endpoint) never carries
+# it, so a client can close a case on this label alone.
+CASE_NOT_FOUND = "CASE_NOT_FOUND"
+
+# Stable ``x-error-code`` of the 403 for an investigation write by a caller who
+# READS the case but does not drive it (ADR-020 D2, #2806). Before it, the
+# driver-only routes answered such a reader with the absent case's 404: false
+# for a case the caller can see listed and open, and the one answer a client
+# could not tell from a deletion.
+CASE_NOT_DRIVER = "CASE_NOT_DRIVER"
+
 
 # error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
 # individual request: if this request failed for one of these reasons, so will
@@ -1095,6 +1111,21 @@ class AuthorizationError(ServiceError):
     """
 
     def __init__(self, message: str = "Not authorized"):
+        super().__init__(message)
+
+
+class CaseNotDriverError(AuthorizationError):
+    """An investigation write by a reader of the case who does not drive it.
+
+    Answered 403 ``x-error-code: CASE_NOT_DRIVER`` by the ``AuthorizationError``
+    handler (#2806). Raised only once the caller is known to READ the case: a
+    caller who cannot read it gets ``NotFoundError("Case", ...)`` instead, so
+    this answer never confirms a case to someone it is hidden from.
+    """
+
+    error_code = CASE_NOT_DRIVER
+
+    def __init__(self, message: str = "Only the case's driver may do this"):
         super().__init__(message)
 
 

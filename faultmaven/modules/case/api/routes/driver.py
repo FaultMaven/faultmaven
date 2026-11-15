@@ -5,7 +5,8 @@ views the case, the driver holds the investigation writes, the creator holds
 governance. These two routes move the driver. Both are open to the case's
 creator and its effective driver only; refusals come from the service:
 
-- a caller who cannot read the case: 404, as on every case route;
+- a caller who cannot read the case: 404 ``CASE_NOT_FOUND``, as on every case
+  route (#2806);
 - a reader who is neither creator nor driver: 403;
 - a target who is not a candidate: 422;
 - a lost version race: 409 ``CASE_VERSION_CONFLICT``.
@@ -32,6 +33,7 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     check_case_service_available,
 )
@@ -42,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 _REFUSALS = {
     403: {"description": "The caller reads the case but neither created nor drives it"},
-    404: {"description": "No such case, or the caller cannot read it"},
+    **CASE_NOT_FOUND_RESPONSE,
 }
 
 

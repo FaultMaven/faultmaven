@@ -28,6 +28,7 @@ import pytest
 from fastapi import status
 from httpx import ASGITransport, AsyncClient
 
+from faultmaven.exceptions import NotFoundError
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
@@ -131,6 +132,19 @@ def mock_case_service():
     # No delete runs (#2510): a real bool, as the service returns, so the
     # detail read serializes as it does for a case nobody is deleting.
     service.delete_in_progress = AsyncMock(return_value=False)
+
+    # The routes resolve the case through ``require_case`` (#2806). It mirrors
+    # whatever ``get_case`` is set to answer: the case, or ``NotFoundError``
+    # where ``get_case`` answers ``None``.
+    async def _require_case(
+        case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
+        case = service.get_case.return_value
+        if case is None:
+            raise NotFoundError("Case", case_id)
+        return case
+
+    service.require_case = AsyncMock(side_effect=_require_case)
     return service
 
 
@@ -397,7 +411,10 @@ class TestGetCase:
         data = response.json()
         assert data["case_id"] == "case_123abc"
         # v2.0 API passes user_id (from current_user), not a tenant id
-        mock_case_service.get_case.assert_called_once_with("case_123abc", "user_789")
+        # Resolved through ``require_case`` against the caller (#2806).
+        mock_case_service.require_case.assert_awaited_once_with(
+            "case_123abc", "user_789", driver_only=False
+        )
 
     async def test_a_case_nobody_deletes_reads_todays_keys_and_deleting_false(
         self, client, mock_case_service, mock_case, headers
@@ -671,11 +688,14 @@ class TestUpdateCase:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_update_case_forbidden(self, client, mock_case_service, headers):
-        """Test updating a case from another enterprise - v2.0 uses PUT method."""
+    async def test_update_case_forbidden(
+        self, client, mock_case_service, mock_case, headers
+    ):
+        """The service's own refusal after the route's gate admitted the
+        caller is a 403 - v2.0 uses PUT method."""
         from faultmaven.exceptions import AuthorizationError
 
-        mock_case_service.get_case.return_value = None
+        mock_case_service.get_case.return_value = mock_case
         mock_case_service.update_case.side_effect = AuthorizationError(
             "Case not accessible by enterprise"
         )

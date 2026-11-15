@@ -28,6 +28,8 @@ from faultmaven.config.tenant_context import (
     get_current_tenant_id,
 )
 from faultmaven.exceptions import (
+    AuthorizationError,
+    CaseNotDriverError,
     NotFoundError,
     ServiceException,
     ValidationException,
@@ -450,7 +452,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         A falsy ``user_id`` admits (an internal caller with no principal); every
         route passes the authenticated caller. Extracted from :meth:`get_case`
         so a caller that must NOT swallow infrastructure failures can apply the
-        same rule (see :meth:`_resolve_case_for_access`).
+        same rule (see :meth:`require_case`).
         """
         if driver_only and creator_only:
             raise ValueError("driver_only and creator_only are exclusive")
@@ -479,7 +481,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             )
         return admitted
 
-    async def _resolve_case_for_access(
+    async def require_case(
         self,
         case_id: str,
         user_id: Optional[str],
@@ -487,29 +489,41 @@ class CaseService(CaseDriverMixin, ICaseService):
         driver_only: bool = False,
         creator_only: bool = False,
     ) -> Case:
-        """Resolve a case for a gate, raising rather than answering ``None``.
+        """The case, for a gate: raises where :meth:`get_case` answers ``None``.
 
-        ``get_case`` cannot be used for a gate that reports 404, because it
-        wraps everything in ``except Exception: return None`` — so a repository
-        outage is indistinguishable from "no such case". A gate built on it
-        answers **404 for a case that exists and is reachable** the moment the
-        database blips, which is the half-success-as-absence shape #1390 was
-        about: the client abandons a case that is fine instead of retrying.
+        The one case lookup behind every case route's refusals (#2806):
+
+        - the caller cannot READ the case (it does not exist, was deleted, or
+          is outside creator ∪ shared-to-my-teams): ``NotFoundError("Case")``,
+          answered 404 ``x-error-code: CASE_NOT_FOUND``. The same for all three,
+          so it discloses nothing about a case the caller cannot read;
+        - the caller reads it but the write is the driver's (``driver_only``)
+          and they do not drive it: ``CaseNotDriverError``, answered 403
+          ``x-error-code: CASE_NOT_DRIVER``. Answering it 404, as the
+          driver-only routes did, told a reader who can see the case listed
+          that it does not exist — the one answer a client could not tell
+          from a deletion;
+        - the caller reads it but the write is the creator's
+          (``creator_only``): ``AuthorizationError``, 403.
+
+        Not via ``get_case``: that wraps everything in ``except Exception:
+        return None``, so a repository outage would be indistinguishable from
+        "no such case" and a gate built on it would answer 404 for a case that
+        exists — the half-success-as-absence shape #1390 was about. Here a
+        repository failure propagates and the caller answers 5xx.
 
         ``driver_only`` / ``creator_only`` mean what they mean on
         :meth:`get_case`.
-
-        Raises:
-            NotFoundError: the case does not exist, or ``user_id`` cannot reach
-                it. Only these two.
-            Anything the repository raises: propagated untouched, so the caller
-                answers 5xx for an infrastructure failure rather than 404.
         """
         case = await self.repository.get(case_id)
-        if not case or not await self._may_access(
+        if not case or not await self._may_access(case, user_id):
+            raise NotFoundError("Case", case_id)
+        if (driver_only or creator_only) and not await self._may_access(
             case, user_id, driver_only=driver_only, creator_only=creator_only
         ):
-            raise NotFoundError("Case", case_id)
+            if driver_only:
+                raise CaseNotDriverError()
+            raise AuthorizationError("Only the case's creator may do this")
         return case
 
     @trace("case_service_update_case")
@@ -539,6 +553,13 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Returns:
             True if update was successful
+
+        Raises:
+            NotFoundError: the caller cannot read the case, or it was deleted
+                while the update ran.
+            CaseNotDriverError: the caller reads it but does not drive it, at
+                the gate or because the driver changed while the update ran
+                (#2806).
         """
         if not case_id or not case_id.strip():
             raise ValidationException("Case ID cannot be empty")
@@ -553,17 +574,16 @@ class CaseService(CaseDriverMixin, ICaseService):
         safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
 
         try:
-            # Access check happens by loading via get_case first. Then the
+            # Access check happens by loading via require_case first. Then the
             # retry helper (state path) reloads on conflict via
             # repository.get(), which skips the access check. We enforce
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
             # ``driver_only``: editing the case and moving its state are the
-            # driver's investigation writes (ADR-020 D2); a reader who does not
-            # drive gets the absent-case answer.
-            existing = await self.get_case(case_id, user_id, driver_only=True)
-            if not existing:
-                return False
+            # driver's investigation writes (ADR-020 D2): a reader who does not
+            # drive is refused ``CASE_NOT_DRIVER``, a caller who cannot read
+            # the case ``CASE_NOT_FOUND`` (#2806).
+            existing = await self.require_case(case_id, user_id, driver_only=True)
 
             # During an investigation the description IS the problem
             # statement, held in three stores (description, the verification
@@ -608,7 +628,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                     # retry reloads — and must not then write as a driver the
                     # caller no longer is (ADR-020 D4).
                     if user_id and case.effective_driver_id != user_id:
-                        raise NotFoundError("Case", case_id)
+                        raise CaseNotDriverError()
                     for key, value in safe_updates.items():
                         if (
                             key == "description"
@@ -637,12 +657,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             logger.info(f"Updated case {case_id}")
             return True
 
-        except ValidationException:
+        except (ValidationException, NotFoundError, AuthorizationError):
+            # The access verdict, up front or under the retry: answered as
+            # what it is, never as a failed write.
             raise
-        except NotFoundError:
-            # The driver changed under the retry: the same answer as a caller
-            # the gate refused up front.
-            return False
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
@@ -724,12 +742,14 @@ class CaseService(CaseDriverMixin, ICaseService):
             True if the link was made and persisted
 
         Raises:
-            NotFoundError: the case does not exist, or ``user_id`` is not its
-                effective driver — a reader who does not drive included. Raised rather than
-                returned as ``False`` so a caller can tell "you may not have
-                this" from "the link failed", which are a 404 and a 500
-                respectively; conflating them is what made this endpoint report
-                a working resume as an absence (#1390).
+            NotFoundError: ``user_id`` cannot read the case.
+            CaseNotDriverError: ``user_id`` reads it but does not drive it
+                (#2806).
+
+            Both are raised rather than returned as ``False`` so a caller can
+            tell "you may not have this" from "the link failed", which are a
+            404 or 403 and a 500 respectively; conflating them is what made
+            this endpoint report a working resume as an absence (#1390).
         """
         if not session_id or not case_id:
             raise ValidationException("Session ID and Case ID are required")
@@ -756,7 +776,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             # NOT via ``get_case``: that swallows every exception into ``None``,
             # so a repository outage would raise ``NotFoundError`` here and the
             # route would answer 404 for a case that exists and is reachable.
-            await self._resolve_case_for_access(case_id, user_id, driver_only=True)
+            await self.require_case(case_id, user_id, driver_only=True)
 
             # Update last activity timestamp via repository
             await self.repository.update_activity_timestamp(case_id)
@@ -792,9 +812,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             logger.info(f"Linked session {session_id} to case {case_id}")
             return True
 
-        except (ValidationException, NotFoundError):
-            # NotFoundError is the ACCESS verdict, not a link failure. The bare
-            # handler below converts anything it catches into False, which the
+        except (ValidationException, NotFoundError, AuthorizationError):
+            # NotFoundError / CaseNotDriverError are the ACCESS verdict, not a
+            # link failure. The bare handler below converts anything it
+            # catches into False, which the
             # route reads as "the link failed" — a 500 for a request that
             # should be a 404.
             raise
@@ -896,8 +917,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             True if the case was resumed
 
         Raises:
-            NotFoundError: the case does not exist or the caller is not its
-                driver (raised by ``link_session_to_case``).
+            NotFoundError: the caller cannot read the case;
+            CaseNotDriverError: the caller reads it but does not drive it
+                (both raised by ``link_session_to_case``).
         """
         if not case_id or not session_id:
             raise ValidationException("Case ID and Session ID are required")
@@ -933,7 +955,7 @@ class CaseService(CaseDriverMixin, ICaseService):
 
             return success
 
-        except (ValidationException, NotFoundError):
+        except (ValidationException, NotFoundError, AuthorizationError):
             raise
         except Exception as e:
             logger.error(
@@ -1008,7 +1030,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         if not case_id:
             raise ValidationException("Case ID cannot be empty")
 
-        case = await self._resolve_case_for_access(case_id, user_id)
+        case = await self.require_case(case_id, user_id)
         if user_id and case.user_id != user_id:
             logger.warning(
                 f"User {user_id} denied delete access to case {case_id} "
@@ -1080,7 +1102,8 @@ class CaseService(CaseDriverMixin, ICaseService):
         transition surfaces as a conflict instead of silently re-closing.
 
         Raises:
-            NotFoundError: Unknown case, or the caller is not its driver.
+            NotFoundError: The caller cannot read the case.
+            CaseNotDriverError: The caller reads it but does not drive it.
             ConflictError: Case is already resolved/closed.
         """
         from faultmaven.core.investigation.outcome import (
@@ -1097,9 +1120,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         )
         from faultmaven.modules.case.utils import update_case_with_retry
 
-        case = await self.get_case(case_id, user_id, driver_only=True)
-        if not case:
-            raise NotFoundError("Case", case_id)
+        # 404 for a case the caller cannot read, 403 ``CASE_NOT_DRIVER`` for a
+        # reader who does not drive it (#2806); a repository failure is a 5xx.
+        case = await self.require_case(case_id, user_id, driver_only=True)
 
         def _already_terminal(state: CaseState) -> ConflictError:
             return ConflictError(
@@ -1117,7 +1140,7 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:
-                raise NotFoundError("Case", case_id)
+                raise CaseNotDriverError()
             if fresh.state.is_terminal:
                 raise _already_terminal(fresh.state)
             # Per attempt: the record this attempt's write folds over (#2689).
@@ -1979,16 +2002,18 @@ class CaseService(CaseDriverMixin, ICaseService):
         (re-sharing is a no-op).
 
         Raises:
-            ValidationException: sharing unavailable (standalone), case missing,
-                caller is not the owner, or caller is not a member of ``team_id``.
+            NotFoundError: the caller cannot read the case.
+            ValidationException: sharing unavailable (standalone), caller is
+                not the owner, or caller is not a member of ``team_id``.
         """
         if not self.team_service or not self.share_repository:
             raise ValidationException(
                 "Team sharing is not available in this deployment"
             )
-        case = await self.repository.get(case_id)
-        if not case:
-            raise ValidationException(f"Case {case_id} not found")
+        # A case the caller cannot read is the 404 ``CASE_NOT_FOUND`` every case
+        # route answers (#2806); it was a 403 "Case ... not found" here, and to
+        # a reader of no share it confirmed the case through the creator check.
+        case = await self.require_case(case_id, actor_user_id)
         if case.user_id != actor_user_id:
             raise ValidationException(
                 "Only the case's creator can share it with a team"
@@ -2017,16 +2042,18 @@ class CaseService(CaseDriverMixin, ICaseService):
         Returns True if a share row was removed (False if it wasn't shared).
 
         Raises:
-            ValidationException: sharing unavailable, case missing, or caller is
-                not the owner.
+            NotFoundError: the caller cannot read the case.
+            ValidationException: sharing unavailable, or caller is not the
+                owner.
         """
         if not self.team_service or not self.share_repository:
             raise ValidationException(
                 "Team sharing is not available in this deployment"
             )
-        case = await self.repository.get(case_id)
-        if not case:
-            raise ValidationException(f"Case {case_id} not found")
+        # A case the caller cannot read is the 404 ``CASE_NOT_FOUND`` every case
+        # route answers (#2806); it was a 403 "Case ... not found" here, and to
+        # a reader of no share it confirmed the case through the creator check.
+        case = await self.require_case(case_id, actor_user_id)
         if case.user_id != actor_user_id:
             raise ValidationException(
                 "Only the case's creator can unshare it from a team"

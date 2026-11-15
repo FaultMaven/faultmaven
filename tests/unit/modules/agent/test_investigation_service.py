@@ -12,8 +12,8 @@ import pytest
 from faultmaven.core.investigation.offers import confirmation_pair
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
+    CaseNotDriverError,
     NotFoundError,
-    PermissionDeniedException,
     ServiceException,
     ValidationException,
 )
@@ -499,7 +499,8 @@ class TestInvestigationServiceProcessTurn:
         await mock_case_repository.save(sample_case)
         unauthorized_user_id = str(uuid4())
 
-        with pytest.raises(PermissionDeniedException, match="not authorized"):
+        # 403 ``CASE_NOT_DRIVER`` (#2806).
+        with pytest.raises(CaseNotDriverError):
             await service.process_turn(
                 case_id=sample_case.case_id,
                 user_id=unauthorized_user_id,

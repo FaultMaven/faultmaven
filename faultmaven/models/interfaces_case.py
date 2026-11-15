@@ -280,6 +280,29 @@ class ICaseService(ABC):
         pass
 
     @abstractmethod
+    async def require_case(
+        self,
+        case_id: str,
+        user_id: Optional[str],
+        *,
+        driver_only: bool = False,
+        creator_only: bool = False,
+    ) -> Case:
+        """The case, or the refusal every case route answers (#2806).
+
+        Raises:
+            NotFoundError: ``("Case", case_id)`` — the caller cannot read it
+                (absent, deleted, or outside their read scope; not told
+                apart). Answered 404 ``x-error-code: CASE_NOT_FOUND``.
+            CaseNotDriverError: ``driver_only`` and the caller reads the case
+                but does not drive it. Answered 403 ``CASE_NOT_DRIVER``.
+            AuthorizationError: ``creator_only`` and the caller reads the
+                case but did not create it.
+            Anything the repository raises, untouched (a 5xx, never a 404).
+        """
+        pass
+
+    @abstractmethod
     async def get_turn_receipt(
         self,
         *,

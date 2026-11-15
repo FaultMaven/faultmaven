@@ -29,6 +29,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
+    CaseNotDriverError,
     FaultMavenException,
     NotFoundError,
     RawModelContentRefused,
@@ -60,12 +61,17 @@ from faultmaven.models.case_ui import CaseUIResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_DRIVER_RESPONSE,
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     _di_get_creator_service_channel,
     _di_get_session_service_dependency,
     _is_default_case_title,
+    case_not_driver_http,
+    case_not_found_http,
     check_case_service_available,
     require_case_not_terminal,
+    resolve_case,
 )
 from faultmaven.modules.case.api.title_generation import (
     MAX_TITLE_WORDS_DEFAULT,
@@ -710,6 +716,7 @@ async def get_case_service_health(
 @router.get(
     "/{case_id}",
     response_model=CaseDetail,
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_case")
@@ -737,19 +744,7 @@ async def get_case(
     response.headers["Expires"] = "0"
 
     try:
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            # Restored from old implementation - proper error response format
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="CASE_NOT_FOUND", message="Case not found or access denied"
-                ),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.model_dump(),
-            )
+        case = await resolve_case(case_service, case_id, current_user.user_id)
 
         # Convert to CaseDetail (v2.0 API model with milestones)
         detail = CaseDetail.from_case(case)
@@ -783,6 +778,7 @@ async def get_case(
 @router.get(
     "/{case_id}/ui",
     response_model=CaseUIResponse,
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_case_ui")
@@ -807,18 +803,7 @@ async def get_case_ui(
         case_service = check_case_service_available(case_service)
 
         # Get case from service
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="CASE_NOT_FOUND", message="Case not found or access denied"
-                ),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.model_dump(),
-            )
+        case = await resolve_case(case_service, case_id, current_user.user_id)
 
         # Transform to UI response based on phase
         ui_response = transform_case_for_ui(case)
@@ -876,6 +861,8 @@ async def get_case_ui(
     "/{case_id}",
     status_code=status.HTTP_200_OK,
     responses={
+        **CASE_NOT_DRIVER_RESPONSE,
+        **CASE_NOT_FOUND_RESPONSE,
         409: {
             "description": (
                 f"`x-error-code: {CASE_TERMINAL}`: the case is resolved or "
@@ -887,7 +874,7 @@ async def get_case_ui(
                     "schema": {"type": "string", "enum": [CASE_TERMINAL]},
                 }
             },
-        }
+        },
     },
     dependencies=[Depends(require_authentication)],
 )
@@ -902,24 +889,22 @@ async def update_case(
     Update case details
 
     Updates case metadata such as title, description, state, priority, and tags.
-    Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
-    the answer an absent case gets.
+    Only the case's DRIVER may update it (ADR-020 D2): a reader who does not
+    drive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404
+    ``CASE_NOT_FOUND`` (#2806).
     """
     case_service = check_case_service_available(case_service)
 
     try:
         # DRIVER only, at the route as well as in ``update_case`` (ADR-020
-        # D2). Resolved through the driver so a reader who does not drive is
-        # answered exactly as an absent case is (the 404 from ``update_case``
-        # below). Through the read allowlist, such a reader's PUT on a terminal
-        # case was answered 409 CASE_TERMINAL instead — a write refused for the
-        # case's state rather than for who asked.
-        case = await case_service.get_case(
-            case_id, current_user.user_id, driver_only=True
+        # D2), and BEFORE the terminal check: a reader who does not drive is
+        # refused for who asked (403 ``CASE_NOT_DRIVER``), not for the case's
+        # state (409 ``CASE_TERMINAL``).
+        case = await resolve_case(
+            case_service, case_id, current_user.user_id, driver_only=True
         )
         # Reject writes on terminal or archived cases
-        if case:
-            require_case_not_terminal(case)
+        require_case_not_terminal(case)
 
         # Build updates dict from request (milestone-based model)
         updates = {}
@@ -942,19 +927,9 @@ async def update_case(
                 detail=error_response.model_dump(),
             )
 
-        success = await case_service.update_case(case_id, updates, current_user.user_id)
-        if not success:
-            # Restored from old implementation - proper error response format
-            error_response = ErrorResponse(
-                schema_version="3.1.0",
-                error=ErrorDetail(
-                    code="CASE_NOT_FOUND", message="Case not found or access denied"
-                ),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=error_response.model_dump(),
-            )
+        # Raises its access verdict rather than answering False: the case
+        # deleted, or its driver changed, while the update ran (#2806).
+        await case_service.update_case(case_id, updates, current_user.user_id)
 
         # Return successful update response as expected by tests
         return {
@@ -969,14 +944,10 @@ async def update_case(
         logger.warning(
             f"Case not found in update_case: {e}",
         )
-        error_response = ErrorResponse(
-            schema_version="3.1.0",
-            error=ErrorDetail(code="CASE_NOT_FOUND", message=str(e)),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=error_response.model_dump(),
-        )
+        raise case_not_found_http() from e
+    except CaseNotDriverError as e:
+        logger.warning(f"Update of case {case_id} refused: {e}")
+        raise case_not_driver_http(str(e)) from e
     except AuthorizationError as e:
         logger.warning(
             f"Authorization error in update_case: {e}",
@@ -1020,6 +991,7 @@ async def update_case(
 @router.post(
     "/{case_id}/title",
     response_model=TitleResponse,
+    responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_generate_case_title")
@@ -1046,9 +1018,11 @@ async def generate_case_title(
 
     **Returns:**
     - 200: TitleResponse with X-Correlation-ID header
-    - 404: the case does not exist or the caller does not drive it. Naming a
-      case writes it, an investigation write that is the driver's (ADR-020
-      D2), so any other reader is refused here before any title is generated.
+    - 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive
+      it. Naming a case writes it, an investigation write that is the
+      driver's (ADR-020 D2), so any other reader is refused here before any
+      title is generated (#2806).
+    - 404 ``CASE_NOT_FOUND``: the caller cannot read the case.
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate
@@ -1098,14 +1072,9 @@ async def generate_case_title(
         # read allowlist a reader was admitted here, could spend an LLM call
         # generating a title, and was then refused by ``update_case``'s gate —
         # a 500 after the spend.
-        case = await case_service.get_case(
-            case_id, current_user.user_id, driver_only=True
+        case = await resolve_case(
+            case_service, case_id, current_user.user_id, driver_only=True
         )
-        if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied",
-            )
 
         logger.info(
             f"🔍 Case retrieved: title='{case.title}', force={effective_force}",
@@ -1232,6 +1201,7 @@ async def search_cases(
 @router.get(
     "/{case_id}/analytics",
     response_model=Dict[str, Any],
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_case_analytics")
@@ -1250,12 +1220,7 @@ async def get_case_analytics(
 
     try:
         # Verify user has access to the case
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied",
-            )
+        await resolve_case(case_service, case_id, current_user.user_id)
 
         analytics = await case_service.get_case_analytics(case_id)
         return analytics

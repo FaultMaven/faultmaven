@@ -54,6 +54,8 @@ from faultmaven.api.v1.dependencies import (
 )
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.exceptions import (
+    CASE_NOT_DRIVER,
+    CaseNotDriverError,
     NotFoundError,
     ServiceException,
     ValidationException,
@@ -243,6 +245,25 @@ def validate_enterprise_access(
         )
 
 
+#: The 403 every report write answers a reader of the case who does not drive
+#: it (ADR-020 D2, #2806).
+_CASE_NOT_DRIVER_RESPONSE: dict = {
+    403: {
+        "description": (
+            f"`x-error-code: {CASE_NOT_DRIVER}`: the caller reads the case but "
+            "does not drive it, and this write is the driver's. Nothing was "
+            "written. Unlabelled: the case belongs to another enterprise."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Which refusal; absent for the enterprise check.",
+                "schema": {"type": "string", "enum": [CASE_NOT_DRIVER]},
+            }
+        },
+    }
+}
+
+
 async def authorize_case_access(
     case_id: Optional[str],
     current_user: UserDTO,
@@ -297,20 +318,30 @@ async def authorize_case_access(
         The authorized case
 
     Raises:
-        HTTPException: 404 if the case is missing or not the caller's, 403 if it
-            belongs to another enterprise, 503 if the case service is unavailable
+        HTTPException: 404 if the caller cannot read the case, 403
+            ``CASE_NOT_DRIVER`` if ``driver_only`` and they read it but do not
+            drive it, 403 if it belongs to another enterprise, 503 if the case
+            service is unavailable
     """
     case_service = check_case_service_available(case_service)
 
-    case = (
-        await case_service.get_case(
-            case_id, user_id=current_user.user_id, driver_only=driver_only
-        )
-        if case_id
-        else None
-    )
-    if not case:
+    if not case_id:
         raise HTTPException(status_code=404, detail=not_found_detail)
+    # ``require_case``, not ``get_case`` (#2806): a reader of the case who does
+    # not drive it is refused for that, 403 ``CASE_NOT_DRIVER``, not told the
+    # report is not found; and a repository failure is a 5xx, never a 404.
+    try:
+        case = await case_service.require_case(
+            case_id, current_user.user_id, driver_only=driver_only
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    except CaseNotDriverError as refused:
+        raise HTTPException(
+            status_code=403,
+            detail=str(refused),
+            headers={"x-error-code": CASE_NOT_DRIVER},
+        )
 
     validate_enterprise_access(current_user, case.enterprise_id)
 
@@ -326,6 +357,7 @@ async def authorize_case_access(
     "/generate",
     response_model=ReportGenerationResponse,
     status_code=status.HTTP_201_CREATED,
+    responses=_CASE_NOT_DRIVER_RESPONSE,
     dependencies=[
         Depends(require_authentication),
         Depends(declare_replay_case_from_query),
@@ -495,6 +527,7 @@ async def get_report(
 @router.put(
     "/{report_id}",
     response_model=ReportResponse,
+    responses=_CASE_NOT_DRIVER_RESPONSE,
     summary="Update report",
     description="Update report title or content",
 )
@@ -604,6 +637,7 @@ async def update_report(
 @router.delete(
     "/{report_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    responses=_CASE_NOT_DRIVER_RESPONSE,
     summary="Delete report",
     description="Permanently delete a report (runbooks cannot be deleted)",
 )
@@ -853,6 +887,7 @@ async def get_report_versions(
 @router.post(
     "/{report_id}/link-case",
     response_model=LinkCaseResponse,
+    responses=_CASE_NOT_DRIVER_RESPONSE,
     summary="Link report to case closure",
     description="Mark case as closed and link final report",
 )

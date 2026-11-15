@@ -28,7 +28,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.schemas import TurnPayload
-from faultmaven.exceptions import NotFoundError, PermissionDeniedException
+from faultmaven.exceptions import CaseNotDriverError, NotFoundError
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     SUBJECT_ACCOUNT,
     BillingSubject,
@@ -157,7 +157,7 @@ async def test_a_case_the_caller_may_not_touch_costs_the_prober_nothing(monkeypa
     ledger = InMemoryTurnLedger()
     service = _service(ledger, monkeypatch, case=_case(user_id=OWNER))
 
-    with pytest.raises(PermissionDeniedException):
+    with pytest.raises(CaseNotDriverError):
         await service.process_turn(CASE_ID, STRANGER, TurnPayload(query="hello"))
 
     assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
@@ -264,7 +264,7 @@ async def test_the_creator_is_refused_while_another_drives_and_pays_nothing(
     ledger = InMemoryTurnLedger()
     service = _service(ledger, monkeypatch, case=_case(driver_id=DRIVER))
 
-    with pytest.raises(PermissionDeniedException):
+    with pytest.raises(CaseNotDriverError):
         await service.process_turn(CASE_ID, OWNER, TurnPayload(query="hello"))
 
     assert await ledger.usage(OWNER_SUBJECT, utc_day()) == 0
