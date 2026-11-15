@@ -199,11 +199,31 @@ client = {{
         assert "[REDACTED]" in result.file_extract
 
     def test_toml_nesting_past_limit_falls_back(self, extractor):
-        """tomli refuses an inline array nested 500 deep with a RecursionError;
-        the extractor falls back instead of raising (#2773)."""
+        """An inline array nested 500 deep reads as not TOML, whether or not
+        the installed tomli refuses it itself (only 2.5+ does); the extractor
+        falls back instead of raising (#2773)."""
         content = "deep = " + "[" * 500 + "]" * 500 + "\n"
         result = extractor.extract(content)
         assert result.file_meta["format"] != "toml"
+
+    def test_json_nesting_past_limit_falls_back(self, extractor):
+        """json.loads accepts 600 levels, which the extractor's recursive
+        walkers cannot; it reads as not JSON instead of raising."""
+        content = '{"a": ' * 600 + "1" + "}" * 600
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "json"
+
+    def test_yaml_self_reference_falls_back(self, extractor):
+        """SafeLoader builds a list that contains itself; it reads as not
+        YAML instead of recursing without end."""
+        result = extractor.extract("loop: &a [*a]\n")
+        assert result.file_meta["format"] != "yaml"
+
+    def test_nesting_at_limit_parses(self, extractor):
+        """Nesting up to the limit still parses structurally."""
+        content = '{"a": ' * 99 + "[1]" + "}" * 99
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "json"
 
     # --- False-positive prevention (tightened key patterns) ---
 

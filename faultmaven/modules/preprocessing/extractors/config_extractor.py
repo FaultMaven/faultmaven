@@ -79,6 +79,34 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return mapping
 
 
+# The deepest nesting a parse may hold. The walkers below (``_count_keys``,
+# ``_redact_secrets_counted``, ``_format_config``) recurse once or twice per
+# level, so a parse deeper than this reads as unparsed by that format instead
+# of exhausting the stack; no parser's own limit is relied on (tomli refuses
+# depth only from 2.5, json and SafeLoader near the interpreter's limit).
+_MAX_NESTING = 100
+
+
+def _nests_too_deep(data: Any) -> bool:
+    """True when ``data`` nests mappings or lists past ``_MAX_NESTING``.
+
+    Iterative, and stops at the first node past the limit, so a
+    self-referencing YAML structure (``&a [*a]``) ends too."""
+    stack = [(data, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            children: Any = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            continue
+        if depth > _MAX_NESTING:
+            return True
+        stack.extend((child, depth + 1) for child in children)
+    return False
+
+
 _YAML_MERGE_TAG = "tag:yaml.org,2002:merge"
 
 
@@ -272,12 +300,14 @@ class StructuredConfigExtractor:
         Try to parse as structured config
 
         Returns the parsed data and its format, or None if no parser reads
-        the content. Raises ``_RepeatedKey`` when JSON or YAML that would
-        parse repeats a key in one mapping.
+        the content within ``_MAX_NESTING``. Raises ``_RepeatedKey`` when JSON
+        or YAML that would parse repeats a key in one mapping.
         """
         # Try JSON first
         try:
-            return json.loads(content, object_pairs_hook=_unique_pairs), "json"
+            result = json.loads(content, object_pairs_hook=_unique_pairs)
+            if not _nests_too_deep(result):
+                return result, "json"
         except _RepeatedKey:
             raise
         except (ValueError, RecursionError):  # JSONDecodeError subclasses it
@@ -286,7 +316,7 @@ class StructuredConfigExtractor:
         try:
             result = yaml.load(content, Loader=_UniqueKeyLoader)
             # YAML might parse plain text as a string - we need a dict
-            if isinstance(result, dict):
+            if isinstance(result, dict) and not _nests_too_deep(result):
                 return result, "yaml"
         except _RepeatedKey:
             raise
@@ -298,7 +328,9 @@ class StructuredConfigExtractor:
 
         # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
-            return tomli.loads(content), "toml"
+            result = tomli.loads(content)
+            if not _nests_too_deep(result):
+                return result, "toml"
         except (ValueError, RecursionError):
             # TOMLDecodeError subclasses ValueError, as does an integer past
             # CPython's digit limit; RecursionError is tomli's nesting limit.
