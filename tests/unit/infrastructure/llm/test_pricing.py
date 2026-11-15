@@ -77,7 +77,8 @@ class TestEstimateCostUsd:
         assert rates.input == 3.0
 
     @pytest.mark.parametrize(
-        "model", ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-4.1-mini", "gpt-4o"]
+        "model",
+        ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-4.1-mini", "gpt-4o"],
     )
     def test_openai_family_cache_read_cheaper_than_input(self, model):
         """The property, asserted per model rather than as arithmetic on one
@@ -253,6 +254,33 @@ class TestEstimateCostUsd:
         )
         assert priced is True
         assert cost == pytest.approx(0.20 + 1.20 + 0.02 + 0.25)
+
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [
+            ("openai", "gpt-6-luna"),
+            ("openai", "gpt-6-luna-2026-09-22"),
+            ("azure", "gpt-6-luna-1"),
+        ],
+    )
+    def test_gpt_6_luna_is_priced_at_its_own_rate(self, provider, model):
+        """gpt-6-luna-1 is the Azure chat deployment, so an unpriced row
+        reports every turn at $0. Its rates are below gpt-5.6-luna's on every
+        bucket, so it must not fall through to that row either."""
+        rates = lookup_rates(provider, model)
+        assert rates is not None
+        assert (rates.input, rates.output) == (0.10, 0.50)
+        assert (rates.cache_read, rates.cache_write) == (0.01, 0.125)
+        cost, priced = estimate_cost_usd(
+            provider,
+            model,
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+        )
+        assert priced is True
+        assert cost == pytest.approx(0.10 + 0.50 + 0.01 + 0.125)
 
     def test_gpt_5_4_mini_uses_its_own_rate_not_gpt_4o_minis(self):
         """Regression: the gpt-5.4-mini row carried gpt-4o-mini's numbers
