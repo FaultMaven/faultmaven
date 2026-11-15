@@ -731,3 +731,34 @@ class TestAnswer:
         )
         assert "not told which model" in text
         assert "Nightly OOM kills" in text
+
+
+class TestTheContinuationGateIsBounded:
+    """#2798: ``reads_as_continuation`` runs on the event loop before the
+    triage call; over a 10 MiB paste its word scan held the loop for 1.18 s.
+    It reads the classifier's window."""
+
+    def test_it_reads_only_the_window(self, monkeypatch):
+        from faultmaven.modules.agent.domain.services import out_of_band as ob
+
+        read: list[int] = []
+        real = ob.classification_window
+
+        def recording(message):
+            window = real(message)
+            read.append(len(window))
+            return window
+
+        monkeypatch.setattr(ob, "classification_window", recording)
+        paste = "the replica was quiet overnight and nothing paged\n" * 200_000
+
+        assert ob.reads_as_continuation(paste + "\nthen it failed again") is True
+        assert read and max(read) <= 4_003
+
+    def test_a_short_answer_is_still_a_continuation(self):
+        from faultmaven.modules.agent.domain.services.out_of_band import (
+            reads_as_continuation,
+        )
+
+        assert reads_as_continuation("yes") is True
+        assert reads_as_continuation("what is a retirement account exactly?") is False

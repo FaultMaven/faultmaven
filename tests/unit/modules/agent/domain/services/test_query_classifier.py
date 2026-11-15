@@ -719,3 +719,102 @@ class TestStatusCodeAdjacencyRules:
         for code in _HTTP_STATUS_CODES:
             got = _extract_entities(f"the service returned {code} downstream")
             assert code in got.get("status_codes", []), f"{code} is not extractable"
+
+
+class TestClassificationReadsABoundedWindow:
+    """#2798: every turn classifies its message on the event loop, with
+    C-level regexes that hold the GIL, and a message can be as large as the
+    upload cap (6.6 s at 10 MiB). The classifier reads only the head and tail
+    of a long message, which left every verdict on 5,497 stored real messages
+    unchanged."""
+
+    #: A realistic paste, repeated to the 10 MiB upload cap.
+    _LOG = (
+        "2026-11-14T09:31:02Z api-gateway ERROR upstream 10.0.3.17:8443 returned 503 "
+        "after connection refused; service user-service retry 3/3\n"
+    )
+
+    def _paste(self, size: int = 10 * 1024 * 1024) -> str:
+        return self._LOG * (size // len(self._LOG))
+
+    def test_no_regex_reads_more_than_the_window(self, monkeypatch):
+        from faultmaven.modules.agent.domain.services import query_classifier as qc
+
+        bound = len(qc.classification_window(self._paste()))
+        # An absolute bound, not the module's own constant: a window of
+        # megabytes would pass a bound derived from itself.
+        assert bound <= 4_003
+        seen: list[int] = []
+        for name in (
+            "_extract_entities",
+            "_is_generic_request",
+            "_has_interrogative_structure",
+            "_has_case_reference",
+            "detect_kb_question",
+        ):
+            real = getattr(qc, name)
+
+            def recording(message, *args, _real=real, **kwargs):
+                seen.append(len(message))
+                return _real(message, *args, **kwargs)
+
+            monkeypatch.setattr(qc, name, recording)
+
+        classify_query(self._paste() + "\nwhy is user-service returning 503?")
+
+        assert seen and max(seen) <= bound + 1
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda p: "why is user-service returning 503 since 09:30?\n" + p,
+            lambda p: p + "\nwhy is user-service returning 503 since 09:30?",
+        ],
+        ids=["question_first", "question_last"],
+    )
+    def test_a_question_at_either_end_of_a_paste_keeps_its_verdict(self, make):
+        """Positive control for the window: the same classification as the
+        short question alone."""
+        short = classify_query("why is user-service returning 503 since 09:30?")
+        long = classify_query(make(self._paste(256 * 1024)))
+        assert long.mode is short.mode
+        assert bool(long.detected_entities) is bool(short.detected_entities)
+
+    def test_a_knowledge_base_question_after_a_paste_is_still_found(self):
+        message = (
+            self._paste(256 * 1024)
+            + "\nis there a runbook for postgres replication lag?"
+        )
+        question = classify_query(message).kb_question
+        assert question is not None and question.topic == "postgres replication lag"
+
+
+class TestTheWindowsSeam:
+    """The window joins a long message's head and tail. Neither the join nor
+    the cut may invent an entity that no part of the message holds."""
+
+    _FILLER = " the replica was quiet overnight" * 200 + " "
+
+    def _two_ends(self, head: str, tail: str) -> str:
+        assert len(head) == 2000 and len(tail) == 2000, "premise: the exact ends"
+        return head + self._FILLER + tail
+
+    def test_a_pattern_does_not_span_the_join(self):
+        """Head ending "Jan", tail opening "12": no timestamp in the message,
+        and none in its window."""
+        head = ("x " * 1000)[: 2000 - 4] + " Jan"
+        tail = "12 rows fetched" + (" ok" * 700)[: 2000 - 15]
+        message = self._two_ends(head, tail)
+        entities = classify_query(message).detected_entities
+        assert "timestamps" not in entities
+        # Positive control: the same two ends adjacent are a timestamp.
+        assert "timestamps" in classify_query("Jan 12 rows fetched").detected_entities
+
+    def test_a_cut_inside_a_token_does_not_invent_one(self):
+        """The head's 2,000th character falls inside "5031": cutting there
+        would leave "503", a status code the message never had."""
+        head = ("x " * 1000)[: 2000 - 4] + " 503"
+        message = head + "1" + self._FILLER + ("ok " * 700)[:2000]
+        assert "status_codes" not in classify_query(message).detected_entities
+        # Positive control: a real 503 is found.
+        assert "status_codes" in classify_query("gateway returns 503").detected_entities

@@ -1142,7 +1142,7 @@ The investigation agent receives a **mode-specific system prompt** based on the 
 
 ### 6.0 Query Classifier
 
-The `classify_query()` function in `modules/agent/domain/services/query_classifier.py` performs mechanical routing:
+The `classify_query()` function in `modules/agent/domain/services/query_classifier.py` performs mechanical routing. It runs synchronously on every turn and reads only `classification_window(message)`: the whole message up to 4,000 characters, else its first and last 2,000, cut at whitespace (#2798). A message states what it asks at its opening or close; a long paste between them is evidence, not the question.
 
 ```python
 class ProcessingMode(str, Enum):

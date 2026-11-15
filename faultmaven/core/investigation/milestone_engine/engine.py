@@ -375,10 +375,9 @@ class MilestoneEngine:
             return kb_question_of(intent_data)
         from faultmaven.modules.agent.domain.services.query_classifier import (
             classify_query,
-            kb_detection_window,
         )
 
-        derived = classify_query(kb_detection_window(user_message or "")).kb_question
+        derived = classify_query(user_message or "").kb_question
         return kb_question_of(
             {KB_QUESTION_INTENT_KEY: derived.as_intent_data() if derived else None}
         )
