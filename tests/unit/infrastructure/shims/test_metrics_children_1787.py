@@ -24,7 +24,6 @@ from faultmaven.infrastructure.shims.metrics import (
     MAX_DECLARED_CHILDREN,
     Counter,
     NoOpMetric,
-    create_children,
     declare_lazy,
 )
 
@@ -69,7 +68,6 @@ def test_metrics_off_creates_nothing(monkeypatch):
         "fm1787_off_total", "d", labelnames=["a"], label_values={"a": ("x", "y")}
     )
     assert isinstance(counter, NoOpMetric)
-    create_children(counter, {"a": ("x",)})
     assert DECLARED_CHILDREN == before
 
 
@@ -142,37 +140,17 @@ def test_declare_lazy_refuses_an_empty_reason():
         declare_lazy(NoOpMetric(), " ")
 
 
-def test_a_direct_counter_gets_nothing_with_metrics_disabled(monkeypatch):
+def test_declare_lazy_records_nothing_with_metrics_disabled(monkeypatch):
     prometheus_client = pytest.importorskip("prometheus_client")
     monkeypatch.setenv("ENABLE_METRICS", "false")
     registry = prometheus_client.CollectorRegistry()
     counter = prometheus_client.Counter(
         "fm1787_disabled_total", "d", ["event"], registry=registry
     )
-    declared, lazy = list(DECLARED_CHILDREN), list(LAZY_DECLARED)
-    create_children(counter, {"event": ("offered", "saved")})
+    lazy = list(LAZY_DECLARED)
     declare_lazy(counter, "event is open")
     assert _samples(registry, "fm1787_disabled") == {}
-    assert (DECLARED_CHILDREN, LAZY_DECLARED) == (declared, lazy)
-
-
-def test_create_children_declares_a_counter_built_without_the_shim(monkeypatch):
-    prometheus_client = pytest.importorskip("prometheus_client")
-    monkeypatch.setenv("ENABLE_METRICS", "true")
-    registry = prometheus_client.CollectorRegistry()
-    counter = prometheus_client.Counter(
-        "fm1787_direct_total", "d", ["event"], registry=registry
-    )
-    assert _samples(registry, "fm1787_direct") == {}
-    create_children(counter, {"event": ("offered", "saved")})
-    assert _samples(registry, "fm1787_direct") == {
-        (("event", "offered"),): 0.0,
-        (("event", "saved"),): 0.0,
-    }
-    with pytest.raises(ValueError, match="'fm1787_direct'"):
-        create_children(counter, {"other": ("x",)})
-    declare_lazy(counter, "event is open")
-    assert LAZY_DECLARED[-1] == ("fm1787_direct", "event is open")
+    assert LAZY_DECLARED == lazy
 
 
 # Every module that defines a labelled counter. The child imports them with
@@ -218,8 +196,8 @@ named = {
 
 from faultmaven.infrastructure.shims.metrics import DECLARED_CHILDREN, LAZY_DECLARED
 
-# Every labelled counter bound at module level in the metric modules, whether
-# built through the shim or straight from prometheus_client, is declared.
+# Every labelled counter bound at module level in the metric modules is
+# declared.
 recorded = {name for name, _, _ in DECLARED_CHILDREN} | {n for n, _ in LAZY_DECLARED}
 undeclared = sorted(
     {

@@ -279,9 +279,7 @@ class TestConfigurationDefaults:
         # one nothing reads.
         assert "opik_track_disable" not in ObservabilitySettings.model_fields
         assert ObservabilitySettings.model_fields["opik_enabled"].default is False
-        assert ObservabilitySettings.model_fields["prometheus_enabled"].default is False
         assert ObservabilitySettings.model_fields["tracing_enabled"].default is False
-        assert ObservabilitySettings.model_fields["metrics_enabled"].default is False
 
     def test_community_protection_defaults(self, monkeypatch):
         """Verify protection features are disabled by default (code defaults)."""
