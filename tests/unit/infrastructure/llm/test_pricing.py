@@ -265,8 +265,8 @@ class TestEstimateCostUsd:
     )
     def test_gpt_6_luna_is_priced_at_its_own_rate(self, provider, model):
         """gpt-6-luna-1 is the Azure chat deployment, so an unpriced row
-        reports every turn at $0. Its rate is half gpt-5.6-luna's, so it
-        must not fall through to that row either."""
+        reports every turn at $0. Its rates are below gpt-5.6-luna's on every
+        bucket, so it must not fall through to that row either."""
         rates = lookup_rates(provider, model)
         assert rates is not None
         assert (rates.input, rates.output) == (0.10, 0.50)

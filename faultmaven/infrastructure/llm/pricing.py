@@ -117,12 +117,14 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # A deployment that raises the budget near 272K should override via
         # LLM_PRICING_OVERRIDES rather than trust this row.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
-        # gpt-6-luna, the next luna generation, at half its rate: $0.10 in /
-        # $0.50 out / $0.01 cache read / $0.125 cache write (1.25x input) per
-        # 1M, short tier. Long tier (input over 272K): $0.20 in / $0.75 out.
-        # Rates as of 2026-11-15 from price trackers that agree with each
-        # other and with Microsoft's Foundry announcement on the long tier;
-        # override via LLM_PRICING_OVERRIDES if the price list differs.
+        # gpt-6-luna, the next luna generation: $0.10 in / $0.50 out / $0.01
+        # cache read / $0.125 cache write (1.25x input, as gpt-5.6-luna's
+        # write is) per 1M, short tier. Long tier (input over 272K): $0.20 in
+        # / $0.75 out. Rates as of 2026-11-15 from price trackers that agree
+        # with each other and with Microsoft's Foundry announcement on the
+        # long tier; override via LLM_PRICING_OVERRIDES if the price list
+        # differs. The write rate is inert today: only the Anthropic provider
+        # reports cache-write tokens.
         "gpt-6-luna": TokenRates(0.10, 0.50, 0.01, 0.125),
         # gpt-5.4-mini stays a supported non-default (reasoning; #644).
         # Corrected 2026-08-26 against developers.openai.com/api/docs/pricing:
@@ -175,9 +177,9 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # Groq's only STRICT structured-output models, and therefore the only
         # ones here fit to be CHAT_PROVIDER. Keys are the bare model names so
         # they also match the "openai/"-prefixed ids the picker and GROQ_MODEL
-        # use — the same substring convention as the claude-* keys. Cached
-        # input is half the input rate (OpenAI-family caching); Groq does not
-        # bill a separate cache write.
+        # use — the same substring convention as the claude-* keys. Groq
+        # bills cached input at half the input rate on these models and no
+        # separate cache write.
         "gpt-oss-120b": TokenRates(0.15, 0.60, 0.075, 0.0),
         "gpt-oss-20b": TokenRates(0.075, 0.30, 0.0375, 0.0),
     },
