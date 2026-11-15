@@ -22,8 +22,10 @@ repo's suite (the repos cannot import one another).
 import asyncio
 import bisect
 import re
+import reprlib
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
@@ -430,6 +432,84 @@ def _line_list(lines: Iterable[int]) -> str:
     return f"lines {', '.join(shown[:-1])} and {shown[-1]}"
 
 
+# --- Bounded frontmatter refusals (#2690) --------------------------------------
+#
+# A refusal names an invalid frontmatter value, never the whole of it, and names
+# each distinct value once: a YAML alias repeats one value at the cost of a few
+# characters, so a refusal sized by the items or by the value grows past the
+# document it answers.
+
+#: How many characters of one invalid value a refusal shows.
+_MAX_VALUE_CHARS = 80
+_VALUE_REPR = reprlib.Repr()
+_VALUE_REPR.maxstring = _VALUE_REPR.maxlong = _VALUE_REPR.maxother = _MAX_VALUE_CHARS
+
+
+def _shown(value: Any, as_repr: bool = False) -> str:
+    """``value`` as a refusal renders it (``str``, or ``repr``), cut to 80 characters.
+
+    A list, mapping or set, and any value shown by ``repr``, goes through
+    ``reprlib``, which renders only a bounded head of a value a YAML alias repeated.
+    """
+    if isinstance(value, str) and not as_repr:
+        text = value
+    elif as_repr or isinstance(value, (list, dict, set)):
+        text = _VALUE_REPR.repr(value)
+    else:
+        text = str(value)
+    if len(text) <= _MAX_VALUE_CHARS:
+        return text
+    return text[: _MAX_VALUE_CHARS - 3] + "..."
+
+
+def _capped_refusals(
+    items: Iterable[Any], refusal: Callable[[Any], Optional[str]], more: str
+) -> List[str]:
+    """One refusal per distinct invalid item, in item order, at most ten.
+
+    Distinct is by the clipped ``repr`` (an item can be unhashable). ``refusal``
+    gives an item's sentence, or ``None`` when it is valid. Past ten, ``more``
+    is formatted with the count of the other distinct invalid items.
+    """
+    refused: List[str] = []
+    seen: Set[str] = set()
+    for item in items:
+        key = _shown(item, as_repr=True)
+        if key in seen:
+            continue
+        sentence = refusal(item)
+        if sentence is None:
+            continue
+        seen.add(key)
+        if len(seen) <= _MAX_LINES_LISTED:
+            refused.append(sentence)
+    if len(seen) > _MAX_LINES_LISTED:
+        refused.append(more.format(len(seen) - _MAX_LINES_LISTED))
+    return refused
+
+
+def _symptom_class_refusal(item: Any) -> Optional[str]:
+    if not isinstance(item, str):
+        return f"symptom_class items must be strings: {_shown(item, as_repr=True)}"
+    if not re.match(r"^[a-z0-9_-]+$", item):
+        return (
+            f"symptom_class must be lowercase with hyphens/underscores: {_shown(item)}"
+        )
+    if item not in vocabulary(SymptomClass):
+        return (
+            f"Invalid symptom_class '{_shown(item)}'. Must be one of the controlled "
+            f"vocabulary ({render_vocabulary(SymptomClass)}), or move it to "
+            f"`tags` if it is a long-tail symptom."
+        )
+    return None
+
+
+def _tag_refusal(tag: Any) -> Optional[str]:
+    if isinstance(tag, str) and not re.match(r"^[a-z0-9-]+$", tag):
+        return f"Tag must be lowercase alphanumeric with hyphens: {_shown(tag)}"
+    return None
+
+
 def _rm_target_is_catastrophic(target: str) -> bool:
     """True for the filesystem root, a whole top-level dir, home, or a var — NOT a
     scoped deeper path like /var/lib/app/* (legitimate cleanup)."""
@@ -457,10 +537,13 @@ def _rm_target_is_catastrophic(target: str) -> bool:
 # mirrored BYTE-IDENTICAL in the other repo (faultmaven runbook_validator.py
 # <-> kb_toolkit/core/validator.py) — the repos can't import each other. The
 # identical behavioral test cases in each repo's suite are the drift backstop;
-# keep both the code and those cases in sync.
+# keep both the code and those cases in sync. Both PRs of a change paste the
+# block diff (FaultMaven/faultmaven#2661), which must be empty.
 
 _STEP_MARKER_RE = re.compile(r"\[step\s*\d+\]", re.IGNORECASE)
 _SIBLING_NEAR_DUP_JACCARD = 0.6
+# Near-duplicate pairs named one warning each; the rest are counted in one line.
+_NEAR_DUP_PAIRS_NAMED = 20
 
 
 def _norm_statement(s: str) -> str:
@@ -468,12 +551,6 @@ def _norm_statement(s: str) -> str:
     # Statements that differ only by a trailing period count as identical, and an
     # all-punctuation Statement normalizes to "" (skipped, never a false dup).
     return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
-
-
-def _statement_jaccard(a: str, b: str) -> float:
-    ta = set(re.findall(r"[a-z0-9]+", a.lower()))
-    tb = set(re.findall(r"[a-z0-9]+", b.lower()))
-    return len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
 
 
 def check_cause_statement_invariants(
@@ -490,7 +567,8 @@ def check_cause_statement_invariants(
       (ii) BLOCK exact-duplicate sibling Statements (one error per duplicate set);
            WARN on near-duplicates (lexical Jaccard >= 0.6) — sibling causes must
            be mutually discriminative (MECE) or holistic matching returns
-           'multiple' and the matcher abstains.
+           'multiple' and the matcher abstains. The first 20 pairs are named, one
+           warning each; one more warning counts the rest.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -516,20 +594,40 @@ def check_cause_statement_invariants(
                 f"causes must be mutually discriminative (MECE) or the matcher abstains."
             )
     # Near-duplicates (high lexical overlap but not identical): pairwise warn.
-    for i in range(len(statements)):
-        li, si = statements[i]
-        if not norms[i][1]:
-            continue
-        for j in range(i + 1, len(statements)):
-            lj, sj = statements[j]
-            if not norms[j][1] or norms[i][1] == norms[j][1]:
+    # Only Statements sharing a word overlap, so Statement i counts the words it
+    # shares with each LATER Statement off its words' posting lists, and the
+    # Jaccard is shared / (|i| + |j| - shared): the all-pairs loop's pairs, in its
+    # order, with each Statement tokenised once (FaultMaven/faultmaven#2661).
+    tokens = [set(norm.split()) for _, norm in norms]
+    postings: Dict[str, List[int]] = {}
+    for i, words in enumerate(tokens):
+        for word in words:
+            postings.setdefault(word, []).append(i)
+    near = 0
+    for i, words in enumerate(tokens):
+        shared: Counter = Counter()
+        for word in words:
+            posting = postings[word]
+            shared.update(posting[bisect.bisect_right(posting, i) :])
+        for j in sorted(shared):
+            overlap = shared[j]
+            jaccard = overlap / (len(words) + len(tokens[j]) - overlap)
+            if norms[i][1] == norms[j][1] or jaccard < _SIBLING_NEAR_DUP_JACCARD:
                 continue
-            if _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
+            near += 1
+            if near <= _NEAR_DUP_PAIRS_NAMED:
+                li, lj = norms[i][0], norms[j][0]
                 warnings.append(
                     f"Causes {li} and {lj} have near-duplicate Statements (lexical "
                     f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
                     f"discriminative or holistic matching may return 'multiple'."
                 )
+    if near > _NEAR_DUP_PAIRS_NAMED:
+        more = near - _NEAR_DUP_PAIRS_NAMED
+        warnings.append(
+            f"And {more} more {'pair' if more == 1 else 'pairs'} of causes have "
+            f"near-duplicate Statements."
+        )
     return errors, warnings
 
 
@@ -933,7 +1031,7 @@ class RunbookValidator:
                 continue
             if not isinstance(value, str) or value not in vocabulary(enum_cls):
                 errors.append(
-                    f"Invalid {field} '{value}'. "
+                    f"Invalid {field} '{_shown(value)}'. "
                     f"Must be one of: {render_vocabulary(enum_cls)}"
                 )
 
@@ -943,11 +1041,9 @@ class RunbookValidator:
             if isinstance(tags, list):
                 if len(tags) > MAX_TAG_COUNT:
                     warnings.append(f"Too many tags ({len(tags)} > {MAX_TAG_COUNT})")
-                for tag in tags:
-                    if isinstance(tag, str) and not re.match(r"^[a-z0-9-]+$", tag):
-                        errors.append(
-                            f"Tag must be lowercase alphanumeric with hyphens: {tag}"
-                        )
+                errors.extend(
+                    _capped_refusals(tags, _tag_refusal, "And {} more invalid tags.")
+                )
 
         # Symptom class — controlled vocabulary (faithfully mirrors kb-toolkit
         # RunbookValidator._validate_symptom_class): shape, then format, then a
@@ -964,19 +1060,13 @@ class RunbookValidator:
             elif not sc:
                 warnings.append("No symptom classes specified")
             else:
-                for item in sc:
-                    if not isinstance(item, str):
-                        errors.append(f"symptom_class items must be strings: {item!r}")
-                    elif not re.match(r"^[a-z0-9_-]+$", item):
-                        errors.append(
-                            f"symptom_class must be lowercase with hyphens/underscores: {item}"
-                        )
-                    elif item not in vocabulary(SymptomClass):
-                        errors.append(
-                            f"Invalid symptom_class '{item}'. Must be one of the controlled "
-                            f"vocabulary ({render_vocabulary(SymptomClass)}), or move it to "
-                            f"`tags` if it is a long-tail symptom."
-                        )
+                errors.extend(
+                    _capped_refusals(
+                        sc,
+                        _symptom_class_refusal,
+                        "And {} more invalid symptom_class values.",
+                    )
+                )
 
         # Version
         if "version" in metadata and isinstance(metadata["version"], str):
