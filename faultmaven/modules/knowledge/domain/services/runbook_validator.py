@@ -22,8 +22,9 @@ repo's suite (the repos cannot import one another).
 import asyncio
 import bisect
 import re
+from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 import yaml
 
@@ -430,6 +431,177 @@ def _line_list(lines: Iterable[int]) -> str:
     return f"lines {', '.join(shown[:-1])} and {shown[-1]}"
 
 
+# --- Bounded frontmatter refusals (#2690) --------------------------------------
+#
+# A refusal names an invalid frontmatter value, never the whole of it, and names
+# each distinct value once: a YAML alias repeats one value at the cost of a few
+# characters, so a refusal sized by the items or by the value grows past the
+# document it answers. A value is rendered only for the sentence that shows it.
+
+#: How many distinct invalid values one field names before it counts the rest.
+_MAX_VALUES_NAMED = 10
+#: How many characters of one invalid value a refusal shows: a value whose whole
+#: rendering is longer shows its first 38 and last 39 characters around "...".
+_MAX_VALUE_CHARS = 80
+_HEAD_CHARS, _TAIL_CHARS = 38, 39
+#: Every int of at most 80 decimal digits has at most 266 bits (10**80 - 1 has
+#: 266), and every int of more than 266 bits has at least 81. So past this many
+#: bits an int is shown by its size and never rendered; a 266-bit int of 81
+#: digits renders as head and tail. ``str`` of one past about 14,000 bits raises
+#: ``ValueError``.
+_MAX_INT_BITS = 266
+
+
+def _leaf_chunk(x: Any, rev: bool) -> str:
+    """``repr(x)`` of a non-container, or its head (``rev``: its tail) for a long
+    str or bytes, which is never rendered whole."""
+    if isinstance(x, (str, bytes)):
+        if len(x) <= _MAX_VALUE_CHARS + 1:
+            return repr(x)
+        # repr's own quote rule, applied to the whole value, not to the slice.
+        sq, dq = ("'", '"') if isinstance(x, str) else (b"'", b'"')
+        quote = '"' if sq in x and dq not in x else "'"
+        piece = repr(x[-_TAIL_CHARS:] if rev else x[: _MAX_VALUE_CHARS + 1])
+        inner = piece[piece.index(piece[-1]) + 1 : -1]
+        if quote == "'" and piece[-1] == '"':
+            inner = inner.replace("'", "\\'")
+        prefix = "b" if isinstance(x, bytes) else ""
+        return inner + quote if rev else prefix + quote + inner
+    if (
+        isinstance(x, int)
+        and not isinstance(x, bool)
+        and x.bit_length() > _MAX_INT_BITS
+    ):
+        return f"<int of {x.bit_length()} bits>"
+    return repr(x)
+
+
+def _emit(x: Any, path: Set[int], rev: bool) -> Iterator[str]:
+    """``repr(x)`` in chunks, front to back (``rev``: back to front), lazily: a
+    reader that stops early renders only what it read. A container already on
+    ``path`` renders as ``repr`` renders a recursive one."""
+    if not isinstance(x, (list, tuple, dict, set)):
+        yield _leaf_chunk(x, rev)
+        return
+    if isinstance(x, list):
+        opener, closer = "[", "]"
+    elif isinstance(x, tuple):
+        opener, closer = "(", ")"
+    else:
+        opener, closer = "{", "}"
+    if id(x) in path:
+        yield opener + "..." + closer
+        return
+    if not x:
+        yield "set()" if isinstance(x, set) else opener + closer
+        return
+    path.add(id(x))
+    items: Iterable[Any] = x.items() if isinstance(x, dict) else x
+    if rev:
+        items = reversed(list(items) if isinstance(x, set) else items)
+    yield closer if rev else opener
+    if rev and isinstance(x, tuple) and len(x) == 1:
+        yield ","
+    for n, item in enumerate(items):
+        if n:
+            yield ", "
+        if isinstance(x, dict):
+            first, second = (item[1], item[0]) if rev else item
+            yield from _emit(first, path, rev)
+            yield ": "
+            yield from _emit(second, path, rev)
+        else:
+            yield from _emit(item, path, rev)
+    if not rev and isinstance(x, tuple) and len(x) == 1:
+        yield ","
+    yield opener if rev else closer
+    path.discard(id(x))
+
+
+def _read(chunks: Iterator[str], enough: int) -> List[str]:
+    read: List[str] = []
+    size = 0
+    for chunk in chunks:
+        read.append(chunk)
+        size += len(chunk)
+        if size >= enough:
+            break
+    return read
+
+
+def _shown(value: Any, as_repr: bool = False) -> str:
+    """``value`` as a refusal renders it, ``str`` (``as_repr``: ``repr``), exactly
+    when that is at most 80 characters, and otherwise its first 38 and last 39
+    characters around "...". Only a bounded head and tail are rendered."""
+    if not as_repr and isinstance(value, (str, date)):
+        text = value if isinstance(value, str) else str(value)
+        if len(text) <= _MAX_VALUE_CHARS:
+            return text
+        return text[:_HEAD_CHARS] + "..." + text[-_TAIL_CHARS:]
+    # str() of every other value YAML gives equals its repr().
+    head = "".join(_read(_emit(value, set(), False), _MAX_VALUE_CHARS + 1))
+    if len(head) <= _MAX_VALUE_CHARS:
+        return head
+    tail = "".join(reversed(_read(_emit(value, set(), True), _TAIL_CHARS)))
+    return head[:_HEAD_CHARS] + "..." + tail[-_TAIL_CHARS:]
+
+
+def _capped_refusals(
+    items: Iterable[Any],
+    refusal: Callable[[Any], Optional[Tuple[str, str, bool]]],
+    more: str,
+) -> List[str]:
+    """One refusal per distinct invalid item, in item order, at most ten, then
+    ``more`` formatted with the count of the other distinct invalid items.
+
+    ``refusal`` checks an item without rendering it: ``None`` when it is valid,
+    else the sentence around the value and whether the value shows by ``repr``.
+    Only an invalid item is keyed, a str by its value and anything else by its
+    identity (a YAML alias repeats one object), and only a new one is rendered.
+    A str already refused is skipped before ``refusal`` scans it again.
+    """
+    refused: List[str] = []
+    seen: Set[Any] = set()
+    for item in items:
+        if isinstance(item, str) and item in seen:
+            continue
+        found = refusal(item)
+        if found is None:
+            continue
+        key = item if isinstance(item, str) else (id(item),)
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(seen) <= _MAX_VALUES_NAMED:
+            before, after, as_repr = found
+            refused.append(before + _shown(item, as_repr) + after)
+    if len(seen) > _MAX_VALUES_NAMED:
+        refused.append(more.format(len(seen) - _MAX_VALUES_NAMED))
+    return refused
+
+
+def _symptom_class_refusal(item: Any) -> Optional[Tuple[str, str, bool]]:
+    if not isinstance(item, str):
+        return "symptom_class items must be strings: ", "", True
+    if not re.match(r"^[a-z0-9_-]+$", item):
+        return "symptom_class must be lowercase with hyphens/underscores: ", "", False
+    if item not in vocabulary(SymptomClass):
+        return (
+            "Invalid symptom_class '",
+            f"'. Must be one of the controlled vocabulary "
+            f"({render_vocabulary(SymptomClass)}), or move it to `tags` if it is a "
+            f"long-tail symptom.",
+            False,
+        )
+    return None
+
+
+def _tag_refusal(tag: Any) -> Optional[Tuple[str, str, bool]]:
+    if isinstance(tag, str) and not re.match(r"^[a-z0-9-]+$", tag):
+        return "Tag must be lowercase alphanumeric with hyphens: ", "", False
+    return None
+
+
 def _rm_target_is_catastrophic(target: str) -> bool:
     """True for the filesystem root, a whole top-level dir, home, or a var — NOT a
     scoped deeper path like /var/lib/app/* (legitimate cleanup)."""
@@ -457,10 +629,13 @@ def _rm_target_is_catastrophic(target: str) -> bool:
 # mirrored BYTE-IDENTICAL in the other repo (faultmaven runbook_validator.py
 # <-> kb_toolkit/core/validator.py) — the repos can't import each other. The
 # identical behavioral test cases in each repo's suite are the drift backstop;
-# keep both the code and those cases in sync.
+# keep both the code and those cases in sync. Both PRs of a change paste the
+# block diff (FaultMaven/faultmaven#2661), which must be empty.
 
 _STEP_MARKER_RE = re.compile(r"\[step\s*\d+\]", re.IGNORECASE)
 _SIBLING_NEAR_DUP_JACCARD = 0.6
+# Near-duplicate pairs named one warning each; the rest are counted in one line.
+_NEAR_DUP_PAIRS_NAMED = 20
 
 
 def _norm_statement(s: str) -> str:
@@ -473,7 +648,8 @@ def _norm_statement(s: str) -> str:
 def _statement_jaccard(a: str, b: str) -> float:
     ta = set(re.findall(r"[a-z0-9]+", a.lower()))
     tb = set(re.findall(r"[a-z0-9]+", b.lower()))
-    return len(ta & tb) / len(ta | tb) if (ta | tb) else 0.0
+    union = ta | tb
+    return len(ta & tb) / len(union) if union else 0.0
 
 
 def check_cause_statement_invariants(
@@ -490,7 +666,9 @@ def check_cause_statement_invariants(
       (ii) BLOCK exact-duplicate sibling Statements (one error per duplicate set);
            WARN on near-duplicates (lexical Jaccard >= 0.6) — sibling causes must
            be mutually discriminative (MECE) or holistic matching returns
-           'multiple' and the matcher abstains.
+           'multiple' and the matcher abstains. Pairs are taken over the first
+           Statement with words of each letter; the first 20 are named, one
+           warning each, and one more warning counts the rest.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -515,21 +693,38 @@ def check_cause_statement_invariants(
                 f"Causes {', '.join(letters)} have identical Statements; sibling "
                 f"causes must be mutually discriminative (MECE) or the matcher abstains."
             )
-    # Near-duplicates (high lexical overlap but not identical): pairwise warn.
-    for i in range(len(statements)):
+    # Near-duplicates (high lexical overlap but not identical): pairwise warn,
+    # over the first Statement with words of each cause letter, so at most 26
+    # whatever a document repeats; a reused letter is refused on its own
+    # (FaultMaven/faultmaven#2661).
+    firsts: List[int] = []
+    seen_letters: Set[str] = set()
+    for i, (letter, norm) in enumerate(norms):
+        if norm and letter not in seen_letters:
+            seen_letters.add(letter)
+            firsts.append(i)
+    near = 0
+    for n, i in enumerate(firsts):
         li, si = statements[i]
-        if not norms[i][1]:
-            continue
-        for j in range(i + 1, len(statements)):
+        for j in firsts[n + 1 :]:
             lj, sj = statements[j]
-            if not norms[j][1] or norms[i][1] == norms[j][1]:
+            if norms[i][1] == norms[j][1]:
                 continue
             if _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
-                warnings.append(
-                    f"Causes {li} and {lj} have near-duplicate Statements (lexical "
-                    f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
-                    f"discriminative or holistic matching may return 'multiple'."
-                )
+                near += 1
+                if near <= _NEAR_DUP_PAIRS_NAMED:
+                    warnings.append(
+                        f"Causes {li} and {lj} have near-duplicate Statements "
+                        f"(lexical overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make "
+                        f"them discriminative or holistic matching may return "
+                        f"'multiple'."
+                    )
+    if near > _NEAR_DUP_PAIRS_NAMED:
+        more = near - _NEAR_DUP_PAIRS_NAMED
+        warnings.append(
+            f"And {more} more {'pair' if more == 1 else 'pairs'} of causes have "
+            f"near-duplicate Statements."
+        )
     return errors, warnings
 
 
@@ -933,7 +1128,7 @@ class RunbookValidator:
                 continue
             if not isinstance(value, str) or value not in vocabulary(enum_cls):
                 errors.append(
-                    f"Invalid {field} '{value}'. "
+                    f"Invalid {field} '{_shown(value)}'. "
                     f"Must be one of: {render_vocabulary(enum_cls)}"
                 )
 
@@ -943,11 +1138,9 @@ class RunbookValidator:
             if isinstance(tags, list):
                 if len(tags) > MAX_TAG_COUNT:
                     warnings.append(f"Too many tags ({len(tags)} > {MAX_TAG_COUNT})")
-                for tag in tags:
-                    if isinstance(tag, str) and not re.match(r"^[a-z0-9-]+$", tag):
-                        errors.append(
-                            f"Tag must be lowercase alphanumeric with hyphens: {tag}"
-                        )
+                errors.extend(
+                    _capped_refusals(tags, _tag_refusal, "And {} more invalid tags.")
+                )
 
         # Symptom class — controlled vocabulary (faithfully mirrors kb-toolkit
         # RunbookValidator._validate_symptom_class): shape, then format, then a
@@ -964,19 +1157,13 @@ class RunbookValidator:
             elif not sc:
                 warnings.append("No symptom classes specified")
             else:
-                for item in sc:
-                    if not isinstance(item, str):
-                        errors.append(f"symptom_class items must be strings: {item!r}")
-                    elif not re.match(r"^[a-z0-9_-]+$", item):
-                        errors.append(
-                            f"symptom_class must be lowercase with hyphens/underscores: {item}"
-                        )
-                    elif item not in vocabulary(SymptomClass):
-                        errors.append(
-                            f"Invalid symptom_class '{item}'. Must be one of the controlled "
-                            f"vocabulary ({render_vocabulary(SymptomClass)}), or move it to "
-                            f"`tags` if it is a long-tail symptom."
-                        )
+                errors.extend(
+                    _capped_refusals(
+                        sc,
+                        _symptom_class_refusal,
+                        "And {} more invalid symptom_class values.",
+                    )
+                )
 
         # Version
         if "version" in metadata and isinstance(metadata["version"], str):
