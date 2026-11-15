@@ -652,7 +652,7 @@ faultmaven_knowledge_search_results_count
 
 | Rule | Check that fails on the next violation | Status |
 |---|---|---|
-| One switch, one path | Importing each collector-defining module with the switch off registers nothing (#2745, S1's pin 2). | Pending: #2748 |
+| One switch, one path | Importing each collector-defining module with the switch off registers nothing (#2745, S1's pin 2). | Enforced by `tests/unit/infrastructure/shims/test_metrics_one_path_2748.py` |
 | Bounded labels | S2's pins 4-6: each label's vocabulary tied to its producer, an out-of-set value raising under tests, and no collector without a writer. | Pending: #2749 |
 
 ---

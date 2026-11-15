@@ -19,49 +19,16 @@ clients; its methods fold every client id through ``client_label``.
 import logging
 from typing import Iterable, Optional
 
-from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
+from faultmaven.infrastructure.shims.metrics import (
+    Counter,
+    Histogram,
+    is_metrics_active,
+)
 
 logger = logging.getLogger(__name__)
 
-# Flag to track if prometheus_client is available
-_PROMETHEUS_AVAILABLE = False
-_METRICS_INITIALIZED = False
-
-try:
-    from prometheus_client import Counter, Histogram
-
-    _PROMETHEUS_AVAILABLE = True
-except ImportError:
-    logger.warning(
-        "prometheus_client not installed. OAuth metrics will be no-ops. "
-        "Install with: pip install prometheus-client"
-    )
-
-    # Create no-op stub classes if prometheus_client not available
-    class Counter:
-        """No-op Counter stub"""
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def labels(self, **kwargs):
-            return self
-
-        def inc(self, amount=1):
-            pass
-
-    class Histogram:
-        """No-op Histogram stub"""
-
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def labels(self, **kwargs):
-            return self
-
-        def observe(self, amount):
-            pass
-
+# Every collector goes through the metrics shim: no-ops with ENABLE_METRICS off
+# (#2748).
 
 #: The label of every client id that is not a configured OAuth client.
 _UNKNOWN_CLIENT = "unknown"
@@ -69,7 +36,8 @@ _UNKNOWN_CLIENT = "unknown"
 #: Why the ``client_id`` counters create no children up front: the configured
 #: clients are known only when a recorder is built from the settings.
 _CLIENT_LABEL_REASON = (
-    "client_id is a configured OAuth client or 'unknown', folded by client_label."
+    "client_id is a configured OAuth client or 'unknown', folded by "
+    "client_label; bounded by #2749."
 )
 
 # ============================================================
@@ -80,15 +48,15 @@ oauth_authorization_requests = Counter(
     "oauth_authorization_requests_total",
     "Total number of OAuth authorization code requests",
     ["client_id", "status"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_authorization_requests, _CLIENT_LABEL_REASON)
 
 oauth_authorization_errors = Counter(
     "oauth_authorization_errors_total",
     "Total number of OAuth authorization errors",
     ["client_id", "error_code"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_authorization_errors, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Token Issuance Metrics
@@ -104,10 +72,10 @@ oauth_tokens_issued = Counter(
     "oauth_tokens_issued_total",
     "Total number of OAuth tokens issued (access + refresh)",
     ["grant_type", "client_id"],
-)
-create_children(
-    oauth_tokens_issued,
-    {"grant_type": ("authorization_code",), "client_id": _CALLER_CLIENT_IDS},
+    label_values={
+        "grant_type": ("authorization_code",),
+        "client_id": _CALLER_CLIENT_IDS,
+    },
 )
 
 oauth_token_exchange_duration = Histogram(
@@ -121,11 +89,8 @@ oauth_token_exchange_errors = Counter(
     "oauth_token_exchange_errors_total",
     "Total number of OAuth token exchange errors",
     ["grant_type", "error_code"],
-)
-# The fixed literals ``OAuthService`` passes to ``record_token_exchange``.
-create_children(
-    oauth_token_exchange_errors,
-    {
+    # The fixed literals ``OAuthService`` passes to ``record_token_exchange``.
+    label_values={
         "grant_type": ("authorization_code",),
         "error_code": (
             "INVALID_AUTHORIZATION_CODE",
@@ -146,15 +111,15 @@ oauth_tokens_refreshed = Counter(
     "oauth_tokens_refreshed_total",
     "Total number of OAuth token refresh operations",
     ["client_id", "status"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_tokens_refreshed, _CLIENT_LABEL_REASON)
 
 oauth_refresh_errors = Counter(
     "oauth_refresh_errors_total",
     "Total number of OAuth token refresh errors",
     ["client_id", "error_code"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_refresh_errors, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Token Revocation Metrics
@@ -164,8 +129,8 @@ oauth_tokens_revoked = Counter(
     "oauth_tokens_revoked_total",
     "Total number of OAuth tokens revoked",
     ["token_type"],
+    label_values={"token_type": ("access_token", "refresh_token")},
 )
-create_children(oauth_tokens_revoked, {"token_type": ("access_token", "refresh_token")})
 
 # ============================================================
 # Security Metrics
@@ -175,31 +140,29 @@ oauth_pkce_verification_failures = Counter(
     "oauth_pkce_verification_failures_total",
     "Total number of PKCE verification failures (potential attacks)",
     ["client_id"],
+    label_values={"client_id": _CALLER_CLIENT_IDS},
 )
-create_children(oauth_pkce_verification_failures, {"client_id": _CALLER_CLIENT_IDS})
 
 oauth_code_replay_attempts = Counter(
     "oauth_code_replay_attempts_total",
     "Total number of authorization code replay attempts detected",
     ["client_id"],
+    label_values={"client_id": _CALLER_CLIENT_IDS},
 )
-create_children(oauth_code_replay_attempts, {"client_id": _CALLER_CLIENT_IDS})
 
 oauth_invalid_client_attempts = Counter(
     "oauth_invalid_client_attempts_total",
     "Total number of requests with invalid client_id",
     ["attempted_client_id"],
-)
-create_children(
-    oauth_invalid_client_attempts, {"attempted_client_id": (_UNKNOWN_CLIENT,)}
+    label_values={"attempted_client_id": (_UNKNOWN_CLIENT,)},
 )
 
 oauth_redirect_uri_mismatches = Counter(
     "oauth_redirect_uri_mismatches_total",
     "Total number of redirect URI mismatch errors",
     ["client_id"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_redirect_uri_mismatches, _CLIENT_LABEL_REASON)
 
 # ============================================================
 # Code Lifecycle Metrics
@@ -209,15 +172,15 @@ oauth_codes_generated = Counter(
     "oauth_codes_generated_total",
     "Total number of authorization codes generated",
     ["client_id"],
+    lazy_labels=_CLIENT_LABEL_REASON,
 )
-declare_lazy(oauth_codes_generated, _CLIENT_LABEL_REASON)
 
 oauth_codes_expired = Counter(
     "oauth_codes_expired_total",
     "Total number of expired authorization code exchanges",
     ["client_id"],
+    label_values={"client_id": _CALLER_CLIENT_IDS},
 )
-create_children(oauth_codes_expired, {"client_id": _CALLER_CLIENT_IDS})
 
 
 # ============================================================
@@ -246,7 +209,7 @@ class OAuthMetricsRecorder:
         if isinstance(allowed_clients, str):
             raise TypeError("allowed_clients must be a collection of ids, not a str")
         self._allowed_clients = frozenset(allowed_clients)
-        self.enabled = _PROMETHEUS_AVAILABLE
+        self.enabled = is_metrics_active()
         if not self.enabled:
             logger.debug("OAuth metrics recorder initialized in no-op mode")
 

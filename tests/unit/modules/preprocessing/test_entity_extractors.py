@@ -378,8 +378,8 @@ async def test_preprocessor_increments_overflow_counter_on_cap_trip(monkeypatch)
 
     from faultmaven.infrastructure.observability.evidence_metrics import (
         CASE_ENTITIES_OVERFLOW_TOTAL,
-        PROMETHEUS_AVAILABLE,
     )
+    from faultmaven.infrastructure.shims.metrics import is_metrics_active
     from faultmaven.modules.preprocessing.classifier import DataClassifier
     from faultmaven.modules.preprocessing.extractors.logs_extractor import (
         LogsAndErrorsExtractor,
@@ -388,8 +388,8 @@ async def test_preprocessor_increments_overflow_counter_on_cap_trip(monkeypatch)
         PreprocessingService,
     )
 
-    if not PROMETHEUS_AVAILABLE:
-        pytest.skip("prometheus_client not installed; counter is a no-op")
+    if not is_metrics_active():
+        pytest.skip("metrics off; counter is a no-op")
 
     def _ip_sample() -> float:
         # prometheus_client ``Counter.labels(...)._value.get()`` exposes

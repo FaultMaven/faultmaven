@@ -19,7 +19,6 @@ class APMProvider(Enum):
     """Supported APM providers."""
 
     OPIK = "opik"
-    PROMETHEUS = "prometheus"
     GRAFANA = "grafana"
     DATADOG = "datadog"
     NEW_RELIC = "new_relic"
@@ -94,7 +93,6 @@ class APMIntegration:
         """Initialize default configurations for supported APM providers."""
         # Use fallback values if settings are not available
         fallback_environment = "development"
-        fallback_instance_id = "localhost:8090"
 
         if self.settings:
             # Use settings-based configuration
@@ -122,17 +120,6 @@ class APMIntegration:
                     "service": self.service_name,
                     "version": "1.0.0",
                     "environment": self.settings.server.environment,
-                },
-            )
-
-            # Prometheus configuration
-            prometheus_config = APMConfiguration(
-                provider=APMProvider.PROMETHEUS,
-                enabled=self.settings.observability.prometheus_enabled,
-                endpoint_url=self.settings.observability.prometheus_pushgateway_url,
-                custom_tags={
-                    "job": self.service_name,
-                    "instance": self.settings.observability.instance_id,
                 },
             )
 
@@ -164,16 +151,6 @@ class APMIntegration:
                 },
             )
 
-            prometheus_config = APMConfiguration(
-                provider=APMProvider.PROMETHEUS,
-                enabled=False,
-                endpoint_url="http://localhost:9091",
-                custom_tags={
-                    "job": self.service_name,
-                    "instance": fallback_instance_id,
-                },
-            )
-
             generic_config = APMConfiguration(
                 provider=APMProvider.GENERIC,
                 enabled=False,
@@ -183,13 +160,11 @@ class APMIntegration:
             )
 
         self.configurations[APMProvider.OPIK] = opik_config
-        self.configurations[APMProvider.PROMETHEUS] = prometheus_config
         self.configurations[APMProvider.GENERIC] = generic_config
 
     def _register_default_exporters(self) -> None:
         """Register default metric exporters for each provider."""
         self.export_callbacks[APMProvider.OPIK] = self._export_to_opik
-        self.export_callbacks[APMProvider.PROMETHEUS] = self._export_to_prometheus
         self.export_callbacks[APMProvider.GENERIC] = self._export_to_generic
 
     def configure_provider(
@@ -309,89 +284,13 @@ class APMIntegration:
         Opik is used for LLM observability (model metadata and usage; no
         prompt or response unless content capture is on, #2616 K0).
         LLM tracing is handled by @opik.track on the LLM router, not here.
-        APM metrics (HTTP request/response timings) go to Prometheus instead.
+        Prometheus metrics go through the metrics shim, never this export
+        (#2780).
         """
         self.logger.debug(
             f"Skipping Opik export for {len(metrics)} APM metrics "
-            "(Opik is for LLM tracing, use Prometheus for APM)"
+            "(Opik is for LLM tracing)"
         )
-
-    async def _export_to_prometheus(
-        self, metrics: List[APMMetrics], config: APMConfiguration
-    ) -> None:
-        """Export metrics to Prometheus pushgateway."""
-        try:
-            import aiohttp
-
-            # Convert metrics to Prometheus format
-            prometheus_data = self._convert_to_prometheus_format(metrics, config)
-
-            if not prometheus_data:
-                return
-
-            # Push to Prometheus pushgateway
-            async with aiohttp.ClientSession() as session:
-                url = f"{config.endpoint_url}/metrics/job/{config.custom_tags.get('job', self.service_name)}"
-
-                async with session.post(
-                    url, data=prometheus_data, headers={"Content-Type": "text/plain"}
-                ) as response:
-                    if response.status == 200:
-                        self.logger.debug(
-                            f"Exported {len(metrics)} metrics to Prometheus"
-                        )
-                    else:
-                        self.logger.warning(
-                            f"Prometheus export failed: {response.status}"
-                        )
-
-        except Exception as e:
-            self.logger.error(f"Prometheus export error: {e}")
-
-    def _convert_to_prometheus_format(
-        self, metrics: List[APMMetrics], config: APMConfiguration
-    ) -> str:
-        """Convert metrics to Prometheus format."""
-        lines = []
-
-        # Group metrics by operation
-        operation_durations = {}
-        operation_counts = {}
-
-        for metric in metrics:
-            operation = metric.operation_name.replace("-", "_").replace(".", "_")
-
-            if operation not in operation_durations:
-                operation_durations[operation] = []
-                operation_counts[operation] = 0
-
-            operation_durations[operation].append(metric.duration_ms)
-            operation_counts[operation] += 1
-
-        # Generate Prometheus metrics
-        for operation, durations in operation_durations.items():
-            # Duration histogram
-            lines.append(
-                f"# HELP faultmaven_{operation}_duration_ms Operation duration in milliseconds"
-            )
-            lines.append(f"# TYPE faultmaven_{operation}_duration_ms histogram")
-
-            # Request count
-            lines.append(
-                f"# HELP faultmaven_{operation}_total Total number of operations"
-            )
-            lines.append(f"# TYPE faultmaven_{operation}_total counter")
-            lines.append(f"faultmaven_{operation}_total {operation_counts[operation]}")
-
-            # Average duration
-            avg_duration = sum(durations) / len(durations)
-            lines.append(
-                f"# HELP faultmaven_{operation}_avg_duration_ms Average operation duration"
-            )
-            lines.append(f"# TYPE faultmaven_{operation}_avg_duration_ms gauge")
-            lines.append(f"faultmaven_{operation}_avg_duration_ms {avg_duration}")
-
-        return "\n".join(lines)
 
     async def _export_to_generic(
         self, metrics: List[APMMetrics], config: APMConfiguration

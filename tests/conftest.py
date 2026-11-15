@@ -655,8 +655,8 @@ except ImportError:
 #   * `apm_integration` buffers a metric for every request through the
 #     performance middleware, and a live app flushes the buffer: its lifespan
 #     starts a background loop that flushes at once and then every 30 s, and
-#     its shutdown flushes once more -- to the Prometheus pushgateway
-#     (localhost:9091) when PROMETHEUS_ENABLED. Left in place, one test's
+#     its shutdown flushes once more -- to each enabled APM exporter (in
+#     #2296, the Prometheus pushgateway #2780 removed). Left in place, one test's
 #     metrics were flushed by whichever app boot ran next on that worker, and
 #     the network guard failed THAT test (#2296).
 # The accumulating state is therefore reset between tests by the autouse

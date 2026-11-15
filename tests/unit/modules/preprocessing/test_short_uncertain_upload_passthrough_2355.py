@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.core.preprocessing.models import to_unified_data_type
-from faultmaven.infrastructure.observability import evidence_metrics
+from faultmaven.infrastructure.shims.metrics import is_metrics_active
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
@@ -146,7 +146,7 @@ def _capture(n: int, *, shaped: bool = True) -> str:
 
 
 def _shape_invalid_count() -> float:
-    if not evidence_metrics.PROMETHEUS_AVAILABLE:
+    if not is_metrics_active():
         return 0.0
     from prometheus_client import REGISTRY
 
@@ -233,7 +233,7 @@ class TestAPageCaptureIsNeverCarded:
 
         assert result.extraction_method == "raw_passthrough"
         assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
-        if evidence_metrics.PROMETHEUS_AVAILABLE:
+        if is_metrics_active():
             assert _shape_invalid_count() == before + 1
 
     @pytest.mark.asyncio
@@ -251,8 +251,8 @@ class TestAPageCaptureIsNeverCarded:
 
 
 @pytest.mark.skipif(
-    not evidence_metrics.PROMETHEUS_AVAILABLE,
-    reason="prometheus_client not installed; the counter is a no-op",
+    not is_metrics_active(),
+    reason="metrics off; the counter is a no-op",
 )
 class TestEveryUncertainVerdictIsCounted:
     """Without the card, a short uncertain upload leaves no other trace."""
@@ -265,8 +265,7 @@ class TestEveryUncertainVerdictIsCounted:
             "faultmaven_preprocessing_uncertain_classification_total",
             {"outcome": outcome},
         )
-        # A child exists from import only under ENABLE_METRICS=true
-        # (``create_children``); otherwise from its first increment.
+        # Every declared child exists from import (``label_values``).
         return 0.0 if value is None else value
 
     @pytest.mark.asyncio
