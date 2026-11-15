@@ -20,7 +20,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
-    cause_recheck_status,
     fix_windows,
     has_resolution_confirmation,
     latest_disconfirmation_turn,
@@ -74,7 +73,7 @@ from tests.unit.core.investigation.bound_rows import (
     upload,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
-from tests.unit.core.investigation.narrated import reask_feedback
+from tests.unit.core.investigation.narrated import reask_feedback, recheck_texts
 from tests.unit.core.investigation.test_deferred_disposition_turn import (
     _case as _deferred_case,
 )
@@ -861,7 +860,7 @@ async def test_9_the_reason_names_the_failed_fix_and_the_newer_one():
         (6, "unknown", False),
     ], "premise: the relapse failed fix 3; fix 6 is unobserved"
     assert latest_disconfirmation_turn(case) == -1, "premise: no M6 row"
-    assert cause_recheck_status(case) == [
+    assert recheck_texts(case) == [
         (
             cause,
             "the fix executed at turn 3 was seen failing at turn 5; the newer "
@@ -876,7 +875,7 @@ async def test_9_the_reason_names_the_failed_fix_and_the_newer_one():
 
 async def test_9_with_no_newer_fix_the_reason_is_unchanged():
     case, cause = await _relapsed(second_fix=False)
-    assert cause_recheck_status(case) == [
+    assert recheck_texts(case) == [
         (cause, "the latest fix was seen failing; only a new fix can confirm")
     ]
     assert assess_resolution_readiness(case).missing[0] == (

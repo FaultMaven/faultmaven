@@ -28,7 +28,6 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     SUBJECT_CAUSE,
     SUBJECT_UNBOUND,
-    cause_recheck_status,
     fix_windows,
     remediations_at,
     subject_index,
@@ -67,7 +66,7 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
     ValidationMethod,
 )
-from tests.unit.core.investigation.narrated import narrated
+from tests.unit.core.investigation.narrated import narrated, recheck_texts
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
     _UNNAMED,
@@ -259,7 +258,7 @@ def test_a_recheck_of_the_relief_or_the_consequence_confirms_nothing(which):
     assert row in window.cause_rows and row not in window.confirmed_cause_rows
     assert window.state != FIX_SUCCEEDED
     assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
-    assert [(e, why) for e, why in cause_recheck_status(case)] == [
+    assert [(e, why) for e, why in recheck_texts(case)] == [
         (row, f"it {_UNCITED}; name one of {ttl.evidence_id} (the cited basis)")
     ]
 
@@ -272,7 +271,7 @@ def test_a_recheck_of_the_cited_basis_confirms_the_cause():
     assert subject_index(case).subject(row) == SUBJECT_CAUSE
     window = _latest(case)
     assert row in window.confirmed_cause_rows and window.state == FIX_SUCCEEDED
-    assert cause_recheck_status(case) == [(row, None)]
+    assert recheck_texts(case) == [(row, None)]
     assert _verdict(case) == ResolutionReadiness.READY
 
 
@@ -375,7 +374,7 @@ def test_an_uncited_pool_root_binds_nothing_until_the_verdict_is_re_sent():
     assert subjects.bindable_rows()[1] == []
     assert _latest(case).state != FIX_SUCCEEDED
     assert _verdict(case) == ResolutionReadiness.NEEDS_INFO
-    assert cause_recheck_status(case) == [(row, _NO_CITATION)]
+    assert recheck_texts(case) == [(row, _NO_CITATION)]
     feedback = _feedback(case)
     assert f"Post-fix row(s) {row.evidence_id} confirm nothing" in feedback
     assert _NO_CITATION in feedback
@@ -702,7 +701,7 @@ def test_a_recheck_of_a_deepened_past_target_is_told_the_cited_basis():
     case, final, _relief, _login, ttl = _mirror()
     _fix(case, 6, "remediation", [_ROOT_ID, final.node_id], _FIX)
     row = _recheck(case, _eid("pool_log"), turn=7)
-    assert cause_recheck_status(case) == [
+    assert recheck_texts(case) == [
         (row, f"it {_UNCITED}; name one of {ttl.evidence_id} (the cited basis)")
     ]
 

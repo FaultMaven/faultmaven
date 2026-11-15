@@ -61,6 +61,25 @@ async def update_progress(
     return expected_version + 1
 
 
+def scoped_outcome(
+    sets: list, params: dict, outcome: Any, expected_version: Any, *, is_pg: bool
+) -> str:
+    """The metadata write's WHERE, adding to ``sets`` the write of
+    ``progress.outcome`` alone when ``outcome`` is given (#2811): the rest of
+    the blob is left as stored, the version is not bumped, and the row is
+    written only while it is still ``expected_version``."""
+    if outcome is None:
+        return "case_id = :case_id"
+    value = (
+        "jsonb_set(progress, '{outcome}', CAST(:outcome AS JSONB))"
+        if is_pg
+        else "json_set(progress, '$.outcome', json(:outcome))"
+    )
+    sets.append(f"progress = {value}")
+    params.update(outcome=outcome.model_dump_json(), expected_version=expected_version)
+    return "case_id = :case_id AND version = :expected_version"
+
+
 _DRIVEN_BY = text(
     "SELECT case_id, enterprise_id, user_id, driver_id FROM cases "
     "WHERE driver_id = :user_id ORDER BY case_id"

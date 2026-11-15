@@ -1053,12 +1053,24 @@ case_outcome_conflicts_total = Counter(
 
 # A write of the record that raised. Nothing reads the record in this stage,
 # so the write never fails the turn or the transition it rides on; the failure
-# is logged with its traceback and counted here, by write point
-# (cycle|replay|resolved|closed).
+# is logged with its traceback and counted here, by write point: the cycle,
+# a replay, the two terminal transitions, and the saves that fold it (#2811:
+# a turn's commit, the case service's write, the metadata write, creation).
 case_outcome_write_failures_total = Counter(
     "faultmaven_case_outcome_write_failures_total",
     "A case outcome record write raised and was skipped (#2615), by write "
-    "point (cycle|replay|resolved|closed).",
+    "point (cycle|replay|resolved|closed|commit|write|metadata|create).",
     labelnames=["at"],
-    label_values={"at": ("cycle", "replay", "resolved", "closed")},
+    label_values={
+        "at": (
+            "cycle",
+            "replay",
+            "resolved",
+            "closed",
+            "commit",
+            "write",
+            "metadata",
+            "create",
+        )
+    },
 )

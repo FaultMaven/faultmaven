@@ -89,7 +89,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import
 from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
-    pass
+    from faultmaven.modules.case.contracts import CaseOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -1157,6 +1157,8 @@ class SQLiteCaseRepository(CaseRepository):
         *,
         title: str | None = None,
         description: str | None = None,
+        outcome: "CaseOutcome | None" = None,
+        expected_version: int | None = None,
     ) -> bool:
         """Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
 
@@ -1182,9 +1184,12 @@ class SQLiteCaseRepository(CaseRepository):
         if description is not None:
             sets.append("description = :description")
             params["description"] = description
+        where = case_driver_sql.scoped_outcome(
+            sets, params, outcome, expected_version, is_pg=False
+        )
 
         try:
-            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE case_id = :case_id")
+            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE {where}")
             result = await self.db.execute(query, params)
             await self.db.commit()
             return result.rowcount > 0

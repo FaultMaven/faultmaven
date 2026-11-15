@@ -21,7 +21,6 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
     _fix_failure_refusal,
 )
 from faultmaven.core.investigation.cause_assurance import (
-    cause_recheck_status,
     fix_windows,
     latest_decided_fix_window,
 )
@@ -63,6 +62,7 @@ from tests.case_builders import inquiry_case, with_declined_offer
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_row
 from tests.unit.core.investigation.fix_turns_2039 import _engine_rows
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.narrated import recheck_texts
 from tests.unit.core.investigation.test_fix_registration_lag_2427 import (
     _PREVIOUS,
     _accepted,
@@ -725,7 +725,7 @@ async def test_7_the_recheck_reason_names_the_fix_done_outside_the_case(newer):
         _accept(case, InvestigationActionType.SOLUTION, 8)
         then = "the newer fix (executed turn 8) is not re-checked yet"
 
-    assert [why for _, why in cause_recheck_status(case)] == [
+    assert [why for _, why in recheck_texts(case)] == [
         f"the fix done outside the case was seen failing at turn 6; {then}"
     ]
 

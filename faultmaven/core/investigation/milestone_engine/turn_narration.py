@@ -39,7 +39,7 @@ from faultmaven.core.investigation.narration.notices import (
 )
 from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offers import summarize_offer
-from faultmaven.core.investigation.outcome import compute_case_outcome
+from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
@@ -71,7 +71,7 @@ def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
     if not any(entry["code"] in READS_THE_RECORD for entry in log):
         return None
     try:
-        return compute_case_outcome(case.progress.outcome, case)
+        return narration_outcome(case)
     except Exception:  # noqa: BLE001 — the write's failure is already counted
         logger.exception(
             "Case %s: no outcome to narrate from (#2636)",

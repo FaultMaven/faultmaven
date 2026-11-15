@@ -46,6 +46,8 @@ from faultmaven.modules.case.domain.owned_models.turn_receipt import (
 )
 
 if TYPE_CHECKING:
+    from faultmaven.modules.case.domain.models.outcome import CaseOutcome
+
     # Report models now owned by Case module - import from case domain models
     from faultmaven.modules.case.domain.owned_models.report import (
         CaseReport,
@@ -684,6 +686,8 @@ class CaseRepository(ABC):
         *,
         title: str | None = None,
         description: str | None = None,
+        outcome: "CaseOutcome | None" = None,
+        expected_version: int | None = None,
     ) -> bool:
         """
         Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
@@ -1528,6 +1532,8 @@ class InMemoryCaseRepository(CaseRepository):
         *,
         title: str | None = None,
         description: str | None = None,
+        outcome: "CaseOutcome | None" = None,
+        expected_version: int | None = None,
     ) -> bool:
         """In-memory scoped update of title/description (no version bump)."""
         case = self._cases.get(case_id)
@@ -1535,10 +1541,14 @@ class InMemoryCaseRepository(CaseRepository):
             return False
         if title is None and description is None:
             return False
+        if outcome is not None and case.version != expected_version:
+            return False
         if title is not None:
             case.title = title
         if description is not None:
             case.description = description
+        if outcome is not None:
+            object.__setattr__(case.progress, "outcome", outcome)
         case.updated_at = datetime.now(timezone.utc)
         return True
 

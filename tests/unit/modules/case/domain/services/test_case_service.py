@@ -289,15 +289,26 @@ class TestUpdateCase:
         """
         case = _make_case()
         mock_repo.get.return_value = case
+        version = case.version
         result = await service.update_case(
             "case_abc123abc123",
             {"title": "New Title", "description": "Updated"},
         )
         assert result is True
-        mock_repo.update_metadata_fields.assert_awaited_once_with(
-            "case_abc123abc123", title="New Title", description="Updated"
+        mock_repo.update_metadata_fields.assert_awaited_once()
+        call = mock_repo.update_metadata_fields.await_args
+        assert call.args == ("case_abc123abc123",)
+        assert (call.kwargs["title"], call.kwargs["description"]) == (
+            "New Title",
+            "Updated",
         )
+        # The description is the statement in force outside an investigation:
+        # the outcome record folded over it rides the same scoped write, on
+        # the version it was folded from (#2811).
+        assert call.kwargs["outcome"].problem.statement == "Updated"
+        assert call.kwargs["expected_version"] == version
         mock_repo.save.assert_not_awaited()
+        mock_repo.save_progress.assert_not_awaited()
 
     @staticmethod
     def _make_closed_case():

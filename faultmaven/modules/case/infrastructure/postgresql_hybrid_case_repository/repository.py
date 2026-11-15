@@ -20,7 +20,7 @@ Architecture:
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Set
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -85,6 +85,10 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.sa
 )
 
 # TYPE_CHECKING imports not needed - models imported directly above
+
+
+if TYPE_CHECKING:
+    from faultmaven.modules.case.domain.models.outcome import CaseOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -1363,6 +1367,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         *,
         title: str | None = None,
         description: str | None = None,
+        outcome: "CaseOutcome | None" = None,
+        expected_version: int | None = None,
     ) -> bool:
         """Scoped UPDATE of cosmetic metadata fields — does NOT bump version.
 
@@ -1380,9 +1386,12 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             sets.append("description = :description")
             params["description"] = description
         sets.append("updated_at = NOW()")
+        where = case_driver_sql.scoped_outcome(
+            sets, params, outcome, expected_version, is_pg=True
+        )
 
         try:
-            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE case_id = :case_id")
+            query = text(f"UPDATE cases SET {', '.join(sets)} WHERE {where}")
             result = await self.db.execute(query, params)
             await self.db.commit()
             return result.rowcount > 0

@@ -131,6 +131,7 @@ DERIVATIONS: dict[str, str] = {
             "_cause_pool",
             "cause_recheck_status",
             "uncited_recheck_why",
+            "uncited_recheck",
             "_no_confirming_window",
             "latest_fix_window",
             "latest_decided_fix_window",
@@ -167,6 +168,9 @@ DERIVATIONS: dict[str, str] = {
     "closure_outcome": _OUTCOME,
     # Its callers are the record's write points.
     "record_case_outcome": _OUTCOME,
+    # #2811: the two save helpers' write, and the record narration reads.
+    "record_before_save": _OUTCOME,
+    "narration_outcome": _OUTCOME,
 }
 
 #: Each outcome field read raw, by the module and class that define it.
@@ -208,8 +212,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "_no_confirming_window": 1,
         "confirming_window": 1,
         "fix_windows": 1,
-        "uncited_recheck_why": 1,
+        "uncited_recheck": 1,
     },
+    # #2811: the typed parameters, rendered by ``narration.rechecks``.
+    (_CA, "uncited_recheck_why"): {"uncited_recheck": 1},
     (_CA, "confirming_polarity_rows"): {"fix_windows": 1},
     (_CA, "confirming_window"): {"fix_windows": 1},
     (_CA, "fix_windows"): {"_pool_legs": 1},
@@ -317,7 +323,26 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
     # The outcome computed in memory for the narration alone when the cycle's
     # record write failed, never stored and counting nothing (#2636 B1b).
-    (_ME + "turn_narration.py", "_outcome"): {"compute_case_outcome": 1},
+    (_ME + "turn_narration.py", "_outcome"): {"narration_outcome": 1},
+    # The two save helpers (#2811): a turn's commit and the case service's
+    # write fold the record after the save's lapse; the metadata write, whose
+    # description is the statement in force outside an investigation, writes
+    # it in its own scoped update.
+    (_ME + "turn_commit.py", "commit_turn_plan"): {"record_before_save": 1},
+    (_CASE + "utils/retry.py", "update_case_with_retry"): {"record_before_save": 1},
+    (_CASE + "domain/services/case_service.py", "CaseService._write_metadata"): {
+        "record_case_outcome": 1
+    },
+    # #2811: a new case's first record, and the out-of-band reclassification,
+    # which re-dates its file's rows.
+    (_CASE + "domain/services/case_service.py", "CaseService.create_case"): {
+        "record_before_save": 1
+    },
+    (
+        "faultmaven/modules/agent/domain/services/investigation_service/"
+        "reclassification.py",
+        "EvidenceReclassifier.reclassify_out_of_band",
+    ): {"record_before_save": 1},
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,
@@ -350,7 +375,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
-    (_OUTCOME, "compute_case_outcome"): {"fix_windows": 1, "shown_milestones": 1},
+    (_OUTCOME, "compute_case_outcome"): {
+        "cause_recheck_status": 1,
+        "fix_windows": 1,
+        "shown_milestones": 1,
+    },
+    (_OUTCOME, "narration_outcome"): {"compute_case_outcome": 1},
+    (_OUTCOME, "record_before_save"): {"record_case_outcome": 1},
     (_OUTCOME, "record_case_outcome"): {"compute_case_outcome": 1},
     # The backfill: once per stored case without a record, from the case.
     ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome._apply"): {
@@ -526,6 +557,12 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         {"open_disposition_offer": 2},
         "opens the resolve offer on a ready recheck (basis model), or the close "
         "offer on an unmet request (basis needs_info_unmet)",
+    ),
+    (_OUTCOME, "record_before_save"): (
+        {"lapse_offers": 1},
+        "lapses, at a save helper before its record is folded (#2811), what "
+        "the save's own lapse would: an open resolve or close offer whose "
+        "premise has gone, and each decline whose premise moved",
     ),
     (_ME + "turn_application.py", "_lapse_and_record"): (
         {"lapse_offers": 1},

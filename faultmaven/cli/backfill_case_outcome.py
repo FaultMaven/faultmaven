@@ -1,5 +1,6 @@
 """Give every stored case that needs one its case outcome record (#2615 stage S1):
-a case without one, or a terminal case whose record no terminal write folded.
+a case without one, a terminal case whose record no terminal write folded, or
+a case whose record is of an older shape (#2811).
 
 ``progress.outcome`` is written at the end of each decision cycle and at both
 terminal transitions (``core/investigation/outcome.py``), so a case stored
@@ -17,6 +18,15 @@ closure, which is not final. The repair folds over that stored record, so its
 final verdicts (a FAILED window, ``accepted_in_turn``) are carried, while the
 closure, folded open, is read off the closed case.
 
+And it rewrites a record of an older shape (``CaseOutcome.shape`` below
+``CURRENT_OUTCOME_SHAPE``, raised by every change that adds or changes a
+field): a field the stored record lacks would read as its default, not as
+what the case holds. **Run it after each release that raises the shape.** The
+rewrite folds over the stored record: the verdicts it held final are carried
+and marked so, and no new final verdict is minted (ruled 2026-11-15 on #2811:
+a first record mints, a re-shape does not). A repair mints, as the terminal
+write it stands in for would have.
+
 Usage (``fm-backfill-case-outcome``, installed with the package)::
 
     fm-backfill-case-outcome --dry-run
@@ -31,9 +41,10 @@ In a Kubernetes deployment, run it in the API pod::
 The precondition it serves
 --------------------------
 There is no legacy read path: no reader computes a record when it meets
-``None``. So this runs after the release that writes the record and before any
-release that switches a reader onto it (#2636's stage R, or #2615's S2). After
-that, a reader meeting ``None`` is a defect.
+``None``. So this runs after the release that writes the record, or raises its
+shape, and before any release that switches a reader onto a field it adds
+(#2636's stage R, or #2615's S2). After that, a reader meeting ``None`` or an
+older shape is a defect.
 
 What it writes
 --------------
@@ -57,8 +68,9 @@ left alone, and its lease is not read. Under standalone the lease store lives
 in the API's own process, which this command cannot see: run it with the API
 idle there.
 
-A case needs a record when it has none, or when it is terminal and no terminal
-write folded the record it has (``needs_record``). Only such a case is written
+A case needs a record when it has none, when its record is of an older shape,
+or when it is terminal and no terminal write folded the record it has
+(``needs_record``). Only such a case is written
 and every other case is left alone, so the command is idempotent: a run straight
 after a writing run (not ``--dry-run``) that exited 0 writes nothing. A run that
 skipped or failed cases leaves them for the next.
@@ -95,8 +107,9 @@ from faultmaven.config.tls_root_set import apply_root_set
 #: -OO`` strips docstrings.
 _SUMMARY = (
     "Compute the case outcome record once for every stored case that needs "
-    "one, from the case as stored (#2615): a case without a record, or a "
-    "terminal case whose record no terminal write folded."
+    "one, from the case as stored (#2615): a case without a record, a "
+    "terminal case whose record no terminal write folded, or a record of an "
+    "older shape."
 )
 
 #: The exit status of a run that skipped a case for work in flight.
@@ -115,10 +128,20 @@ class _Leave(Exception):
 
 
 def needs_record(case: Any) -> bool:
-    """Whether the case needs its record computed: it has none, or it is
-    terminal and no terminal write folded the record it has."""
+    """Whether the case needs its record computed: it has none, it is of an
+    older shape, or the case is terminal and no terminal write folded it."""
+    from faultmaven.modules.case.contracts import CURRENT_OUTCOME_SHAPE
+
     record = case.progress.outcome
-    return record is None or (case.is_terminal and not record.folded_under.is_terminal)
+    return record is None or record.shape < CURRENT_OUTCOME_SHAPE or _repairs(case)
+
+
+def _repairs(case: Any) -> bool:
+    """A terminal case whose record no terminal write folded."""
+    record = case.progress.outcome
+    return (
+        record is not None and case.is_terminal and not record.folded_under.is_terminal
+    )
 
 
 async def backfill_case_outcome(
@@ -135,11 +158,8 @@ async def backfill_case_outcome(
     flight; by default the container's, composed here (a test passes its own).
     """
     from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
-    from faultmaven.core.investigation.outcome import (
-        compute_case_outcome,
-        disagreement_keys,
-        report_saved_disagreements,
-    )
+    from faultmaven.core.investigation.outcome import compute_case_outcome
+    from faultmaven.modules.case.contracts import WritePoint
     from faultmaven.modules.case.exceptions import CaseNotFoundError
     from faultmaven.modules.case.utils.retry import update_case_with_retry
     from faultmaven.providers.tenancy.factory import (
@@ -186,12 +206,17 @@ async def backfill_case_outcome(
                 ) from exc
             if busy:
                 raise _Leave("a turn or its task is in flight", skipped=True)
-        repairing[case.case_id] = case.progress.outcome is not None
-        loaded[case.case_id] = disagreement_keys(case.progress.outcome)
+        repair = _repairs(case)
+        repairing[case.case_id] = repair
         # Over the stored record: none for a case without one (ruled on
         # #2636), and for a repair the record the terminal write left, whose
-        # final verdicts carry while its open closure does not.
-        record = compute_case_outcome(case.progress.outcome, case)
+        # final verdicts carry while its open closure does not. A first
+        # record and a repair mint finals; a re-shape does not (#2811).
+        record = compute_case_outcome(
+            case.progress.outcome,
+            case,
+            at=WritePoint.REPAIR if repair else WritePoint.BACKFILL,
+        )
         if dry_run:
             raise _Leave("dry run", would_write=True)
         case.progress.outcome = record
@@ -200,18 +225,19 @@ async def backfill_case_outcome(
     already = 0
     written: list[str] = []
     repairing: dict[str, bool] = {}
-    loaded: dict[str, frozenset[tuple[str, int]]] = {}
     counted: dict[str, list[str]] = {}
     skipped: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
     for case_id in case_ids:
         try:
-            saved = await update_case_with_retry(
-                repository, case_id, _apply, save=repository.save_progress
-            )
             # Counted once, after the save, on the attempt that saved (#2689).
-            counted[case_id] = report_saved_disagreements(
-                case_id, loaded[case_id], saved.progress.outcome
+            counted[case_id] = []
+            await update_case_with_retry(
+                repository,
+                case_id,
+                _apply,
+                save=repository.save_progress,
+                counted=counted[case_id],
             )
             written.append(case_id)
         except _Leave as left:
@@ -261,9 +287,10 @@ def main() -> None:
         description=_SUMMARY,
         epilog=(
             "Runs after the release that writes the record and before any "
-            "release that switches a reader onto it. Idempotent: only a case "
-            "that needs a record (none, or a terminal case's record no terminal "
-            "write folded) is written, so a run straight after a writing run "
+            "release that switches a reader onto it, and after each release "
+            "that raises the record's shape. Idempotent: only a case that needs "
+            "a record (none, an older shape, or a terminal case's record no "
+            "terminal write folded) is written, so a run straight after a writing run "
             "that exited 0 writes nothing. Exit 1 "
             "when any case failed, else 3 when any was skipped: a failure "
             "outranks a skip."
@@ -294,8 +321,8 @@ def main() -> None:
         parser,
         args,
         "This writes a case outcome record onto every stored case that needs "
-        "one: a case without a record, or a terminal case whose record no "
-        "terminal write folded.",
+        "one: a case without a record, a record of an older shape, or a "
+        "terminal case whose record no terminal write folded.",
     )
 
     require_persistent_database_or_exit()

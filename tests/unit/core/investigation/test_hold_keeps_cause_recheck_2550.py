@@ -18,7 +18,6 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_UNKNOWN,
     SUBJECT_CAUSE,
     SUBJECT_UNBOUND,
-    cause_recheck_status,
     fix_windows,
     subject_index,
 )
@@ -55,6 +54,7 @@ from tests.unit.core.investigation.bound_rows import (
     ensure_subjects,
     upload,
 )
+from tests.unit.core.investigation.narrated import recheck_texts
 
 pytestmark = pytest.mark.unit
 
@@ -123,7 +123,7 @@ def _assert_counts_for_the_cause(case, evidence_id: str) -> None:
     assert _row(case, evidence_id).category == CAUSAL_ABSENCE
     subjects = subject_index(case)
     assert subjects.subject(_row(case, evidence_id), windows=True) == SUBJECT_CAUSE
-    assert [(e.evidence_id, why) for e, why in cause_recheck_status(case)] == [
+    assert [(e.evidence_id, why) for e, why in recheck_texts(case)] == [
         (evidence_id, None)
     ]
     assert [e.evidence_id for e in fix_windows(case)[0].cause_rows] == [evidence_id]
@@ -216,7 +216,7 @@ class TestAnAnswerBackToWhereTheCaseWas:
         assert case.progress.problem_status == ProblemStatus.VERIFIED
         assert _row(case, absent).category == CAUSAL_ABSENCE
         assert subject_index(case).subject(_row(case, absent)) == SUBJECT_UNBOUND
-        assert cause_recheck_status(case) == []
+        assert recheck_texts(case) == []
 
     async def test_to_unverified_keeps_it_held(self):
         engine, case = revision._engine(), revision._case()
@@ -261,7 +261,7 @@ async def test_readers_during_the_hold_read_the_row_as_held():
     absent = await _hold_with_both_legs(engine, case)
 
     assert _row(case, absent).category == SYMPTOM_ABSENCE
-    assert cause_recheck_status(case) == []
+    assert recheck_texts(case) == []
     readiness = assess_resolution_readiness(case)
     assert readiness.verdict == readiness.NEEDS_INFO
     assert derive_disposition_eligibility(case)["resolved"] == (

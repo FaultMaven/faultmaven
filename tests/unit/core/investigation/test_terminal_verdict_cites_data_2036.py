@@ -24,7 +24,6 @@ import pytest
 from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
-    cause_recheck_status,
     confirming_polarity_rows,
 )
 from faultmaven.core.investigation.cause_identification import (
@@ -71,7 +70,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.unit.core.investigation.bound_rows import bound_evidence, upload
-from tests.unit.core.investigation.narrated import narrated
+from tests.unit.core.investigation.narrated import narrated, recheck_texts
 from tests.unit.core.investigation.test_terminal_root_identification_2036 import (
     _open_chain_case,
 )
@@ -495,7 +494,7 @@ def test_no_consumer_reads_a_refuted_root_as_held():
     )
     # Not "held open": the fallen cause's reversed verdict cites no row, so
     # the window-bound re-check confirms nothing (#2557).
-    assert [why for _e, why in cause_recheck_status(case)] == [
+    assert [why for _e, why in recheck_texts(case)] == [
         "the root cause's terminal verdict cites no row yet"
     ]
     assert [e.evidence_id for e in confirming_polarity_rows(case)] == [

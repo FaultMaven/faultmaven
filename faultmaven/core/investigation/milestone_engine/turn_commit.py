@@ -23,12 +23,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from faultmaven.core.investigation.outcome import record_before_save
 from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
     ICaseRepository,
     ReportType,
     TurnReceipt,
+    WritePoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,11 +104,16 @@ async def commit_turn_plan(
     commit. Shielded, no outside cancel reaches it, and every exception it
     sees is one the commit really raised.
     """
+    undo = None
     try:
+        # The record of the case as saved, after the save's lapse (#2811).
+        undo = record_before_save(case, at=WritePoint.COMMIT)
         saved = await repository.save(
             case, reports=tuple(plan.reports), receipt=plan.receipt
         )
     except BaseException:
+        if undo is not None:
+            undo()
         plan.cancel_gates()
         raise
     plan.release_gates()

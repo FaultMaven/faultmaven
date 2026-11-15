@@ -215,3 +215,38 @@ async def test_a_copy_holding_an_older_version_is_refused(world):
     with pytest.raises(StaleCaseException):
         await world.save_progress(second)
     assert (await world.get(case_id)).version == second.version + 1
+
+
+async def test_2811_the_scoped_write_carries_the_record_and_bumps_nothing(world):
+    """A description edit's record rides the scoped metadata write: only
+    ``progress.outcome`` is replaced, the version is not bumped, and the
+    write is refused once the version it was folded from has moved."""
+    from faultmaven.core.investigation.outcome import compute_case_outcome
+    from faultmaven.modules.case.contracts import WritePoint
+
+    (case_id,) = await _stored(world, count=1)
+    case = await world.get(case_id)
+    case.description = "checkout is slow"
+    record = compute_case_outcome(None, case, at=WritePoint.METADATA)
+
+    assert await world.repository.update_metadata_fields(
+        case_id,
+        description="checkout is slow",
+        outcome=record,
+        expected_version=case.version,
+    )
+    saved = await world.get(case_id)
+    assert saved.version == case.version
+    assert saved.description == "checkout is slow"
+    assert saved.progress.outcome == record
+    assert saved.progress.model_dump(exclude={"outcome"}) == case.progress.model_dump(
+        exclude={"outcome"}
+    )
+
+    assert not await world.repository.update_metadata_fields(
+        case_id,
+        description="checkout is slower",
+        outcome=record,
+        expected_version=case.version + 1,
+    ), "a moved version refuses the write"
+    assert (await world.get(case_id)).description == "checkout is slow"

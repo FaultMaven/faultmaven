@@ -55,6 +55,7 @@ from faultmaven.modules.case.contracts import (
     CauseState,
     ClosureEligibility,
     ResolutionReason,
+    WritePoint,
 )
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation import narrated as narrated_module
@@ -369,7 +370,7 @@ def test_a_held_check_at_step_2_is_counted_once(monkeypatch):
     case, metadata = golden._models_proposal(golden._held(), "resolved")
     codes = [e["code"] for e in metadata[DECISIONS_KEY]]
     assert {NoticeCode.PENDING_CHECK, OfferCode.RESOLUTION_NEEDS_INFO} <= set(codes)
-    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at="cycle")
+    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at=WritePoint.CYCLE)
     case.progress.outcome.resolution.reason = ResolutionReason.CONFIRMED
     narrate_turn(case, metadata)
     assert counts == [(NoticeCode.PENDING_CHECK, "resolution.reason")]

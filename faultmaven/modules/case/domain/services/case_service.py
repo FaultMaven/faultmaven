@@ -30,6 +30,7 @@ from faultmaven.config.tenant_context import (
 from faultmaven.exceptions import (
     AuthorizationError,
     CaseNotDriverError,
+    ConflictError,
     NotFoundError,
     ServiceException,
     ValidationException,
@@ -57,6 +58,7 @@ from faultmaven.modules.case.contracts import (
     ICaseStoreEraser,
     MessageRowKind,
     TurnReceipt,
+    WritePoint,
     append_message_row,
     is_server_written_assistant_row,
     is_server_written_user_row,
@@ -331,7 +333,12 @@ class CaseService(CaseDriverMixin, ICaseService):
                 except Exception as e:
                     logger.warning(f"Failed to update session with case ID: {e}")
 
-            # Save the case using repository
+            # Save the case with its first outcome record: an INQUIRY case
+            # holds nothing to mint, and its description is the statement in
+            # force (#2811).
+            from faultmaven.core.investigation.outcome import record_before_save
+
+            record_before_save(case, at=WritePoint.CREATE)
             saved_case = await self.repository.save(case)
 
             # Share-creation defaults (ADR-013 §D3). A Slack-originated case is
@@ -554,7 +561,10 @@ class CaseService(CaseDriverMixin, ICaseService):
           ``update_metadata_fields`` repo method. Does NOT bump
           ``cases.version`` and therefore cannot stale-conflict with an
           in-flight turn save. This is the common path for title
-          generation and dashboard renames.
+          generation and dashboard renames. A changed description, the
+          statement in force outside an investigation, carries the case
+          outcome record folded over it in the same scoped write
+          (``_write_metadata``, #2811).
         - **Investigation state** (status, closure_reason, or mixed with
           metadata): goes through ``update_case_with_retry``, which uses
           the versioned ``save`` path with OCC retry on conflict. Status
@@ -625,11 +635,7 @@ class CaseService(CaseDriverMixin, ICaseService):
 
             if not touches_state and touches_metadata:
                 # Metadata-only path: scoped UPDATE, no version bump.
-                await self.repository.update_metadata_fields(
-                    case_id,
-                    title=safe_updates.get("title"),
-                    description=safe_updates.get("description"),
-                )
+                await self._write_metadata(case_id, safe_updates)
             elif touches_state:
                 # Investigation-state path: versioned save with OCC retry.
                 # Any metadata fields in the same call ride along on the
@@ -672,13 +678,62 @@ class CaseService(CaseDriverMixin, ICaseService):
             logger.info(f"Updated case {case_id}")
             return True
 
-        except (ValidationException, NotFoundError, AuthorizationError):
+        except (ValidationException, NotFoundError, AuthorizationError, ConflictError):
             # The access verdict, up front or under the retry: answered as
             # what it is, never as a failed write.
             raise
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
+
+    async def _write_metadata(self, case_id: str, updates: Dict[str, Any]) -> None:
+        """The scoped metadata write, which never bumps ``cases.version``. A
+        changed description is the statement in force outside an
+        investigation (``current_statement``), so the case outcome record is
+        folded over it and written in the same scoped UPDATE, only while the
+        version it was folded from stands; a write that lost that race folds
+        again (#2811). An unchanged description is not written: the title is,
+        alone. Its disagreements are counted once, after the write."""
+        from faultmaven.core.investigation.outcome import (
+            disagreement_keys,
+            record_case_outcome,
+            report_saved_disagreements,
+        )
+
+        title, description = updates.get("title"), updates.get("description")
+        for _attempt in range(3):
+            case = await self.repository.get(case_id)
+            if case is None:
+                raise NotFoundError("Case", case_id)
+            stored, loaded = case.description, disagreement_keys(case.progress.outcome)
+            if description is not None:
+                try:
+                    case.description = description
+                except ValueError as exc:
+                    raise ValidationException(f"description: {exc}") from exc
+            if case.description == stored:
+                # Nothing for the record: the title alone. A description
+                # written here, unguarded, could land beside the record of a
+                # concurrent edit's.
+                if title is not None:
+                    await self.repository.update_metadata_fields(case_id, title=title)
+                return
+            record_case_outcome(case, at=WritePoint.METADATA)
+            if await self.repository.update_metadata_fields(
+                case_id,
+                title=title,
+                description=description,
+                outcome=case.progress.outcome,
+                expected_version=case.version,
+            ):
+                report_saved_disagreements(case_id, loaded, case.progress.outcome)
+                return
+        raise ConflictError(
+            f"Case {case_id} changed while its description was edited; retry",
+            resource_type="Case",
+            resource_id=case_id,
+            conflict_reason="concurrent_update",
+        )
 
     @trace("case_service_get_or_create_case_for_session")
     async def get_or_create_case_for_session(
@@ -1121,14 +1176,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             CaseNotDriverError: The caller reads it but does not drive it.
             ConflictError: Case is already resolved/closed.
         """
-        from faultmaven.core.investigation.outcome import (
-            disagreement_keys,
-            report_saved_disagreements,
-        )
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,
         )
-        from faultmaven.exceptions import CASE_TERMINAL, ConflictError, NotFoundError
+        from faultmaven.exceptions import CASE_TERMINAL, NotFoundError
         from faultmaven.modules.case.exceptions import (
             CaseNotFoundError,
             StaleCaseException,
@@ -1151,15 +1202,11 @@ class CaseService(CaseDriverMixin, ICaseService):
         if case.state.is_terminal:
             raise _already_terminal(case.state)
 
-        loaded: list[frozenset[tuple[str, int]]] = [frozenset()]
-
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:
                 raise CaseNotDriverError()
             if fresh.state.is_terminal:
                 raise _already_terminal(fresh.state)
-            # Per attempt: the record this attempt's write folds over (#2689).
-            loaded[0] = disagreement_keys(fresh.progress.outcome)
             execute_user_closure(fresh, user_id)
 
         # The retry helper's own exceptions subclass CaseException, which no
@@ -1179,8 +1226,6 @@ class CaseService(CaseDriverMixin, ICaseService):
                 resource_id=case_id,
                 conflict_reason="concurrent_update",
             )
-        # Counted once, on the record the saving attempt wrote (#2689).
-        report_saved_disagreements(case_id, loaded[0], updated_case.progress.outcome)
         logger.info(
             f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
         )

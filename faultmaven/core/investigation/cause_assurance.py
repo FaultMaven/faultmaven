@@ -46,13 +46,19 @@ from faultmaven.modules.case.contracts import (
     MitigationRefusalReason,
     NeedPurpose,
     NeedState,
+    NoConfirmingWindow,
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    NoWindowKind,
     PoolEmptyReason,
     ProblemStatus,
+    RecheckReason,
+    RecheckWhy,
     RootCauseConclusion,
     SolutionOutcome,
+    UncitedKind,
+    UncitedRecheck,
     classify_solution_outcome,
 )
 
@@ -1144,10 +1150,11 @@ def cause_recheck_status(
 ) -> list:
     """Every cause-bound causal_absence row, as ``(row, why)``: ``why`` is
     None for a row of the cause leg (``cause_elimination_rows``), else why it
-    does not count yet. The ``<fix_verification>`` block shows the second
-    kind, so the model asks for what is missing, not for a re-check already on
-    record (#1906 D7). A row bound only to a fix's window is listed with
-    ``uncited_recheck_why`` (#2557)."""
+    does not count yet, as a ``RecheckWhy`` code with its parameters (#2811).
+    The ``<fix_verification>`` block renders the second kind
+    (``narration.rechecks``), so the model asks for what is missing, not for
+    a re-check already on record (#1906 D7). A row bound only to a fix's
+    window is listed with ``uncited_recheck_why`` (#2557)."""
     subjects = subject_index(case) if subjects is None else subjects
     held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
@@ -1157,7 +1164,7 @@ def cause_recheck_status(
     window = confirming_window(case, windows=windows, subjects=subjects)
     no_window = None if window is not None else _no_confirming_window(case, windows)
     window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
-    uncited = uncited_recheck_why(subjects)
+    uncited = uncited_recheck(subjects)
     out = []
     for e in getattr(case, "evidence", None) or []:
         bound = subjects.subject(e) == SUBJECT_CAUSE
@@ -1167,47 +1174,49 @@ def cause_recheck_status(
         ):
             continue
         turn = subjects.observed(e)
+        why: RecheckWhy | None = None
         if held_open:
-            why = "the cause's identification is held open"
+            why = RecheckWhy(RecheckReason.HELD_OPEN)
         elif e.evidence_id in disconfirmation_ids:
-            why = "it is a failed fix's disconfirmation"
+            why = RecheckWhy(RecheckReason.DISCONFIRMATION)
         elif turn < posited:
-            why = f"its data predates the cause's positing (turn {posited})"
+            why = RecheckWhy(RecheckReason.PREDATES_POSITING, posited)
         elif turn < last_disconfirm:
-            why = f"its data predates the failed fix seen at turn {last_disconfirm}"
+            why = RecheckWhy(RecheckReason.PREDATES_FAILED_FIX, last_disconfirm)
         elif window is None:
-            why = no_window
+            why = RecheckWhy(RecheckReason.NO_CONFIRMING_WINDOW, window=no_window)
         elif not window.holds(turn):
-            why = "it is outside the latest observed fix's window"
+            why = RecheckWhy(RecheckReason.OUTSIDE_WINDOW)
         elif not bound and (
             window.kind is None
             or e.evidence_id in {r.evidence_id for r in window.cause_rows}
         ):
-            why = uncited
+            why = RecheckWhy(RecheckReason.UNCITED, uncited=uncited)
         elif window.kind is not None and e not in window.confirmed_cause_rows:
-            why = (
-                f"it re-checks a cause the fix executed at turn {window.fix_turn} "
-                "was not run against"
-            )
-        else:
-            why = None
+            why = RecheckWhy(RecheckReason.OTHER_CAUSE, window.fix_turn)
         out.append((e, why))
     return out
 
 
-def uncited_recheck_why(subjects: "SubjectIndex") -> str:
-    """Why a window-bound cause re-check confirms nothing, naming the cited
-    basis to re-check (#2557); the one copy of the clause."""
+def uncited_recheck(subjects: "SubjectIndex") -> UncitedRecheck:
+    """Why a window-bound cause re-check confirms nothing, with up to five
+    rows of the cited basis to re-check (#2557)."""
     if not subjects.pool_roots:
-        return "no root cause is identified to confirm"
+        return UncitedRecheck(kind=UncitedKind.NO_ROOT)
     _problem, cause = subjects.bindable_rows()
-    ids = ", ".join(e.evidence_id for e in cause[:5])
-    if ids:
-        return (
-            "it re-checks a row the root's verdict does not cite; name one of "
-            f"{ids} (the cited basis)"
+    if cause:
+        return UncitedRecheck(
+            kind=UncitedKind.CITED, cited_row_ids=[e.evidence_id for e in cause[:5]]
         )
-    return "the root cause's terminal verdict cites no row yet"
+    return UncitedRecheck(kind=UncitedKind.NO_CITATION)
+
+
+def uncited_recheck_why(subjects: "SubjectIndex") -> str:
+    """``uncited_recheck``, rendered (``narration.rechecks``): the one copy
+    of the clause."""
+    from faultmaven.core.investigation.narration.rechecks import uncited_text
+
+    return uncited_text(uncited_recheck(subjects))
 
 
 def remediations_at(case: "Case", turn: int | None) -> list:
@@ -1220,48 +1229,34 @@ def remediations_at(case: "Case", turn: int | None) -> list:
     ]
 
 
-def _no_confirming_window(case: "Case", windows: list) -> str:
+def _no_confirming_window(case: "Case", windows: list) -> NoConfirmingWindow:
     """Why no window confirms (``confirming_window`` is None): the latest
     attempt was no fix of the cause (``off_cause_attempt``, #2036 D2.3), the
     latest observed fix failed, or it acted on a cause no longer identified
-    (``off_cause``). When a newer fix is recorded that nobody has observed
-    yet, it is named as the one still to re-check, not as missing (#2495). A
-    failed window 0 is named as the fix done outside the case (#2501)."""
+    (``off_cause``). A newer fix recorded that nobody has observed yet is
+    named as the one still to re-check, not as missing (#2495). A failed
+    window 0 has no ``fix_turn``: the fix done outside the case (#2501).
+    Rendered by ``narration.rechecks``."""
     off = off_cause_attempt(case, windows)
     if off is not None:
-        return (
-            f"the fix executed at turn {off} did not act on the cause now "
-            "identified; only a fix of that cause can confirm it"
-        )
+        return NoConfirmingWindow(kind=NoWindowKind.OFF_CAUSE_ATTEMPT, fix_turn=off)
     observed = [i for i, w in enumerate(windows) if w.observed]
     last = windows[observed[-1]] if observed else None
     after = windows[observed[-1] + 1 :] if observed else []
-    newer = [w for w in after if w.fix_turn is not None]
-    pending = (
-        f"; the newer fix (executed turn {newer[-1].fix_turn}) is not re-checked yet"
-        if newer
-        else None
-    )
+    newer = [w.fix_turn for w in after if w.fix_turn is not None]
+    pending = newer[-1] if newer else None
     if last is not None and last.state == FIX_FAILED:
-        which = (
-            "the fix done outside the case"
-            if last.fix_turn is None
-            else f"the fix executed at turn {last.fix_turn}"
-        )
-        seen = f"{which} was seen failing at turn {last.failure_turn}"
-        if pending:
-            return seen + pending
-        if last.fix_turn is None:
-            return f"{seen}; only a new fix can confirm"
+        kind = NoWindowKind.FAILED
     elif last is not None and last.off_cause:
-        seen = (
-            f"the fix executed at turn {last.fix_turn} acted on a cause no longer "
-            "identified"
-        )
-        return seen + (
-            pending or "; only a fix of the cause now identified can confirm it"
-        )
-    return "the latest fix was seen failing; only a new fix can confirm"
+        kind = NoWindowKind.NO_LONGER_IDENTIFIED
+    else:
+        return NoConfirmingWindow(kind=NoWindowKind.LATEST_FAILED)
+    return NoConfirmingWindow(
+        kind=kind,
+        fix_turn=last.fix_turn,
+        failure_turn=last.failure_turn,
+        newer_fix_turn=pending,
+    )
 
 
 def confirming_polarity_rows(case: "Case") -> list:

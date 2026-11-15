@@ -53,6 +53,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhaust
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _mitigation_verify_refusal,
 )
+from faultmaven.core.investigation.narration.rechecks import recheck_text
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
     declined_resolve_entry,
@@ -337,7 +338,10 @@ def build_fix_verification_block(case: Case) -> str:
         return "\n".join([OPEN_TAG, header + "evidence rows):", *lines, CLOSE_TAG])
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
-    status = cause_recheck_status(case, subjects=subjects, windows=windows)
+    status = [
+        (row, recheck_text(why))
+        for row, why in cause_recheck_status(case, subjects=subjects, windows=windows)
+    ]
     cause_rows = [row for row, why in status if why is None]
     problem_rows = (
         symptom_elimination_rows(case, cause_rows, subjects=subjects, windows=windows)

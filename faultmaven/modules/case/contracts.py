@@ -322,6 +322,8 @@ class ICaseRepository(Protocol):
         *,
         title: Optional[str] = None,
         description: Optional[str] = None,
+        outcome: Optional["CaseOutcome"] = None,
+        expected_version: Optional[int] = None,
     ) -> bool:
         """Scoped update of cosmetic metadata fields (title, description).
 
@@ -333,6 +335,12 @@ class ICaseRepository(Protocol):
 
         Status/closure_reason still go through the versioned ``save``
         path because they are investigation state.
+
+        ``outcome``: the case outcome record folded over the new description
+        (#2811), written in the same UPDATE as ``progress.outcome`` alone,
+        and only while the stored version is ``expected_version``, which it
+        does not bump either. False when no row was updated: the case is
+        gone, or (with ``outcome``) its version moved.
         """
         ...
 
@@ -600,6 +608,7 @@ from faultmaven.modules.case.domain.models.offer import (
     ResolveRequest,
 )
 from faultmaven.modules.case.domain.models.outcome import (
+    CURRENT_OUTCOME_SHAPE,
     AttemptOutcome,
     BindableRows,
     CaseOutcome,
@@ -609,16 +618,24 @@ from faultmaven.modules.case.domain.models.outcome import (
     ConfirmationGap,
     Demotion,
     DisconfirmationPair,
+    FinalAt,
     FixWindowRecord,
     FixWindowState,
     MitigationOutcome,
     MitigationRefusalReason,
+    NoConfirmingWindow,
+    NoWindowKind,
     PoolEmptyReason,
     ProblemOutcome,
+    RecheckReason,
+    RecheckWhy,
     ResolutionOutcome,
     ResolutionReason,
     ResolutionVerdict,
     UnboundRecheck,
+    UncitedKind,
+    UncitedRecheck,
+    WritePoint,
 )
 from faultmaven.modules.case.domain.models.problem import (
     InquiryData,
@@ -888,6 +905,7 @@ __all__ = [
     "CauseAssuranceGrade",
     "CauseState",
     # The case outcome record (#2615 stage S1)
+    "CURRENT_OUTCOME_SHAPE",
     "AttemptOutcome",
     "BindableRows",
     "CaseOutcome",
@@ -897,16 +915,24 @@ __all__ = [
     "ConfirmationGap",
     "Demotion",
     "DisconfirmationPair",
+    "FinalAt",
     "FixWindowRecord",
     "FixWindowState",
     "MitigationOutcome",
     "MitigationRefusalReason",
+    "NoConfirmingWindow",
+    "NoWindowKind",
     "PoolEmptyReason",
     "ProblemOutcome",
     "ResolutionOutcome",
     "ResolutionReason",
+    "RecheckReason",
+    "RecheckWhy",
     "ResolutionVerdict",
+    "UncitedKind",
+    "UncitedRecheck",
     "UnboundRecheck",
+    "WritePoint",
     "ConfidenceLevel",
     "InquiryData",
     "DocumentationData",

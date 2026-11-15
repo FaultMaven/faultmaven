@@ -34,6 +34,7 @@ from faultmaven.modules.case.contracts import (
     AnswerKind,
     HypothesisState,
     TurnOutcome,
+    WritePoint,
 )
 
 from .affordances import engine_owned_affordances
@@ -551,5 +552,7 @@ async def _apply_turn_response(
     # included, and before the save. The
     # narration step reads it (``_finalize_turn``), and only then is the turn
     # recorded (#2636).
-    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case_updated, at="cycle")
+    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(
+        case_updated, at=WritePoint.CYCLE
+    )
     return case_updated, record_inputs

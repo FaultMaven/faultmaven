@@ -18,7 +18,7 @@ pinned by ``tests/unit/modules/case/test_case_outcome_record_2636.py``.
 """
 
 from enum import StrEnum
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -101,12 +101,118 @@ class MitigationRefusalReason(StrEnum):
     NO_BOUND_RELIEF = "no_bound_relief"
 
 
+class RecheckReason(StrEnum):
+    """Why a cause-bound causal_absence row does or does not count toward the
+    cause leg (``cause_assurance.cause_recheck_status``), one member per
+    branch, in the order they are tried. A code, never prose: the narration
+    package renders it (#2811)."""
+
+    COUNTS = "counts"
+    HELD_OPEN = "held_open"
+    DISCONFIRMATION = "disconfirmation"
+    PREDATES_POSITING = "predates_positing"
+    PREDATES_FAILED_FIX = "predates_failed_fix"
+    NO_CONFIRMING_WINDOW = "no_confirming_window"
+    OUTSIDE_WINDOW = "outside_window"
+    UNCITED = "uncited"
+    OTHER_CAUSE = "other_cause"
+
+
+class NoWindowKind(StrEnum):
+    """Why no fix window confirms (``cause_assurance._no_confirming_window``)."""
+
+    OFF_CAUSE_ATTEMPT = "off_cause_attempt"
+    """The latest attempt was no fix of the cause now identified."""
+    FAILED = "failed"
+    """The latest observed fix was seen failing."""
+    NO_LONGER_IDENTIFIED = "no_longer_identified"
+    """The latest observed fix acted on a cause no longer identified."""
+    LATEST_FAILED = "latest_failed"
+    """None of the above: the latest fix was seen failing."""
+
+
+class NoConfirmingWindow(BaseModel):
+    """The parameters of ``NO_CONFIRMING_WINDOW``. ``fix_turn``: the fix's
+    execution turn, None for window 0 (the fix done outside the case)."""
+
+    kind: NoWindowKind
+    fix_turn: Optional[int] = None
+    failure_turn: Optional[int] = None
+    newer_fix_turn: Optional[int] = Field(
+        default=None, description="A newer fix nobody has re-checked yet"
+    )
+
+
+class UncitedKind(StrEnum):
+    """Why a window-bound cause re-check confirms nothing
+    (``cause_assurance.uncited_recheck``)."""
+
+    NO_ROOT = "no_root"
+    CITED = "cited"
+    NO_CITATION = "no_citation"
+
+
+class UncitedRecheck(BaseModel):
+    """The parameters of ``UNCITED``: its variant, and for ``cited`` up to
+    five rows of the root's cited basis."""
+
+    kind: UncitedKind
+    cited_row_ids: List[str] = Field(default_factory=list)
+
+
+class RecheckWhy(NamedTuple):
+    """A row's ``RecheckReason`` with the parameters its text states: a turn
+    (the positing, the failed fix's, or the fix the row did not re-check),
+    or the typed parameters of a missing window or an uncited re-check.
+    Returned by ``cause_recheck_status``; the record holds the same
+    parameters (``CauseOutcome``)."""
+
+    reason: RecheckReason
+    turn: Optional[int] = None
+    window: Optional[NoConfirmingWindow] = None
+    uncited: Optional[UncitedRecheck] = None
+
+
 class ClosureEligibility(StrEnum):
     """``closure_verdict``: what a close of the case would be."""
 
     HAS_SUBSTANCE = "has_substance"
     TRIVIAL = "trivial"
     SUGGEST_RESOLVE = "suggest_resolve"
+
+
+#: Raised by every change that adds or changes a ``CaseOutcome`` field: a
+#: stored record of an older shape is rewritten by the backfill (#2811).
+CURRENT_OUTCOME_SHAPE = 2
+
+
+class WritePoint(StrEnum):
+    """Where a record is folded (``record_case_outcome``,
+    ``compute_case_outcome``). Only a cycle, a replay, a resolve, a close and
+    the backfill's repair mint a final verdict (``MINTING_POINTS``), and any
+    first record."""
+
+    CYCLE = "cycle"
+    REPLAY = "replay"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+    REPAIR = "repair"
+    BACKFILL = "backfill"
+    COMMIT = "commit"
+    WRITE = "write"
+    METADATA = "metadata"
+    CREATE = "create"
+    NARRATION = "narration"
+    SHAPE = "shape"
+    """Not a fold: a verdict an older shape held final, marked on upgrade."""
+
+
+class FinalAt(BaseModel):
+    """Where a verdict became final: the write point that minted it, and the
+    case's turn then (#2811)."""
+
+    at: WritePoint
+    turn: int
 
 
 class ProblemOutcome(BaseModel):
@@ -156,6 +262,25 @@ class CauseOutcome(BaseModel):
             "together"
         ),
     )
+    recheck: Dict[str, RecheckReason] = Field(
+        default_factory=dict,
+        description="Each cause-bound causal_absence row, and whether it counts",
+    )
+    posited_turn: int = Field(
+        default=0, description="The turn the case's cause was posited (#2036)"
+    )
+    latest_disconfirmation_turn: int = Field(
+        default=-1, description="The newest engine-known failed fix's turn, or -1"
+    )
+    no_confirming_window: Optional[NoConfirmingWindow] = Field(
+        default=None, description="Set with any ``no_confirming_window`` row"
+    )
+    uncited: Optional[UncitedRecheck] = Field(
+        default=None, description="Set with any ``uncited`` row"
+    )
+    other_cause_fix_turn: Optional[int] = Field(
+        default=None, description="Set with any ``other_cause`` row"
+    )
 
     @model_validator(mode="after")
     def _reason_iff_empty(self) -> "CauseOutcome":
@@ -180,7 +305,8 @@ class DisconfirmationPair(BaseModel):
 
 class FixWindowRecord(BaseModel):
     """One fix window as read (``cause_assurance.FixWindow``). FAILED is
-    final: it is carried with its rows, its citations and ``read_under``."""
+    final once ``final_at`` is set: it is carried with its rows, its
+    citations and ``read_under``."""
 
     fix_turn: Optional[int] = None
     end_turn: Optional[int] = None
@@ -188,9 +314,12 @@ class FixWindowRecord(BaseModel):
     relief_turn: Optional[int] = None
     failure_turn: Optional[int] = None
     off_cause: bool = False
+    observed: bool = Field(default=False, description="The fix's outcome was looked at")
     cause_row_ids: List[str] = Field(default_factory=list)
     confirmed_cause_row_ids: List[str] = Field(default_factory=list)
-    problem_row_ids: List[str] = Field(default_factory=list)
+    problem_row_ids: List[str] = Field(
+        default_factory=list, description="The rows that showed the problem gone"
+    )
     cited_basis: Dict[str, List[str]] = Field(
         default_factory=dict,
         description="Root id -> the cited rows the window's cause rows re-check",
@@ -199,6 +328,7 @@ class FixWindowRecord(BaseModel):
     read_under: str = Field(
         default="", description="The problem statement the window was read under"
     )
+    final_at: Optional[FinalAt] = None
 
 
 class AttemptOutcome(BaseModel):
@@ -208,11 +338,20 @@ class AttemptOutcome(BaseModel):
     action_id: Optional[str] = None
     kind: Optional[Literal["remediation", "interception"]] = None
     target_ids: List[str] = Field(default_factory=list)
-    accepted_in_turn: Optional[int] = Field(default=None, description="Final")
+    accepted_in_turn: Optional[int] = Field(
+        default=None, description="Final once ``final_at`` is set"
+    )
     registered_in_turn: Optional[int] = None
     window: Optional[FixWindowRecord] = Field(
         default=None, description="None for an interception, which opens none"
     )
+    relief_turn: Optional[int] = Field(
+        default=None, description="An interception's: the problem last seen gone"
+    )
+    present_turn: Optional[int] = Field(
+        default=None, description="An interception's: the problem last seen present"
+    )
+    final_at: Optional[FinalAt] = None
 
 
 class Demotion(BaseModel):
@@ -306,11 +445,18 @@ class ClosureOutcome(BaseModel):
 class CaseOutcome(BaseModel):
     """The case's outcome, folded over its prior (#2615, *The record*)."""
 
+    shape: int = Field(
+        default=1,
+        description=(
+            "The record's shape (``CURRENT_OUTCOME_SHAPE`` when written); a "
+            "record stored before the field reads as shape 1"
+        ),
+    )
     folded_under: CaseState = Field(
         description=(
-            "The case's state when the record was folded: a terminal case "
-            "whose record was folded under an open state was never written "
-            "by a terminal write, and the backfill recomputes it"
+            "The case's state at the last fold that may mint (#2811): a "
+            "terminal case whose record was folded under an open state was "
+            "never written by a terminal write, and the backfill recomputes it"
         )
     )
     problem: ProblemOutcome
@@ -320,7 +466,7 @@ class CaseOutcome(BaseModel):
     resolution: ResolutionOutcome
     unbound_rechecks: List[UnboundRecheck] = Field(default_factory=list)
     bindable: Optional[BindableRows] = Field(
-        default=None, description="Set with any unbound re-check"
+        default=None, description="Always set from shape 2; None before"
     )
     mitigation: Optional[MitigationOutcome] = None
     milestones_shown: List[str] = Field(default_factory=list)
