@@ -21,6 +21,8 @@ from faultmaven.exceptions import (
     CallShapeUnsupported,
     ModelLoadingException,
     RawModelContentRefused,
+    counts_against_breaker,
+    is_rate_limit_throttle,
 )
 from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
@@ -1078,6 +1080,19 @@ class ProviderRegistry:
                     last_error = e
                 continue
             except Exception as e:
+                if is_rate_limit_throttle(e):
+                    # A 429 the provider's own waits did not outlast: the
+                    # provider is up and busy, not down (#2793). No health
+                    # penalty; the chain moves on. A failure seen earlier that
+                    # the router's breaker counts stays the raised error, so
+                    # the router still counts it; any other is replaced.
+                    self.logger.warning(
+                        f"{provider_name} rate-limited this call and was skipped "
+                        f"without a health penalty: {e}"
+                    )
+                    if last_error is None or not counts_against_breaker(last_error):
+                        last_error = e
+                    continue
                 # Record failure for health tracking
                 state.record_failure()
 

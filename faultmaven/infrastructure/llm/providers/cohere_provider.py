@@ -24,6 +24,7 @@ from .base import (
     ProviderConfig,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 
@@ -161,7 +162,8 @@ class CohereProvider(BaseLLMProvider):
         # Make request to Cohere API
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
+                async with post_waiting_out_rate_limits(
+                    session,
                     f"{self.config.base_url}/chat",  # v2 endpoint
                     headers=headers,
                     json=payload,

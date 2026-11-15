@@ -20,11 +20,28 @@ from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
+    counts_against_breaker,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 
 # Type variable for generic return types
 T = TypeVar("T")
+
+# The monotonic deadline of the ``call_external`` call in progress, bound
+# around its ``call_func`` whenever it has a timeout. A wait inside the call
+# (a provider waiting out a 429, #2793) reads it so it never outlasts the call.
+_call_deadline: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "call_deadline", default=None
+)
+
+
+def remaining_call_time() -> Optional[float]:
+    """Seconds left before the enclosing ``call_external`` call's timeout, or
+    ``None`` outside a call bound by one."""
+    deadline = _call_deadline.get()
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
 
 
 class CircuitBreaker:
@@ -349,26 +366,37 @@ class BaseExternalClient(ABC):
                     # Execute with timeout
                     start_time = time.time()
 
-                    if asyncio.iscoroutinefunction(call_func):
-                        if timeout:
+                    # Bound before the ``wait_for`` starts, so the task it
+                    # creates inherits the deadline (#2793).
+                    deadline_token = (
+                        _call_deadline.set(time.monotonic() + timeout)
+                        if timeout
+                        else None
+                    )
+                    try:
+                        if asyncio.iscoroutinefunction(call_func):
+                            if timeout:
+                                result = await asyncio.wait_for(
+                                    call_func(*args, **kwargs), timeout=timeout
+                                )
+                            else:
+                                result = await call_func(*args, **kwargs)
+                        elif timeout and self.blocking_executor is not None:
+                            # Off the loop, so the budget can end the AWAIT. The
+                            # call itself runs on in its thread to the client's
+                            # own bound, which is why a write passes no timeout
+                            # (see ``timeout`` above, #2056).
                             result = await asyncio.wait_for(
-                                call_func(*args, **kwargs), timeout=timeout
+                                self.run_blocking(call_func, *args, **kwargs),
+                                timeout=timeout,
                             )
                         else:
-                            result = await call_func(*args, **kwargs)
-                    elif timeout and self.blocking_executor is not None:
-                        # Off the loop, so the budget can end the AWAIT. The
-                        # call itself runs on in its thread to the client's
-                        # own bound, which is why a write passes no timeout
-                        # (see ``timeout`` above, #2056).
-                        result = await asyncio.wait_for(
-                            self.run_blocking(call_func, *args, **kwargs),
-                            timeout=timeout,
-                        )
-                    else:
-                        # Awaited to its end: with no timeout (a write), or
-                        # inline, where ``wait_for`` could not preempt it.
-                        result = await self.run_blocking(call_func, *args, **kwargs)
+                            # Awaited to its end: with no timeout (a write), or
+                            # inline, where ``wait_for`` could not preempt it.
+                            result = await self.run_blocking(call_func, *args, **kwargs)
+                    finally:
+                        if deadline_token is not None:
+                            _call_deadline.reset(deadline_token)
 
                     call_duration = time.time() - start_time
                     ctx["call_duration"] = call_duration
@@ -543,10 +571,7 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        service_scoped = (
-                            getattr(call_error, "error_code", None)
-                            in SERVICE_SCOPED_ERROR_CODES
-                        )
+                        service_scoped = counts_against_breaker(call_error)
                         if self.circuit_breaker and service_scoped:
                             self.circuit_breaker.record_failure(call_error)
 
@@ -582,8 +607,20 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        if self.circuit_breaker:
+                        # A throttle (a 429 the provider's own waits did not
+                        # outlast) says the service is up and busy, so it is
+                        # not counted against the shared breaker (#2793).
+                        throttled = not counts_against_breaker(call_error)
+                        if self.circuit_breaker and not throttled:
                             self.circuit_breaker.record_failure(call_error)
+                        if throttled:
+                            self.logger.warning(
+                                f"Rate-limited on {self.service_name}.{operation_name}"
+                                f" — a throttle, not counted against the circuit"
+                                f" breaker: {call_error}",
+                                client=self.client_name,
+                                service=self.service_name,
+                            )
 
                         # Log failed boundary - outbound
                         self.logger.log_boundary(
