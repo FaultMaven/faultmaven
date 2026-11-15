@@ -62,7 +62,6 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     InvestigationActionType,
     MitigationRecord,
-    NeedPurpose,
     RecheckReason,
     RecheckWhy,
     WritePoint,
@@ -616,6 +615,33 @@ async def _no_longer_identified():
     return case
 
 
+async def _latest_failed():
+    """No observed window failed or acted off-cause: the fix of A at 5 is
+    never observed, A is deepened to B at 7, B re-checked gone at 8, and B's
+    fix runs at 9."""
+    from tests.unit.core.investigation.recorded_turns import _record
+    from tests.unit.core.investigation.test_fix_targets_review_2036 import (
+        _CAUSE_GONE,
+        _deepen,
+        _engine,
+        _fix,
+        _identified_case,
+        _obs,
+        _ran,
+    )
+
+    eng = _engine()
+    case, _a, hyp = _identified_case()
+    renewal = [_fix("renew the certificate")]
+    await _record(eng, case, 5, solutions_to_add=renewal, milestones=_ran())
+    r2 = await _deepen(eng, case, hyp, 7, "nothing rotates the certificate")
+    cited = r2.metadata["root_terminal_evidence_ids"][0]
+    await _record(eng, case, 8, _obs(_CAUSE_GONE, "a rotation job exists now", cited))
+    rotation = [_fix("install the rotation CronJob", r2.node_id)]
+    await _record(eng, case, 9, solutions_to_add=rotation, milestones=_ran())
+    return case
+
+
 async def _uncited(cited: bool):
     from tests.unit.core.investigation.test_cause_leg_cited_basis_2557 import (
         _fixed,
@@ -719,6 +745,7 @@ REASONS = {
         _no_longer_identified,
         {"no_longer_identified", "window_n", "newer"},
     ),
+    "latest_failed": (_latest_failed, {"latest_failed"}),
     "uncited_cited": (lambda: _uncited(True), {"uncited", "uncited.cited"}),
     "uncited_no_citation": (
         lambda: _uncited(False),
@@ -741,20 +768,15 @@ def test_every_reason_and_kind_is_shown_by_a_fixture():
     from faultmaven.modules.case.contracts import NoWindowKind, UncitedKind
 
     shown = set().union(*(shows for _build, shows in REASONS.values()))
-    unreachable = {NoWindowKind.LATEST_FAILED.value}  # below
-    expected = (
-        {
-            *(r.value for r in RecheckReason if r not in _NOT_PARAMETRISED),
-            *(k.value for k in NoWindowKind),
-            *(f"uncited.{k.value}" for k in UncitedKind),
-            "window_0",
-            "window_n",
-            "newer",
-            "no_newer",
-        }
-        - unreachable
-        - {RecheckReason.NO_CONFIRMING_WINDOW.value}
-    )
+    expected = {
+        *(r.value for r in RecheckReason if r not in _NOT_PARAMETRISED),
+        *(k.value for k in NoWindowKind),
+        *(f"uncited.{k.value}" for k in UncitedKind),
+        "window_0",
+        "window_n",
+        "newer",
+        "no_newer",
+    } - {RecheckReason.NO_CONFIRMING_WINDOW.value}
     assert expected <= shown
 
 
@@ -764,15 +786,3 @@ _NOT_PARAMETRISED = {
     RecheckReason.DISCONFIRMATION,
     RecheckReason.OUTSIDE_WINDOW,
 }
-
-
-def test_latest_failed_renders_from_its_record_row():
-    """``LATEST_FAILED`` (no observed window failed or acted off-cause) is
-    not reachable through the derivations here: an observed cause re-check
-    observes its window. Its record row is built directly."""
-    from faultmaven.modules.case.contracts import NoConfirmingWindow, NoWindowKind
-
-    window = NoConfirmingWindow(kind=NoWindowKind.LATEST_FAILED)
-    assert recheck_text(_why(RecheckReason.NO_CONFIRMING_WINDOW, window)) == (
-        "the latest fix was seen failing; only a new fix can confirm"
-    )
