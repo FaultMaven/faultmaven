@@ -583,6 +583,54 @@ class TestTheCutShortCallStillReachesTheBreaker:
         assert virtual_now() - started < 0.5, "an open breaker must fast-fail"
 
 
+class _ThrottledProvider(_HangingProvider):
+    """Answers every call with a throttle 429 after ``hang_seconds``: the
+    provider's own waits spent (#2793)."""
+
+    async def _hang(self):
+        self.calls_reaching_the_provider += 1
+        await asyncio.sleep(self.hang_seconds)
+        raise LLMException("rate limit exceeded", status_code=429)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestALadderOfThrottlesStaysInsideTheTurn:
+    """A throttle is not counted by the breaker (#2793), so the breaker no
+    longer cuts a ladder of them at three attempts; the turn-budget refusal is
+    what stops it. One throttled call earlier in the turn (as in #2793's
+    evidence), then a ladder whose budget fits three attempts and not a fourth.
+    Counted, the throttles would open the breaker after two ladder attempts.
+    """
+
+    async def test_the_budget_refuses_the_attempt_that_does_not_fit(self):
+        turn_seconds = 2.0 + SCALED_RESERVE + SCALED_COMMIT_RESERVE
+        provider = _ThrottledProvider(0.4)
+        attempts = {"n": 0}
+
+        async def op():
+            attempts["n"] += 1
+            return await provider.route(1.0, clamp=True)
+
+        handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.05))
+        started = virtual_now()
+        with bind_turn_deadline(turn_seconds):
+
+            async def turn():
+                with pytest.raises(LLMException):
+                    await provider.route(1.0, clamp=True)
+                return await handler.with_retry(operation=op)
+
+            _, error = await asyncio.wait_for(turn(), timeout=turn_seconds)
+
+        assert attempts["n"] == 3
+        assert provider.calls_reaching_the_provider == 4
+        assert error is not None and error.error_code == "RETRY_EXHAUSTED"
+        assert virtual_now() - started < turn_seconds
+        assert provider.circuit_breaker.failure_count == 0
+        assert provider.circuit_breaker.state == "closed"
+
+
 #: The verdict tests' turn: 1.3s of spendable-plus-step-reserve shape, plus the
 #: (scaled) commit reserve the ladder leaves unspent (#1882).
 _VERDICT_TURN = 1.3 + SCALED_COMMIT_RESERVE
