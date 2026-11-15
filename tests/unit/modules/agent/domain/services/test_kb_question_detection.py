@@ -17,7 +17,6 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
     KbQuestionKind,
     ProcessingMode,
     QueryClassification,
-    classification_window,
     classify_query,
     detect_kb_question,
 )
@@ -292,33 +291,39 @@ def test_detection_cost_does_not_grow_with_the_windowed_text(
 ):
     """A quadratic pattern took 13.9 s on an 80k-character message (#2797).
 
-    ``classification_window`` bounds the text by design, so past 4,000
-    characters the whole call is flat and no growth can be read (#2827). A
-    backtracking pattern is a property of the patterns over the text they
-    read, so the window is lifted here and the patterns read the payload whole.
+    The listing and filler frames match no pattern, so they run all of
+    ``_KB_QUESTION_PATTERNS`` over the whole text. The unfinished frame matches
+    the first pattern, then runs the two vetoes and ``_kb_question_topic``
+    (to ``_KB_TOPIC_BEFORE_NOUN``). No frame reaches the listing pattern or
+    ``_kb_context_topic``.
+
+    ``classification_window`` caps the text at 4,000 characters, and inside
+    that the fixed per-call cost dominates, so a noisy window escalates past
+    the cap, where nothing grows (#2827). The window is lifted here so the
+    frames reach the patterns whole.
     """
     monkeypatch.setattr(query_classifier, "classification_window", lambda m: m)
+    past_the_window = "x " * 5000 + "Is there a runbook for redis OOM?" + " x" * 5000
+    assert detect_kb_question(past_the_window) is not None, "the window still applies"
     assert_linear_growth(
         detect_kb_question,
         payload_at,
         small=16,
         label=f"detect_kb_question on {label}",
+        max_escalations=1,
     )
 
 
 def test_detection_reads_only_the_classification_window():
-    """The window is what bounds the detector's cost on a long message."""
+    """The window is what bounds the detector's cost on a long message: its
+    head and its tail are read, the middle is not."""
     filler = "the replica fell behind again overnight. " * 300
     question = "Is there a runbook for redis OOM?"
+    asked = KbQuestion(kind=LOOKUP, topic="redis OOM")
     assert len(filler) > 4 * _CLASSIFY_WINDOW_CHARS
-    past_the_window = filler + question + " " + filler
-    assert detect_kb_question(past_the_window) is None
-    in_the_head = question + " " + filler + filler
-    assert detect_kb_question(in_the_head) == KbQuestion(kind=LOOKUP, topic="redis OOM")
-    for message in (past_the_window, in_the_head, filler + question):
-        assert detect_kb_question(message) == detect_kb_question(
-            classification_window(message)
-        )
+    assert detect_kb_question(filler + question + " " + filler) is None
+    assert detect_kb_question(question + " " + filler + filler) == asked
+    assert detect_kb_question(filler + filler + question) == asked
 
 
 # ---------------------------------------------------------------------------
