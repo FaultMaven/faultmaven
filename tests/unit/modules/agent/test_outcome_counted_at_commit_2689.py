@@ -31,7 +31,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_settlem
     PreparedTurn,
     settle_turn,
 )
-from faultmaven.modules.case.contracts import CaseState
+from faultmaven.modules.case.contracts import CaseState, WritePoint
 from faultmaven.modules.case.exceptions import StaleCaseException
 from tests.case_builders import with_open_offer
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import _fix
@@ -74,7 +74,7 @@ def _disagreeing(case):
     verdict disagreeing (a real disagreement, counted on ``main`` at fold
     time)."""
     action = _fix(case, turn=3)
-    case.progress.outcome = compute_case_outcome(None, case)
+    case.progress.outcome = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     action.accepted_in_turn = 2
     return case
 
@@ -202,7 +202,7 @@ def _prepared(case, conflicts) -> PreparedTurn:
 
 async def test_the_narrations_conflicts_count_once_after_the_commit(counted):
     case = _investigating_case()
-    case.progress.outcome = compute_case_outcome(None, case)
+    case.progress.outcome = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     repository = SimpleNamespace(save=AsyncMock(return_value=case))
     await settle_turn(repository, None, _prepared(case, ["narration.request_ready"]))
     assert counted == ["narration.request_ready"]
@@ -210,7 +210,7 @@ async def test_the_narrations_conflicts_count_once_after_the_commit(counted):
 
 async def test_the_narrations_conflicts_count_nothing_on_a_failed_commit(counted):
     case = _investigating_case()
-    case.progress.outcome = compute_case_outcome(None, case)
+    case.progress.outcome = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     stale = StaleCaseException(case.case_id, expected_version=1, actual_version=2)
     repository = SimpleNamespace(save=AsyncMock(side_effect=stale))
     with pytest.raises(StaleCaseException):
@@ -230,7 +230,7 @@ async def test_a_count_that_raises_never_fails_the_committed_turn(monkeypatch):
         SimpleNamespace(labels=_broken),
     )
     case = _investigating_case()
-    case.progress.outcome = compute_case_outcome(None, case)
+    case.progress.outcome = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     repository = SimpleNamespace(save=AsyncMock(return_value=case))
     await settle_turn(repository, None, _prepared(case, ["narration.request_ready"]))
     repository.save.assert_awaited_once()
@@ -291,17 +291,17 @@ def test_a_disagreement_dropped_and_read_again_within_one_turn_counts_again(coun
     the same turn reads it again: a return, counted once more."""
     case = _investigating_case()
     action = _fix(case, turn=3)
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     action.accepted_in_turn, case.current_turn = 2, 4
-    stored = compute_case_outcome(first, case)
+    stored = compute_case_outcome(first, case, at=WritePoint.CYCLE)
     assert list(stored.disagreements.values()) == [4], "premise: stored at 4"
     loaded = outcome_module.disagreement_keys(stored)
     case.current_turn = 9
     action.accepted_in_turn = 3
-    gone = compute_case_outcome(stored, case)
+    gone = compute_case_outcome(stored, case, at=WritePoint.CYCLE)
     assert gone.disagreements == {}, "premise: read gone"
     action.accepted_in_turn = 2
-    back = compute_case_outcome(gone, case)
+    back = compute_case_outcome(gone, case, at=WritePoint.CYCLE)
     assert list(back.disagreements) == list(stored.disagreements)
     outcome_module.report_saved_disagreements(case.case_id, loaded, back)
     assert counted == [_FIELD]
@@ -321,7 +321,7 @@ def test_a_field_that_cannot_be_counted_drops_none_of_the_rest(monkeypatch):
         SimpleNamespace(labels=_labels),
     )
     case = _investigating_case()
-    saved = compute_case_outcome(None, case).model_copy(
+    saved = compute_case_outcome(None, case, at=WritePoint.CYCLE).model_copy(
         update={"disagreements": {"aaa.unknown:x": 9, f"{_FIELD}:act": 9}}
     )
     outcome_module.report_saved_disagreements(
@@ -382,7 +382,9 @@ async def test_a_commit_only_the_receipt_probe_vouches_for_counts_nothing(
             response={},
         )
         compute = outcome_module.compute_case_outcome
-        case.progress.outcome = compute(case.progress.outcome, case)
+        case.progress.outcome = compute(
+            case.progress.outcome, case, at=WritePoint.CYCLE
+        )
         await settle_turn(repository, None, prepared)
 
     await _settle()

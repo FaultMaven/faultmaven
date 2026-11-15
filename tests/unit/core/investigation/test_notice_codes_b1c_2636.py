@@ -40,6 +40,7 @@ from faultmaven.core.investigation.narration.notices import (
     render_notice,
     unbound_lines,
 )
+from faultmaven.modules.case.contracts import WritePoint
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation.narrated import narrated
 
@@ -90,7 +91,7 @@ def test_a_decided_notice_is_rendered_where_it_stands(name):
     # #2555: the unbound re-checks are told by ``narrate_turn`` alone, from
     # the record's rows, read before the narration marked them (the
     # scenarios store no record before it).
-    record = outcome_module.compute_case_outcome(None, case)
+    record = outcome_module.compute_case_outcome(None, case, at=WritePoint.CYCLE)
     for entry in log:
         if entry["code"] == NoticeCode.UNBOUND_RECHECKS:
             texts = [line for line, _ids in unbound_lines(entry["params"], record)]

@@ -44,12 +44,14 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     MitigationRefusalReason,
     ProblemStatus,
+    WritePoint,
 )
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
 from tests.case_builders import inquiry_case
+from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _deepen,
     _fix,
@@ -132,7 +134,7 @@ def _revision_pending():
         basis="the gateway log shows timeouts with normal DB latency",
         wording_key="revised",
     )
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert case.progress.outcome.problem.status == ProblemStatus.REVISION_PENDING
     return case
 
@@ -173,7 +175,7 @@ async def test_2658_the_menu_close_saves_a_record_of_the_case_as_saved():
 
 async def test_a_patch_statement_edit_saves_a_matching_record(tenant):
     case, _root, _hyp = _identified_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     tenant(case)
     repository = await _stored(case)
 
@@ -190,7 +192,7 @@ async def test_an_inquiry_description_edit_refolds_the_record(tenant):
     """Outside an investigation the description is the statement in force:
     the scoped metadata write is followed by a fold of the record."""
     case = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     tenant(case)
     repository = await _stored(case)
 
@@ -211,7 +213,7 @@ async def test_a_terminal_state_written_raw_by_patch_is_refused(tenant):
     from faultmaven.exceptions import ServiceException
 
     case, _root, _hyp = _identified_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     tenant(case)
     repository = await _stored(case)
     before = (await repository.get(case.case_id)).version
@@ -236,7 +238,7 @@ async def test_the_record_reads_the_offers_as_the_save_lapses_them():
     _engine_, case, _result = await _offered_then_declined()
     repository = await _stored(case)
     case.evidence.append(_user_confirmation(case.current_turn))
-    unlapsed = compute_case_outcome(case.progress.outcome, case, at="commit")
+    unlapsed = compute_case_outcome(case.progress.outcome, case, at=WritePoint.COMMIT)
     assert unlapsed.resolution.declined_stands is False, "premise: the row is new"
 
     saved = await commit_turn_plan(repository, case, TurnCommitPlan())
@@ -267,7 +269,7 @@ def _failed_after_a_cycle():
     window now reads FAILED, first at a save that is not a cycle."""
     case, root, hyp = _identified_case()
     fix = _fix(case)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert _window(case.progress.outcome, fix.action_id).final_at is None
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
@@ -277,7 +279,7 @@ def _failed_after_a_cycle():
 def test_a_failed_window_first_read_at_a_commit_is_not_final():
     case, root, hyp, fix = _failed_after_a_cycle()
 
-    record_before_save(case, at="commit")
+    record_before_save(case, at=WritePoint.COMMIT)
     window = _window(case.progress.outcome, fix.action_id)
     assert window.state == FixWindowState.FAILED
     assert window.final_at is None, "a commit mints no final verdict"
@@ -285,7 +287,7 @@ def test_a_failed_window_first_read_at_a_commit_is_not_final():
     # The next cycle re-reads it: re-rooted, the window no longer fails, and
     # nothing is carried or counted as a disagreement.
     _deepen(case, hyp, root)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     record = case.progress.outcome
     assert _window(record, fix.action_id).state != FixWindowState.FAILED
     assert record.disagreements == {}
@@ -293,8 +295,8 @@ def test_a_failed_window_first_read_at_a_commit_is_not_final():
 
 def test_the_next_cycle_mints_a_failure_it_still_reads():
     case, _root, _hyp, fix = _failed_after_a_cycle()
-    record_before_save(case, at="commit")
-    record_case_outcome(case, at="cycle")
+    record_before_save(case, at=WritePoint.COMMIT)
+    record_case_outcome(case, at=WritePoint.CYCLE)
     final = _window(case.progress.outcome, fix.action_id).final_at
     assert (final.at, final.turn) == ("cycle", case.current_turn)
 
@@ -325,7 +327,7 @@ async def test_the_entrys_closure_survives_a_terminal_turns_commit():
         reason=case.closure_reason,
         statement="the closure the entry decided",
     )
-    record_case_outcome(case, at="closed", closure=decided)
+    record_case_outcome(case, at=WritePoint.CLOSED, closure=decided)
     repository = await _stored(case)
 
     saved = await commit_turn_plan(repository, case, TurnCommitPlan())
@@ -395,12 +397,24 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
     fix = _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    old = _old_shape(compute_case_outcome(None, case))
+    old = _old_shape(compute_case_outcome(None, case, at=WritePoint.CYCLE))
     assert old.shape == 1
-    fresh_rows = _window(compute_case_outcome(None, case), fix.action_id)
-    assert fresh_rows.problem_row_ids == [_eid("relief")], "premise"
+    # A relief recorded after the failure: the fresh read holds it, the
+    # frozen verdict does not.
+    _row(
+        case,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=11,
+        evidence_id=_eid("late"),
+        summary="checkout answers 200 later",
+        rechecks=VERIFYING_ID,
+    )
+    fresh_rows = _window(
+        compute_case_outcome(None, case, at=WritePoint.CYCLE), fix.action_id
+    )
+    assert fresh_rows.problem_row_ids == [_eid("relief"), _eid("late")], "premise"
 
-    record = compute_case_outcome(old, case, at="commit")
+    record = compute_case_outcome(old, case, at=WritePoint.COMMIT)
 
     window = _window(record, fix.action_id)
     assert record.shape == CURRENT_OUTCOME_SHAPE
@@ -411,9 +425,15 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
     (attempt,) = [a for a in record.attempts if a.action_id == fix.action_id]
     assert attempt.final_at.at == "shape"
 
+    # Rows a window holds of its own are never overwritten.
+    minted = old.model_copy(deep=True)
+    _window(minted, fix.action_id).problem_row_ids = [_eid("gone")]
+    upgraded = compute_case_outcome(minted, case, at=WritePoint.COMMIT)
+    assert _window(upgraded, fix.action_id).problem_row_ids == [_eid("gone")]
+
     # Carried as final once re-rooted, where a fresh read no longer fails.
     _deepen(case, hyp, root)
-    again = compute_case_outcome(old, case, at="commit")
+    again = compute_case_outcome(old, case, at=WritePoint.COMMIT)
     assert _window(again, fix.action_id).state == FixWindowState.FAILED
     assert "attempts.window:" + fix.action_id in again.disagreements
 
@@ -426,7 +446,7 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
 async def test_a_disagreement_first_stored_by_a_patch_is_counted_once(counted, tenant):
     case, _root, _hyp = _identified_case()
     action = _fix(case, turn=3)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     action.accepted_in_turn = 2
     tenant(case)
     repository = await _stored(case)
@@ -437,3 +457,262 @@ async def test_a_disagreement_first_stored_by_a_patch_is_counted_once(counted, t
 
     await service.update_case(case.case_id, {"description": "checkout 503s again"})
     assert counted == ["attempts.accepted_in_turn"], "carried already: none again"
+
+
+def test_each_shape_step_runs_once_and_only_on_its_own_shape(monkeypatch):
+    """A record already at shape 2, moved to a shape 3 whose step adds
+    nothing: an off-cycle FAILED window it holds non-final stays non-final;
+    only the 1 -> 2 step marks what shape 1 held final."""
+    case, _root, _hyp, fix = _failed_after_a_cycle()
+    record_before_save(case, at=WritePoint.COMMIT)
+    stored = case.progress.outcome
+    assert _window(stored, fix.action_id).final_at is None, "premise: off-cycle"
+    monkeypatch.setattr(outcome_module, "CURRENT_OUTCOME_SHAPE", 3)
+    monkeypatch.setitem(outcome_module.SHAPE_STEPS, 3, lambda prior, *_: prior)
+
+    folded = compute_case_outcome(stored, case, at=WritePoint.COMMIT)
+
+    assert folded.shape == 3
+    assert _window(folded, fix.action_id).final_at is None
+
+
+# ---------------------------------------------------------------------------
+# The metadata write bumps no version
+# ---------------------------------------------------------------------------
+
+
+async def test_a_description_edit_leaves_an_in_flight_turn_to_commit(tenant):
+    """The review's probe: a turn loads the case at v1, the description is
+    edited meanwhile, and the turn still commits (no 409)."""
+    case = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    tenant(case)
+    repository = await _stored(case)
+    turn = await repository.get(case.case_id)
+
+    await CaseService(repository).update_case(
+        case.case_id, {"description": "checkout is slow"}
+    )
+    edited = await repository.get(case.case_id)
+    assert edited.version == turn.version, "the scoped write bumps nothing"
+    assert edited.progress.outcome.problem.statement == "checkout is slow"
+
+    await commit_turn_plan(repository, turn, TurnCommitPlan())
+
+
+async def test_an_unchanged_description_folds_nothing(tenant):
+    case = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    tenant(case)
+    repository = await _stored(case)
+    before = (await repository.get(case.case_id)).progress.outcome
+
+    await CaseService(repository).update_case(
+        case.case_id, {"title": "Slow checkout", "description": case.description}
+    )
+
+    saved = await repository.get(case.case_id)
+    assert saved.title == "Slow checkout"
+    assert saved.progress.outcome == before
+
+
+# ---------------------------------------------------------------------------
+# Only a minting fold moves a record to terminal
+# ---------------------------------------------------------------------------
+
+
+async def test_a_close_whose_record_write_raised_is_left_for_the_repair(
+    tenant, monkeypatch
+):
+    """The review's probe: the closed write raises inside ``close_case``;
+    the write helper's fold carries the open ``folded_under``, so
+    ``needs_record`` holds and the backfill repairs it."""
+    from unittest.mock import patch
+
+    from faultmaven.cli.backfill_case_outcome import (
+        backfill_case_outcome,
+        needs_record,
+    )
+
+    case, _root, _hyp = _identified_case()
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    tenant(case)
+    repository = await _stored(case)
+    real = outcome_module.compute_case_outcome
+
+    def _closed_raises(prior, case, *, at, closure=None):
+        if at == WritePoint.CLOSED:
+            raise RuntimeError("the closed write")
+        return real(prior, case, at=at, closure=closure)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(outcome_module, "compute_case_outcome", _closed_raises)
+        await CaseService(repository).close_case(case.case_id, case.effective_driver_id)
+    saved = await repository.get(case.case_id)
+    assert saved.state == CaseState.CLOSED, "premise: closed"
+    assert saved.progress.outcome.folded_under == CaseState.INVESTIGATING
+    assert needs_record(saved)
+
+    with patch(
+        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+        return_value="single",
+    ):
+        assert (
+            await backfill_case_outcome(
+                enterprise_id=None, dry_run=False, repository=repository
+            )
+            == 0
+        )
+    repaired = (await repository.get(case.case_id)).progress.outcome
+    assert repaired.folded_under == CaseState.CLOSED
+    assert repaired.closure.reason == saved.closure_reason
+
+
+# ---------------------------------------------------------------------------
+# The reclassification re-dates the rows the record reads
+# ---------------------------------------------------------------------------
+
+
+async def test_a_reclassified_relief_row_saves_a_matching_record(tenant):
+    """A mitigated case relieved at 7 on two rows: the first dated by the
+    instant it inherited from its file, so it is the relief row. Its file is
+    reclassified and the new extractor parses no timestamps, so the row's
+    instant goes with the file's (#1471): the saved record names the other
+    relief row, as the saved case reads it."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.models.api import DataType
+    from faultmaven.modules.agent.domain.services.investigation_service.reclassification import (  # noqa: E501
+        EvidenceReclassifier,
+    )
+    from tests.unit.core.investigation.bound_rows import bound_row
+    from tests.unit.core.investigation.golden_cases_2636 import _accepted_mitigation
+    from tests.unit.modules.agent.conftest import make_preprocessing_result
+
+    case, shown = _accepted_mitigation()
+    instant = datetime.now(timezone.utc) - timedelta(minutes=5)
+    dated = {
+        "coverage_start_ts": instant,
+        "coverage_end_ts": instant,
+        "coverage_source": "iso8601",
+    }
+    first = bound_row(
+        case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=7, rechecks=shown
+    )
+    (upload,) = [f for f in case.uploaded_files if f.file_id == first.source_file_id]
+    upload.storage_ref = "evidence/relief.log"
+    for row in (upload, first):
+        for field, value in dated.items():
+            setattr(row, field, value)
+    second = bound_row(
+        case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=7, rechecks=shown
+    )
+    case.current_turn = 7
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    assert case.progress.outcome.mitigation.relief_row_id == first.evidence_id
+    tenant(case)
+    repository = await _stored(case)
+    preprocessing = MagicMock()
+    preprocessing.reclassify_evidence = AsyncMock(
+        return_value=make_preprocessing_result()
+    )
+    storage = MagicMock()
+    storage.retrieve_file = AsyncMock(return_value=b"checkout ok\n")
+
+    await EvidenceReclassifier(
+        case_repository=repository,
+        file_storage_service=storage,
+        preprocessing_service=preprocessing,
+    ).reclassify_out_of_band(
+        case.case_id, first.evidence_id, case.user_id, DataType.LOGS_AND_ERRORS
+    )
+
+    saved = await repository.get(case.case_id)
+    (row,) = [e for e in saved.evidence if e.evidence_id == first.evidence_id]
+    assert row.coverage_end_ts is None, "premise: the instant went with the file"
+    mitigation = saved.progress.outcome.mitigation
+    assert mitigation.relief_row_id == second.evidence_id
+    assert mitigation.span_seconds is None
+    assert _matches(saved)
+
+
+# ---------------------------------------------------------------------------
+# A failed save leaves the case as it was
+# ---------------------------------------------------------------------------
+
+
+class _Refuses(_Copies):
+    async def save(self, case, **rows):
+        if case.is_persisted:
+            raise RuntimeError("the commit failed")
+        return await super().save(case, **rows)
+
+
+async def test_a_failed_commit_restores_the_offers_and_the_record():
+    _engine_, case, _result = await _offered_then_declined()
+    repository = _Refuses()
+    await repository.save(case)
+    case.evidence.append(_user_confirmation(case.current_turn))
+    offers, outcome = case.offer_record, case.progress.outcome
+    assert lapse_offers(case) != offers, "premise: the lapse moves the record"
+
+    with pytest.raises(RuntimeError):
+        await commit_turn_plan(repository, case, TurnCommitPlan())
+
+    assert case.offer_record is offers
+    assert case.progress.outcome is outcome
+
+
+async def test_a_failed_write_restores_the_offers_and_the_record(tenant):
+    from faultmaven.modules.case.utils import update_case_with_retry
+
+    _engine_, case, _result = await _offered_then_declined()
+    tenant(case)
+    repository = _Refuses()
+    await repository.save(case)
+    seen = []
+
+    async def mutate(loaded):
+        loaded.evidence.append(_user_confirmation(loaded.current_turn))
+        seen.append((loaded, loaded.offer_record, loaded.progress.outcome))
+
+    with pytest.raises(RuntimeError):
+        await update_case_with_retry(repository, case.case_id, mutate)
+
+    ((loaded, offers, outcome),) = seen
+    assert loaded.offer_record is offers
+    assert loaded.progress.outcome is outcome
+
+
+# ---------------------------------------------------------------------------
+# Creation and the write points
+# ---------------------------------------------------------------------------
+
+
+async def test_a_new_case_is_saved_with_a_first_record():
+    repository = InMemoryCaseRepository()
+    case = await CaseService(repository).create_case(
+        title="Slow checkout", description="checkout is slow", owner_id="u"
+    )
+    record = (await repository.get(case.case_id)).progress.outcome
+    assert record.problem.statement == "checkout is slow"
+    assert record.attempts == [] and record.folded_under == CaseState.INQUIRY
+
+
+def test_a_misspelt_write_point_is_refused_and_counted(monkeypatch):
+    from types import SimpleNamespace
+
+    case, _root, _hyp = _identified_case()
+    failed: list = []
+    monkeypatch.setattr(
+        outcome_module,
+        "case_outcome_write_failures_total",
+        SimpleNamespace(
+            labels=lambda at: SimpleNamespace(inc=lambda: failed.append(at))
+        ),
+    )
+    assert record_case_outcome(case, at="cylce") is False
+    assert failed == ["cylce"]
+    with pytest.raises(ValueError):
+        compute_case_outcome(None, case, at="cylce")

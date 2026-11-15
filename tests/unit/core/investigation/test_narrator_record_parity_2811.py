@@ -40,7 +40,7 @@ from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
 )
-from faultmaven.core.investigation.narration.content import content
+from faultmaven.core.investigation.narration.rechecks import recheck_text
 from faultmaven.core.investigation.outcome import (
     compute_case_outcome,
     narration_outcome,
@@ -64,6 +64,8 @@ from faultmaven.modules.case.contracts import (
     MitigationRecord,
     NeedPurpose,
     RecheckReason,
+    RecheckWhy,
+    WritePoint,
 )
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -117,18 +119,15 @@ def derived(case) -> dict:
     attempts = _dated(case)
     return {
         "recheck": [
-            (e.evidence_id, why.reason if why else RecheckReason.COUNTS)
+            (
+                (e.evidence_id, why.reason, why.turn or why.window or why.uncited)
+                if why
+                else (e.evidence_id, RecheckReason.COUNTS, None)
+            )
             for e, why in status
         ],
-        "recheck.turns": sorted(
-            {
-                (why.reason, why.turn)
-                for _e, why in status
-                if why is not None
-                and why.reason
-                in (RecheckReason.PREDATES_POSITING, RecheckReason.PREDATES_FAILED_FIX)
-            }
-        ),
+        # What each reason's text states, rendered as the block renders it.
+        "recheck.text": [recheck_text(why) for _e, why in status],
         "windows": [
             (
                 w.fix_turn,
@@ -171,11 +170,6 @@ def derived(case) -> dict:
             [e.evidence_id for e in cause],
         ),
         "held_need": held.need_id if held is not None else None,
-        "open_needs": [
-            (n.need_id, n.request_text)
-            for n in case.evidence_needs
-            if n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
-        ],
         "declined": declined_resolve_entry(case) is not None,
         "mitigation": (
             None
@@ -191,16 +185,11 @@ def derived(case) -> dict:
         "identification_leg": cause_identification_leg(case),
         "closure": (closure_verdict(case), mitigation_closure_line(case)),
         "milestones": shown_milestones(case),
-        "solution": (
-            (case.solutions[-1].solution_id, case.solutions[-1].title)
-            if case.solutions
-            else None
-        ),
     }
 
 
 def recorded(outcome, case) -> dict:
-    """The same facts, read off the record (and ``content`` by its ids)."""
+    """The same facts, read off the record."""
     cause = outcome.cause
     attempts = sorted(
         (a for a in outcome.attempts if a.accepted_in_turn is not None),
@@ -211,17 +200,21 @@ def recorded(outcome, case) -> dict:
         key=lambda w: -1 if w.fix_turn is None else w.fix_turn,
     )
     decided = [w for w in windows if w.state != FixWindowState.UNKNOWN]
-    turns = {
+    params = {
         RecheckReason.PREDATES_POSITING: cause.posited_turn,
         RecheckReason.PREDATES_FAILED_FIX: cause.latest_disconfirmation_turn,
+        RecheckReason.OTHER_CAUSE: cause.other_cause_fix_turn,
+        RecheckReason.NO_CONFIRMING_WINDOW: cause.no_confirming_window,
+        RecheckReason.UNCITED: cause.uncited,
     }
     mitigation = outcome.mitigation
     resolution = outcome.resolution
     return {
-        "recheck": list(cause.recheck.items()),
-        "recheck.turns": sorted(
-            {(code, turns[code]) for code in cause.recheck.values() if code in turns}
-        ),
+        "recheck": [(i, code, params.get(code)) for i, code in cause.recheck.items()],
+        "recheck.text": [
+            recheck_text(_why(code, params.get(code)))
+            for code in cause.recheck.values()
+        ],
         "windows": [
             (
                 a.window.fix_turn,
@@ -244,7 +237,6 @@ def recorded(outcome, case) -> dict:
         "legs": (resolution.cause_row_ids, resolution.problem_row_ids),
         "bindable": (outcome.bindable.problem_row_ids, outcome.bindable.cause_row_ids),
         "held_need": resolution.pending_check_need_id,
-        "open_needs": [(i, content(case, i)) for i in resolution.open_need_ids],
         "declined": resolution.declined_stands,
         "mitigation": (
             None
@@ -266,12 +258,18 @@ def recorded(outcome, case) -> dict:
         "identification_leg": cause.identification_leg,
         "closure": (outcome.closure.eligibility, outcome.closure.statement),
         "milestones": outcome.milestones_shown,
-        "solution": (
-            (resolution.solution_id, content(case, resolution.solution_id))
-            if resolution.solution_id
-            else None
-        ),
     }
+
+
+def _why(code, param):
+    """A ``RecheckWhy`` built from the record's fields alone."""
+    if code == RecheckReason.COUNTS:
+        return None
+    if code == RecheckReason.NO_CONFIRMING_WINDOW:
+        return RecheckWhy(code, window=param)
+    if code == RecheckReason.UNCITED:
+        return RecheckWhy(code, uncited=param)
+    return RecheckWhy(code, turn=param)
 
 
 def differences(case) -> set[str]:
@@ -316,7 +314,7 @@ async def _hypothesis_action():
     )
 
     case, _root, _hyp = _identified_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     await _turn(
         _engine(),
         case,
@@ -392,7 +390,7 @@ async def _held_check():
     )
 
     case = _held_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     return case
 
 
@@ -411,7 +409,7 @@ async def _held_check_then_interception():
     bound_row(case, EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE, turn=9, rechecks=shown)
     bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=10, rechecks=shown)
     case.current_turn = 10
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     repository = InMemoryCaseRepository()
     await repository.save(case)
     return await commit_turn_plan(repository, case, TurnCommitPlan())
@@ -429,7 +427,7 @@ async def _relapsed_mitigation():
     )
     bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=9, rechecks=shown)
     case.current_turn = 9
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert _mitigation_verified(case) is False, "premise: relapsed"
     return case
 
@@ -459,7 +457,7 @@ def _carried_failure(kinded: bool):
         _fix(case)
         _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    case.progress.outcome = compute_case_outcome(None, case, at="cycle")
+    case.progress.outcome = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root)
     return case
 
@@ -524,10 +522,3 @@ async def test_each_narrator_fact_has_a_field_equal_to_its_derivation(name):
 def test_each_declared_difference_is_shown_by_a_fixture():
     shown = set().union(*(declared for _build, declared in FIXTURES.values()))
     assert shown == set(DECLARED), "a declared difference no fixture shows"
-
-
-async def test_content_returns_the_text_an_id_names_and_none_for_another():
-    case = await _offer_answered_at_0b()
-    row = case.evidence[0]
-    assert content(case, row.evidence_id) == row.summary
-    assert content(case, "ev_000000000000") is None

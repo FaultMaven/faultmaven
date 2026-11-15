@@ -108,6 +108,7 @@ from faultmaven.modules.case.contracts import (
     ResolveEligibility,
     SolutionState,
     WorkingConclusion,
+    WritePoint,
 )
 
 # INV-26 substantive-input bound: a typed reply longer than this cannot be a
@@ -1073,7 +1074,7 @@ def _execute_resolved_transition(case: Case, user_id: str):
         )
     )
 
-    _outcome().record_case_outcome(case, at="resolved")
+    _outcome().record_case_outcome(case, at=WritePoint.RESOLVED)
     logger.info(f"Case {case.case_id} transitioned to RESOLVED (terminal state)")
 
 
@@ -1135,7 +1136,7 @@ def _execute_closed_transition(
         )
     )
 
-    _outcome().record_case_outcome(case, at="closed", closure=closure)
+    _outcome().record_case_outcome(case, at=WritePoint.CLOSED, closure=closure)
     logger.info(f"Case {case.case_id} transitioned to CLOSED (terminal state)")
 
 

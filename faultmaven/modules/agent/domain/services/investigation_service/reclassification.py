@@ -17,6 +17,11 @@ from faultmaven.core.investigation.coverage_trust import CALLER_DECLARED_COVERAG
 from faultmaven.core.investigation.milestone_engine.milestone_inference import (
     _evidence_coverage,
 )
+from faultmaven.core.investigation.outcome import (
+    disagreement_keys,
+    record_before_save,
+    report_saved_disagreements,
+)
 from faultmaven.core.investigation.suggestion_liveness import (
     drop_clarifications_for_file,
 )
@@ -47,6 +52,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_bookkee
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    WritePoint,
 )
 from faultmaven.modules.case.domain.models.evidence import (
     Evidence,
@@ -925,7 +931,12 @@ class EvidenceReclassifier:
         applied = await self.apply_reclassification(
             working, evidence_index, data_type, user_id
         )
+        # The re-extraction re-dates the file's rows (their coverage), which
+        # the record reads: folded before the save, counted after (#2811).
+        loaded = disagreement_keys(working.progress.outcome)
+        record_before_save(working, at=WritePoint.WRITE)
         await self.repository.save(working)
+        report_saved_disagreements(case_id, loaded, working.progress.outcome)
 
         # ``api`` counts a COMMITTED reclassification: the save has run.
         self._count_and_log(case_id, evidence_id, applied, trigger="api")

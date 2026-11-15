@@ -76,6 +76,7 @@ from faultmaven.modules.case.contracts import (
     ResolutionReason,
     ResolutionVerdict,
     ValidationMethod,
+    WritePoint,
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row
@@ -256,12 +257,12 @@ def test_2595_an_unkinded_window_read_failed_stays_failed_after_the_pool_rebinds
     fix = _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     assert _window(first, fix.action_id).state == FixWindowState.FAILED
 
     _deepen(case, hyp, root)
     assert fix_windows(case)[-1].state != FIX_FAILED, "premise: re-read at the pool"
-    second = compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case, at=WritePoint.CYCLE)
 
     window = _window(second, fix.action_id)
     assert window.state == FixWindowState.FAILED
@@ -283,18 +284,20 @@ def test_2582_a_failure_read_through_a_cited_row_survives_a_re_root(kinded, conf
         ).action_id
     _relapse(case, rechecks=cited.evidence_id)
     _recompute_at(case, 9)
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
 
     _deepen(case, hyp, root)
     assert root.metadata["root_terminal_evidence_ids"] == [], "premise: erased"
     assert all(w.state != FIX_FAILED for w in fix_windows(case)), "premise: re-read"
-    second = compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case, at=WritePoint.CYCLE)
 
     window = _window(second, action_id)
     assert window.state == FixWindowState.FAILED
     assert window.cited_basis == {_ROOT_ID: [cited.evidence_id]}
     assert window.read_under == "checkout returns 503"
-    assert second == compute_case_outcome(second, case), "carried, not re-read"
+    assert second == compute_case_outcome(
+        second, case, at=WritePoint.CYCLE
+    ), "carried, not re-read"
     assert "attempts.window" in conflicts
 
 
@@ -312,7 +315,7 @@ async def test_the_replay_keeps_a_failure_one_bundle_read_after_the_next_re_root
     )
     _relapse(case, rechecks=cited.evidence_id)
     _recompute_at(case, 9)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert not case.progress.outcome.attempts, "premise: nothing read before"
 
     case.current_turn = 10
@@ -356,9 +359,9 @@ async def test_the_replay_keeps_a_failure_one_bundle_read_after_the_next_re_root
 def test_an_accepted_in_turn_is_carried_and_a_re_dating_counted(conflicts):
     case, _root, _hyp = _identified_case()
     fix = _fix(case)
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     fix.accepted_in_turn = 5
-    second = compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case, at=WritePoint.CYCLE)
     (attempt,) = second.attempts
     assert attempt.accepted_in_turn == 6
     assert conflicts == ["attempts.accepted_in_turn"]
@@ -371,10 +374,10 @@ def test_window_zero_is_one_entry_carried_across_cycles(conflicts):
     record = None
     for turn in (9, 10, 11):
         _recompute_at(case, turn)
-        record = compute_case_outcome(record, case)
+        record = compute_case_outcome(record, case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root, turn=12)
     for _ in range(2):
-        record = compute_case_outcome(record, case)
+        record = compute_case_outcome(record, case, at=WritePoint.CYCLE)
     zero = [a for a in record.attempts if a.action_id is None]
     assert len(zero) == 1
     assert zero[0].window.state == FixWindowState.FAILED
@@ -386,10 +389,10 @@ def test_a_standing_disagreement_counts_once_over_ten_cycles(conflicts):
     fix = _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    record = compute_case_outcome(None, case)
+    record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root)
     for _ in range(10):
-        record = compute_case_outcome(record, case)
+        record = compute_case_outcome(record, case, at=WritePoint.CYCLE)
     assert conflicts == ["attempts.window"]
     assert record.disagreements == {f"attempts.window:{fix.action_id}": 10}
 
@@ -399,9 +402,9 @@ async def test_a_replay_adds_nothing_for_a_disagreement_already_counted(conflict
     _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert conflicts == ["attempts.window"], "premise: counted once"
 
     propose_revision(
@@ -429,10 +432,10 @@ async def test_a_replay_adds_nothing_for_a_disagreement_already_counted(conflict
 def test_a_disagreement_that_returns_counts_again(conflicts):
     case, _root, _hyp = _identified_case()
     fix = _fix(case)
-    record = compute_case_outcome(None, case)
+    record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     for accepted in (5, 5, 6, 5):
         fix.accepted_in_turn = accepted
-        record = compute_case_outcome(record, case)
+        record = compute_case_outcome(record, case, at=WritePoint.CYCLE)
     assert conflicts == ["attempts.accepted_in_turn"] * 2
 
 
@@ -441,14 +444,14 @@ def test_a_terminal_case_does_not_carry_a_closure_folded_open(conflicts):
     open case's closure, which is not final: the next fold reads the closed
     case's own."""
     case, _root, _hyp = _identified_case()
-    open_record = compute_case_outcome(None, case)
+    open_record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     case.atomic_update(
         state=CaseState.CLOSED,
         closed_at=case.updated_at,
         closure_reason=ClosureReason.SOLUTION_DEFERRED,
     )
     assert open_record.closure.reason != ClosureReason.SOLUTION_DEFERRED, "premise"
-    record = compute_case_outcome(open_record, case)
+    record = compute_case_outcome(open_record, case, at=WritePoint.CYCLE)
     assert record.closure.reason == ClosureReason.SOLUTION_DEFERRED
     assert record.folded_under == CaseState.CLOSED
     assert conflicts == []
@@ -456,7 +459,7 @@ def test_a_terminal_case_does_not_carry_a_closure_folded_open(conflicts):
 
 def test_window_zero_is_recorded_only_once_observed():
     case, _root, _hyp = _identified_case()
-    assert compute_case_outcome(None, case).attempts == []
+    assert compute_case_outcome(None, case, at=WritePoint.CYCLE).attempts == []
 
 
 def test_the_resolved_rows_are_final(conflicts):
@@ -464,12 +467,12 @@ def test_the_resolved_rows_are_final(conflicts):
     case.atomic_update(
         state=CaseState.RESOLVED, resolved_at=case.updated_at, closed_at=case.updated_at
     )
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     assert first.resolution.confirmed_row_ids, "premise: confirmed"
     case.evidence = [
         e for e in case.evidence if e.category != _C.SYMPTOM_ABSENCE_EVIDENCE
     ]
-    second = compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case, at=WritePoint.CYCLE)
     assert second.resolution.confirmed_row_ids == first.resolution.confirmed_row_ids
     assert conflicts == ["resolution.confirmed_row_ids"]
 
@@ -481,10 +484,12 @@ def test_a_terminal_closure_is_carried(conflicts):
         closed_at=case.updated_at,
         closure_reason=ClosureReason.SOLUTION_DEFERRED,
     )
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     assert first.closure.reason == ClosureReason.SOLUTION_DEFERRED
     case.closure_reason = ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE
-    assert compute_case_outcome(first, case).closure == first.closure
+    assert (
+        compute_case_outcome(first, case, at=WritePoint.CYCLE).closure == first.closure
+    )
     assert conflicts == ["closure"]
 
 
@@ -495,7 +500,7 @@ def test_a_terminal_closure_is_carried(conflicts):
 
 def test_each_section_of_an_identified_case():
     case, _root, _hyp = _identified_case()
-    record = compute_case_outcome(None, case)
+    record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
 
     assert record.problem.status == ProblemStatus.VERIFIED
     assert record.problem.verifying_row_ids == [VERIFYING_ID]
@@ -553,7 +558,9 @@ def test_a_failed_fix_records_its_disconfirmation_as_rows():
         summary="checkout still 503",
         rechecks=VERIFYING_ID,
     )
-    window = _window(compute_case_outcome(None, case), fix.action_id)
+    window = _window(
+        compute_case_outcome(None, case, at=WritePoint.CYCLE), fix.action_id
+    )
     assert window.state == FixWindowState.FAILED
     assert (window.fix_turn, window.end_turn) == (8, None)
     pair = window.disconfirmation
@@ -563,7 +570,7 @@ def test_a_failed_fix_records_its_disconfirmation_as_rows():
 
 def test_a_confirmed_case_records_both_legs_and_its_statement():
     case = _held_case(asked=False)
-    record = compute_case_outcome(None, case)
+    record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     resolution = record.resolution
     assert resolution.reason == ResolutionReason.CONFIRMED
     assert resolution.verdict == ResolutionVerdict.READY
@@ -579,7 +586,7 @@ def test_an_unkinded_window_with_nothing_seen_reads_unknown_and_an_interception_
     case, _root, _hyp = _identified_case()
     fix = _fix(case)
     relief = _fix(case, turn=7, fix_kind="interception", target_ids=[_ROOT_ID])
-    record = compute_case_outcome(None, case)
+    record = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     assert _window(record, fix.action_id).state == FixWindowState.UNKNOWN
     (attempt,) = [a for a in record.attempts if a.action_id == relief.action_id]
     assert attempt.window is None and attempt.kind == "interception"
@@ -602,7 +609,7 @@ def test_the_unbound_rechecks_list_every_turn_and_carry_the_narrated_turn():
     )
     case.current_turn = 9
     case.progress.problem_status = ProblemStatus.REVISION_PENDING
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     (unbound,) = first.unbound_rechecks
     assert (unbound.evidence_id, unbound.observed_turn) == (_eid("unnamed"), 7)
     assert unbound.uncited is False and unbound.after_mitigation is False
@@ -612,7 +619,12 @@ def test_the_unbound_rechecks_list_every_turn_and_carry_the_narrated_turn():
     narrated = first.model_copy(
         update={"unbound_rechecks": [unbound.model_copy(update={"narrated_turn": 8})]}
     )
-    assert compute_case_outcome(narrated, case).unbound_rechecks[0].narrated_turn == 8
+    assert (
+        compute_case_outcome(narrated, case, at=WritePoint.CYCLE)
+        .unbound_rechecks[0]
+        .narrated_turn
+        == 8
+    )
 
 
 def test_the_mitigation_section_reads_its_observation():
@@ -627,7 +639,7 @@ def test_the_mitigation_section_reads_its_observation():
         summary="checkout answers 200 after the failover",
         rechecks=VERIFYING_ID,
     )
-    mitigation = compute_case_outcome(None, case).mitigation
+    mitigation = compute_case_outcome(None, case, at=WritePoint.CYCLE).mitigation
     assert (mitigation.attempt_turn, mitigation.relief_turn) == (6, 7)
     assert mitigation.relief_row_id == _eid("relieved")
     assert mitigation.holding is True and mitigation.present_turn is None
@@ -725,14 +737,16 @@ def _rootless(case):
     ids=lambda v: getattr(v, "value", None) if not callable(v) else "",
 )
 def test_each_way_the_confirmation_pool_comes_back_empty(build, reason):
-    cause = compute_case_outcome(None, build()).cause
+    cause = compute_case_outcome(None, build(), at=WritePoint.CYCLE).cause
     assert cause.pool_empty_reason == reason
     assert bool(cause.confirmation_root_ids) == (reason is None)
 
 
 def test_the_fallen_leg_stands_when_nothing_refuses_it():
     case, root = _fallen_case()
-    assert compute_case_outcome(None, case).cause.confirmation_root_ids == [_ROOT_ID]
+    assert compute_case_outcome(
+        None, case, at=WritePoint.CYCLE
+    ).cause.confirmation_root_ids == [_ROOT_ID]
 
 
 def _invalidated():
@@ -799,7 +813,7 @@ def _failed_fix():
 )
 def test_each_branch_of_resolution_readiness_has_its_reason(build, reason, verdict):
     case = build()
-    resolution = compute_case_outcome(None, case).resolution
+    resolution = compute_case_outcome(None, case, at=WritePoint.CYCLE).resolution
     assert (resolution.reason, resolution.verdict) == (reason, verdict)
     if reason == ResolutionReason.PENDING_CHECK:
         assert resolution.pending_check_need_id == case.evidence_needs[0].need_id
@@ -860,7 +874,7 @@ def _no_symptom_row(case):
     ids=["relief", "cause-leg", "no-symptom-row", "pair", "none"],
 )
 def test_the_confirmation_gaps_are_the_asks_the_branch_makes(build, gaps):
-    resolution = compute_case_outcome(None, build()).resolution
+    resolution = compute_case_outcome(None, build(), at=WritePoint.CYCLE).resolution
     assert resolution.reason == ResolutionReason.DOCUMENTATION_GAPS
     assert resolution.confirmation_gaps == gaps
 
@@ -900,13 +914,18 @@ def _mitigated(status=ProblemStatus.VERIFIED, *, dated=True, relieved=False):
     ],
 )
 def test_each_branch_of_the_mitigation_refusal_has_its_reason(build, reason):
-    assert compute_case_outcome(None, build()).mitigation.refusal_reason == reason
+    assert (
+        compute_case_outcome(
+            None, build(), at=WritePoint.CYCLE
+        ).mitigation.refusal_reason
+        == reason
+    )
 
 
 def test_a_stored_verdict_carries_no_refusal_reason():
     case = _mitigated(relieved=True)
     case.progress.mitigation.verified = True
-    mitigation = compute_case_outcome(None, case).mitigation
+    mitigation = compute_case_outcome(None, case, at=WritePoint.CYCLE).mitigation
     assert mitigation.verified and mitigation.settled
     assert mitigation.refusal_reason is None
 
@@ -920,7 +939,10 @@ def test_a_stored_verdict_carries_no_refusal_reason():
     ],
 )
 def test_each_closure_eligibility(build, eligibility):
-    assert compute_case_outcome(None, build()).closure.eligibility == eligibility
+    assert (
+        compute_case_outcome(None, build(), at=WritePoint.CYCLE).closure.eligibility
+        == eligibility
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1006,7 +1028,7 @@ def test_a_close_accepted_on_its_stored_reason_writes_the_terminal_record(
         ),
     )
     case, _root, _hyp = _identified_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     case.offer_record = open_disposition_offer(
         case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU
     )
@@ -1024,7 +1046,7 @@ def test_an_offer_openers_closure_is_not_kept_the_record_computes_fresh():
     case, _root, _hyp = _identified_case()
     record = open_disposition_offer(case, kind=OfferKind.CLOSE, basis=OfferBasis.MENU)
     case.progress.problem_status = ProblemStatus.INVALIDATED
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert record.open.closure_reason != ClosureReason.CLOSED_FALSE_ALARM, "premise"
     assert case.progress.outcome.closure.reason == ClosureReason.CLOSED_FALSE_ALARM
 

@@ -1100,29 +1100,35 @@ written*, as amended by #2811, ruled 2026-11-15):
   step-0 turn, such as the menu close of #2658, stores a record of the case it
   saves) and the case service's write (`update_case_with_retry`, every REST
   mutation). Each runs the turn-sequence repair and the lapse first, so the
-  record reads the offer record as stored. A description edit outside an
-  investigation, which the scoped metadata write stores, is folded beside it.
-  Case creation, a driver change, the runbook conversion's save and the
-  out-of-band reclassification change no field the record reads
-  (`test_record_written_at_every_case_save_2811.py`).
+  record reads the offer record as stored, and a failed save puts the offer
+  record and the record back. Case creation saves a first record, and the
+  out-of-band reclassification, which re-dates its file's rows, folds before
+  its save. A changed description outside an investigation carries its
+  record in the scoped metadata write itself, which bumps no version, written
+  only while the version it was folded from stands. A driver change, the
+  runbook conversion's save and the vectorized flag change no field the
+  record reads (`test_record_written_at_every_case_save_2811.py`).
 - **Finals are minted only at a cycle, a replay, a resolve or a close**, or on
   a first record (`outcome.MINTING_POINTS`). A FAILED window and an
   `accepted_in_turn` are final once marked `final_at` (the write point and the
   turn); the carry keys on the mark. Any other fold refreshes the derived
-  sections and carries the finals already marked, and on a terminal case the
-  closure a terminal write folded.
+  sections and carries the finals already marked, the prior's `folded_under`
+  (so a terminal write that raised is still repaired), and on a terminal case
+  the closure a terminal write folded. The write point is a `WritePoint`.
 - **Computed on demand for narration** (`narration_outcome`): folded in memory
   over the stored record, stored nowhere, minting nothing, once per narration
   pass.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
-  as that shape; a fold over it marks the finals it held, and
+  as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
+  the 1 -> 2 step marks the finals shape 1 held), and
   `fm-backfill-case-outcome` rewrites it, so the backfill runs after each
   shape change, not once (amending #2615 Q6). A re-shape mints nothing.
 - **The narrators read by id.** The record holds codes and ids, never display
-  text (`cause.recheck`'s `RecheckReason`, rendered by `narration.rechecks`);
-  a narrator fetches the text an id names through `narration.content`, which
-  holds no predicate.
+  text (`cause.recheck`'s `RecheckReason`, with each reason's parameters as
+  typed fields, rendered by `narration.rechecks`). A narrator will fetch the
+  text an id names through one accessor with no predicate, `content(id)`, with
+  the selected ids the record holds for it (stage S2b).
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is

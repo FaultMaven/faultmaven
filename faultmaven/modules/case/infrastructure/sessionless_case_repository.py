@@ -46,7 +46,7 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 
 if TYPE_CHECKING:
-    from faultmaven.modules.case.contracts import CaseReport, ReportType
+    from faultmaven.modules.case.contracts import CaseOutcome, CaseReport, ReportType
 
 logger = logging.getLogger(__name__)
 
@@ -494,12 +494,18 @@ class SessionlessCaseRepository(CaseRepository):
         *,
         title: str | None = None,
         description: str | None = None,
+        outcome: "CaseOutcome | None" = None,
+        expected_version: int | None = None,
     ) -> bool:
         """Scoped UPDATE of cosmetic metadata fields (no version bump)."""
         async with get_db_session() as session:
             repo = get_repository_for_session(session)
             return await repo.update_metadata_fields(
-                case_id, title=title, description=description
+                case_id,
+                title=title,
+                description=description,
+                outcome=outcome,
+                expected_version=expected_version,
             )
 
     async def update_evidence_vectorized(

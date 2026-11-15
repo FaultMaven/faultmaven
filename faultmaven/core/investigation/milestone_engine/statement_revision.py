@@ -32,7 +32,12 @@ from faultmaven.core.investigation.problem_status import (
     current_statement,
 )
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
-from faultmaven.modules.case.contracts import AnswerVia, CaseState, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    AnswerVia,
+    CaseState,
+    ProblemStatus,
+    WritePoint,
+)
 
 from .stage_gates import (
     CARRIED_FIX_KEY,
@@ -194,7 +199,7 @@ async def confirm_revision(
         # folds over the previous bundle's, so a FAILED window read here
         # survives a later bundle's re-root. Steps 2-4 run once, in the live
         # turn.
-        record_case_outcome(case, at="replay")
+        record_case_outcome(case, at=WritePoint.REPLAY)
         for key in REPLAYED_KEYS:
             replayed[key].extend(bundle_metadata.get(key, []))
         merge_system_notices(metadata, bundle_metadata)

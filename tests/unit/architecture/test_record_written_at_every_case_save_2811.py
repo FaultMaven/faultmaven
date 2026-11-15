@@ -4,10 +4,11 @@ the record reads (#2811, the save census).
 The incident: #2658, step 0's menu close, saved a case it had changed with
 no record write, so the stored record disagreed with the saved case; #2811's
 pull found the other paths the same way, one at a time (the deterministic
-step-0 turns, ``PATCH /cases/{id}``, the metadata edit). The record is now
-folded at the two save helpers (``commit_turn_plan``,
-``update_case_with_retry``) after the save's lapse, and beside the metadata
-edit. This census lists every reference to a case repository's write in
+step-0 turns, ``PATCH /cases/{id}``, the metadata edit, case creation, the
+out-of-band reclassification). The record is now folded at the two save
+helpers (``commit_turn_plan``, ``update_case_with_retry``) after the save's
+lapse, at creation and the reclassification, and in the metadata edit's own
+scoped write. This census lists every reference to a case repository's write in
 ``faultmaven/`` outside the repositories themselves, keyed by
 ``(path, qualname)``:
 
@@ -46,6 +47,10 @@ WRITE_METHODS = frozenset(
         "release_driver",
         "release_drivers_for_team_leave",
         "release_drivers_for_deactivation",
+        "delete_evidence",
+        "delete_uploaded_file",
+        "add_message",
+        "update_evidence_vectorized",
     }
 )
 
@@ -60,15 +65,9 @@ EXCLUDED = (
     "faultmaven/infrastructure/persistence/user_repository.py",
 )
 
-#: What a ``WRITES`` site, or a function nested in it, must reference: the
-#: fold, or the case service's refold of a metadata edit.
+#: What a ``WRITES`` site, or a function nested in it, must reference.
 RECORD_WRITERS = frozenset(
-    {
-        "record_before_save",
-        "record_case_outcome",
-        "compute_case_outcome",
-        "_refold_outcome",
-    }
+    {"record_before_save", "record_case_outcome", "compute_case_outcome"}
 )
 
 WRITES = "writes the record"
@@ -85,36 +84,35 @@ SAVE_SITES: dict[tuple[str, str], tuple[dict[str, int], str]] = {
     ),
     (_CASE + "utils/retry.py", "update_case_with_retry"): ({"save": 1}, WRITES),
     # The metadata edit: a description outside an investigation is the
-    # statement in force; folded beside the scoped write.
-    (_CASE + "domain/services/case_service.py", "CaseService.update_case"): (
-        {"update_metadata_fields": 1},
+    # statement in force; its record rides the same scoped write (the other
+    # call writes a title, or a description that did not change).
+    (_CASE + "domain/services/case_service.py", "CaseService._write_metadata"): (
+        {"update_metadata_fields": 2},
         WRITES,
     ),
-    (_CASE + "domain/services/case_service.py", "CaseService._refold_outcome"): (
-        {"save_progress": 1},
+    # A new case's first record, and the reclassification, which re-dates its
+    # file's rows (their coverage, read by the mitigation's relief and span).
+    (_CASE + "domain/services/case_service.py", "CaseService.create_case"): (
+        {"save": 1},
         WRITES,
     ),
+    (
+        "faultmaven/modules/agent/domain/services/investigation_service/reclassification.py",
+        "EvidenceReclassifier.reclassify_out_of_band",
+    ): ({"save": 1}, WRITES),
     ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome"): (
         {"save_progress": 1},
         WRITES,
     ),
     # No record input.
-    (_CASE + "domain/services/case_service.py", "CaseService.create_case"): (
-        {"save": 1},
-        "a new case: no turn has run, so it holds nothing the record reads; "
-        "its first fold is a first record",
-    ),
     (
         "faultmaven/core/investigation/milestone_engine/runbook_creation.py",
         "RunbookCreator._run_runbook_conversion",
     ): ({"save": 1}, "the runbook conversion's notice and state, read by no fold"),
     (
-        "faultmaven/modules/agent/domain/services/investigation_service/reclassification.py",
-        "EvidenceReclassifier.reclassify_out_of_band",
-    ): (
-        {"save": 1},
-        "an evidence row's classification metadata, read by no fold",
-    ),
+        "faultmaven/core/investigation/milestone_engine/vectorization.py",
+        "EvidenceVectorizer._vectorize_evidence",
+    ): ({"update_evidence_vectorized": 1}, "an evidence row's vectorized flag"),
     (_CASE + "domain/services/case_driver.py", "CaseDriverMixin.reassign_driver"): (
         {"reassign_driver": 1},
         "driver_id",

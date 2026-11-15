@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
-from faultmaven.modules.case.contracts import Case, ICaseRepository
+from faultmaven.modules.case.contracts import Case, ICaseRepository, WritePoint
 from faultmaven.modules.case.exceptions import (
     CaseNotFoundError,
     StaleCaseException,
@@ -94,11 +94,16 @@ async def update_case_with_retry(
         # Per attempt: the record this attempt's write folds over (#2689).
         loaded = disagreement_keys(case.progress.outcome)
         await mutator(case)
+        undo = None
         if save is None:
-            record_before_save(case, at="write")
+            undo = record_before_save(case, at=WritePoint.WRITE)
         try:
             saved = await write(case)
-        except StaleCaseException as exc:
+        except BaseException as exc:
+            if undo is not None:
+                undo()
+            if not isinstance(exc, StaleCaseException):
+                raise
             last_stale = exc
             # Reload and re-apply on the next iteration.
             continue

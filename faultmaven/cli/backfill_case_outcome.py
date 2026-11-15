@@ -159,6 +159,7 @@ async def backfill_case_outcome(
     """
     from faultmaven.cli._tenant import EnterpriseRefused, bind_and_load_enterprise
     from faultmaven.core.investigation.outcome import compute_case_outcome
+    from faultmaven.modules.case.contracts import WritePoint
     from faultmaven.modules.case.exceptions import CaseNotFoundError
     from faultmaven.modules.case.utils.retry import update_case_with_retry
     from faultmaven.providers.tenancy.factory import (
@@ -212,7 +213,9 @@ async def backfill_case_outcome(
         # final verdicts carry while its open closure does not. A first
         # record and a repair mint finals; a re-shape does not (#2811).
         record = compute_case_outcome(
-            case.progress.outcome, case, at="repair" if repair else "backfill"
+            case.progress.outcome,
+            case,
+            at=WritePoint.REPAIR if repair else WritePoint.BACKFILL,
         )
         if dry_run:
             raise _Leave("dry run", would_write=True)

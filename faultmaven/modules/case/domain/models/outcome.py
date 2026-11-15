@@ -118,15 +118,59 @@ class RecheckReason(StrEnum):
     OTHER_CAUSE = "other_cause"
 
 
+class NoWindowKind(StrEnum):
+    """Why no fix window confirms (``cause_assurance._no_confirming_window``)."""
+
+    OFF_CAUSE_ATTEMPT = "off_cause_attempt"
+    """The latest attempt was no fix of the cause now identified."""
+    FAILED = "failed"
+    """The latest observed fix was seen failing."""
+    NO_LONGER_IDENTIFIED = "no_longer_identified"
+    """The latest observed fix acted on a cause no longer identified."""
+    LATEST_FAILED = "latest_failed"
+    """None of the above: the latest fix was seen failing."""
+
+
+class NoConfirmingWindow(BaseModel):
+    """The parameters of ``NO_CONFIRMING_WINDOW``. ``fix_turn``: the fix's
+    execution turn, None for window 0 (the fix done outside the case)."""
+
+    kind: NoWindowKind
+    fix_turn: Optional[int] = None
+    failure_turn: Optional[int] = None
+    newer_fix_turn: Optional[int] = Field(
+        default=None, description="A newer fix nobody has re-checked yet"
+    )
+
+
+class UncitedKind(StrEnum):
+    """Why a window-bound cause re-check confirms nothing
+    (``cause_assurance.uncited_recheck``)."""
+
+    NO_ROOT = "no_root"
+    CITED = "cited"
+    NO_CITATION = "no_citation"
+
+
+class UncitedRecheck(BaseModel):
+    """The parameters of ``UNCITED``: its variant, and for ``cited`` up to
+    five rows of the root's cited basis."""
+
+    kind: UncitedKind
+    cited_row_ids: List[str] = Field(default_factory=list)
+
+
 class RecheckWhy(NamedTuple):
     """A row's ``RecheckReason`` with the parameters its text states: a turn
     (the positing, the failed fix's, or the fix the row did not re-check),
-    and the clause another derivation composed (no confirming window, or an
-    uncited re-check). Returned by ``cause_recheck_status``; never stored."""
+    or the typed parameters of a missing window or an uncited re-check.
+    Returned by ``cause_recheck_status``; the record holds the same
+    parameters (``CauseOutcome``)."""
 
     reason: RecheckReason
     turn: Optional[int] = None
-    clause: str = ""
+    window: Optional[NoConfirmingWindow] = None
+    uncited: Optional[UncitedRecheck] = None
 
 
 class ClosureEligibility(StrEnum):
@@ -142,12 +186,32 @@ class ClosureEligibility(StrEnum):
 CURRENT_OUTCOME_SHAPE = 2
 
 
-class FinalAt(BaseModel):
-    """Where a verdict became final: the write point that minted it (a cycle,
-    a replay, a resolve, a close, a first record; ``shape`` for one an older
-    shape held final) and the case's turn then (#2811)."""
+class WritePoint(StrEnum):
+    """Where a record is folded (``record_case_outcome``,
+    ``compute_case_outcome``). Only a cycle, a replay, a resolve, a close and
+    the backfill's repair mint a final verdict (``MINTING_POINTS``), and any
+    first record."""
 
-    at: str
+    CYCLE = "cycle"
+    REPLAY = "replay"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
+    REPAIR = "repair"
+    BACKFILL = "backfill"
+    COMMIT = "commit"
+    WRITE = "write"
+    METADATA = "metadata"
+    CREATE = "create"
+    NARRATION = "narration"
+    SHAPE = "shape"
+    """Not a fold: a verdict an older shape held final, marked on upgrade."""
+
+
+class FinalAt(BaseModel):
+    """Where a verdict became final: the write point that minted it, and the
+    case's turn then (#2811)."""
+
+    at: WritePoint
     turn: int
 
 
@@ -207,6 +271,15 @@ class CauseOutcome(BaseModel):
     )
     latest_disconfirmation_turn: int = Field(
         default=-1, description="The newest engine-known failed fix's turn, or -1"
+    )
+    no_confirming_window: Optional[NoConfirmingWindow] = Field(
+        default=None, description="Set with any ``no_confirming_window`` row"
+    )
+    uncited: Optional[UncitedRecheck] = Field(
+        default=None, description="Set with any ``uncited`` row"
+    )
+    other_cause_fix_turn: Optional[int] = Field(
+        default=None, description="Set with any ``other_cause`` row"
     )
 
     @model_validator(mode="after")
@@ -308,13 +381,6 @@ class ResolutionOutcome(BaseModel):
         description="At RESOLVED, the confirmation and the stamp's rows (final)",
     )
     statement: str = Field(default="", description="``resolution_record_lines``")
-    solution_id: Optional[str] = Field(
-        default=None, description="The solution the confirmation names: the latest"
-    )
-    open_need_ids: List[str] = Field(
-        default_factory=list,
-        description="The outstanding symptom-verification needs",
-    )
 
 
 class UnboundRecheck(BaseModel):
@@ -388,9 +454,9 @@ class CaseOutcome(BaseModel):
     )
     folded_under: CaseState = Field(
         description=(
-            "The case's state when the record was folded: a terminal case "
-            "whose record was folded under an open state was never written "
-            "by a terminal write, and the backfill recomputes it"
+            "The case's state at the last fold that may mint (#2811): a "
+            "terminal case whose record was folded under an open state was "
+            "never written by a terminal write, and the backfill recomputes it"
         )
     )
     problem: ProblemOutcome

@@ -53,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     PoolEmptyReason,
     ProblemStatus,
     TurnOutcome,
+    WritePoint,
 )
 from tests.unit.core.investigation import golden_cases_2636 as golden
 from tests.unit.core.investigation.bound_rows import bound_row
@@ -499,9 +500,9 @@ def test_an_outcome_computed_in_memory_counts_no_disagreement(monkeypatch):
     _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    first = compute_case_outcome(None, case)
+    first = compute_case_outcome(None, case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root)
-    second = compute_case_outcome(first, case)
+    second = compute_case_outcome(first, case, at=WritePoint.CYCLE)
     assert counted == []
     assert [k.split(":")[0] for k in second.disagreements] == ["attempts.window"]
     outcome_module.report_saved_disagreements(
@@ -730,7 +731,9 @@ def _stored_as_json(case, **extra) -> None:
     record written by another release carried."""
     from faultmaven.modules.case.contracts import CaseOutcome
 
-    dumped = compute_case_outcome(None, case).model_dump(mode="json")
+    dumped = compute_case_outcome(None, case, at=WritePoint.CYCLE).model_dump(
+        mode="json"
+    )
     dumped.pop("narration_since", None)  # as ``main`` stored it: no such key
     case.progress.outcome = CaseOutcome.model_validate({**dumped, **extra})
 
@@ -849,7 +852,7 @@ def test_a_failed_write_tells_no_unbound_row_and_marks_none(monkeypatch):
 
     monkeypatch.setattr(outcome_module, "_mitigation", _boom)
     metadata = {**_flagged(case), turn_narration.OUTCOME_WRITTEN_KEY: False}
-    assert not outcome_module.record_case_outcome(case, at="cycle")
+    assert not outcome_module.record_case_outcome(case, at=WritePoint.CYCLE)
     monkeypatch.setattr(outcome_module, "_mitigation", real)
     narrate_turn(case, metadata)
     assert not _naming(metadata["system_notices"], "held")
@@ -939,7 +942,9 @@ async def test_the_rows_marked_are_those_the_turn_record_kept(monkeypatch):
         plain[-1],
     ]
     assert len(metadata["system_notices"]) == MAX_SYSTEM_NOTICES + 1
-    metadata[OUTCOME_WRITTEN_KEY] = outcome_module.record_case_outcome(case, at="cycle")
+    metadata[OUTCOME_WRITTEN_KEY] = outcome_module.record_case_outcome(
+        case, at=WritePoint.CYCLE
+    )
     inputs = turn_application.TurnRecordInputs(
         fields=dict(
             turn_number=case.current_turn,

@@ -24,7 +24,12 @@ from faultmaven.core.investigation.outcome import (
 )
 from faultmaven.core.investigation.terminal_transitions import execute_user_closure
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.contracts import CaseState, FixWindowState, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    CaseState,
+    FixWindowState,
+    ProblemStatus,
+    WritePoint,
+)
 from tests.case_builders import inquiry_case
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _identified_case,
@@ -101,7 +106,9 @@ async def test_yes_writes_each_record_from_the_case_as_stored(repository, stored
     assert await _run(repository) == 0
     for case_id, before in stored.items():
         after = await repository.get(case_id)
-        assert after.progress.outcome == compute_case_outcome(None, before)
+        assert after.progress.outcome == compute_case_outcome(
+            None, before, at=WritePoint.CYCLE
+        )
         assert after.version == before.version + 1
 
 
@@ -204,7 +211,7 @@ async def _closed_with_an_open_record(repository, monkeypatch):
     """A case closed while its record write raised: the record it keeps was
     folded at the last cycle, under the open state."""
     case, _root, _hyp = _identified_case()
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     # The evidence then shows the problem was never there: the close records
     # a false alarm, which the open record's closure does not say.
     case.progress.problem_status = ProblemStatus.INVALIDATED
@@ -287,13 +294,13 @@ async def test_a_repair_folds_over_the_stored_record_and_keeps_a_failed_window(
     fix = _fix(case)
     _relapse(case, rechecks=_eid("pool_log"))
     _recompute_at(case, 9)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     _deepen(case, hyp, root)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     assert _window(case.progress.outcome, fix.action_id).state == FixWindowState.FAILED
-    assert compute_case_outcome(None, case).attempts[0].window.state != (
-        FixWindowState.FAILED
-    ), "premise: the fresh read is not FAILED"
+    assert compute_case_outcome(None, case, at=WritePoint.CYCLE).attempts[
+        0
+    ].window.state != (FixWindowState.FAILED), "premise: the fresh read is not FAILED"
     with monkeypatch.context() as patched:
         patched.setattr(outcome_module, "compute_case_outcome", _boom)
         execute_user_closure(case, case.user_id)
@@ -345,7 +352,7 @@ async def _repair_with_a_disagreement(repository, monkeypatch):
 
     case, _root, _hyp = _identified_case()
     fix = _fix(case)
-    record_case_outcome(case, at="cycle")
+    record_case_outcome(case, at=WritePoint.CYCLE)
     fix.accepted_in_turn = 5
     with monkeypatch.context() as patched:
         patched.setattr(outcome_module, "compute_case_outcome", _boom)
@@ -449,9 +456,11 @@ async def test_2811_an_old_shape_record_is_rewritten_and_a_current_one_left(
     fix = _fix(old)
     _relapse(old, rechecks=_eid("pool_log"))
     _recompute_at(old, 9)
-    old.progress.outcome = _old_shape(compute_case_outcome(None, old))
+    old.progress.outcome = _old_shape(
+        compute_case_outcome(None, old, at=WritePoint.CYCLE)
+    )
     current = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
-    record_case_outcome(current, at="cycle")
+    record_case_outcome(current, at=WritePoint.CYCLE)
     for case in (old, current):
         await repository.save(case)
     current_version = (await repository.get(current.case_id)).version

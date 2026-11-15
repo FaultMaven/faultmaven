@@ -131,6 +131,7 @@ DERIVATIONS: dict[str, str] = {
             "_cause_pool",
             "cause_recheck_status",
             "uncited_recheck_why",
+            "uncited_recheck",
             "_no_confirming_window",
             "latest_fix_window",
             "latest_decided_fix_window",
@@ -172,11 +173,6 @@ DERIVATIONS: dict[str, str] = {
     "narration_outcome": _OUTCOME,
 }
 
-#: The narrators' one accessor of a case besides its record (#2811, ruled
-#: 2026-11-15): the text an id names, no predicate. Pin 2 (S2b) allows it;
-#: in S2a no product module calls it (its caller is the parity test).
-ACCESSORS: dict[str, str] = {"content": _INV + "narration/content.py"}
-
 #: Each outcome field read raw, by the module and class that define it.
 FIELDS: dict[str, tuple[str, str]] = {
     "completed_milestones": (_PROGRESS, "InvestigationProgress"),
@@ -216,8 +212,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "_no_confirming_window": 1,
         "confirming_window": 1,
         "fix_windows": 1,
-        "uncited_recheck_why": 1,
+        "uncited_recheck": 1,
     },
+    # #2811: the typed parameters, rendered by ``narration.rechecks``.
+    (_CA, "uncited_recheck_why"): {"uncited_recheck": 1},
     (_CA, "confirming_polarity_rows"): {"fix_windows": 1},
     (_CA, "confirming_window"): {"fix_windows": 1},
     (_CA, "fix_windows"): {"_pool_legs": 1},
@@ -328,13 +326,23 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "turn_narration.py", "_outcome"): {"narration_outcome": 1},
     # The two save helpers (#2811): a turn's commit and the case service's
     # write fold the record after the save's lapse; the metadata write, whose
-    # description is the statement in force outside an investigation, folds
-    # it beside its scoped update.
+    # description is the statement in force outside an investigation, writes
+    # it in its own scoped update.
     (_ME + "turn_commit.py", "commit_turn_plan"): {"record_before_save": 1},
     (_CASE + "utils/retry.py", "update_case_with_retry"): {"record_before_save": 1},
-    (_CASE + "domain/services/case_service.py", "CaseService._refold_outcome.refold"): {
+    (_CASE + "domain/services/case_service.py", "CaseService._write_metadata"): {
         "record_case_outcome": 1
     },
+    # #2811: a new case's first record, and the out-of-band reclassification,
+    # which re-dates its file's rows.
+    (_CASE + "domain/services/case_service.py", "CaseService.create_case"): {
+        "record_before_save": 1
+    },
+    (
+        "faultmaven/modules/agent/domain/services/investigation_service/"
+        "reclassification.py",
+        "EvidenceReclassifier.reclassify_out_of_band",
+    ): {"record_before_save": 1},
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,
@@ -1012,18 +1020,6 @@ def test_each_watched_function_is_defined_where_the_census_says(name):
     """A rename would otherwise leave the census watching a name nothing has."""
     path = {**DERIVATIONS, **ENTRIES}[name]
     assert name in _module_functions(path), f"{name} is not defined in {path}"
-
-
-def test_the_content_accessor_is_defined_and_called_by_no_product_module():
-    ((name, path),) = ACCESSORS.items()
-    assert name in _module_functions(path)
-    module = path.removesuffix(".py").replace("/", ".")
-    callers = [
-        rel.relative_to(_ROOT).as_posix()
-        for rel in sorted(_PACKAGE.rglob("*.py"))
-        if module in rel.read_text(encoding="utf-8")
-    ]
-    assert callers == [], f"S2b's narrators call it; S2a's none do: {callers}"
 
 
 @pytest.mark.parametrize("name", sorted(FIELDS))
