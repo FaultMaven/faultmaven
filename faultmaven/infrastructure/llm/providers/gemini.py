@@ -28,6 +28,7 @@ from .base import (
     ToolCall,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 
@@ -674,7 +675,8 @@ class GeminiProvider(BaseLLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
+                async with post_waiting_out_rate_limits(
+                    session,
                     url,
                     params=params,
                     headers=headers,

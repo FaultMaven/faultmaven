@@ -23,6 +23,7 @@ from .base import (
     StopReason,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 # The two protocols a self-hosted endpoint can speak to FaultMaven.
@@ -405,7 +406,8 @@ class LocalProvider(BaseLLMProvider):
         payload["options"].update({k: v for k, v in kwargs.items() if v is not None})
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
+            async with post_waiting_out_rate_limits(
+                session,
                 f"{root}/api/chat",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
@@ -488,7 +490,8 @@ class LocalProvider(BaseLLMProvider):
 
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.post(
+                async with post_waiting_out_rate_limits(
+                    session,
                     f"{root}/v1/chat/completions",
                     headers=headers,
                     json=payload,
@@ -643,7 +646,8 @@ class LocalProvider(BaseLLMProvider):
             self._merge_extra_kwargs(payload, kwargs, model=model)
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(
+            async with post_waiting_out_rate_limits(
+                session,
                 f"{root}/completion",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),

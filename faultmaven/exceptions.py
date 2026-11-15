@@ -866,6 +866,34 @@ class LLMException(FaultMavenException):
         super().__init__(message, **kwargs)
 
 
+def is_rate_limit_throttle(exc: BaseException) -> bool:
+    """A provider's 429 that is a throttle, not an outage (#2793).
+
+    The provider is up and has said when to come back, so neither the router's
+    circuit breaker nor the registry's per-provider health counts it. A 429
+    carrying a service-scoped code (quota exhausted) is not a throttle: no
+    wait clears it, and it keeps opening the breaker.
+    """
+    return (
+        isinstance(exc, LLMException)
+        and exc.status_code == 429
+        and exc.error_code not in SERVICE_SCOPED_ERROR_CODES
+    )
+
+
+def counts_against_breaker(exc: BaseException) -> bool:
+    """Whether ``call_external`` records ``exc`` on its circuit breaker.
+
+    A non-retryable failure counts only when it is service-scoped (quota,
+    rejected credentials); a request-scoped one says nothing about the service.
+    Any other failure counts, except a throttle (#2793). The registry reads the
+    same answer to decide which failure in a fallback chain is raised.
+    """
+    if getattr(exc, "retryable", True) is False:
+        return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
+    return not is_rate_limit_throttle(exc)
+
+
 class LLMOutputFloorError(LLMException):
     """A response was cut at the output cap with less visible output than the
     caller's declared floor (``min_output_tokens``, #1117).

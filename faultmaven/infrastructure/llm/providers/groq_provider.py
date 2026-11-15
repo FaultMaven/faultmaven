@@ -25,6 +25,7 @@ from .base import (
     ProviderConfig,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 
@@ -168,37 +169,27 @@ class GroqProvider(BaseLLMProvider):
         self._merge_extra_kwargs(payload, kwargs, model=model)
 
         # Make request to Groq API
-        _MAX_RATE_LIMIT_RETRIES = 2
         try:
             async with aiohttp.ClientSession() as session:
-                for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-                    async with session.post(
-                        f"{self.config.base_url}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                    ) as response:
-                        if response.status == 429 and attempt < _MAX_RATE_LIMIT_RETRIES:
-                            retry_after = float(
-                                response.headers.get("retry-after", "60")
-                            )
-                            await asyncio.sleep(retry_after)
-                            continue
-                        if response.status != 200:
-                            error_text = await response.text()
-                            # Pass status_code only; LLMException derives
-                            # retryable (429 + 5xx). An explicit
-                            # retryable=status==429 would wrongly force 5xx
-                            # to non-retryable.
-                            raise LLMException(
-                                f"Groq API error {response.status}: {error_text}",
-                                status_code=response.status,
-                                provider_error_code=extract_provider_error_code(
-                                    error_text
-                                ),
-                            )
-                        data = await response.json()
-                        break
+                async with post_waiting_out_rate_limits(
+                    session,
+                    f"{self.config.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        # Pass status_code only; LLMException derives
+                        # retryable (429 + 5xx). An explicit
+                        # retryable=status==429 would wrongly force 5xx
+                        # to non-retryable.
+                        raise LLMException(
+                            f"Groq API error {response.status}: {error_text}",
+                            status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
+                        )
+                    data = await response.json()
 
                 # Extract response content (OpenAI-compatible format)
                 if not data.get("choices") or len(data["choices"]) == 0:

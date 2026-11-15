@@ -5,13 +5,22 @@ This module defines the abstract base class that all LLM providers must implemen
 ensuring consistent behavior and configuration across all provider implementations.
 """
 
+import asyncio
 import json
 import logging
+import math
 import time
 from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, AsyncIterator, Dict, FrozenSet, List, Mapping, Optional
+
+from faultmaven.core.investigation.turn_budget import spendable_turn_budget
+from faultmaven.exceptions import is_billing_quota_error
+from faultmaven.infrastructure.base_client import remaining_call_time
 
 # Import structured output capability system
 from faultmaven.infrastructure.llm.structured_output_capability import (
@@ -258,6 +267,118 @@ def extract_provider_error_code(body: Any) -> Optional[str]:
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return None
+
+
+# How a provider's 429 is waited out at the provider boundary (#2793): the one
+# policy every provider's POST uses, through ``post_waiting_out_rate_limits``.
+# Re-sends after a 429 per POST, at most; the next 429 is raised. A call that
+# POSTs more than once (a #510 or temperature re-send) can wait more in total.
+RATE_LIMIT_MAX_RETRIES = 2
+# The longest single wait taken; a provider asking for longer is raised at once.
+RATE_LIMIT_MAX_WAIT_SECONDS = 20.0
+# The first wait when the 429 names none, doubled per further attempt (2 s, 4 s).
+RATE_LIMIT_DEFAULT_WAIT_SECONDS = 2.0
+# A wait is taken only when this many times it is less than what is left of each
+# bound deadline: the re-send gets at least as long as the wait.
+RATE_LIMIT_DEADLINE_FACTOR = 2.0
+
+_rate_limit_logger = logging.getLogger(__name__)
+
+
+def _finite_seconds(value: str, scale: float = 1.0) -> Optional[float]:
+    """``value`` as non-negative seconds, or ``None`` when it is not a finite
+    number (unreadable, ``nan`` or ``inf``)."""
+    try:
+        seconds = float(value) / scale
+    except ValueError:
+        return None
+    return max(seconds, 0.0) if math.isfinite(seconds) else None
+
+
+def _retry_after_seconds(headers: Mapping[str, str]) -> Optional[float]:
+    """The wait a 429's headers ask for, or ``None`` when they name none.
+
+    ``retry-after-ms`` (Azure, OpenAI) first, then ``retry-after`` as seconds or
+    as the HTTP-date RFC 9110 also allows. An unreadable or non-finite value
+    names nothing.
+    """
+    millis = headers.get("retry-after-ms")
+    if millis is not None:
+        seconds = _finite_seconds(millis, 1000.0)
+        if seconds is not None:
+            return seconds
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    seconds = _finite_seconds(value)
+    if seconds is not None:
+        return seconds
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max((when - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
+def rate_limit_wait(headers: Mapping[str, str], attempt: int) -> Optional[float]:
+    """Seconds to wait before re-sending after a 429, or ``None`` to raise now.
+
+    ``attempt`` is the number of waits already taken for this POST. The wait
+    is the one the headers ask for, else ``RATE_LIMIT_DEFAULT_WAIT_SECONDS``
+    doubled per attempt. ``None`` after ``RATE_LIMIT_MAX_RETRIES`` waits for
+    this POST, for a wait over ``RATE_LIMIT_MAX_WAIT_SECONDS``, and for a wait
+    that ``RATE_LIMIT_DEADLINE_FACTOR`` times is not less than what is left of
+    the enclosing ``call_external`` call (``remaining_call_time``) or of a bound
+    turn (``spendable_turn_budget``). The call's deadline bounds all of its
+    waits, across every POST it makes.
+    """
+    if attempt >= RATE_LIMIT_MAX_RETRIES:
+        return None
+    wait = _retry_after_seconds(headers)
+    if wait is None:
+        wait = RATE_LIMIT_DEFAULT_WAIT_SECONDS * 2**attempt
+    if wait > RATE_LIMIT_MAX_WAIT_SECONDS:
+        return None
+    for remaining in (remaining_call_time(), spendable_turn_budget()):
+        if remaining is not None and not RATE_LIMIT_DEADLINE_FACTOR * wait < remaining:
+            return None
+    return wait
+
+
+@asynccontextmanager
+async def post_waiting_out_rate_limits(
+    session: Any, url: str, **kwargs: Any
+) -> AsyncIterator[Any]:
+    """``session.post(url, **kwargs)``, re-sent after each 429 ``rate_limit_wait``
+    allows a wait for. Yields the first response it does not wait out, which
+    may be a 429 for the caller to raise. A quota-exhaustion 429 is yielded at
+    once: no wait adds credits. The connection is released before each wait.
+    """
+    attempt = 0
+    while True:
+        async with session.post(url, **kwargs) as response:
+            wait = None
+            if response.status == 429:
+                # aiohttp caches the body, so the caller's own read still works.
+                text = await response.text()
+                if not is_billing_quota_error(
+                    text, 429, extract_provider_error_code(text)
+                ):
+                    wait = rate_limit_wait(response.headers, attempt)
+            if wait is None:
+                yield response
+                return
+        _rate_limit_logger.warning(
+            "Provider answered 429 for %s; waiting %.2fs before re-send %d of %d",
+            url.split("?", 1)[0],
+            wait,
+            attempt + 1,
+            RATE_LIMIT_MAX_RETRIES,
+        )
+        await asyncio.sleep(wait)
+        attempt += 1
 
 
 class ReasoningIntent(str, Enum):
