@@ -453,9 +453,9 @@ read with no deadline of its own fails in 30 s when it draws a stale pooled
 connection (its pre-ping meets the command timeout) and in 10 s when the
 connection has to be reopened (the connect timeout); allow 40 s for both. The
 16th concurrent caller can wait the 30 s pool timeout first. A turn whose commit meets a database that stops
-answering mid-commit fails with the outcome unknown: a retry under the same
-`Idempotency-Key` is answered from the turn receipt, an unkeyed retry may save
-the turn twice. Alembic is outside these bounds: it runs on the sync driver in
+answering mid-commit is answered 500 `TURN_OUTCOME_UNKNOWN`: a retry under the
+same `Idempotency-Key` is answered from the turn receipt, an unkeyed retry may
+save the turn twice. Alembic is outside these bounds: it runs on the sync driver in
 a subprocess bounded at 60 s.
 
 On PostgreSQL connections over TCP the engine also sets keepalive (30 s idle,

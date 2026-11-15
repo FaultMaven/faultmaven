@@ -34,14 +34,26 @@ from faultmaven.api.exception_handlers import http_exception_handler
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_investigation_service
 from faultmaven.config.turn_ceiling import TurnCeiling
-from faultmaven.exceptions import DatabaseTimeout, LLMException, ServiceException
+from faultmaven.exceptions import (
+    CommitOutcomeUnknown,
+    DatabaseTimeout,
+    LLMException,
+    ServiceException,
+)
 from faultmaven.infrastructure.persistence import database
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    service as investigation_service_module,
+)
+from faultmaven.modules.agent.domain.services.investigation_service.service import (
+    InvestigationService,
+)
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes import conversation as conversation_module
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
 from faultmaven.modules.case.api.routes.router import router
+from faultmaven.modules.case.contracts import TurnReceiptExistsError
 from faultmaven.modules.case.domain.models.case import Case
 from tests.case_builders import inquiry_case
 from tests.silent_postgres import SilentPostgres
@@ -280,13 +292,96 @@ class TestThePreparationLetsItThrough:
                 )
 
 
-class TestAfterTheCommit:
-    async def test_a_database_timeout_after_the_commit_is_not_answered_as_unsaved(
-        self,
+def _assert_outcome_unknown(response: httpx.Response) -> None:
+    assert response.status_code == 500, response.text
+    assert response.headers["x-error-code"] == "TURN_OUTCOME_UNKNOWN"
+    assert "retry-after" not in response.headers, "no timed retry is invited"
+    detail = response.json()["detail"]
+    assert "may have been saved" in detail
+    assert "Idempotency-Key" in detail
+
+
+def _chained(*links: BaseException) -> BaseException:
+    """``links[0]`` raised from ``links[1]`` raised from ... the last."""
+    for outer, inner in zip(links, links[1:]):
+        outer.__cause__ = inner
+    return links[0]
+
+
+async def _post_turn_whose_settlement_raises(failure: BaseException):
+    """The real ``commit_turn``, with only the shielded settlement replaced."""
+
+    async def _settle(*_args, **_kwargs):
+        raise failure
+
+    async def _real_commit(prepared, receipt_key=None):
+        return await InvestigationService.commit_turn(
+            MagicMock(), prepared, receipt_key=receipt_key
+        )
+
+    service = _stubbed_service(AsyncMock(return_value=MagicMock()))
+    service.commit_turn = _real_commit
+    with (
+        patch.object(investigation_service_module, "check_commit_budget", lambda: None),
+        patch.object(investigation_service_module, "run_settlement_shielded", _settle),
     ):
+        return await _post_turn(service)
+
+
+class TestDuringTheCommit:
+    """What a failed settlement is answered over HTTP (#2813). The chains are
+    the ones ``get_db_session`` and the repository build on the way out."""
+
+    async def test_a_commit_the_database_stopped_answering_may_have_landed(self):
+        response = await _post_turn_whose_settlement_raises(
+            _chained(
+                DatabaseTimeout("the database did not answer in time"),
+                RuntimeError("Failed to save case"),
+                CommitOutcomeUnknown("the COMMIT was not answered"),
+                TimeoutError(),
+            )
+        )
+
+        _assert_outcome_unknown(response)
+
+    async def test_a_connection_lost_mid_commit_may_have_landed(self):
+        response = await _post_turn_whose_settlement_raises(
+            _chained(
+                RuntimeError("Failed to save case"),
+                CommitOutcomeUnknown("the COMMIT was not answered"),
+                ConnectionResetError(),
+            )
+        )
+
+        _assert_outcome_unknown(response)
+
+    async def test_a_timeout_before_the_commit_saved_nothing(self):
+        """A statement before the COMMIT went unanswered: the preparation's
+        503, not the AI provider's 500."""
+        response = await _post_turn_whose_settlement_raises(
+            _chained(
+                DatabaseTimeout("the database did not answer in time"),
+                RuntimeError("Failed to save case"),
+                TimeoutError(),
+            )
+        )
+
+        _assert_database_unavailable(response)
+
+    async def test_any_other_commit_failure_still_saved_nothing(self):
+        response = await _post_turn_whose_settlement_raises(
+            RuntimeError("Failed to save case: a constraint refused it")
+        )
+
+        assert response.status_code == 500
+        assert response.headers["x-error-code"] == "SERVICE_ERROR"
+
+
+class TestAfterTheCommit:
+    async def test_a_failure_after_the_commit_is_turn_outcome_unknown(self):
         """The turn committed; a database timeout while the response is gated
         for the viewer must not say "nothing was saved" (neither the 503 nor the
-        504 does): it is the 500 any later failure gets."""
+        504 does), nor invite a blind retry."""
         service = _stubbed_service(AsyncMock(return_value=MagicMock()))
         service.commit_turn = AsyncMock(return_value=MagicMock())
 
@@ -308,8 +403,53 @@ class TestAfterTheCommit:
             response = await _post_turn(service)
 
         service.commit_turn.assert_awaited_once()
-        assert response.status_code == 500
-        assert "saved" not in response.json()["detail"]
+        _assert_outcome_unknown(response)
+
+    async def test_a_failed_replay_of_the_turn_committed_under_its_key(self):
+        """Another request under the key committed it (the receipt's key
+        refused this one's commit); reading it back then fails."""
+        service = _stubbed_service(AsyncMock(return_value=MagicMock()))
+        service.commit_turn = AsyncMock(
+            side_effect=TurnReceiptExistsError(CASE_ID, "key-2813")
+        )
+
+        with patch.object(
+            conversation_module,
+            "replay_committed_turn",
+            AsyncMock(side_effect=RuntimeError("receipt read failed")),
+        ):
+            response = await _post_turn(service)
+
+        _assert_outcome_unknown(response)
+
+    async def test_a_deliberate_answer_after_the_commit_passes(self):
+        """``replay_committed_turn``'s own refusals are answers, not failures."""
+        service = _stubbed_service(AsyncMock(return_value=MagicMock()))
+        service.commit_turn = AsyncMock(
+            side_effect=TurnReceiptExistsError(CASE_ID, "key-2813")
+        )
+        refusal = HTTPException(
+            status_code=409, headers={"x-error-code": "IDEMPOTENCY_KEY_REUSE"}
+        )
+
+        with patch.object(
+            conversation_module,
+            "replay_committed_turn",
+            AsyncMock(side_effect=refusal),
+        ):
+            response = await _post_turn(service)
+
+        assert response.status_code == 409
+        assert response.headers["x-error-code"] == "IDEMPOTENCY_KEY_REUSE"
+
+
+def test_the_route_documents_the_outcome_unknown_500():
+    documented = conversation_module._TURN_RESPONSES[500]["description"]
+
+    assert "TURN_OUTCOME_UNKNOWN" in documented
+    assert "Idempotency-Key" in documented
+    assert "Any other `x-error-code` on a 500" in documented
+    assert "no `x-error-code`" in documented, "a 500 from outside the route"
 
 
 def test_the_route_documents_the_503():

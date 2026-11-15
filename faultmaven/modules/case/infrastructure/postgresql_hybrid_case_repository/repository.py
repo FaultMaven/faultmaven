@@ -26,6 +26,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.exceptions import CommitOutcomeUnknown
+from faultmaven.infrastructure.persistence.db_errors import sqlstate
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.deletion import CaseDeletion
 from faultmaven.modules.case.domain.models.driver import (
@@ -200,7 +202,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Raises:
             StaleCaseException: The case changed since it was read
-            RepositoryException: If save fails
+            RepositoryException: If save fails. Chained from
+                ``CommitOutcomeUnknown`` when the COMMIT itself raised and is
+                not known to have rolled back, so it may have landed (#2813).
         """
         self.check_turn_rows(case, reports, receipt)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
@@ -329,7 +333,15 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     await self._raise_if_receipt_exists(case, receipt, refused)
                     raise
 
-            await self.db.commit()
+            try:
+                await self.db.commit()
+            except Exception as failure:
+                if not _commit_rolled_back(failure):
+                    raise CommitOutcomeUnknown(
+                        f"The COMMIT of case {case.case_id} was not answered: "
+                        f"{failure!r}"
+                    ) from failure
+                raise
             case.mark_persisted()
             return case
 
@@ -1695,6 +1707,31 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # Agent Execution & Tool Call Persistence (PostgreSQL)
     # Schema reference: docs/architecture/data-and-storage/schemas/case-schema.md §4.11
     # ============================================================
+
+
+#: The SQLSTATE classes of an error that refuses the transaction itself, so a
+#: COMMIT answered with one rolled back: integrity (23, a deferred constraint),
+#: invalid transaction state (25) and transaction rollback (40, serialization
+#: failure and deadlock). An allow-list, because the other way round fails
+#: unsafe: a FATAL termination (57P01 admin_shutdown) can be sent after the
+#: commit record is durable, and asyncpg raises a connection exception (08003)
+#: on the client side.
+_ROLLED_BACK_CLASSES = ("23", "25", "40")
+
+#: ``query_canceled``: the statement was cancelled, which rolls back.
+_QUERY_CANCELED = "57014"
+
+
+def _commit_rolled_back(failure: BaseException) -> bool:
+    """Whether the failed COMMIT is known not to have landed (#2813).
+
+    Only a SQLSTATE that refuses the transaction says so. A timeout, a
+    client-side error and every other SQLSTATE leave the outcome unknown.
+    """
+    code = sqlstate(failure)
+    if code is None:
+        return False
+    return code == _QUERY_CANCELED or code.startswith(_ROLLED_BACK_CLASSES)
 
 
 class RepositoryException(Exception):

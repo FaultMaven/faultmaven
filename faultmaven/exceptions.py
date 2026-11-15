@@ -110,6 +110,25 @@ class DatabaseTimeout(TimeoutError):
     """
 
 
+class CommitOutcomeUnknown(Exception):
+    """A COMMIT raised, and whether it landed is unknown (#2813).
+
+    The driver's command timeout, a connection lost mid-COMMIT, a FATAL
+    termination: the server may have committed the transaction anyway. Only a
+    SQLSTATE that refuses the transaction (a serialization failure, a deferred
+    constraint) says it rolled back, and that is not this. Errs toward unknown:
+    a client-side error raised before the COMMIT reached the server is this
+    too. Raised by ``PostgreSQLHybridCaseRepository.save`` around its
+    ``db.commit()``; SQLite answers its COMMIT in-process, so its repository
+    has no such case.
+
+    Found by type on the ``__cause__`` chain, like ``DatabaseTimeout``, which a
+    COMMIT timeout is also wrapped in by ``get_db_session``. The turn route
+    answers it 500 ``TURN_OUTCOME_UNKNOWN``; ``InvestigationService
+    .commit_turn`` passes it through as itself.
+    """
+
+
 class UsageStoreUnavailable(Exception):
     """The LLM usage ledger's tables could not be read (#1764).
 

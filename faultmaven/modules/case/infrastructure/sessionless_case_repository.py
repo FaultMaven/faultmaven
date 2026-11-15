@@ -138,7 +138,7 @@ class SessionlessCaseRepository(CaseRepository):
            for keyed and unkeyed turns alike: lost-ack window 2.
         2. **Inside the commit.** A raise from the dialect repository's own
            ``db.commit()`` (PostgreSQL's connection lost mid-COMMIT) leaves
-           the outcome unknown. For a keyed turn the receipt answers it: it is
+           the outcome unknown (``CommitOutcomeUnknown`` on its chain, #2813). For a keyed turn the receipt answers it: it is
            read back in a FRESH session, and if it is there under this key AND
            this ``turn_number`` the turn committed, so this returns normally.
            The enterprise contextvar is task-local and the settlement copies

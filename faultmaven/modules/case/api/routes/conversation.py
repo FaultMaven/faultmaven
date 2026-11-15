@@ -58,6 +58,7 @@ from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
     CaseNotDriverError,
+    CommitOutcomeUnknown,
     DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
@@ -383,6 +384,34 @@ async def resume_case_in_session(
         )
 
 
+#: ``x-error-code`` of the turn route's 500 for a turn that may have committed
+#: (#2813): its COMMIT raised and is not known to have rolled back, or
+#: answering it failed after the commit. Every other code on a 500 the route
+#: answers means nothing of the turn committed; a 500 with no code was raised
+#: outside the route (``internal_server_error_handler``) and says nothing.
+TURN_OUTCOME_UNKNOWN = "TURN_OUTCOME_UNKNOWN"
+
+TURN_OUTCOME_UNKNOWN_DETAIL = (
+    "The turn may have been saved. Retry with the same Idempotency-Key to "
+    "learn whether it was; without a key, reload the case before sending it "
+    "again."
+)
+
+
+def _turn_outcome_unknown_http() -> HTTPException:
+    """The 500 for a ``CommitOutcomeUnknown`` (#2813).
+
+    No ``Retry-After``, as ``KB_INGEST_OUTCOME_UNKNOWN`` sends none: a timed
+    retry is what an unkeyed client must not make blindly. Not a 503, which on
+    this route says nothing was saved.
+    """
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=TURN_OUTCOME_UNKNOWN_DETAIL,
+        headers={"x-error-code": TURN_OUTCOME_UNKNOWN},
+    )
+
+
 #: The turn route's documented non-2xx answers that a client branches on by
 #: ``x-error-code`` (#1888). Declared so the contract describes what the route
 #: does: an undocumented response is invisible to every client generator and
@@ -457,7 +486,8 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "Unavailable; nothing of the turn committed, and a retry after "
             "`Retry-After` seconds is safe. Told apart by `x-error-code`: "
             f"`{DATABASE_UNAVAILABLE}` (the database did not answer while the "
-            "turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage "
+            "turn was being prepared or before its commit); "
+            "`TENANT_TURN_CAP_UNAVAILABLE` (the usage "
             "allowance could not be checked); `LLM_OVER_CAPACITY`, "
             "`LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI "
             "provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the "
@@ -472,6 +502,31 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "Retry-After": {
                 "description": "Seconds; sent with every 503 this route answers.",
                 "schema": {"type": "integer"},
+            },
+        },
+    },
+    500: {
+        "description": (
+            f"`{TURN_OUTCOME_UNKNOWN}`: the turn may have committed. Its commit "
+            "failed without the database saying it rolled back (it stopped "
+            "answering during it, or the connection was lost), or answering it "
+            "failed after the commit. Retry with the same `Idempotency-Key`: a "
+            "committed turn is answered from its receipt, one that did not "
+            "commit runs. Without a key, reload the case before sending the "
+            "turn again. No `Retry-After` is sent. Any other `x-error-code` on "
+            "a 500 means nothing of the turn committed. A 500 with no "
+            "`x-error-code` failed outside the route (after it answered, or "
+            "before it ran) and says nothing about the turn: treat it as "
+            f"`{TURN_OUTCOME_UNKNOWN}`."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": (
+                    f"`{TURN_OUTCOME_UNKNOWN}` when the turn may have "
+                    "committed; any other code means nothing committed; "
+                    "absent, the 500 says nothing about the turn."
+                ),
+                "schema": {"type": "string"},
             },
         },
     },
@@ -606,8 +661,12 @@ async def submit_turn(
       bound, not when it finishes.
 
     A response lost after the commit (a disconnect, a timeout on the client's
-    side) is recovered by retrying with the same key. Without a key, every
-    request runs as a new turn.
+    side) is recovered by retrying with the same key, and so is a **500**
+    `x-error-code: TURN_OUTCOME_UNKNOWN`: the turn may have committed (its
+    commit failed without the database saying it rolled back, or answering it
+    failed). A 500 with any other code means nothing of the turn committed; one
+    with no code failed outside the route and says nothing, so treat it as
+    `TURN_OUTCOME_UNKNOWN`. Without a key, every request runs as a new turn.
 
     **A case being deleted.** A turn holds the case's in-flight lease from
     here to its end, so a delete of the case refuses while it runs; one that
@@ -913,13 +972,14 @@ async def submit_turn(
             # does not, with nothing committed; once started, the commit runs
             # to its end. So a 2xx means the whole turn committed and a non-2xx
             # means none of it did, with one exception the owner accepted
-            # (#2280, 2026-10-25): a database that stops answering during the
-            # commit itself. The commit is bounded by the database's command
-            # timeout like any statement, so the route answers 500 and the
-            # commit may have landed. A keyed retry is answered from the turn
-            # receipt; an unkeyed retry may save the turn twice. A live but
-            # slow server is not this case: its statement_timeout cancels the
-            # statement first, and nothing commits.
+            # (#2280, 2026-10-25): a COMMIT that goes unanswered (the database
+            # stops answering during it, bounded by its command timeout, or
+            # the connection is lost), and with it any failure after the
+            # commit. Both are answered 500 ``TURN_OUTCOME_UNKNOWN`` (#2813):
+            # a keyed retry is answered from the turn receipt; an unkeyed
+            # retry may save the turn twice. A live but slow server is not
+            # this case: its statement_timeout cancels the statement first,
+            # and nothing commits.
             with bind_turn_deadline(agent_timeout):
                 try:
                     prepared = await asyncio.wait_for(
@@ -940,6 +1000,7 @@ async def submit_turn(
                         "Turn on case %s not prepared: %s", case_id, unavailable
                     )
                     raise database_unavailable_http_exception() from unavailable
+                committed_elsewhere = False
                 try:
                     response = await investigation_service.commit_turn(
                         prepared,
@@ -948,8 +1009,25 @@ async def submit_turn(
                 except TurnReceiptExistsError:
                     # Another request under this key committed while this one
                     # ran without a claim (``turn_idempotency``'s degraded
-                    # mode); nothing of this one committed. Answer with the
-                    # committed turn, as its retry would be.
+                    # mode); nothing of this one committed. Answered below with
+                    # the committed turn, as its retry would be.
+                    committed_elsewhere = True
+                except DatabaseTimeout as unavailable:
+                    # A statement BEFORE the COMMIT went unanswered (an
+                    # unanswered COMMIT is ``CommitOutcomeUnknown``), so nothing
+                    # committed: the preparation's 503 (#2813).
+                    logger.error(
+                        "Turn on case %s not committed: %s", case_id, unavailable
+                    )
+                    raise database_unavailable_http_exception() from unavailable
+
+            # The turn is committed, this request's or another's under its key,
+            # so a failure from here on may not be answered as one that saved
+            # nothing (#2813). An HTTPException is a deliberate answer
+            # (``replay_committed_turn``'s 409/503) and passes; anything else is
+            # the unanswered COMMIT's 500.
+            try:
+                if committed_elsewhere:
                     replay = await replay_committed_turn(
                         keyed=keyed,
                         case=case,
@@ -959,33 +1037,42 @@ async def submit_turn(
                         http_response.headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
                     return await _turn_gated_for_viewer(request, current_user, replay)
 
-            # Name the case from its own content. Called unconditionally: whether
-            # the case is *titleable* is decided inside, against the case as it
-            # stands after this turn, by the same gate the title endpoint uses.
-            #
-            # Awaited BEFORE returning rather than deferred to a background task,
-            # which orders it ahead of the next turn's load and so keeps that
-            # turn's full-row save from writing the placeholder back over the
-            # generated title. It costs the turn ~1ms on the extractive path and
-            # up to AUTO_TITLE_TIMEOUT_SECONDS in the worst case, once per case.
-            # See _auto_title_case_if_default — the placement is load-bearing.
-            await _auto_title_case_if_default(
-                case_id=case_id,
-                user_id=current_user.user_id,
-                case_service=case_service,
-                llm_provider=getattr(request.app.state, "llm_provider", None),
-                sanitizer=getattr(request.app.state, "sanitizer", None),
-                redis_client=getattr(request.app.state, "redis_client", None),
-            )
+                # Name the case from its own content. Called unconditionally:
+                # whether the case is *titleable* is decided inside, against
+                # the case as it stands after this turn, by the same gate the
+                # title endpoint uses.
+                #
+                # Awaited BEFORE returning rather than deferred to a background
+                # task, which orders it ahead of the next turn's load and so
+                # keeps that turn's full-row save from writing the placeholder
+                # back over the generated title. It costs the turn ~1ms on the
+                # extractive path and up to AUTO_TITLE_TIMEOUT_SECONDS in the
+                # worst case, once per case. See _auto_title_case_if_default —
+                # the placement is load-bearing.
+                await _auto_title_case_if_default(
+                    case_id=case_id,
+                    user_id=current_user.user_id,
+                    case_service=case_service,
+                    llm_provider=getattr(request.app.state, "llm_provider", None),
+                    sanitizer=getattr(request.app.state, "sanitizer", None),
+                    redis_client=getattr(request.app.state, "redis_client", None),
+                )
 
-            return await _turn_gated_for_viewer(request, current_user, response)
+                return await _turn_gated_for_viewer(request, current_user, response)
+            except HTTPException:
+                raise
+            except Exception as failure:
+                # A ``RawModelContentRefused`` is not let through here: its
+                # 500 ``SERVICE_ERROR`` says nothing was saved, false after the
+                # commit. The one send on this path, the auto-title, answers
+                # its own refusal for that reason (#1998).
+                logger.error(
+                    "Turn on case %s committed; answering it failed: %r",
+                    case_id,
+                    failure,
+                )
+                raise _turn_outcome_unknown_http() from failure
 
-        except DatabaseTimeout:
-            # After the preparation (whose own is answered 503 above): reading a
-            # replayed turn, or gating the committed response for the viewer.
-            # The turn may have committed, so neither "nothing was saved"
-            # answer may be given; it is the 500 of any later failure.
-            raise
         except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
             # Both mean the same thing to the client, and are answered the
             # same way: the turn ran out of time and NOTHING of it was
@@ -1093,6 +1180,9 @@ async def submit_turn(
         )
     except HTTPException:
         raise
+    except CommitOutcomeUnknown as unknown:
+        logger.error("Turn on case %s: outcome unknown: %s", case_id, unknown)
+        raise _turn_outcome_unknown_http() from unknown
     except ServiceException as e:
         logger.error(
             f"Turn processing failed: {e}",
