@@ -522,7 +522,9 @@ def test_each_section_of_an_identified_case():
     assert resolution.pending_check_need_id is None
     assert resolution.declined_stands is False
     assert resolution.confirmed_row_ids == [] and resolution.statement == ""
-    assert record.unbound_rechecks == [] and record.bindable is None
+    assert record.unbound_rechecks == []
+    # Always set from shape 2, unbound re-checks or none (#2811).
+    assert record.bindable.problem_row_ids == [VERIFYING_ID]
     assert record.mitigation is None
     assert record.folded_under == CaseState.INVESTIGATING
     assert record.disagreements == {}

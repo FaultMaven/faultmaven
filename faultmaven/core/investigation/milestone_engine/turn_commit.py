@@ -23,6 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
+from faultmaven.core.investigation.outcome import record_before_save
 from faultmaven.modules.case.contracts import (
     Case,
     CaseReport,
@@ -103,6 +104,8 @@ async def commit_turn_plan(
     sees is one the commit really raised.
     """
     try:
+        # The record of the case as saved, after the save's lapse (#2811).
+        record_before_save(case, at="commit")
         saved = await repository.save(
             case, reports=tuple(plan.reports), receipt=plan.receipt
         )

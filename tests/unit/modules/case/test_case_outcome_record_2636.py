@@ -45,6 +45,7 @@ from faultmaven.modules.case.contracts import (
     PoolEmptyReason,
     ProblemOutcome,
     ProblemStatus,
+    RecheckReason,
     ResolutionOutcome,
     ResolutionReason,
     ResolutionVerdict,
@@ -101,6 +102,17 @@ PINNED: dict = {
         "no_bound_relief",
     ],
     ClosureEligibility: ["has_substance", "trivial", "suggest_resolve"],
+    RecheckReason: [
+        "counts",
+        "held_open",
+        "disconfirmation",
+        "predates_positing",
+        "predates_failed_fix",
+        "no_confirming_window",
+        "outside_window",
+        "uncited",
+        "other_cause",
+    ],
     # Defined elsewhere, and stored in the record too.
     ProblemStatus: ["unverified", "verified", "revision_pending", "invalidated"],
     ClosureReason: [

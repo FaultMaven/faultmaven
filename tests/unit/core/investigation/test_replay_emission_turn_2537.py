@@ -13,7 +13,6 @@ No live LLM.
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
-    cause_recheck_status,
     fix_windows,
 )
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
@@ -36,6 +35,7 @@ from tests.unit.core.investigation import (
     test_problem_statement_revision_and_false_alarm as revision,
 )
 from tests.unit.core.investigation.bound_rows import upload
+from tests.unit.core.investigation.narrated import recheck_texts
 
 pytestmark = pytest.mark.unit
 
@@ -122,7 +122,7 @@ async def test_a_replayed_cause_is_posited_in_its_own_turn(data_turn, why):
         _obs(_CAUSE_GONE, "the orders pool reads 50 connections", support, file_id),
     )
 
-    ((row, reason),) = cause_recheck_status(case)
+    ((row, reason),) = recheck_texts(case)
     assert row.category == _CAUSE_GONE
     assert reason == why
 

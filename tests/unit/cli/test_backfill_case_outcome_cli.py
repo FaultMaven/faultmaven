@@ -425,3 +425,64 @@ async def test_2555_the_backfill_marks_nothing_and_the_next_turn_tells_once(
 
     assert len(_turn()) == 1
     assert _turn() == [], "told once"
+
+
+# ---------------------------------------------------------------------------
+# #2811: a record of an older shape is rewritten; a re-shape mints nothing
+# ---------------------------------------------------------------------------
+
+
+async def test_2811_an_old_shape_record_is_rewritten_and_a_current_one_left(
+    repository, capsys
+):
+    from faultmaven.modules.case.contracts import CURRENT_OUTCOME_SHAPE
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
+        _eid,
+        _fix,
+        _recompute_at,
+        _relapse,
+        _window,
+    )
+    from tests.unit.core.investigation.test_current_record_2811 import _old_shape
+
+    old, _root, _hyp = _identified_case()
+    fix = _fix(old)
+    _relapse(old, rechecks=_eid("pool_log"))
+    _recompute_at(old, 9)
+    old.progress.outcome = _old_shape(compute_case_outcome(None, old))
+    current = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
+    record_case_outcome(current, at="cycle")
+    for case in (old, current):
+        await repository.save(case)
+    current_version = (await repository.get(current.case_id)).version
+
+    assert await _run(repository) == 0
+    assert "Have one:     1 (left alone)" in capsys.readouterr().out
+    rewritten = (await repository.get(old.case_id)).progress.outcome
+    assert rewritten.shape == CURRENT_OUTCOME_SHAPE
+    window = _window(rewritten, fix.action_id)
+    assert window.observed is True
+    assert window.final_at.at == "shape", "carried as final, not minted anew"
+    assert window.problem_row_ids == [_eid("relief")]
+    assert (await repository.get(current.case_id)).version == current_version
+    assert await _run(repository) == 0, "idempotent"
+
+
+async def test_2811_a_first_record_mints_its_finals(repository):
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
+        _eid,
+        _fix,
+        _recompute_at,
+        _relapse,
+        _window,
+    )
+
+    case, _root, _hyp = _identified_case()
+    fix = _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    _recompute_at(case, 9)
+    await repository.save(case)
+
+    assert await _run(repository) == 0
+    record = (await repository.get(case.case_id)).progress.outcome
+    assert _window(record, fix.action_id).final_at.at == "backfill"

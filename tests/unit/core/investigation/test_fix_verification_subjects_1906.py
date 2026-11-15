@@ -19,7 +19,6 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_UNBOUND,
     _cause_pool,
     cause_elimination_rows,
-    cause_recheck_status,
     confirm_root_from_resolution_absence,
     confirming_polarity_rows,
     fix_windows,
@@ -74,6 +73,7 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, upload
 from tests.unit.core.investigation.fix_turns_2039 import _TSU, _engine_rows
+from tests.unit.core.investigation.narrated import recheck_texts
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _ROOT_ID,
     _accept,
@@ -1206,7 +1206,7 @@ async def test_f2_a_fallen_cause_is_not_confirmed_past_a_newer_candidate(
     assert assess_resolution_readiness(case).verdict != ResolutionReadiness.READY
     assert a_recheck in fix_windows(case)[-1].cause_rows
     assert "Post-fix row(s)" not in "\n".join(meta.get("system_notices") or [])
-    assert [w for e, w in cause_recheck_status(case) if e is a_recheck] == [why]
+    assert [w for e, w in recheck_texts(case) if e is a_recheck] == [why]
 
 
 async def test_f2_the_fallen_causes_own_hypothesis_is_not_another_candidate():

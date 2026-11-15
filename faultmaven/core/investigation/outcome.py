@@ -29,17 +29,24 @@ record disagree; stage S3 switches them.
 
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), after
-each bundle of a statement-revision replay, and at both terminal transitions.
-The narration step reads the cycle's record (#2636 B1b): the withdrawal and
-the mitigation notices state its verdicts. ``closure_outcome`` computes the closure
-section on demand at the four closure entries, and the two that close hand it
-to ``_execute_closed_transition``, whose record persists it.
+each bundle of a statement-revision replay, at both terminal transitions, and
+at the two save helpers (#2811): a turn's commit (``commit_turn_plan``) and
+the case service's write (``update_case_with_retry``), each after the save's
+offer lapse (``record_before_save``), so every saved case carries a record
+of the case as saved. A final verdict (``FinalAt``: a FAILED window, an
+``accepted_in_turn``, the stamp's rows) is minted only at a cycle, a replay,
+a resolve, a close (``MINTING_POINTS``) or a first record; any other fold
+refreshes the rest and carries the finals already recorded. The narration
+step reads the cycle's record (#2636 B1b); mid-cycle narration reads one
+computed in memory (``narration_outcome``). ``closure_outcome`` computes the
+closure section on demand at the four closure entries, and the two that
+close hand it to ``_execute_closed_transition``, whose record persists it.
 
-Every stored case gets its first record from ``fm-backfill-case-outcome``
-(``faultmaven/cli/backfill_case_outcome.py``), computed once from the case as
-stored, and recomputes a terminal case's record that no terminal write
-folded (``CaseOutcome.folded_under``). No reader computes a record on
-``None``: there is no legacy read path.
+``fm-backfill-case-outcome`` (``faultmaven/cli/backfill_case_outcome.py``)
+gives every stored case without a record its first, recomputes a terminal
+case's record that no terminal write folded (``CaseOutcome.folded_under``),
+and rewrites a record of an older shape (``CURRENT_OUTCOME_SHAPE``). No reader
+computes a record on ``None``: there is no legacy read path.
 """
 
 from __future__ import annotations
@@ -50,13 +57,17 @@ from typing import TYPE_CHECKING, Optional
 from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
+    FIX_INTERCEPTION,
     SUBJECT_PROBLEM,
+    _cause_posited_turn,
     _is_remediation,
     _pool_legs,
-    cause_elimination_rows,
     cause_pool_empty_reason,
+    cause_recheck_status,
     confirmation_stamp_rows,
     fix_windows,
+    interception_relief,
+    latest_disconfirmation_turn,
     mitigation_observation,
     mitigation_refusal_reason,
     mitigation_settled,
@@ -70,6 +81,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_conflicts_total,
     case_outcome_write_failures_total,
 )
+from faultmaven.core.investigation.offers import lapse_offers
 from faultmaven.core.investigation.problem_status import current_statement
 from faultmaven.core.investigation.terminal_transitions import (
     _mitigation_declared_stable,
@@ -83,6 +95,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     shown_milestones,
 )
 from faultmaven.modules.case.contracts import (
+    CURRENT_OUTCOME_SHAPE,
     AttemptOutcome,
     BindableRows,
     CaseOutcome,
@@ -93,11 +106,14 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     DisconfirmationPair,
     EvidenceCategory,
+    FinalAt,
     FixWindowRecord,
     FixWindowState,
     InvestigationActionType,
     MitigationOutcome,
+    NeedPurpose,
     ProblemOutcome,
+    RecheckReason,
     ResolutionOutcome,
     ResolutionVerdict,
     UnboundRecheck,
@@ -108,6 +124,10 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 logger = logging.getLogger(__name__)
+
+#: The write points that may mint a final verdict (#2811, ruled 2026-11-15),
+#: and the backfill's terminal repair, which stands in for a terminal write.
+MINTING_POINTS = frozenset({"cycle", "replay", "resolved", "closed", "repair"})
 
 
 def _closure_of(case: "Case", reason: Optional[ClosureReason]) -> ClosureOutcome:
@@ -136,19 +156,22 @@ def record_case_outcome(
     """Fold the case's outcome over ``progress.outcome`` and store it there.
 
     ``at`` names the write point: ``cycle``, ``replay``, ``resolved`` or
-    ``closed``. ``closure``: at a terminal transition, the closure its entry
-    computed (``closure_outcome``); with none (a resolve, or a close offer
-    accepted on its stored reason), the one the case now stands on.
+    ``closed``, which mint finals (``MINTING_POINTS``), or a save helper's
+    ``commit``, ``write`` or ``metadata``, which carry them. ``closure``: at a
+    terminal transition, the closure its entry computed
+    (``closure_outcome``); with none (a resolve, or a close offer accepted on
+    its stored reason), the one the case now stands on. Any other fold of a
+    terminal case carries the closure a terminal write folded.
     A write that raises fails neither the turn nor the transition: it is
     logged with its traceback and counted on
     ``case_outcome_write_failures_total{at}``, and returns False, so the
     narration step renders from no record this write did not store (#2636).
     Returns whether the record was written."""
     try:
-        if case.is_terminal and closure is None:
+        if case.is_terminal and closure is None and at in ("resolved", "closed"):
             closure = _closure_of(case, case.closure_reason)
         case.progress.outcome = compute_case_outcome(
-            case.progress.outcome, case, closure=closure
+            case.progress.outcome, case, at=at, closure=closure
         )
         return True
     except Exception:  # noqa: BLE001 — the record is written in shadow (S1)
@@ -159,6 +182,23 @@ def record_case_outcome(
         )
         case_outcome_write_failures_total.labels(at=at).inc()
         return False
+
+
+def record_before_save(case: "Case", *, at: str) -> None:
+    """A save helper's steps before its save (#2811): the turn-sequence
+    repair and the offer lapse the save would run (both idempotent, so the
+    save's second run is a no-op), then the record, folded over the case as
+    it will be stored."""
+    case.reconcile_turn_sequence()
+    case.offer_record = lapse_offers(case)
+    record_case_outcome(case, at=at)
+
+
+def narration_outcome(case: "Case") -> CaseOutcome:
+    """The record for the moment narrated, folded in memory over the stored
+    one and stored nowhere; it mints no final verdict (#2811). Computed once
+    per narration pass, at its entry."""
+    return compute_case_outcome(case.progress.outcome, case, at="narration")
 
 
 class _Disagreements:
@@ -234,30 +274,42 @@ def compute_case_outcome(
     prior: Optional[CaseOutcome],
     case: "Case",
     *,
+    at: str = "cycle",
     closure: Optional[ClosureOutcome] = None,
 ) -> CaseOutcome:
     """The case's outcome, folded over ``prior`` (None: computed once from
-    the case as it stands). ``closure``: the closure a terminal transition
-    persists (``record_case_outcome``). Counts nothing: its disagreements are
-    counted once a saved record carries them (#2689)."""
+    the case as it stands). ``at``: the write point; a final verdict is
+    minted only at one of ``MINTING_POINTS`` or on a first record (no
+    ``prior``). ``closure``: the closure a terminal transition persists
+    (``record_case_outcome``). Counts nothing: its disagreements are counted
+    once a saved record carries them (#2689)."""
+    mint = None
+    if prior is None or at in MINTING_POINTS:
+        mint = FinalAt(at=at, turn=case.current_turn)
+    upgrade = prior is not None and prior.shape < CURRENT_OUTCOME_SHAPE
+    if upgrade:
+        prior = _upgraded(prior, case)
     subjects = subject_index(case)
     windows = fix_windows(case, subjects)
+    status = cause_recheck_status(case, subjects=subjects, windows=windows)
     statement = current_statement(case)
     seen = _Disagreements(case, prior)
     unbound = _unbound_rechecks(prior, case, subjects, windows)
+    fold = _Fold(prior, case, subjects, windows, statement, seen, mint, upgrade)
     return CaseOutcome(
+        shape=CURRENT_OUTCOME_SHAPE,
         folded_under=case.state,
         problem=ProblemOutcome(
             status=case.progress.problem_status,
             verifying_row_ids=list(subjects.verifying),
             statement=statement,
         ),
-        cause=_cause(case, subjects),
-        attempts=_attempts(prior, case, subjects, windows, statement, seen),
+        cause=_cause(case, subjects, status),
+        attempts=_attempts(fold),
         demotions=list(prior.demotions) if prior is not None else [],
-        resolution=_resolution(prior, case, subjects, windows, seen),
+        resolution=_resolution(fold, status),
         unbound_rechecks=unbound,
-        bindable=_bindable(subjects) if unbound else None,
+        bindable=_bindable(subjects),
         mitigation=_mitigation(case, subjects),
         milestones_shown=shown_milestones(case),
         closure=_closure(prior, case, closure, seen),
@@ -265,7 +317,36 @@ def compute_case_outcome(
     )
 
 
-def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
+def _upgraded(prior: CaseOutcome, case: "Case") -> CaseOutcome:
+    """A record of an older shape, with what it held final marked so
+    (``FinalAt`` ``shape``): every ``accepted_in_turn``, and every FAILED
+    window, which was observed to fail."""
+    mark = FinalAt(at="shape", turn=case.current_turn)
+    attempts = []
+    for attempt in prior.attempts:
+        update: dict = {}
+        if attempt.accepted_in_turn is not None and attempt.final_at is None:
+            update["final_at"] = mark
+        window = attempt.window
+        if window is not None and window.state == FixWindowState.FAILED:
+            update["window"] = window.model_copy(
+                update={"final_at": window.final_at or mark, "observed": True}
+            )
+        attempts.append(attempt.model_copy(update=update) if update else attempt)
+    return prior.model_copy(update={"attempts": attempts})
+
+
+class _Fold:
+    """What one computation folds the attempts and the resolution with."""
+
+    def __init__(self, prior, case, subjects, windows, statement, seen, mint, upgrade):
+        self.prior, self.case, self.subjects = prior, case, subjects
+        self.windows, self.statement, self.seen = windows, statement, seen
+        self.mint: Optional[FinalAt] = mint
+        self.upgrade: bool = upgrade
+
+
+def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome:
     identified, held, fallen = _pool_legs(case)
     return CauseOutcome(
         identified_root_ids=sorted(identified),
@@ -293,12 +374,17 @@ def _cause(case: "Case", subjects: "SubjectIndex") -> CauseOutcome:
         pool_empty_reason=cause_pool_empty_reason(case),
         identification_leg=cause_identification_leg(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),
+        recheck={
+            e.evidence_id: why.reason if why is not None else RecheckReason.COUNTS
+            for e, why in status
+        },
+        posited_turn=_cause_posited_turn(case),
+        latest_disconfirmation_turn=latest_disconfirmation_turn(case),
     )
 
 
-def _window_record(
-    window: "FixWindow", subjects: "SubjectIndex", statement: str
-) -> FixWindowRecord:
+def _window_record(window: "FixWindow", fold: _Fold) -> FixWindowRecord:
+    subjects = fold.subjects
     named = {getattr(e, "rechecks_evidence_id", None) for e in window.cause_rows}
     pair = None
     if window.disconfirmation is not None:
@@ -332,43 +418,48 @@ def _window_record(
         relief_turn=window.relief_turn,
         failure_turn=window.failure_turn,
         off_cause=window.off_cause,
+        observed=window.observed,
         cause_row_ids=[e.evidence_id for e in window.cause_rows],
         confirmed_cause_row_ids=[e.evidence_id for e in window.confirmed_cause_rows],
+        problem_row_ids=[
+            e.evidence_id
+            for e in subjects.rows.values()
+            if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+            and subjects.subject(e) == SUBJECT_PROBLEM
+            and window.holds(subjects.observed(e))
+        ],
         cited_basis={
             node_id: sorted(rows & named)
             for node_id, rows in subjects.citations.items()
             if rows & named
         },
         disconfirmation=pair,
-        read_under=statement,
+        read_under=fold.statement,
+        final_at=fold.mint if window.state == FIX_FAILED else None,
     )
 
 
-def _attempts(
-    prior: Optional[CaseOutcome],
-    case: "Case",
-    subjects: "SubjectIndex",
-    windows: list,
-    statement: str,
-    seen: _Disagreements,
-) -> list[AttemptOutcome]:
+def _attempts(fold: _Fold) -> list[AttemptOutcome]:
     """Every accepted SOLUTION, keyed by its ``action_id``, with the window
-    it opened; window 0, the fix done outside the case, as ``action_id``
-    None once observed. Folded over ``prior``: a FAILED window and an
-    ``accepted_in_turn`` are carried, and a carried FAILED window whose
-    attempt no longer reads at all is kept."""
+    it opened, or, for an interception, what the problem did after it;
+    window 0, the fix done outside the case, as ``action_id`` None once
+    observed. Folded over the prior: a FAILED window and an
+    ``accepted_in_turn`` are carried once final (``final_at``), and a final
+    FAILED window whose attempt no longer reads at all is kept."""
+    case, windows, mint = fold.case, fold.windows, fold.mint
     by_turn = {w.fix_turn: w for w in windows[1:]}
     fresh = []
     if windows[0].observed:
-        fresh.append(
-            AttemptOutcome(window=_window_record(windows[0], subjects, statement))
-        )
+        fresh.append(AttemptOutcome(window=_window_record(windows[0], fold)))
     for action in getattr(case, "proposed_actions", None) or []:
         kind = getattr(action.action_type, "value", action.action_type)
         if action.state != "accepted" or kind != InvestigationActionType.SOLUTION:
             continue
         turn = action.accepted_in_turn
         window = by_turn.get(turn) if turn is not None else None
+        relief = present = None
+        if turn is not None and action.fix_kind == FIX_INTERCEPTION:
+            relief, present = interception_relief(case, turn, fold.subjects)
         fresh.append(
             AttemptOutcome(
                 action_id=action.action_id,
@@ -377,12 +468,16 @@ def _attempts(
                 accepted_in_turn=turn,
                 registered_in_turn=action.registered_in_turn,
                 window=(
-                    _window_record(window, subjects, statement)
+                    _window_record(window, fold)
                     if window is not None and _is_remediation(action)
                     else None
                 ),
+                relief_turn=relief,
+                present_turn=present,
+                final_at=mint if turn is not None else None,
             )
         )
+    prior = fold.prior
     carried = {a.action_id: a for a in (prior.attempts if prior is not None else [])}
     out = []
     for attempt in fresh:
@@ -390,40 +485,43 @@ def _attempts(
         if old is None:
             out.append(attempt)
             continue
-        update = {}
-        if (
-            old.accepted_in_turn is not None
-            and attempt.accepted_in_turn != old.accepted_in_turn
-        ):
-            seen.add(
-                "attempts.accepted_in_turn",
-                attempt.action_id,
-                old.accepted_in_turn,
-                attempt.accepted_in_turn,
-            )
-            update["accepted_in_turn"] = old.accepted_in_turn
-        if old.window is not None and old.window.state == FixWindowState.FAILED:
-            if attempt.window is None or attempt.window.state != FIX_FAILED:
-                fresh_state = attempt.window.state if attempt.window else None
-                seen.add("attempts.window", attempt.action_id, FIX_FAILED, fresh_state)
+        update: dict = {}
+        if old.final_at is not None:
+            update["final_at"] = old.final_at
+            if attempt.accepted_in_turn != old.accepted_in_turn:
+                fold.seen.add(
+                    "attempts.accepted_in_turn",
+                    attempt.action_id,
+                    old.accepted_in_turn,
+                    attempt.accepted_in_turn,
+                )
+                update["accepted_in_turn"] = old.accepted_in_turn
+        if old.window is not None and old.window.final_at is not None:
+            new = attempt.window
+            if new is None or new.state != FIX_FAILED:
+                fresh_state = new.state if new else None
+                fold.seen.add(
+                    "attempts.window", attempt.action_id, FIX_FAILED, fresh_state
+                )
             update["window"] = old.window
+            if fold.upgrade and new is not None and new.fix_turn == old.window.fix_turn:
+                # The fields an older shape lacked, from the same window read
+                # fresh (#2811).
+                update["window"] = old.window.model_copy(
+                    update={"problem_row_ids": new.problem_row_ids}
+                )
         out.append(attempt.model_copy(update=update) if update else attempt)
     for old in carried.values():
-        if old.window is not None and old.window.state == FixWindowState.FAILED:
-            seen.add("attempts.window", old.action_id, FIX_FAILED, None)
+        if old.window is not None and old.window.final_at is not None:
+            fold.seen.add("attempts.window", old.action_id, FIX_FAILED, None)
             out.append(old)
     return out
 
 
-def _resolution(
-    prior: Optional[CaseOutcome],
-    case: "Case",
-    subjects: "SubjectIndex",
-    windows: list,
-    seen: _Disagreements,
-) -> ResolutionOutcome:
+def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
+    case, subjects, windows, prior = fold.case, fold.subjects, fold.windows, fold.prior
     readiness = assess_resolution_readiness(case)
-    cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
+    cause_rows = [e for e, why in status if why is None]
     problem_rows = symptom_elimination_rows(
         case, cause_rows, subjects=subjects, windows=windows
     )
@@ -438,8 +536,10 @@ def _resolution(
         carried = prior.resolution.confirmed_row_ids if prior is not None else []
         if carried:
             if carried != confirmed:
-                seen.add("resolution.confirmed_row_ids", None, carried, confirmed)
+                fold.seen.add("resolution.confirmed_row_ids", None, carried, confirmed)
             confirmed = list(carried)
+        elif fold.mint is None:
+            confirmed = []  # minted only where finals are (#2811)
     check = readiness.pending_check
     return ResolutionOutcome(
         verdict=ResolutionVerdict(readiness.verdict),
@@ -452,6 +552,13 @@ def _resolution(
         declined_stands=declined_resolve_entry(case) is not None,
         confirmed_row_ids=confirmed,
         statement=resolution_record_lines(case),
+        # The ids whose text a narrator states (``narration.content``).
+        solution_id=case.solutions[-1].solution_id if case.solutions else None,
+        open_need_ids=[
+            n.need_id
+            for n in case.evidence_needs
+            if n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION
+        ],
     )
 
 

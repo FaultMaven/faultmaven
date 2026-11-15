@@ -167,7 +167,15 @@ DERIVATIONS: dict[str, str] = {
     "closure_outcome": _OUTCOME,
     # Its callers are the record's write points.
     "record_case_outcome": _OUTCOME,
+    # #2811: the two save helpers' write, and the record narration reads.
+    "record_before_save": _OUTCOME,
+    "narration_outcome": _OUTCOME,
 }
+
+#: The narrators' one accessor of a case besides its record (#2811, ruled
+#: 2026-11-15): the text an id names, no predicate. Pin 2 (S2b) allows it;
+#: in S2a no product module calls it (its caller is the parity test).
+ACCESSORS: dict[str, str] = {"content": _INV + "narration/content.py"}
 
 #: Each outcome field read raw, by the module and class that define it.
 FIELDS: dict[str, tuple[str, str]] = {
@@ -317,7 +325,16 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
     # The outcome computed in memory for the narration alone when the cycle's
     # record write failed, never stored and counting nothing (#2636 B1b).
-    (_ME + "turn_narration.py", "_outcome"): {"compute_case_outcome": 1},
+    (_ME + "turn_narration.py", "_outcome"): {"narration_outcome": 1},
+    # The two save helpers (#2811): a turn's commit and the case service's
+    # write fold the record after the save's lapse; the metadata write, whose
+    # description is the statement in force outside an investigation, folds
+    # it beside its scoped update.
+    (_ME + "turn_commit.py", "commit_turn_plan"): {"record_before_save": 1},
+    (_CASE + "utils/retry.py", "update_case_with_retry"): {"record_before_save": 1},
+    (_CASE + "domain/services/case_service.py", "CaseService._refold_outcome.refold"): {
+        "record_case_outcome": 1
+    },
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
         "assess_closure_readiness": 1,
@@ -350,7 +367,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
-    (_OUTCOME, "compute_case_outcome"): {"fix_windows": 1, "shown_milestones": 1},
+    (_OUTCOME, "compute_case_outcome"): {
+        "cause_recheck_status": 1,
+        "fix_windows": 1,
+        "shown_milestones": 1,
+    },
+    (_OUTCOME, "narration_outcome"): {"compute_case_outcome": 1},
+    (_OUTCOME, "record_before_save"): {"record_case_outcome": 1},
     (_OUTCOME, "record_case_outcome"): {"compute_case_outcome": 1},
     # The backfill: once per stored case without a record, from the case.
     ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome._apply"): {
@@ -526,6 +549,12 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         {"open_disposition_offer": 2},
         "opens the resolve offer on a ready recheck (basis model), or the close "
         "offer on an unmet request (basis needs_info_unmet)",
+    ),
+    (_OUTCOME, "record_before_save"): (
+        {"lapse_offers": 1},
+        "lapses, at a save helper before its record is folded (#2811), what "
+        "the save's own lapse would: an open resolve or close offer whose "
+        "premise has gone, and each decline whose premise moved",
     ),
     (_ME + "turn_application.py", "_lapse_and_record"): (
         {"lapse_offers": 1},
@@ -983,6 +1012,18 @@ def test_each_watched_function_is_defined_where_the_census_says(name):
     """A rename would otherwise leave the census watching a name nothing has."""
     path = {**DERIVATIONS, **ENTRIES}[name]
     assert name in _module_functions(path), f"{name} is not defined in {path}"
+
+
+def test_the_content_accessor_is_defined_and_called_by_no_product_module():
+    ((name, path),) = ACCESSORS.items()
+    assert name in _module_functions(path)
+    module = path.removesuffix(".py").replace("/", ".")
+    callers = [
+        rel.relative_to(_ROOT).as_posix()
+        for rel in sorted(_PACKAGE.rglob("*.py"))
+        if module in rel.read_text(encoding="utf-8")
+    ]
+    assert callers == [], f"S2b's narrators call it; S2a's none do: {callers}"
 
 
 @pytest.mark.parametrize("name", sorted(FIELDS))

@@ -42,6 +42,7 @@ async def update_case_with_retry(
     max_attempts: int = 3,
     *,
     save: CaseSave | None = None,
+    counted: list[str] | None = None,
 ) -> Case:
     """Load the case, apply ``mutator``, save — retry on version conflict.
 
@@ -61,6 +62,10 @@ async def update_case_with_retry(
         save: The versioned write to use instead of ``repo.save``, such as
             ``repo.save_progress`` (#2636). It must raise
             ``StaleCaseException`` on a version conflict, as ``save`` does.
+            With none, the full save: the offers are lapsed and the case
+            outcome record folded first (``record_before_save``, #2811).
+        counted: Extended with the disagreements the saved record first
+            carries, each counted once after the save (#2689).
 
     Returns:
         The saved ``Case`` (the same instance the mutator operated on,
@@ -74,19 +79,34 @@ async def update_case_with_retry(
             low-contention paths where a few retries are cheap) or
             surface the exception upward.
     """
+    from faultmaven.core.investigation.outcome import (
+        disagreement_keys,
+        record_before_save,
+        report_saved_disagreements,
+    )
+
     last_stale: StaleCaseException | None = None
     write = repo.save if save is None else save
     for attempt in range(max_attempts):
         case = await repo.get(case_id)
         if case is None:
             raise CaseNotFoundError(case_id=case_id)
+        # Per attempt: the record this attempt's write folds over (#2689).
+        loaded = disagreement_keys(case.progress.outcome)
         await mutator(case)
+        if save is None:
+            record_before_save(case, at="write")
         try:
-            return await write(case)
+            saved = await write(case)
         except StaleCaseException as exc:
             last_stale = exc
             # Reload and re-apply on the next iteration.
             continue
+        # Counted once, on the record the saving attempt wrote (#2689).
+        found = report_saved_disagreements(case_id, loaded, saved.progress.outcome)
+        if counted is not None:
+            counted.extend(found)
+        return saved
 
     # All attempts lost the race; re-raise the last conflict.
     assert last_stale is not None  # max_attempts >= 1 in practice

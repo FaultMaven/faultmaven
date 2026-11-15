@@ -289,6 +289,7 @@ class TestUpdateCase:
         """
         case = _make_case()
         mock_repo.get.return_value = case
+        mock_repo.save_progress = AsyncMock(side_effect=lambda case: case)
         result = await service.update_case(
             "case_abc123abc123",
             {"title": "New Title", "description": "Updated"},
@@ -298,6 +299,9 @@ class TestUpdateCase:
             "case_abc123abc123", title="New Title", description="Updated"
         )
         mock_repo.save.assert_not_awaited()
+        # The description is the statement in force outside an investigation:
+        # the outcome record is folded over it, written alone (#2811).
+        mock_repo.save_progress.assert_awaited_once()
 
     @staticmethod
     def _make_closed_case():

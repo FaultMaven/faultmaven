@@ -1,6 +1,7 @@
 """Rendering a decider's codes in a test that calls the decider directly
 (#2636): the decision cycle's narration step, after the record."""
 
+from faultmaven.core.investigation.cause_assurance import cause_recheck_status
 from faultmaven.core.investigation.milestone_engine.transitions import (
     declined_resolution_reask,
 )
@@ -14,6 +15,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.narration.notices import render_notice
+from faultmaven.core.investigation.narration.rechecks import recheck_text
 from faultmaven.core.investigation.outcome import record_case_outcome
 
 
@@ -35,3 +37,9 @@ def reask_feedback(case) -> str | None:
         return None
     (text,) = render_notice(NoticeCode.DECLINED_RESOLUTION_REASK, params, None, [])
     return text
+
+
+def recheck_texts(case) -> list:
+    """``cause_recheck_status`` as the ``<fix_verification>`` block states
+    it: each row with its rendered why, None for a row that counts (#2811)."""
+    return [(row, recheck_text(why)) for row, why in cause_recheck_status(case)]

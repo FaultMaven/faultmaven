@@ -23,7 +23,6 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_INTERCEPTION,
     FIX_REMEDIATION,
-    cause_recheck_status,
     conclusion_node,
     confirming_polarity_rows,
     fix_windows,
@@ -55,6 +54,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID
+from tests.unit.core.investigation.narrated import recheck_texts
 from tests.unit.core.investigation.recorded_turns import _record
 from tests.unit.core.investigation.test_fix_targets_2036 import (
     _ROOT_FIX,
@@ -409,7 +409,7 @@ async def test_a_recheck_after_an_off_cause_fix_says_why_it_does_not_count():
         solutions_to_add=[_fix("install the rotation CronJob", r2.node_id)],
         milestones=_ran(),
     )
-    (why,) = [why for e, why in cause_recheck_status(case) if e is row]
+    (why,) = [why for e, why in recheck_texts(case) if e is row]
     assert why == (
         "the fix executed at turn 5 acted on a cause no longer identified; the "
         "newer fix (executed turn 9) is not re-checked yet"

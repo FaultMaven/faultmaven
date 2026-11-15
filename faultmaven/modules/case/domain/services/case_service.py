@@ -554,7 +554,10 @@ class CaseService(CaseDriverMixin, ICaseService):
           ``update_metadata_fields`` repo method. Does NOT bump
           ``cases.version`` and therefore cannot stale-conflict with an
           in-flight turn save. This is the common path for title
-          generation and dashboard renames.
+          generation and dashboard renames. A description, the statement in
+          force outside an investigation, is then folded into the case
+          outcome record by a progress-only write (``_refold_outcome``,
+          #2811), which does bump it.
         - **Investigation state** (status, closure_reason, or mixed with
           metadata): goes through ``update_case_with_retry``, which uses
           the versioned ``save`` path with OCC retry on conflict. Status
@@ -630,6 +633,8 @@ class CaseService(CaseDriverMixin, ICaseService):
                     title=safe_updates.get("title"),
                     description=safe_updates.get("description"),
                 )
+                if "description" in safe_updates:
+                    await self._refold_outcome(case_id)
             elif touches_state:
                 # Investigation-state path: versioned save with OCC retry.
                 # Any metadata fields in the same call ride along on the
@@ -679,6 +684,21 @@ class CaseService(CaseDriverMixin, ICaseService):
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {e}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
+
+    async def _refold_outcome(self, case_id: str) -> None:
+        """Fold the case outcome record over a description the scoped
+        metadata write stored: outside an investigation the description is
+        the statement in force (``current_statement``), a field the record
+        holds (#2811). Written alone (``save_progress``)."""
+        from faultmaven.core.investigation.outcome import record_case_outcome
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        async def refold(case: Case) -> None:
+            record_case_outcome(case, at="metadata")
+
+        await update_case_with_retry(
+            self.repository, case_id, refold, save=self.repository.save_progress
+        )
 
     @trace("case_service_get_or_create_case_for_session")
     async def get_or_create_case_for_session(
@@ -1121,10 +1141,6 @@ class CaseService(CaseDriverMixin, ICaseService):
             CaseNotDriverError: The caller reads it but does not drive it.
             ConflictError: Case is already resolved/closed.
         """
-        from faultmaven.core.investigation.outcome import (
-            disagreement_keys,
-            report_saved_disagreements,
-        )
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,
         )
@@ -1151,15 +1167,11 @@ class CaseService(CaseDriverMixin, ICaseService):
         if case.state.is_terminal:
             raise _already_terminal(case.state)
 
-        loaded: list[frozenset[tuple[str, int]]] = [frozenset()]
-
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:
                 raise CaseNotDriverError()
             if fresh.state.is_terminal:
                 raise _already_terminal(fresh.state)
-            # Per attempt: the record this attempt's write folds over (#2689).
-            loaded[0] = disagreement_keys(fresh.progress.outcome)
             execute_user_closure(fresh, user_id)
 
         # The retry helper's own exceptions subclass CaseException, which no
@@ -1179,8 +1191,6 @@ class CaseService(CaseDriverMixin, ICaseService):
                 resource_id=case_id,
                 conflict_reason="concurrent_update",
             )
-        # Counted once, on the record the saving attempt wrote (#2689).
-        report_saved_disagreements(case_id, loaded[0], updated_case.progress.outcome)
         logger.info(
             f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
         )

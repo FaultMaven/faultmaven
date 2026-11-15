@@ -51,6 +51,8 @@ from faultmaven.modules.case.contracts import (
     NodeType,
     PoolEmptyReason,
     ProblemStatus,
+    RecheckReason,
+    RecheckWhy,
     RootCauseConclusion,
     SolutionOutcome,
     classify_solution_outcome,
@@ -1144,10 +1146,11 @@ def cause_recheck_status(
 ) -> list:
     """Every cause-bound causal_absence row, as ``(row, why)``: ``why`` is
     None for a row of the cause leg (``cause_elimination_rows``), else why it
-    does not count yet. The ``<fix_verification>`` block shows the second
-    kind, so the model asks for what is missing, not for a re-check already on
-    record (#1906 D7). A row bound only to a fix's window is listed with
-    ``uncited_recheck_why`` (#2557)."""
+    does not count yet, as a ``RecheckWhy`` code with its parameters (#2811).
+    The ``<fix_verification>`` block renders the second kind
+    (``narration.rechecks``), so the model asks for what is missing, not for
+    a re-check already on record (#1906 D7). A row bound only to a fix's
+    window is listed with ``uncited_recheck_why`` (#2557)."""
     subjects = subject_index(case) if subjects is None else subjects
     held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
@@ -1167,30 +1170,26 @@ def cause_recheck_status(
         ):
             continue
         turn = subjects.observed(e)
+        why: RecheckWhy | None = None
         if held_open:
-            why = "the cause's identification is held open"
+            why = RecheckWhy(RecheckReason.HELD_OPEN)
         elif e.evidence_id in disconfirmation_ids:
-            why = "it is a failed fix's disconfirmation"
+            why = RecheckWhy(RecheckReason.DISCONFIRMATION)
         elif turn < posited:
-            why = f"its data predates the cause's positing (turn {posited})"
+            why = RecheckWhy(RecheckReason.PREDATES_POSITING, posited)
         elif turn < last_disconfirm:
-            why = f"its data predates the failed fix seen at turn {last_disconfirm}"
+            why = RecheckWhy(RecheckReason.PREDATES_FAILED_FIX, last_disconfirm)
         elif window is None:
-            why = no_window
+            why = RecheckWhy(RecheckReason.NO_CONFIRMING_WINDOW, clause=no_window)
         elif not window.holds(turn):
-            why = "it is outside the latest observed fix's window"
+            why = RecheckWhy(RecheckReason.OUTSIDE_WINDOW)
         elif not bound and (
             window.kind is None
             or e.evidence_id in {r.evidence_id for r in window.cause_rows}
         ):
-            why = uncited
+            why = RecheckWhy(RecheckReason.UNCITED, clause=uncited)
         elif window.kind is not None and e not in window.confirmed_cause_rows:
-            why = (
-                f"it re-checks a cause the fix executed at turn {window.fix_turn} "
-                "was not run against"
-            )
-        else:
-            why = None
+            why = RecheckWhy(RecheckReason.OTHER_CAUSE, window.fix_turn)
         out.append((e, why))
     return out
 

@@ -1061,8 +1061,10 @@ cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
 14. **The narration** (`_finalize_turn` → `narrate_turn`).
 15. **The turn record** (`record_turn`), then the unbound re-checks named on a
     line it kept marked told (`mark_told`).
-16. **The save**, once, at the service (`CaseRepository.prepare_for_save`
-    repeats the lapse rule).
+16. **The save**, once, at the service (`commit_turn_plan`): the lapse rule,
+    then the outcome record folded again (`record_before_save`, #2811), then
+    `CaseRepository.save`, whose `prepare_for_save` repeats the lapse (a
+    no-op).
 17. **The disagreements counted** (`turn_settlement.settle_turn`, right after
     the commit, under its shield).
 
@@ -1081,12 +1083,46 @@ record first carries it: the (key, first-read turn) pairs the committed record
 holds beyond those of the record the turn loaded, so a disagreement read gone
 and then read again at a later turn counts again, and the narration's
 `narration.<code>` conflicts, counted after the commit
-(`outcome.report_saved_disagreements`). The REST close and the backfill count
-the same diff after their retry helper returns, on the attempt that saved; the
-backfill also prints what it counted. A dry run, a failed or cancelled commit,
+(`outcome.report_saved_disagreements`). The case service's write helper
+(`update_case_with_retry`: `PATCH /cases/{id}`, the REST close, the metadata
+refold, the backfill) counts the same diff after its save, on the attempt
+that saved; the backfill also prints what it counted. A dry run, a failed or cancelled commit,
 a retried attempt and a commit only the turn receipt vouches for (it may be
 another request's under the same key, #1888) count nothing. Accepted: the
 #2280 window (the commit lands, then the save raises on timeout) undercounts.
+
+**The outcome record** (`CaseOutcome`, #2615 *The record* and *When it is
+written*, as amended by #2811, ruled 2026-11-15):
+
+- **Written at every save that changes what it holds.** Besides the cycle
+  (step 13), a replay bundle and the two terminal transitions, the two save
+  helpers fold it: a turn's commit (`commit_turn_plan`, so a deterministic
+  step-0 turn, such as the menu close of #2658, stores a record of the case it
+  saves) and the case service's write (`update_case_with_retry`, every REST
+  mutation). Each runs the turn-sequence repair and the lapse first, so the
+  record reads the offer record as stored. A description edit outside an
+  investigation, which the scoped metadata write stores, is folded beside it.
+  Case creation, a driver change, the runbook conversion's save and the
+  out-of-band reclassification change no field the record reads
+  (`test_record_written_at_every_case_save_2811.py`).
+- **Finals are minted only at a cycle, a replay, a resolve or a close**, or on
+  a first record (`outcome.MINTING_POINTS`). A FAILED window and an
+  `accepted_in_turn` are final once marked `final_at` (the write point and the
+  turn); the carry keys on the mark. Any other fold refreshes the derived
+  sections and carries the finals already marked, and on a terminal case the
+  closure a terminal write folded.
+- **Computed on demand for narration** (`narration_outcome`): folded in memory
+  over the stored record, stored nowhere, minting nothing, once per narration
+  pass.
+- **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
+  every change that adds or changes a field. A record of an older shape reads
+  as that shape; a fold over it marks the finals it held, and
+  `fm-backfill-case-outcome` rewrites it, so the backfill runs after each
+  shape change, not once (amending #2615 Q6). A re-shape mints nothing.
+- **The narrators read by id.** The record holds codes and ids, never display
+  text (`cause.recheck`'s `RecheckReason`, rendered by `narration.rechecks`);
+  a narrator fetches the text an id names through `narration.content`, which
+  holds no predicate.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is

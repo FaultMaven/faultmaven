@@ -253,13 +253,13 @@ def _failing_write(monkeypatch) -> list:
 
     monkeypatch.setattr(outcome_module, "shown_milestones", _boom)
     computed: list = []
-    real = turn_narration.compute_case_outcome
+    real = turn_narration.narration_outcome
 
     def _counted(*args, **kwargs):
         computed.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(turn_narration, "compute_case_outcome", _counted)
+    monkeypatch.setattr(turn_narration, "narration_outcome", _counted)
     return computed
 
 
