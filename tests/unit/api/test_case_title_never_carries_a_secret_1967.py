@@ -91,6 +91,7 @@ def _service(case: Case, context: str = "") -> AsyncMock:
     """Serves ``case`` and ``context``; a title write really lands on it."""
     service = AsyncMock()
     service.get_case = AsyncMock(return_value=case)
+    service.require_case = AsyncMock(return_value=case)
     service.get_case_conversation_context = AsyncMock(return_value=context)
 
     async def _update(case_id, updates, user_id=None):

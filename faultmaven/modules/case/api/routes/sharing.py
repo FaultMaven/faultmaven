@@ -12,11 +12,13 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
+    case_not_found_http,
     check_case_service_available,
 )
 
@@ -46,6 +48,7 @@ logger = logging.getLogger(__name__)
     description="Share a case with a Team (ADR-013 §D4). Creator-only (ADR-020 "
     "D2); the Team must "
     "be one the caller belongs to. Idempotent.",
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 async def share_case_with_team(
@@ -67,6 +70,9 @@ async def share_case_with_team(
             "team_id": team_id,
         }
 
+    except NotFoundError as e:
+        # The caller cannot read the case (#2806).
+        raise case_not_found_http() from e
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except HTTPException:
@@ -88,6 +94,15 @@ async def share_case_with_team(
         "D2). If the share was the case's driver's last way to read it, the "
         "case is handed back to its creator first (ADR-020 D3)."
     ),
+    responses={
+        404: {
+            **CASE_NOT_FOUND_RESPONSE[404],
+            "description": (
+                CASE_NOT_FOUND_RESPONSE[404]["description"]
+                + " Without the label: the case is not shared with that team."
+            ),
+        }
+    },
     dependencies=[Depends(require_authentication)],
 )
 async def unshare_case_from_team(
@@ -111,6 +126,9 @@ async def unshare_case_from_team(
 
         logger.info(f"Case {case_id} unshared from team {team_id} by {user_id}")
 
+    except NotFoundError as e:
+        # The caller cannot read the case (#2806).
+        raise case_not_found_http() from e
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except HTTPException:

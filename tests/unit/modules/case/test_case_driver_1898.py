@@ -22,6 +22,7 @@ from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
+    CaseNotDriverError,
     ConflictError,
     NotFoundError,
     ValidationException,
@@ -237,9 +238,8 @@ class TestTheWriteSplit:
     async def test_the_creator_cannot_edit_while_another_drives(self, world):
         await _case(world.repository, driver_id=DRIVER)
 
-        assert (
-            await world.service.update_case(CASE_ID, {"title": "x"}, CREATOR) is False
-        )
+        with pytest.raises(CaseNotDriverError):
+            await world.service.update_case(CASE_ID, {"title": "x"}, CREATOR)
         assert await world.service.update_case(CASE_ID, {"title": "Renamed"}, DRIVER)
         assert (await world.repository.get(CASE_ID)).title == "Renamed"
 
@@ -250,7 +250,7 @@ class TestTheWriteSplit:
         """A reassignment landing between the gate and the versioned write must
         not let the former driver write as a driver."""
         await _case(world.repository, driver_id=DRIVER)
-        gate = world.service.get_case
+        gate = world.service.require_case
 
         async def gate_then_hand_back(case_id, user_id=None, **kw):
             found = await gate(case_id, user_id, **kw)
@@ -260,12 +260,16 @@ class TestTheWriteSplit:
                 )
             return found
 
-        world.service.get_case = gate_then_hand_back
-        edited = await world.service.update_case(
+        world.service.require_case = gate_then_hand_back
+        update = world.service.update_case(
             CASE_ID, {"title": "Renamed", "state": CaseState.INQUIRY}, DRIVER
         )
-
-        assert edited is (not flip)
+        if flip:
+            # Answered as what happened, never as an absence (#2806).
+            with pytest.raises(CaseNotDriverError):
+                await update
+        else:
+            assert await update is True
         title = (await world.repository.get(CASE_ID)).title
         assert title == ("Checkout latency" if flip else "Renamed")
 
@@ -275,7 +279,7 @@ class TestTheWriteSplit:
         the gate and the write must refuse the close, not close a case the
         caller no longer drives."""
         await _case(world.repository, driver_id=DRIVER)
-        gate = world.service.get_case
+        gate = world.service.require_case
 
         async def gate_then_hand_back(case_id, user_id=None, **kw):
             found = await gate(case_id, user_id, **kw)
@@ -285,9 +289,9 @@ class TestTheWriteSplit:
                 )
             return found
 
-        world.service.get_case = gate_then_hand_back
+        world.service.require_case = gate_then_hand_back
         if flip:
-            with pytest.raises(NotFoundError):
+            with pytest.raises(CaseNotDriverError):
                 await world.service.close_case(CASE_ID, DRIVER)
             assert (await world.repository.get(CASE_ID)).state == CaseState.INQUIRY
         else:
@@ -296,18 +300,21 @@ class TestTheWriteSplit:
 
     async def test_a_reader_closing_a_terminal_case_is_told_nothing(self, world):
         """The gate runs before the terminal check: a reader who does not drive
-        gets the absent-case answer, not ``CASE_TERMINAL``, which would tell
-        them the case's state through a write they may not make."""
+        is refused for who they are (``CASE_NOT_DRIVER``, #2806), not with
+        ``CASE_TERMINAL``, which would tell them the case's state through a
+        write they may not make."""
         await _case(world.repository, driver_id=DRIVER, state=CaseState.CLOSED)
 
-        with pytest.raises(NotFoundError):
+        with pytest.raises(CaseNotDriverError):
             await world.service.close_case(CASE_ID, CREATOR)
 
     async def test_close_is_the_drivers(self, world):
         await _case(world.repository, driver_id=DRIVER)
 
-        with pytest.raises(NotFoundError):
+        with pytest.raises(CaseNotDriverError):
             await world.service.close_case(CASE_ID, CREATOR)
+        with pytest.raises(NotFoundError):
+            await world.service.close_case(CASE_ID, OUTSIDER)
         closed = await world.service.close_case(CASE_ID, DRIVER)
         assert closed.state == CaseState.CLOSED
 

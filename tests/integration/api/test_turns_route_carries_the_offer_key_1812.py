@@ -103,6 +103,9 @@ def mounted():
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(side_effect=lambda cid, uid: store.row())
+    case_service.require_case = AsyncMock(
+        side_effect=lambda cid, uid, **_flags: store.row()
+    )
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")

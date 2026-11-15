@@ -24,6 +24,7 @@ from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     require_authentication,
 )
+from faultmaven.exceptions import AuthorizationError, CaseNotDriverError, NotFoundError
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
@@ -61,21 +62,21 @@ def _owner_or_shared_case_service(
     service = SimpleNamespace(**members)
     effective_driver = driver or owner
 
-    async def get_case(
+    async def require_case(
         requested_id, user_id=None, *, driver_only=False, creator_only=False
     ):
+        # ``CaseService.require_case``'s verdicts (#2806): unreadable is the
+        # case's NotFoundError, a reader refused a driver write is
+        # CaseNotDriverError, a reader refused a creator write is 403.
         if requested_id != case_id:
-            return None
+            raise NotFoundError("Case", requested_id)
         if user_id:
-            reads = user_id == owner or user_id in shared_to
-            if creator_only:
-                admitted = user_id == owner
-            elif driver_only:
-                admitted = reads and user_id == effective_driver
-            else:
-                admitted = reads
-            if not admitted:
-                return None
+            if not (user_id == owner or user_id in shared_to):
+                raise NotFoundError("Case", requested_id)
+            if driver_only and user_id != effective_driver:
+                raise CaseNotDriverError()
+            if creator_only and user_id != owner:
+                raise AuthorizationError("Only the case's creator may do this")
         return SimpleNamespace(
             case_id=case_id,
             user_id=owner,
@@ -83,7 +84,21 @@ def _owner_or_shared_case_service(
             effective_driver_id=effective_driver,
         )
 
+    async def get_case(
+        requested_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
+        try:
+            return await require_case(
+                requested_id,
+                user_id,
+                driver_only=driver_only,
+                creator_only=creator_only,
+            )
+        except (NotFoundError, AuthorizationError):
+            return None
+
     service.get_case = get_case
+    service.require_case = require_case
     return service
 
 
@@ -143,7 +158,16 @@ def build_app():
                 # wrong reason, which is the failure this fake exists to avoid.
                 return case
 
-            return SimpleNamespace(get_case=get_case)
+            async def require_case(
+                case_id, user_id=None, *, driver_only=False, creator_only=False
+            ):
+                # ``case`` None models an unknown or unreadable case: the
+                # case's NotFoundError, as the real one raises (#2806).
+                if case is None:
+                    raise NotFoundError("Case", case_id)
+                return case
+
+            return SimpleNamespace(get_case=get_case, require_case=require_case)
 
         async def _current_user_optional():
             return None

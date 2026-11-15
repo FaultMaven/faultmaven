@@ -78,6 +78,9 @@ async def _post_turn(
 ) -> httpx.Response:
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
 
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")

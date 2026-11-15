@@ -7935,7 +7935,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "14.26.1"
+    "version": "15.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10827,6 +10827,34 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -10959,6 +10987,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -10981,7 +11023,7 @@
         ]
       },
       "put": {
-        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's DRIVER may update it (ADR-020 D2); any other reader gets\nthe answer an absent case gets.",
+        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's DRIVER may update it (ADR-020 D2): a reader who does not\ndrive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404\n``CASE_NOT_FOUND`` (#2806).",
         "operationId": "update_case_api_v1_cases__case_id__put",
         "parameters": [
           {
@@ -11012,6 +11054,34 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "409": {
             "description": "`x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only.",
@@ -11077,6 +11147,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11101,7 +11185,7 @@
     },
     "/api/v1/cases/{case_id}/close": {
       "post": {
-        "description": "Close case and archive with reports.\n\nTransitions the case to CLOSED through the engine's terminal executor\n(CaseService.close_case \u2192 execute_user_closure): closure_reason is\nengine-derived, closed_at is stamped, and an action-history entry is\nrecorded \u2014 the same closure rule as the chat-confirmed flow (#915; the\nprevious body set ``case.state`` directly, which the terminal-state\nvalidator rejects, and then called a service method that didn't exist).\n\nThen marks all latest reports as linked to the closure. Close-first\nordering: a refused close (404 unknown/not-owner, 409 already\nterminal \u2014 mapped by the global exception handlers) must never mark\nreports as closure-linked.\n\nReturns:\n    CaseClosureResponse with list of archived reports",
+        "description": "Close case and archive with reports.\n\nTransitions the case to CLOSED through the engine's terminal executor\n(CaseService.close_case \u2192 execute_user_closure): closure_reason is\nengine-derived, closed_at is stamped, and an action-history entry is\nrecorded \u2014 the same closure rule as the chat-confirmed flow (#915; the\nprevious body set ``case.state`` directly, which the terminal-state\nvalidator rejects, and then called a service method that didn't exist).\n\nThen marks all latest reports as linked to the closure. Close-first\nordering: a refused close (404 unreadable, 403 not the driver, 409 already\nterminal \u2014 mapped by the global exception handlers) must never mark\nreports as closure-linked. The 404 carries ``CASE_NOT_FOUND`` and the\n403 ``CASE_NOT_DRIVER`` (#2806).\n\nReturns:\n    CaseClosureResponse with list of archived reports",
         "operationId": "close_case_api_v1_cases__case_id__close_post",
         "parameters": [
           {
@@ -11140,6 +11224,34 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "409": {
             "description": "`x-error-code: CASE_TERMINAL`: the case is already resolved or closed. Unlabelled, with `conflict_reason: concurrent_update`: the case changed while closing; reload and retry.",
@@ -11228,6 +11340,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11291,7 +11417,7 @@
     },
     "/api/v1/cases/{case_id}/data/{data_id}": {
       "delete": {
-        "description": "Remove data file from a case. Returns 204 No Content on success.\n\nOnly the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.",
+        "description": "Remove data file from a case. Returns 204 No Content on success.\n\nOnly the case's DRIVER may call it (ADR-020 D2): another reader gets 403\n``CASE_NOT_DRIVER``, a caller who cannot read the case 404\n``CASE_NOT_FOUND`` (#2806).",
         "operationId": "delete_case_data_api_v1_cases__case_id__data__data_id__delete",
         "parameters": [
           {
@@ -11320,6 +11446,34 @@
               "X-Correlation-ID": {
                 "description": "Request correlation ID",
                 "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
                   "type": "string"
                 }
               }
@@ -11381,6 +11535,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -11446,7 +11614,18 @@
             "description": "The caller reads the case but neither created nor drives it"
           },
           "404": {
-            "description": "No such case, or the caller cannot read it"
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "409": {
             "description": "`CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. A resolved or closed case is NOT refused: its driver can still be changed."
@@ -11498,7 +11677,18 @@
             "description": "The caller reads the case but neither created nor drives it"
           },
           "404": {
-            "description": "No such case, or the caller cannot read it"
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -11549,6 +11739,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -11611,6 +11815,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11635,7 +11853,7 @@
     },
     "/api/v1/cases/{case_id}/evidence/{evidence_id}/classification": {
       "patch": {
-        "description": "Reclassify an existing evidence row under a user-specified data type.\n\nPhase 1.5 \u2014 the escape hatch for \"the classifier was confidently\nwrong\". Re-runs the preprocessing pipeline on the stored raw file\nwith ``user_override=data_type``, overwrites the evidence's\nstructural index, and appends to its extractor.attempts history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the\nflag is off so the endpoint is invisible in production by default.\n\nError responses (dispatched by ``api/exception_handlers.py``):\n\n- ``404`` \u2014 feature disabled, case not found, or evidence not in case\n  (``NotFoundError``).\n- ``409`` \u2014 evidence has no backing file (``ConflictError`` with\n  ``conflict_reason=\"no_backing_file\"``).\n- ``403`` \u2014 caller does not drive the case, or drives it but can no\n  longer read it (``AuthorizationError``, ADR-020 D2).\n- ``422`` \u2014 invalid or missing ``data_type``, OR the case is terminal\n  (both ``ValidationException``). A closed or resolved investigation\n  accepts questions, not mutation; the terminal refusal is raised after\n  the evidence lookup, so a missing evidence id is still a ``404``.\n- ``500`` \u2014 storage/preprocessing failure (``ServiceException``).",
+        "description": "Reclassify an existing evidence row under a user-specified data type.\n\nPhase 1.5 \u2014 the escape hatch for \"the classifier was confidently\nwrong\". Re-runs the preprocessing pipeline on the stored raw file\nwith ``user_override=data_type``, overwrites the evidence's\nstructural index, and appends to its extractor.attempts history.\n\nGated by ``FAULTMAVEN_RECLASSIFY_ENABLED``. Returns 404 when the\nflag is off so the endpoint is invisible in production by default.\n\nError responses (dispatched by ``api/exception_handlers.py``):\n\n- ``404`` \u2014 feature disabled, case not found or not readable by the\n  caller, or evidence not in case (``NotFoundError``). Only the case's\n  own carries ``CASE_NOT_FOUND`` (#2806).\n- ``409`` \u2014 evidence has no backing file (``ConflictError`` with\n  ``conflict_reason=\"no_backing_file\"``).\n- ``403`` ``CASE_NOT_DRIVER`` \u2014 the caller reads the case but does not\n  drive it (``CaseNotDriverError``, ADR-020 D2). A driver who can no\n  longer read it gets the case's 404.\n- ``422`` \u2014 invalid or missing ``data_type``, OR the case is terminal\n  (both ``ValidationException``). A closed or resolved investigation\n  accepts questions, not mutation; the terminal refusal is raised after\n  the evidence lookup, so a missing evidence id is still a ``404``.\n- ``500`` \u2014 storage/preprocessing failure (``ServiceException``).",
         "operationId": "reclassify_evidence_api_v1_cases__case_id__evidence__evidence_id__classification_patch",
         "parameters": [
           {
@@ -11678,6 +11896,34 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -11766,6 +12012,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11853,6 +12113,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11925,6 +12199,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11978,6 +12266,34 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -12044,6 +12360,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12102,6 +12432,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12156,6 +12500,20 @@
           "204": {
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`. Without the label: the case is not shared with that team.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12180,7 +12538,7 @@
     },
     "/api/v1/cases/{case_id}/title": {
       "post": {
-        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 404: the case does not exist or the caller does not drive it. Naming a\n  case writes it, an investigation write that is the driver's (ADR-020\n  D2), so any other reader is refused here before any title is generated.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
+        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive\n  it. Naming a case writes it, an investigation write that is the\n  driver's (ADR-020 D2), so any other reader is refused here before any\n  title is generated (#2806).\n- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
         "operationId": "generate_case_title_api_v1_cases__case_id__title_post",
         "parameters": [
           {
@@ -12234,6 +12592,34 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -12318,6 +12704,34 @@
                 "schema": {
                   "enum": [
                     "true"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
                   ],
                   "type": "string"
                 }
@@ -12455,6 +12869,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12554,6 +12982,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12614,6 +13056,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "404": {
+            "description": "`x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -14252,6 +14708,20 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal; absent for the enterprise check.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14294,6 +14764,20 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal; absent for the enterprise check.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
@@ -14401,6 +14885,20 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal; absent for the enterprise check.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -14460,6 +14958,20 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "description": "`x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.",
+            "headers": {
+              "x-error-code": {
+                "description": "Which refusal; absent for the enterprise check.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_DRIVER"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {

@@ -25,6 +25,8 @@ from fastapi import HTTPException, status
 
 from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import (
+    AuthorizationError,
+    NotFoundError,
     RawModelContentRefused,
     ServiceException,
     ServiceUnavailableException,
@@ -1179,6 +1181,13 @@ async def _generate_and_persist_title(
         )
     except HTTPException:
         # Re-raise HTTPException without modification to preserve original error
+        raise
+    except (NotFoundError, AuthorizationError):
+        # ``update_case``'s verdicts when the case was deleted, or handed to
+        # another driver, while the title was generated: the global handlers
+        # answer them 404 ``CASE_NOT_FOUND`` / 403 ``CASE_NOT_DRIVER``, as
+        # ``PUT /cases/{case_id}`` answers the same race (#2806). Wrapped below
+        # they were a 500 a client reads as a server fault.
         raise
     except ServiceException as e:
         # Handle service-level exceptions with proper error detail

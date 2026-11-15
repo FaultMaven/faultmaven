@@ -482,6 +482,9 @@ class TestSubmitTurnRejectsMalformedIntent:
 
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_mock_case())
+        case_service.require_case = AsyncMock(
+            return_value=case_service.get_case.return_value
+        )
         current_user = MagicMock()
         current_user.user_id = "test-user-123"
         return await submit_turn(
@@ -529,6 +532,9 @@ class TestSubmitTurnBillingExhaustion:
 
         case_service = MagicMock()
         case_service.get_case = AsyncMock(return_value=_make_mock_case())
+        case_service.require_case = AsyncMock(
+            return_value=case_service.get_case.return_value
+        )
         investigation_service = MagicMock()
         # The route prepares under its deadline and commits after (#1882);
         # the prepared stand-in is the response, handed back by the commit.

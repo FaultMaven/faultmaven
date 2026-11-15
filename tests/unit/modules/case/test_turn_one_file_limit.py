@@ -100,6 +100,9 @@ def _app() -> tuple[FastAPI, AsyncMock]:
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_make_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
 
     prepare_turn = AsyncMock(return_value=_make_turn_response())
     investigation_service = MagicMock()

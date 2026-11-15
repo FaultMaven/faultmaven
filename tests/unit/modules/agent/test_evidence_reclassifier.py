@@ -22,6 +22,7 @@ import pytest
 
 from faultmaven.exceptions import (
     AuthorizationError,
+    CaseNotDriverError,
     ConflictError,
     NotFoundError,
     ValidationException,
@@ -126,15 +127,27 @@ class TestAuthAndLookup:
     async def test_user_not_owner_raises_authorization_error(
         self, reclassifier, repo_with_case
     ):
-        """Non-owner caller raises AuthorizationError → HTTP 403."""
+        """A reader who does not drive → ``CaseNotDriverError`` (403
+        ``CASE_NOT_DRIVER``); a caller who cannot read the case → the case's
+        ``NotFoundError`` (404 ``CASE_NOT_FOUND``), never a 403 that confirms
+        a case hidden from them (#2806)."""
         _, case = repo_with_case
-        with pytest.raises(AuthorizationError):
+        with pytest.raises(CaseNotDriverError):
+            await reclassifier.reclassify_out_of_band(
+                case_id=case.case_id,
+                evidence_id="ev_aaaaaaaaaaaa",
+                user_id="user_not_owner",
+                data_type=DataType.LOGS_AND_ERRORS,
+                caller_reads_case=True,
+            )
+        with pytest.raises(NotFoundError) as hidden:
             await reclassifier.reclassify_out_of_band(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
                 user_id="user_not_owner",
                 data_type=DataType.LOGS_AND_ERRORS,
             )
+        assert hidden.value.resource_type == "Case"
 
     @pytest.mark.asyncio
     async def test_evidence_not_in_case_raises(self, reclassifier, repo_with_case):
@@ -218,13 +231,13 @@ class TestTheDriverGate:
     async def test_an_assigned_driver_who_no_longer_reads_is_refused(
         self, reclassifier, repo_with_case
     ):
-        """The PATCH route has no read check ahead of this 403; without the
-        read fact a driver whose every share was withdrawn — before any release
-        reached the row — would be admitted. The gate split must not widen
-        it."""
+        """Without the read fact a driver whose every share was withdrawn —
+        before any release reached the row — would be admitted. The gate split
+        must not widen it. They no longer read the case, so it is the case's
+        404 to them (#2806)."""
         _, case = repo_with_case
         case.driver_id = "user_driver"
-        with pytest.raises(AuthorizationError):
+        with pytest.raises(NotFoundError):
             await reclassifier.reclassify_out_of_band(
                 case_id=case.case_id,
                 evidence_id="ev_aaaaaaaaaaaa",
@@ -480,9 +493,16 @@ class TestTheGuardOrder:
     ):
         repo, case = repo_with_case
         case = _close(repo, case)
-        for call in await self._both(reclassifier, case, "ev_missing_zz", "user_other"):
-            with pytest.raises(AuthorizationError):
-                await call
+        out, in_turn = await self._both(
+            reclassifier, case, "ev_missing_zz", "user_other"
+        )
+        # Out of band, "user_other" does not read the case: the case's 404,
+        # ahead of the evidence's (#2806). In a turn the case was read.
+        with pytest.raises(NotFoundError) as hidden:
+            await out
+        assert hidden.value.resource_type == "Case"
+        with pytest.raises(CaseNotDriverError):
+            await in_turn
 
     @pytest.mark.asyncio
     async def test_a_terminal_case_with_no_stored_file_is_422_before_the_409(

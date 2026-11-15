@@ -19,8 +19,11 @@ from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_DRIVER_RESPONSE,
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     check_case_service_available,
+    resolve_case,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -34,7 +37,11 @@ logger = logging.getLogger(__name__)
 # Case-scoped data management endpoints
 
 
-@router.get("/{case_id}/data", dependencies=[Depends(require_authentication)])
+@router.get(
+    "/{case_id}/data",
+    responses=CASE_NOT_FOUND_RESPONSE,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_list_case_data")
 async def list_case_data(
     case_id: str,
@@ -52,15 +59,12 @@ async def list_case_data(
     Always returns 200 with empty array if no data exists.
     """
     case_service = check_case_service_available(case_service)
+    # Outside the try below: its "never fail a list" fallback would answer a
+    # failed case lookup 200 with an empty list, for a case whose existence and
+    # access were never checked. A lookup failure is a 5xx (#2806).
+    await resolve_case(case_service, case_id, current_user.user_id)
 
     try:
-        # Verify case exists
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404, detail="Case not found or access denied"
-            )
-
         # Mock empty data list for now
         data_list = []
         total_count = 0
@@ -78,7 +82,11 @@ async def list_case_data(
         return JSONResponse(status_code=200, content=[], headers={"X-Total-Count": "0"})
 
 
-@router.get("/{case_id}/data/{data_id}", dependencies=[Depends(require_authentication)])
+@router.get(
+    "/{case_id}/data/{data_id}",
+    responses=CASE_NOT_FOUND_RESPONSE,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case_data")
 async def get_case_data(
     case_id: str,
@@ -91,11 +99,7 @@ async def get_case_data(
 
     try:
         # Verify case exists
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404, detail="Case not found or access denied"
-            )
+        await resolve_case(case_service, case_id, current_user.user_id)
 
         # Mock data record
         data_record = {
@@ -143,7 +147,9 @@ async def upload_case_data_gone(case_id: str):
                     "schema": {"type": "string"},
                 }
             },
-        }
+        },
+        **CASE_NOT_DRIVER_RESPONSE,
+        **CASE_NOT_FOUND_RESPONSE,
     },
     dependencies=[Depends(require_authentication)],
 )
@@ -156,7 +162,9 @@ async def delete_case_data(
 ):
     """Remove data file from a case. Returns 204 No Content on success.
 
-    Only the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.
+    Only the case's DRIVER may call it (ADR-020 D2): another reader gets 403
+    ``CASE_NOT_DRIVER``, a caller who cannot read the case 404
+    ``CASE_NOT_FOUND`` (#2806).
     """
     case_service = check_case_service_available(case_service)
 
@@ -166,13 +174,9 @@ async def delete_case_data(
         #
         # This route is still a STUB — it deletes nothing and answers 204 to
         # the driver. The gate is only what it can honestly refuse today.
-        case = await case_service.get_case(
-            case_id, current_user.user_id, driver_only=True
+        await resolve_case(
+            case_service, case_id, current_user.user_id, driver_only=True
         )
-        if not case:
-            raise HTTPException(
-                status_code=404, detail="Case not found or access denied"
-            )
 
         # Return 204 No Content for successful deletion
         return Response(status_code=status.HTTP_204_NO_CONTENT)

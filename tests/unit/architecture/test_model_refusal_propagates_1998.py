@@ -513,6 +513,7 @@ def _title_case_service(case: SimpleNamespace) -> SimpleNamespace:
 
     return SimpleNamespace(
         get_case=AsyncMock(return_value=case),
+        require_case=AsyncMock(return_value=case),
         get_case_conversation_context=AsyncMock(
             return_value="User: login failures on the auth service " * 40
         ),

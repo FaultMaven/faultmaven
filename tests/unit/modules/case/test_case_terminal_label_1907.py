@@ -81,6 +81,9 @@ def _client() -> tuple[TestClient, AsyncMock, MagicMock]:
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_closed_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
     case_service.update_case = AsyncMock(return_value=True)
 
     prepare_turn = AsyncMock(

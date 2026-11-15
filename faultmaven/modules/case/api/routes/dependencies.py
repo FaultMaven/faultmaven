@@ -17,9 +17,16 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.exceptions import CASE_TERMINAL
+from faultmaven.exceptions import (
+    CASE_NOT_DRIVER,
+    CASE_NOT_FOUND,
+    CASE_TERMINAL,
+    CaseNotDriverError,
+    NotFoundError,
+)
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
+from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import is_default_case_title
 
 logger = logging.getLogger(__name__)
@@ -168,6 +175,96 @@ def require_case_not_terminal(case) -> None:
             detail="Case is in terminal state and read-only. No further modifications allowed.",
             headers={"x-error-code": CASE_TERMINAL},
         )
+
+
+#: The case route's 404 for a case the caller cannot read (#2806), for the
+#: ``responses`` of every route under ``/cases/{case_id}``.
+CASE_NOT_FOUND_RESPONSE: dict = {
+    404: {
+        "description": (
+            f"`x-error-code: {CASE_NOT_FOUND}`: the case does not exist, was "
+            "deleted, or the caller cannot read it; the three are not told "
+            "apart. A 404 for something inside the case (a file, evidence, a "
+            "report) carries no `x-error-code`."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Present when the CASE is what was not found.",
+                "schema": {"type": "string", "enum": [CASE_NOT_FOUND]},
+            }
+        },
+    }
+}
+
+#: The 403 for an investigation write by a reader who does not drive the case
+#: (ADR-020 D2, #2806), for the ``responses`` of every driver-only case route.
+CASE_NOT_DRIVER_RESPONSE: dict = {
+    403: {
+        "description": (
+            f"`x-error-code: {CASE_NOT_DRIVER}`: the caller reads the case but "
+            "does not drive it, and this write is the driver's. Nothing was "
+            "written."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Which refusal.",
+                "schema": {"type": "string", "enum": [CASE_NOT_DRIVER]},
+            }
+        },
+    }
+}
+
+
+def case_not_found_http() -> HTTPException:
+    """404 ``x-error-code: CASE_NOT_FOUND``: the case lookup came back empty.
+
+    For a route that must answer as an ``HTTPException`` (its own ``except
+    Exception`` would otherwise turn the service's ``NotFoundError`` into a
+    500). The ``NotFoundError`` handler gives the same status and label.
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Case not found or access denied",
+        headers={"x-error-code": CASE_NOT_FOUND},
+    )
+
+
+def case_not_driver_http(
+    message: str = "Only the case's driver may do this",
+) -> HTTPException:
+    """403 ``x-error-code: CASE_NOT_DRIVER``: a reader who does not drive."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=message,
+        headers={"x-error-code": CASE_NOT_DRIVER},
+    )
+
+
+async def resolve_case(
+    case_service: ICaseService,
+    case_id: str,
+    user_id: str,
+    *,
+    driver_only: bool = False,
+) -> Case:
+    """The case a route acts on, or the case route's labelled refusal (#2806).
+
+    Through ``CaseService.require_case``, the one lookup behind every case
+    route's refusals: 404 ``CASE_NOT_FOUND`` for a case the caller cannot read,
+    403 ``CASE_NOT_DRIVER`` for a reader who does not drive it when the route's
+    write is the driver's (``driver_only``). Raised as ``HTTPException`` so a
+    route's ``except HTTPException: raise`` lets them through untouched. A
+    repository failure propagates as itself, for the route to answer 5xx —
+    never a 404 for a case that exists.
+    """
+    try:
+        return await case_service.require_case(
+            case_id, user_id, driver_only=driver_only
+        )
+    except NotFoundError as absent:
+        raise case_not_found_http() from absent
+    except CaseNotDriverError as refused:
+        raise case_not_driver_http(str(refused)) from refused
 
 
 async def _di_get_creator_service_channel(

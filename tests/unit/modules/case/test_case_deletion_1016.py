@@ -236,7 +236,8 @@ async def test_a_save_after_the_delete_is_refused_in_memory():
 
 async def test_an_update_that_loses_the_race_with_a_delete_is_not_found():
     """``update_case``'s retry reloads and finds no row (test 11): the answer
-    an absent case gets (``False``, the route's 404), not a 500."""
+    an absent case gets (the case's ``NotFoundError``, the route's 404
+    ``CASE_NOT_FOUND``, #2806), not a 500."""
     w = await _world()
     real_get = w.repository.get
     calls = 0
@@ -247,12 +248,11 @@ async def test_an_update_that_loses_the_race_with_a_delete_is_not_found():
         return await real_get(case_id) if calls == 1 else None
 
     w.repository.get = get_then_vanish
-    assert (
+    with pytest.raises(NotFoundError) as absent:
         await w.service.update_case(
             w.case.case_id, {"state": CaseState.INVESTIGATING.value}, CREATOR
         )
-        is False
-    )
+    assert absent.value.resource_type == "Case"
 
 
 # ============================================================

@@ -57,6 +57,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from faultmaven.exceptions import (
+    CASE_NOT_FOUND,
     LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_CIRCUIT_OPEN,
@@ -695,7 +696,15 @@ async def not_found_exception_handler(
     if exc.resource_id is not None:
         body["resource_id"] = exc.resource_id
 
-    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=body)
+    # A case the caller cannot read is labelled, whichever route looked it up
+    # (#2806): the label a client closes the case on. ``resource_type`` is the
+    # discriminator because ``NotFoundError("Case", ...)`` is the case lookup's
+    # one raiser; a file, evidence or report inside the case names its own
+    # type and goes out unlabelled.
+    headers = {"x-error-code": CASE_NOT_FOUND} if exc.resource_type == "Case" else None
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND, content=body, headers=headers
+    )
 
 
 async def authorization_exception_handler(
@@ -720,6 +729,9 @@ async def authorization_exception_handler(
         str(exc),
     )
 
+    # A refusal that names its reason carries it (``CaseNotDriverError``:
+    # ``CASE_NOT_DRIVER``, #2806); every other 403 goes out as it did.
+    error_code = getattr(exc, "error_code", None)
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN,
         content={
@@ -727,6 +739,7 @@ async def authorization_exception_handler(
             "detail": str(exc),
             "status_code": 403,
         },
+        headers={"x-error-code": error_code} if error_code else None,
     )
 
 

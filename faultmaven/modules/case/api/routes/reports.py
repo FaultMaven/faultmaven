@@ -22,9 +22,12 @@ from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_DRIVER_RESPONSE,
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     _di_get_runbook_kb_dependency,
     check_case_service_available,
+    resolve_case,
 )
 from faultmaven.modules.case.contracts import ReportGenerationRequest
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
@@ -83,7 +86,9 @@ def _recommendation_unavailable_detail(unreadable: bool) -> str:
 
 
 @router.get(
-    "/{case_id}/report-recommendations", dependencies=[Depends(require_authentication)]
+    "/{case_id}/report-recommendations",
+    responses=CASE_NOT_FOUND_RESPONSE,
+    dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
@@ -131,11 +136,7 @@ async def get_report_recommendations(
 
     try:
         # Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404, detail="Case not found or access denied"
-            )
+        case = await resolve_case(case_service, case_id, current_user.user_id)
 
         # Validate case is in resolved state (terminal state with solution)
         # Note: Only RESOLVED is valid - CLOSED is terminal without solution
@@ -230,7 +231,11 @@ async def get_report_recommendations(
         )
 
 
-@router.post("/{case_id}/reports", dependencies=[Depends(require_authentication)])
+@router.post(
+    "/{case_id}/reports",
+    responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_generate_case_reports")
 async def generate_case_reports(
     case_id: str,
@@ -250,12 +255,12 @@ async def generate_case_reports(
         # ``driver_only``: regeneration flips ``is_current`` across the case's
         # reports, an investigation write (ADR-020 D2). Inside one enterprise
         # nothing else separates a reader from the driver, so this flag is the
-        # whole of the boundary here.
-        case = await case_service.get_case(
-            case_id, current_user.user_id, driver_only=True
+        # whole of the boundary here. Another reader is refused 403
+        # ``CASE_NOT_DRIVER``, a caller who cannot read the case 404
+        # ``CASE_NOT_FOUND`` (#2806).
+        case = await resolve_case(
+            case_service, case_id, current_user.user_id, driver_only=True
         )
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
 
         # Only terminal cases can have reports
         if not case.is_terminal:
@@ -284,7 +289,11 @@ async def generate_case_reports(
         raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
-@router.get("/{case_id}/reports", dependencies=[Depends(require_authentication)])
+@router.get(
+    "/{case_id}/reports",
+    responses=CASE_NOT_FOUND_RESPONSE,
+    dependencies=[Depends(require_authentication)],
+)
 @trace("api_get_case_reports")
 async def get_case_reports(
     request: Request,
@@ -318,9 +327,7 @@ async def get_case_reports(
 
     try:
         # Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        await resolve_case(case_service, case_id, current_user.user_id)
 
         # Check if case_repository is available
         if not case_repository:
@@ -400,6 +407,7 @@ def _draft_to_runbook_report(case_id: str, draft: dict) -> dict:
 
 @router.get(
     "/{case_id}/reports/{report_id}/download",
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_download_case_report")
@@ -428,9 +436,7 @@ async def download_case_report(
 
     try:
         # Verify case exists and user has access
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        await resolve_case(case_service, case_id, current_user.user_id)
 
         # Check if case_repository is available
         if not case_repository:
@@ -488,6 +494,8 @@ async def download_case_report(
 @router.post(
     "/{case_id}/close",
     responses={
+        **CASE_NOT_DRIVER_RESPONSE,
+        **CASE_NOT_FOUND_RESPONSE,
         409: {
             "description": (
                 f"`x-error-code: {CASE_TERMINAL}`: the case is already "
@@ -501,7 +509,7 @@ async def download_case_report(
                     "schema": {"type": "string", "enum": [CASE_TERMINAL]},
                 }
             },
-        }
+        },
     },
     dependencies=[Depends(require_authentication)],
 )
@@ -524,9 +532,10 @@ async def close_case(
     validator rejects, and then called a service method that didn't exist).
 
     Then marks all latest reports as linked to the closure. Close-first
-    ordering: a refused close (404 unknown/not-owner, 409 already
+    ordering: a refused close (404 unreadable, 403 not the driver, 409 already
     terminal — mapped by the global exception handlers) must never mark
-    reports as closure-linked.
+    reports as closure-linked. The 404 carries ``CASE_NOT_FOUND`` and the
+    403 ``CASE_NOT_DRIVER`` (#2806).
 
     Returns:
         CaseClosureResponse with list of archived reports

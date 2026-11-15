@@ -23,7 +23,7 @@ from faultmaven.core.investigation.suggestion_liveness import (
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.core.preprocessing.models import unified_data_type_of
 from faultmaven.exceptions import (
-    AuthorizationError,
+    CaseNotDriverError,
     ConflictError,
     NotFoundError,
     ServiceException,
@@ -656,7 +656,8 @@ class EvidenceReclassifier:
         case: "Case", evidence_id: str, user_id: str, *, reads: bool
     ) -> int:
         """The one guard both entry points run in front of
-        ``apply_reclassification``, in this order: the driver gate (403), the
+        ``apply_reclassification``, in this order: the read gate (404
+        ``CASE_NOT_FOUND``), the driver gate (403 ``CASE_NOT_DRIVER``), the
         evidence lookup (404), then the terminal refusal (422). Returns the
         addressed evidence's index.
 
@@ -669,11 +670,14 @@ class EvidenceReclassifier:
         (``caller_reads_case``). Without that last arm the PATCH route — which
         has no read check of its own ahead of this 403 — would admit a driver
         who had lost every share before a release reached the row.
+
+        A caller who cannot read the case is answered as for an absent case,
+        not 403: a 403 to them confirmed a case hidden from them (#2806).
         """
-        if case.effective_driver_id != user_id or not reads:
-            raise AuthorizationError(
-                f"User {user_id} not authorized for case {case.case_id}"
-            )
+        if not reads:
+            raise NotFoundError("Case", case.case_id)
+        if case.effective_driver_id != user_id:
+            raise CaseNotDriverError()
 
         evidence_index: Optional[int] = None
         for i, ev in enumerate(case.evidence or []):
@@ -894,7 +898,9 @@ class EvidenceReclassifier:
 
         Raises:
             NotFoundError: case or evidence not found (404).
-            AuthorizationError: user is not the case's driver (403).
+            CaseNotDriverError: the user reads the case but does not drive it
+                (403 ``CASE_NOT_DRIVER``); one who cannot read it gets the
+                case's ``NotFoundError``.
             ValidationException: the case is TERMINAL (422). Raised AFTER the
                 evidence lookup, so a missing evidence id is still a 404
                 whatever state the case is in.

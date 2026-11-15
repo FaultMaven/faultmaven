@@ -49,8 +49,8 @@ backs it lives in
 |-------------------------|-------------|---------------|
 | `ValidationException` | 422 Unprocessable Entity | Client input is malformed (bad format, missing required field, fails business validation). |
 | `ConflictError` | 409 Conflict | Resource state conflict (duplicate username, double-close, attempting an operation incompatible with current state). |
-| `NotFoundError` | 404 Not Found | Resource lookup miss (case/session/user does not exist). |
-| `AuthorizationError` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. |
+| `NotFoundError` | 404 Not Found | Resource lookup miss (case/session/user does not exist). `NotFoundError("Case", id)` carries `x-error-code: CASE_NOT_FOUND` (#2806). |
+| `AuthorizationError` | 403 Forbidden | Caller is authenticated but lacks permission for the operation. A subclass that names an `error_code` carries it as `x-error-code`: `CaseNotDriverError` → `CASE_NOT_DRIVER` (#2806). |
 | `ServiceException` | 500 Internal Server Error, unless it wraps an LLM failure (see [LLM Provider Failures](#llm-provider-failures-turn-endpoints)) | Genuine server failure that the client cannot resolve (database error, wrapped infrastructure failure). |
 
 All five inherit from `FaultMavenException` (base class). The

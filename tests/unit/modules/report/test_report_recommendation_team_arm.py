@@ -96,6 +96,9 @@ async def test_the_route_hands_the_service_the_bound_enterprise():
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
 
     captured = {}
 

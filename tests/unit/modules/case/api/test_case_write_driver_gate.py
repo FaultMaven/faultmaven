@@ -19,6 +19,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
+from faultmaven.exceptions import (
+    CASE_NOT_DRIVER,
+    AuthorizationError,
+    CaseNotDriverError,
+    NotFoundError,
+)
 from faultmaven.modules.case.api.routes.cases import delete_case
 from faultmaven.modules.case.api.routes.reports import generate_case_reports
 from faultmaven.modules.case.contracts import ReportGenerationRequest, ReportType
@@ -45,13 +51,16 @@ def _case_service_that_refuses_non_drivers(driver: str = OWNER) -> MagicMock:
     """
     service = MagicMock()
 
-    async def get_case(case_id, user_id=None, *, driver_only=False, creator_only=False):
+    async def require_case(
+        case_id, user_id=None, *, driver_only=False, creator_only=False
+    ):
+        # ``CaseService.require_case``'s verdicts (#2806).
         if case_id != CASE_ID:
-            return None
+            raise NotFoundError("Case", case_id)
         if driver_only and user_id != driver:
-            return None
+            raise CaseNotDriverError()
         if creator_only and user_id != OWNER:
-            return None
+            raise AuthorizationError("Only the case's creator may do this")
         return SimpleNamespace(
             case_id=CASE_ID,
             user_id=OWNER,
@@ -60,7 +69,7 @@ def _case_service_that_refuses_non_drivers(driver: str = OWNER) -> MagicMock:
             title="Checkout latency spike",
         )
 
-    service.get_case = AsyncMock(side_effect=get_case)
+    service.require_case = AsyncMock(side_effect=require_case)
     return service
 
 
@@ -84,8 +93,9 @@ async def test_report_regeneration_refuses_a_teammate_with_a_read_share():
             current_user=_user(TEAMMATE),
         )
 
-    assert exc.value.status_code == 404
-    assert case_service.get_case.await_args.kwargs.get("driver_only") is True
+    assert exc.value.status_code == 403
+    assert exc.value.headers == {"x-error-code": CASE_NOT_DRIVER}
+    assert case_service.require_case.await_args.kwargs.get("driver_only") is True
 
 
 async def test_report_regeneration_still_serves_the_owner():
@@ -125,7 +135,8 @@ async def test_report_regeneration_refuses_the_creator_while_another_drives():
             current_user=_user(OWNER),
         )
 
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 403
+    assert exc.value.headers == {"x-error-code": CASE_NOT_DRIVER}
 
 
 async def test_report_regeneration_serves_the_assigned_driver():

@@ -37,7 +37,7 @@ from sqlalchemy.pool import NullPool
 import faultmaven
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.exceptions import ServiceException
+from faultmaven.exceptions import NotFoundError, ServiceException
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.storage.filesystem import FilesystemStorageBackend
 from faultmaven.models.api_models import IntentType, QueryIntent
@@ -253,6 +253,14 @@ class _World:
         async def _get_case(case_id, user_id):
             return await self.committed()
 
+        async def _require_case(
+            case_id, user_id=None, *, driver_only=False, creator_only=False
+        ):
+            case = await self.committed()
+            if case is None:
+                raise NotFoundError("Case", case_id)
+            return case
+
         page = await list_uploaded_files(
             self.case_id,
             Response(),
@@ -260,7 +268,9 @@ class _World:
             offset=0,
             sort_by="uploaded_at_turn",
             sort_order="desc",
-            case_service=SimpleNamespace(get_case=_get_case),
+            case_service=SimpleNamespace(
+                get_case=_get_case, require_case=_require_case
+            ),
             current_user=SimpleNamespace(user_id=self.user_id),
         )
         return page.files

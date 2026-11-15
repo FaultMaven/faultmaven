@@ -44,6 +44,7 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
+    CaseNotDriverError,
     DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
@@ -351,7 +352,8 @@ class InvestigationService:
 
         Raises:
             NotFoundError: If case not found
-            PermissionDeniedException: If user not authorized
+            CaseNotDriverError: The caller reads the case but does not drive
+                it (403 ``CASE_NOT_DRIVER``, #2806)
             DatabaseTimeout: The database did not answer in time, wherever in
                 the preparation (#2280); nothing is committed.
             ServiceException: If turn processing fails
@@ -624,13 +626,15 @@ class InvestigationService:
             )
 
         except (
+            CaseNotDriverError,
             NotFoundError,
             PermissionDeniedException,
             StaleCaseException,
             TenantTurnCapError,
             ValidationException,
         ):
-            # NotFoundError → 404, PermissionDeniedException → 403,
+            # NotFoundError → 404, CaseNotDriverError and
+            # PermissionDeniedException → 403,
             # StaleCaseException → 409, TenantTurnCapExceeded → 429,
             # TenantTurnCapUnavailable → 503, ValidationException → 422.
             # All must pass through unwrapped so the FastAPI exception
@@ -763,7 +767,7 @@ class InvestigationService:
 
         # Only the case's effective DRIVER may submit a turn (ADR-020 D2), so a
         # reader who does not drive — the creator included, while someone else
-        # drives — is refused here with 403. The route resolved ``case``
+        # drives — is refused here with 403 ``CASE_NOT_DRIVER``. The route resolved ``case``
         # through the READ allowlist, so a driver who has lost read access
         # never reaches this line.
         #
@@ -781,9 +785,7 @@ class InvestigationService:
                 f"User {user_id} denied a turn on case {case_id} "
                 f"(driver: {case.effective_driver_id})"
             )
-            raise PermissionDeniedException(
-                f"User {user_id} not authorized for case {case_id}"
-            )
+            raise CaseNotDriverError()
 
         # ── The per-tenant daily turn cap (ADR-016 D5.3) ──
         # HERE, and the position is the decision. Everything that can refuse

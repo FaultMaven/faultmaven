@@ -66,6 +66,9 @@ def _user() -> UserDTO:
 async def _post_turn(prepare_turn, *, ceiling_seconds: float = 120.0) -> httpx.Response:
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
     investigation_service = MagicMock()
     investigation_service.prepare_turn = prepare_turn
     investigation_service.commit_turn = AsyncMock()
@@ -140,6 +143,9 @@ async def test_the_in_flight_claim_lives_for_the_response_bound_not_the_ceiling(
 
     case_service = MagicMock()
     case_service.get_case = AsyncMock(return_value=_case())
+    case_service.require_case = AsyncMock(
+        return_value=case_service.get_case.return_value
+    )
     app = FastAPI()
     app.include_router(router, prefix="/api/v1")
     app.add_exception_handler(HTTPException, http_exception_handler)

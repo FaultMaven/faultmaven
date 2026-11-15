@@ -151,6 +151,68 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.0.0",
+        level="MAJOR",
+        title=(
+            "A case route says what was refused (#2806): every case lookup that "
+            "comes back empty answers 404 `x-error-code: CASE_NOT_FOUND`, and an "
+            "investigation write by a reader who does not drive the case answers "
+            "403 `x-error-code: CASE_NOT_DRIVER` where it answered 404."
+        ),
+        body=r"""`CASE_NOT_FOUND` is the case's own 404: the case does not exist, was
+deleted, or the caller cannot read it (creator or shared to one of their
+teams), the three not told apart. Every route under `/cases/{case_id}`, and
+`POST /cases/sessions/{session_id}/resume/{case_id}`, sends it from one
+lookup. A 404 for something inside the case (a file, evidence, a report, a
+team the case is not shared with, the reclassification endpoint switched off)
+carries no `x-error-code`, so a client may close the case on the label alone.
+Each route declares it in its 404 response.
+
+`CASE_NOT_DRIVER` is the 403 for a caller who reads the case but does not
+drive it, on a write that is the driver's (ADR-020 D2):
+
+* `PUT /cases/{case_id}`, `POST /cases/{case_id}/title`, `POST
+  /cases/sessions/{session_id}/resume/{case_id}`, `DELETE
+  /cases/{case_id}/data/{data_id}`, `POST /cases/{case_id}/reports` and `POST
+  /cases/{case_id}/close`, and the report writes `POST /reports/generate`,
+  `PUT /reports/{report_id}`, `DELETE /reports/{report_id}` and `POST
+  /reports/{report_id}/link-case`, answered such a reader 404, the answer an
+  absent case gets. It was false for a case the reader sees listed and can
+  open, and it was the one answer a client could not tell from a deletion.
+  They now answer 403, on a terminal case too (the driver alone gets 409
+  `CASE_TERMINAL` there);
+* `POST /cases/{case_id}/turns` and `PATCH
+  /cases/{case_id}/evidence/{evidence_id}/classification` already answered
+  403; the 403 now carries the label.
+
+Three other answers move to the case's 404. `POST /cases/{case_id}/team-shares`
+and `DELETE /cases/{case_id}/team-shares/{team_id}` answered a missing case
+403 `Case ... not found`, and a caller of no share was told through the
+creator check that the case exists. The classification `PATCH` answered a
+caller who cannot read the case 403. All three now answer 404
+`CASE_NOT_FOUND`. A failure during a case lookup is a 5xx, never this 404
+nor `CASE_NOT_DRIVER`: the repository read, and the lookup of the caller's
+teams and the cases shared to them.
+
+The label is the header, not the body. `GET /cases/{case_id}`, `GET
+/cases/{case_id}/ui` and `PUT /cases/{case_id}` answered their 404 with
+`detail.error.code == "CASE_NOT_FOUND"`; they now answer `{"detail": "..."}`
+like the other case routes. A refusal raised in the service reaches the
+common handler instead, whose body names `resource_type: "Case"` (404) or the
+refusal text (403); `POST /cases/{case_id}/title` answers a case deleted or
+handed off while its title was generated that way. Classify on
+`x-error-code`.
+
+MAJOR because a status changes: a client that read 404 on these driver-only
+routes as "the case is gone" now gets 403 for a reader. copilot-ui reads both
+labels already (faultmaven-copilot#399, ahead of adopting this contract), and
+re-reads the case after an unlabelled 403 or 404 on a write.
+faultmaven-dashboard treats a 404 and a 403 on the case alike
+(`isCaseUnreadable`) and offers these writes only to the driver. The Slack
+agent only creates cases and sends turns, whose status does not change. All
+three survive and only regenerate.""",
+    ),
+    ContractChange(
         version="14.26.1",
         level="PATCH",
         title=(

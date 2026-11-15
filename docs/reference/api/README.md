@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 14.26.1
+**Version:** 15.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1699,6 +1699,8 @@ a previous troubleshooting conversation.
 **Responses:**
 
 - `200` — Successful Response (`object`)
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1729,6 +1731,7 @@ read-only and read it again until it is gone (404) or `deleting` clears
 **Responses:**
 
 - `200` — Successful Response ([`CaseDetail`](#casedetail))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1740,8 +1743,9 @@ read-only and read it again until it is gone (404) or `deleting` clears
 Update case details
 
 Updates case metadata such as title, description, state, priority, and tags.
-Only the case's DRIVER may update it (ADR-020 D2); any other reader gets
-the answer an absent case gets.
+Only the case's DRIVER may update it (ADR-020 D2): a reader who does not
+drive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404
+``CASE_NOT_FOUND`` (#2806).
 
 **Tags:** `cases`
 
@@ -1758,6 +1762,8 @@ the answer an absent case gets.
 **Responses:**
 
 - `200` — Successful Response
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `409` — `x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
@@ -1843,6 +1849,7 @@ resolution time, and other case metrics.
 **Responses:**
 
 - `200` — Successful Response (`object`)
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1863,9 +1870,10 @@ previous body set ``case.state`` directly, which the terminal-state
 validator rejects, and then called a service method that didn't exist).
 
 Then marks all latest reports as linked to the closure. Close-first
-ordering: a refused close (404 unknown/not-owner, 409 already
+ordering: a refused close (404 unreadable, 403 not the driver, 409 already
 terminal — mapped by the global exception handlers) must never mark
-reports as closure-linked.
+reports as closure-linked. The 404 carries ``CASE_NOT_FOUND`` and the
+403 ``CASE_NOT_DRIVER`` (#2806).
 
 Returns:
     CaseClosureResponse with list of archived reports
@@ -1885,6 +1893,8 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `409` — `x-error-code: CASE_TERMINAL`: the case is already resolved or closed. Unlabelled, with `conflict_reason: concurrent_update`: the case changed while closing; reload and retry.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
@@ -1914,6 +1924,7 @@ Always returns 200 with empty array if no data exists.
 **Responses:**
 
 - `200` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1959,6 +1970,7 @@ Get specific data file details for a case.
 **Responses:**
 
 - `200` — Successful Response (`object`)
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -1969,7 +1981,9 @@ Get specific data file details for a case.
 
 Remove data file from a case. Returns 204 No Content on success.
 
-Only the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.
+Only the case's DRIVER may call it (ADR-020 D2): another reader gets 403
+``CASE_NOT_DRIVER``, a caller who cannot read the case 404
+``CASE_NOT_FOUND`` (#2806).
 
 **Tags:** `cases`
 
@@ -1983,6 +1997,8 @@ Only the case's DRIVER may call it (ADR-020 D2); anyone else gets 404.
 **Responses:**
 
 - `204` — Data deleted successfully
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2011,7 +2027,7 @@ Hand the case's investigation writes to another account (ADR-020 D4). The caller
 
 - `200` — Successful Response ([`CaseSummary`](#casesummary))
 - `403` — The caller reads the case but neither created nor drives it
-- `404` — No such case, or the caller cannot read it
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `409` — `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. A resolved or closed case is NOT refused: its driver can still be changed.
 - `422` — The target is not a candidate for this case
 
@@ -2037,7 +2053,7 @@ Who the case's driver may be handed to (ADR-020 D4): the creator, then the activ
 
 - `200` — Successful Response ([`CaseDriverCandidateList`](#casedrivercandidatelist))
 - `403` — The caller reads the case but neither created nor drives it
-- `404` — No such case, or the caller cannot read it
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2061,6 +2077,7 @@ Retrieve all evidence records for a case, each with source-file reference and hy
 **Responses:**
 
 - `200` — Successful Response ([`CaseEvidenceListResponse`](#caseevidencelistresponse))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2085,6 +2102,7 @@ Retrieve detailed evidence information including source file reference and hypot
 **Responses:**
 
 - `200` — Successful Response ([`EvidenceDetailsResponse`](#evidencedetailsresponse))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2107,12 +2125,14 @@ flag is off so the endpoint is invisible in production by default.
 
 Error responses (dispatched by ``api/exception_handlers.py``):
 
-- ``404`` — feature disabled, case not found, or evidence not in case
-  (``NotFoundError``).
+- ``404`` — feature disabled, case not found or not readable by the
+  caller, or evidence not in case (``NotFoundError``). Only the case's
+  own carries ``CASE_NOT_FOUND`` (#2806).
 - ``409`` — evidence has no backing file (``ConflictError`` with
   ``conflict_reason="no_backing_file"``).
-- ``403`` — caller does not drive the case, or drives it but can no
-  longer read it (``AuthorizationError``, ADR-020 D2).
+- ``403`` ``CASE_NOT_DRIVER`` — the caller reads the case but does not
+  drive it (``CaseNotDriverError``, ADR-020 D2). A driver who can no
+  longer read it gets the case's 404.
 - ``422`` — invalid or missing ``data_type``, OR the case is terminal
   (both ``ValidationException``). A closed or resolved investigation
   accepts questions, not mutation; the terminal refusal is raised after
@@ -2135,6 +2155,8 @@ Error responses (dispatched by ``api/exception_handlers.py``):
 **Responses:**
 
 - `200` — Successful Response
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2162,6 +2184,7 @@ Supports pagination and includes metadata about message retrieval status.
 **Responses:**
 
 - `200` — Successful Response ([`CaseMessagesResponse`](#casemessagesresponse))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2234,6 +2257,7 @@ Raises:
 **Responses:**
 
 - `200` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2275,6 +2299,7 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2303,6 +2328,8 @@ This endpoint allows regeneration if the original was missing or needs refresh.
 **Responses:**
 
 - `200` — Successful Response
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2336,6 +2363,7 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2363,6 +2391,7 @@ Share a case with a Team (ADR-013 §D4). Creator-only (ADR-020 D2); the Team mus
 **Responses:**
 
 - `201` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2387,6 +2416,7 @@ Remove a case's share to a Team (ADR-013 §D4). Creator-only (ADR-020 D2). If th
 **Responses:**
 
 - `204` — Successful Response
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`. Without the label: the case is not shared with that team.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2406,9 +2436,11 @@ Generate a concise, case-specific title from case messages and metadata.
 
 **Returns:**
 - 200: TitleResponse with X-Correlation-ID header
-- 404: the case does not exist or the caller does not drive it. Naming a
-  case writes it, an investigation write that is the driver's (ADR-020
-  D2), so any other reader is refused here before any title is generated.
+- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive
+  it. Naming a case writes it, an investigation write that is the
+  driver's (ADR-020 D2), so any other reader is refused here before any
+  title is generated (#2806).
+- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate
@@ -2436,6 +2468,8 @@ Generate a concise, case-specific title from case messages and metadata.
 **Responses:**
 
 - `200` — Successful Response ([`TitleResponse`](#titleresponse))
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2518,6 +2552,8 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 **Responses:**
 
 - `200` — The turn's response. A retry of a committed turn under the same `Idempotency-Key` is answered with that turn's response, and carries `X-Idempotency-Replayed: true`. ([`TurnResponse`](#turnresponse))
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, and while it reads `deleting: true` show it read-only and read it again until it is gone (404) or `deleting` clears).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 - `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).
@@ -2552,6 +2588,7 @@ in a single response optimized for the current investigation phase.
 **Responses:**
 
 - `200` — Successful Response ([`CaseUIResponse_Inquiry`](#caseuiresponse_inquiry) | [`CaseUIResponse_Investigating`](#caseuiresponse_investigating) | [`CaseUIResponse_Resolved`](#caseuiresponse_resolved))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2582,6 +2619,7 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response ([`UploadedFilesList`](#uploadedfileslist))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2606,6 +2644,7 @@ Retrieve detailed information about an uploaded file including all evidence deri
 **Responses:**
 
 - `200` — Successful Response ([`UploadedFileDetailsResponse`](#uploadedfiledetailsresponse))
+- `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -3672,6 +3711,7 @@ Generate post-mortem, executive summary, or technical analysis reports using LLM
 **Responses:**
 
 - `201` — Successful Response ([`ReportGenerationResponse`](#reportgenerationresponse))
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -3720,6 +3760,7 @@ Update report title or content
 **Responses:**
 
 - `200` — Successful Response ([`ReportResponse`](#reportresponse))
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -3741,6 +3782,7 @@ Permanently delete a report (runbooks cannot be deleted)
 **Responses:**
 
 - `204` — Successful Response
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -3768,6 +3810,7 @@ Mark case as closed and link final report
 **Responses:**
 
 - `200` — Successful Response ([`LinkCaseResponse`](#linkcaseresponse))
+- `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written. Unlabelled: the case belongs to another enterprise.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

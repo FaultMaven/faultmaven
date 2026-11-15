@@ -28,9 +28,12 @@ from faultmaven.models.api_models import (
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     _safe_enum_value,
+    case_not_found_http,
     check_case_service_available,
+    resolve_case,
 )
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -51,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 @router.get(
     "/{case_id}/uploaded-files",
+    responses=CASE_NOT_FOUND_RESPONSE,
     response_model=UploadedFilesList,
     operation_id="list_uploaded_files",
     # The gate resolves before the case service, whatever it does (#1494).
@@ -83,9 +87,7 @@ async def list_uploaded_files(
 
     try:
         # Get case with access control
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail="Case not found")
+        case = await resolve_case(case_service, case_id, current_user.user_id)
 
         # Get uploaded files list (not evidence - files exist in ALL phases)
         uploaded_files_list = case.uploaded_files
@@ -134,6 +136,8 @@ async def list_uploaded_files(
     except HTTPException:
         raise
     except NotFoundError as e:
+        if e.resource_type == "Case":
+            raise case_not_found_http() from e
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedException as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -144,6 +148,7 @@ async def list_uploaded_files(
 
 @router.get(
     "/{case_id}/uploaded-files/{file_id}",
+    responses=CASE_NOT_FOUND_RESPONSE,
     response_model=UploadedFileDetailsResponse,
     summary="Get uploaded file details with derived evidence",
     description="Retrieve detailed information about an uploaded file including all evidence derived from it and hypothesis linkage.",
@@ -167,11 +172,9 @@ async def get_uploaded_file_details(
     user_id = current_user.user_id
 
     try:
-        # ICaseService.get_case applies ownership-based access control and
-        # returns None for both "not found" and "not owned" — both surface as 404.
-        case = await case_service.get_case(case_id, user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+        # "Not found" and "not readable" are one 404, ``CASE_NOT_FOUND``; the
+        # file's own 404 below carries no label (#2806).
+        case = await resolve_case(case_service, case_id, user_id)
 
         # Find the uploaded file
         uploaded_file = next(
@@ -315,6 +318,7 @@ def _build_evidence_response(
 
 @router.get(
     "/{case_id}/evidence",
+    responses=CASE_NOT_FOUND_RESPONSE,
     response_model=CaseEvidenceListResponse,
     summary="List all evidence for a case",
     description="Retrieve all evidence records for a case, each with source-file reference and hypothesis linkage.",
@@ -336,9 +340,7 @@ async def list_case_evidence(
     user_id = current_user.user_id
 
     try:
-        case = await case_service.get_case(case_id, user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+        case = await resolve_case(case_service, case_id, user_id)
 
         # Built ONCE for the whole list. This endpoint does not paginate, so a
         # case with many evidence rows would otherwise walk and sort the turn
@@ -365,6 +367,7 @@ async def list_case_evidence(
 
 @router.get(
     "/{case_id}/evidence/{evidence_id}",
+    responses=CASE_NOT_FOUND_RESPONSE,
     response_model=EvidenceDetailsResponse,
     summary="Get evidence details with source file",
     description="Retrieve detailed evidence information including source file reference and hypothesis linkage.",
@@ -387,9 +390,7 @@ async def get_evidence_details(
     user_id = current_user.user_id
 
     try:
-        case = await case_service.get_case(case_id, user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+        case = await resolve_case(case_service, case_id, user_id)
 
         evidence = next(
             (e for e in case.evidence if e.evidence_id == evidence_id), None

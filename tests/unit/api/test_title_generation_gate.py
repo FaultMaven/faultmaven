@@ -116,6 +116,7 @@ def _service_for(case: Case, context_text: str = "") -> AsyncMock:
     """
     service = AsyncMock()
     service.get_case = AsyncMock(return_value=case)
+    service.require_case = AsyncMock(return_value=case)
     service.get_case_conversation_context = AsyncMock(return_value=context_text)
 
     async def _update(case_id, updates, user_id=None):

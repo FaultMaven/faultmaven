@@ -2,7 +2,7 @@
 
 Same defect class as ``test_case_for_session_401.py``, second instance in the
 same file: ``list_uploaded_files`` raises its own
-``HTTPException(404, "Case not found")`` when the case service cannot resolve
+``HTTPException(404, ...)`` when the case service cannot resolve
 the case, but its ``except`` chain was ``NotFoundError`` /
 ``PermissionDeniedException`` / bare ``Exception`` with no
 ``except HTTPException: raise``. The bare handler caught the handler's *own*
@@ -34,8 +34,10 @@ async def test_unknown_case_surfaces_as_404_not_500(build_app, call_api):
     # rather than passing vacuously.
     assert response.status_code == 404, response.text
 
+    # The case's own 404 (#2806).
+    assert response.headers["x-error-code"] == "CASE_NOT_FOUND"
     detail = response.json()["detail"]
-    assert detail == "Case not found"
+    assert detail == "Case not found or access denied"
     # The 500-wrap stringified the HTTPException, embedding its status as text.
     assert "404:" not in detail
 

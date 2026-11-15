@@ -48,6 +48,7 @@ from faultmaven.core.investigation.turn_budget import (
     TURN_COMMIT_RESERVE_SECONDS,
     bind_turn_deadline,
 )
+from faultmaven.exceptions import NotFoundError
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.api_models import QueryIntent, TurnResponse
@@ -513,7 +514,17 @@ async def _submit(
                 return await SQLiteCaseRepository(other).get(case_id)
 
         case_service = MagicMock()
+
+        async def _require_case(
+            case_id, user_id=None, *, driver_only=False, creator_only=False
+        ):
+            case = await _get_case(case_id, user_id)
+            if case is None:
+                raise NotFoundError("Case", case_id)
+            return case
+
         case_service.get_case = AsyncMock(side_effect=_get_case)
+        case_service.require_case = AsyncMock(side_effect=_require_case)
         request = MagicMock()
         request.app.state.llm_provider = None
         return await submit_turn(

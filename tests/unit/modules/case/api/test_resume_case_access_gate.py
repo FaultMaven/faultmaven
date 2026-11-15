@@ -10,7 +10,8 @@ They now live in different places, deliberately:
   caller of that `ICaseService` member inherits it rather than just this route
   — see `TestTheLinkGatesTheCase` in the service tests. What is asserted HERE
   is that the route hands the member the caller, and maps its two answers
-  correctly: `NotFoundError` -> 404, a falsy return -> 500.
+  correctly: `NotFoundError` -> 404 `CASE_NOT_FOUND`, `CaseNotDriverError`
+  -> 403 `CASE_NOT_DRIVER` (#2806), a falsy return -> 500.
 * **The session** is gated here, because the session is the route's own
   argument and the service never sees it.
 """
@@ -21,6 +22,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.exceptions import (
+    CASE_NOT_DRIVER,
+    CASE_NOT_FOUND,
     NotFoundError,
     ServiceException,
     SessionStoreException,
@@ -61,11 +64,12 @@ def _make_case_service(
     )
     # Record what the route asked the gate, so an unscoped early resolution is
     # visible. Losing this assertion in a rewrite is how `get_case(case_id)`
-    # with no caller survived the whole module.
+    # with no caller survived the whole module. The route's gate is
+    # `require_case` (#2806).
     service.calls = []
-    inner = service.get_case
+    inner = service.require_case
 
-    async def recording_get_case(
+    async def recording_require_case(
         case_id, user_id=None, *, driver_only=False, creator_only=False
     ):
         service.calls.append(
@@ -80,7 +84,7 @@ def _make_case_service(
             case_id, user_id, driver_only=driver_only, creator_only=creator_only
         )
 
-    service.get_case = recording_get_case
+    service.require_case = recording_require_case
     return service
 
 
@@ -105,7 +109,7 @@ async def test_forwards_the_caller_to_the_gate(
     service.resume_case_in_session.assert_awaited_once_with(CASE_ID, SESSION_ID, CALLER)
     # …and the route's own early gate resolved against the CALLER, through
     # the DRIVER: a resume is an investigation write (ADR-020 D2). Without
-    # this an unscoped `get_case(case_id)` passes every test here.
+    # this an unscoped `require_case(case_id)` passes every test here.
     assert service.calls == [
         {
             "case_id": CASE_ID,
@@ -131,7 +135,7 @@ async def test_a_case_the_caller_cannot_reach_is_a_404(
     response = await call_api(app, "POST", PATH)
 
     assert response.status_code == 404, response.text
-    assert response.json()["detail"] == "Case not found or resume not permitted"
+    assert response.headers["x-error-code"] == CASE_NOT_FOUND
     service.resume_case_in_session.assert_not_awaited()
 
 
@@ -139,8 +143,9 @@ async def test_refuses_a_teammate_holding_a_share(
     build_app, call_api, owner_or_shared_case_service
 ):
     """Driver only (ADR-020 D2): a teammate who reads the case but does not
-    drive it gets exactly the answer an absent case gets, and neither the
-    session nor the link is reached.
+    drive it is refused 403 ``CASE_NOT_DRIVER`` (#2806; it was the absent
+    case's 404, which the client could not tell from a deletion), and neither
+    the session nor the link is reached.
     """
     service = _make_case_service(
         owner_or_shared_case_service, owner="user-owner", shared_to=(CALLER,)
@@ -149,8 +154,8 @@ async def test_refuses_a_teammate_holding_a_share(
 
     response = await call_api(app, "POST", PATH)
 
-    assert response.status_code == 404, response.text
-    assert response.json()["detail"] == "Case not found or resume not permitted"
+    assert response.status_code == 403, response.text
+    assert response.headers["x-error-code"] == CASE_NOT_DRIVER
     service.resume_case_in_session.assert_not_awaited()
 
 
@@ -169,7 +174,8 @@ async def test_refuses_the_creator_while_another_drives(
 
     response = await call_api(app, "POST", PATH)
 
-    assert response.status_code == 404, response.text
+    assert response.status_code == 403, response.text
+    assert response.headers["x-error-code"] == CASE_NOT_DRIVER
     service.resume_case_in_session.assert_not_awaited()
 
 

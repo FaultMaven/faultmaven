@@ -373,12 +373,12 @@ class TestReviewRound:
     ):
         """The offer ids are the driver's business: anyone else gets the
         refusal every other turn gives them, before any offer lookup."""
-        from faultmaven.exceptions import PermissionDeniedException
+        from faultmaven.exceptions import CaseNotDriverError
 
         repo, case = repo_and_case
         service = _service(MockMilestoneEngine(), repo, preprocessing, file_storage)
 
-        with pytest.raises(PermissionDeniedException):
+        with pytest.raises(CaseNotDriverError):
             await service.process_turn(
                 case_id=case.case_id,
                 user_id="someone_else",

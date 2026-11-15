@@ -56,6 +56,8 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.exceptions import (
     CASE_TERMINAL,
+    AuthorizationError,
+    CaseNotDriverError,
     DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
@@ -79,10 +81,15 @@ from faultmaven.models.api_models import IntentType, QueryIntent, TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.api.routes.dependencies import (
+    CASE_NOT_DRIVER_RESPONSE,
+    CASE_NOT_FOUND_RESPONSE,
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
     _parse_observed_at,
+    case_not_driver_http,
+    case_not_found_http,
     check_case_service_available,
+    resolve_case,
     resolve_paste_source_meta,
 )
 from faultmaven.modules.case.api.title_generation import _auto_title_case_if_default
@@ -151,6 +158,7 @@ async def _turn_gated_for_viewer(
 @router.get(
     "/{case_id}/messages",
     response_model=CaseMessagesResponse,
+    responses=CASE_NOT_FOUND_RESPONSE,
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_case_messages_enhanced")
@@ -182,12 +190,7 @@ async def get_case_messages_enhanced(
 
     try:
         # Verify user has access to the case
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or access denied",
-            )
+        await resolve_case(case_service, case_id, current_user.user_id)
 
         # Use the enhanced message retrieval method
         message_response = await case_service.get_case_messages_enhanced(
@@ -229,6 +232,7 @@ async def get_case_messages_enhanced(
 @router.post(
     "/sessions/{session_id}/resume/{case_id}",
     response_model=Dict[str, Any],
+    responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_resume_case_in_session")
@@ -282,16 +286,12 @@ async def resume_case_in_session(
         # `cases.last_activity` through `update_activity_timestamp` and moves
         # the session's current-case pointer, so it resolves through the
         # driver — the same rule `sessions.py` picks by HTTP method, and the
-        # turn's own gate. A reader who does not drive gets the answer an
-        # absent case gets.
-        case = await case_service.get_case(
-            case_id, current_user.user_id, driver_only=True
+        # turn's own gate. A reader who does not drive is refused 403
+        # ``CASE_NOT_DRIVER``, a caller who cannot read the case 404
+        # ``CASE_NOT_FOUND`` (#2806).
+        await resolve_case(
+            case_service, case_id, current_user.user_id, driver_only=True
         )
-        if case is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Case not found or resume not permitted",
-            )
 
         # ── 2. The session ───────────────────────────────────────────────
         # Without this, naming SOMEONE ELSE'S session id retargets their
@@ -366,11 +366,12 @@ async def resume_case_in_session(
 
     except HTTPException:
         raise
-    except NotFoundError:
-        # The access verdict from `link_session_to_case`. Re-raised so the
-        # app's handler answers 404; the bare handler below would make it a
-        # 500 and tell the caller the server broke on a request it was simply
-        # not allowed to make.
+    except (NotFoundError, AuthorizationError):
+        # The access verdict from `link_session_to_case` (404 CASE_NOT_FOUND,
+        # 403 CASE_NOT_DRIVER when the driver changed after the gate above).
+        # Re-raised so the app's handlers answer it; the bare handler below
+        # would make it a 500 and tell the caller the server broke on a
+        # request it was simply not allowed to make.
         raise
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -387,6 +388,8 @@ async def resume_case_in_session(
 #: does: an undocumented response is invisible to every client generator and
 #: to every contract differ.
 _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    **CASE_NOT_DRIVER_RESPONSE,
+    **CASE_NOT_FOUND_RESPONSE,
     200: {
         "description": (
             "The turn's response. A retry of a committed turn under the same "
@@ -693,14 +696,10 @@ async def submit_turn(
         # that turn back from its receipt; a driver gate here, ahead of the
         # replay, would refuse that retry once the case was reassigned away
         # from the caller while they can still read it. A reader who does not
-        # drive is therefore admitted here and refused with 403 in the
-        # service, before the turn cap is charged or anything is written.
-        case = await case_service.get_case(case_id, current_user.user_id)
-        if not case:
-            raise HTTPException(
-                status_code=404,
-                detail="Case not found or access denied",
-            )
+        # drive is therefore admitted here and refused with 403
+        # ``CASE_NOT_DRIVER`` in the service, before the turn cap is charged or
+        # anything is written.
+        case = await resolve_case(case_service, case_id, current_user.user_id)
 
         # Each file's bytes, read ONCE: the idempotency step fingerprints them
         # and the attachment build below reuses them (#1888). A fingerprint of
@@ -1077,10 +1076,16 @@ async def submit_turn(
             },
         )
     except NotFoundError as e:
+        # The case gone by the time the service read it is the case's 404
+        # (#2806); any other missing resource goes out unlabelled.
+        if e.resource_type == "Case":
+            raise case_not_found_http() from e
         raise HTTPException(
             status_code=404,
             detail=str(e),
         )
+    except CaseNotDriverError as e:
+        raise case_not_driver_http(str(e)) from e
     except PermissionDeniedException as e:
         raise HTTPException(
             status_code=403,
@@ -1139,6 +1144,7 @@ async def submit_case_query_gone(case_id: str):
 
 @router.patch(
     "/{case_id}/evidence/{evidence_id}/classification",
+    responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
     # Route-level, ahead of every provider (#1494's shape): the handler also
     # resolves the case service now (ADR-020 D2), and an anonymous caller must
     # be refused before any collaborator resolves.
@@ -1172,12 +1178,14 @@ async def reclassify_evidence(
 
     Error responses (dispatched by ``api/exception_handlers.py``):
 
-    - ``404`` — feature disabled, case not found, or evidence not in case
-      (``NotFoundError``).
+    - ``404`` — feature disabled, case not found or not readable by the
+      caller, or evidence not in case (``NotFoundError``). Only the case's
+      own carries ``CASE_NOT_FOUND`` (#2806).
     - ``409`` — evidence has no backing file (``ConflictError`` with
       ``conflict_reason="no_backing_file"``).
-    - ``403`` — caller does not drive the case, or drives it but can no
-      longer read it (``AuthorizationError``, ADR-020 D2).
+    - ``403`` ``CASE_NOT_DRIVER`` — the caller reads the case but does not
+      drive it (``CaseNotDriverError``, ADR-020 D2). A driver who can no
+      longer read it gets the case's 404.
     - ``422`` — invalid or missing ``data_type``, OR the case is terminal
       (both ``ValidationException``). A closed or resolved investigation
       accepts questions, not mutation; the terminal refusal is raised after
@@ -1207,10 +1215,16 @@ async def reclassify_evidence(
     # it. Not a refusal here — the service keeps this route's refusal shapes
     # (404 absent, 403 not the driver) — only the fact the service cannot
     # resolve for itself.
-    caller_reads_case = (
-        case_service is not None
-        and await case_service.get_case(case_id, current_user.user_id) is not None
-    )
+    # Through ``require_case``, not ``get_case``: that answers None for a
+    # repository failure too, and the reclassifier would then refuse a reader
+    # with the absent case's ``CASE_NOT_FOUND`` (#2806).
+    caller_reads_case = False
+    if case_service is not None:
+        try:
+            await case_service.require_case(case_id, current_user.user_id)
+            caller_reads_case = True
+        except NotFoundError:
+            pass
     updated_evidence = await evidence_reclassifier.reclassify_out_of_band(
         case_id=case_id,
         evidence_id=evidence_id,

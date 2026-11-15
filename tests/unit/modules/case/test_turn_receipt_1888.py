@@ -201,22 +201,20 @@ class _Faults:
 
 class _TeamCaseService(CaseService):
     """The real ``CaseService``; its read arm also admits ``TEAMMATE`` (a team
-    share, which the standalone wiring has no resolver for)."""
+    share, which the standalone wiring has no resolver for). Overridden at the
+    one resolver, so ``get_case`` and ``require_case`` both honour it."""
 
-    async def get_case(
-        self, case_id, user_id=None, *, driver_only=False, creator_only=False
+    async def _may_access(
+        self, case, user_id, *, driver_only=False, creator_only=False, strict=False
     ):
-        case = await self.repository.get(case_id)
-        if case is None:
-            return None
-        if user_id is None:
-            return case
+        if not user_id:
+            return True
         if creator_only:
-            return case if user_id == case.user_id else None
+            return user_id == case.user_id
         reads = user_id in (case.user_id, TEAMMATE)
         if driver_only:
-            return case if reads and user_id == case.effective_driver_id else None
-        return case if reads else None
+            return reads and user_id == case.effective_driver_id
+        return reads
 
 
 @dataclass
