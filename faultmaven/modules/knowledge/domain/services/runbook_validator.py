@@ -444,9 +444,11 @@ _MAX_VALUES_NAMED = 10
 #: rendering is longer shows its first 38 and last 39 characters around "...".
 _MAX_VALUE_CHARS = 80
 _HEAD_CHARS, _TAIL_CHARS = 38, 39
-#: An int past this many bits has more than 79 decimal digits; ``str`` of one
-#: past about 14,000 bits raises ``ValueError``, so it is never rendered.
-_MAX_INT_BITS = 260
+#: Every int at or above 2**266 (more than 266 bits) has at least 81 decimal
+#: digits and every smaller one at most 80, so past this many bits an int is
+#: shown by its size and never rendered: ``str`` of one past about 14,000 bits
+#: raises ``ValueError``.
+_MAX_INT_BITS = 266
 
 
 def _leaf_chunk(x: Any, rev: bool) -> str:
@@ -529,7 +531,7 @@ def _read(chunks: Iterator[str], enough: int) -> List[str]:
 def _shown(value: Any, as_repr: bool = False) -> str:
     """``value`` as a refusal renders it, ``str`` (``as_repr``: ``repr``), exactly
     when that is at most 80 characters, and otherwise its first 38 and last 39
-    characters around "...". Only those characters are ever rendered."""
+    characters around "...". Only a bounded head and tail are rendered."""
     if not as_repr and isinstance(value, (str, date)):
         text = value if isinstance(value, str) else str(value)
         if len(text) <= _MAX_VALUE_CHARS:
@@ -555,10 +557,13 @@ def _capped_refusals(
     else the sentence around the value and whether the value shows by ``repr``.
     Only an invalid item is keyed, a str by its value and anything else by its
     identity (a YAML alias repeats one object), and only a new one is rendered.
+    A str already refused is skipped before ``refusal`` scans it again.
     """
     refused: List[str] = []
     seen: Set[Any] = set()
     for item in items:
+        if isinstance(item, str) and item in seen:
+            continue
         found = refusal(item)
         if found is None:
             continue
@@ -661,8 +666,8 @@ def check_cause_statement_invariants(
            WARN on near-duplicates (lexical Jaccard >= 0.6) — sibling causes must
            be mutually discriminative (MECE) or holistic matching returns
            'multiple' and the matcher abstains. Pairs are taken over the first
-           Statement of each letter; the first 20 are named, one warning each,
-           and one more warning counts the rest.
+           Statement with words of each letter; the first 20 are named, one
+           warning each, and one more warning counts the rest.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -688,8 +693,8 @@ def check_cause_statement_invariants(
                 f"causes must be mutually discriminative (MECE) or the matcher abstains."
             )
     # Near-duplicates (high lexical overlap but not identical): pairwise warn,
-    # over the first Statement of each cause letter, so at most 26 whatever a
-    # document repeats; a reused letter is refused on its own
+    # over the first Statement with words of each cause letter, so at most 26
+    # whatever a document repeats; a reused letter is refused on its own
     # (FaultMaven/faultmaven#2661).
     firsts: List[int] = []
     seen_letters: Set[str] = set()

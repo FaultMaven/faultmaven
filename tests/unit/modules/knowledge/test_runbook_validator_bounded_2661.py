@@ -1,14 +1,14 @@
 """The runbook validator's near-duplicate check and per-item refusals are bounded
 (#2661 sub-stage 3b0, #2690).
 
-- The near-duplicate check runs the all-pairs loop over the first Statement of
-  each cause letter. With one Statement per letter (every valid document) it finds
+- The near-duplicate check runs the all-pairs loop over the first Statement with
+  words of each cause letter. With one Statement per letter (every valid document) it finds
   that loop's pairs, in its order: a differential against the loop, copied from
   ``e1451bc85``. The first 20 pairs keep their warning; one more counts the rest.
 - A frontmatter refusal names each distinct invalid value once, at most ten, then
   counts the rest. A value shows as ``str``/``repr`` renders it when that is at
   most 80 characters, else as its first 38 and last 39 characters around "...",
-  and only those characters are rendered. Its size no longer grows with the item
+  and only a bounded head and tail are rendered. Its size no longer grows with the item
   count or with a value a YAML alias repeats.
 
 The same cases are in ``faultmaven-kb-toolkit``'s suite
@@ -355,6 +355,19 @@ class TestSymptomClassRefusals:
             f"symptom_class items must be strings: {whole[:38]}...{whole[-39:]}"
         )
 
+    @pytest.mark.parametrize("bits", [261, 266, 267])
+    def test_an_int_renders_whole_up_to_266_bits(self, bits):
+        """Every int below 2**266 has at most 80 digits and renders exactly as
+        ``str`` does; from 2**266 (267 bits) it has at least 81 and shows its
+        size. ``6617a1338`` cut at 260 bits."""
+        value = 2 ** (bits - 1)
+        content = _with({"symptom_class": f"[{value}]"})
+        shown = str(value) if bits <= 266 else f"<int of {bits} bits>"
+        assert _errors(content, "symptom_class") == [
+            f"symptom_class items must be strings: {shown}"
+        ]
+        assert len(str(value)) <= 80 if bits <= 266 else len(str(value)) > 80
+
     def test_a_huge_int_renders_by_its_size(self):
         """``str`` of a 16,000-bit int raises ``ValueError``; it is never called."""
         content = _with({"symptom_class": "[0x" + "f" * 4000 + "]"})
@@ -427,6 +440,23 @@ class TestSiblingRefusals:
         assert refused == [
             f"Tag must be lowercase alphanumeric with hyphens: {v}" for v in values[:10]
         ] + ["And 2 more invalid tags."]
+
+    def test_an_aliased_invalid_string_is_checked_once(self, monkeypatch):
+        """50 aliases of one invalid 10,000-character tag: ``_tag_refusal``
+        (a regex over the whole value) runs once, not 51 times as at
+        ``6617a1338``."""
+        calls = []
+        real = rv._tag_refusal
+        monkeypatch.setattr(
+            rv, "_tag_refusal", lambda tag: calls.append(tag) or real(tag)
+        )
+        tags = "[&a " + "a" * 10_000 + "A" + ", " + ", ".join(["*a"] * 50) + "]"
+        shown = "a" * 38 + "..." + "a" * 38 + "A"
+        content = _with({"tags": tags})
+        assert _errors(content, "Tag must") == [
+            f"Tag must be lowercase alphanumeric with hyphens: {shown}"
+        ]
+        assert len(calls) == 1
 
     def test_distinct_long_tags_keep_distinct_errors(self):
         """As for symptom_class; the score is e1451bc85's (74.8/C)."""
@@ -509,11 +539,12 @@ class TestRenderer:
 
 class TestScore:
     """The score subtracts 10 per error. It moves from ``e1451bc85``'s only when
-    an invalid value repeats (the same string, or one object a YAML alias
-    repeats), or when more than 10 distinct invalid values hit the cap: the
-    errors are then 11 (ten named, one count) instead of n, so 12 or more
-    distinct values score higher. The pinned figures were captured from
-    ``e1451bc85``."""
+    an invalid value repeats, meaning the same string, or the same object, which
+    a YAML alias or a written-out repeat of an interned value (a small int,
+    ``true``, ``false``, ``null``) gives; or when more than 10 distinct values
+    hit the cap, so there are 11 errors instead of n. Either can raise the score
+    only while completeness is not already floored at 0. The pinned figures were
+    captured from ``e1451bc85``."""
 
     def test_distinct_invalid_values_score_as_before(self):
         validation, score = validate_and_score(_with({"symptom_class": "[aa, bb, cc]"}))
