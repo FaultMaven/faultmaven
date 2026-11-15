@@ -170,7 +170,9 @@ def _prometheus_imports(source: str, module: str, is_package: bool = False) -> s
             for a in node.names:
                 if origin.split(".")[0] == "prometheus_client":
                     found.add((module, origin, a.name))
-                elif origin in shim_modules and a.name.startswith("Prometheus"):
+                elif origin in shim_modules and (
+                    a.name == "*" or a.name.startswith("Prometheus")
+                ):
                     found.add((module, origin, a.name))
                 bound[a.asname or a.name] = f"{origin}.{a.name}"
     for node in ast.walk(ast.parse(source)):
@@ -204,6 +206,7 @@ def test_only_the_shim_imports_a_collector_class():
         f"from {_SHIM_PACKAGE} import metrics\nmetrics.PrometheusHistogram",
         f"import {_SHIM}\n{_SHIM}.PrometheusSummary",
         "from . import metrics as m\nm.PrometheusInfo",
+        f"from {_SHIM} import *",
     ],
 )
 def test_the_import_check_sees_a_collector_class(line):
@@ -390,7 +393,9 @@ async def test_the_tracer_health_reports_whether_its_collectors_record(
 ):
     if stand_in is not None:
         monkeypatch.setattr(tracing, "GENERIC_FUNCTION_DURATION", stand_in)
+    real = is_real(tracing.GENERIC_FUNCTION_DURATION)
+    monkeypatch.setenv("ENABLE_METRICS", "false" if real else "true")
     tracer = tracing.OpikTracer(settings=settings_module.get_settings())
     report = (await tracer.health_check())["tracer_specific"]
-    assert report["metrics_recording"] is is_real(tracing.GENERIC_FUNCTION_DURATION)
+    assert report["metrics_recording"] is real
     assert "prometheus_available" not in report
