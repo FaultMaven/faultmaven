@@ -1254,19 +1254,41 @@ def test_both_counters_expose_every_series_at_zero_from_import():
         **{f"faultmaven_case_outcome_conflicts|{f}": 0.0 for f in fields},
         **{
             f"faultmaven_case_outcome_write_failures|{at}": 0.0
-            for at in _declared_write_points()
+            for at in _recorded_write_points()
         },
     }
 
 
+#: The write points that never reach ``record_case_outcome``, so never label
+#: the write-failure counter: the backfill's first record and repair fold
+#: through ``compute_case_outcome``, narration folds in memory and stores
+#: nothing, and ``shape`` marks an upgrade rather than naming a fold.
+_UNRECORDED = {
+    WritePoint.REPAIR,
+    WritePoint.BACKFILL,
+    WritePoint.NARRATION,
+    WritePoint.SHAPE,
+}
+
+
+def _recorded_write_points() -> set[str]:
+    """Every write point ``record_case_outcome`` is called with (#2811)."""
+    return {p.value for p in WritePoint} - {p.value for p in _UNRECORDED}
+
+
+def test_the_write_failure_counter_declares_every_recorded_write_point():
+    """Its ``at`` labels are exactly the recorded write points: a label
+    removed, one added for a point that never records, or a new
+    ``WritePoint`` nobody declared, each fails here."""
+    assert set(_declared_write_points()) == _recorded_write_points()
+
+
 def _declared_write_points() -> tuple:
-    """The write-failure counter's ``at`` labels, read off its declaration
-    (``lifecycle_metrics``), so the expected series cannot drift from it;
-    each one a ``WritePoint`` (#2811)."""
+    """The write-failure counter's ``at`` labels, as its declaration
+    (``lifecycle_metrics``) states them."""
     import ast
 
     from faultmaven.core.investigation import lifecycle_metrics
-    from faultmaven.modules.case.contracts import WritePoint
 
     tree = ast.parse(Path(lifecycle_metrics.__file__).read_text(encoding="utf-8"))
     (call,) = [
@@ -1276,6 +1298,4 @@ def _declared_write_points() -> tuple:
         and [t.id for t in node.targets] == ["case_outcome_write_failures_total"]
     ]
     (values,) = [k.value for k in call.keywords if k.arg == "label_values"]
-    declared = ast.literal_eval(values)["at"]
-    assert set(declared) <= {p.value for p in WritePoint}
-    return declared
+    return ast.literal_eval(values)["at"]
