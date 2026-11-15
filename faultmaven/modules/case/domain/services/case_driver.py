@@ -165,12 +165,10 @@ class CaseDriverMixin:
         """The case, iff ``actor_user_id`` is its creator or effective driver.
 
         A caller who cannot READ the case gets 404 (the read gate runs first,
-        as on every case route); a reader who is neither gets 403 (ADR-020
-        D4).
+        through ``require_case`` as on every case route); a reader who is
+        neither gets 403 (ADR-020 D4).
         """
-        case = await self.repository.get(case_id)
-        if case is None or not await self._may_access(case, actor_user_id):
-            raise NotFoundError("Case", case_id)
+        case = await self.require_case(case_id, actor_user_id)
         if actor_user_id not in (case.user_id, case.effective_driver_id):
             raise AuthorizationError(
                 "Only the case's creator or its current driver may do this"

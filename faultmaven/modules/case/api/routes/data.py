@@ -59,11 +59,12 @@ async def list_case_data(
     Always returns 200 with empty array if no data exists.
     """
     case_service = check_case_service_available(case_service)
+    # Outside the try below: its "never fail a list" fallback would answer a
+    # failed case lookup 200 with an empty list, for a case whose existence and
+    # access were never checked. A lookup failure is a 5xx (#2806).
+    await resolve_case(case_service, case_id, current_user.user_id)
 
     try:
-        # Verify case exists
-        await resolve_case(case_service, case_id, current_user.user_id)
-
         # Mock empty data list for now
         data_list = []
         total_count = 0

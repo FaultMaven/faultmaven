@@ -302,7 +302,12 @@ async def test_an_unshare_from_a_team_the_case_is_not_shared_with_is_unlabelled(
 
 @pytest.mark.parametrize(
     "method,template,body",
-    [("GET", "/cases/{id}", None), ("PUT", "/cases/{id}", {"title": "Renamed"})],
+    [
+        ("GET", "/cases/{id}", None),
+        ("PUT", "/cases/{id}", {"title": "Renamed"}),
+        # Its "never fail a list" fallback answered the failure 200 [].
+        ("GET", "/cases/{id}/data", None),
+    ],
 )
 async def test_a_failed_lookup_is_never_the_cases_404(world, method, template, body):
     """``get_case`` answers None for a repository failure; a gate on it said
@@ -313,6 +318,87 @@ async def test_a_failed_lookup_is_never_the_cases_404(world, method, template, b
 
     assert answer.status_code >= 500, answer.text
     assert _label(answer) != CASE_NOT_FOUND
+
+
+class _Unreachable:
+    """A team or share lookup whose store is down."""
+
+    def __init__(self, *names):
+        for name in names:
+            setattr(self, name, self._fail)
+
+    async def _fail(self, *args, **kwargs):
+        raise ConnectionError("share store unreachable")
+
+
+@pytest.mark.parametrize("store", ["share_repository", "team_service"])
+@pytest.mark.parametrize(
+    "method,template,body,as_user",
+    [
+        # TEAMMATE and DRIVER both read the case only through the team share.
+        ("GET", "/cases/{id}", None, TEAMMATE),
+        ("PUT", "/cases/{id}", {"title": "Renamed"}, DRIVER),
+        ("GET", "/cases/{id}/driver-candidates", None, DRIVER),
+    ],
+    ids=["read", "driver-write", "handoff"],
+)
+async def test_a_failed_share_lookup_is_never_a_refusal(
+    world, store, method, template, body, as_user
+):
+    """The listing collapses a failed share arm to owner-only, which only
+    shows less. On a gate that empty arm told a teammate the case was gone
+    and the driver they do not drive it, both labels a client acts on."""
+    unreachable = _Unreachable("list_resource_ids", "list_all_user_team_ids")
+    setattr(world.service, store, unreachable)
+
+    answer = await world.call(method, template, body, as_user=as_user)
+
+    assert answer.status_code >= 500, answer.text
+    assert _label(answer) not in (CASE_NOT_FOUND, CASE_NOT_DRIVER)
+
+
+async def test_a_failed_share_lookup_still_lets_the_creator_in(world):
+    """The creator reads through the owner arm, which never asks the store."""
+    world.service.share_repository = _Unreachable("list_resource_ids")
+
+    assert (await world.service.require_case(CASE_ID, CREATOR)).case_id == CASE_ID
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [CaseNotDriverError(), NotFoundError("Case", CASE_ID)],
+    ids=["handed-off", "deleted"],
+)
+async def test_a_title_write_that_loses_the_race_keeps_its_verdict(verdict):
+    """``update_case`` raises when the case is handed off or deleted while the
+    title is generated. The persist step wrapped that in a 500 after the model
+    spend; it reaches the global handlers, which label it."""
+    from tests.unit.api.test_title_generation_gate import (
+        _conversation,
+        _generate,
+        _make_case,
+        _service_for,
+        mock_request,
+        mock_response,
+        mock_user,
+    )
+
+    case = _make_case()
+    case.inquiry.proposed_problem_statement = (
+        "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+    )
+    service = _service_for(case, _conversation(user_turns=1))
+    service.update_case.side_effect = verdict
+
+    with pytest.raises(type(verdict)):
+        await _generate(
+            service,
+            mock_request.__wrapped__(),
+            mock_response.__wrapped__(),
+            mock_user.__wrapped__(),
+            case.case_id,
+        )
+    service.update_case.assert_awaited_once()
 
 
 # ============================================================

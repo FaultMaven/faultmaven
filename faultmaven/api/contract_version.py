@@ -190,8 +190,18 @@ and `DELETE /cases/{case_id}/team-shares/{team_id}` answered a missing case
 403 `Case ... not found`, and a caller of no share was told through the
 creator check that the case exists. The classification `PATCH` answered a
 caller who cannot read the case 403. All three now answer 404
-`CASE_NOT_FOUND`. A repository failure during a case lookup is a 5xx, never
-this 404.
+`CASE_NOT_FOUND`. A failure during a case lookup is a 5xx, never this 404
+nor `CASE_NOT_DRIVER`: the repository read, and the lookup of the caller's
+teams and the cases shared to them.
+
+The label is the header, not the body. `GET /cases/{case_id}`, `GET
+/cases/{case_id}/ui` and `PUT /cases/{case_id}` answered their 404 with
+`detail.error.code == "CASE_NOT_FOUND"`; they now answer `{"detail": "..."}`
+like the other case routes. A refusal raised in the service reaches the
+common handler instead, whose body names `resource_type: "Case"` (404) or the
+refusal text (403); `POST /cases/{case_id}/title` answers a case deleted or
+handed off while its title was generated that way. Classify on
+`x-error-code`.
 
 MAJOR because a status changes: a client that read 404 on these driver-only
 routes as "the case is gone" now gets 403 for a reader. copilot-ui reads both

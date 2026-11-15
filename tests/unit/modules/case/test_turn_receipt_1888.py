@@ -205,7 +205,7 @@ class _TeamCaseService(CaseService):
     one resolver, so ``get_case`` and ``require_case`` both honour it."""
 
     async def _may_access(
-        self, case, user_id, *, driver_only=False, creator_only=False
+        self, case, user_id, *, driver_only=False, creator_only=False, strict=False
     ):
         if not user_id:
             return True

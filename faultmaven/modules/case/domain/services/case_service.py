@@ -438,6 +438,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         *,
         driver_only: bool = False,
         creator_only: bool = False,
+        strict: bool = False,
     ) -> bool:
         """Whether ``user_id`` may reach ``case`` — THE resolver (ADR-020 D2).
 
@@ -453,6 +454,10 @@ class CaseService(CaseDriverMixin, ICaseService):
         route passes the authenticated caller. Extracted from :meth:`get_case`
         so a caller that must NOT swallow infrastructure failures can apply the
         same rule (see :meth:`require_case`).
+
+        ``strict`` is for a gate: a failure resolving the shared-to-my-teams arm
+        raises instead of collapsing it to owner-only (see
+        :meth:`_resolve_shared_case_ids`).
         """
         if driver_only and creator_only:
             raise ValueError("driver_only and creator_only are exclusive")
@@ -463,12 +468,14 @@ class CaseService(CaseDriverMixin, ICaseService):
         elif driver_only:
             admitted = case.effective_driver_id == user_id and (
                 case.user_id == user_id
-                or case.case_id in await self._resolve_shared_case_ids(user_id)
+                or case.case_id
+                in await self._resolve_shared_case_ids(user_id, strict=strict)
             )
         else:
             admitted = (
                 case.user_id == user_id
-                or case.case_id in await self._resolve_shared_case_ids(user_id)
+                or case.case_id
+                in await self._resolve_shared_case_ids(user_id, strict=strict)
             )
         if not admitted:
             logger.warning(
@@ -510,16 +517,24 @@ class CaseService(CaseDriverMixin, ICaseService):
         return None``, so a repository outage would be indistinguishable from
         "no such case" and a gate built on it would answer 404 for a case that
         exists — the half-success-as-absence shape #1390 was about. Here a
-        repository failure propagates and the caller answers 5xx.
+        repository failure propagates and the caller answers 5xx, and so does a
+        failure resolving the caller's teams or the cases shared to them
+        (``strict``): the listing collapses that arm to owner-only, which only
+        shows less, but here an empty arm is a claim — "no such case" to a
+        teammate, or "not the driver" to the driver.
 
         ``driver_only`` / ``creator_only`` mean what they mean on
         :meth:`get_case`.
         """
         case = await self.repository.get(case_id)
-        if not case or not await self._may_access(case, user_id):
+        if not case or not await self._may_access(case, user_id, strict=True):
             raise NotFoundError("Case", case_id)
         if (driver_only or creator_only) and not await self._may_access(
-            case, user_id, driver_only=driver_only, creator_only=creator_only
+            case,
+            user_id,
+            driver_only=driver_only,
+            creator_only=creator_only,
+            strict=True,
         ):
             if driver_only:
                 raise CaseNotDriverError()
@@ -1171,7 +1186,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         )
         return updated_case
 
-    async def _resolve_user_team_ids(self, user_id: Optional[str]) -> List[str]:
+    async def _resolve_user_team_ids(
+        self, user_id: Optional[str], *, strict: bool = False
+    ) -> List[str]:
         """The team ids a principal belongs to; ``[]`` when unwired or on error.
 
         Gateway for the read paths (allowlist + team facet) so a request that
@@ -1183,19 +1200,26 @@ class CaseService(CaseDriverMixin, ICaseService):
         table (see ``PostgreSQLTeamRepository``), so under the caller's org RLS
         context it returns only teams in that org — the case/team org boundary is
         enforced here, not left to a distant policy. Fail-safe: an error yields
-        ``[]`` (owner-only reads / no facet) rather than leaking or crashing.
+        ``[]`` (owner-only reads / no facet) rather than leaking or crashing,
+        except under ``strict``, where it propagates.
         """
         if not user_id or not self.team_service:
             return []
         try:
             return await self.team_service.list_all_user_team_ids(user_id)
         except Exception as e:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning(f"Failed to resolve team ids for {user_id}: {e}")
             return []
 
     @trace("case_service_list_user_cases")
     async def _resolve_shared_case_ids(
-        self, user_id: Optional[str], team_ids: Optional[List[str]] = None
+        self,
+        user_id: Optional[str],
+        team_ids: Optional[List[str]] = None,
+        *,
+        strict: bool = False,
     ) -> List[str]:
         """Resolve the case ids shared to any of ``user_id``'s teams.
 
@@ -1226,11 +1250,18 @@ class CaseService(CaseDriverMixin, ICaseService):
         whole listing. The refusing counterpart, for paths that must not
         degrade, is ``api/v1/auth_dependencies.require_actor_enterprise``; both
         decide through the same ``usable_tenant_id`` predicate.
+
+        ``strict`` (a single-case gate, :meth:`require_case`): a team or share
+        lookup that FAILS propagates instead. On a listing an empty arm only
+        shows less; on a gate it is the claim "no such case" or "not the
+        driver", which a client acts on (#2806, the #944 rule). A tenantless
+        context still collapses: the request front door refuses one before any
+        route runs.
         """
         if not self.share_repository:
             return []
         if team_ids is None:
-            team_ids = await self._resolve_user_team_ids(user_id)
+            team_ids = await self._resolve_user_team_ids(user_id, strict=strict)
         if not team_ids:
             return []
         enterprise_id = get_current_tenant_id()
@@ -1249,6 +1280,8 @@ class CaseService(CaseDriverMixin, ICaseService):
                 enterprise_id=enterprise_id,
             )
         except Exception as e:  # noqa: BLE001
+            if strict:
+                raise
             logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
             return []
 
