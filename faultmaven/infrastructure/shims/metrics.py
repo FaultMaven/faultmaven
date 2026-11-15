@@ -539,34 +539,6 @@ def is_real(collector: Any) -> bool:
     return not isinstance(collector, NoOpMetric)
 
 
-def get_metrics_status() -> dict:
-    """
-    Get current metrics collection status for diagnostics.
-
-    Returns:
-        Dictionary with metrics configuration status:
-        - prometheus_available: Whether the prometheus_client library is installed
-        - metrics_enabled: Whether ENABLE_METRICS env var is true
-        - active: Whether metrics collection is actually active (both conditions met)
-    """
-    metrics_enabled = _is_metrics_enabled()
-    return {
-        "prometheus_available": PROMETHEUS_AVAILABLE,
-        "metrics_enabled": metrics_enabled,
-        "active": PROMETHEUS_AVAILABLE and metrics_enabled,
-    }
-
-
-def is_metrics_active() -> bool:
-    """
-    Check if metrics collection is currently active.
-
-    Returns:
-        True if Prometheus is available AND ENABLE_METRICS=true
-    """
-    return PROMETHEUS_AVAILABLE and _is_metrics_enabled()
-
-
 # Pre-defined common metrics (follow evolution strategy example from lines 898-913)
 request_counter = Counter(
     "http_requests_total",

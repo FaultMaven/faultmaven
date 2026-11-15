@@ -8,10 +8,13 @@ switch also had three spellings: ``ENABLE_METRICS`` (the shim's),
 pushgateway exporter, a second metrics path, #2780).
 
 Pin 2: importing each module that imports ``prometheus_client`` or calls the
-shim, in a fresh interpreter with the switch off, registers nothing; and no
-module but the shim imports a collector class, so none can build one at call
-time. Pin 3: no setting, CI line, doc, ``.env.example`` or compose file names
-another switch. #2780: the APM integration has no Prometheus exporter.
+shim, in a fresh interpreter with the switch off, registers nothing. Outside the
+shim, no module imports anything from ``prometheus_client`` but the listed
+exposition, registry and parser names, and none imports a ``Prometheus*`` name
+from the shim or its package, or reads one as an attribute of a name bound to
+either. A plain ``import prometheus_client`` fails too. Pin 3: no setting, CI
+line, doc, ``.env.example`` or compose file names another switch. #2780: the
+APM integration has no Prometheus exporter.
 """
 
 import ast
@@ -27,10 +30,13 @@ from pydantic_settings import BaseSettings
 import faultmaven
 from faultmaven.config import settings as settings_module
 from faultmaven.infrastructure import shims
+from faultmaven.infrastructure.observability import tracing
 from faultmaven.infrastructure.observability.apm_integration import (
     APMIntegration,
     APMProvider,
 )
+from faultmaven.infrastructure.shims.metrics import NoOpMetric, is_real
+from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
 
 pytestmark = pytest.mark.unit
 
@@ -76,17 +82,23 @@ def _module_name(path: Path) -> str:
     return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
+def _source(node: ast.ImportFrom, module: str, is_package: bool) -> str:
+    """The absolute module *node* imports from, relative imports resolved."""
+    source = node.module or ""
+    if node.level:
+        base = module.split(".")
+        base = base[: len(base) - node.level + (1 if is_package else 0)]
+        source = ".".join(base + ([source] if source else []))
+    return source
+
+
 def _imports_metrics(node: ast.AST, module: str, is_package: bool) -> bool:
     """Whether *node* imports ``prometheus_client`` or the metrics shim."""
     if isinstance(node, ast.Import):
         return any(a.name.split(".")[0] == "prometheus_client" for a in node.names)
     if not isinstance(node, ast.ImportFrom):
         return False
-    source = node.module or ""
-    if node.level:
-        base = module.split(".")
-        base = base[: len(base) - node.level + (1 if is_package else 0)]
-        source = ".".join(base + ([source] if source else []))
+    source = _source(node, module, is_package)
     names = {a.name for a in node.names}
     return (
         source.split(".")[0] == "prometheus_client"
@@ -115,7 +127,8 @@ def test_the_list_is_every_importer_and_shim_caller():
 
 
 #: Every ``prometheus_client`` import outside the shim: (module, imported from,
-#: name). Exposition, registry and parser only; no collector class.
+#: name). Exposition, registry and parser only; no collector class, and no
+#: ``Prometheus*`` class the shim binds.
 _ALLOWED_PROMETHEUS_IMPORTS = {
     # ``/metrics``: serialises the default registry the shim's collectors fill.
     (_EXPORTER, "prometheus_client", "CONTENT_TYPE_LATEST"),
@@ -126,20 +139,46 @@ _ALLOWED_PROMETHEUS_IMPORTS = {
 }
 
 
-def _prometheus_imports(source: str, module: str) -> set:
-    """(module, imported from, name) for each ``prometheus_client`` import in
-    *source*; a bare ``import`` is ``*``, since it reaches every class."""
-    found = set()
+def _dotted(node: ast.AST) -> str:
+    """``a.b.c`` for a chain of names and attributes, else ``""``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        head = _dotted(node.value)
+        return f"{head}.{node.attr}" if head else ""
+    return ""
+
+
+def _prometheus_imports(source: str, module: str, is_package: bool = False) -> set:
+    """(module, from, name) for each ``prometheus_client`` import in *source*
+    (a bare ``import`` is ``*``: it reaches every class), and for each
+    ``Prometheus*`` name it takes from the shim or its package, imported or
+    read as an attribute of a name bound to either."""
+    shim_modules = {_SHIM, _SHIM_PACKAGE}
+    found, bound = set(), {}
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found |= {
-                (module, a.name, "*")
-                for a in node.names
-                if a.name.split(".")[0] == "prometheus_client"
-            }
-        elif isinstance(node, ast.ImportFrom) and not node.level:
-            if (node.module or "").split(".")[0] == "prometheus_client":
-                found |= {(module, node.module, a.name) for a in node.names}
+            for a in node.names:
+                if a.name.split(".")[0] == "prometheus_client":
+                    found.add((module, a.name, "*"))
+                # ``import x.y as m`` binds m to x.y; ``import x.y`` binds x.
+                bound[a.asname or a.name.split(".")[0]] = (
+                    a.name if a.asname else a.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom):
+            origin = _source(node, module, is_package)
+            for a in node.names:
+                if origin.split(".")[0] == "prometheus_client":
+                    found.add((module, origin, a.name))
+                elif origin in shim_modules and a.name.startswith("Prometheus"):
+                    found.add((module, origin, a.name))
+                bound[a.asname or a.name] = f"{origin}.{a.name}"
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr.startswith("Prometheus"):
+            head, _, rest = _dotted(node.value).partition(".")
+            owner = ".".join(filter(None, [bound.get(head, ""), rest]))
+            if owner in shim_modules:
+                found.add((module, owner, node.attr))
     return found
 
 
@@ -148,7 +187,8 @@ def test_only_the_shim_imports_a_collector_class():
     for path in (REPO_ROOT / "faultmaven").rglob("*.py"):
         module = _module_name(path)
         if module != _SHIM:
-            found |= _prometheus_imports(path.read_text(encoding="utf-8"), module)
+            source = path.read_text(encoding="utf-8")
+            found |= _prometheus_imports(source, module, path.name == "__init__.py")
     assert found == _ALLOWED_PROMETHEUS_IMPORTS
 
 
@@ -158,12 +198,18 @@ def test_only_the_shim_imports_a_collector_class():
         "from prometheus_client import Counter",
         "from prometheus_client.metrics import Gauge",
         "import prometheus_client",
+        f"from {_SHIM} import PrometheusCounter",
+        f"from {_SHIM_PACKAGE} import PrometheusGauge",
+        f"import {_SHIM} as m\nm.PrometheusCounter('x', 'd')",
+        f"from {_SHIM_PACKAGE} import metrics\nmetrics.PrometheusHistogram",
+        f"import {_SHIM}\n{_SHIM}.PrometheusSummary",
+        "from . import metrics as m\nm.PrometheusInfo",
     ],
 )
 def test_the_import_check_sees_a_collector_class(line):
     """Positive control: a planted collector import is outside the allow-list."""
-    (planted,) = _prometheus_imports(line, "faultmaven.planted")
-    assert planted not in _ALLOWED_PROMETHEUS_IMPORTS
+    planted = _prometheus_imports(line, f"{_SHIM_PACKAGE}.planted")
+    assert planted and not planted & _ALLOWED_PROMETHEUS_IMPORTS
 
 
 _MARKER = "@@REGISTRY@@"
@@ -326,3 +372,25 @@ def test_the_apm_integration_has_no_prometheus_exporter():
     stats = apm.get_export_statistics()
     assert set(stats["configurations"]) == {"opik", "generic"}
     assert not hasattr(apm, "_export_to_prometheus")
+
+
+@pytest.mark.parametrize("stand_in", [None, NoOpMetric()], ids=["module", "no-op"])
+def test_the_oauth_recorder_is_enabled_by_its_collectors(monkeypatch, stand_in):
+    """Read from the collector, not the environment flipped since it was built."""
+    if stand_in is not None:
+        monkeypatch.setattr(oauth_metrics, "oauth_authorization_requests", stand_in)
+    real = is_real(oauth_metrics.oauth_authorization_requests)
+    monkeypatch.setenv("ENABLE_METRICS", "false" if real else "true")
+    assert oauth_metrics.OAuthMetricsRecorder(()).enabled is real
+
+
+@pytest.mark.parametrize("stand_in", [None, NoOpMetric()], ids=["module", "no-op"])
+async def test_the_tracer_health_reports_whether_its_collectors_record(
+    monkeypatch, stand_in
+):
+    if stand_in is not None:
+        monkeypatch.setattr(tracing, "GENERIC_FUNCTION_DURATION", stand_in)
+    tracer = tracing.OpikTracer(settings=settings_module.get_settings())
+    report = (await tracer.health_check())["tracer_specific"]
+    assert report["metrics_recording"] is is_real(tracing.GENERIC_FUNCTION_DURATION)
+    assert "prometheus_available" not in report
