@@ -457,8 +457,8 @@ _CASE_REFERENCE_PHRASES = [
 # have anything on etcd quorum loss?" is not caught, by design.
 #
 # Every quantifier is bounded and detection reads a bounded window of the
-# message (``_KB_DETECT_WINDOW``): this runs synchronously on every turn, and a
-# turn's text can be megabytes.
+# message (``classification_window``): this runs synchronously on every turn,
+# and a turn's text can be megabytes.
 _KB_NOUN = r"(?:run[- ]?books?|knowledge[- ]base)"
 _KB_PLAYBOOK = r"(?:play[- ]?books?)"
 # Either noun: where the topic sits, and what the vetoes recognise.
@@ -771,10 +771,10 @@ _KB_CLAUSE_BREAK = re.compile(
 )
 _KB_TOPIC_MAX_CHARS = 200
 
-# Detection reads at most this much from each end of a long message: a
-# question about the knowledge base opens or closes a message, and a pasted
-# log in between is not one.
-_KB_DETECT_WINDOW = 2000
+# Classification reads at most this much from each end of a long message
+# (``classification_window``): what a message asks opens or closes it, and a
+# pasted log in between is evidence, not the question.
+_CLASSIFY_WINDOW_CHARS = 2000
 
 # A clause of the message, for finding what "this" points back to.
 _KB_CLAUSE_SPLIT = re.compile(r"(?<=[.!?;])\s+|,\s+|\n+")
@@ -884,11 +884,21 @@ def _kb_context_topic(message: str) -> str:
     return context
 
 
-def kb_detection_window(message: str) -> str:
-    """The part of ``message`` a knowledge-base question is looked for in."""
-    if len(message) <= 2 * _KB_DETECT_WINDOW:
+def classification_window(message: str) -> str:
+    """The part of ``message`` the classifier reads: all of it up to twice
+    ``_CLASSIFY_WINDOW_CHARS``, else its head and its tail.
+
+    The classifier runs synchronously on every turn, on the event loop, and a
+    turn's text can be up to the upload cap: its C-level regexes over a 10 MiB
+    paste held the loop for 6.6 s (#2798). Measured 2026-11-15 over 5,497 stored
+    user messages (the dev DB and the SRE simulator's transcripts, up to 86,046
+    characters, 80 over 4,000): the mode, whether entities were found and the
+    knowledge-base question were identical, for every message, with the whole
+    text and with this window.
+    """
+    if len(message) <= 2 * _CLASSIFY_WINDOW_CHARS:
         return message
-    return message[:_KB_DETECT_WINDOW] + "\n" + message[-_KB_DETECT_WINDOW:]
+    return message[:_CLASSIFY_WINDOW_CHARS] + "\n" + message[-_CLASSIFY_WINDOW_CHARS:]
 
 
 def detect_kb_question(message: str) -> Optional[KbQuestion]:
@@ -903,7 +913,7 @@ def detect_kb_question(message: str) -> Optional[KbQuestion]:
     """
     if not message:
         return None
-    text = kb_detection_window(message)
+    text = classification_window(message)
     if not any(p.search(text) for p in _KB_QUESTION_PATTERNS):
         return None
     if _KB_ACTION_VETO.search(text) or _KB_REFERENCE_VETO.search(text):
@@ -1041,12 +1051,13 @@ def classify_query(
 
     A question about FaultMaven is never also a knowledge-base question: "how
     do you retrieve runbooks?" asks how the assistant works, not what the
-    knowledge base holds.
+    knowledge base holds. Reads ``classification_window`` of the message, so
+    no caller classifies a whole paste (#2798).
     """
-    classification = _classify_mode(user_message, has_attachments)
+    message = classification_window((user_message or "").strip())
+    classification = _classify_mode(message, has_attachments)
     if classification.mode == ProcessingMode.AGENT_META:
         return classification
-    message = (user_message or "").strip()
     question = detect_kb_question(message)
     classification.kb_question = question
     if question is not None and _is_pure_kb_question(message, question):
@@ -1068,7 +1079,7 @@ def _is_pure_kb_question(message: str, question: KbQuestion) -> bool:
     """
     if question.from_context:
         return False
-    text = kb_detection_window(message)
+    text = classification_window(message)
     # Word by word: a topic can join a runbook's name and a subject that sit
     # apart in the message.
     for word in set(question.topic.split()):
