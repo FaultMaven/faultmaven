@@ -58,7 +58,8 @@ class TokenRates:
 # also matches "anthropic/claude-sonnet-4-6" (OpenRouter) or a dated snapshot
 # suffix.
 # Anthropic prompt-cache: write ~1.25x input (5-min TTL), read ~0.1x input.
-# OpenAI-family cached input is ~0.5x input; write is not separately billed.
+# OpenAI-family cached input is 0.1x input on the gpt-5/gpt-6 rows (0.25-0.5x
+# on gpt-4.x); a cache-write rate is set only where one is published.
 #
 # A key that names no version is a TRAP, because the failure it produces is
 # the invisible one: it keeps matching the next generation and bills it at the
@@ -116,6 +117,13 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # A deployment that raises the budget near 272K should override via
         # LLM_PRICING_OVERRIDES rather than trust this row.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
+        # gpt-6-luna, the next luna generation, at half its rate: $0.10 in /
+        # $0.50 out / $0.01 cache read / $0.125 cache write (1.25x input) per
+        # 1M, short tier. Long tier (input over 272K): $0.20 in / $0.75 out.
+        # Rates as of 2026-11-15 from price trackers that agree with each
+        # other and with Microsoft's Foundry announcement on the long tier;
+        # override via LLM_PRICING_OVERRIDES if the price list differs.
+        "gpt-6-luna": TokenRates(0.10, 0.50, 0.01, 0.125),
         # gpt-5.4-mini stays a supported non-default (reasoning; #644).
         # Corrected 2026-08-26 against developers.openai.com/api/docs/pricing:
         # the entry read 0.15/0.60/0.075, which is gpt-4o-mini's row — a
@@ -196,8 +204,10 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # deployments bill a premium, and a non-OpenAI Foundry model has no
         # row here (it reports unpriced) — set either via
         # LLM_PRICING_OVERRIDES. Keys match by substring, so a deployment
-        # named "gpt-5.4-mini-1" takes the gpt-5.4-mini row.
+        # named "gpt-5.4-mini-1" takes the gpt-5.4-mini row and one named
+        # "gpt-6-luna-1" the gpt-6-luna row.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
+        "gpt-6-luna": TokenRates(0.10, 0.50, 0.01, 0.125),
         "gpt-5.4-mini": TokenRates(0.75, 4.50, 0.075, 0.0),
     },
 }
