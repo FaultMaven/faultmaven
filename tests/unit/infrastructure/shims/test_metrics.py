@@ -14,54 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-class TestMetricsStatus:
-    """Tests for metrics status functions."""
-
-    def test_get_metrics_status_disabled(self):
-        """Test get_metrics_status when metrics are disabled."""
-        with patch.dict(os.environ, {"ENABLE_METRICS": "false"}):
-            from faultmaven.infrastructure.shims.metrics import get_metrics_status
-
-            status = get_metrics_status()
-
-            assert "prometheus_available" in status
-            assert "metrics_enabled" in status
-            assert "active" in status
-            assert status["metrics_enabled"] is False
-            assert status["active"] is False
-
-    def test_get_metrics_status_enabled_without_prometheus(self):
-        """Test get_metrics_status when enabled but Prometheus not available."""
-        with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch(
-                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
-            ):
-                from faultmaven.infrastructure.shims import metrics
-
-                status = metrics.get_metrics_status()
-
-                assert status["metrics_enabled"] is True
-                assert status["active"] is False  # Can't be active without Prometheus
-
-    def test_is_metrics_active_false_by_default(self):
-        """Test is_metrics_active returns False by default."""
-        with patch.dict(os.environ, {}, clear=True):
-            from faultmaven.infrastructure.shims.metrics import is_metrics_active
-
-            assert is_metrics_active() is False
-
-    def test_is_metrics_active_when_enabled_without_prometheus(self):
-        """Test is_metrics_active when enabled but Prometheus not installed."""
-        with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            with patch(
-                "faultmaven.infrastructure.shims.metrics.PROMETHEUS_AVAILABLE", False
-            ):
-                from faultmaven.infrastructure.shims import metrics
-
-                result = metrics.is_metrics_active()
-                assert result is False
-
-
 class TestPrometheusAvailability:
     """Tests for Prometheus availability detection."""
 
@@ -227,23 +179,6 @@ class TestIntegrationWithPrometheus:
             gauge.set(42)
             gauge.inc()
             gauge.dec()
-
-    def test_get_metrics_status_with_prometheus(self):
-        """Test status when Prometheus is actually available."""
-        from faultmaven.infrastructure.shims.metrics import (
-            PROMETHEUS_AVAILABLE,
-            get_metrics_status,
-        )
-
-        if not PROMETHEUS_AVAILABLE:
-            pytest.skip("Prometheus not installed - skipping integration test")
-
-        with patch.dict(os.environ, {"ENABLE_METRICS": "true"}):
-            status = get_metrics_status()
-
-            assert status["prometheus_available"] is True
-            assert status["metrics_enabled"] is True
-            assert status["active"] is True
 
 
 class TestHistogramTimerContextManager:
@@ -492,7 +427,7 @@ class TestHttpDurationBucketsSpanRealTraffic:
                 "d=m.request_duration;l=m.llm_latency;"
                 "sys.stderr.write('@@'+json.dumps({"
                 "'prometheus_available': m.PROMETHEUS_AVAILABLE,"
-                "'metrics_active': m.is_metrics_active(),"
+                "'metrics_active': m.is_real(d),"
                 "'type': type(d).__name__,"
                 "'bounds': [str(b) for b in getattr(d,'_upper_bounds',[])] or None,"
                 "'llm_type': type(l).__name__,"

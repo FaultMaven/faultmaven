@@ -20,9 +20,9 @@ import pytest
 from faultmaven.infrastructure.observability.evidence_metrics import (
     AGENT_TRIAGE_ESCALATION_TOTAL,
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
-    PROMETHEUS_AVAILABLE,
     record_triage_escalation_if_same_turn,
 )
+from faultmaven.infrastructure.shims.metrics import is_real
 
 # ---------------------------------------------------------------------------
 # record_triage_escalation_if_same_turn
@@ -117,7 +117,9 @@ class TestTriageEscalationTrigger:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not PROMETHEUS_AVAILABLE, reason="prometheus_client missing")
+@pytest.mark.skipif(
+    not is_real(PREPROCESSING_EXTRACTION_YIELD_RATIO), reason="metrics off"
+)
 class TestYieldRatioEmitted:
     @pytest.mark.asyncio
     async def test_yield_ratio_observes_on_extraction(self):

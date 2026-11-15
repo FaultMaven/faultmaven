@@ -503,9 +503,8 @@ jobs:
           # Standalone configuration - optional (cloud) features disabled
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
-          PROMETHEUS_ENABLED: "false"
           TRACING_ENABLED: "false"
-          METRICS_ENABLED: "false"
+          ENABLE_METRICS: "false"
           PROTECTION_ENABLED: "false"
           SANITIZE_PII: "false"
           VECTOR_STORAGE_TYPE: "inmemory"
@@ -779,9 +778,8 @@ jobs:
           SKIP_SERVICE_CHECKS: "true"
           OPIK_ENABLED: "false"
           OPIK_TRACK_DISABLE: "true"
-          PROMETHEUS_ENABLED: "true"
           TRACING_ENABLED: "true"
-          METRICS_ENABLED: "true"
+          ENABLE_METRICS: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
           VECTOR_STORAGE_TYPE: "inmemory"
@@ -838,9 +836,8 @@ jobs:
           # the tracked wrapper is still exercised on this path.
           OPIK_ENABLED: "false"
           OPIK_TRACK_DISABLE: "true"
-          PROMETHEUS_ENABLED: "true"
           TRACING_ENABLED: "true"
-          METRICS_ENABLED: "true"
+          ENABLE_METRICS: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
           # No REDIS_*: this step names no Redis. Every Redis consumer in the

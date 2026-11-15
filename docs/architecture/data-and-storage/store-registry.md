@@ -307,15 +307,15 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - No metric's label names carry a case, user or enterprise id (every `Counter`,
   `Gauge`, `Histogram` and `Summary` in `faultmaven/`, read for its label names);
   OAuth metrics label the OAuth client, not a tenant:
-  `modules/auth/infrastructure/metrics/oauth_metrics.py:81`.
+  `modules/auth/infrastructure/metrics/oauth_metrics.py:50`.
 - The OAuth client label is the request's client id kept only when it is a
   configured client, else `unknown`
-  (`modules/auth/infrastructure/metrics/oauth_metrics.py:253-260`).
+  (`modules/auth/infrastructure/metrics/oauth_metrics.py:216-223`).
 - The rule that every label's values are bounded by code or by operator
   configuration, with `other` for a value outside the set in production, is
   principles §7's. It is pending: #2749 (S2).
 - The one switch, `ENABLE_METRICS`, read by the metrics shim, is principles
-  §7's rule too. It is pending: #2748 (S1).
+  §7's rule too: `tests/unit/infrastructure/shims/test_metrics_one_path_2748.py`.
 
 ### Logs
 

@@ -16,314 +16,246 @@ Alert rules that consume these metrics live in the Grafana/Prometheus config
 for the canonical alert definitions.
 """
 
-import logging
-
-from faultmaven.infrastructure.shims.metrics import create_children, declare_lazy
+from faultmaven.infrastructure.shims.metrics import Counter, Histogram
 from faultmaven.modules.case.contracts import EntityType, EvidenceSourceType
 
-try:
-    from prometheus_client import Counter, Histogram
+# Every collector goes through the metrics shim, so with ENABLE_METRICS off
+# each is a no-op and nothing is registered (#2748).
 
-    PROMETHEUS_AVAILABLE = True
-except ImportError:
-    PROMETHEUS_AVAILABLE = False
-    logging.warning("Prometheus client not available — evidence metrics are no-ops")
+#: The async-turn-retry counters' lazy reason; #2749 removes collectors with no
+#: writer.
+_NO_WRITER = (
+    "nothing emits it: the async-turn-retry path it was scaffolded for was "
+    "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
+    "evidence-failure-modes.md), so its documented {} values are bound to no "
+    "code; removed by #2749."
+)
 
+EVIDENCE_DEDUP_HITS_TOTAL = Counter(
+    "faultmaven_evidence_dedup_hits_total",
+    "Number of attachments that matched an existing content_hash on the "
+    "same case and short-circuited through the dedup path (no new Evidence "
+    "row, no raw-file re-storage).",
+)
 
-class _NoOpMetric:
-    """Fallback used when prometheus_client is not installed.
+EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = Counter(
+    "faultmaven_evidence_orphan_files_found_total",
+    "Number of stored files found to be orphaned (past TTL with "
+    "linked=False) during an orphan-cleanup sweep. Emitted by the M1 "
+    "orphan cleanup job.",
+)
 
-    Mirrors the subset of the Counter/Histogram API the emitters use so callers
-    don't need PROMETHEUS_AVAILABLE guards at every call site.
-    """
+EVIDENCE_ORPHAN_FILES_DELETED_TOTAL = Counter(
+    "faultmaven_evidence_orphan_files_deleted_total",
+    "Number of orphaned files successfully deleted from storage during an "
+    "orphan-cleanup sweep. Emitted by the M1 orphan cleanup job.",
+)
 
-    def labels(self, *args, **kwargs) -> "_NoOpMetric":
-        return self
+EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL = Counter(
+    "faultmaven_evidence_orphan_files_rescued_total",
+    "Number of files the database cross-check saved during an "
+    "orphan-cleanup sweep: the sidecar said linked=False past the TTL, but "
+    "an uploaded_files row still referenced the object. Non-zero means "
+    "sidecar drift is live and the pre-#1232 sweep would have destroyed "
+    "referenced evidence.",
+)
 
-    def inc(self, amount: float = 1.0) -> None:
-        pass
+EVIDENCE_MARK_LINKED_FAILURES_TOTAL = Counter(
+    "faultmaven_evidence_mark_linked_failures_total",
+    "Number of times the best-effort sidecar mark_linked step failed after "
+    "an upload was already persisted, leaving the sidecar stale at "
+    "linked=False. Labeled by outcome (returned_false | raised | timed_out). Since "
+    "#1232 the stale flag is harmless — the sweep asks the database, and "
+    "the row's ON DELETE CASCADE lifetime makes it self-healing — so this "
+    "counts the CAUSE (a failed storage write) rather than a data-loss "
+    "window, and is the measurement that would justify retrying the call. "
+    "Emitted from the API process, which is scraped; the sweep's own "
+    "counters are not.",
+    labelnames=["outcome"],
+    label_values={"outcome": ("returned_false", "raised", "timed_out")},
+)
 
-    def observe(self, amount: float) -> None:
-        pass
+EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
+    "faultmaven_evidence_turn_async_retry_enqueued_total",
+    "Number of turns whose LLM call hit a transient failure and were "
+    "enqueued for async retry. Labeled by failure reason. Emitted by the "
+    "PLAN-async-turn-retry implementation.",
+    labelnames=["reason"],
+    lazy_labels=_NO_WRITER.format("reason"),
+)
 
+EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = Counter(
+    "faultmaven_evidence_turn_async_retry_outcome_total",
+    "Terminal outcome of async turn retries. Labeled by outcome "
+    "(success | failure | timeout | superseded | cancelled). Emitted by "
+    "the PLAN-async-turn-retry implementation.",
+    labelnames=["outcome"],
+    lazy_labels=_NO_WRITER.format("outcome"),
+)
 
-if PROMETHEUS_AVAILABLE:
-    EVIDENCE_DEDUP_HITS_TOTAL = Counter(
-        "faultmaven_evidence_dedup_hits_total",
-        "Number of attachments that matched an existing content_hash on the "
-        "same case and short-circuited through the dedup path (no new Evidence "
-        "row, no raw-file re-storage).",
-    )
+EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
+    "faultmaven_evidence_turn_async_retry_latency_seconds",
+    "Wall-clock seconds from first retry enqueue to terminal outcome, "
+    "covering all attempts. Emitted by the PLAN-async-turn-retry "
+    "implementation.",
+)
 
-    EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = Counter(
-        "faultmaven_evidence_orphan_files_found_total",
-        "Number of stored files found to be orphaned (past TTL with "
-        "linked=False) during an orphan-cleanup sweep. Emitted by the M1 "
-        "orphan cleanup job.",
-    )
+# Phase 1.5 — user-driven reclassification. Labelled by
+# (from_type, to_type, trigger) so a classifier-bias dashboard can
+# spot systematic (from_type, to_type) pairs. trigger values:
+# ``api`` (direct PATCH), ``agent_tool`` (reclassify_evidence tool).
+EVIDENCE_RECLASSIFICATION_TOTAL = Counter(
+    "faultmaven_evidence_reclassification_total",
+    "Number of evidence rows whose data_type was changed by a user "
+    "override. Emitted by the PATCH "
+    "/cases/{id}/evidence/{eid}/classification endpoint and by the "
+    "reclassify_evidence agent tool.",
+    labelnames=["from_type", "to_type", "trigger"],
+    lazy_labels="from_type x to_type x trigger is over 100 combinations, and "
+    "from_type is a stored value that may be 'unknown' or retired; bounded by #2749.",
+)
 
-    EVIDENCE_ORPHAN_FILES_DELETED_TOTAL = Counter(
-        "faultmaven_evidence_orphan_files_deleted_total",
-        "Number of orphaned files successfully deleted from storage during an "
-        "orphan-cleanup sweep. Emitted by the M1 orphan cleanup job.",
-    )
+# Phase 2c — extraction-quality feedback signals.
+#
+# Yield ratio: len(structural_index) / len(raw_content), per
+# extraction run, labelled by the extractor's chosen data_type. A
+# baseline forms naturally per type (LOGS ~0.005 for crime-scene
+# extraction, STRUCTURED_CONFIG ~0.3 for parsed config). Abrupt
+# drift — STRUCTURED_CONFIG yield dropping below 0.01 for a week —
+# indicates the data distribution changed and the extractor is
+# producing garbage for a new sub-format. Bucket boundaries cover
+# the full range from near-zero (degenerate) through 1.0
+# (uncompressed passthrough) with denser resolution in the
+# interesting low-compression band.
+PREPROCESSING_EXTRACTION_YIELD_RATIO = Histogram(
+    "faultmaven_preprocessing_extraction_yield_ratio",
+    "Ratio of structural_index bytes to raw_content bytes per "
+    "extraction. Baselines per data_type provide a drift signal.",
+    labelnames=["data_type"],
+    buckets=(0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0),
+)
 
-    EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL = Counter(
-        "faultmaven_evidence_orphan_files_rescued_total",
-        "Number of files the database cross-check saved during an "
-        "orphan-cleanup sweep: the sidecar said linked=False past the TTL, but "
-        "an uploaded_files row still referenced the object. Non-zero means "
-        "sidecar drift is live and the pre-#1232 sweep would have destroyed "
-        "referenced evidence.",
-    )
+# #2355: one per classification that ends uncertain
+# (``classification_failed``), by what the pipeline did with it.
+# outcome=clarification: an extractor would run, so the upload is put to
+# the user as type choices; passthrough: none would (under
+# MIN_EXTRACTION_LINES, or a shape-valid page capture), so it passes to
+# the model as unstructured_text with no question. Counted at
+# preprocessing, before per-case dedup: a re-sent duplicate counts again,
+# and so does an upload whose turn later fails. It is the lasting record
+# of how often the rules cannot decide; intake persists no verdict.
+PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = Counter(
+    "faultmaven_preprocessing_uncertain_classification_total",
+    "Classifications that ended uncertain, by outcome: clarification "
+    "(type choices offered; an extractor would run) or passthrough "
+    "(passed to the model as unstructured_text; no extractor runs). "
+    "Counted before per-case dedup.",
+    ["outcome"],
+    label_values={"outcome": ("clarification", "passthrough")},
+)
 
-    EVIDENCE_MARK_LINKED_FAILURES_TOTAL = Counter(
-        "faultmaven_evidence_mark_linked_failures_total",
-        "Number of times the best-effort sidecar mark_linked step failed after "
-        "an upload was already persisted, leaving the sidecar stale at "
-        "linked=False. Labeled by outcome (returned_false | raised | timed_out). Since "
-        "#1232 the stale flag is harmless — the sweep asks the database, and "
-        "the row's ON DELETE CASCADE lifetime makes it self-healing — so this "
-        "counts the CAUSE (a failed storage write) rather than a data-loss "
-        "window, and is the measurement that would justify retrying the call. "
-        "Emitted from the API process, which is scraped; the sweep's own "
-        "counters are not.",
-        labelnames=["outcome"],
-    )
-    create_children(
-        EVIDENCE_MARK_LINKED_FAILURES_TOTAL,
-        {"outcome": ("returned_false", "raised", "timed_out")},
-    )
+# #2791: one per Tier 1 extraction whose extractor reported that it could
+# not parse the shape it was given (``file_meta["unparsed"]``), so the
+# content was kept as uploaded in place of the extractor's fragment. By
+# extractor class: which shapes the extractors do not read yet.
+PREPROCESSING_UNPARSED_SHAPE_TOTAL = Counter(
+    "faultmaven_preprocessing_unparsed_shape_total",
+    "Tier 1 extractions whose extractor could not parse the shape it "
+    "was given; the content was kept as uploaded. By extractor class.",
+    ["extractor"],
+    label_values={
+        "extractor": (
+            "CommandOutputExtractor",
+            "MetricsAndPerformanceExtractor",
+            "ProfilingDataExtractor",
+            "SourceCodeExtractor",
+            "StructuredConfigExtractor",
+            "TraceDataExtractor",
+        )
+    },
+)
 
-    EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = Counter(
-        "faultmaven_evidence_turn_async_retry_enqueued_total",
-        "Number of turns whose LLM call hit a transient failure and were "
-        "enqueued for async retry. Labeled by failure reason. Emitted by the "
-        "PLAN-async-turn-retry implementation.",
-        labelnames=["reason"],
-    )
-    declare_lazy(
-        EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL,
-        "nothing emits it: the async-turn-retry path it was scaffolded for was "
-        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
-        "evidence-failure-modes.md), so its documented reason values are bound "
-        "to no code.",
-    )
-
-    EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = Counter(
-        "faultmaven_evidence_turn_async_retry_outcome_total",
-        "Terminal outcome of async turn retries. Labeled by outcome "
-        "(success | failure | timeout | superseded | cancelled). Emitted by "
-        "the PLAN-async-turn-retry implementation.",
-        labelnames=["outcome"],
-    )
-    declare_lazy(
-        EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL,
-        "nothing emits it: the async-turn-retry path it was scaffolded for was "
-        "designed and discarded (PLAN-async-turn-retry.md, deleted 2026-04-19; "
-        "evidence-failure-modes.md), so its documented outcome values are bound "
-        "to no code.",
-    )
-
-    EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = Histogram(
-        "faultmaven_evidence_turn_async_retry_latency_seconds",
-        "Wall-clock seconds from first retry enqueue to terminal outcome, "
-        "covering all attempts. Emitted by the PLAN-async-turn-retry "
-        "implementation.",
-    )
-
-    # Phase 1.5 — user-driven reclassification. Labelled by
-    # (from_type, to_type, trigger) so a classifier-bias dashboard can
-    # spot systematic (from_type, to_type) pairs. trigger values:
-    # ``api`` (direct PATCH), ``agent_tool`` (reclassify_evidence tool).
-    EVIDENCE_RECLASSIFICATION_TOTAL = Counter(
-        "faultmaven_evidence_reclassification_total",
-        "Number of evidence rows whose data_type was changed by a user "
-        "override. Emitted by the PATCH "
-        "/cases/{id}/evidence/{eid}/classification endpoint and by the "
-        "reclassify_evidence agent tool.",
-        labelnames=["from_type", "to_type", "trigger"],
-    )
-    declare_lazy(
-        EVIDENCE_RECLASSIFICATION_TOTAL,
-        "from_type x to_type x trigger is over 100 combinations, and from_type "
-        "is a stored value that may be 'unknown' or retired.",
-    )
-
-    # Phase 2c — extraction-quality feedback signals.
-    #
-    # Yield ratio: len(structural_index) / len(raw_content), per
-    # extraction run, labelled by the extractor's chosen data_type. A
-    # baseline forms naturally per type (LOGS ~0.005 for crime-scene
-    # extraction, STRUCTURED_CONFIG ~0.3 for parsed config). Abrupt
-    # drift — STRUCTURED_CONFIG yield dropping below 0.01 for a week —
-    # indicates the data distribution changed and the extractor is
-    # producing garbage for a new sub-format. Bucket boundaries cover
-    # the full range from near-zero (degenerate) through 1.0
-    # (uncompressed passthrough) with denser resolution in the
-    # interesting low-compression band.
-    PREPROCESSING_EXTRACTION_YIELD_RATIO = Histogram(
-        "faultmaven_preprocessing_extraction_yield_ratio",
-        "Ratio of structural_index bytes to raw_content bytes per "
-        "extraction. Baselines per data_type provide a drift signal.",
-        labelnames=["data_type"],
-        buckets=(0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0),
-    )
-
-    # #2355: one per classification that ends uncertain
-    # (``classification_failed``), by what the pipeline did with it.
-    # outcome=clarification: an extractor would run, so the upload is put to
-    # the user as type choices; passthrough: none would (under
-    # MIN_EXTRACTION_LINES, or a shape-valid page capture), so it passes to
-    # the model as unstructured_text with no question. Counted at
-    # preprocessing, before per-case dedup: a re-sent duplicate counts again,
-    # and so does an upload whose turn later fails. It is the lasting record
-    # of how often the rules cannot decide; intake persists no verdict.
-    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = Counter(
-        "faultmaven_preprocessing_uncertain_classification_total",
-        "Classifications that ended uncertain, by outcome: clarification "
-        "(type choices offered; an extractor would run) or passthrough "
-        "(passed to the model as unstructured_text; no extractor runs). "
-        "Counted before per-case dedup.",
-        ["outcome"],
-    )
-    create_children(
-        PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL,
-        {"outcome": ("clarification", "passthrough")},
-    )
-
-    # #2791: one per Tier 1 extraction whose extractor reported that it could
-    # not parse the shape it was given (``file_meta["unparsed"]``), so the
-    # content was kept as uploaded in place of the extractor's fragment. By
-    # extractor class: which shapes the extractors do not read yet.
-    PREPROCESSING_UNPARSED_SHAPE_TOTAL = Counter(
-        "faultmaven_preprocessing_unparsed_shape_total",
-        "Tier 1 extractions whose extractor could not parse the shape it "
-        "was given; the content was kept as uploaded. By extractor class.",
-        ["extractor"],
-    )
-    create_children(
-        PREPROCESSING_UNPARSED_SHAPE_TOTAL,
-        {
-            "extractor": (
-                "CommandOutputExtractor",
-                "MetricsAndPerformanceExtractor",
-                "ProfilingDataExtractor",
-                "SourceCodeExtractor",
-                "StructuredConfigExtractor",
-                "TraceDataExtractor",
-            )
-        },
-    )
-
-    # Triage-to-escalation rate: counts when the agent received a
-    # Triage-mode turn with a structural index AND immediately called
-    # search_file or deep_analysis on the same evidence (within the
-    # same turn's tool-loop). A high ratio of
-    # escalations / triage_turns on one data_type indicates the
-    # structural index is leaving the agent uninformed — a signal to
-    # tune the extractor rather than the classifier. Emitted by the
-    # agent tool-loop layer when it observes a tool call on an
-    # evidence whose structural_index was just delivered in the
-    # current turn's context.
-    AGENT_TRIAGE_ESCALATION_TOTAL = Counter(
-        "faultmaven_agent_triage_escalation_total",
-        "Number of in-turn tool calls (search_file / deep_analysis) "
-        "targeting an evidence whose structural_index was delivered "
-        "in the same turn. High rate on a data_type → structural "
-        "index insufficient for that type.",
-        labelnames=["data_type", "tool"],
-    )
+# Triage-to-escalation rate: counts when the agent received a
+# Triage-mode turn with a structural index AND immediately called
+# search_file or deep_analysis on the same evidence (within the
+# same turn's tool-loop). A high ratio of
+# escalations / triage_turns on one data_type indicates the
+# structural index is leaving the agent uninformed — a signal to
+# tune the extractor rather than the classifier. Emitted by the
+# agent tool-loop layer when it observes a tool call on an
+# evidence whose structural_index was just delivered in the
+# current turn's context.
+AGENT_TRIAGE_ESCALATION_TOTAL = Counter(
+    "faultmaven_agent_triage_escalation_total",
+    "Number of in-turn tool calls (search_file / deep_analysis) "
+    "targeting an evidence whose structural_index was delivered "
+    "in the same turn. High rate on a data_type → structural "
+    "index insufficient for that type.",
+    labelnames=["data_type", "tool"],
     # The labels ``record_triage_escalation_if_same_turn`` writes.
-    create_children(
-        AGENT_TRIAGE_ESCALATION_TOTAL,
-        {
-            "data_type": (*(t.value for t in EvidenceSourceType), "unknown"),
-            "tool": ("search_file", "deep_analysis"),
-        },
-    )
+    label_values={
+        "data_type": (*(t.value for t in EvidenceSourceType), "unknown"),
+        "tool": ("search_file", "deep_analysis"),
+    },
+)
 
-    # Phase 4 — case-level entity registry overflow. Labeled by
-    # ``entity_type`` so the dashboard surfaces which vocabulary
-    # members regularly hit the per-(evidence, type) hard cap.
-    # Emitted once per (evidence, entity_type) pair that overflows,
-    # not per excess row — a single evidence spilling 1000 IPs
-    # increments the ``ip`` bucket by 1, not 500.
-    # Per Phase 4 plan exit criteria: if any type's overflow rate
-    # > 20% of evidence, tune the cap or split the type.
-    CASE_ENTITIES_OVERFLOW_TOTAL = Counter(
-        "faultmaven_case_entities_overflow_total",
-        "Number of (evidence, entity_type) pairs that exceeded the "
-        "Phase 4 per-(evidence, type) hard cap and had entity rows "
-        "truncated. Labelled by entity_type.",
-        labelnames=["entity_type"],
-    )
-    create_children(
-        CASE_ENTITIES_OVERFLOW_TOTAL, {"entity_type": [t.value for t in EntityType]}
-    )
+# Phase 4 — case-level entity registry overflow. Labeled by
+# ``entity_type`` so the dashboard surfaces which vocabulary
+# members regularly hit the per-(evidence, type) hard cap.
+# Emitted once per (evidence, entity_type) pair that overflows,
+# not per excess row — a single evidence spilling 1000 IPs
+# increments the ``ip`` bucket by 1, not 500.
+# Per Phase 4 plan exit criteria: if any type's overflow rate
+# > 20% of evidence, tune the cap or split the type.
+CASE_ENTITIES_OVERFLOW_TOTAL = Counter(
+    "faultmaven_case_entities_overflow_total",
+    "Number of (evidence, entity_type) pairs that exceeded the "
+    "Phase 4 per-(evidence, type) hard cap and had entity rows "
+    "truncated. Labelled by entity_type.",
+    labelnames=["entity_type"],
+    label_values={"entity_type": [t.value for t in EntityType]},
+)
 
-    # 2026-05-01 review fix: page_capture passthrough shape validation.
-    # Increments when an attachment classified as source_type=page_capture
-    # lacks the structural-shape signals (no [captured_at:] preamble AND
-    # no `\n## ` heading) and falls through to standard extractor dispatch
-    # instead of bypassing Tier-1 extraction. A spike here indicates either
-    # a producer-side change in Copilot's htmlToStructuredText format, or
-    # a non-Copilot client misusing input_type=page_capture.
-    PAGE_CAPTURE_SHAPE_INVALID_TOTAL = Counter(
-        "faultmaven_page_capture_shape_invalid_total",
-        "Number of attachments tagged source_type=page_capture that "
-        "failed structural-shape validation and fell through to standard "
-        "extractor dispatch. Spikes indicate producer-side format drift "
-        "or misuse of the page_capture intake path.",
-    )
+# 2026-05-01 review fix: page_capture passthrough shape validation.
+# Increments when an attachment classified as source_type=page_capture
+# lacks the structural-shape signals (no [captured_at:] preamble AND
+# no `\n## ` heading) and falls through to standard extractor dispatch
+# instead of bypassing Tier-1 extraction. A spike here indicates either
+# a producer-side change in Copilot's htmlToStructuredText format, or
+# a non-Copilot client misusing input_type=page_capture.
+PAGE_CAPTURE_SHAPE_INVALID_TOTAL = Counter(
+    "faultmaven_page_capture_shape_invalid_total",
+    "Number of attachments tagged source_type=page_capture that "
+    "failed structural-shape validation and fell through to standard "
+    "extractor dispatch. Spikes indicate producer-side format drift "
+    "or misuse of the page_capture intake path.",
+)
 
-    # #1930: evidence is submitted data. A model-written row whose
-    # source_file_id names no file of the case is refused rather than kept
-    # with no source; the label says why the row never reached the case.
-    EVIDENCE_ROW_REFUSED_TOTAL = Counter(
-        "faultmaven_evidence_row_refused_total",
-        "Number of evidence rows the model wrote that the engine refused. "
-        "reason=unresolved_file: the source_file_id names no uploaded file "
-        "of the case.",
-        ["reason"],
-    )
-    create_children(EVIDENCE_ROW_REFUSED_TOTAL, {"reason": ("unresolved_file",)})
+# #1930: evidence is submitted data. A model-written row whose
+# source_file_id names no file of the case is refused rather than kept
+# with no source; the label says why the row never reached the case.
+EVIDENCE_ROW_REFUSED_TOTAL = Counter(
+    "faultmaven_evidence_row_refused_total",
+    "Number of evidence rows the model wrote that the engine refused. "
+    "reason=unresolved_file: the source_file_id names no uploaded file "
+    "of the case.",
+    ["reason"],
+    label_values={"reason": ("unresolved_file",)},
+)
 
-    # #1930: system output the user typed into a chat message, offered back
-    # for the user to declare. event=offered: an offer of output blocks was
-    # made (one per message); state_requested: a message reported the state of
-    # the user's system with no data, and its output was asked for;
-    # block_unmatched: a block the model named was not found in the message and
-    # was dropped; saved: the user saved the blocks as data.
-    CHAT_DATA_OFFER_EVENTS_TOTAL = Counter(
-        "faultmaven_chat_data_offer_events_total",
-        "Chat-data offer lifecycle events: offered, state_requested, "
-        "block_unmatched, saved.",
-        ["event"],
-    )
-    create_children(
-        CHAT_DATA_OFFER_EVENTS_TOTAL,
-        {"event": ("offered", "state_requested", "block_unmatched", "saved")},
-    )
-else:
-    EVIDENCE_DEDUP_HITS_TOTAL = _NoOpMetric()
-    EVIDENCE_ORPHAN_FILES_FOUND_TOTAL = _NoOpMetric()
-    EVIDENCE_ORPHAN_FILES_DELETED_TOTAL = _NoOpMetric()
-    EVIDENCE_ORPHAN_FILES_RESCUED_TOTAL = _NoOpMetric()
-    EVIDENCE_MARK_LINKED_FAILURES_TOTAL = _NoOpMetric()
-    EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL = _NoOpMetric()
-    EVIDENCE_TURN_ASYNC_RETRY_OUTCOME_TOTAL = _NoOpMetric()
-    EVIDENCE_TURN_ASYNC_RETRY_LATENCY_SECONDS = _NoOpMetric()
-    EVIDENCE_RECLASSIFICATION_TOTAL = _NoOpMetric()
-    PREPROCESSING_EXTRACTION_YIELD_RATIO = _NoOpMetric()
-    PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL = _NoOpMetric()
-    PREPROCESSING_UNPARSED_SHAPE_TOTAL = _NoOpMetric()
-    AGENT_TRIAGE_ESCALATION_TOTAL = _NoOpMetric()
-    CASE_ENTITIES_OVERFLOW_TOTAL = _NoOpMetric()
-    PAGE_CAPTURE_SHAPE_INVALID_TOTAL = _NoOpMetric()
-    EVIDENCE_ROW_REFUSED_TOTAL = _NoOpMetric()
-    CHAT_DATA_OFFER_EVENTS_TOTAL = _NoOpMetric()
-
+# #1930: system output the user typed into a chat message, offered back
+# for the user to declare. event=offered: an offer of output blocks was
+# made (one per message); state_requested: a message reported the state of
+# the user's system with no data, and its output was asked for;
+# block_unmatched: a block the model named was not found in the message and
+# was dropped; saved: the user saved the blocks as data.
+CHAT_DATA_OFFER_EVENTS_TOTAL = Counter(
+    "faultmaven_chat_data_offer_events_total",
+    "Chat-data offer lifecycle events: offered, state_requested, "
+    "block_unmatched, saved.",
+    ["event"],
+    label_values={"event": ("offered", "state_requested", "block_unmatched", "saved")},
+)
 
 __all__ = [
     "EVIDENCE_DEDUP_HITS_TOTAL",
@@ -343,7 +275,6 @@ __all__ = [
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
     "EVIDENCE_ROW_REFUSED_TOTAL",
     "CHAT_DATA_OFFER_EVENTS_TOTAL",
-    "PROMETHEUS_AVAILABLE",
     "record_triage_escalation_if_same_turn",
 ]
 

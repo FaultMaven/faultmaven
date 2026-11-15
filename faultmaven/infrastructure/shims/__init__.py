@@ -24,17 +24,11 @@ Usage:
     my_counter = Counter('my_metric', 'My metric description')
     my_counter.inc()
 
-    # Check status of shims
-    from faultmaven.infrastructure.shims import (
-        get_pii_redaction_status,
-        get_metrics_status,
-    )
+    # Check status of the PII shim
+    from faultmaven.infrastructure.shims import get_pii_redaction_status
 
     pii = get_pii_redaction_status()
     print(f"PII redaction available: {pii['would_be_active']}")
-
-    metrics = get_metrics_status()
-    print(f"Metrics active: {metrics['active']}")
 
 Import cost:
     These names are resolved lazily (PEP 562). Re-exporting all the shims
@@ -67,8 +61,6 @@ if TYPE_CHECKING:  # static analysis only — never executed at runtime
         active_sessions,
         case_operations,
         component_health_status,
-        get_metrics_status,
-        is_metrics_active,
         knowledge_queries,
         llm_call_tokens,
         llm_cost_usd,
@@ -106,8 +98,6 @@ _EXPORTS_BY_SUBMODULE = {
         "active_sessions",
         "case_operations",
         "component_health_status",
-        "get_metrics_status",
-        "is_metrics_active",
         "knowledge_queries",
         "llm_call_tokens",
         "llm_cost_usd",
@@ -186,8 +176,6 @@ __all__ = [
     "Gauge",
     "Summary",
     "Info",
-    "get_metrics_status",
-    "is_metrics_active",
     "PROMETHEUS_AVAILABLE",
     # Pre-defined metrics
     "request_counter",

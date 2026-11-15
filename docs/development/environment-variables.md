@@ -562,6 +562,20 @@ reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
 |----------|------|---------|-------------|
 | `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (180 s for a model load plus twice the estimate) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: for example 600 under an ingress `proxy-read-timeout` of 660 s |
 
+## Metrics
+
+`METRICS_EXPORTER` is a `settings.py` field. `ENABLE_METRICS` is not: the
+metrics shim (`faultmaven/infrastructure/shims/metrics.py`) reads it from the
+environment when each collector is created, at the import of the module that
+defines it, so a change takes effect at the next start. `.env` sets it too,
+because the settings' dotenv loader fills the environment before any such
+module is imported. Both are needed to scrape.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ENABLE_METRICS` | bool | false | `true` (any letter case) makes every first-party collector record, when `prometheus_client` is installed. Otherwise each collector is a no-op and nothing is registered. It is the only variable that switches recording |
+| `METRICS_EXPORTER` | `none` \| `prometheus_http` | `none` | `prometheus_http` mounts `/metrics` on the API. It switches no collector |
+
 ## LLM Trace Content
 
 `ObservabilitySettings.opik_capture_content` (`settings.observability`). Spans

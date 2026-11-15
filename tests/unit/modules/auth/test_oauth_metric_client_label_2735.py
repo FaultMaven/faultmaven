@@ -7,9 +7,9 @@ in process memory until restart. The recorder now folds every client id through
 ``client_label``: a configured client keeps its id, anything else is
 ``unknown``.
 
-The series tests need ``prometheus_client`` (``requirements/cloud.txt``), so
-they run in the cloud slice and skip elsewhere; the ``client_label`` tests run
-everywhere.
+The series tests need metrics on (``prometheus_client`` from
+``requirements/cloud.txt`` and ``ENABLE_METRICS=true``), so they run in the
+cloud slice and skip elsewhere; the ``client_label`` tests run everywhere.
 """
 
 import uuid
@@ -20,12 +20,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.config.settings import AuthSettings
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import RefreshClaim
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     OAuthMetricsRecorder,
+    oauth_authorization_requests,
 )
 from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
     InMemoryOAuthCodeRepository,
@@ -79,6 +81,12 @@ def _refresh_service(allowed=(COPILOT,), valid=True, claims=()):
         )
     )
     return _service(allowed, generator=generator, users=users)
+
+
+def _require_metrics():
+    """Skip unless the OAuth collectors are real (#2748)."""
+    if not is_real(oauth_authorization_requests):
+        pytest.skip("metrics off: the OAuth collectors are no-ops")
 
 
 def _ids():
@@ -177,7 +185,7 @@ _RECORDS = {
 @pytest.mark.parametrize("method", sorted(_RECORDS))
 def test_no_recorder_method_labels_a_raw_id(method):
     """Every writer folds, not only the ones the service reaches with raw ids."""
-    pytest.importorskip("prometheus_client")
+    _require_metrics()
     recorder = OAuthMetricsRecorder([COPILOT])
     raw_ids = _ids()
 
@@ -192,7 +200,7 @@ def test_no_recorder_method_labels_a_raw_id(method):
 
 class TestAuthorizeSeries:
     async def test_distinct_invalid_ids_add_no_series(self):
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         service = _service()
         raw_ids = _ids()
 
@@ -206,7 +214,7 @@ class TestAuthorizeSeries:
         _assert_bounded(before, after_first, _oauth_series(), set(raw_ids))
 
     async def test_an_allowed_client_keeps_its_label(self):
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         labels = {"client_id": COPILOT, "status": "success"}
         before = _value("oauth_authorization_requests_total", labels)
 
@@ -217,7 +225,7 @@ class TestAuthorizeSeries:
 
 class TestRefreshSeries:
     async def test_distinct_ids_on_a_refused_refresh_add_no_series(self):
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         service = _refresh_service(valid=False)
         raw_ids = _ids()
 
@@ -231,7 +239,7 @@ class TestRefreshSeries:
         _assert_bounded(before, after_first, _oauth_series(), set(raw_ids))
 
     async def test_distinct_ids_on_a_successful_refresh_add_no_series(self):
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         service = _refresh_service()
         # Each token is bound to the id it is presented under (#2750).
         service.token_generator.validate_refresh_token.side_effect = lambda token: {
@@ -251,7 +259,7 @@ class TestRefreshSeries:
 
     async def test_distinct_ids_refused_by_a_bound_token_add_no_series(self):
         """A client mismatch (#2750) labels the presented id through the fold."""
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         service = _refresh_service(claims={"client_id": COPILOT})
         raw_ids = _ids()
         labels = {"client_id": "unknown", "error_code": "CLIENT_MISMATCH"}
@@ -273,7 +281,7 @@ class TestRefreshSeries:
         ids=["default-client", "client-added-to-allowlist"],
     )
     async def test_an_allowed_client_keeps_its_label(self, allowed, client_id):
-        pytest.importorskip("prometheus_client")
+        _require_metrics()
         labels = {"client_id": client_id, "status": "success"}
         before = _value("oauth_tokens_refreshed_total", labels)
 
@@ -310,7 +318,7 @@ def _drive(client, send, raw_ids):
 
 
 def test_the_authorize_route_adds_no_series_for_unknown_clients():
-    pytest.importorskip("prometheus_client")
+    _require_metrics()
     from fastapi.testclient import TestClient
 
     from faultmaven.api.v1.auth_dependencies import require_authentication
@@ -357,7 +365,7 @@ def test_the_authorize_route_adds_no_series_for_unknown_clients():
 
 def test_the_token_route_labels_an_unknown_client_unknown():
     """``POST /token`` is unauthenticated: the id arrives straight off the wire."""
-    pytest.importorskip("prometheus_client")
+    _require_metrics()
     from fastapi.testclient import TestClient
 
     from faultmaven.modules.auth.api.rate_limiting import (

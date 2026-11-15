@@ -335,7 +335,7 @@ OPIK_ENABLED=false
 | `ENABLE_METRICS` | `false` | Read from the environment when a collector is created |
 | `METRICS_EXPORTER` | `none` | Selects exposition: `prometheus_http` or `none` |
 
-`METRICS_EXPORTER=prometheus_http` serves `/metrics`. `ENABLE_METRICS=true` makes the collectors created through the metrics shim record. The collectors in three modules (`tracing.py`, `oauth_metrics.py`, `evidence_metrics.py`) record whenever `prometheus_client` is installed, until #2748.
+`METRICS_EXPORTER=prometheus_http` serves `/metrics`. `ENABLE_METRICS=true` makes every first-party collector record; each is created through the metrics shim.
 
 ### External Log Aggregation
 
