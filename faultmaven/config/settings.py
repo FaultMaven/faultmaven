@@ -2530,15 +2530,12 @@ class ObservabilitySettings(BaseSettings):
 
     # APM Integration (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    prometheus_enabled: bool = Field(default=False)
-    prometheus_pushgateway_url: str = Field(default="http://localhost:9091")
     generic_apm_enabled: bool = Field(default=False)
     generic_apm_url: Optional[str] = Field(default=None)
     generic_apm_api_key: Optional[SecretStr] = Field(default=None)
 
     # Workspace integration (merged from WorkspaceSettings)
     comet_workspace: Optional[str] = Field(default=None)
-    instance_id: str = Field(default="localhost:8090")
 
     # Performance monitoring (merged from EnhancedObservabilitySettings)
     # COMMUNITY DEFAULT: Basic monitoring only
@@ -2548,10 +2545,6 @@ class ObservabilitySettings(BaseSettings):
     # Basic tracing configuration
     # COMMUNITY DEFAULT: Disabled (enterprise feature)
     tracing_enabled: bool = Field(default=False)
-
-    # Metrics
-    # COMMUNITY DEFAULT: Disabled (enterprise feature)
-    metrics_enabled: bool = Field(default=False)
 
     # Retention of the LLM usage ledger (#640, Q6). The daily rows' horizon is
     # thirteen months so a billing view can put the same month last year beside

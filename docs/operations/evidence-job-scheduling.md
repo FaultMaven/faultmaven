@@ -198,8 +198,7 @@ There is no per-file deletion-failure counter; failures are logged
 > builds that app. So the counters rise and die with the pod, and any alert
 > expression over them **cannot fire from the scheduled sweep**. Detect orphan
 > problems from the job's logs instead (below). Making the counters alertable
-> would take either a Pushgateway (`prometheus_pushgateway_url` already exists
-> in settings but nothing in the jobs path pushes to it) or moving the sweep
+> would take either a Pushgateway (nothing pushes to one) or moving the sweep
 > into a scraped long-lived process.
 
 **Detection that does work (log-based):**

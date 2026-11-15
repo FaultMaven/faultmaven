@@ -23,6 +23,7 @@ from .base import (
     ReasoningIntent,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 
@@ -932,7 +933,8 @@ class OpenAIProvider(BaseLLMProvider):
         """
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
+                async with post_waiting_out_rate_limits(
+                    session,
                     f"{self.config.base_url}/chat/completions",
                     headers=headers,
                     json=payload,

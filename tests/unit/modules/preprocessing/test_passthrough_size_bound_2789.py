@@ -21,6 +21,7 @@ import json
 import pytest
 
 from faultmaven.infrastructure.observability import evidence_metrics
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.extractors import (
@@ -281,8 +282,8 @@ class TestEveryStoredExtractIsBounded:
 
 
 @pytest.mark.skipif(
-    not evidence_metrics.PROMETHEUS_AVAILABLE,
-    reason="prometheus_client not installed; the histogram is a no-op",
+    not is_real(evidence_metrics.PREPROCESSING_EXTRACTION_YIELD_RATIO),
+    reason="metrics off; the histogram is a no-op",
 )
 @pytest.mark.asyncio
 async def test_the_yield_ratio_measures_the_extract_before_the_cut():
@@ -392,8 +393,8 @@ async def test_the_same_shapes_small_still_pass_through_whole(content):
 
 
 @pytest.mark.skipif(
-    not evidence_metrics.PROMETHEUS_AVAILABLE,
-    reason="prometheus_client not installed; the counter is a no-op",
+    not is_real(evidence_metrics.PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL),
+    reason="metrics off; the counter is a no-op",
 )
 @pytest.mark.asyncio
 async def test_a_large_uncertain_upload_counts_as_a_passthrough():

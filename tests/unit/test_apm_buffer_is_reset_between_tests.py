@@ -2,10 +2,10 @@
 
 ``apm_integration`` buffers a metric for every request through the performance
 middleware, and a live app flushes the buffer (a background loop its lifespan
-starts, and its shutdown) to the Prometheus pushgateway (localhost:9091) when
-``PROMETHEUS_ENABLED`` is on, as in Test Cloud. A test that left metrics behind
-had them flushed by whichever app boot ran next on its worker, and the network
-guard failed that other test.
+starts, and its shutdown) to each enabled APM exporter: in #2296, the
+Prometheus pushgateway (localhost:9091) that #2780 removed. A test that left
+metrics behind had them flushed by whichever app boot ran next on its worker,
+and the network guard failed that other test.
 
 The root conftest's ``_reset_observability_singletons`` clears the buffer after
 every test. A test cannot watch its own teardown, so a two-test suite runs in a

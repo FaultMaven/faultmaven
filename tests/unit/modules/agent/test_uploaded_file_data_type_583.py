@@ -208,7 +208,7 @@ class TestReclassificationMetricLabel:
     stored vocabularies must land on the same series.
 
     Asserted on the labels the code PASSES, with the metric patched, not on
-    the counter's value: under ``PROMETHEUS_ENABLED=false`` (the Standalone
+    the counter's value: under ``ENABLE_METRICS=false`` (the Standalone
     CI job) the metric is a no-op with no ``_value`` to read.
     """
 

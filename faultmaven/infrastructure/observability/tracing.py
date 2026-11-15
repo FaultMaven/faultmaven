@@ -34,64 +34,50 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.shims.metrics import declare_lazy
+from faultmaven.infrastructure.shims.metrics import Counter, Gauge, Histogram, is_real
 from faultmaven.models.interfaces import ITracer
 
-# Prometheus metrics
-try:
-    from prometheus_client import Counter, Gauge, Histogram
+# Prometheus metrics, through the metrics shim: no-ops with ENABLE_METRICS off
+# (#2748).
+REQUEST_COUNTER = Counter(
+    "faultmaven_requests_total",
+    "Total number of requests",
+    ["endpoint", "method", "status"],
+    lazy_labels="endpoint is the traced function's name, an open set; "
+    "per-request; bounded by #2749.",
+)
 
-    PROMETHEUS_AVAILABLE = True
-except ImportError:
-    PROMETHEUS_AVAILABLE = False
-    logging.warning("Prometheus client not available")
+# Request duration histogram
+REQUEST_DURATION = Histogram(
+    "faultmaven_request_duration_seconds",
+    "Request duration in seconds",
+    ["endpoint", "method"],
+)
 
-# Prometheus metrics
-if PROMETHEUS_AVAILABLE:
-    # Request counters
-    REQUEST_COUNTER = Counter(
-        "faultmaven_requests_total",
-        "Total number of requests",
-        ["endpoint", "method", "status"],
-    )
-    declare_lazy(
-        REQUEST_COUNTER,
-        "endpoint is the traced function's name, an open set; per-request.",
-    )
+# Active sessions gauge
+ACTIVE_SESSIONS = Gauge("faultmaven_active_sessions", "Number of active sessions")
 
-    # Request duration histogram
-    REQUEST_DURATION = Histogram(
-        "faultmaven_request_duration_seconds",
-        "Request duration in seconds",
-        ["endpoint", "method"],
-    )
+# LLM request metrics
+LLM_REQUEST_COUNTER = Counter(
+    "faultmaven_llm_requests_total",
+    "Total number of LLM requests",
+    ["provider", "model", "status"],
+    lazy_labels="provider and model are parsed from the traced function's name; "
+    "bounded by #2749.",
+)
 
-    # Active sessions gauge
-    ACTIVE_SESSIONS = Gauge("faultmaven_active_sessions", "Number of active sessions")
+LLM_REQUEST_DURATION = Histogram(
+    "faultmaven_llm_request_duration_seconds",
+    "LLM request duration in seconds",
+    ["provider", "model"],
+)
 
-    # LLM request metrics
-    LLM_REQUEST_COUNTER = Counter(
-        "faultmaven_llm_requests_total",
-        "Total number of LLM requests",
-        ["provider", "model", "status"],
-    )
-    declare_lazy(
-        LLM_REQUEST_COUNTER,
-        "provider and model are parsed from the traced function's name.",
-    )
-
-    LLM_REQUEST_DURATION = Histogram(
-        "faultmaven_llm_request_duration_seconds",
-        "LLM request duration in seconds",
-        ["provider", "model"],
-    )
-
-    # Generic function metrics
-    GENERIC_FUNCTION_DURATION = Histogram(
-        "faultmaven_function_duration_seconds",
-        "Generic function duration in seconds",
-        ["function_name", "status"],
-    )
+# Generic function metrics
+GENERIC_FUNCTION_DURATION = Histogram(
+    "faultmaven_function_duration_seconds",
+    "Generic function duration in seconds",
+    ["function_name", "status"],
+)
 
 
 class _NoOpSpan:
@@ -207,7 +193,8 @@ class OpikTracer(BaseExternalClient, ITracer):
                 "use_local_opik": self.use_local_opik,
                 "local_opik_url": self.local_opik_url,
                 "local_opik_host": self.local_opik_host,
-                "prometheus_available": PROMETHEUS_AVAILABLE,
+                # Whether this module's collectors record (#2748).
+                "metrics_recording": is_real(GENERIC_FUNCTION_DURATION),
             }
 
             # Test service connectivity if using local Opik
@@ -275,14 +262,13 @@ class OpikTracer(BaseExternalClient, ITracer):
         duration = time.time() - start_time
         self.logger.debug(f"Trace completed: {operation} ({duration:.3f}s, {status})")
 
-        # Record Prometheus metrics if available
-        if PROMETHEUS_AVAILABLE:
-            try:
-                GENERIC_FUNCTION_DURATION.labels(
-                    function_name=operation, status=status
-                ).observe(duration)
-            except Exception as e:
-                self.logger.warning(f"Failed to record fallback metrics: {e}")
+        # A no-op with ENABLE_METRICS off.
+        try:
+            GENERIC_FUNCTION_DURATION.labels(
+                function_name=operation, status=status
+            ).observe(duration)
+        except Exception as e:
+            self.logger.warning(f"Failed to record fallback metrics: {e}")
 
 
 def trace(name: str, settings=None):
@@ -344,9 +330,6 @@ def _record_metrics(function_name: str, duration: float, status: str):
         duration: Duration in seconds
         status: Success or error status
     """
-    if not PROMETHEUS_AVAILABLE:
-        return
-
     try:
         # Determine metric type based on function name
         if function_name.startswith("llm_"):

@@ -5,8 +5,8 @@ Covers:
   are importable and have the expected name + type.
 - `evidence_dedup_hits_total` increments when `_preprocess_attachment` hits
   the dedup short-circuit (integration with PLAN-content-hash-deduplication).
-- When prometheus_client is unavailable, metrics fall back to no-op objects
-  without raising.
+- With metrics off (ENABLE_METRICS unset, or no prometheus_client), the
+  shim's no-op objects stand in without raising.
 
 Run with:
     pytest tests/unit/infrastructure/observability/test_evidence_metrics.py -v
@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.infrastructure.observability import evidence_metrics as m
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -58,7 +59,7 @@ class TestEvidenceMetricsRegistration:
         ):
             assert hasattr(m, name), f"Metric {name} not exported"
             metric = getattr(m, name)
-            # Works under both PROMETHEUS_AVAILABLE and no-op fallback paths
+            # Works with metrics on and on the shim's no-op path
             assert (
                 hasattr(metric, "inc")
                 or hasattr(metric, "observe")
@@ -66,8 +67,8 @@ class TestEvidenceMetricsRegistration:
             )
 
     @pytest.mark.skipif(
-        not m.PROMETHEUS_AVAILABLE,
-        reason="prometheus_client not installed; names not meaningful",
+        not is_real(m.EVIDENCE_DEDUP_HITS_TOTAL),
+        reason="metrics off; names not meaningful",
     )
     def test_metric_names_follow_convention(self):
         # Counters/Histograms expose their name via _name; labels become suffixes
@@ -79,8 +80,7 @@ class TestEvidenceMetricsRegistration:
         )
 
     @pytest.mark.skipif(
-        not m.PROMETHEUS_AVAILABLE,
-        reason="prometheus_client not installed",
+        not is_real(m.EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL), reason="metrics off"
     )
     def test_labeled_counters_accept_labels(self):
         # Smoke: calling .labels() must not raise. No-op on actual value.
@@ -129,7 +129,7 @@ class TestDedupHitCounterEmission:
 
     def _current(self) -> float:
         """Read the current counter value (0.0 when no emissions)."""
-        if not m.PROMETHEUS_AVAILABLE:
+        if not is_real(m.EVIDENCE_DEDUP_HITS_TOTAL):
             return 0.0
         return m.EVIDENCE_DEDUP_HITS_TOTAL._value.get()
 
@@ -172,7 +172,7 @@ class TestDedupHitCounterEmission:
         await service.process_turn(case.case_id, "user_owner", payload)
 
         after = self._current()
-        if m.PROMETHEUS_AVAILABLE:
+        if is_real(m.EVIDENCE_DEDUP_HITS_TOTAL):
             assert (
                 after == before + 1
             ), f"Dedup counter did not increment: before={before}, after={after}"

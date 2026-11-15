@@ -258,11 +258,10 @@ class TestObservabilityConfiguration:
 
     def test_observability_constants(self):
         """Test that observability constants are defined."""
-        from faultmaven.infrastructure.observability import opik_sdk, tracing
+        from faultmaven.infrastructure.observability import opik_sdk
 
         # Should have availability flags
         assert isinstance(opik_sdk.OPIK_AVAILABLE, bool)
-        assert isinstance(tracing.PROMETHEUS_AVAILABLE, bool)
 
 
 class TestObservabilityPerformance:

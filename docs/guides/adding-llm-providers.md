@@ -645,9 +645,11 @@ class CohereProvider(BaseLLMProvider):
             **kwargs
         }
 
-        # Make API request
+        # Make API request. POST through post_waiting_out_rate_limits (from
+        # .base), never session.post: it waits out a 429 by the shared policy.
         async with aiohttp.ClientSession() as session:
-            async with session.post(
+            async with post_waiting_out_rate_limits(
+                session,
                 f"{self.config.base_url}/generate",
                 headers=headers,
                 json=payload,
@@ -1003,7 +1005,7 @@ if response.status != 200:
     )
 ```
 
-The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx and 429 errors are retried with backoff. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
+The `status_code` drives retry behavior in the router: 4xx errors fail fast (non-retryable), 5xx and 429 errors are retried with backoff. A rate-limit 429 reaches this raise only once `post_waiting_out_rate_limits` has spent the waits `rate_limit_wait` allows for this POST (#2793; the enclosing call's timeout bounds all of a call's waits), and the breaker and provider health do not count it. A quota-exhaustion 429 reaches it at once, and both count it. Default retryability is `False` (fail-fast) — opt in to retries with `retryable=True` for specific transient errors.
 
 **Pass `provider_error_code`, and include the full error body in the message.** Both, because `LLMException.__init__` reads both. `extract_provider_error_code` handles every published body shape in one place, and the code it returns decides the typed `category` (#509) *and* **billing/quota exhaustion** (#548) — an `insufficient_quota` from an OpenAI-compatible surface, or an Anthropic `billing_error`, is classified as `error_code=QUOTA_EXHAUSTED` (always non-retryable, mapped to HTTP 402 at the API) without anyone reading English. Where a provider publishes no code — and most do not — the same chokepoint falls back to matching the body wording, which is why the upstream `error_text` belongs in the message too. A new provider therefore gets correct billing handling for free; you do **not** need to special-case it, and you should not copy a billing table into your adapter. Pass `error_code=QUOTA_EXHAUSTED` explicitly only for a billing signal that is neither the code nor the wording — something this chokepoint structurally cannot see.
 
