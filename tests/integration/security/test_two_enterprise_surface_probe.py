@@ -3611,9 +3611,9 @@ async def _arrange_resume(world, stack: AsyncExitStack, broken: bool) -> _Arrang
     before = await _case_row(world, case_id)
 
     async def check_refusal(response) -> None:
-        assert response.json().get("detail") == (
-            "Case not found or resume not permitted"
-        ), (
+        # The case gate's refusal is labelled CASE_NOT_FOUND (#2806); the
+        # session gate's 404 carries no label.
+        assert response.headers.get("x-error-code") == "CASE_NOT_FOUND", (
             "the refusal did not come from the route's own CASE gate (A's session "
             f"is A's, so the session gate cannot be what refused): {response.text[:300]}"
         )
@@ -5206,10 +5206,10 @@ async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_worl
 
     The teammate names a session of THEIR OWN, so the session half of the route
     passes and only the case half can refuse. Two gates guard the case — the
-    route's early check and the one inside ``link_session_to_case`` — and they
-    answer in different shapes, so the ``detail`` is asserted: it is the
-    route's own refusal, issued before any session lookup, that is under test
-    here. The service's half is pinned by ``TestTheLinkGatesTheCase``.
+    route's early check and the one inside ``link_session_to_case``. Both
+    answer 403 ``CASE_NOT_DRIVER`` (#2806); the store staying empty shows it is
+    the route's own refusal, issued before any session lookup, that answered.
+    The service's half is pinned by ``TestTheLinkGatesTheCase``.
     """
     world = shared_world
     case_id = world.shared_case.case_id
@@ -5230,16 +5230,11 @@ async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_worl
         refused = await as_teammate(
             world, "POST", f"/api/v1/cases/sessions/{b_session}/resume/{case_id}"
         )
-        assert refused.status_code == 404, (
+        assert refused.status_code == 403, (
             "a teammate resumed the owner's case in their session "
             f"({refused.status_code}): {refused.text[:300]}"
         )
-        assert refused.json().get("detail") == (
-            "Case not found or resume not permitted"
-        ), (
-            "the refusal did not come from the route's own case gate: "
-            f"{refused.text[:300]}"
-        )
+        assert refused.headers.get("x-error-code") == "CASE_NOT_DRIVER"
         assert_no_private_content(refused, "POST .../resume/{case_id}")
         assert store.data == {}, "a refused resume moved a session pointer"
         assert (
@@ -5251,7 +5246,7 @@ async def test_a_teammate_cannot_resume_the_owners_case_in_a_session(shared_worl
         )
         assert owner.status_code == 200, (
             "control: the owner cannot resume their own case, so the teammate's "
-            f"404 is not attributable to ownership: {owner.text[:300]}"
+            f"403 is not attributable to driving: {owner.text[:300]}"
         )
         assert store.data == {f"session:{a_session}:current_case_id": case_id}
     finally:
@@ -5306,10 +5301,11 @@ async def test_a_teammate_cannot_name_the_owners_case_or_spend_a_model_call(
 
     async with _app_state(world.app, llm_provider=model):
         refused = await as_teammate(world, "POST", path, json={})
-        assert refused.status_code == 404, (
-            "a teammate's /title on a case they can READ was not refused as an "
-            f"absent case ({refused.status_code}): {refused.text[:300]}"
+        assert refused.status_code == 403, (
+            "a teammate's /title on a case they can READ was not refused as "
+            f"not its driver ({refused.status_code}): {refused.text[:300]}"
         )
+        assert refused.headers.get("x-error-code") == "CASE_NOT_DRIVER"
         assert_no_private_content(refused, f"POST {path}")
         assert model.calls == [], (
             f"a refused teammate spent {len(model.calls)} model call(s) naming "
@@ -5320,7 +5316,7 @@ async def test_a_teammate_cannot_name_the_owners_case_or_spend_a_model_call(
         owner = await as_owner(world, "POST", path, json={})
         assert owner.status_code == 200, (
             "control: the owner cannot name their own case, so the teammate's "
-            f"404 is not attributable to ownership: {owner.text[:300]}"
+            f"403 is not attributable to driving: {owner.text[:300]}"
         )
     assert len(model.calls) == 1, (
         "control: the owner's call did not reach the model, so the teammate's "
@@ -5329,7 +5325,7 @@ async def test_a_teammate_cannot_name_the_owners_case_or_spend_a_model_call(
     assert (await _case_row(world, case_id))[0] == _RecordingTitleModel.TITLE
 
 
-async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
+async def test_a_teammate_put_is_refused_as_not_the_driver_even_when_terminal(
     shared_world,
 ):
     """``PUT /cases/{id}`` resolves the case through OWNERSHIP at the route (#1898).
@@ -5339,8 +5335,9 @@ async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
     not_write`` pins that). What the route's read-arm lookup still did was
     answer a teammate's PUT on a TERMINAL case with **409 CASE_TERMINAL** — a
     write refused for the case's state rather than for who asked, telling a
-    non-owner the case's lifecycle. Owner-only at the route, the teammate gets
-    the 404 an absent case gets, and the OWNER still gets the 409.
+    non-owner the case's lifecycle. Driver-only at the route, the teammate gets
+    403 ``CASE_NOT_DRIVER`` (#2806; it was the absent case's 404), and the
+    OWNER still gets the 409.
     """
     world = shared_world
     case_id = world.shared_case.case_id
@@ -5362,19 +5359,19 @@ async def test_a_teammate_put_is_refused_as_an_absent_case_even_when_terminal(
     assert before[1] == "closed"
 
     refused = await as_teammate(world, "PUT", path, json={"title": "PWNED"})
-    assert refused.status_code == 404, (
+    assert refused.status_code == 403, (
         "a teammate's PUT on the owner's terminal case was answered as a state "
-        f"conflict rather than as an absent case ({refused.status_code}): "
+        f"conflict rather than as not its driver ({refused.status_code}): "
         f"{refused.text[:300]}"
     )
-    assert refused.headers.get("x-error-code") != "CASE_TERMINAL"
+    assert refused.headers.get("x-error-code") == "CASE_NOT_DRIVER"
     assert_no_private_content(refused, f"PUT {path}")
     assert await _case_row(world, case_id) == before
 
     owner_terminal = await as_owner(world, "PUT", path, json={"title": "late"})
     assert owner_terminal.status_code == 409, (
         "control: the owner's PUT on their own closed case no longer reaches the "
-        f"terminal gate, so the teammate's 404 distinguishes nothing: "
+        f"terminal gate, so the teammate's 403 distinguishes nothing: "
         f"{owner_terminal.text[:300]}"
     )
     assert owner_terminal.headers.get("x-error-code") == "CASE_TERMINAL"
@@ -5384,8 +5381,9 @@ async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
     """``DELETE /cases/{id}/data/{data_id}`` is DRIVER only (ADR-020 D2).
 
     The route is a stub: it deletes nothing and answers 204. Through the read
-    allowlist it told a teammate "deleted"; driver-only, the teammate gets the
-    404 an absent case gets and the driver (here the creator) keeps the stub's 204.
+    allowlist it told a teammate "deleted"; driver-only, the teammate gets 403
+    ``CASE_NOT_DRIVER`` (#2806) and the driver (here the creator) keeps the
+    stub's 204.
     """
     world = shared_world
     path = (
@@ -5394,7 +5392,8 @@ async def test_a_teammate_cannot_delete_the_owners_case_data(shared_world):
     )
 
     refused = await as_teammate(world, "DELETE", path)
-    assert refused.status_code == 404, (
+    assert refused.headers.get("x-error-code") == "CASE_NOT_DRIVER"
+    assert refused.status_code == 403, (
         "a teammate's DELETE of the owner's case data was not refused "
         f"({refused.status_code}): {refused.text[:300]}"
     )
@@ -5540,7 +5539,8 @@ async def test_a_hand_off_moves_the_investigation_writes_and_not_governance(
         world, "PUT", f"/api/v1/cases/{case_id}", json={"title": "Creator write"}
     )
     assert by_driver.status_code == 200, by_driver.text[:300]
-    assert by_creator.status_code == 404, by_creator.text[:300]
+    assert by_creator.status_code == 403, by_creator.text[:300]
+    assert by_creator.headers.get("x-error-code") == "CASE_NOT_DRIVER"
 
     # Governance: the creator's, not the driver's.
     driver_delete = await as_teammate(world, "DELETE", f"/api/v1/cases/{case_id}")
