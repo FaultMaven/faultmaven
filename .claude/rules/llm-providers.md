@@ -292,7 +292,11 @@ timeout, then slow 503s). `T` is the resolved per-call ceiling —
 threefold. Three PAID attempts on the long ladder, because the router's breaker
 opens on the third failure and short-circuits the fourth, plus the three
 backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
-refuses); the deadline ladder stays under the breaker. On a turn with tools
+refuses); the deadline ladder stays under the breaker. A throttle 429 is not
+counted by the breaker or the registry's provider health (#2793): every
+provider first waits it out at its POST (`post_waiting_out_rate_limits`,
+`rate_limit_wait` in `providers/base.py`, within a 20 s cap and the turn's
+spendable budget), so a ladder of throttles can pay the fourth attempt. On a turn with tools
 the tool loop's own attempt comes first, outside the ladder
 (`ToolCallingUnsupportedError`, chained from the provider's failure), and the
 fallback ladder then makes its own attempts: that turn pays the tool attempt

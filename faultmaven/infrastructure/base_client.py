@@ -20,6 +20,7 @@ from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
+    is_rate_limit_throttle,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 
@@ -582,8 +583,20 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        if self.circuit_breaker:
+                        # A throttle (a 429 the provider's own waits did not
+                        # outlast) says the service is up and busy, so it is
+                        # not counted against the shared breaker (#2793).
+                        throttled = is_rate_limit_throttle(call_error)
+                        if self.circuit_breaker and not throttled:
                             self.circuit_breaker.record_failure(call_error)
+                        if throttled:
+                            self.logger.warning(
+                                f"Rate-limited on {self.service_name}.{operation_name}"
+                                f" — a throttle, not counted against the circuit"
+                                f" breaker: {call_error}",
+                                client=self.client_name,
+                                service=self.service_name,
+                            )
 
                         # Log failed boundary - outbound
                         self.logger.log_boundary(

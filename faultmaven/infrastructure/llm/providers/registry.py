@@ -21,6 +21,7 @@ from faultmaven.exceptions import (
     CallShapeUnsupported,
     ModelLoadingException,
     RawModelContentRefused,
+    is_rate_limit_throttle,
 )
 from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
@@ -1078,6 +1079,17 @@ class ProviderRegistry:
                     last_error = e
                 continue
             except Exception as e:
+                if is_rate_limit_throttle(e):
+                    # A 429 the provider's own waits did not outlast: the
+                    # provider is up and busy, not down (#2793). No health
+                    # penalty; the chain moves on, and the throttle is what
+                    # the caller sees if nothing else answers.
+                    self.logger.warning(
+                        f"{provider_name} rate-limited this call and was skipped "
+                        f"without a health penalty: {e}"
+                    )
+                    last_error = e
+                    continue
                 # Record failure for health tracking
                 state.record_failure()
 

@@ -45,6 +45,8 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 **Strategy**: Automatic retry with exponential backoff. `LLMException` with `status_code >= 500`, `status_code == 429`, or explicit `retryable=True` triggers retries.
 
+**A rate-limit 429 is first waited out at the provider boundary** (#2793). Every provider's POST goes through `post_waiting_out_rate_limits` (`infrastructure/llm/providers/base.py`), which re-sends after the wait `rate_limit_wait` allows: `retry-after-ms`, else `retry-after` (seconds or HTTP-date), else 2 s doubled per attempt; at most `RATE_LIMIT_MAX_RETRIES` (2) re-sends, no single wait over `RATE_LIMIT_MAX_WAIT_SECONDS` (20 s), and inside a bound turn only a wait strictly less than `spendable_turn_budget()`. A 429 those waits do not outlast is raised, and is a **throttle** (`is_rate_limit_throttle`): neither the router's circuit breaker nor the registry's per-provider health counts it, because the provider is up and has said when to come back.
+
 > **Not all 429s are transient.** Providers reuse HTTP 429 for both rate-limiting (transient) and **billing/quota exhaustion** (permanent). A 429 whose body indicates exhausted credits/quota is classified as billing, not rate-limiting — see [§1.6](#16-billing--quota-exhaustion-operator-action-required).
 
 ### 1.2 Non-Retryable Client Errors (Fail Fast)
@@ -340,7 +342,7 @@ weaker evidence the provider is down.
 | Class | Retries (`RetryConfig`) | Worst case, one ladder |
 |---|---|---|
 | Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
-| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder, a mixed one included (a timeout, then slow 503s) |
+| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder the breaker counts, a mixed one included (a timeout, then slow 503s). A throttle 429 is not counted (§1.1), so a ladder of throttles can pay the fourth attempt, `4T + 14s`, still refused when it does not fit the turn budget |
 
 `T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`.
 The class is by kind, not by elapsed time: the handler has no `T` to compare an

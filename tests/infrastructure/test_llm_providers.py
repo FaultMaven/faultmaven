@@ -116,7 +116,10 @@ class TestLLMProviderRealBehavior:
             # Simulate real provider failures
             if provider_state["openai_failures"] > 0:
                 provider_state["openai_failures"] -= 1
-                raise web.HTTPTooManyRequests(text="Rate limit exceeded")
+                # OpenAI and Azure name the wait in milliseconds too.
+                raise web.HTTPTooManyRequests(
+                    text="Rate limit exceeded", headers={"retry-after-ms": "50"}
+                )
 
             # Simulate real network delay
             if provider_state["response_delay"] > 0:
@@ -269,8 +272,10 @@ class TestLLMProviderRealBehavior:
 
         assert isinstance(result, LLMResponse)
         assert result.content is not None
-        # A 429 with no Retry-After is failed over, not slept on.
-        assert requested_waits == [], f"a 429 was waited out: {requested_waits}s"
+        # The 429 is waited out at the provider for the time it named, and the
+        # same provider answers (#2793).
+        assert requested_waits == [0.05], f"waits: {requested_waits}s"
+        assert provider_state["openai_calls"] == 2
 
     async def test_real_concurrent_requests_load(
         self, llm_router_with_test_endpoints, requested_waits

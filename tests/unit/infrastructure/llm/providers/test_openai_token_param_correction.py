@@ -110,6 +110,7 @@ def _sequenced_session(specs):
         resp.status = spec["status"]
         resp.json = AsyncMock(return_value=spec.get("json", {}))
         resp.text = AsyncMock(return_value=spec.get("text", ""))
+        resp.headers = spec.get("headers", {})
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
         responses.append(resp)
@@ -290,18 +291,23 @@ class TestTokenParamCorrectionDoesNotOverreach:
         )
 
     async def test_transient_failure_that_happens_to_name_the_parameter(self):
-        """Category gates first: the ladder, not a swap, owns a 429."""
+        """Category gates first: the wait policy and the ladder, not a swap,
+        own a 429. Its wait is past the cap, so the provider boundary raises it
+        at once (#2793)."""
         await self._assert_not_retried(
             OpenAIProvider(_config_for("gpt-4o")),
-            _error(
-                429,
-                {
-                    "error": {
-                        "message": "Rate limit reached; reduce max_tokens or retry.",
-                        "code": "rate_limit_exceeded",
-                    }
-                },
-            ),
+            {
+                **_error(
+                    429,
+                    {
+                        "error": {
+                            "message": "Rate limit reached; reduce max_tokens or retry.",
+                            "code": "rate_limit_exceeded",
+                        }
+                    },
+                ),
+                "headers": {"retry-after": "600"},
+            },
             LLMErrorCategory.TRANSIENT,
         )
 
