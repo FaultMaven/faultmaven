@@ -444,10 +444,11 @@ _MAX_VALUES_NAMED = 10
 #: rendering is longer shows its first 38 and last 39 characters around "...".
 _MAX_VALUE_CHARS = 80
 _HEAD_CHARS, _TAIL_CHARS = 38, 39
-#: Every int at or above 2**266 (more than 266 bits) has at least 81 decimal
-#: digits and every smaller one at most 80, so past this many bits an int is
-#: shown by its size and never rendered: ``str`` of one past about 14,000 bits
-#: raises ``ValueError``.
+#: Every int of at most 80 decimal digits has at most 266 bits (10**80 - 1 has
+#: 266), and every int of more than 266 bits has at least 81. So past this many
+#: bits an int is shown by its size and never rendered; a 266-bit int of 81
+#: digits renders as head and tail. ``str`` of one past about 14,000 bits raises
+#: ``ValueError``.
 _MAX_INT_BITS = 266
 
 

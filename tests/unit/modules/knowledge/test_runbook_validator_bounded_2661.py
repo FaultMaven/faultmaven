@@ -355,18 +355,30 @@ class TestSymptomClassRefusals:
             f"symptom_class items must be strings: {whole[:38]}...{whole[-39:]}"
         )
 
-    @pytest.mark.parametrize("bits", [261, 266, 267])
-    def test_an_int_renders_whole_up_to_266_bits(self, bits):
-        """Every int below 2**266 has at most 80 digits and renders exactly as
-        ``str`` does; from 2**266 (267 bits) it has at least 81 and shows its
-        size. ``6617a1338`` cut at 260 bits."""
-        value = 2 ** (bits - 1)
+    @pytest.mark.parametrize(
+        "value,shown",
+        [
+            (2**260, str(2**260)),
+            (2**265, str(2**265)),
+            (10**80, "1" + "0" * 37 + "..." + "0" * 39),
+            (2**266, "<int of 267 bits>"),
+        ],
+        ids=[
+            "261-bits-79-digits",
+            "266-bits-80-digits",
+            "266-bits-81-digits",
+            "267-bits",
+        ],
+    )
+    def test_an_int_renders_by_its_digits_up_to_266_bits(self, value, shown):
+        """An int of at most 80 digits renders whole, exactly as ``str``
+        (2**260, 2**265); a 266-bit int of 81 digits (10**80) renders as head
+        and tail; an int of more than 266 bits (2**266) shows its size and is
+        never rendered. ``6617a1338`` cut at 260 bits."""
         content = _with({"symptom_class": f"[{value}]"})
-        shown = str(value) if bits <= 266 else f"<int of {bits} bits>"
         assert _errors(content, "symptom_class") == [
             f"symptom_class items must be strings: {shown}"
         ]
-        assert len(str(value)) <= 80 if bits <= 266 else len(str(value)) > 80
 
     def test_a_huge_int_renders_by_its_size(self):
         """``str`` of a 16,000-bit int raises ``ValueError``; it is never called."""
