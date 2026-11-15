@@ -385,9 +385,10 @@ async def resume_case_in_session(
 
 
 #: ``x-error-code`` of the turn route's 500 for a turn that may have committed
-#: (#2813): its COMMIT went unanswered, or answering it failed after the
-#: commit. Every other 500 the route answers means nothing of the turn
-#: committed.
+#: (#2813): its COMMIT raised and is not known to have rolled back, or
+#: answering it failed after the commit. Every other code on a 500 the route
+#: answers means nothing of the turn committed; a 500 with no code was raised
+#: outside the route (``internal_server_error_handler``) and says nothing.
 TURN_OUTCOME_UNKNOWN = "TURN_OUTCOME_UNKNOWN"
 
 TURN_OUTCOME_UNKNOWN_DETAIL = (
@@ -507,19 +508,23 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     500: {
         "description": (
             f"`{TURN_OUTCOME_UNKNOWN}`: the turn may have committed. Its commit "
-            "went unanswered (the database stopped answering during it, or the "
-            "connection was lost), or answering it failed after the commit. "
-            "Retry with the same `Idempotency-Key`: a committed turn is "
-            "answered from its receipt, one that did not commit runs. Without "
-            "a key, reload the case before sending the turn again. No "
-            "`Retry-After` is sent. Any other `x-error-code` on a 500 from "
-            "this route means nothing of the turn committed."
+            "failed without the database saying it rolled back (it stopped "
+            "answering during it, or the connection was lost), or answering it "
+            "failed after the commit. Retry with the same `Idempotency-Key`: a "
+            "committed turn is answered from its receipt, one that did not "
+            "commit runs. Without a key, reload the case before sending the "
+            "turn again. No `Retry-After` is sent. Any other `x-error-code` on "
+            "a 500 means nothing of the turn committed. A 500 with no "
+            "`x-error-code` failed outside the route (after it answered, or "
+            "before it ran) and says nothing about the turn: treat it as "
+            f"`{TURN_OUTCOME_UNKNOWN}`."
         ),
         "headers": {
             "x-error-code": {
                 "description": (
                     f"`{TURN_OUTCOME_UNKNOWN}` when the turn may have "
-                    "committed; any other code means nothing committed."
+                    "committed; any other code means nothing committed; "
+                    "absent, the 500 says nothing about the turn."
                 ),
                 "schema": {"type": "string"},
             },
@@ -658,9 +663,10 @@ async def submit_turn(
     A response lost after the commit (a disconnect, a timeout on the client's
     side) is recovered by retrying with the same key, and so is a **500**
     `x-error-code: TURN_OUTCOME_UNKNOWN`: the turn may have committed (its
-    commit went unanswered, or answering it failed). Any other 500 means
-    nothing of the turn committed. Without a key, every request runs as a new
-    turn.
+    commit failed without the database saying it rolled back, or answering it
+    failed). A 500 with any other code means nothing of the turn committed; one
+    with no code failed outside the route and says nothing, so treat it as
+    `TURN_OUTCOME_UNKNOWN`. Without a key, every request runs as a new turn.
 
     **A case being deleted.** A turn holds the case's in-flight lease from
     here to its end, so a delete of the case refuses while it runs; one that
@@ -1056,10 +1062,16 @@ async def submit_turn(
             except HTTPException:
                 raise
             except Exception as failure:
-                raise CommitOutcomeUnknown(
-                    f"The turn on case {case_id} committed, and answering it "
-                    f"failed: {failure!r}"
-                ) from failure
+                # A ``RawModelContentRefused`` is not let through here: its
+                # 500 ``SERVICE_ERROR`` says nothing was saved, false after the
+                # commit. The one send on this path, the auto-title, answers
+                # its own refusal for that reason (#1998).
+                logger.error(
+                    "Turn on case %s committed; answering it failed: %r",
+                    case_id,
+                    failure,
+                )
+                raise _turn_outcome_unknown_http() from failure
 
         except (asyncio.TimeoutError, TurnDeadlineExceeded) as timed_out:
             # Both mean the same thing to the client, and are answered the

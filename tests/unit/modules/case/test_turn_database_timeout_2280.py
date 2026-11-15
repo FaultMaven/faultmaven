@@ -449,6 +449,7 @@ def test_the_route_documents_the_outcome_unknown_500():
     assert "TURN_OUTCOME_UNKNOWN" in documented
     assert "Idempotency-Key" in documented
     assert "Any other `x-error-code` on a 500" in documented
+    assert "no `x-error-code`" in documented, "a 500 from outside the route"
 
 
 def test_the_route_documents_the_503():

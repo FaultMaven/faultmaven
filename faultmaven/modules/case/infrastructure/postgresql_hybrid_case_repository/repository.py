@@ -203,8 +203,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Raises:
             StaleCaseException: The case changed since it was read
             RepositoryException: If save fails. Chained from
-                ``CommitOutcomeUnknown`` when the COMMIT itself raised without
-                the server's answer, so it may have landed (#2813).
+                ``CommitOutcomeUnknown`` when the COMMIT itself raised and is
+                not known to have rolled back, so it may have landed (#2813).
         """
         self.check_turn_rows(case, reports, receipt)
         # Restored if the save does not commit: see SAVE_STAMPED_FIELDS.
@@ -336,7 +336,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             try:
                 await self.db.commit()
             except Exception as failure:
-                if not _server_answered(failure):
+                if not _commit_rolled_back(failure):
                     raise CommitOutcomeUnknown(
                         f"The COMMIT of case {case.case_id} was not answered: "
                         f"{failure!r}"
@@ -1709,21 +1709,29 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
     # ============================================================
 
 
-#: SQLSTATE class 08, connection exception. asyncpg raises it on the client
-#: side (``ConnectionDoesNotExistError``, 08003) when the connection is gone,
-#: so it is not the server's answer to the statement.
-_CONNECTION_EXCEPTION_CLASS = "08"
+#: The SQLSTATE classes of an error that refuses the transaction itself, so a
+#: COMMIT answered with one rolled back: integrity (23, a deferred constraint),
+#: invalid transaction state (25) and transaction rollback (40, serialization
+#: failure and deadlock). An allow-list, because the other way round fails
+#: unsafe: a FATAL termination (57P01 admin_shutdown) can be sent after the
+#: commit record is durable, and asyncpg raises a connection exception (08003)
+#: on the client side.
+_ROLLED_BACK_CLASSES = ("23", "25", "40")
+
+#: ``query_canceled``: the statement was cancelled, which rolls back.
+_QUERY_CANCELED = "57014"
 
 
-def _server_answered(failure: BaseException) -> bool:
-    """Whether the server answered the failed COMMIT, which then did not land.
+def _commit_rolled_back(failure: BaseException) -> bool:
+    """Whether the failed COMMIT is known not to have landed (#2813).
 
-    PostgreSQL's error reply to a COMMIT means it rolled the transaction back,
-    and that reply carries a SQLSTATE. A timeout, or a connection exception,
-    carries none from the server, and the COMMIT may have landed (#2813).
+    Only a SQLSTATE that refuses the transaction says so. A timeout, a
+    client-side error and every other SQLSTATE leave the outcome unknown.
     """
     code = sqlstate(failure)
-    return code is not None and not code.startswith(_CONNECTION_EXCEPTION_CLASS)
+    if code is None:
+        return False
+    return code == _QUERY_CANCELED or code.startswith(_ROLLED_BACK_CLASSES)
 
 
 class RepositoryException(Exception):

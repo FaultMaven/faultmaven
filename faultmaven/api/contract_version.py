@@ -156,14 +156,18 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         title=(
             "`POST /cases/{case_id}/turns` documents a 500 and names the one that "
             "may have saved the turn (#2813): `x-error-code: TURN_OUTCOME_UNKNOWN`, "
-            "no `Retry-After`. Any other 500 from the route means nothing of the "
-            "turn committed. MINOR: a newly documented status on a route that "
+            "no `Retry-After`. A 500 with any other code from the route means "
+            "nothing of the turn committed; one with no `x-error-code` failed "
+            "outside the route and says nothing about the turn. MINOR: a newly documented status on a route that "
             "already answered 500s, with one new code under it; no request or "
             "schema shape changes."
         ),
-        body=r"""`TURN_OUTCOME_UNKNOWN` answers a turn whose commit went unanswered (the
-database stopped answering during the COMMIT, or the connection was lost) and
-a turn that committed but whose answer then failed. Recover it by retrying
+        body=r"""`TURN_OUTCOME_UNKNOWN` answers a turn whose COMMIT failed without the
+database saying it rolled back (it stopped answering during the COMMIT, the
+connection was lost, or the server terminated the session) and a turn that
+committed but whose answer then failed. A 500 carrying no `x-error-code` was
+raised outside the route (a middleware, or the response's serialization) and
+may follow a committed turn: treat it as `TURN_OUTCOME_UNKNOWN`. Recover it by retrying
 with the same `Idempotency-Key`: a committed turn is answered from its
 receipt, one that did not commit runs. Without a key, reload the case before
 sending the turn again.

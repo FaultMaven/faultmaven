@@ -111,14 +111,16 @@ class DatabaseTimeout(TimeoutError):
 
 
 class CommitOutcomeUnknown(Exception):
-    """A COMMIT was sent and raised before the server answered it (#2813).
+    """A COMMIT raised, and whether it landed is unknown (#2813).
 
-    The driver's command timeout, or a connection lost mid-COMMIT: the server
-    may have committed the transaction after the client stopped listening, so
-    whether it landed is unknown. A COMMIT the server answered with an error
-    (it carries a SQLSTATE) is not this: PostgreSQL rolled it back. Raised by
-    ``PostgreSQLHybridCaseRepository.save`` around its ``db.commit()``; SQLite
-    answers its COMMIT in-process, so its repository has no such case.
+    The driver's command timeout, a connection lost mid-COMMIT, a FATAL
+    termination: the server may have committed the transaction anyway. Only a
+    SQLSTATE that refuses the transaction (a serialization failure, a deferred
+    constraint) says it rolled back, and that is not this. Errs toward unknown:
+    a client-side error raised before the COMMIT reached the server is this
+    too. Raised by ``PostgreSQLHybridCaseRepository.save`` around its
+    ``db.commit()``; SQLite answers its COMMIT in-process, so its repository
+    has no such case.
 
     Found by type on the ``__cause__`` chain, like ``DatabaseTimeout``, which a
     COMMIT timeout is also wrapped in by ``get_db_session``. The turn route
