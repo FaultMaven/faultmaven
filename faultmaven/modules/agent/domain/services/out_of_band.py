@@ -66,6 +66,7 @@ from faultmaven.infrastructure.security.model_content import case_redacted_messa
 from faultmaven.modules.agent.domain.services.query_classifier import (
     ProcessingMode,
     QueryClassification,
+    classification_window,
 )
 from faultmaven.modules.case.contracts import (
     is_server_written_assistant_row,
@@ -261,8 +262,12 @@ def reads_as_continuation(message: str) -> bool:
     What this deliberately does NOT do is decide what a message is ABOUT. That
     is the classifier's question, and a word list answering it is how a
     retirement-account question came to be investigated as an incident.
+
+    Reads the classifier's window (``classification_window``), not the whole
+    message: it runs on the event loop, and over a 10 MiB paste the word scan
+    held it for 1.18 s (#2798).
     """
-    words = re.findall(r"[a-z0-9']+", message.lower())
+    words = re.findall(r"[a-z0-9']+", classification_window(message).lower())
     if len(words) < TRIAGE_MIN_WORDS:
         return True
     return any(w in _CONTINUATION_WORDS for w in words)

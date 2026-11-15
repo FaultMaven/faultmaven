@@ -775,6 +775,9 @@ _KB_TOPIC_MAX_CHARS = 200
 # (``classification_window``): what a message asks opens or closes it, and a
 # pasted log in between is evidence, not the question.
 _CLASSIFY_WINDOW_CHARS = 2000
+# Joins a long message's head and tail. Not whitespace and not a word
+# character, so no pattern's ``\s+``, ``\b`` or token runs across it.
+_WINDOW_SEAM = "\n\u2026\n"
 
 # A clause of the message, for finding what "this" points back to.
 _KB_CLAUSE_SPLIT = re.compile(r"(?<=[.!?;])\s+|,\s+|\n+")
@@ -895,10 +898,27 @@ def classification_window(message: str) -> str:
     characters, 80 over 4,000): the mode, whether entities were found and the
     knowledge-base question were identical, for every message, with the whole
     text and with this window.
+
+    Each part is cut at whitespace, and the two are joined by
+    ``_WINDOW_SEAM``, which no pattern spans: a cut inside a token ("5031" ->
+    "503") or a pattern across the join ("Jan" + "12") would otherwise invent
+    an entity neither part holds. What the window gives up is a message whose
+    only anchor sits in its middle (a question, a long paste, a timestamp half
+    way through, another long paste): it reads as the question alone.
     """
     if len(message) <= 2 * _CLASSIFY_WINDOW_CHARS:
         return message
-    return message[:_CLASSIFY_WINDOW_CHARS] + "\n" + message[-_CLASSIFY_WINDOW_CHARS:]
+    head = message[:_CLASSIFY_WINDOW_CHARS]
+    tail = message[-_CLASSIFY_WINDOW_CHARS:]
+    if not message[_CLASSIFY_WINDOW_CHARS].isspace():
+        cut = max(head.rfind(" "), head.rfind("\n"), head.rfind("\t"))
+        head = head[:cut] if cut > 0 else ""
+    if not message[-_CLASSIFY_WINDOW_CHARS - 1].isspace():
+        starts = [
+            i for i in (tail.find(" "), tail.find("\n"), tail.find("\t")) if i >= 0
+        ]
+        tail = tail[min(starts) + 1 :] if starts else ""
+    return head + _WINDOW_SEAM + tail
 
 
 def detect_kb_question(message: str) -> Optional[KbQuestion]:

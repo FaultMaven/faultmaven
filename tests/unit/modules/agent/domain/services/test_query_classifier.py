@@ -741,7 +741,9 @@ class TestClassificationReadsABoundedWindow:
         from faultmaven.modules.agent.domain.services import query_classifier as qc
 
         bound = len(qc.classification_window(self._paste()))
-        assert bound <= 2 * qc._CLASSIFY_WINDOW_CHARS + 1
+        # An absolute bound, not the module's own constant: a window of
+        # megabytes would pass a bound derived from itself.
+        assert bound <= 4_003
         seen: list[int] = []
         for name in (
             "_extract_entities",
@@ -785,3 +787,34 @@ class TestClassificationReadsABoundedWindow:
         )
         question = classify_query(message).kb_question
         assert question is not None and question.topic == "postgres replication lag"
+
+
+class TestTheWindowsSeam:
+    """The window joins a long message's head and tail. Neither the join nor
+    the cut may invent an entity that no part of the message holds."""
+
+    _FILLER = " the replica was quiet overnight" * 200 + " "
+
+    def _two_ends(self, head: str, tail: str) -> str:
+        assert len(head) == 2000 and len(tail) == 2000, "premise: the exact ends"
+        return head + self._FILLER + tail
+
+    def test_a_pattern_does_not_span_the_join(self):
+        """Head ending "Jan", tail opening "12": no timestamp in the message,
+        and none in its window."""
+        head = ("x " * 1000)[: 2000 - 4] + " Jan"
+        tail = "12 rows fetched" + (" ok" * 700)[: 2000 - 15]
+        message = self._two_ends(head, tail)
+        entities = classify_query(message).detected_entities
+        assert "timestamps" not in entities
+        # Positive control: the same two ends adjacent are a timestamp.
+        assert "timestamps" in classify_query("Jan 12 rows fetched").detected_entities
+
+    def test_a_cut_inside_a_token_does_not_invent_one(self):
+        """The head's 2,000th character falls inside "5031": cutting there
+        would leave "503", a status code the message never had."""
+        head = ("x " * 1000)[: 2000 - 4] + " 503"
+        message = head + "1" + self._FILLER + ("ok " * 700)[:2000]
+        assert "status_codes" not in classify_query(message).detected_entities
+        # Positive control: a real 503 is found.
+        assert "status_codes" in classify_query("gateway returns 503").detected_entities
