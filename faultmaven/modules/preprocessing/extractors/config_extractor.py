@@ -87,14 +87,23 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 _MAX_NESTING = 100
 
 
-def _nests_too_deep(data: Any) -> bool:
-    """True when ``data`` nests mappings or lists past ``_MAX_NESTING``.
+def _too_big_to_walk(data: Any, source_chars: int) -> bool:
+    """True when ``data`` nests past ``_MAX_NESTING``, or holds more nodes than
+    its source has characters.
 
-    Iterative, and stops at the first node past the limit, so a
-    self-referencing YAML structure (``&a [*a]``) ends too."""
+    Without YAML aliases every node the walkers visit is at least one
+    character of the source, so only an alias makes a walk outgrow its text:
+    a list of aliases to a list of aliases (``a1: [*a0, *a0, ...]``) multiplies
+    at each level, and six levels of ten from 393 bytes are 10^7 nodes. A
+    self-referencing structure (``&a [*a]``) is the endless case of the same.
+    Iterative, and stops at the first node past either bound."""
     stack = [(data, 1)]
+    nodes = 0
     while stack:
         node, depth = stack.pop()
+        nodes += 1
+        if nodes > source_chars:
+            return True
         if isinstance(node, dict):
             children: Any = node.values()
         elif isinstance(node, list):
@@ -300,13 +309,13 @@ class StructuredConfigExtractor:
         Try to parse as structured config
 
         Returns the parsed data and its format, or None if no parser reads
-        the content within ``_MAX_NESTING``. Raises ``_RepeatedKey`` when JSON
+        the content within ``_too_big_to_walk``'s bounds. Raises ``_RepeatedKey`` when JSON
         or YAML that would parse repeats a key in one mapping.
         """
         # Try JSON first
         try:
             result = json.loads(content, object_pairs_hook=_unique_pairs)
-            if not _nests_too_deep(result):
+            if not _too_big_to_walk(result, len(content)):
                 return result, "json"
         except _RepeatedKey:
             raise
@@ -316,7 +325,7 @@ class StructuredConfigExtractor:
         try:
             result = yaml.load(content, Loader=_UniqueKeyLoader)
             # YAML might parse plain text as a string - we need a dict
-            if isinstance(result, dict) and not _nests_too_deep(result):
+            if isinstance(result, dict) and not _too_big_to_walk(result, len(content)):
                 return result, "yaml"
         except _RepeatedKey:
             raise
@@ -329,7 +338,7 @@ class StructuredConfigExtractor:
         # Try TOML: tomli, not the stdlib tomllib, which reads only TOML 1.0 on 3.11
         try:
             result = tomli.loads(content)
-            if not _nests_too_deep(result):
+            if not _too_big_to_walk(result, len(content)):
                 return result, "toml"
         except (ValueError, RecursionError):
             # TOMLDecodeError subclasses ValueError, as does an integer past

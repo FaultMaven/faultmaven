@@ -219,6 +219,40 @@ client = {{
         result = extractor.extract("loop: &a [*a]\n")
         assert result.file_meta["format"] != "yaml"
 
+    def test_yaml_alias_fan_out_falls_back(self, extractor):
+        """Each level a list of ten aliases to the one before: 10^5 nodes from
+        a few hundred characters, which every walker would expand again. It
+        reads as not YAML instead (the guard stops at the source's length)."""
+        lines = ["a0: &a0 [x]"]
+        for level in range(1, 6):
+            refs = ", ".join([f"*a{level - 1}"] * 10)
+            lines.append(f"a{level}: &a{level} [{refs}]")
+        content = "\n".join(lines) + "\n"
+        result = extractor.extract(content)
+        assert result.file_meta["format"] != "yaml"
+
+    def test_yaml_anchors_and_merge_keys_still_parse(self, extractor):
+        """Anchors as configs use them (shared defaults merged into services)
+        stay well inside the guard."""
+        content = (
+            "x-defaults: &defaults\n"
+            "  restart: always\n"
+            "  logging: {driver: json-file}\n"
+            "services:\n"
+            "  api:\n"
+            "    <<: *defaults\n"
+            "    image: api:1\n"
+            "  worker:\n"
+            "    <<: *defaults\n"
+            "    image: worker:1\n"
+            "    ports: &ports [8080, 8443]\n"
+            "  proxy:\n"
+            "    ports: *ports\n"
+        )
+        result = extractor.extract(content)
+        assert result.file_meta["format"] == "yaml"
+        assert "restart" in result.file_extract
+
     def test_nesting_at_limit_parses(self, extractor):
         """Nesting up to the limit still parses structurally."""
         content = '{"a": ' * 99 + "[1]" + "}" * 99
