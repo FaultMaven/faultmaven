@@ -37,6 +37,7 @@ from faultmaven.infrastructure.llm.providers.base import (
     rate_limit_wait,
 )
 from faultmaven.infrastructure.llm.providers.local_provider import LocalProvider
+from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
 from faultmaven.infrastructure.llm.providers.registry import (
     PROVIDER_SCHEMA,
     ProviderHealth,
@@ -383,3 +384,103 @@ def test_quota_exhaustion_at_429_is_not_a_throttle():
     assert not is_rate_limit_throttle(quota)
     assert is_rate_limit_throttle(LLMException("rate limited", status_code=429))
     assert not is_rate_limit_throttle(LLMException("server", status_code=503))
+
+
+# ---------------------------------------------------------------------------
+# 5. Review fixes: the call's deadline, the chain's real failure, quota,
+#    non-finite headers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_wait_the_calls_timeout_cannot_also_afford_is_not_taken(sleep):
+    """Two 15 s waits under a 30 s call timeout used to end in a counted
+    ``ExternalCallTimeout``. The re-send must get as long as the wait, so a
+    15 s wait under 30 s is refused and the throttle raised, uncounted."""
+    router = LLMRouter()
+    session = _session(_throttled({"retry-after": "15"}), _response(200, _OPENAI_OK))
+
+    async def send():
+        return await send_to_model(_azure(), prompt=vetted("hello"))
+
+    with patch("aiohttp.ClientSession", return_value=session):
+        with pytest.raises(LLMException) as raised:
+            await router.call_external(
+                operation_name="route_llm_request",
+                call_func=send,
+                timeout=30,
+                retries=0,
+            )
+
+    assert not isinstance(raised.value, TimeoutError)
+    assert is_rate_limit_throttle(raised.value)
+    assert session.post.call_count == 1
+    sleep.assert_not_awaited()
+    assert router.circuit_breaker.failure_count == 0
+
+
+@pytest.mark.parametrize("retry_after,taken", [("4.9", 4.9), ("5", None)])
+def test_a_wait_is_taken_only_when_twice_it_fits_the_call(retry_after, taken):
+    with patch.object(base, "remaining_call_time", return_value=10.0):
+        assert rate_limit_wait({"retry-after": retry_after}, 0) == taken
+
+
+@pytest.mark.asyncio
+async def test_a_throttled_fallback_does_not_hide_the_primarys_outage(sleep):
+    registry = ProviderRegistry(settings=None)
+    fallback = OpenAIProvider(
+        _config("openai", "https://openai.test.invalid/v1", "gpt-5.4-mini")
+    )
+    registry._providers = {"azure": _azure(), "openai": fallback}
+    registry._fallback_chain = ["azure", "openai"]
+    registry._provider_states = {
+        name: ProviderState(name=name) for name in registry._fallback_chain
+    }
+    registry._initialized = True
+    session = _session(
+        _response(503, '{"error":{"message":"overloaded"}}'),
+        *[_throttled({"retry-after": "1"}) for _ in range(3)],
+    )
+    with (
+        patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ),
+        patch("aiohttp.ClientSession", return_value=session),
+    ):
+        router = LLMRouter()
+        with pytest.raises(LLMException) as raised:
+            await router.route(prompt=vetted("hello"), bypass_cache=True)
+
+    assert raised.value.status_code == 503
+    assert router.circuit_breaker.failure_count == 1
+    assert registry._provider_states["azure"].consecutive_failures == 1
+    assert registry._provider_states["openai"].consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_a_quota_429_is_raised_after_one_post_with_no_wait(sleep):
+    session = _session(
+        _response(429, _QUOTA_BODY, {"retry-after": "1"}), _response(200, _OPENAI_OK)
+    )
+    with patch("aiohttp.ClientSession", return_value=session):
+        with pytest.raises(LLMException) as raised:
+            await send_to_model(_azure(), prompt=vetted("hello"))
+
+    assert raised.value.error_code == QUOTA_EXHAUSTED
+    assert session.post.call_count == 1
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "headers,expected",
+    [
+        ({"retry-after": "nan"}, RATE_LIMIT_DEFAULT_WAIT_SECONDS),
+        ({"retry-after": "inf"}, RATE_LIMIT_DEFAULT_WAIT_SECONDS),
+        ({"retry-after": "-inf"}, RATE_LIMIT_DEFAULT_WAIT_SECONDS),
+        ({"retry-after-ms": "nan"}, RATE_LIMIT_DEFAULT_WAIT_SECONDS),
+        ({"retry-after-ms": "inf"}, RATE_LIMIT_DEFAULT_WAIT_SECONDS),
+        ({"retry-after-ms": "inf", "retry-after": "3"}, 3.0),
+    ],
+)
+def test_a_non_finite_header_names_nothing(headers, expected):
+    assert rate_limit_wait(headers, 0) == expected

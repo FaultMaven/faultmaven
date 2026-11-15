@@ -295,8 +295,11 @@ backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
 refuses); the deadline ladder stays under the breaker. A throttle 429 is not
 counted by the breaker or the registry's provider health (#2793): every
 provider first waits it out at its POST (`post_waiting_out_rate_limits`,
-`rate_limit_wait` in `providers/base.py`, within a 20 s cap and the turn's
-spendable budget), so a ladder of throttles can pay the fourth attempt. On a turn with tools
+`rate_limit_wait` in `providers/base.py`: at most 2 re-sends per POST, each
+wait within a 20 s cap and taken only when twice it is less than what is left
+of the enclosing call's timeout and of the turn's spendable budget, so the
+call's deadline bounds all its waits; a quota 429 is not waited on), so a
+ladder of throttles can pay the fourth attempt. On a turn with tools
 the tool loop's own attempt comes first, outside the ladder
 (`ToolCallingUnsupportedError`, chained from the provider's failure), and the
 fallback ladder then makes its own attempts: that turn pays the tool attempt

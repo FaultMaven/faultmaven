@@ -1082,13 +1082,18 @@ class ProviderRegistry:
                 if is_rate_limit_throttle(e):
                     # A 429 the provider's own waits did not outlast: the
                     # provider is up and busy, not down (#2793). No health
-                    # penalty; the chain moves on, and the throttle is what
-                    # the caller sees if nothing else answers.
+                    # penalty; the chain moves on. A real failure seen earlier
+                    # stays the raised error, so the router still counts it.
                     self.logger.warning(
                         f"{provider_name} rate-limited this call and was skipped "
                         f"without a health penalty: {e}"
                     )
-                    last_error = e
+                    if (
+                        last_error is None
+                        or is_rate_limit_throttle(last_error)
+                        or isinstance(last_error, CallShapeUnsupported)
+                    ):
+                        last_error = e
                     continue
                 # Record failure for health tracking
                 state.record_failure()
