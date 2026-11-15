@@ -692,7 +692,8 @@ class CaseService(CaseDriverMixin, ICaseService):
         investigation (``current_statement``), so the case outcome record is
         folded over it and written in the same scoped UPDATE, only while the
         version it was folded from stands; a write that lost that race folds
-        again (#2811). Its disagreements are counted once, after the write."""
+        again (#2811). An unchanged description is not written: the title is,
+        alone. Its disagreements are counted once, after the write."""
         from faultmaven.core.investigation.outcome import (
             disagreement_keys,
             record_case_outcome,
@@ -711,9 +712,11 @@ class CaseService(CaseDriverMixin, ICaseService):
                 except ValueError as exc:
                     raise ValidationException(f"description: {exc}") from exc
             if case.description == stored:
-                await self.repository.update_metadata_fields(
-                    case_id, title=title, description=description
-                )
+                # Nothing for the record: the title alone. A description
+                # written here, unguarded, could land beside the record of a
+                # concurrent edit's.
+                if title is not None:
+                    await self.repository.update_metadata_fields(case_id, title=title)
                 return
             record_case_outcome(case, at=WritePoint.METADATA)
             if await self.repository.update_metadata_fields(

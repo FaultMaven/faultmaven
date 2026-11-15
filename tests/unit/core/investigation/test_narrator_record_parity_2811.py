@@ -522,3 +522,257 @@ async def test_each_narrator_fact_has_a_field_equal_to_its_derivation(name):
 def test_each_declared_difference_is_shown_by_a_fixture():
     shown = set().union(*(declared for _build, declared in FIXTURES.values()))
     assert shown == set(DECLARED), "a declared difference no fixture shows"
+
+
+# ---------------------------------------------------------------------------
+# Each re-check reason, with every kind of its parameters, rendered from the
+# record's fields alone (``recheck.text``), window 0 included
+# ---------------------------------------------------------------------------
+
+
+async def _held_open():
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _case,
+    )
+
+    case = _case("treatment")
+    case.progress.cause_identification_held_open = True
+    return case
+
+
+async def _posited_later():
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _case,
+    )
+
+    case = _case("treatment")
+    for node in case.causal_nodes.values():
+        node.metadata["root_attached_turn"] = 5
+    return case
+
+
+async def _before_the_failed_fix():
+    from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
+        _engine_disconfirmation,
+    )
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _confirmed_case,
+    )
+
+    case = _confirmed_case()
+    case.evidence.append(_engine_disconfirmation(case.current_turn + 2))
+    case.current_turn += 2
+    return case
+
+
+async def _window_zero_failed(newer: bool):
+    from faultmaven.modules.case.contracts import InvestigationActionType as Kind
+    from tests.unit.core.investigation.test_window_zero_relapse_2501 import (
+        _accept,
+        _relapsed,
+    )
+
+    _eng, case = await _relapsed()
+    if newer:
+        _accept(case, Kind.SOLUTION, 8)
+    return case
+
+
+async def _fix_failed(newer: bool):
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _relapsed,
+    )
+
+    case, _cause = await _relapsed(second_fix=newer)
+    return case
+
+
+async def _no_longer_identified():
+    """#2036 P5: the renewal acted on a cause deepened past since, and a
+    newer fix of the deeper cause is not re-checked yet."""
+    from tests.unit.core.investigation.bound_rows import VERIFYING_ID
+    from tests.unit.core.investigation.recorded_turns import _record
+    from tests.unit.core.investigation.test_fix_targets_review_2036 import (
+        _CAUSE_GONE,
+        _PRESENT,
+        _deepen,
+        _engine,
+        _fix,
+        _identified_case,
+        _obs,
+        _ran,
+    )
+
+    eng = _engine()
+    case, _a, hyp = _identified_case()
+    renewal = [_fix("renew the certificate")]
+    await _record(eng, case, 5, solutions_to_add=renewal, milestones=_ran())
+    await _record(eng, case, 6, _obs(_PRESENT, "checkout still 503", VERIFYING_ID))
+    r2 = await _deepen(eng, case, hyp, 7, "nothing rotates the certificate")
+    cited = r2.metadata["root_terminal_evidence_ids"][0]
+    await _record(eng, case, 8, _obs(_CAUSE_GONE, "a rotation job exists now", cited))
+    rotation = [_fix("install the rotation CronJob", r2.node_id)]
+    await _record(eng, case, 9, solutions_to_add=rotation, milestones=_ran())
+    return case
+
+
+async def _uncited(cited: bool):
+    from tests.unit.core.investigation.test_cause_leg_cited_basis_2557 import (
+        _fixed,
+        _mirror,
+        _recheck,
+    )
+
+    case, final, relief, _login, ttl = _mirror(cited=cited)
+    _fixed(case, final)
+    _recheck(case, (relief if cited else ttl).evidence_id)
+    return case
+
+
+async def _uncited_with_no_root():
+    """#2557 F2: the cause fell, a candidate stands that is not identified."""
+    from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
+        _SUPPORT,
+        _a_fell_then_b,
+        _fix_b_and_recheck,
+    )
+
+    eng, case, _a, _b, _b_support = await _a_fell_then_b(1, False)
+    await _fix_b_and_recheck(eng, case, _SUPPORT)
+    return case
+
+
+async def _other_cause():
+    """A fix run against one identified root, and a re-check of the other."""
+    from tests.unit.core.investigation.bound_rows import _row
+    from tests.unit.core.investigation.golden_cases_2636 import (
+        _second_validated_root,
+    )
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import _fix
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _ROOT_ID,
+        _eid,
+        _identified_case,
+        _recompute_at,
+    )
+    from tests.utils import terminal_verdict
+
+    case, root, hyp = _identified_case()
+    _second_validated_root(case)
+    second = case.causal_nodes["cn_00000000b0b0"]
+    second.metadata.update(terminal_verdict(_eid("pgb_log")))
+    second.node_state, second.belief = root.node_state, root.belief
+    second.validation_method = root.validation_method
+    case.hypotheses["hyp_00000000b0b0"].state = hyp.state
+    _recompute_at(case, 5)
+    _fix(case, turn=6, target_ids=[_ROOT_ID], fix_kind="remediation")
+    for label, named in (("pgbgone", "pgb_log"), ("poolgone", "pool_log")):
+        _row(
+            case,
+            EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            turn=7,
+            evidence_id=_eid(label),
+            summary=f"{named} re-checked",
+            rechecks=_eid(named),
+        )
+    _recompute_at(case, 7)
+    return case
+
+
+def _shows(case) -> set:
+    """What a case's live derivation shows of each reason: its code, the
+    kind of its parameters, and whether a missing window is window 0 or has a
+    newer fix. Read live, so a record that lost a parameter fails the parity
+    check below, not this premise."""
+    shown = set()
+    for _row, why in cause_recheck_status(case):
+        if why is None:
+            continue
+        shown.add(why.reason.value)
+        if why.window is not None:
+            shown.add(why.window.kind.value)
+            shown.add("window_0" if why.window.fix_turn is None else "window_n")
+            newer = why.window.newer_fix_turn is not None
+            shown.add("newer" if newer else "no_newer")
+        if why.uncited is not None:
+            shown.add(f"uncited.{why.uncited.kind.value}")
+    return shown
+
+
+#: Each fixture, and what it must show (``_shows``).
+REASONS = {
+    "held_open": (_held_open, {"held_open"}),
+    "posited_later": (_posited_later, {"predates_positing"}),
+    "before_the_failed_fix": (_before_the_failed_fix, {"predates_failed_fix"}),
+    "off_cause_attempt": (_held_check_then_interception, {"off_cause_attempt"}),
+    "window_zero_failed": (
+        lambda: _window_zero_failed(False),
+        {"failed", "window_0", "no_newer"},
+    ),
+    "window_zero_failed_newer": (
+        lambda: _window_zero_failed(True),
+        {"failed", "window_0", "newer"},
+    ),
+    "fix_failed_newer": (lambda: _fix_failed(True), {"failed", "window_n", "newer"}),
+    "fix_failed": (lambda: _fix_failed(False), {"failed", "window_n", "no_newer"}),
+    "no_longer_identified": (
+        _no_longer_identified,
+        {"no_longer_identified", "window_n", "newer"},
+    ),
+    "uncited_cited": (lambda: _uncited(True), {"uncited", "uncited.cited"}),
+    "uncited_no_citation": (
+        lambda: _uncited(False),
+        {"uncited", "uncited.no_citation"},
+    ),
+    "uncited_no_root": (_uncited_with_no_root, {"uncited", "uncited.no_root"}),
+    "other_cause": (_other_cause, {"other_cause"}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REASONS))
+async def test_each_reason_renders_from_the_record_as_it_does_live(name):
+    build, shows = REASONS[name]
+    case = await build()
+    assert shows <= _shows(case), "premise: the fixture shows it"
+    assert differences(case) == set()
+
+
+def test_every_reason_and_kind_is_shown_by_a_fixture():
+    from faultmaven.modules.case.contracts import NoWindowKind, UncitedKind
+
+    shown = set().union(*(shows for _build, shows in REASONS.values()))
+    unreachable = {NoWindowKind.LATEST_FAILED.value}  # below
+    expected = (
+        {
+            *(r.value for r in RecheckReason if r not in _NOT_PARAMETRISED),
+            *(k.value for k in NoWindowKind),
+            *(f"uncited.{k.value}" for k in UncitedKind),
+            "window_0",
+            "window_n",
+            "newer",
+            "no_newer",
+        }
+        - unreachable
+        - {RecheckReason.NO_CONFIRMING_WINDOW.value}
+    )
+    assert expected <= shown
+
+
+#: Reasons with no parameters and no fixture of their own here.
+_NOT_PARAMETRISED = {
+    RecheckReason.COUNTS,
+    RecheckReason.DISCONFIRMATION,
+    RecheckReason.OUTSIDE_WINDOW,
+}
+
+
+def test_latest_failed_renders_from_its_record_row():
+    """``LATEST_FAILED`` (no observed window failed or acted off-cause) is
+    not reachable through the derivations here: an observed cause re-check
+    observes its window. Its record row is built directly."""
+    from faultmaven.modules.case.contracts import NoConfirmingWindow, NoWindowKind
+
+    window = NoConfirmingWindow(kind=NoWindowKind.LATEST_FAILED)
+    assert recheck_text(_why(RecheckReason.NO_CONFIRMING_WINDOW, window)) == (
+        "the latest fix was seen failing; only a new fix can confirm"
+    )

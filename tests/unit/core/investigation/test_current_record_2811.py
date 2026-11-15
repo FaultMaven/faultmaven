@@ -500,20 +500,85 @@ async def test_a_description_edit_leaves_an_in_flight_turn_to_commit(tenant):
     await commit_turn_plan(repository, turn, TurnCommitPlan())
 
 
+class _Spied(_Copies):
+    """Records each scoped metadata write; ``before_write`` runs once,
+    ahead of the next one (a concurrent request landing first)."""
+
+    def __init__(self):
+        super().__init__()
+        self.writes: list = []
+        self.before_write = None
+
+    async def update_metadata_fields(self, case_id, **fields):
+        if self.before_write is not None:
+            first, self.before_write = self.before_write, None
+            await first()
+        self.writes.append(fields)
+        return await super().update_metadata_fields(case_id, **fields)
+
+
+async def _spied(case) -> _Spied:
+    repository = _Spied()
+    await repository.save(case)
+    return repository
+
+
 async def test_an_unchanged_description_folds_nothing(tenant):
+    """The title alone is written: no description, no record, no version."""
     case = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
     record_case_outcome(case, at=WritePoint.CYCLE)
     tenant(case)
-    repository = await _stored(case)
+    repository = await _spied(case)
     before = (await repository.get(case.case_id)).progress.outcome
 
     await CaseService(repository).update_case(
         case.case_id, {"title": "Slow checkout", "description": case.description}
     )
 
+    assert repository.writes == [{"title": "Slow checkout"}]
     saved = await repository.get(case.case_id)
     assert saved.title == "Slow checkout"
     assert saved.progress.outcome == before
+
+
+async def test_an_unchanged_description_with_no_title_writes_nothing(tenant):
+    case = inquiry_case(user_id="u", enterprise_id="o", statement="it is slow")
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    tenant(case)
+    repository = await _spied(case)
+
+    await CaseService(repository).update_case(
+        case.case_id, {"description": case.description}
+    )
+
+    assert repository.writes == []
+
+
+async def test_a_concurrent_edit_keeps_the_description_beside_its_record(tenant):
+    """The review's interleaving: request D2 (a title, and the description
+    unchanged) loads first; request D1 (a new description) commits it with
+    its record; then D2 writes. The stored description and the record's
+    statement come from one write."""
+    case = inquiry_case(user_id="u", enterprise_id="o", statement="API is slow")
+    case.description = "API is slow"
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    tenant(case)
+    repository = await _spied(case)
+    service = CaseService(repository)
+
+    async def d1():
+        await service.update_case(case.case_id, {"description": "checkout is slow"})
+
+    repository.before_write = d1
+    await service.update_case(
+        case.case_id, {"title": "Slow API", "description": "API is slow"}
+    )
+
+    final = await repository.get(case.case_id)
+    assert final.title == "Slow API"
+    assert final.description == "checkout is slow"
+    assert final.progress.outcome.problem.statement == "checkout is slow"
+    assert narration_outcome(final) == final.progress.outcome
 
 
 # ---------------------------------------------------------------------------
