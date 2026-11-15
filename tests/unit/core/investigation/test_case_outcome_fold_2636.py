@@ -15,6 +15,7 @@ bundles of a replay. Each one carries the fresh derivation's reversal as a
 premise, so it fails without the fold. No live LLM.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1253,6 +1254,28 @@ def test_both_counters_expose_every_series_at_zero_from_import():
         **{f"faultmaven_case_outcome_conflicts|{f}": 0.0 for f in fields},
         **{
             f"faultmaven_case_outcome_write_failures|{at}": 0.0
-            for at in ("cycle", "replay", "resolved", "closed")
+            for at in _declared_write_points()
         },
     }
+
+
+def _declared_write_points() -> tuple:
+    """The write-failure counter's ``at`` labels, read off its declaration
+    (``lifecycle_metrics``), so the expected series cannot drift from it;
+    each one a ``WritePoint`` (#2811)."""
+    import ast
+
+    from faultmaven.core.investigation import lifecycle_metrics
+    from faultmaven.modules.case.contracts import WritePoint
+
+    tree = ast.parse(Path(lifecycle_metrics.__file__).read_text(encoding="utf-8"))
+    (call,) = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and [t.id for t in node.targets] == ["case_outcome_write_failures_total"]
+    ]
+    (values,) = [k.value for k in call.keywords if k.arg == "label_values"]
+    declared = ast.literal_eval(values)["at"]
+    assert set(declared) <= {p.value for p in WritePoint}
+    return declared
