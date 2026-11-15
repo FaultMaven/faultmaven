@@ -103,6 +103,7 @@ def _sequenced_session(specs):
         resp.status = spec["status"]
         resp.json = AsyncMock(return_value=spec.get("json", {}))
         resp.text = AsyncMock(return_value=spec.get("text", ""))
+        resp.headers = spec.get("headers", {})
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
         responses.append(resp)
@@ -236,7 +237,10 @@ class TestNothingElseBuysAResend:
     )
     async def test_it_is_raised_after_one_request(self, status, body):
         provider = OpenAIProvider(_config_for("gpt-5.4-mini"))
-        session, sent = _sequenced_session([_error(status, body)])
+        # A wait past the cap, so the provider boundary raises the 429 at once
+        # (#2793): what is pinned is that the correction does not re-send.
+        spec = {**_error(status, body), "headers": {"retry-after": "600"}}
+        session, sent = _sequenced_session([spec])
 
         with pytest.raises(LLMException):
             await _send(provider, session)

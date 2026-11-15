@@ -25,6 +25,7 @@ from .base import (
     ProviderConfig,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 # Assistant content blocks that carry signed reasoning, echoed verbatim.
@@ -807,37 +808,27 @@ class AnthropicProvider(BaseLLMProvider):
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
 
-        _MAX_RATE_LIMIT_RETRIES = 2
         try:
             async with aiohttp.ClientSession() as session:
-                for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-                    async with session.post(
-                        url,
-                        headers=headers,
-                        json=request_body,
-                        timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                    ) as response:
-                        if response.status == 429 and attempt < _MAX_RATE_LIMIT_RETRIES:
-                            retry_after = float(
-                                response.headers.get("retry-after", "60")
-                            )
-                            await asyncio.sleep(retry_after)
-                            continue
-                        if response.status != 200:
-                            error_text = await response.text()
-                            # Pass status_code only; LLMException derives
-                            # retryable (429 + 5xx). An explicit
-                            # retryable=status==429 would wrongly force 5xx
-                            # to non-retryable.
-                            raise LLMException(
-                                f"Anthropic API request failed: {response.status} - {error_text}",
-                                status_code=response.status,
-                                provider_error_code=extract_provider_error_code(
-                                    error_text
-                                ),
-                            )
-                        response_data = await response.json()
-                        break
+                async with post_waiting_out_rate_limits(
+                    session,
+                    url,
+                    headers=headers,
+                    json=request_body,
+                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        # Pass status_code only; LLMException derives
+                        # retryable (429 + 5xx). An explicit
+                        # retryable=status==429 would wrongly force 5xx
+                        # to non-retryable.
+                        raise LLMException(
+                            f"Anthropic API request failed: {response.status} - {error_text}",
+                            status_code=response.status,
+                            provider_error_code=extract_provider_error_code(error_text),
+                        )
+                    response_data = await response.json()
         except asyncio.TimeoutError:
             raise LLMException(
                 f"Anthropic API request timed out after {self.config.timeout}s "

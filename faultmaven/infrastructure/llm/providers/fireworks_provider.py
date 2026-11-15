@@ -21,6 +21,7 @@ from .base import (
     ProviderConfig,
     extract_provider_error_code,
     normalize_stop_reason,
+    post_waiting_out_rate_limits,
 )
 
 
@@ -160,7 +161,8 @@ class FireworksProvider(BaseLLMProvider):
         # Make request
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(
+                async with post_waiting_out_rate_limits(
+                    session,
                     f"{self.config.base_url}/chat/completions",
                     headers=headers,
                     json=payload,
