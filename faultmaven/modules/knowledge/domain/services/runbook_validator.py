@@ -22,10 +22,9 @@ repo's suite (the repos cannot import one another).
 import asyncio
 import bisect
 import re
-import reprlib
-from collections import Counter
+from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 import yaml
 
@@ -437,76 +436,163 @@ def _line_list(lines: Iterable[int]) -> str:
 # A refusal names an invalid frontmatter value, never the whole of it, and names
 # each distinct value once: a YAML alias repeats one value at the cost of a few
 # characters, so a refusal sized by the items or by the value grows past the
-# document it answers.
+# document it answers. A value is rendered only for the sentence that shows it.
 
-#: How many characters of one invalid value a refusal shows.
+#: How many distinct invalid values one field names before it counts the rest.
+_MAX_VALUES_NAMED = 10
+#: How many characters of one invalid value a refusal shows: a value whose whole
+#: rendering is longer shows its first 38 and last 39 characters around "...".
 _MAX_VALUE_CHARS = 80
-_VALUE_REPR = reprlib.Repr()
-_VALUE_REPR.maxstring = _VALUE_REPR.maxlong = _VALUE_REPR.maxother = _MAX_VALUE_CHARS
+_HEAD_CHARS, _TAIL_CHARS = 38, 39
+#: An int past this many bits has more than 79 decimal digits; ``str`` of one
+#: past about 14,000 bits raises ``ValueError``, so it is never rendered.
+_MAX_INT_BITS = 260
+
+
+def _leaf_chunk(x: Any, rev: bool) -> str:
+    """``repr(x)`` of a non-container, or its head (``rev``: its tail) for a long
+    str or bytes, which is never rendered whole."""
+    if isinstance(x, (str, bytes)):
+        if len(x) <= _MAX_VALUE_CHARS + 1:
+            return repr(x)
+        # repr's own quote rule, applied to the whole value, not to the slice.
+        sq, dq = ("'", '"') if isinstance(x, str) else (b"'", b'"')
+        quote = '"' if sq in x and dq not in x else "'"
+        piece = repr(x[-_TAIL_CHARS:] if rev else x[: _MAX_VALUE_CHARS + 1])
+        inner = piece[piece.index(piece[-1]) + 1 : -1]
+        if quote == "'" and piece[-1] == '"':
+            inner = inner.replace("'", "\\'")
+        prefix = "b" if isinstance(x, bytes) else ""
+        return inner + quote if rev else prefix + quote + inner
+    if (
+        isinstance(x, int)
+        and not isinstance(x, bool)
+        and x.bit_length() > _MAX_INT_BITS
+    ):
+        return f"<int of {x.bit_length()} bits>"
+    return repr(x)
+
+
+def _emit(x: Any, path: Set[int], rev: bool) -> Iterator[str]:
+    """``repr(x)`` in chunks, front to back (``rev``: back to front), lazily: a
+    reader that stops early renders only what it read. A container already on
+    ``path`` renders as ``repr`` renders a recursive one."""
+    if not isinstance(x, (list, tuple, dict, set)):
+        yield _leaf_chunk(x, rev)
+        return
+    if isinstance(x, list):
+        opener, closer = "[", "]"
+    elif isinstance(x, tuple):
+        opener, closer = "(", ")"
+    else:
+        opener, closer = "{", "}"
+    if id(x) in path:
+        yield opener + "..." + closer
+        return
+    if not x:
+        yield "set()" if isinstance(x, set) else opener + closer
+        return
+    path.add(id(x))
+    items: Iterable[Any] = x.items() if isinstance(x, dict) else x
+    if rev:
+        items = reversed(list(items) if isinstance(x, set) else items)
+    yield closer if rev else opener
+    if rev and isinstance(x, tuple) and len(x) == 1:
+        yield ","
+    for n, item in enumerate(items):
+        if n:
+            yield ", "
+        if isinstance(x, dict):
+            first, second = (item[1], item[0]) if rev else item
+            yield from _emit(first, path, rev)
+            yield ": "
+            yield from _emit(second, path, rev)
+        else:
+            yield from _emit(item, path, rev)
+    if not rev and isinstance(x, tuple) and len(x) == 1:
+        yield ","
+    yield opener if rev else closer
+    path.discard(id(x))
+
+
+def _read(chunks: Iterator[str], enough: int) -> List[str]:
+    read: List[str] = []
+    size = 0
+    for chunk in chunks:
+        read.append(chunk)
+        size += len(chunk)
+        if size >= enough:
+            break
+    return read
 
 
 def _shown(value: Any, as_repr: bool = False) -> str:
-    """``value`` as a refusal renders it (``str``, or ``repr``), cut to 80 characters.
-
-    A list, mapping or set, and any value shown by ``repr``, goes through
-    ``reprlib``, which renders only a bounded head of a value a YAML alias repeated.
-    """
-    if isinstance(value, str) and not as_repr:
-        text = value
-    elif as_repr or isinstance(value, (list, dict, set)):
-        text = _VALUE_REPR.repr(value)
-    else:
-        text = str(value)
-    if len(text) <= _MAX_VALUE_CHARS:
-        return text
-    return text[: _MAX_VALUE_CHARS - 3] + "..."
+    """``value`` as a refusal renders it, ``str`` (``as_repr``: ``repr``), exactly
+    when that is at most 80 characters, and otherwise its first 38 and last 39
+    characters around "...". Only those characters are ever rendered."""
+    if not as_repr and isinstance(value, (str, date)):
+        text = value if isinstance(value, str) else str(value)
+        if len(text) <= _MAX_VALUE_CHARS:
+            return text
+        return text[:_HEAD_CHARS] + "..." + text[-_TAIL_CHARS:]
+    # str() of every other value YAML gives equals its repr().
+    head = "".join(_read(_emit(value, set(), False), _MAX_VALUE_CHARS + 1))
+    if len(head) <= _MAX_VALUE_CHARS:
+        return head
+    tail = "".join(reversed(_read(_emit(value, set(), True), _TAIL_CHARS)))
+    return head[:_HEAD_CHARS] + "..." + tail[-_TAIL_CHARS:]
 
 
 def _capped_refusals(
-    items: Iterable[Any], refusal: Callable[[Any], Optional[str]], more: str
+    items: Iterable[Any],
+    refusal: Callable[[Any], Optional[Tuple[str, str, bool]]],
+    more: str,
 ) -> List[str]:
-    """One refusal per distinct invalid item, in item order, at most ten.
+    """One refusal per distinct invalid item, in item order, at most ten, then
+    ``more`` formatted with the count of the other distinct invalid items.
 
-    Distinct is by the clipped ``repr`` (an item can be unhashable). ``refusal``
-    gives an item's sentence, or ``None`` when it is valid. Past ten, ``more``
-    is formatted with the count of the other distinct invalid items.
+    ``refusal`` checks an item without rendering it: ``None`` when it is valid,
+    else the sentence around the value and whether the value shows by ``repr``.
+    Only an invalid item is keyed, a str by its value and anything else by its
+    identity (a YAML alias repeats one object), and only a new one is rendered.
     """
     refused: List[str] = []
-    seen: Set[str] = set()
+    seen: Set[Any] = set()
     for item in items:
-        key = _shown(item, as_repr=True)
+        found = refusal(item)
+        if found is None:
+            continue
+        key = item if isinstance(item, str) else (id(item),)
         if key in seen:
             continue
-        sentence = refusal(item)
-        if sentence is None:
-            continue
         seen.add(key)
-        if len(seen) <= _MAX_LINES_LISTED:
-            refused.append(sentence)
-    if len(seen) > _MAX_LINES_LISTED:
-        refused.append(more.format(len(seen) - _MAX_LINES_LISTED))
+        if len(seen) <= _MAX_VALUES_NAMED:
+            before, after, as_repr = found
+            refused.append(before + _shown(item, as_repr) + after)
+    if len(seen) > _MAX_VALUES_NAMED:
+        refused.append(more.format(len(seen) - _MAX_VALUES_NAMED))
     return refused
 
 
-def _symptom_class_refusal(item: Any) -> Optional[str]:
+def _symptom_class_refusal(item: Any) -> Optional[Tuple[str, str, bool]]:
     if not isinstance(item, str):
-        return f"symptom_class items must be strings: {_shown(item, as_repr=True)}"
+        return "symptom_class items must be strings: ", "", True
     if not re.match(r"^[a-z0-9_-]+$", item):
-        return (
-            f"symptom_class must be lowercase with hyphens/underscores: {_shown(item)}"
-        )
+        return "symptom_class must be lowercase with hyphens/underscores: ", "", False
     if item not in vocabulary(SymptomClass):
         return (
-            f"Invalid symptom_class '{_shown(item)}'. Must be one of the controlled "
-            f"vocabulary ({render_vocabulary(SymptomClass)}), or move it to "
-            f"`tags` if it is a long-tail symptom."
+            "Invalid symptom_class '",
+            f"'. Must be one of the controlled vocabulary "
+            f"({render_vocabulary(SymptomClass)}), or move it to `tags` if it is a "
+            f"long-tail symptom.",
+            False,
         )
     return None
 
 
-def _tag_refusal(tag: Any) -> Optional[str]:
+def _tag_refusal(tag: Any) -> Optional[Tuple[str, str, bool]]:
     if isinstance(tag, str) and not re.match(r"^[a-z0-9-]+$", tag):
-        return f"Tag must be lowercase alphanumeric with hyphens: {_shown(tag)}"
+        return "Tag must be lowercase alphanumeric with hyphens: ", "", False
     return None
 
 
@@ -553,6 +639,13 @@ def _norm_statement(s: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", s.lower()))
 
 
+def _statement_jaccard(a: str, b: str) -> float:
+    ta = set(re.findall(r"[a-z0-9]+", a.lower()))
+    tb = set(re.findall(r"[a-z0-9]+", b.lower()))
+    union = ta | tb
+    return len(ta & tb) / len(union) if union else 0.0
+
+
 def check_cause_statement_invariants(
     statements: List[tuple],
 ) -> tuple[List[str], List[str]]:
@@ -567,8 +660,9 @@ def check_cause_statement_invariants(
       (ii) BLOCK exact-duplicate sibling Statements (one error per duplicate set);
            WARN on near-duplicates (lexical Jaccard >= 0.6) — sibling causes must
            be mutually discriminative (MECE) or holistic matching returns
-           'multiple' and the matcher abstains. The first 20 pairs are named, one
-           warning each; one more warning counts the rest.
+           'multiple' and the matcher abstains. Pairs are taken over the first
+           Statement of each letter; the first 20 are named, one warning each,
+           and one more warning counts the rest.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -593,35 +687,32 @@ def check_cause_statement_invariants(
                 f"Causes {', '.join(letters)} have identical Statements; sibling "
                 f"causes must be mutually discriminative (MECE) or the matcher abstains."
             )
-    # Near-duplicates (high lexical overlap but not identical): pairwise warn.
-    # Only Statements sharing a word overlap, so Statement i counts the words it
-    # shares with each LATER Statement off its words' posting lists, and the
-    # Jaccard is shared / (|i| + |j| - shared): the all-pairs loop's pairs, in its
-    # order, with each Statement tokenised once (FaultMaven/faultmaven#2661).
-    tokens = [set(norm.split()) for _, norm in norms]
-    postings: Dict[str, List[int]] = {}
-    for i, words in enumerate(tokens):
-        for word in words:
-            postings.setdefault(word, []).append(i)
+    # Near-duplicates (high lexical overlap but not identical): pairwise warn,
+    # over the first Statement of each cause letter, so at most 26 whatever a
+    # document repeats; a reused letter is refused on its own
+    # (FaultMaven/faultmaven#2661).
+    firsts: List[int] = []
+    seen_letters: Set[str] = set()
+    for i, (letter, norm) in enumerate(norms):
+        if norm and letter not in seen_letters:
+            seen_letters.add(letter)
+            firsts.append(i)
     near = 0
-    for i, words in enumerate(tokens):
-        shared: Counter = Counter()
-        for word in words:
-            posting = postings[word]
-            shared.update(posting[bisect.bisect_right(posting, i) :])
-        for j in sorted(shared):
-            overlap = shared[j]
-            jaccard = overlap / (len(words) + len(tokens[j]) - overlap)
-            if norms[i][1] == norms[j][1] or jaccard < _SIBLING_NEAR_DUP_JACCARD:
+    for n, i in enumerate(firsts):
+        li, si = statements[i]
+        for j in firsts[n + 1 :]:
+            lj, sj = statements[j]
+            if norms[i][1] == norms[j][1]:
                 continue
-            near += 1
-            if near <= _NEAR_DUP_PAIRS_NAMED:
-                li, lj = norms[i][0], norms[j][0]
-                warnings.append(
-                    f"Causes {li} and {lj} have near-duplicate Statements (lexical "
-                    f"overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make them "
-                    f"discriminative or holistic matching may return 'multiple'."
-                )
+            if _statement_jaccard(si, sj) >= _SIBLING_NEAR_DUP_JACCARD:
+                near += 1
+                if near <= _NEAR_DUP_PAIRS_NAMED:
+                    warnings.append(
+                        f"Causes {li} and {lj} have near-duplicate Statements "
+                        f"(lexical overlap >= {_SIBLING_NEAR_DUP_JACCARD:.0%}); make "
+                        f"them discriminative or holistic matching may return "
+                        f"'multiple'."
+                    )
     if near > _NEAR_DUP_PAIRS_NAMED:
         more = near - _NEAR_DUP_PAIRS_NAMED
         warnings.append(
