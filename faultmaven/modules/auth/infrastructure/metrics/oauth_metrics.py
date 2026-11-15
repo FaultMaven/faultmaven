@@ -19,11 +19,7 @@ clients; its methods fold every client id through ``client_label``.
 import logging
 from typing import Iterable, Optional
 
-from faultmaven.infrastructure.shims.metrics import (
-    Counter,
-    Histogram,
-    is_metrics_active,
-)
+from faultmaven.infrastructure.shims.metrics import Counter, Histogram, is_real
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +205,7 @@ class OAuthMetricsRecorder:
         if isinstance(allowed_clients, str):
             raise TypeError("allowed_clients must be a collection of ids, not a str")
         self._allowed_clients = frozenset(allowed_clients)
-        self.enabled = is_metrics_active()
+        self.enabled = is_real(oauth_authorization_requests)
         if not self.enabled:
             logger.debug("OAuth metrics recorder initialized in no-op mode")
 

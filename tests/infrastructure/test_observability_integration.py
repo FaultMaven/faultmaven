@@ -369,10 +369,11 @@ class TestRealMetricsCollection:
         collector = MockMetricsCollector()
 
         # Check if Prometheus metrics are available before patching
-        from faultmaven.infrastructure.shims.metrics import is_metrics_active
+        from faultmaven.infrastructure.observability import tracing as _tracing
+        from faultmaven.infrastructure.shims.metrics import is_real
 
         # Create a context manager that conditionally patches metrics
-        if is_metrics_active():
+        if is_real(_tracing.REQUEST_COUNTER):
             # Import metrics to ensure they exist
             from faultmaven.infrastructure.observability.tracing import (
                 ACTIVE_SESSIONS,
@@ -461,9 +462,10 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
 
         # Import and test actual Prometheus metrics from tracing module
-        from faultmaven.infrastructure.shims.metrics import is_metrics_active
+        from faultmaven.infrastructure.observability import tracing as _tracing
+        from faultmaven.infrastructure.shims.metrics import is_real
 
-        if not is_metrics_active():
+        if not is_real(_tracing.REQUEST_COUNTER):
             pytest.skip("metrics off: the tracing collectors are no-ops")
 
         # Import metrics only if Prometheus is available
@@ -528,9 +530,10 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
 
         # Import and test actual Prometheus histogram metrics from tracing module
-        from faultmaven.infrastructure.shims.metrics import is_metrics_active
+        from faultmaven.infrastructure.observability import tracing as _tracing
+        from faultmaven.infrastructure.shims.metrics import is_real
 
-        if not is_metrics_active():
+        if not is_real(_tracing.REQUEST_COUNTER):
             pytest.skip("metrics off: the tracing collectors are no-ops")
 
         # Import metrics only if Prometheus is available
@@ -617,9 +620,10 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
 
         # Import and test actual Prometheus gauge metrics from tracing module
-        from faultmaven.infrastructure.shims.metrics import is_metrics_active
+        from faultmaven.infrastructure.observability import tracing as _tracing
+        from faultmaven.infrastructure.shims.metrics import is_real
 
-        if not is_metrics_active():
+        if not is_real(_tracing.REQUEST_COUNTER):
             pytest.skip("metrics off: the tracing collectors are no-ops")
 
         # Import metrics only if Prometheus is available
@@ -680,9 +684,10 @@ class TestRealMetricsCollection:
         collector, metrics_data = mock_metrics_collector
 
         # Import actual Prometheus metrics from tracing module
-        from faultmaven.infrastructure.shims.metrics import is_metrics_active
+        from faultmaven.infrastructure.observability import tracing as _tracing
+        from faultmaven.infrastructure.shims.metrics import is_real
 
-        if not is_metrics_active():
+        if not is_real(_tracing.REQUEST_COUNTER):
             pytest.skip("metrics off: the tracing collectors are no-ops")
 
         # Import metrics only if Prometheus is available

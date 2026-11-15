@@ -8,9 +8,10 @@ switch also had three spellings: ``ENABLE_METRICS`` (the shim's),
 pushgateway exporter, a second metrics path, #2780).
 
 Pin 2: importing each module that imports ``prometheus_client`` or calls the
-shim, in a fresh interpreter with the switch off, registers nothing. Pin 3: no
-setting or CI env line names another switch. #2780: the APM integration has no
-Prometheus exporter.
+shim, in a fresh interpreter with the switch off, registers nothing; and no
+module but the shim imports a collector class, so none can build one at call
+time. Pin 3: no setting, CI line, doc, ``.env.example`` or compose file names
+another switch. #2780: the APM integration has no Prometheus exporter.
 """
 
 import ast
@@ -37,6 +38,8 @@ REPO_ROOT = Path(faultmaven.__file__).resolve().parent.parent
 
 _SHIM = "faultmaven.infrastructure.shims.metrics"
 _SHIM_PACKAGE = "faultmaven.infrastructure.shims"
+_EXPORTER = "faultmaven.infrastructure.observability.metrics_exporters.prometheus"
+_EXTRACTOR = "faultmaven.modules.preprocessing.extractors.metrics_extractor"
 
 #: Every module under ``faultmaven/`` that imports ``prometheus_client`` or
 #: calls the metrics shim; the scan below must find exactly these.
@@ -56,7 +59,7 @@ COLLECTOR_MODULES = (
     "faultmaven.infrastructure.observability.evidence_metrics",
     "faultmaven.infrastructure.observability.funnel_metrics",
     "faultmaven.infrastructure.observability.loop_lag",
-    "faultmaven.infrastructure.observability.metrics_exporters.prometheus",
+    _EXPORTER,
     "faultmaven.infrastructure.observability.tracing",
     "faultmaven.infrastructure.shims",
     "faultmaven.infrastructure.shims.metrics",
@@ -64,7 +67,7 @@ COLLECTOR_MODULES = (
     "faultmaven.modules.auth.infrastructure.metrics.oauth_metrics",
     "faultmaven.modules.auth.infrastructure.metrics.revocation_metrics",
     "faultmaven.modules.auth.infrastructure.metrics.session_metrics",
-    "faultmaven.modules.preprocessing.extractors.metrics_extractor",
+    _EXTRACTOR,
 )
 
 
@@ -109,6 +112,58 @@ def _enumerate() -> set:
 
 def test_the_list_is_every_importer_and_shim_caller():
     assert _enumerate() == set(COLLECTOR_MODULES)
+
+
+#: Every ``prometheus_client`` import outside the shim: (module, imported from,
+#: name). Exposition, registry and parser only; no collector class.
+_ALLOWED_PROMETHEUS_IMPORTS = {
+    # ``/metrics``: serialises the default registry the shim's collectors fill.
+    (_EXPORTER, "prometheus_client", "CONTENT_TYPE_LATEST"),
+    (_EXPORTER, "prometheus_client", "REGISTRY"),
+    (_EXPORTER, "prometheus_client", "generate_latest"),
+    # Parses an uploaded Prometheus text exposition; builds no collector.
+    (_EXTRACTOR, "prometheus_client.parser", "text_string_to_metric_families"),
+}
+
+
+def _prometheus_imports(source: str, module: str) -> set:
+    """(module, imported from, name) for each ``prometheus_client`` import in
+    *source*; a bare ``import`` is ``*``, since it reaches every class."""
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found |= {
+                (module, a.name, "*")
+                for a in node.names
+                if a.name.split(".")[0] == "prometheus_client"
+            }
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            if (node.module or "").split(".")[0] == "prometheus_client":
+                found |= {(module, node.module, a.name) for a in node.names}
+    return found
+
+
+def test_only_the_shim_imports_a_collector_class():
+    found = set()
+    for path in (REPO_ROOT / "faultmaven").rglob("*.py"):
+        module = _module_name(path)
+        if module != _SHIM:
+            found |= _prometheus_imports(path.read_text(encoding="utf-8"), module)
+    assert found == _ALLOWED_PROMETHEUS_IMPORTS
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from prometheus_client import Counter",
+        "from prometheus_client.metrics import Gauge",
+        "import prometheus_client",
+    ],
+)
+def test_the_import_check_sees_a_collector_class(line):
+    """Positive control: a planted collector import is outside the allow-list."""
+    (planted,) = _prometheus_imports(line, "faultmaven.planted")
+    assert planted not in _ALLOWED_PROMETHEUS_IMPORTS
 
 
 _MARKER = "@@REGISTRY@@"
@@ -219,6 +274,46 @@ def test_no_ci_env_line_names_another_switch():
         keys |= _env_keys(yaml.safe_load(path.read_text(encoding="utf-8")))
     assert "ENABLE_METRICS" in keys
     assert keys & _OTHER_SWITCHES == set()
+
+
+#: Where a switch's name would reach an operator or a CI run.
+_SWITCH_SCAN = ("docs/**/*", ".env.example", "docker-compose*.yml", ".github/**/*")
+
+#: Lines allowed to name another switch: none.
+_SWITCH_MENTIONS_ALLOWED: set = set()
+
+
+def _switch_mentions(root: Path) -> set:
+    """(path, line number) of each line under *root*'s scanned files naming
+    ``METRICS_ENABLED`` or ``PROMETHEUS_ENABLED``, ``run:`` lines included."""
+    found = set()
+    for pattern in _SWITCH_SCAN:
+        for path in root.glob(pattern):
+            if not path.is_file():
+                continue
+            text = path.read_bytes().decode("utf-8", errors="ignore")
+            for number, line in enumerate(text.splitlines(), 1):
+                if any(name in line for name in _OTHER_SWITCHES):
+                    found.add((path.relative_to(root).as_posix(), number))
+    return found
+
+
+def test_no_doc_env_template_compose_file_or_ci_line_names_another_switch():
+    assert _switch_mentions(REPO_ROOT) == _SWITCH_MENTIONS_ALLOWED
+
+
+def test_the_switch_scan_sees_a_planted_line(tmp_path):
+    """Positive control: a planted mention in each scanned place is found."""
+    planted = {
+        "docs/operations/x.md": "Set `METRICS_ENABLED=true`.",
+        ".env.example": "PROMETHEUS_ENABLED=false",
+        "docker-compose.yml": "      - METRICS_ENABLED=true",
+        ".github/workflows/ci.yml": "      - run: PROMETHEUS_ENABLED=true pytest",
+    }
+    for rel, line in planted.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(f"first line\n{line}\n", encoding="utf-8")
+    assert _switch_mentions(tmp_path) == {(rel, 2) for rel in planted}
 
 
 def test_the_apm_integration_has_no_prometheus_exporter():

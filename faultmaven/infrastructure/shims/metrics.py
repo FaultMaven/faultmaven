@@ -208,27 +208,11 @@ def _create(metric: Any, exposed: str, labelnames, combos) -> None:
     DECLARED_CHILDREN.append((exposed, tuple(labelnames), combos))
 
 
-def create_children(metric: Any, label_values: Mapping[str, Iterable[str]]) -> None:
-    """Create every child *label_values* declares on *metric*, at 0, and record it.
-
-    For a module that builds its counters straight from ``prometheus_client``,
-    called after the definition (the shim's ``Counter`` takes ``label_values``).
-    A no-op on a ``NoOpMetric``, without ``prometheus_client`` or with metrics
-    disabled; a declaration that does not fit the counter raises ValueError
-    whenever the counter is real.
-    """
-    if isinstance(metric, NoOpMetric) or not PROMETHEUS_AVAILABLE:
-        return
-    combos = _combinations(metric._name, metric._labelnames, label_values)
-    if _is_metrics_enabled():
-        _create(metric, metric._name, metric._labelnames, combos)
-
-
 def declare_lazy(metric: Any, reason: str) -> None:
-    """Record why *metric*'s labels are open-ended, for a module that builds its
-    counters straight from ``prometheus_client``. ValueError on an empty
-    *reason*; otherwise a no-op on a ``NoOpMetric``, without ``prometheus_client``
-    or with metrics disabled."""
+    """Record why *metric*'s labels are open-ended, for a counter built outside
+    the shim's ``Counter`` (none in ``faultmaven/`` since #2748; #2749 removes
+    this). ValueError on an empty *reason*; otherwise a no-op on a
+    ``NoOpMetric``, without ``prometheus_client`` or with metrics disabled."""
     _check_reason(getattr(metric, "_name", "?"), reason)
     if isinstance(metric, NoOpMetric) or not PROMETHEUS_AVAILABLE:
         return
@@ -547,6 +531,12 @@ def Info(
             f"(PROMETHEUS_AVAILABLE={PROMETHEUS_AVAILABLE}, ENABLE_METRICS={metrics_enabled})"
         )
         return NoOpMetric()
+
+
+def is_real(collector: Any) -> bool:
+    """Whether *collector* records: the shim made it a real collector when it
+    was created, not a ``NoOpMetric`` (#2748)."""
+    return not isinstance(collector, NoOpMetric)
 
 
 def get_metrics_status() -> dict:

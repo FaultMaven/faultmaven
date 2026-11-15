@@ -196,10 +196,11 @@ These settings exist in the codebase but are **not** part of the Standalone `.en
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPIK_ENABLED` | `false` | Enable Opik LLM tracing |
-| `ENABLE_METRICS` | `false` | Record Prometheus metrics (`METRICS_EXPORTER=prometheus_http` exposes them) |
 | `TRACING_ENABLED` | `false` | Enable distributed tracing |
 | `PROTECTION_ENABLED` | `false` | Enable PII protection |
 | `SANITIZE_PII` | `false` | Enable PII sanitization |
+
+`ENABLE_METRICS` (default `false`) is not a settings field: the metrics shim reads it from the environment when each collector is created. See [Environment Variables](../development/environment-variables.md#metrics).
 
 #### Redis Configuration (Cloud)
 

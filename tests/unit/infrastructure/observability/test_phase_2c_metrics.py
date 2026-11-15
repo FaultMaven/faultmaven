@@ -22,7 +22,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
     record_triage_escalation_if_same_turn,
 )
-from faultmaven.infrastructure.shims.metrics import is_metrics_active
+from faultmaven.infrastructure.shims.metrics import is_real
 
 # ---------------------------------------------------------------------------
 # record_triage_escalation_if_same_turn
@@ -117,7 +117,9 @@ class TestTriageEscalationTrigger:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not is_metrics_active(), reason="metrics off")
+@pytest.mark.skipif(
+    not is_real(PREPROCESSING_EXTRACTION_YIELD_RATIO), reason="metrics off"
+)
 class TestYieldRatioEmitted:
     @pytest.mark.asyncio
     async def test_yield_ratio_observes_on_extraction(self):

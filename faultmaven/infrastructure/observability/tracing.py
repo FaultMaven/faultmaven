@@ -34,12 +34,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Dict
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
-from faultmaven.infrastructure.shims.metrics import (
-    Counter,
-    Gauge,
-    Histogram,
-    get_metrics_status,
-)
+from faultmaven.infrastructure.shims.metrics import Counter, Gauge, Histogram, is_real
 from faultmaven.models.interfaces import ITracer
 
 # Prometheus metrics, through the metrics shim: no-ops with ENABLE_METRICS off
@@ -198,7 +193,8 @@ class OpikTracer(BaseExternalClient, ITracer):
                 "use_local_opik": self.use_local_opik,
                 "local_opik_url": self.local_opik_url,
                 "local_opik_host": self.local_opik_host,
-                "prometheus_available": get_metrics_status()["prometheus_available"],
+                # Whether this module's collectors record (#2748).
+                "metrics_recording": is_real(GENERIC_FUNCTION_DURATION),
             }
 
             # Test service connectivity if using local Opik

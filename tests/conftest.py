@@ -11,7 +11,6 @@ ENV_VARS_TO_CLEAR = [
     "HOST",
     "PORT",
     "WORKERS",
-    "INSTANCE_ID",
     "CHAT_PROVIDER",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_MODEL",

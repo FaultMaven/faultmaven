@@ -18,7 +18,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.infrastructure.observability import evidence_metrics as m
-from faultmaven.infrastructure.shims.metrics import is_metrics_active
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service.service import (
@@ -67,7 +67,8 @@ class TestEvidenceMetricsRegistration:
             )
 
     @pytest.mark.skipif(
-        not is_metrics_active(), reason="metrics off; names not meaningful"
+        not is_real(m.EVIDENCE_DEDUP_HITS_TOTAL),
+        reason="metrics off; names not meaningful",
     )
     def test_metric_names_follow_convention(self):
         # Counters/Histograms expose their name via _name; labels become suffixes
@@ -78,7 +79,9 @@ class TestEvidenceMetricsRegistration:
             "faultmaven_"
         )
 
-    @pytest.mark.skipif(not is_metrics_active(), reason="metrics off")
+    @pytest.mark.skipif(
+        not is_real(m.EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL), reason="metrics off"
+    )
     def test_labeled_counters_accept_labels(self):
         # Smoke: calling .labels() must not raise. No-op on actual value.
         m.EVIDENCE_TURN_ASYNC_RETRY_ENQUEUED_TOTAL.labels(reason="timeout")
@@ -126,7 +129,7 @@ class TestDedupHitCounterEmission:
 
     def _current(self) -> float:
         """Read the current counter value (0.0 when no emissions)."""
-        if not is_metrics_active():
+        if not is_real(m.EVIDENCE_DEDUP_HITS_TOTAL):
             return 0.0
         return m.EVIDENCE_DEDUP_HITS_TOTAL._value.get()
 
@@ -169,7 +172,7 @@ class TestDedupHitCounterEmission:
         await service.process_turn(case.case_id, "user_owner", payload)
 
         after = self._current()
-        if is_metrics_active():
+        if is_real(m.EVIDENCE_DEDUP_HITS_TOTAL):
             assert (
                 after == before + 1
             ), f"Dedup counter did not increment: before={before}, after={after}"

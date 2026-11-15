@@ -21,7 +21,8 @@ from __future__ import annotations
 import pytest
 
 from faultmaven.core.preprocessing.models import to_unified_data_type
-from faultmaven.infrastructure.shims.metrics import is_metrics_active
+from faultmaven.infrastructure.observability import evidence_metrics
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.api import DataType, SourceMetadata
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.preprocessing_service import (
@@ -146,7 +147,7 @@ def _capture(n: int, *, shaped: bool = True) -> str:
 
 
 def _shape_invalid_count() -> float:
-    if not is_metrics_active():
+    if not is_real(evidence_metrics.PAGE_CAPTURE_SHAPE_INVALID_TOTAL):
         return 0.0
     from prometheus_client import REGISTRY
 
@@ -233,7 +234,7 @@ class TestAPageCaptureIsNeverCarded:
 
         assert result.extraction_method == "raw_passthrough"
         assert result.detailed_data_type == DataType.UNSTRUCTURED_TEXT
-        if is_metrics_active():
+        if is_real(evidence_metrics.PAGE_CAPTURE_SHAPE_INVALID_TOTAL):
             assert _shape_invalid_count() == before + 1
 
     @pytest.mark.asyncio
@@ -251,7 +252,7 @@ class TestAPageCaptureIsNeverCarded:
 
 
 @pytest.mark.skipif(
-    not is_metrics_active(),
+    not is_real(evidence_metrics.PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL),
     reason="metrics off; the counter is a no-op",
 )
 class TestEveryUncertainVerdictIsCounted:

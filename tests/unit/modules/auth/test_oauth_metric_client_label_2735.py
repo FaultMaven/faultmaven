@@ -20,13 +20,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.config.settings import AuthSettings
-from faultmaven.infrastructure.shims.metrics import is_metrics_active
+from faultmaven.infrastructure.shims.metrics import is_real
 from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import RefreshClaim
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
     OAuthMetricsRecorder,
+    oauth_authorization_requests,
 )
 from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
     InMemoryOAuthCodeRepository,
@@ -84,7 +85,7 @@ def _refresh_service(allowed=(COPILOT,), valid=True, claims=()):
 
 def _require_metrics():
     """Skip unless the OAuth collectors are real (#2748)."""
-    if not is_metrics_active():
+    if not is_real(oauth_authorization_requests):
         pytest.skip("metrics off: the OAuth collectors are no-ops")
 
 
