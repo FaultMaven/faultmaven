@@ -77,8 +77,10 @@ CANCELLED = "cancelled"
 #: one retry.
 HUNG = "hung"
 #: The provider answers 503. Status-shaped: the full ladder. With a non-zero
-#: ``hang_seconds`` this is the slow non-504 5xx, the one failure whose ladder
-#: can still cost ``3T + 14``.
+#: ``hang_seconds`` this is the slow non-504 5xx, whose ladder the breaker cuts
+#: at ``3T + 14``. A ladder with a throttle 429 in it is not cut by the breaker
+#: (#2793) and can send one more attempt, refused by the turn budget when it
+#: would not fit (``TestALadderOfThrottlesStaysInsideTheTurn``).
 ANSWERS_503 = "answers_503"
 
 

@@ -426,7 +426,20 @@ def test_a_wait_is_taken_only_when_twice_it_fits_the_call(retry_after, taken):
 
 
 @pytest.mark.asyncio
-async def test_a_throttled_fallback_does_not_hide_the_primarys_outage(sleep):
+@pytest.mark.parametrize(
+    "primary,raised_status,counted",
+    [
+        # A counted outage stays the raised error, so the breaker sees it.
+        ((503, '{"error":{"message":"overloaded"}}'), 503, 1),
+        # A request-scoped rejection is not counted, so the throttle (the
+        # retryable answer) is raised, uncounted, as on main.
+        ((400, '{"error":{"type":"invalid_request_error","message":"bad"}}'), 429, 0),
+    ],
+    ids=["503-counted", "400-request-scoped"],
+)
+async def test_a_throttled_fallback_raises_the_failure_the_breaker_counts(
+    sleep, primary, raised_status, counted
+):
     registry = ProviderRegistry(settings=None)
     fallback = OpenAIProvider(
         _config("openai", "https://openai.test.invalid/v1", "gpt-5.4-mini")
@@ -438,7 +451,7 @@ async def test_a_throttled_fallback_does_not_hide_the_primarys_outage(sleep):
     }
     registry._initialized = True
     session = _session(
-        _response(503, '{"error":{"message":"overloaded"}}'),
+        _response(*primary),
         *[_throttled({"retry-after": "1"}) for _ in range(3)],
     )
     with (
@@ -451,8 +464,8 @@ async def test_a_throttled_fallback_does_not_hide_the_primarys_outage(sleep):
         with pytest.raises(LLMException) as raised:
             await router.route(prompt=vetted("hello"), bypass_cache=True)
 
-    assert raised.value.status_code == 503
-    assert router.circuit_breaker.failure_count == 1
+    assert raised.value.status_code == raised_status
+    assert router.circuit_breaker.failure_count == counted
     assert registry._provider_states["azure"].consecutive_failures == 1
     assert registry._provider_states["openai"].consecutive_failures == 0
 

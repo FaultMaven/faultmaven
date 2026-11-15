@@ -72,7 +72,8 @@ def model_retry_ladders(
     Every count comes from ``RetryConfig``, the object the running ladder
     reads, so the report and the runtime cannot disagree about a ladder's
     length. The breaker threshold is composed in rather than assumed: attempts
-    that reach a provider are ``min(retries + 1, circuit_breaker_threshold)``,
+    that reach a provider on a ladder the breaker cuts are
+    ``min(retries + 1, circuit_breaker_threshold)``,
     so the status-shaped ladder pays 3 attempts and all three backoffs
     (``3T + 14``), while the deadline-shaped one stops at its own cap, under the
     breaker (``2T + 2``). That prices the failures the breaker counts. A ladder

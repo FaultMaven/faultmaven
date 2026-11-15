@@ -881,6 +881,19 @@ def is_rate_limit_throttle(exc: BaseException) -> bool:
     )
 
 
+def counts_against_breaker(exc: BaseException) -> bool:
+    """Whether ``call_external`` records ``exc`` on its circuit breaker.
+
+    A non-retryable failure counts only when it is service-scoped (quota,
+    rejected credentials); a request-scoped one says nothing about the service.
+    Any other failure counts, except a throttle (#2793). The registry reads the
+    same answer to decide which failure in a fallback chain is raised.
+    """
+    if getattr(exc, "retryable", True) is False:
+        return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
+    return not is_rate_limit_throttle(exc)
+
+
 class LLMOutputFloorError(LLMException):
     """A response was cut at the output cap with less visible output than the
     caller's declared floor (``min_output_tokens``, #1117).
