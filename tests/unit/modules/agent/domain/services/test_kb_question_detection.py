@@ -9,12 +9,15 @@ user something about their knowledge base they never asked.
 
 import pytest
 
+from faultmaven.modules.agent.domain.services import query_classifier
 from faultmaven.modules.agent.domain.services.out_of_band import needs_llm_triage
 from faultmaven.modules.agent.domain.services.query_classifier import (
+    _CLASSIFY_WINDOW_CHARS,
     KbQuestion,
     KbQuestionKind,
     ProcessingMode,
     QueryClassification,
+    classification_window,
     classify_query,
     detect_kb_question,
 )
@@ -284,15 +287,38 @@ def test_a_topic_ends_at_its_clause(message):
     ],
     ids=["unfinished-frames", "listing-frames", "filler-words"],
 )
-def test_detection_cost_does_not_grow_with_the_message(payload_at, label):
-    """It runs synchronously on every turn, and a turn's text can be
-    megabytes. A quadratic pattern took 13.9 s on an 80k-character message."""
+def test_detection_cost_does_not_grow_with_the_windowed_text(
+    payload_at, label, monkeypatch
+):
+    """A quadratic pattern took 13.9 s on an 80k-character message (#2797).
+
+    ``classification_window`` bounds the text by design, so past 4,000
+    characters the whole call is flat and no growth can be read (#2827). A
+    backtracking pattern is a property of the patterns over the text they
+    read, so the window is lifted here and the patterns read the payload whole.
+    """
+    monkeypatch.setattr(query_classifier, "classification_window", lambda m: m)
     assert_linear_growth(
         detect_kb_question,
         payload_at,
         small=16,
         label=f"detect_kb_question on {label}",
     )
+
+
+def test_detection_reads_only_the_classification_window():
+    """The window is what bounds the detector's cost on a long message."""
+    filler = "the replica fell behind again overnight. " * 300
+    question = "Is there a runbook for redis OOM?"
+    assert len(filler) > 4 * _CLASSIFY_WINDOW_CHARS
+    past_the_window = filler + question + " " + filler
+    assert detect_kb_question(past_the_window) is None
+    in_the_head = question + " " + filler + filler
+    assert detect_kb_question(in_the_head) == KbQuestion(kind=LOOKUP, topic="redis OOM")
+    for message in (past_the_window, in_the_head, filler + question):
+        assert detect_kb_question(message) == detect_kb_question(
+            classification_window(message)
+        )
 
 
 # ---------------------------------------------------------------------------
