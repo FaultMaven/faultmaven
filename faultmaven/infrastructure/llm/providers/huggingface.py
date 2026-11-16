@@ -1,34 +1,31 @@
 """
 Hugging Face provider implementation.
 
-This module implements the Hugging Face Inference API provider for
-accessing open-source models and specialized models.
+Hugging Face serves hosted models through its Inference Providers router
+(``https://router.huggingface.co/v1``), an OpenAI-compatible chat-completions
+API, so the wire protocol (request/response shape, stop reasons, usage) is
+inherited unchanged from :class:`OpenAIProvider`. The retired serverless
+text-generation API (``api-inference.huggingface.co``, ``inputs`` →
+``generated_text``) no longer resolves (#2111). An override of the base URL
+names another OpenAI-compatible base, such as a self-hosted TGI's ``/v1``.
+
+What is NOT inherited is the OpenAI-specific request tuning and the capability
+claims: the router forwards each call to whichever provider serves the model,
+so the OpenAI model-family predicates do not apply, and tool calling and strict
+schema support vary per routed provider and are unverified.
 """
 
-import asyncio
-import json
-import time
-from typing import Any, List, Optional
+from typing import Optional
 
-import aiohttp
-
-from faultmaven.exceptions import LLMException, ModelLoadingException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import (
-    BaseLLMProvider,
-    LLMResponse,
-    ProviderConfig,
-    extract_provider_error_code,
-    normalize_stop_reason,
-    post_waiting_out_rate_limits,
-)
+from .openai_provider import OpenAIProvider
 
 
-class HuggingFaceProvider(BaseLLMProvider):
-    """Hugging Face Inference API provider implementation"""
+class HuggingFaceProvider(OpenAIProvider):
+    """Hugging Face router provider (OpenAI-compatible wire protocol)."""
 
     #: This provider's label: what ``provider_name`` returns, what
     #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
@@ -39,305 +36,34 @@ class HuggingFaceProvider(BaseLLMProvider):
     def provider_name(self) -> str:
         return self.LABEL
 
-    def is_available(self) -> bool:
-        """Check if Hugging Face provider is properly configured"""
-        return bool(self.config.api_key and self.config.base_url and self.config.models)
+    @classmethod
+    def _uses_completion_tokens_param(cls, model_name: str) -> bool:
+        """Open with the legacy ``max_tokens``, the spelling the router's
+        chat-completions API documents. The inherited ``_generate()`` still
+        re-sends once under the other spelling if a route rejects it (#510)."""
+        return False
 
-    def get_supported_models(self) -> List[str]:
-        """Get list of supported Hugging Face models"""
-        return self.config.models.copy()
+    @classmethod
+    def _caps_reasoning_effort(cls, model_name: str) -> bool:
+        """The top-level OpenAI ``reasoning_effort`` field is not part of the
+        router's contract for routed models, so it is never sent."""
+        return False
+
+    @classmethod
+    def _defaults_reasoning(cls, model_name: str) -> bool:
+        """The direct-OpenAI gpt-5.6 accommodation (omit ``temperature``, send
+        ``reasoning_effort: "none"`` with tools) is not applied to routed
+        models."""
+        return False
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
-        """HuggingFace Inference API does not support tool calling."""
+        """Not claimed: tool support varies per routed provider and is
+        unverified, so the engine runs single-shot without DA tool use."""
         return False
 
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:
-        """
-        Determine structured output capability for Hugging Face models.
-
-        All Hugging Face models use BEST_EFFORT mode (prompt-based JSON generation).
-        The Inference API doesn't provide strict json_schema enforcement.
-
-        Args:
-            model: Model name to check (uses default if None)
-
-        Returns:
-            StructuredOutputCapability: Always BEST_EFFORT for all HuggingFace models
-        """
-        # All HuggingFace models use BEST_EFFORT mode
+        """BEST_EFFORT (prompt-based JSON) for every model: strict schema
+        enforcement varies per routed provider and is unverified."""
         return StructuredOutputCapability.BEST_EFFORT
-
-    async def _generate(
-        self,
-        prompt: str,
-        model: Optional[str] = None,
-        max_tokens: int = 1000,
-        temperature: float = 0.7,
-        **kwargs,
-    ) -> LLMResponse:
-        """
-        Generate text using Hugging Face Inference API
-
-        Args:
-            prompt: Input prompt for text generation
-            model: Specific Hugging Face model to use
-            max_tokens: Maximum tokens to generate (mapped to max_new_tokens)
-            temperature: Sampling temperature (0.0-2.0)
-            **kwargs: Additional parameters
-
-        Returns:
-            LLMResponse with generated text
-        """
-        start_time = time.time()
-
-        # Use specified model or default
-        selected_model = model or self.config.default_model
-        if not selected_model:
-            selected_model = "microsoft/DialoGPT-medium"
-
-        # Router-level reasoning knobs (#1117/#1118) this provider has no
-        # mechanism for; popped so they cannot leak into the request body,
-        # logging any intent it cannot act on.
-        self._discard_reasoning_kwargs(kwargs, model=selected_model)
-
-        # Prepare headers for Hugging Face API
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        # Prepare request body for Hugging Face API format
-        request_body = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": max_tokens,
-                "temperature": temperature,
-                "return_full_text": False,
-                "do_sample": True,
-            },
-        }
-
-        # Add optional parameters
-        if "top_p" in kwargs:
-            request_body["parameters"]["top_p"] = kwargs["top_p"]
-        if "top_k" in kwargs:
-            request_body["parameters"]["top_k"] = kwargs["top_k"]
-        if "repetition_penalty" in kwargs:
-            request_body["parameters"]["repetition_penalty"] = kwargs[
-                "repetition_penalty"
-            ]
-        if "stop_sequences" in kwargs:
-            request_body["parameters"]["stop"] = kwargs["stop_sequences"]
-        if kwargs.get("response_format"):
-            # Some HF endpoints (TGI/vLLM) support response_format in parameters
-            request_body["parameters"]["response_format"] = kwargs["response_format"]
-
-        # Add wait_for_model parameter to handle model loading
-        request_body["options"] = {"wait_for_model": True}
-
-        # Make API request to Hugging Face
-        url = f"{self.config.base_url.rstrip('/')}/{selected_model}"
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with post_waiting_out_rate_limits(
-                    session,
-                    url,
-                    headers=headers,
-                    json=request_body,
-                    timeout=aiohttp.ClientTimeout(total=self.config.timeout),
-                ) as response:
-
-                    if response.status == 503:
-                        # Model is loading - raise ModelLoadingException for orchestration layer to handle
-                        raise ModelLoadingException(
-                            message=f"HuggingFace model '{selected_model}' is loading",
-                            retry_after=10,
-                            model_name=selected_model,
-                        )
-
-                    if response.status != 200:
-                        error_text = await response.text()
-                        raise LLMException(
-                            f"Hugging Face API request failed: {response.status} - {error_text}",
-                            status_code=response.status,
-                            provider_error_code=extract_provider_error_code(error_text),
-                        )
-
-                    response_data = await response.json()
-        except asyncio.TimeoutError:
-            raise LLMException(
-                f"HuggingFace API request timed out after {self.config.timeout}s "
-                f"(model: {selected_model})",
-                status_code=504,  # gateway timeout — transient/retryable
-            )
-        except aiohttp.ClientError as e:
-            # Transport failure with no HTTP status — typed so retryability is
-            # DECLARED rather than inferred from aiohttp's wording (#1287).
-            raise LLMException(
-                f"HuggingFace connection error: {str(e)}", retryable=True
-            )
-
-        # Extract content from Hugging Face response format
-        content = ""
-        result_obj: Any = None
-        if isinstance(response_data, list) and len(response_data) > 0:
-            # Standard text generation response
-            first_result = response_data[0]
-            result_obj = first_result
-            if "generated_text" in first_result:
-                content = first_result["generated_text"]
-            elif "text" in first_result:
-                content = first_result["text"]
-        elif isinstance(response_data, dict):
-            # Some models return different formats
-            result_obj = response_data
-            if "generated_text" in response_data:
-                content = response_data["generated_text"]
-            elif "text" in response_data:
-                content = response_data["text"]
-
-        # Stop reason, when the endpoint volunteers one.
-        #
-        # TGI reports it under `details.finish_reason`, but ONLY when the
-        # request asks for `parameters.details: true` — and this provider
-        # deliberately does not ask. Non-TGI endpoints behind the same
-        # inference URL reject unknown parameters, so requesting details to
-        # gain a signal would trade a blind spot on one provider for broken
-        # requests on another; HuggingFace is already documented as the
-        # not-recommended provider (no tool calling). So in practice this stays
-        # UNKNOWN, which is a state the enum represents honestly rather than
-        # papering over as "finished normally" (#1094). Parsed anyway, because
-        # a TGI deployment that does return details costs nothing to read.
-        details = result_obj.get("details") if isinstance(result_obj, dict) else None
-        stop_reason = normalize_stop_reason(
-            details.get("finish_reason") if isinstance(details, dict) else None
-        )
-
-        # Calculate metrics
-        response_time_ms = int((time.time() - start_time) * 1000)
-
-        # Estimate token usage (Hugging Face doesn't always provide this)
-        tokens_used = self._estimate_tokens(content)
-
-        # Calculate confidence based on model and response quality
-        confidence = self._calculate_confidence(selected_model, content, response_data)
-
-        return LLMResponse(
-            content=content,
-            confidence=confidence,
-            provider=self.provider_name,
-            model=selected_model,
-            tokens_used=tokens_used,
-            response_time_ms=response_time_ms,
-            cached=False,
-            stop_reason=stop_reason,
-        )
-
-    def _estimate_tokens(self, content: str) -> int:
-        """
-        Estimate token count for content (rough approximation)
-
-        Args:
-            content: Generated content
-
-        Returns:
-            Estimated token count
-        """
-        # Rough approximation: ~4 characters per token for English text
-        return max(1, len(content) // 4)
-
-    def _calculate_confidence(
-        self, model: str, content: str, response_data: dict
-    ) -> float:
-        """
-        Calculate confidence score for Hugging Face response
-
-        Args:
-            model: Model used for generation
-            content: Generated content
-            response_data: Full API response
-
-        Returns:
-            Confidence score (0.0-1.0)
-        """
-        base_confidence = self.config.confidence_score
-
-        # Hugging Face models have varying confidence characteristics
-        model_confidence_map = {
-            # Large language models
-            "microsoft/dialoGPT": 0.75,
-            "gpt2": 0.70,
-            "distilgpt2": 0.65,
-            "facebook/blenderbot": 0.78,
-            "microsoft/DialoGPT-large": 0.80,
-            "microsoft/DialoGPT-medium": 0.75,
-            "microsoft/DialoGPT-small": 0.70,
-            # Instruction-following models
-            "tiiuae/falcon": 0.85,
-            "bigscience/bloom": 0.82,
-            "EleutherAI/gpt-j": 0.80,
-            # Code models
-            "Salesforce/codegen": 0.78,
-            "microsoft/codebert": 0.75,
-        }
-
-        # Find matching model confidence
-        model_confidence = base_confidence
-        for model_name, confidence in model_confidence_map.items():
-            if model_name.lower() in model.lower():
-                model_confidence = confidence
-                break
-
-        # Adjust based on content quality
-        content_length = len(content.strip())
-
-        if content_length == 0:
-            return 0.0
-        elif content_length < 30:
-            # Very short responses might be less reliable
-            model_confidence *= 0.7
-        elif content_length > 300:
-            # Longer responses from smaller models might be less coherent
-            model_confidence *= 0.95
-
-        # Check for common generation issues
-        problematic_patterns = [
-            "unk>",
-            "<pad>",
-            "<eos>",
-            "[UNK]",
-            "[PAD]",
-            "[EOS]",
-            "sorry, i",
-            "i cannot",
-            "i can't",
-            "not able to",
-        ]
-
-        content_lower = content.lower()
-        for pattern in problematic_patterns:
-            if pattern in content_lower:
-                model_confidence *= 0.6
-                break
-
-        # Check for repetitive content (common issue with smaller models)
-        words = content.split()
-        if len(words) > 10:
-            unique_words = set(words)
-            repetition_ratio = len(unique_words) / len(words)
-            if repetition_ratio < 0.7:  # High repetition
-                model_confidence *= 0.8
-
-        # Check if response seems incomplete or cut off
-        if content.endswith(("...", ".", ",")):
-            # Might be a natural ending
-            pass
-        elif len(content) > 100 and not content.endswith((".", "!", "?", "\n")):
-            # Long response without proper ending - might be truncated
-            model_confidence *= 0.9
-
-        # Ensure confidence is within valid range
-        return min(1.0, max(0.0, model_confidence))

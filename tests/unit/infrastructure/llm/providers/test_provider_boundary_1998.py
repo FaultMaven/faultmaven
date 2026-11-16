@@ -651,7 +651,7 @@ def test_the_closed_set_is_a_union_of_disjoint_parts():
     assert not base.GENERATE_KWARGS & base.ROUTER_CONSUMED_KWARGS
     assert set(base.CONTENT_KWARGS) <= base.PROVIDER_OPTION_KWARGS
     assert set(base.CONTENT_LIST_KWARGS) <= base.PROVIDER_OPTION_KWARGS
-    assert len(base.PROVIDER_OPTION_KWARGS) == 11
+    assert len(base.PROVIDER_OPTION_KWARGS) == 10
 
 
 def _declared_labelnames() -> List[str]:

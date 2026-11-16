@@ -1575,9 +1575,8 @@ class TestSelectedModelPriced:
     def test_zero_cost_provider_is_priced_not_unpriced(self):
         """Self-hosted is KNOWN-free, which is priced, not unknown.
 
-        lookup_rates short-circuits local/huggingface to a zero rate, so these
-        must not be reported as cost-blind — there is no under-reporting to
-        warn about.
+        lookup_rates short-circuits local to a zero rate, so it must not be
+        reported as cost-blind — there is no under-reporting to warn about.
         """
         status = self._registry_with(
             "whatever-the-user-pulled", provider_name="local"

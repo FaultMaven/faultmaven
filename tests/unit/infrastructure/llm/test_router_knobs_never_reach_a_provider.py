@@ -14,10 +14,10 @@ that refusal.
 The same seam carries a second rule, found in review: the router forwards
 ``response_format``, ``tools``, ``tool_choice`` and ``messages`` as ``None``
 on every call that did not set them, and an adapter that tests key PRESENCE
-puts them in the body (``"response_format": null`` on Cohere, HuggingFace and
-the local OpenAI-compatible transport; ``format: "json"`` on EVERY Ollama
-call). Every kwarg a provider puts in a body must be one the API accepts, and
-an unset one is never a value.
+puts them in the body (``"response_format": null`` on Cohere, the retired
+HuggingFace text-generation adapter and the local OpenAI-compatible transport;
+``format: "json"`` on EVERY Ollama call). Every kwarg a provider puts in a body
+must be one the API accepts, and an unset one is never a value.
 
 Three layers are pinned here:
 
@@ -151,7 +151,6 @@ _ANTHROPIC_RESP = {
     "stop_reason": "end_turn",
     "usage": {"input_tokens": 5, "output_tokens": 5},
 }
-_HF_RESP = [{"generated_text": "ok"}]
 _OLLAMA_RESP = {
     "message": {"role": "assistant", "content": "ok"},
     "eval_count": 1,
@@ -192,7 +191,7 @@ TARGETS = [
     Target("cohere", "cohere", _COHERE_RESP),
     Target("gemini", "gemini", _GEMINI_RESP),
     Target("anthropic", "anthropic", _ANTHROPIC_RESP),
-    Target("huggingface", "huggingface", _HF_RESP),
+    Target("huggingface", "huggingface", _OPENAI_RESP),
     Target("local-openai", "local", _OPENAI_RESP),
     Target("local-ollama", "local", _OLLAMA_RESP, "http://localhost:11434/api"),
     Target("local-llamacpp", "local", _LLAMACPP_RESP, via_llamacpp_fallback=True),
@@ -632,7 +631,7 @@ _JSON_OBJECT_IS_SENT_AS = {
     "cohere": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-openai": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-llamacpp": lambda b: b["response_format"] == _JSON_OBJECT,
-    "huggingface": lambda b: b["parameters"]["response_format"] == _JSON_OBJECT,
+    "huggingface": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-ollama": lambda b: b["format"] == "json",
     "gemini": lambda b: (
         b["generationConfig"]["response_mime_type"] == "application/json"
@@ -871,6 +870,7 @@ _TOOLS_ON_THE_WIRE = {
     "azure": _openai_tools,
     "groq": _openai_tools,
     "fireworks": _openai_tools,
+    "huggingface": _openai_tools,
     "local-openai": _openai_tools,
     "cohere": _cohere_tools,
     "gemini": _gemini_tools,
@@ -879,7 +879,7 @@ _TOOLS_ON_THE_WIRE = {
 
 
 def test_every_tool_carrying_target_is_checked():
-    carriers = {"huggingface", "local-ollama", "local-llamacpp"}
+    carriers = {"local-ollama", "local-llamacpp"}
     assert (
         set(_TOOLS_ON_THE_WIRE) == set(_LABELS) - carriers
     ), "a target that sends tools needs an entry in _TOOLS_ON_THE_WIRE"

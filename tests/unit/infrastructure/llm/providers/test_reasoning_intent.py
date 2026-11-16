@@ -553,13 +553,10 @@ _COHERE_RESP = {
     "usage": {"tokens": {"input_tokens": 5, "output_tokens": 5}},
 }
 
-_HF_RESP = [{"generated_text": "ok"}]
-
 
 def _body_has_no_router_knobs(body) -> bool:
     """The knobs must appear NOWHERE in the outgoing body — not as top-level
-    keys, not nested (HuggingFace tucks kwargs under ``parameters``, the local
-    Ollama path under ``options``)."""
+    keys, not nested (the local Ollama path tucks kwargs under ``options``)."""
     flat = str(body)
     return "reasoning_intent" not in flat and "min_output_tokens" not in flat
 
@@ -637,18 +634,21 @@ class TestNoMechanismProviders:
         provider = HuggingFaceProvider(
             _config(
                 "huggingface",
-                "mistralai/Mistral-Large-Instruct-2411",
-                "https://api-inference.huggingface.co/models",
+                "meta-llama/Llama-3.3-70B-Instruct",
+                "https://router.huggingface.co/v1",
             )
         )
         body = await _sent_body(
             mock_aiohttp_session,
             provider,
-            _HF_RESP,
+            _OPENAI_RESP,
             reasoning_intent=ReasoningIntent.INFERENCE,
             min_output_tokens=500,
         )
         assert _body_has_no_router_knobs(body)
+        # The OpenAI-family reasoning field is not part of the router's
+        # contract for routed models, so the intent is never translated into it.
+        assert "reasoning_effort" not in body
 
     async def test_local_pops_knobs(self, mock_aiohttp_session):
         """Covers the OpenAI-compatible transport, which this base_url selects.

@@ -99,10 +99,9 @@ PROVIDER_OPTION_KWARGS: FrozenSet[str] = frozenset(
         "system",  # Anthropic; content, checked as such (CONTENT_KWARGS)
         "preamble",  # Cohere; content, checked as such (CONTENT_KWARGS)
         "reasoning_effort",  # OpenAI family
-        "stop_sequences",  # Anthropic, Gemini, HuggingFace; content (CONTENT_LIST_KWARGS)
-        "top_p",  # Gemini, HuggingFace
-        "top_k",  # Gemini, HuggingFace
-        "repetition_penalty",  # HuggingFace
+        "stop_sequences",  # Anthropic, Gemini; content (CONTENT_LIST_KWARGS)
+        "top_p",  # Gemini
+        "top_k",  # Gemini
         "safety_settings",  # Gemini
         "strict_tools",  # Cohere
         "stream",  # Cohere
@@ -137,9 +136,9 @@ class StopReason(str, Enum):
     strings: a normalised enum is the single vocabulary, and the raw value is
     only ever read by the provider that produced it.
 
-    ``UNKNOWN`` is a real state, not a synonym for "finished normally". Some
-    providers supply no signal at all on the way we call them (HuggingFace),
-    and any response we did not parse a reason out of lands here too. Collapsing
+    ``UNKNOWN`` is a real state, not a synonym for "finished normally". A
+    response we did not parse a reason out of lands here, as does any finish
+    value newer than the alias table below. Collapsing
     it into "not truncated" would make every ``if response.is_truncated`` check
     fail open — silently reporting a cut body as complete, which is exactly the
     defect this field exists to close.

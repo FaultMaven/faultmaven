@@ -174,14 +174,11 @@ is what runs when a deployment sets only `GEMINI_API_KEY`.
 ```bash
 # Environment Configuration
 HUGGINGFACE_API_KEY="hf_your_token"
-HUGGINGFACE_MODEL="tiiuae/falcon-7b-instruct"
+HUGGINGFACE_MODEL="meta-llama/Llama-3.3-70B-Instruct"
 CHAT_PROVIDER="huggingface"
 ```
 
-**Available Models**:
-- `tiiuae/falcon-7b-instruct` (Default)
-- `microsoft/DialoGPT-large`
-- `meta-llama/Llama-2-7b-chat-hf`
+**Default model**: `meta-llama/Llama-3.3-70B-Instruct`. Requests go to Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1/chat/completions`), which serves any model a live inference provider maps. `HUGGINGFACE_API_URL` overrides the base, and must name another OpenAI-compatible base (a self-hosted TGI's `/v1` serves `/chat/completions` too). Router calls are billed by the serving provider, so they are not priced as free: an unlisted model counts as unpriced.
 
 **Features**: Access to thousands of open source models, free tier available.
 
@@ -986,7 +983,7 @@ service = AgentService(
 
 **Optional Capability Methods** (override from `BaseLLMProvider` when needed):
 
-- `def supports_tool_calling(model=None) -> bool` - Whether the model supports OpenAI-compatible function calling. Default: `True`. Override to return `False` for models that don't support tools (e.g. HuggingFace Inference API, whose API has no tools endpoint), or that accept the tools API but cannot satisfy `tool_choice=required` in practice (Fireworks' `_TOOL_CALLING_DENYLIST`, currently `minimax-m2p7` only — DeepSeek V3+ *is* tool-capable on Fireworks and is not denylisted). When `False`, the investigation engine falls back to single-shot generation without DA tool use.
+- `def supports_tool_calling(model=None) -> bool` - Whether the model supports OpenAI-compatible function calling. Default: `True`. Override to return `False` for models that don't support tools (e.g. HuggingFace, whose tool support varies per routed provider and is unverified), or that accept the tools API but cannot satisfy `tool_choice=required` in practice (Fireworks' `_TOOL_CALLING_DENYLIST`, currently `minimax-m2p7` only — DeepSeek V3+ *is* tool-capable on Fireworks and is not denylisted). When `False`, the investigation engine falls back to single-shot generation without DA tool use.
 - `def get_structured_output_capability(model=None) -> StructuredOutputCapability` - Structured output support level (`STRICT`, `BEST_EFFORT`, `FUNCTION_CALLING`, `NONE`). Default: `BEST_EFFORT`. Override for providers with strict JSON schema support (e.g., OpenAI → `STRICT`).
 
 **Error Handling**:
@@ -1063,7 +1060,7 @@ FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"      # Full path r
 OPENAI_MODEL="gpt-5.6-luna"                                        # Simple name
 ANTHROPIC_MODEL="claude-sonnet-4-6"                                # Version-specific
 GEMINI_MODEL="gemini-3.8-flash"                                    # Product-version
-HUGGINGFACE_MODEL="tiiuae/falcon-7b-instruct"                    # org/model format
+HUGGINGFACE_MODEL="meta-llama/Llama-3.3-70B-Instruct"            # org/model format
 OPENROUTER_MODEL="anthropic/claude-3-sonnet"                      # provider/model
 LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-dependent
 ```
