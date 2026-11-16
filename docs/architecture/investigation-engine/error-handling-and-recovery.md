@@ -108,10 +108,12 @@ was ignored for billing. Reading it here is what stops billing classification
 depending on nine providers' English, which a rewording or a localization can
 change without notice — the `case_b639fac38fe0` regression.
 
-Tier 3 stays, and is still load-bearing: **seven of the nine providers publish
-no structured billing code**. Cohere sends a bare `{"message": …}`, HuggingFace
-a bare string, Groq/Fireworks an OpenAI-compatible envelope with no
-billing-specific code of their own, and Local has no billing at all. Gemini —
+Tier 3 stays, and is still load-bearing: **six of the nine providers publish
+no structured billing code**, and HuggingFace may not either. Cohere sends a
+bare `{"message": …}`, Groq/Fireworks an OpenAI-compatible envelope with no
+billing-specific code of their own, and Local has no billing at all.
+HuggingFace's retired Inference API sent a bare string; the error-body shape of
+its router (`router.huggingface.co`, #2111) is unverified. Gemini —
 the shipped default — publishes only `RESOURCE_EXHAUSTED`, which it reuses for
 a transient per-minute limit, and `PERMISSION_DENIED`, which it reuses for a
 mis-scoped key; the unambiguous fact lives in `error.details[].reason ==

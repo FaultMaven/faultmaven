@@ -10,7 +10,6 @@ Note: This module no longer calls load_dotenv() at import time. Environment vari
 loading is handled by the settings system.
 """
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -19,7 +18,6 @@ from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import (
     CallShapeUnsupported,
-    ModelLoadingException,
     RawModelContentRefused,
     counts_against_breaker,
     is_rate_limit_throttle,
@@ -212,10 +210,10 @@ PROVIDER_SCHEMA = {
     "huggingface": {
         "api_key_var": "HUGGINGFACE_API_KEY",
         "model_var": "HUGGINGFACE_MODEL",
-        "default_base_url": "https://api-inference.huggingface.co/models",
-        "default_model": "mistralai/Mistral-Large-Instruct-2411",
+        # Hugging Face's OpenAI-compatible router (#2111).
+        "default_base_url": "https://router.huggingface.co/v1",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct",
         "available_models": [
-            "mistralai/Mistral-Large-Instruct-2411",
             "meta-llama/Llama-3.3-70B-Instruct",
         ],
         "provider_class": HuggingFaceProvider,
@@ -966,33 +964,14 @@ class ProviderRegistry:
                 # Track call start time for latency measurement
                 start_time = time.monotonic()
 
-                # Retry loop for ModelLoadingException
-                max_model_loading_retries = 2
-                for retry_attempt in range(max_model_loading_retries + 1):
-                    try:
-                        response = await send_to_model(
-                            provider,
-                            prompt=prompt,
-                            model=model,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            **kwargs,
-                        )
-                        break  # Success, exit retry loop
-                    except ModelLoadingException as mle:
-                        if retry_attempt < max_model_loading_retries:
-                            self.logger.info(
-                                f"⏳ Model '{mle.model_name}' is loading, "
-                                f"waiting {mle.retry_after}s before retry "
-                                f"({retry_attempt + 1}/{max_model_loading_retries})"
-                            )
-                            await asyncio.sleep(mle.retry_after)
-                        else:
-                            self.logger.warning(
-                                f"⚠️ Model '{mle.model_name}' still loading after "
-                                f"{max_model_loading_retries} retries, trying next provider"
-                            )
-                            raise  # Re-raise to trigger fallback to next provider
+                response = await send_to_model(
+                    provider,
+                    prompt=prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs,
+                )
 
                 # Calculate latency
                 latency_ms = (time.monotonic() - start_time) * 1000

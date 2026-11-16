@@ -82,7 +82,7 @@ _OK_BODY = {
         "finish_reason": "COMPLETE",
         "usage": {"tokens": {"input_tokens": 3, "output_tokens": 1}},
     },
-    "huggingface": [{"generated_text": "ok"}],
+    "huggingface": _OPENAI_OK,
 }
 
 

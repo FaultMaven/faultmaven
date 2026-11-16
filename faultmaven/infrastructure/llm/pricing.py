@@ -187,6 +187,14 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "command-r-plus": TokenRates(2.50, 10.0, 0.0, 0.0),
         "command-r": TokenRates(0.15, 0.60, 0.0, 0.0),
     },
+    "huggingface": {
+        # The router passes the serving provider's rate through, and which
+        # provider serves a call is not fixed. So the row is the HIGHEST live
+        # published rate for the model (ovhcloud; novita $0.135/$0.40),
+        # read 2026-11-16 from the router's /v1/models listing: an upper bound
+        # that never under-reports (#2111).
+        "llama-3.3-70b-instruct": TokenRates(0.74, 0.74),
+    },
     "openrouter": {
         # OpenRouter passes provider rates through; keep the common routed
         # models. The Opus rows mirror the anthropic table above: routing
@@ -231,8 +239,9 @@ _SCHEDULED_RATE_CHANGES: tuple = (
 
 # Providers with no per-token cost (self-hosted). These are KNOWN to be free, so
 # they price to $0 with priced=True — distinct from an unknown model, which is
-# unpriced=True so cost under-reporting stays visible.
-_ZERO_COST_PROVIDERS = frozenset({"local", "huggingface"})
+# unpriced=True so cost under-reporting stays visible. HuggingFace is not one:
+# its router bills each call through the provider that serves it (#2111).
+_ZERO_COST_PROVIDERS = frozenset({"local"})
 _ZERO_RATES = TokenRates()
 
 

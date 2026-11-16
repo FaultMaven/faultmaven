@@ -627,11 +627,12 @@ def declared_llm_category(error: BaseException) -> Optional[LLMErrorCategory]:
 # This is the FALLBACK tier, not the primary one (#548): a structured billing
 # code, where the provider publishes one, is read first from
 # ``_BILLING_PROVIDER_ERROR_CODES`` below. The markers stay because most
-# providers publish nothing structured — Cohere sends a bare message,
-# HuggingFace a bare string, and Gemini's only machine signal for a
-# billing-disabled 403 is the same ``PERMISSION_DENIED`` a mis-scoped key
-# gets. Narrowing this list to "what the code tier misses" would shrink
-# detection for seven of the nine providers.
+# providers publish nothing structured — Cohere sends a bare message, and
+# Gemini's only machine signal for a billing-disabled 403 is the same
+# ``PERMISSION_DENIED`` a mis-scoped key gets. HuggingFace's retired Inference
+# API sent a bare string; its router's error-body shape is unverified (#2111).
+# Narrowing this list to "what the code tier misses" would shrink detection
+# for six of the nine providers, and possibly HuggingFace.
 _BILLING_ERROR_MARKERS: tuple = (
     "insufficient_quota",
     "exceeded your current quota",
@@ -911,31 +912,6 @@ class LLMOutputFloorError(LLMException):
     ``max_tokens`` or a lower reasoning intent — a decision this layer cannot
     make for it.
     """
-
-
-class ModelLoadingException(LLMException):
-    """Raised when an LLM model is still loading (e.g., HuggingFace 503).
-
-    This exception signals to the orchestration layer that the model
-    is temporarily unavailable due to loading, and the request should
-    be retried after a delay.
-
-    Attributes:
-        retry_after: Suggested wait time in seconds before retry
-        model_name: Name of the model that is loading
-    """
-
-    def __init__(
-        self,
-        message: str = "Model is loading",
-        retry_after: int = 10,
-        model_name: Optional[str] = None,
-    ):
-        self.retry_after = retry_after
-        self.model_name = model_name
-        super().__init__(
-            message, details={"retry_after": retry_after, "model_name": model_name}
-        )
 
 
 class CallShapeUnsupported(LLMException):
