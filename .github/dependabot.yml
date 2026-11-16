@@ -53,8 +53,8 @@ updates:
       # (#1177 + #1178, 2026-08-25): it did NOT bump pyproject.toml's
       # chromadb floor (`>= 1.0.0` then) — every candidate already satisfies it — but
       # the pip ecosystem at "/" still discovers requirements/*.txt, so it
-      # raised a PR touching the SAME three lockfiles as this entry. Two
-      # identical PRs, and with open-pull-requests-limit: 2 they consumed the
+      # raised a PR touching the SAME lockfiles as this entry (four now, with
+      # image.txt). Two identical PRs, and with open-pull-requests-limit: 2 they consumed the
       # entire slot budget on day one, which is the exact stall this file
       # exists to prevent. Do not re-add "/" to "cover the floor": it does not
       # cover the floor, it duplicates this line.

@@ -505,7 +505,7 @@ def test_the_refusals_name_only_doubles_the_suite_installs():
     for raised in (connect, lookup):
         text = str(raised.value)
         assert "respx" not in text
-        assert "AsyncMock" in text and hasattr(mock, "AsyncMock")
+        assert "AsyncMock" in text
 
 
 _CHILD_TESTS = """

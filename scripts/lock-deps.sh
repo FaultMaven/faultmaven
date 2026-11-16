@@ -22,12 +22,12 @@ if [ -z "$PYTHON_VERSION" ]; then
 fi
 
 if ! command -v uv &> /dev/null; then
-    echo "ERROR: uv ${UV_VERSION} is required. Install with: pip install uv==${UV_VERSION}"
+    echo "ERROR: uv ${UV_VERSION} is required. Install it outside the project's venvs, e.g. pipx install --force uv==${UV_VERSION}"
     exit 1
 fi
 FOUND_UV="$(uv --version | awk '{print $2}')"
 if [ "$FOUND_UV" != "$UV_VERSION" ]; then
-    echo "ERROR: uv ${FOUND_UV} found; the lockfiles are made with uv ${UV_VERSION}. Install with: pip install uv==${UV_VERSION}"
+    echo "ERROR: uv ${FOUND_UV} found; the lockfiles are made with uv ${UV_VERSION}. Install it outside the project's venvs, e.g. pipx install --force uv==${UV_VERSION}"
     exit 1
 fi
 
@@ -51,10 +51,13 @@ uv pip compile pyproject.toml \
     --quiet
 
 # The image's lockfile: the cloud extra alone, so no test package ships to
-# production. cloud.txt above keeps the test extra for the CI jobs (#2231).
-echo "  requirements/image.txt (cloud)"
+# production. cloud.txt above keeps the test extra for the CI jobs (#2231), and
+# constrains this compile, so every pin the image shares with it is the one
+# the cloud test jobs ran.
+echo "  requirements/image.txt (cloud, constrained by cloud.txt)"
 uv pip compile pyproject.toml \
     --extra cloud \
+    -c requirements/cloud.txt \
     --python-version "$PYTHON_VERSION" \
     --python-platform linux \
     -o requirements/image.txt \

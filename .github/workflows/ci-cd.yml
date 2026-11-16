@@ -1411,6 +1411,25 @@ jobs:
           -v "$PWD/scripts/check_tls_root_set.py:/opt/check/check_tls_root_set.py:ro"
           faultmaven:ci python /opt/check/check_tls_root_set.py --require-all
 
+      # The image installs requirements/image.txt, which no test job installs
+      # (they take cloud.txt, with the test extra), so this is the one check
+      # that the app and every fm-* entry point import without a test package
+      # (#2231). Entry points are read from the installed metadata.
+      - name: The app imports in the image's environment
+        timeout-minutes: 10
+        run: |
+          docker run --rm --network none faultmaven:ci python -c '
+          import importlib
+          import importlib.metadata as md
+          eps = md.entry_points(group="console_scripts")
+          mods = sorted({e.module for e in eps if e.dist and e.dist.name == "faultmaven"})
+          if not mods:
+              raise SystemExit("no faultmaven console_scripts entry point in the image")
+          for name in ["faultmaven.main", "faultmaven.server", *mods]:
+              importlib.import_module(name)
+              print("imported", name)
+          '
+
       # Free space when the build ended, pass or fail: a disk failure's log
       # shows what was left, and a cleanup that freed nothing shows here too.
       - name: Disk space after the build

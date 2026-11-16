@@ -22,7 +22,7 @@
 # packages the lockfile omits. Leftovers matter: a package you have and CI does
 # not can make an optional import succeed locally and fail there.
 #
-# Requires: uv (pip install uv)
+# Requires: uv, installed outside the venvs it syncs (pipx install uv)
 
 set -euo pipefail
 
@@ -57,7 +57,7 @@ if [ ! -f "$LOCKFILE" ]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-    echo "✗ uv is required. Install with: pip install uv" >&2
+    echo "✗ uv is required. Install it outside the project's venvs, e.g. pipx install uv" >&2
     exit 1
 fi
 UV_BIN="$(command -v uv)"

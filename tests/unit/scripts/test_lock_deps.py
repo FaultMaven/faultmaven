@@ -1,5 +1,6 @@
 """lock-deps.sh runs under the one uv CI installs (#2777), and gives the image a
-lockfile without the test extra (#2231). Run on a copy, against a stand-in uv."""
+lockfile without the test extra, pinned as cloud.txt (#2231). Run on a copy,
+against a stand-in uv."""
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ def test_any_uv_but_the_one_ci_installs_is_refused(tmp_path):
     assert CI_UV
     proc, compiles = _run(tmp_path, "0.0.1")
     assert proc.returncode == 1 and compiles == {}
-    assert f"pip install uv=={CI_UV}" in proc.stdout
+    assert f"pipx install --force uv=={CI_UV}" in proc.stdout
 
 
 def test_the_image_lockfile_is_the_cloud_extra_alone(tmp_path):
@@ -54,3 +55,6 @@ def test_the_image_lockfile_is_the_cloud_extra_alone(tmp_path):
 
     assert extras("image") == ["cloud"]
     assert extras("cloud") == ["cloud", "test"]  # the CI jobs keep the test extra
+    # Constrained by cloud.txt, so every pin the image shares is one CI tested.
+    image = compiles["requirements/image.txt"]
+    assert image[image.index("-c") + 1] == "requirements/cloud.txt"
