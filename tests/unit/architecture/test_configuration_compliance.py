@@ -62,7 +62,9 @@ KNOWN_ENV_ACCESS = {
     # TLS_EXTRA_CA_FILE and the inherited owned variables, and writes the set.
     # ``root_set_status`` reads the owned variables back: the environment is
     # the fact it reports (``features.tls_root_set``), settings never hold it.
-    "faultmaven/config/tls_root_set.py": 7,
+    # The Postgres root inputs it refuses are the drivers' own variables, and
+    # libpq's Windows CRL default is under ``APPDATA`` (#2787).
+    "faultmaven/config/tls_root_set.py": 8,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
     # The Opik SDK reads its configuration from the environment (``OpikConfig``),

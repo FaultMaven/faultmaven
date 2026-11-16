@@ -7,11 +7,19 @@ in a fresh process, through its own SDK client or pool, retries off, twice:
 **applied** (``apply_root_set()`` first) passes when it succeeds after a
 handshake; **bare** (as before #2692) passes when it fails with none.
 ``sslmode=require`` verified nothing before, so its row also meets a CA outside
-the set: applied refuses it, bare accepts it. A client not installed fails only
-under ``--require-all``. Every row connects to ``127.0.0.1``, never a name. Each
+the set: applied refuses it, bare fails only after accepting it. The Postgres
+CRL rows (#2787) meet a server whose CA is outside the set, with a CRL input
+holding that CA and a CRL it signs (``PGSSLCRL``, or ``root.crl`` in the
+child's home): applied passes when the start itself refuses, naming the input
+(for ``root.crl``, the scratch home's file), with no handshake; bare, with ``PGSSLROOTCERT`` naming the set's CA, passes when
+the outside server verifies, the exposure the refusal closes. ``EXPECTED``
+gives each row's verdict rule. A client not installed fails only under
+``--require-all``. Every row connects to ``127.0.0.1``, never a name. Each
 client process runs without ``PG*`` or ``*_proxy`` variables (any case, so
-``grpc_proxy`` and ``no_proxy`` too), and refuses a Python-level connect or
-lookup off loopback; gRPC's and libpq's C sockets are not patched.
+``grpc_proxy`` and ``no_proxy`` too), with the scratch directory as ``HOME``,
+and refuses a Python-level connect or lookup off loopback; gRPC's and libpq's C
+sockets are not patched. ``HOME`` does not hide the password-database home, so
+the check refuses to run while that home holds ``.postgresql/root.crl``.
 """
 
 from __future__ import annotations
@@ -138,6 +146,20 @@ def _verify_full(port: int) -> str:
     return f"postgresql://probe@{HOST}:{port}/probe?sslmode=verify-full"
 
 
+def _asyncpg(server: str):
+    return lambda m, p: _reached(
+        lambda: asyncio.run(m.connect(_verify_full(p[server]), timeout=10))
+    )
+
+
+def _psycopg2(server: str):
+    return lambda m, p: _reached(
+        lambda: m.connect(
+            _verify_full(p[server]), gssencmode="disable", connect_timeout=10
+        )
+    )
+
+
 # name: (module the client is given, its server, client(module, ports)).
 # The equality row has no server and no bare run: certifi can hold exactly the
 # OS bundle's roots on a host (it does on the one #2692 was built on), so a bare
@@ -161,23 +183,12 @@ ROWS = {
         ).ping(),
     ),  # fmt: skip
     "grpc": ("grpc", "grpc", _grpc),
-    "asyncpg verify-full": (
-        "asyncpg",
-        "pg",
-        lambda m, p: _reached(
-            lambda: asyncio.run(m.connect(_verify_full(p["pg"]), timeout=10))
-        ),
-    ),
+    "asyncpg verify-full": ("asyncpg", "pg", _asyncpg("pg")),
     "sqlalchemy asyncpg require": ("sqlalchemy.ext.asyncio", "pg", _sqlalchemy_require),
-    "psycopg2 verify-full": (
-        "psycopg2",
-        "pg",
-        lambda m, p: _reached(
-            lambda: m.connect(
-                _verify_full(p["pg"]), gssencmode="disable", connect_timeout=10
-            )
-        ),
-    ),
+    "psycopg2 verify-full": ("psycopg2", "pg", _psycopg2("pg")),
+    "asyncpg crl input": ("asyncpg", "outside", _asyncpg("outside")),
+    "psycopg2 crl input": ("psycopg2", "outside", _psycopg2("outside")),
+    "asyncpg home root.crl": ("asyncpg", "outside", _asyncpg("outside")),
     "litellm": (
         "litellm.llms.custom_httpx.http_handler",
         "https",
@@ -200,6 +211,24 @@ ROWS = {
 }
 # A row needs these installed besides its module's top-level package.
 _ALSO_NEEDS = {"sqlalchemy asyncpg require": "asyncpg"}
+# The Postgres CRL rows (#2787): the input each one's child is given, which the
+# applied leg's refusal names.
+CRL_INPUTS = {
+    "asyncpg crl input": "PGSSLCRL",
+    "psycopg2 crl input": "PGSSLCRL",
+    "asyncpg home root.crl": "root.crl",
+}
+# (applied, bare) per row; any other row verifies applied and refuses bare.
+# "verifies": exit 0 after a handshake. "refuses": non-zero with none.
+# "accepts outside, then fails": the require row's bare leg completes a
+# handshake with the set's server and then the outside one, which it reports.
+# "refused at start": non-zero, no handshake, and the start's own refusal opens
+# by naming the input ("TLS root set: PGSSLCRL is set", or the scratch home's
+# root.crl); a timeout never passes.
+EXPECTED = {
+    "sqlalchemy asyncpg require": ("verifies", "accepts outside, then fails"),
+    **dict.fromkeys(CRL_INPUTS, ("refused at start", "verifies")),
+}
 
 
 def _loopback_only() -> None:
@@ -308,7 +337,9 @@ def _serve_grpc(chain: bytes, key: bytes):
 
 def _certificates(directory: Path, name: str):
     """A CA (written to ``<name>-ca.pem``) and a leaf it signs: the CA file, a
-    server context presenting the leaf, and the leaf's PEM chain and key."""
+    server context presenting the leaf, and the leaf's PEM chain and key. Also
+    ``<name>-crl.pem``: the CA, then an empty CRL it signs, a CRL input that
+    loads."""
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -357,9 +388,40 @@ def _certificates(directory: Path, name: str):
     )
     for file, content in zip(files, (ca.public_bytes(pem), chain, key)):
         file.write_bytes(content)
+    crl = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca_name)
+        .last_update(now - datetime.timedelta(hours=1))
+        .next_update(now + datetime.timedelta(days=1))
+        .sign(ca_key, hashes.SHA256())
+    )
+    (directory / f"{name}-crl.pem").write_bytes(
+        ca.public_bytes(pem) + crl.public_bytes(pem)
+    )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(files[1], files[2])
     return files[0], context, chain, key
+
+
+def _named_input(name: str, env: dict) -> str:
+    """How the start's refusal opens for a CRL row: the variable, or the file
+    under the child's own (scratch) home."""
+    if CRL_INPUTS.get(name) == "root.crl":
+        return os.path.join(env["HOME"], ".postgresql", "root.crl") + " exists"
+    return f"{CRL_INPUTS.get(name)} is set"
+
+
+def _passwd_home_holds_crl() -> bool:
+    """Whether the password-database home holds ``.postgresql/root.crl``,
+    which every applied child would refuse whatever its ``HOME``. A yes or no
+    only: the path, read from the password database, is never printed."""
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    except (ImportError, KeyError):
+        return False
+    return os.path.exists(os.path.join(home, ".postgresql", "root.crl"))
 
 
 def _run(
@@ -384,10 +446,16 @@ def _run(
     if server is None:
         return ("PASS" if code == 0 else "FAIL"), said
     delta = len(counts[server]) - before
-    if applied:
-        ok = code == 0 and delta >= 1
-    else:  # the require row's bare run completes a handshake with the outside CA
-        ok = code != 0 and (delta == 0 or "require" in name)
+    expected = EXPECTED.get(name, ("verifies", "refuses"))[0 if applied else 1]
+    ok = {
+        "verifies": code == 0 and delta >= 1,
+        "refuses": code != 0 and delta == 0,
+        "accepts outside, then fails": code != 0
+        and "accepted a peer outside the set" in said,
+        "refused at start": code != 0
+        and delta == 0
+        and said.startswith(f"TLS root set: {_named_input(name, env)}"),
+    }[expected]
     return ("PASS" if ok else "FAIL"), f"{delta} handshake(s); {said}"
 
 
@@ -404,6 +472,14 @@ def main(argv: list[str] | None = None) -> int:
         return _child(args.child, not args.bare, json.loads(args.ports))
     from faultmaven.config.tls_root_set import OWNED_VARIABLES
 
+    if _passwd_home_holds_crl():
+        print(
+            "check_tls_root_set: the password database's home directory holds "
+            ".postgresql/root.crl, and every applied row would refuse it "
+            "whatever the child's HOME: move it aside and re-run.",
+            file=sys.stderr,
+        )
+        return 1
     failed, ports, counts, listeners, grpc_server = False, {}, {}, [], None
     with tempfile.TemporaryDirectory(prefix="check-tls-root-set-") as scratch:
         ca_file, context, chain, key = _certificates(Path(scratch), "set")
@@ -424,9 +500,21 @@ def main(argv: list[str] | None = None) -> int:
             and not name.startswith("PG")
         }
         env.update(_CHILD_ENV, TLS_EXTRA_CA_FILE=str(ca_file), TMPDIR=scratch)
+        env.update(HOME=scratch)  # no ~/.postgresql of the caller's
+        crl_home = Path(scratch) / "crl-home"
+        (crl_home / ".postgresql").mkdir(parents=True)
+        outside_crl = Path(scratch) / "outside-crl.pem"
+        (crl_home / ".postgresql" / "root.crl").write_bytes(outside_crl.read_bytes())
         for name in ROWS:
             for applied in (True, False) if ROWS[name][1] else (True,):
-                verdict, detail = _run(name, applied, ports, counts, env)
+                row_env = dict(env)
+                if CRL_INPUTS.get(name) == "PGSSLCRL":
+                    row_env["PGSSLCRL"] = str(outside_crl)
+                elif name in CRL_INPUTS:
+                    row_env["HOME"] = str(crl_home)
+                if name in CRL_INPUTS and not applied:
+                    row_env["PGSSLROOTCERT"] = str(ca_file)  # the set's own CA
+                verdict, detail = _run(name, applied, ports, counts, row_env)
                 failed |= verdict == "FAIL" or (verdict != "PASS" and args.require_all)
                 mode = "applied" if applied else "bare"
                 print(f"{name:<28} {mode:<8} {verdict:<14} {detail}", flush=True)

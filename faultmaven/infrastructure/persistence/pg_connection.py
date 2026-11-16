@@ -22,7 +22,9 @@ check in ``bootstrap/data_init``:
    The server's ``statement_timeout`` sits below the command timeout
    (:func:`pg_bounds`, set per transaction by the engine's ``begin``
    listener), so a live but slow server cancels its own statement first and the
-   connection survives.
+   connection survives. It also refuses, for any database, a URL whose query
+   hands the driver a Postgres root input outside the TLS root set
+   (``pg_root_inputs_in_url``, #2787): the start checks only ``DATABASE_URL``.
 3. **TCP liveness on idle pooled connections** (:func:`enable_tcp_liveness`):
    keepalive and ``TCP_USER_TIMEOUT``, so a connection whose packets are lost
    while it sits in the pool is found dead. It does nothing for a frozen server
@@ -51,6 +53,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy.engine import make_url
+
+from faultmaven.config.tls_root_set import pg_root_inputs_in_url, pg_url_refusal
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import DatabaseSettings
@@ -200,8 +204,16 @@ def pg_connect_args(
 
     Raises:
         ValueError: The URL's query sets one of these itself (see
-            ``_OWNED_CONNECT_KEYWORDS``).
+            ``_OWNED_CONNECT_KEYWORDS``), or, for any database, names a
+            Postgres root input outside the TLS root set or holds a key that
+            is not a plain option name, which can smuggle one in
+            (``pg_root_inputs_in_url``, #2787): this engine's URL can come from
+            a nested ``DATABASE`` variable or the caller, which the start's
+            check does not read.
     """
+    root_inputs = pg_root_inputs_in_url(database_url)
+    if root_inputs:
+        raise ValueError(pg_url_refusal(root_inputs))
     if not is_asyncpg_url(database_url):
         return {}
     query = make_url(database_url).query

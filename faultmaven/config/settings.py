@@ -1065,11 +1065,14 @@ def configured_database_url() -> Optional[str]:
     ``env_file``, no ``secrets_dir``, default ``settings_customise_sources``.
     If that ever changes, this reader must follow; a test pins it.
 
-    Its one caller is ``alembic/env.py``, which must judge the URL without
+    Its callers are ``alembic/env.py`` and ``apply_root_set``
+    (``faultmaven/config/tls_root_set.py``, which refuses a Postgres root input
+    in the URL's query, #2787), each of which must judge the URL without
     building the whole application's settings; an exact-name ``os.environ``
     read there disagreed with the app on a lowercase spelling (#1704). A nested
     JSON ``DATABASE`` reaches the app's settings but not this reader (#1785).
-    The app itself never calls it: it judges the built settings' URL.
+    The app judges the built settings' URL for everything else; it reads this
+    one only through ``apply_root_set``, at every start.
 
     Returns:
         The configured value, the empty string included, or ``None`` when the
