@@ -1656,7 +1656,7 @@ Each 422 carries `reason`, and its sentence as `detail`, `message`, `help` and t
 
 ### 14.3 Test Fixtures
 
-LLM responses are mocked using `AsyncMock` and `respx` (established pattern). Fixture files contain representative LLM analysis and conversion responses for deterministic testing.
+LLM responses are mocked using `AsyncMock` (established pattern). Fixture files contain representative LLM analysis and conversion responses for deterministic testing.
 
 ```python
 @pytest.fixture

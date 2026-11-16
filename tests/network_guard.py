@@ -324,7 +324,7 @@ class NetworkGuard:
             f"ends the attempt before any connection, so the test would pass or "
             f"fail on whether DNS answers (#2232). Give the code under test a "
             f"loopback port the test bound (closed, for an unreachable server) "
-            f"or a double (respx, a fake transport), not a server's name. (A run "
+            f"or a double (an AsyncMock), not a server's name. (A run "
             f"whose purpose is to reach a provider sets "
             f"{ALLOW_LIVE_NETWORK_ENV}=1.)"
         )
@@ -351,7 +351,7 @@ class NetworkGuard:
             f"because {reason}. A test may connect to a port it bound itself "
             f"({len(self.bound_ports)} so far) and to "
             f"{allowed or 'no configured service'}. Give the code under test a "
-            f"double (respx, a fake transport, a server on a port the test binds), "
+            f"double (an AsyncMock, a server on a port the test binds), "
             f"not a real server. (A run whose purpose is to reach a provider sets "
             f"{ALLOW_LIVE_NETWORK_ENV}=1.)"
         )

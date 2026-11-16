@@ -494,6 +494,20 @@ def test_the_environment_switch_is_read_once_so_a_test_cannot_set_it(monkeypatch
             socket.create_connection(("127.0.0.1", 11434), timeout=1)
 
 
+def test_the_refusals_name_only_doubles_the_suite_installs():
+    """#2184: both refusals offered ``respx``, which no lockfile installs, so a
+    test written on that advice died on ``ModuleNotFoundError``."""
+    with network_guard.expecting_refusals():
+        with pytest.raises(NetworkAccessBlocked) as connect:
+            socket.create_connection(("127.0.0.1", 11434), timeout=1)
+        with pytest.raises(NameResolutionBlocked) as lookup:
+            socket.getaddrinfo(_ELSEWHERE, 443)
+    for raised in (connect, lookup):
+        text = str(raised.value)
+        assert "respx" not in text
+        assert "AsyncMock" in text
+
+
 _CHILD_TESTS = """
 import socket
 

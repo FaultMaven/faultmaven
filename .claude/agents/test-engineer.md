@@ -21,7 +21,7 @@ Own all testing work: unit tests, integration tests, E2E tests, scenario generat
 
 **`faultmaven`** — Python, FastAPI
 
-Testing stack: pytest, pytest-asyncio, httpx (AsyncClient), pytest-cov, respx, unittest.mock
+Testing stack: pytest, pytest-asyncio, httpx (AsyncClient), pytest-cov, unittest.mock (AsyncMock); for HTTP, a server on a port the test binds
 
 Module test structure:
 ```
