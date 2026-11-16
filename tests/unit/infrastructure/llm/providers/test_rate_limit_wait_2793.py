@@ -432,7 +432,8 @@ def test_a_wait_is_taken_only_when_twice_it_fits_the_call(retry_after, taken):
         # A counted outage stays the raised error, so the breaker sees it.
         ((503, '{"error":{"message":"overloaded"}}'), 503, 1),
         # A request-scoped rejection is not counted, so the throttle (the
-        # retryable answer) is raised, uncounted, as on main.
+        # retryable answer) is raised, uncounted, as on main; nor is it
+        # recorded on the primary's health (#2833).
         ((400, '{"error":{"type":"invalid_request_error","message":"bad"}}'), 429, 0),
     ],
     ids=["503-counted", "400-request-scoped"],
@@ -466,7 +467,7 @@ async def test_a_throttled_fallback_raises_the_failure_the_breaker_counts(
 
     assert raised.value.status_code == raised_status
     assert router.circuit_breaker.failure_count == counted
-    assert registry._provider_states["azure"].consecutive_failures == 1
+    assert registry._provider_states["azure"].consecutive_failures == counted
     assert registry._provider_states["openai"].consecutive_failures == 0
 
 

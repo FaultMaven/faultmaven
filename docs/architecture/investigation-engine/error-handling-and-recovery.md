@@ -162,7 +162,15 @@ The `BaseExternalClient.call_external()` method checks `retryable` before retryi
 - `retryable=True` (5xx, 429, explicit): retry with exponential backoff
 - `retryable=False` (other 4xx, billing, default): fail immediately, no retries
 
-The provider registry re-raises the last provider's error directly (preserving retryability and `error_code`) rather than wrapping in a generic exception.
+**Which failure a fallback chain raises** (#2832). The provider registry raises a provider's error directly (preserving retryability and `error_code`) rather than wrapping it in a generic exception. When no provider in a chain returned a response, the chain raises the failure that ranks highest, and the later one on a tie. The ranks, highest first:
+
+1. counted by the breaker and retryable (a 5xx, a timeout, an unclassified exception);
+2. counted and not retryable (quota, rejected credentials);
+3. not counted and retryable (a throttle the provider's waits did not outlast);
+4. not counted and not retryable (a request-scoped 4xx);
+5. `CallShapeUnsupported`.
+
+A low-confidence response still beats every failure, and `RawModelContentRefused` still aborts the chain. A provider's health records only a failure the breaker would count. "Counted" is `counts_against_breaker`; one predicate, `chain_failure_rank` (`faultmaven/exceptions.py`), keeps the order at every arm of `ProviderRegistry.route_request`, pinned by `tests/unit/infrastructure/llm/providers/test_chain_failure_order_2833.py`.
 
 **Circuit breaker carries the classification.** When repeated failures open the breaker, `CircuitBreakerError` carries the `error_code` of the failure that tripped it (latched across the failing streak so a trailing transient error does not erase a permanent billing signal). This keeps a billing condition distinguishable as `QUOTA_EXHAUSTED` even on turns where the request never reaches the provider — without it, an open breaker would mask billing as a generic 500.
 

@@ -888,11 +888,27 @@ def counts_against_breaker(exc: BaseException) -> bool:
     A non-retryable failure counts only when it is service-scoped (quota,
     rejected credentials); a request-scoped one says nothing about the service.
     Any other failure counts, except a throttle (#2793). The registry reads the
-    same answer to decide which failure in a fallback chain is raised.
+    same answer for a provider's health and, through ``chain_failure_rank``,
+    to decide which failure in a fallback chain is raised.
     """
     if getattr(exc, "retryable", True) is False:
         return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
     return not is_rate_limit_throttle(exc)
+
+
+def chain_failure_rank(exc: BaseException) -> int:
+    """How a fallback chain ranks ``exc`` against its other failures (#2833).
+
+    The chain raises its highest-ranked failure, the later one on a tie:
+    5 counted by the breaker and retryable; 4 counted, not retryable (quota,
+    rejected credentials); 3 not counted, retryable (a throttle); 2 not
+    counted, not retryable (a request-scoped 4xx); 1 ``CallShapeUnsupported``.
+    """
+    if isinstance(exc, CallShapeUnsupported):
+        return 1
+    counted = counts_against_breaker(exc)
+    retryable = getattr(exc, "retryable", True) is not False
+    return (4 if counted else 2) + (1 if retryable else 0)
 
 
 class LLMOutputFloorError(LLMException):

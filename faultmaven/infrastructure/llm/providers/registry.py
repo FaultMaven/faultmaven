@@ -19,6 +19,7 @@ from typing import Dict, List, Mapping, Optional, Type, Union
 from faultmaven.exceptions import (
     CallShapeUnsupported,
     RawModelContentRefused,
+    chain_failure_rank,
     counts_against_breaker,
     is_rate_limit_throttle,
 )
@@ -1049,37 +1050,44 @@ class ProviderRegistry:
                 # This CALL's shape on this transport, not the provider's
                 # health (#2016): no failure is recorded. Unlike a refused
                 # content grammar, another provider may carry the call, so
-                # the chain continues; a real failure already seen outranks
-                # the refusal when the chain is exhausted.
+                # the chain continues; it ranks below every other failure
+                # (``chain_failure_rank``).
                 self.logger.warning(
                     f"{provider_name} cannot carry this call shape and was "
                     f"skipped without a health penalty: {e}"
                 )
-                if last_error is None or isinstance(last_error, CallShapeUnsupported):
+                if last_error is None or (
+                    chain_failure_rank(e) >= chain_failure_rank(last_error)
+                ):
                     last_error = e
                 continue
             except Exception as e:
                 if is_rate_limit_throttle(e):
                     # A 429 the provider's own waits did not outlast: the
                     # provider is up and busy, not down (#2793). No health
-                    # penalty; the chain moves on. A failure seen earlier that
-                    # the router's breaker counts stays the raised error, so
-                    # the router still counts it; any other is replaced.
+                    # penalty; the chain moves on.
                     self.logger.warning(
                         f"{provider_name} rate-limited this call and was skipped "
                         f"without a health penalty: {e}"
                     )
-                    if last_error is None or not counts_against_breaker(last_error):
+                    if last_error is None or (
+                        chain_failure_rank(e) >= chain_failure_rank(last_error)
+                    ):
                         last_error = e
                     continue
-                # Record failure for health tracking
-                state.record_failure()
+                # Health records only a failure the breaker counts (#2833): a
+                # request-scoped rejection says nothing about the provider.
+                if counts_against_breaker(e):
+                    state.record_failure()
 
                 self.logger.warning(
                     f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
                     f"health: {state.health.value}): {e}"
                 )
-                last_error = e
+                if last_error is None or (
+                    chain_failure_rank(e) >= chain_failure_rank(last_error)
+                ):
+                    last_error = e
                 continue
 
         # If we have a low-confidence response, return it with appropriate metadata
@@ -1094,10 +1102,10 @@ class ProviderRegistry:
             )
             return best_low_confidence_response
 
-        # All providers failed completely — re-raise the last error directly
-        # so that retryability metadata (e.g. LLMException.retryable) is
-        # preserved for upstream retry logic in call_external().
-        self.logger.error(f"All providers failed. Last error: {last_error}")
+        # All providers failed completely — re-raise the highest-ranked
+        # failure directly (``chain_failure_rank``) so that retryability
+        # metadata is preserved for upstream retry logic in call_external().
+        self.logger.error(f"All providers failed. Raised error: {last_error}")
         if last_error is not None:
             raise last_error
         raise Exception("All providers failed with no error details")
