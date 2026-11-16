@@ -81,20 +81,17 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+from faultmaven.modules.knowledge.exceptions import (
+    GateFailed,
     GateOutputTooLarge,
     GateRefused,
     GateTimedOut,
     GateTooLarge,
     GateUnavailable,
-)
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
-)
-from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
     KbReceiptExistsError,
+    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
@@ -170,6 +167,13 @@ INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
 }
 
 
+class RefusalDetail(BaseModel):
+    """A 422 that names what to fix in `detail` alone: the runbook body
+    refused for its content, or a draft past its bound."""
+
+    detail: str
+
+
 class RunbookCheckRefusal(BaseModel):
     """The 422 of a runbook check stopped for the document alone (#2661):
     `detail`, `message` and `help` are the reason's sentence, which is also the
@@ -187,14 +191,15 @@ class RunbookCheckRefusal(BaseModel):
 #: The answers of a route that runs the runbook gate (#2661): raised by
 #: ``runbook_gate`` and answered by ``api.exception_handlers``. Nothing is saved.
 GATE_RESPONSES: Dict[int | str, Dict[str, Any]] = {
-    # Either body: the gate's refusal joins the request-binding 422 the route
-    # already declared, which it does not replace.
+    # Any of the three: the gate's refusal joins the request-binding 422 and
+    # the `detail` one these routes already answer, which it does not replace.
     422: {
         "content": {
             "application/json": {
                 "schema": {
                     "anyOf": [
                         {"$ref": "#/components/schemas/HTTPValidationError"},
+                        RefusalDetail.model_json_schema(),
                         RunbookCheckRefusal.model_json_schema(),
                     ]
                 }
@@ -756,9 +761,9 @@ async def upload_document(
             receipt,
             headers={"Location": _document_location(receipt.response["document_id"])},
         )
-    except (GateRefused, GateUnavailable):
-        # The runbook check's 422 with its ``reason``, or its 503: the one
-        # registered handler's answers (#2661), never the quality help below.
+    except (GateRefused, GateUnavailable, GateFailed):
+        # The runbook check's 422 with its ``reason``, its 503, or its 500: the
+        # registered handlers' answers (#2661), never the quality help below.
         raise
     except RunbookQualityError as quality_error:
         # The single gate's refusal, rendered as the structured 422 this route
@@ -1402,7 +1407,7 @@ async def update_document(
         # The redaction (#1981) could not run: the global handler's generic
         # 503, not the blanket 500 below. Nothing was saved.
         raise
-    except (GateRefused, GateUnavailable):  # as on upload (#2661)
+    except (GateRefused, GateUnavailable, GateFailed):  # as on upload (#2661)
         raise
     except RunbookQualityError as quality_error:
         # The body holds a credential or a destructive command (#2012):

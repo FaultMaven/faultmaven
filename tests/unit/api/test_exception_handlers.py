@@ -42,11 +42,10 @@ from faultmaven.exceptions import (
 )
 from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
-from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+from faultmaven.modules.knowledge.exceptions import (
+    GateFailed,
     GateRefused,
     GateUnavailable,
-)
-from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
 )
@@ -424,6 +423,7 @@ class TestGetExceptionHandlers:
             IndexAdmissionRefused,
             GateRefused,
             GateUnavailable,
+            GateFailed,
             ServiceError,
             ServiceException,
             LLMException,

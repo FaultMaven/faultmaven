@@ -27,7 +27,6 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set,
 
 import yaml
 
-from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.security.secret_patterns import (
     SECRET_PATTERNS,
     RedactionSpan,
@@ -73,6 +72,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     iter_cause_blocks,
     parse_cause_subfields,
 )
+from faultmaven.modules.knowledge.exceptions import RunbookQualityError
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
     RunbookDifficulty,
@@ -1068,9 +1068,11 @@ class RunbookValidator:
             return None
         try:
             loaded = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError):
-            # Nesting a few hundred deep exhausts PyYAML's recursion (#2838):
-            # unparseable frontmatter, like any other YAML the parser refuses.
+        except (yaml.YAMLError, RecursionError, ValueError, TypeError):
+            # Unparseable frontmatter, whatever PyYAML raised: a syntax error,
+            # nesting deep enough to exhaust its recursion (#2838), or a
+            # constructor's own error on a scalar it resolved
+            # (``last_updated: 2026-11-31`` is a timestamp with no such day).
             return None
         # None distinguishes "no frontmatter" from "empty frontmatter" here, so
         # this cannot just call parse_frontmatter. A non-mapping body is still
@@ -1698,29 +1700,6 @@ class RunbookValidator:
 # So the gate moves DOWN to the service, and the route keeps its own richer 422
 # (errors + warnings + authoring help). The route's copy is now a better message
 # for the same decision rather than the only place the decision is made.
-
-
-class RunbookQualityError(ValidationException):
-    """Content was refused by the runbook quality gate.
-
-    A ``ValidationException`` so the registered global handler answers **422** —
-    the same status the upload route already answers by hand, reached from the
-    service layer without the route having to translate anything.
-
-    ``errors`` / ``warnings`` are kept as structured attributes for callers that
-    want to render them; the flattened message carries them too, because
-    ``validation_exception_handler`` renders ``str(exc)`` and a bare "does not
-    meet quality standards" tells a reviewer nothing about what to fix.
-    """
-
-    def __init__(self, errors: List[str], warnings: Optional[List[str]] = None):
-        self.errors = list(errors)
-        self.warnings = list(warnings or [])
-        joined = "; ".join(self.errors) if self.errors else "unspecified"
-        super().__init__(
-            f"Content does not meet runbook quality standards: {joined}",
-            details={"errors": self.errors, "warnings": self.warnings},
-        )
 
 
 def enforce_runbook_quality(content: str) -> None:

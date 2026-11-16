@@ -2,11 +2,12 @@
 
 The gate's checks ran on the default executor's threads under a semaphore,
 which bounded how many ran, never how long: a check outlived its caller, and
-native regex code holding the interpreter lock stalled the loop. Each check now
-runs in a worker (``runbook_gate``, ``validation_worker``) under a CPU-time
-deadline, and the gate fails closed. A refusal for the input alone is a 422
-with its ``reason``; one that depends on load is a 503 with ``Retry-After``.
-None admits content.
+native regex code holding the interpreter lock stalled the loop. The checks a
+request needs now run in one worker call (``runbook_gate``,
+``validation_worker``), each under a CPU-time deadline, and the gate fails
+closed. A refusal for the input alone is a 422 with its ``reason``; one that
+depends on load is a 503 with ``Retry-After``; a check that raises is the
+generic 500. None admits content.
 
 The hostile checks are ``gate_stubs``, served as the worker in place of the
 real one. Every worker is a real process, and every bound a test sets is one
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import pickle
 import signal
@@ -34,6 +36,7 @@ from fastapi import FastAPI, HTTPException
 from sqlalchemy import null, select, update
 
 from faultmaven.api.exception_handlers import (
+    SERVICE_ERROR_DETAIL,
     get_exception_handlers,
     http_exception_handler,
 )
@@ -60,6 +63,16 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.exceptions import (
+    GateBusy,
+    GateFailed,
+    GateOutputTooLarge,
+    GateRefused,
+    GateTimedOut,
+    GateTooLarge,
+    GateUnavailable,
+    RunbookQualityError,
+)
 from tests.runbook_samples import valid_runbook
 from tests.unit.modules.knowledge import gate_stubs
 from tests.utils import regex_only_sanitizer
@@ -73,11 +86,11 @@ USER = "user-7"
 _HARNESS_SECONDS = 60
 
 _REFUSALS = [
-    runbook_gate.GateTimedOut,
-    runbook_gate.GateOutputTooLarge,
-    runbook_gate.GateTooLarge,
+    GateTimedOut,
+    GateOutputTooLarge,
+    GateTooLarge,
 ]
-_UNAVAILABLE = [runbook_gate.GateBusy, runbook_gate.GateUnavailable]
+_UNAVAILABLE = [GateBusy, GateUnavailable]
 
 _TEMPLATE = {
     "title": "Connection Pool Exhausted On The API",
@@ -207,16 +220,14 @@ def _create(client):
 
 
 async def _state(session_factory) -> list:
-    """Every row a refusal must leave as it was."""
+    """Every row's text and status, which a refusal must leave as they were.
+    (A read's stored refusal is ``quality_details``, tested on its own.)"""
     async with session_factory() as session:
         items = (await session.execute(select(KnowledgeItemModel))).scalars()
         drafts = (await session.execute(select(ConversionDraftModel))).scalars()
         return sorted(
             [("item", i.item_id, i.content) for i in items]
-            + [
-                ("draft", d.id, d.content, d.status, repr(d.quality_details))
-                for d in drafts
-            ]
+            + [("draft", d.id, d.content, d.status) for d in drafts]
         )
 
 
@@ -296,7 +307,7 @@ async def test_a_check_past_its_deadline_is_killed_and_refused(
     await asyncio.gather(*tasks)
 
     assert response.status_code == 422, response.text
-    assert response.json() == _refusal_body(runbook_gate.GateTimedOut)
+    assert response.json() == _refusal_body(GateTimedOut)
     assert alive_after_three_turns == [[True]], "the loop did not run beside it"
     assert [p.returncode for p in spawned] == [-signal.SIGPROF]
     assert not _in_this_process(
@@ -318,37 +329,44 @@ async def test_a_check_past_its_deadline_is_killed_and_refused(
         pytest.param(
             "loops_in_python",
             {"GATE_WORK_CPU_SECONDS": 60, "GATE_CPU_LIMIT_SECONDS": 1},
-            runbook_gate.GateTimedOut,
+            GateTimedOut,
             -signal.SIGXCPU,
             id="cpu-backstop",
         ),
-        pytest.param("allocates", {}, runbook_gate.GateTooLarge, 3, id="memory-limit"),
+        pytest.param("allocates", {}, GateTooLarge, 3, id="memory-limit"),
         pytest.param(
             "floods",
             {"GATE_OUTPUT_LIMIT_BYTES": 64 * 1024},
-            runbook_gate.GateOutputTooLarge,
+            GateOutputTooLarge,
             None,
             id="output-limit",
         ),
         pytest.param(
             "is_killed",
             {},
-            runbook_gate.GateUnavailable,
+            GateUnavailable,
             -signal.SIGKILL,
             id="killed",
         ),
-        pytest.param("raises", {}, runbook_gate.GateUnavailable, 1, id="exit-1"),
+        pytest.param("raises", {}, GateFailed, 1, id="check-raises"),
+        pytest.param(
+            "fails_costly_to_report",
+            {"GATE_WORK_CPU_SECONDS": 0.3, "FM_GATE_STUB_WORK_CPU": "0.3"},
+            GateFailed,
+            1,
+            id="timer-disarmed-on-failure",
+        ),
         pytest.param(
             "sleeps",
             {"GATE_WORK_WALL_SECONDS": 0.5},
-            runbook_gate.GateUnavailable,
+            GateUnavailable,
             -signal.SIGKILL,
             id="wall-backstop",
         ),
         pytest.param(
             "never_starts",
             {"GATE_START_SECONDS": 0.5},
-            runbook_gate.GateUnavailable,
+            GateUnavailable,
             -signal.SIGKILL,
             id="start-timeout",
         ),
@@ -357,11 +375,17 @@ async def test_a_check_past_its_deadline_is_killed_and_refused(
 async def test_each_end_of_a_worker_answers_as_ruled(
     monkeypatch, spawned, stub, limits, refusal, code
 ):
-    """Only the input decides a 422 (CPU, memory, output); a kill, an exit, the
-    wall-clock backstop and a start that never finishes are 503s."""
+    """Only the input decides a 422 (CPU, memory, output). A check that
+    raises is a defect, a 500 that no retry changes, and it is reported as
+    that even when reporting it costs more CPU than the deadline left: the
+    timer ends with the check. A kill, the wall-clock backstop and a start
+    that never finishes are 503s."""
     _serve_stub(monkeypatch, stub)
     for name, value in limits.items():
-        monkeypatch.setattr(runbook_gate, name, value)
+        if name.startswith("FM_"):
+            monkeypatch.setenv(name, value)
+        else:
+            monkeypatch.setattr(runbook_gate, name, value)
 
     async with asyncio.timeout(_HARNESS_SECONDS):
         with pytest.raises(refusal) as refused:
@@ -408,7 +432,7 @@ async def test_no_slot_within_its_wait_is_busy_and_spawns_nothing(monkeypatch, s
     monkeypatch.setattr(runbook_gate, "GATE_SLOT_WAIT_SECONDS", 0.2)
     await runbook_gate._gate_slots().acquire("another-user")
 
-    with pytest.raises(runbook_gate.GateBusy):
+    with pytest.raises(GateBusy):
         await runbook_gate.aenforce_runbook_security("body", principal=USER)
 
     assert spawned == []
@@ -486,7 +510,7 @@ _GATE_ROUTES = [
 
 
 def _refuse_with(monkeypatch, refusal) -> None:
-    async def refuse(check, content, principal, slot_wait=None):
+    async def refuse(checks, principal, slot_wait=None):
         assert principal == USER
         raise refusal()
 
@@ -528,8 +552,76 @@ async def test_every_gate_route_answers_a_check_that_cannot_run_with_503(
     assert await _state(session_factory) == before
 
 
+@pytest.mark.parametrize("route", _GATE_ROUTES)
+async def test_every_gate_route_answers_a_check_that_raised_with_500(
+    monkeypatch, session_factory, client, route
+):
+    """A defect in the check: the static 500 with no ``Retry-After``, which
+    no retry of the same document changes."""
+    send = await route(client, session_factory)
+    before = await _state(session_factory)
+    _refuse_with(monkeypatch, GateFailed)
+
+    response = await send()
+
+    assert response.status_code == 500, response.text
+    assert response.headers["x-error-code"] == "SERVICE_ERROR"
+    assert "Retry-After" not in response.headers
+    assert response.json() == {"detail": SERVICE_ERROR_DETAIL}
+    assert await _state(session_factory) == before
+
+
+async def test_a_check_that_raises_in_its_worker_is_a_500_at_upload(
+    monkeypatch, session_factory, client, spawned, caplog
+):
+    _serve_stub(monkeypatch, "raises")
+
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        response = await _upload(client)
+
+    assert response.status_code == 500, response.text
+    assert response.headers["x-error-code"] == "SERVICE_ERROR"
+    assert "Retry-After" not in response.headers
+    assert [p.returncode for p in spawned] == [1]
+    assert any(
+        r.levelno == logging.ERROR and "a check that failed" in r.getMessage()
+        for r in caplog.records
+    )
+    assert await _state(session_factory) == []
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    ["last_updated: 2026-11-31", "tags: [2024-02-30]"],
+    ids=["no-such-day", "no-such-day-in-a-list"],
+)
+async def test_a_scalar_yaml_cannot_construct_is_unparseable_frontmatter(
+    session_factory, client, frontmatter
+):
+    """PyYAML resolves these as dates and its constructor raises. They are the
+    frontmatter refusal the quality gate answers, never an end of its worker."""
+    body = valid_runbook().replace("last_updated: 2026-08-28", frontmatter)
+    if frontmatter.startswith("tags"):
+        body = valid_runbook().replace("status: draft", f"status: draft\n{frontmatter}")
+
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        response = await client.post(
+            "/api/v1/knowledge/documents",
+            data={"title": "Redis evictions", "document_type": "runbook"},
+            files={"file": ("rb.md", body.encode(), "text/markdown")},
+        )
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("Runbook does not meet quality standards: ")
+    assert "No YAML frontmatter found" in detail
+    assert "reason" not in response.json()
+    assert await _state(session_factory) == []
+
+
 def test_every_gate_route_declares_its_answers(app):
-    """The refusal body on each route's 422, and the 503 codes and header."""
+    """Each 422 body a gate route answers (a binding error, a `detail`
+    refusal, the check's refusal), and the 503 codes and header."""
     paths = app.openapi()["paths"]
     declared = {
         ("post", "/api/v1/knowledge/documents"): (422, 503),
@@ -555,6 +647,7 @@ def test_every_gate_route_declares_its_answers(app):
             assert schema == {
                 "anyOf": [
                     {"$ref": "#/components/schemas/HTTPValidationError"},
+                    routes.RefusalDetail.model_json_schema(),
                     refusal,
                 ]
             }, path
@@ -630,6 +723,91 @@ async def test_a_row_stored_without_a_score_is_scored_once_outside_any_session(
     assert second.json() == first.json()
 
 
+async def test_a_stored_row_refused_by_its_check_answers_that_refusal_again(
+    monkeypatch, session_factory, client, spawned
+):
+    """A pre-#2661 row whose read-time check is refused for its text: the
+    refusal is stored, the next read answers the same 422 with no worker, and
+    the draft listing shows no score for it."""
+    send = await _stored_unscored_read_route(client, session_factory)
+    _serve_stub(monkeypatch, "loops_in_python")
+    monkeypatch.setattr(runbook_gate, "GATE_WORK_CPU_SECONDS", 0.3)
+    monkeypatch.setattr(runbook_gate, "GATE_START_SECONDS", _HARNESS_SECONDS)
+    monkeypatch.setattr(runbook_gate, "GATE_WORK_WALL_SECONDS", _HARNESS_SECONDS)
+    spawned.clear()
+
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        first, second = await send(), await send()
+
+    assert (first.status_code, second.status_code) == (422, 422)
+    assert first.json() == second.json() == _refusal_body(GateTimedOut)
+    assert [p.returncode for p in spawned] == [-signal.SIGPROF]
+    listed = (await client.get("/api/v1/knowledge/drafts")).json()
+    assert [d["quality_details"] for d in listed] == [None]
+
+
+async def test_a_stored_row_whose_check_cannot_run_is_checked_again(
+    monkeypatch, session_factory, client
+):
+    """Load is no fact about the text: a 503 stores nothing."""
+    send = await _stored_unscored_read_route(client, session_factory)
+    _refuse_with(monkeypatch, GateBusy)
+    assert (await send()).status_code == 503
+    monkeypatch.undo()
+
+    response = await send()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["drafts"][0]["quality_score"]["overall"] > 0
+
+
+async def test_an_upload_and_a_verify_each_spawn_one_worker(
+    session_factory, client, spawned
+):
+    """Every check a request needs runs in one worker: the upload's quality
+    and security checks of one text, and verify's check of the draft and of
+    the text it publishes. Nothing is checked twice."""
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        assert (await _upload(client)).status_code == 201
+        uploaded = len(spawned)
+        draft = await _draft_url(client)
+        created = len(spawned)
+        verified = await client.post(f"{draft}/verify")
+
+    assert verified.status_code == 200, verified.text
+    assert (uploaded, created - uploaded, len(spawned) - created) == (1, 1, 1)
+
+
+async def test_an_ingest_no_user_asked_for_checks_as_the_system(monkeypatch):
+    """The pack's runbooks have no owner: their check takes the system's slot
+    key, and still runs."""
+    principals: list[str] = []
+
+    async def run(checks, principal, slot_wait=None):
+        principals.append(principal)
+        raise GateBusy()
+
+    monkeypatch.setattr(runbook_gate, "_run", run)
+    service = KnowledgeService(
+        sanitizer=regex_only_sanitizer(),
+        tracer=None,
+        vector_store=None,
+        db_session_factory=AsyncMock(),
+    )
+
+    with pytest.raises(GateBusy):
+        await service.ingest_runbook(
+            document_id="kb_0123456789abcdef",
+            title="Runbook",
+            content=valid_runbook(),
+            enterprise_id=STANDALONE_ENTERPRISE_ID,
+            scope="global",
+            record=AsyncMock(),
+        )
+
+    assert principals == [runbook_gate.SYSTEM_GATE_PRINCIPAL]
+
+
 # ---------------------------------------------------------------------------
 # The same answers as in process (the oracle)
 # ---------------------------------------------------------------------------
@@ -662,7 +840,7 @@ def _in_process(check: str, content: str) -> dict:
         return {"validation": v.model_dump(), "quality": q.model_dump()}
     try:
         getattr(runbook_validator, check)(content)
-    except runbook_validator.RunbookQualityError as e:
+    except RunbookQualityError as e:
         return {"refused": {"errors": e.errors, "warnings": e.warnings}}
     if check == "enforce_runbook_quality":
         _, q = runbook_validator.validate_and_score(content)
@@ -707,17 +885,69 @@ async def test_each_refusal_round_trips_through_a_real_worker(monkeypatch, conte
         try:
             getattr(runbook_validator, check)(content)
             expected = None
-        except runbook_validator.RunbookQualityError as e:
+        except RunbookQualityError as e:
             expected = (e.errors, e.warnings)
         gate = getattr(runbook_gate, f"a{check}")
         if expected is None:
-            await gate(content, principal=USER)
+            answer = await gate(content, principal=USER)
+            if check == "enforce_runbook_quality":
+                # The same call's security answer, for the publication.
+                _, security = answer
+                assert security == runbook_gate.SecurityAnswer(
+                    content, _in_process("enforce_runbook_security", content)["refused"]
+                )
             continue
-        with pytest.raises(runbook_validator.RunbookQualityError) as gated:
+        with pytest.raises(RunbookQualityError) as gated:
             await gate(content, principal=USER)
-        assert type(gated.value) is runbook_validator.RunbookQualityError
+        assert type(gated.value) is RunbookQualityError
         assert (gated.value.errors, gated.value.warnings) == expected, check
     await _through_workers(monkeypatch, [content])
+
+
+async def test_verify_checks_the_draft_and_the_text_it_publishes_in_one_call():
+    """The draft's own refusal answers first and stops the call; once it
+    passes, the published text's answer comes back to be enforced later."""
+    clean, hazardous = _pack()[0], _refused_fixtures()[0]
+    expected = _in_process("enforce_runbook_security", hazardous)["refused"]
+    assert expected is not None
+
+    answer = await runbook_gate.aenforce_runbook_security(
+        clean, principal=USER, then=hazardous
+    )
+    with pytest.raises(RunbookQualityError) as refused:
+        await runbook_gate.aenforce_runbook_security(
+            hazardous, principal=USER, then=clean
+        )
+
+    assert answer == runbook_gate.SecurityAnswer(hazardous, expected)
+    assert (refused.value.errors, refused.value.warnings) == (
+        expected["errors"],
+        expected["warnings"],
+    )
+    with pytest.raises(RunbookQualityError):
+        answer.enforce()
+
+
+def test_a_call_stops_at_its_first_refusal():
+    """As the separate calls did: the quality refusal answers, and the
+    security check of the same text never runs."""
+    ran: list[str] = []
+
+    def run(name, text):
+        ran.append(name)
+        return validation_worker.CHECKS[name](text)
+
+    work = validation_worker.answers(
+        run,
+        [["enforce_runbook_quality", 0], ["enforce_runbook_security", 0]],
+        ["# Not a runbook\n"],
+        runbook_gate.GATE_WORK_CPU_SECONDS,
+    )
+
+    given = json.loads(work())
+
+    assert ran == ["enforce_runbook_quality"]
+    assert len(given) == 1 and given[0]["refused"]["errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +963,7 @@ def test_deeply_nested_frontmatter_is_refused_as_unparseable():
     malformed = "---\na: [\n---\n# T\n"
 
     v, _ = runbook_validator.validate_and_score(nested)
-    with pytest.raises(runbook_validator.RunbookQualityError) as refused:
+    with pytest.raises(RunbookQualityError) as refused:
         runbook_validator.enforce_runbook_quality(nested)
 
     assert v.errors == runbook_validator.validate_and_score(malformed)[0].errors
@@ -745,16 +975,17 @@ def test_deeply_nested_frontmatter_is_refused_as_unparseable():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("case_id", [None, "case-1"], ids=["document", "case"])
 @pytest.mark.parametrize(
-    "case_id,slot_wait",
-    [(None, None), ("case-1", runbook_gate.GATE_BACKGROUND_SLOT_WAIT_SECONDS)],
+    "refusal", _REFUSALS + _UNAVAILABLE + [GateFailed], ids=lambda r: r.__name__
 )
-@pytest.mark.parametrize("refusal", _REFUSALS + _UNAVAILABLE, ids=lambda r: r.__name__)
-async def test_a_conversion_draft_fails_with_the_gates_sentence(
-    monkeypatch, refusal, case_id, slot_wait
+async def test_a_conversion_draft_fails_with_the_gates_answer(
+    monkeypatch, refusal, case_id
 ):
-    """A case's conversion, which no request waits on, waits longer for a
-    slot. Only a check that could not run is worth retrying."""
+    """Every conversion's checks run after its model calls were paid for, a
+    document's modes at once, so each waits for a slot as long as a conversion
+    may. Only a check that could not run is worth retrying; a check that
+    raised fails the draft as any other defect does, by its class."""
     from unittest.mock import MagicMock
 
     from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
@@ -767,7 +998,7 @@ async def test_a_conversion_draft_fails_with_the_gates_sentence(
         assert (principal, slot_wait) == ("u1", expected_wait)
         raise refusal()
 
-    expected_wait = slot_wait
+    expected_wait = runbook_gate.GATE_BACKGROUND_SLOT_WAIT_SECONDS
     monkeypatch.setattr(service_module, "avalidate_and_score", refuse)
     monkeypatch.setattr(service_module, "claim_case_draft_slot", AsyncMock())
     monkeypatch.setattr(service_module, "refuse_if_draft_slot_taken", AsyncMock())
@@ -816,25 +1047,29 @@ async def test_a_conversion_draft_fails_with_the_gates_sentence(
         case_id=case_id,
     )
 
+    error = (
+        "Runbook generation failed (GateFailed)"
+        if refusal is GateFailed
+        else refusal.message
+    )
     assert result == ConversionError(
-        failure_mode_id="fm-1",
-        error=refusal.message,
-        retryable=refusal in _UNAVAILABLE,
+        failure_mode_id="fm-1", error=error, retryable=refusal in _UNAVAILABLE
     )
 
 
 async def test_every_gate_check_runs_under_the_callers_principal(
     monkeypatch, tmp_path, session_factory, client
 ):
-    """Upload (the quality gate, then ingest's security half), document edit,
-    template create, draft edit, draft verify (its own check, then ingest's),
-    and the scan. A fresh upload's draft is read without a check."""
-    seen: list[tuple[str, str]] = []
+    """Upload (the quality gate and the security half, in one call), document
+    edit, template create, draft edit, draft verify (the draft's check and the
+    published text's, in one call), and the scan. A fresh upload's draft is
+    read without a check."""
+    seen: list[tuple[list[str], str]] = []
     real_run = runbook_gate._run
 
-    async def run(check, content, principal, slot_wait=None):
-        seen.append((check, principal))
-        return await real_run(check, content, principal, slot_wait)
+    async def run(checks, principal, slot_wait=None):
+        seen.append(([name for name, _ in checks], principal))
+        return await real_run(checks, principal, slot_wait)
 
     monkeypatch.setattr(runbook_gate, "_run", run)
     from faultmaven.utils import runbook_id
@@ -865,15 +1100,13 @@ async def test_every_gate_check_runs_under_the_callers_principal(
 
     assert [r.status_code for r in responses] == [200] * 5, [r.text for r in responses]
     assert {principal for _, principal in seen} == {USER}
-    assert [check for check, _ in seen] == [
-        "enforce_runbook_quality",
-        "enforce_runbook_security",
-        "enforce_runbook_security",
-        "validate_and_score",
-        "validate_and_score",
-        "enforce_runbook_security",
-        "enforce_runbook_security",
-        "validate_and_score",
+    assert [checks for checks, _ in seen] == [
+        ["enforce_runbook_quality", "enforce_runbook_security"],
+        ["enforce_runbook_security"],
+        ["validate_and_score"],
+        ["validate_and_score"],
+        ["enforce_runbook_security", "enforce_runbook_security"],
+        ["validate_and_score"],
     ]
 
 
@@ -922,11 +1155,21 @@ async def test_a_refused_draft_fails_in_a_batch_and_the_rest_go_on(refusal):
     assert result["results"][0]["error"] == refusal.message
 
 
+async def test_a_draft_whose_check_raised_fails_in_a_batch_and_the_rest_go_on():
+    service = ConversionService(llm_router=None, settings=None, db_session_factory=None)
+    service.verify_draft = AsyncMock(side_effect=[GateFailed(), None])
+
+    result = await service.verify_batch([("c", "d1"), ("c", "d2")], user_id=USER)
+
+    assert [r["status"] for r in result["results"]] == ["failed", "verified"]
+    assert result["results"][0]["error"] == "Verification failed (GateFailed)"
+
+
 async def test_a_check_that_cannot_run_in_ingest_is_not_logged_as_a_failure(
     caplog, session_factory, client
 ):
     draft = await _draft_url(client)
-    client.knowledge.ingest_runbook = AsyncMock(side_effect=runbook_gate.GateBusy())
+    client.knowledge.ingest_runbook = AsyncMock(side_effect=GateBusy())
 
     response = await client.post(f"{draft}/verify")
 
@@ -961,7 +1204,9 @@ async def test_the_scan_lists_a_refused_file_and_stops_on_one_it_cannot_check(
         assert response.headers["x-error-code"] == refusal.error_code
 
 
-@pytest.mark.parametrize("refusal", _REFUSALS + _UNAVAILABLE, ids=lambda r: r.__name__)
+@pytest.mark.parametrize(
+    "refusal", _REFUSALS + _UNAVAILABLE + [GateFailed], ids=lambda r: r.__name__
+)
 def test_a_refusal_survives_copy_and_pickle(refusal):
     for clone in (copy.copy(refusal()), pickle.loads(pickle.dumps(refusal()))):
-        assert (type(clone), str(clone)) == (refusal, refusal.message)
+        assert (type(clone), str(clone)) == (refusal, str(refusal()))

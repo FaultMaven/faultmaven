@@ -159,8 +159,8 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "(`validation_timeout`, `validation_output_too_large`, "
             "`validation_too_large`); one that cannot run answers 503 "
             "`RUNBOOK_VALIDATION_BUSY` or `RUNBOOK_VALIDATION_UNAVAILABLE` with "
-            "`Retry-After`. MINOR: a new 422 body beside the declared one, and "
-            "new codes on a 503."
+            "`Retry-After`. MINOR: a new 422 body beside the declared ones, "
+            "and new codes on a 503."
         ),
         body=r"""Nothing is saved on any of these answers. They are declared on
 `POST /knowledge/documents`, `PUT /knowledge/documents/{document_id}`,
@@ -176,21 +176,25 @@ the 503 only.
   to check. Split it into smaller runbooks." `validation_output_too_large`:
   "This document has too many problems to list. Split it into smaller
   runbooks." `validation_too_large`: "This document is too large to check.
-  Split it into smaller runbooks." The 422 schema is `HTTPValidationError` or
-  this body; every other 422 answers as before.
+  Split it into smaller runbooks." The 422 schema is `HTTPValidationError`, a
+  `detail` string (`RefusalDetail`, the refusal these routes already answer),
+  or this body; every other 422 answers as before.
 * 503 `RUNBOOK_VALIDATION_BUSY`, "The server is busy checking other runbooks.
   Try again in a moment.", and `RUNBOOK_VALIDATION_UNAVAILABLE`, "The runbook
   check could not run. Try again in a moment.", each with `Retry-After`.
+* A check that raises is a defect in it: the existing 500 `SERVICE_ERROR`,
+  with no `Retry-After`.
 
 `GET /knowledge/conversions/{conversion_id}` runs the check only for a
 knowledge-base upload's draft stored before this version without a score, on
-its first read; every draft is now stored with its score. A conversion's draft
-that the check refuses fails with the sentence in the job's `warnings`, and
-the scan lists such a file in `errors`. `verify-batch` records a 422 as that
-draft's `failed` with its sentence. From a check that cannot run on, it defers
-that draft and the rest of the batch, as for busy indexing, each with the
-error "Not verified: the runbook check was busy or could not run. Verify it
-again." in its result.""",
+its first read: the score, or the 422's refusal, is stored, and a stored
+refusal answers the same 422 on every later read. Every draft is now stored
+with its score. A conversion's draft that the check refuses fails with the
+sentence in the job's `warnings`, and the scan lists such a file in `errors`.
+`verify-batch` records a 422 as that draft's `failed` with its sentence. From
+a check that cannot run on, it defers that draft and the rest of the batch, as
+for busy indexing, each with the error "Not verified: the runbook check was
+busy or could not run. Verify it again." in its result.""",
     ),
     ContractChange(
         version="15.1.0",

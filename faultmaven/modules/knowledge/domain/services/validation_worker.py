@@ -1,19 +1,21 @@
-"""The runbook gate's worker (#2661): one check over one body, a phased job of
-``worker_process`` run as ``python -m`` by ``runbook_gate``. A refusal is an
-answer, never a failure. It imports nothing of ``modules.case``.
+"""The runbook gate's worker (#2661): the checks one request needs, in order, a
+phased job of ``worker_process`` run as ``python -m`` by ``runbook_gate``. A
+refusal is an answer, never a failure. It imports nothing of ``modules.case``.
 
-The work runs under a CPU-time deadline: ``ITIMER_PROF`` counts this process's
-CPU from the start of the work, serialising the answer included, and its
-``SIGPROF`` ends the process, inside C code too.
+Each check runs under its own CPU-time deadline: ``ITIMER_PROF`` counts this
+process's CPU from the start of the check, serialising its answer included,
+and its ``SIGPROF`` ends the process, inside C code too. The checks stop at the
+first refusal, as the calls they replace would have.
 """
 
 import json
 import signal
 import sys
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Tuple
 
 from faultmaven.infrastructure import worker_process
 from faultmaven.modules.knowledge.domain.services import runbook_validator as rv
+from faultmaven.modules.knowledge.exceptions import RunbookQualityError
 
 
 def _scored(content: str) -> Dict[str, Any]:
@@ -34,7 +36,7 @@ def _quality(content: str) -> Dict[str, Any]:
 def _security(content: str) -> Dict[str, Any]:
     try:
         rv.enforce_runbook_security(content)
-    except rv.RunbookQualityError as refused:
+    except RunbookQualityError as refused:
         return {"refused": {"errors": refused.errors, "warnings": refused.warnings}}
     return {"refused": None}
 
@@ -47,22 +49,46 @@ CHECKS: Dict[str, Callable[[str], Dict[str, Any]]] = {
 }
 
 
-def timed(cpu_seconds: float, answer: Callable[[], Any]) -> Callable[[], str]:
-    """The work: ``answer()`` serialised, under ``cpu_seconds`` of CPU time."""
+def timed(cpu_seconds: float, answer: Callable[[], Any]) -> Tuple[Any, str]:
+    """``answer()`` and its serialised form, under ``cpu_seconds`` of CPU time.
+    The timer is disarmed however the check ends, so a check that raises is
+    reported as the failure it is, never ended by the timer meanwhile."""
+    signal.setitimer(signal.ITIMER_PROF, cpu_seconds)
+    try:
+        result = answer()
+        return result, json.dumps(result)
+    finally:
+        signal.setitimer(signal.ITIMER_PROF, 0)
+
+
+def answers(
+    run: Callable[[str, str], Any],
+    checks: List[List[Any]],
+    parts: List[str],
+    cpu_seconds: float,
+) -> Callable[[], str]:
+    """The work: each ``[check, part]`` in order, each under its own deadline,
+    until the first refusal, as a JSON list."""
 
     def work() -> str:
-        signal.setitimer(signal.ITIMER_PROF, cpu_seconds)
-        result = json.dumps(answer())
-        signal.setitimer(signal.ITIMER_PROF, 0)
-        return result
+        given: List[str] = []
+        for name, part in checks:
+            result, text = timed(cpu_seconds, lambda: run(name, parts[part]))
+            given.append(text)
+            if isinstance(result, dict) and result.get("refused"):
+                break
+        return "[" + ",".join(given) + "]"
 
     return work
 
 
 def _check(request: Dict[str, Any], send) -> Callable[[], str]:
-    check = CHECKS[request["check"]]
-    (content,) = request["parts"]
-    return timed(request["work_cpu_seconds"], lambda: check(content))
+    return answers(
+        lambda name, text: CHECKS[name](text),
+        request["checks"],
+        request["parts"],
+        request["work_cpu_seconds"],
+    )
 
 
 def _parts(answer: str) -> List[str]:

@@ -8,8 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import (
     EmbeddingException,
+    FaultMavenException,
     KnowledgeBaseException,
     ServiceUnavailableException,
+    ValidationException,
     VectorStoreException,
 )
 
@@ -244,3 +246,107 @@ class ItemTitleScrubUnavailable(ServiceUnavailableException):
     response says what the title held or why the check failed. The cause is on
     ``__cause__`` and in the log, by type, never the text.
     """
+
+
+class RunbookQualityError(ValidationException):
+    """Content was refused by the runbook quality gate.
+
+    A ``ValidationException`` so the registered global handler answers **422** —
+    the same status the upload route already answers by hand, reached from the
+    service layer without the route having to translate anything.
+
+    ``errors`` / ``warnings`` are kept as structured attributes for callers that
+    want to render them; the flattened message carries them too, because
+    ``validation_exception_handler`` renders ``str(exc)`` and a bare "does not
+    meet quality standards" tells a reviewer nothing about what to fix.
+    """
+
+    def __init__(self, errors: List[str], warnings: Optional[List[str]] = None):
+        self.errors = list(errors)
+        self.warnings = list(warnings or [])
+        joined = "; ".join(self.errors) if self.errors else "unspecified"
+        super().__init__(
+            f"Content does not meet runbook quality standards: {joined}",
+            details={"errors": self.errors, "warnings": self.warnings},
+        )
+
+
+# The runbook gate's answers when a check does not finish (#2661), raised by
+# ``domain.services.runbook_gate`` and answered by ``api.exception_handlers``.
+
+#: The ``Retry-After`` of the gate's 503s: its slot wait
+#: (``runbook_gate.GATE_SLOT_WAIT_SECONDS`` is this value).
+RUNBOOK_CHECK_RETRY_AFTER_SECONDS = 5
+
+
+class GateRefused(RunbookQualityError):
+    """A check stopped for its input alone: the gate's 422, with ``reason`` and
+    the ruled sentence as its one error. Nothing is admitted."""
+
+    reason: str
+    message: str
+
+    def __init__(self, *_args) -> None:  # ``args`` back from copy and pickle
+        super().__init__(errors=[self.message])
+        self.args = (self.message,)
+
+
+class GateTimedOut(GateRefused):
+    """Past the check's CPU-time deadline (or its ``RLIMIT_CPU`` backstop)."""
+
+    reason = "validation_timeout"
+    message = "This document took too long to check. Split it into smaller runbooks."
+
+
+class GateOutputTooLarge(GateRefused):
+    """An answer past the gate's output limit."""
+
+    reason = "validation_output_too_large"
+    message = (
+        "This document has too many problems to list. Split it into smaller "
+        "runbooks."
+    )
+
+
+class GateTooLarge(GateRefused):
+    """Past the gate's memory limit."""
+
+    reason = "validation_too_large"
+    message = "This document is too large to check. Split it into smaller runbooks."
+
+
+#: Each refusal by its ``reason``: a refusal stored on a row is raised again.
+GATE_REFUSALS: Dict[str, type] = {
+    refusal.reason: refusal
+    for refusal in (GateTimedOut, GateOutputTooLarge, GateTooLarge)
+}
+
+
+class GateUnavailable(FaultMavenException):
+    """The check could not run (load, a kill, a start that failed): a 503 with
+    ``Retry-After``. Nothing is admitted."""
+
+    error_code = "RUNBOOK_VALIDATION_UNAVAILABLE"
+    message = "The runbook check could not run. Try again in a moment."
+    retry_after_seconds = RUNBOOK_CHECK_RETRY_AFTER_SECONDS
+
+    def __init__(self, *_args) -> None:  # ``args`` back from copy and pickle
+        super().__init__(self.message)
+        self.args = (self.message,)
+
+
+class GateBusy(GateUnavailable):
+    """No slot within the wait."""
+
+    error_code = "RUNBOOK_VALIDATION_BUSY"
+    message = "The server is busy checking other runbooks. Try again in a moment."
+
+
+class GateFailed(FaultMavenException):
+    """The check itself raised (a defect in it, not the input's size or load):
+    the generic 500 ``SERVICE_ERROR``, not retryable. Nothing is admitted. The
+    worker's failure is in the log, never in the answer."""
+
+    def __init__(self, *_args) -> None:  # ``args`` back from copy and pickle
+        super().__init__("The runbook check failed.")
+        self.args = ("The runbook check failed.",)

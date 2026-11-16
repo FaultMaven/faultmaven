@@ -122,13 +122,8 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
 )
 from faultmaven.modules.knowledge.domain.services.runbook_gate import (
     GATE_BACKGROUND_SLOT_WAIT_SECONDS,
-    GateRefused,
-    GateUnavailable,
     aenforce_runbook_security,
     avalidate_and_score,
-)
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.domain.trace_purge import (
     TRACE_ERASER_NOT_WIRED,
@@ -140,9 +135,13 @@ from faultmaven.modules.knowledge.draft_content import (
     ensure_draft_content_within_bound,
 )
 from faultmaven.modules.knowledge.exceptions import (
+    GATE_REFUSALS,
     INGEST_OUTCOME_UNKNOWN_DETAIL,
+    GateRefused,
+    GateUnavailable,
     IngestNotRecorded,
     IngestOutcomeUnknown,
+    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, render_vocabulary
 from faultmaven.providers.tenancy.factory import (
@@ -163,6 +162,11 @@ logger = logging.getLogger(__name__)
 SCAN_UNAVAILABLE_MULTI_MSG = (
     "This deployment has no runbook directory; upload or convert instead"
 )
+
+#: The key of a refusal stored in a draft row's ``quality_details`` in place of
+#: a score (#2661): the runbook check's ``reason`` for a row stored without a
+#: score whose read-time check was refused for the text alone.
+_STORED_REFUSAL = "refused"
 
 
 def _already_verified(draft_id: str) -> ConflictError:
@@ -1222,15 +1226,14 @@ class ConversionService:
 
             draft_id = generate_draft_id()
 
-            # In a worker, validating ONCE (#1417, #2661). A case's conversion
-            # runs in the background, where no request waits, so it waits for a
-            # slot longer rather than lose its paid-for draft as busy.
+            # In a worker, validating ONCE (#1417, #2661). The model calls for
+            # this draft are already paid for, and a document's modes run at
+            # once under one principal, so every mode waits for a slot as long
+            # as a conversion may rather than lose its draft as busy.
             validation, quality = await avalidate_and_score(
                 runbook_content,
                 principal=user_id,
-                slot_wait=(
-                    None if case_id is None else GATE_BACKGROUND_SLOT_WAIT_SECONDS
-                ),
+                slot_wait=GATE_BACKGROUND_SLOT_WAIT_SECONDS,
             )
 
             quality_warning = None
@@ -1384,11 +1387,14 @@ class ConversionService:
         for dm in draft_models:
             # Every writer stores the draft's score with it, so a read runs no
             # check (#2661). Only a KB upload's row written before then has
-            # none: it is scored once and the score stored.
-            if dm.quality_details:
-                quality = QualityScore(**dm.quality_details)
-            else:
+            # none: it is checked once and the score, or the check's refusal,
+            # stored; a stored refusal answers its 422 again.
+            if not dm.quality_details:
                 quality = await self._score_stored_draft(dm.id, dm.content, user_id)
+            elif _STORED_REFUSAL in dm.quality_details:
+                raise GATE_REFUSALS[dm.quality_details[_STORED_REFUSAL]]()
+            else:
+                quality = QualityScore(**dm.quality_details)
             # The text is the row's own column (#1950): the same on every
             # replica, whatever disk this pod has.
             drafts.append(
@@ -1445,23 +1451,31 @@ class ConversionService:
         self, draft_id: str, content: str, user_id: str
     ) -> QualityScore:
         """The score of a draft row stored without one (a KB upload's, written
-        before #2661), through the bounded check, then stored on the row so the
-        next read runs no check."""
-        _validation, quality = await avalidate_and_score(content, principal=user_id)
+        before #2661), through the bounded check. The score, or a refusal for
+        the text alone, is stored on the row, so the next read runs no check."""
+        try:
+            _validation, quality = await avalidate_and_score(content, principal=user_id)
+            stored = {
+                "quality_score": quality.overall,
+                "quality_details": quality.model_dump(),
+            }
+        except GateRefused as refused:
+            quality, stored = refused, {
+                "quality_details": {_STORED_REFUSAL: refused.reason}
+            }
         async with self._db_session_factory() as session:
             await session.execute(
                 update(ConversionDraftModel)
                 .where(
                     ConversionDraftModel.id == draft_id,
-                    # Only while the row holds the text that was scored.
+                    # Only while the row holds the text that was checked.
                     ConversionDraftModel.content == content,
                 )
-                .values(
-                    quality_score=quality.overall,
-                    quality_details=quality.model_dump(),
-                )
+                .values(**stored)
             )
             await session.commit()
+        if isinstance(quality, GateRefused):
+            raise quality
         return quality
 
     async def get_conversion_by_case(
@@ -1632,7 +1646,12 @@ class ConversionService:
                     "quality_score": (
                         float(dm.quality_score) if dm.quality_score else None
                     ),
-                    "quality_details": dm.quality_details,
+                    # A stored refusal (#2661) is no score: listed as none.
+                    "quality_details": (
+                        None
+                        if dm.quality_details and _STORED_REFUSAL in dm.quality_details
+                        else dm.quality_details
+                    ),
                     "created_at": (
                         dm.created_at.isoformat() if dm.created_at else None
                     ),
@@ -1731,10 +1750,10 @@ class ConversionService:
         #
         # And BEFORE the text is stored, which is the other half of the
         # ordering. This ``await`` is a cancellation point: a client disconnect,
-        # a timeout or a shutdown during those 0.7-8.3 s changes nothing at all,
-        # because the new text and its verdict are committed together below, in
-        # one transaction, or not at all. A reviewer can never read a verdict
-        # about text the gate never saw.
+        # a timeout or a shutdown during the check, or its wait for a slot,
+        # changes nothing at all, because the new text and its verdict are
+        # committed together below, in one transaction, or not at all. A
+        # reviewer can never read a verdict about text the gate never saw.
         validation, quality = await avalidate_and_score(content, principal=user_id)
 
         # The text and its verdict, written as ONE CONDITIONAL UPDATE: only
@@ -2157,35 +2176,46 @@ class ConversionService:
             enterprise_id = job.enterprise_id
             scope = job.scope
 
-        # A body holding a credential is not published (#2012), checked on the
-        # draft's own text so the refusal names the lines its author sees: the
-        # frontmatter is rewritten below, which moves them. ``ingest_runbook``
-        # checks the text it is handed again, for every caller.
-        await aenforce_runbook_security(read_content, principal=user_id)
-
         # The verified frontmatter, written into the draft's text (#1950). The
-        # validation gate above passed, so the frontmatter parses. This text can
-        # be a few characters longer than the draft (``status: verified``, the
+        # validation gate passed, so the frontmatter parses. This text can be a
+        # few characters longer than the draft (``status: verified``, the
         # verifier's name); the edit bound does not apply to it, because the
         # user was allowed to save the text it grows from (see
-        # ``faultmaven.modules.knowledge.draft_content``).
+        # ``faultmaven.modules.knowledge.draft_content``). Its YAML aliases are
+        # re-emitted expanded, so it can grow far past the bound (#2674).
         import frontmatter
         import yaml
 
         from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
-        verifier_name = await self._verifier_display_name(user_id, enterprise_id)
-        post = frontmatter.loads(read_content)
-        post.metadata["status"] = "verified"
-        post.metadata["verified_by"] = verifier_name
-        # ``scope`` in the frontmatter is the tier the knowledge item is
-        # published at (``taxonomy.KnowledgeScope``), and that tier is the
-        # job's, not the file's: a scan infers it from the directory, and a
-        # ``team_*`` file is published personal. The stored text says what the
-        # row says, so a reader of the runbook is not told a tier it is not at
-        # (#1986). A draft whose frontmatter already agrees is unchanged.
-        post.metadata["scope"] = scope
-        content = frontmatter.dumps(post)
+        try:
+            verifier_name = await self._verifier_display_name(user_id, enterprise_id)
+            post = frontmatter.loads(read_content)
+            post.metadata["status"] = "verified"
+            post.metadata["verified_by"] = verifier_name
+            # ``scope`` in the frontmatter is the tier the knowledge item is
+            # published at (``taxonomy.KnowledgeScope``), and that tier is the
+            # job's, not the file's: a scan infers it from the directory, and a
+            # ``team_*`` file is published personal. The stored text says what
+            # the row says, so a reader of the runbook is not told a tier it is
+            # not at (#1986). A draft whose frontmatter already agrees is
+            # unchanged.
+            post.metadata["scope"] = scope
+            content = frontmatter.dumps(post)
+        except Exception:
+            # The draft's own check answers first, as it did before this text
+            # was made; then this failure.
+            await aenforce_runbook_security(read_content, principal=user_id)
+            raise
+
+        # A body holding a credential is not published (#2012), checked on the
+        # draft's own text so the refusal names the lines its author sees: the
+        # rewrite above moves them. The text ``ingest_runbook`` publishes is
+        # checked in the same worker call (#2661), and its answer is enforced
+        # there, where its own check would run.
+        security = await aenforce_runbook_security(
+            read_content, principal=user_id, then=content
+        )
 
         fm_meta = extract_frontmatter_metadata(content)
         tags: Optional[List[str]] = None
@@ -2307,6 +2337,7 @@ class ConversionService:
                 verified_by=user_id,
                 record=record,
                 index_window_seconds=index_window_seconds,
+                security=security,
             )
         except (RunbookQualityError, IndexAdmissionRefused, GateUnavailable):
             # The body holds a credential (#2012), the check could not run

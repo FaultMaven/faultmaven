@@ -46,10 +46,12 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.job_persist
     _persist_job,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_gate import (
-    GateRefused,
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
+from faultmaven.modules.knowledge.exceptions import (
+    GateRefused,
+)
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, member_value
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (

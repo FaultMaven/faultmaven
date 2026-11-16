@@ -109,11 +109,13 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     _SHAPE_PATTERNS,
-    RunbookQualityError,
     RunbookValidator,
     enforce_runbook_quality,
     enforce_runbook_security,
     find_security_hazards,
+)
+from faultmaven.modules.knowledge.exceptions import (
+    RunbookQualityError,
 )
 from tests.runbook_samples import valid_runbook
 from tests.utils import record_nothing, regex_only_sanitizer

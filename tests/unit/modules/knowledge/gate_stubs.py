@@ -2,7 +2,7 @@
 
 Served in place of ``validation_worker`` (``runbook_gate._VALIDATION_WORKER``),
 it runs the stub ``FM_GATE_STUB`` names, whatever check the gate asked for,
-under the real worker's CPU-time deadline (``validation_worker.timed``). A
+under the real worker's CPU-time deadline (``validation_worker.answers``). A
 worker inherits the test's environment, so a test picks the stub with
 ``monkeypatch.setenv``. Every stub ends by its own state, never by a clock: a
 loop runs until a deadline stops it, a sleep outlasts any bound a test sets.
@@ -17,7 +17,7 @@ import sys
 import time
 
 from faultmaven.infrastructure import worker_process
-from faultmaven.modules.knowledge.domain.services.validation_worker import timed
+from faultmaven.modules.knowledge.domain.services.validation_worker import answers
 
 # Its importable name, not ``__main__``: the parent re-emits the records
 # under it, where the test listens.
@@ -103,6 +103,21 @@ def raises(check: str) -> dict:
     raise RuntimeError("a check that failed")
 
 
+class _CostlyToReport(RuntimeError):
+    """A failure whose own text costs twice the work's deadline of CPU, so a
+    timer left armed past the check would end the report."""
+
+    def __str__(self) -> str:
+        started = _cpu()
+        while _cpu() - started < 2 * float(os.environ["FM_GATE_STUB_WORK_CPU"]):
+            pass
+        return "a check that failed"
+
+
+def fails_costly_to_report(check: str) -> dict:
+    raise _CostlyToReport()
+
+
 def is_killed(check: str) -> dict:
     os.kill(os.getpid(), signal.SIGKILL)
     return passes(check)
@@ -110,7 +125,12 @@ def is_killed(check: str) -> dict:
 
 def _check(request, send):
     stub = globals()[os.environ["FM_GATE_STUB"]]
-    return timed(request["work_cpu_seconds"], lambda: stub(request["check"]))
+    return answers(
+        lambda name, _text: stub(name),
+        request["checks"],
+        request["parts"],
+        request["work_cpu_seconds"],
+    )
 
 
 if __name__ == "__main__":

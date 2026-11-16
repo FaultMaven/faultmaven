@@ -13364,7 +13364,7 @@
     },
     "/api/v1/knowledge/conversions/{conversion_id}": {
       "get": {
-        "description": "Get conversion job details with all drafts.\n\nEvery draft is stored with its score. Only a knowledge-base upload's draft\nstored before #2661, which has none, is scored on its first read, so that\nread alone can answer the runbook check's 422 or 503.",
+        "description": "Get conversion job details with all drafts.\n\nEvery draft is stored with its score. Only a knowledge-base upload's draft\nstored before #2661, which has none, is checked on its first read, so that\nread alone can answer the runbook check's 422, 503 or 500. Its score, or\nthe 422's refusal, is then stored: a stored refusal answers the same 422\non every later read, with no check.",
         "operationId": "get_conversion_api_v1_knowledge_conversions__conversion_id__get",
         "parameters": [
           {
@@ -13393,6 +13393,20 @@
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
+                    },
+                    {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
                     },
                     {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
@@ -13584,6 +13598,20 @@
                       "$ref": "#/components/schemas/HTTPValidationError"
                     },
                     {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
+                    },
+                    {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
                       "properties": {
                         "detail": {
@@ -13724,6 +13752,20 @@
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
+                    },
+                    {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
                     },
                     {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
@@ -14126,6 +14168,20 @@
                       "$ref": "#/components/schemas/HTTPValidationError"
                     },
                     {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
+                    },
+                    {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
                       "properties": {
                         "detail": {
@@ -14504,6 +14560,20 @@
                       "$ref": "#/components/schemas/HTTPValidationError"
                     },
                     {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
+                    },
+                    {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
                       "properties": {
                         "detail": {
@@ -14732,7 +14802,7 @@
     },
     "/api/v1/knowledge/drafts/verify-batch": {
       "post": {
-        "description": "Activate multiple drafts sequentially (verify + ingest into KB).\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's\nwindow (#2055): a draft the window has no room left for is ``deferred``\n(unverified; verify it again), as is every draft after it, and the envelope\ncounts them in ``deferred``. A draft too large for any window is\n``failed``. From the first draft the runbook check is busy for or cannot\nrun on, every draft is ``deferred`` too; one it stops for its input alone\nis ``failed`` with the reason's sentence (#2661).",
+        "description": "Activate multiple drafts sequentially (verify + ingest into KB).\n\nWith ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's\nwindow (#2055): a draft the window has no room left for is ``deferred``\n(unverified; verify it again), as is every draft after it, and the envelope\ncounts them in ``deferred``. A draft too large for any window is\n``failed``. From the first draft the runbook check is busy for or cannot\nrun on, every draft is ``deferred`` too; one it stops for its input alone\nis ``failed`` with the reason's sentence, and one whose check raised is\n``failed`` by the error's class (#2661).",
         "operationId": "verify_batch_api_v1_knowledge_drafts_verify_batch_post",
         "requestBody": {
           "content": {
@@ -14805,6 +14875,20 @@
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/HTTPValidationError"
+                    },
+                    {
+                      "description": "A 422 that names what to fix in `detail` alone: the runbook body\nrefused for its content, or a draft past its bound.",
+                      "properties": {
+                        "detail": {
+                          "title": "Detail",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "detail"
+                      ],
+                      "title": "RefusalDetail",
+                      "type": "object"
                     },
                     {
                       "description": "The 422 of a runbook check stopped for the document alone (#2661):\n`detail`, `message` and `help` are the reason's sentence, which is also the\none entry of `errors`.",
@@ -14898,7 +14982,7 @@
     },
     "/api/v1/knowledge/scan": {
       "post": {
-        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global discovery is unaffected.\n\nA file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal\ndraft. A file under ``team_<id>/`` is imported as a **personal** draft too\n(#1986): the scan runs only where there are no teams, so no team exists to\nshare it with, and a team-scope runbook with no team would be visible to\nits owner alone. The response's ``notes`` list names each such file\n(\"team_x/foo.md imported as personal: ...\"); ``errors`` names the files\nthat were not imported.\n\nEach draft's title is redacted before its row is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nscan answers **503**, a retryable server-side condition, with a generic\ndetail. It can do so MID-WALK: the files imported before the failing one\nstay imported (each is its own draft), and a second scan skips them and\nimports the rest.\n\nA file the runbook check stops for its input alone is listed in\n``errors``; a check that is busy or cannot run stops the scan the same way,\nwith **503** ``RUNBOOK_VALIDATION_BUSY`` or\n``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661).",
+        "description": "Import the .md files under data/knowledge/ as drafts (standalone only).\n\nEach file that is not already a live draft or a published runbook becomes a\ndraft holding the file's text, so it appears in the Drafts tab for review.\nThe import never changes an existing draft (#1950).\n\nUnder ``TENANT_PROVIDER=multi`` the API has no runbook directory \u2014 its\nreplicas share no disk \u2014 so the service refuses with a\n``ValidationException``, which the global handler answers as 422.\n\nGlobal-scope files (the platform corpus) are minted into drafts only for a\nplatform operator (#770). Non-global discovery is unaffected.\n\nA file under ``personal_<id>/`` or ``user_<id>/`` is imported as a personal\ndraft. A file under ``team_<id>/`` is imported as a **personal** draft too\n(#1986): the scan runs only where there are no teams, so no team exists to\nshare it with, and a team-scope runbook with no team would be visible to\nits owner alone. The response's ``notes`` list names each such file\n(\"team_x/foo.md imported as personal: ...\"); ``errors`` names the files\nthat were not imported.\n\nEach draft's title is redacted before its row is written (#1981). If that\ncheck cannot run (the sanitizer or its pseudonym key is unavailable) the\nscan answers **503**, a retryable server-side condition, with a generic\ndetail. It can do so MID-WALK: the files imported before the failing one\nstay imported (each is its own draft), and a second scan skips them and\nimports the rest.\n\nA file the runbook check stops for its input alone is listed in\n``errors``; a check that is busy or cannot run stops the scan the same way,\nwith **503** ``RUNBOOK_VALIDATION_BUSY`` or\n``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661), and a check\nthat raises with the generic **500** ``SERVICE_ERROR``.",
         "operationId": "scan_for_runbooks_api_v1_knowledge_scan_post",
         "responses": {
           "200": {

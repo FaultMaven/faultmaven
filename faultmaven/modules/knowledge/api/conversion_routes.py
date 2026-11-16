@@ -521,7 +521,8 @@ async def scan_for_runbooks(
     A file the runbook check stops for its input alone is listed in
     ``errors``; a check that is busy or cannot run stops the scan the same way,
     with **503** ``RUNBOOK_VALIDATION_BUSY`` or
-    ``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661).
+    ``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661), and a check
+    that raises with the generic **500** ``SERVICE_ERROR``.
     """
     return await service.scan_for_runbooks(
         user_id=current_user.user_id,
@@ -548,8 +549,10 @@ async def get_conversion(
     """Get conversion job details with all drafts.
 
     Every draft is stored with its score. Only a knowledge-base upload's draft
-    stored before #2661, which has none, is scored on its first read, so that
-    read alone can answer the runbook check's 422 or 503."""
+    stored before #2661, which has none, is checked on its first read, so that
+    read alone can answer the runbook check's 422, 503 or 500. Its score, or
+    the 422's refusal, is then stored: a stored refusal answers the same 422
+    on every later read, with no check."""
     result = await service.get_conversion(
         conversion_id=conversion_id,
         user_id=current_user.user_id,
@@ -622,7 +625,8 @@ async def verify_batch(
     counts them in ``deferred``. A draft too large for any window is
     ``failed``. From the first draft the runbook check is busy for or cannot
     run on, every draft is ``deferred`` too; one it stops for its input alone
-    is ``failed`` with the reason's sentence (#2661).
+    is ``failed`` with the reason's sentence, and one whose check raised is
+    ``failed`` by the error's class (#2661).
     """
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],

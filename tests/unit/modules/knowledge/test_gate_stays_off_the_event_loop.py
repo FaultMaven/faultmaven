@@ -1,4 +1,5 @@
-"""The runbook publication gate never runs on the event loop (#1417).
+"""The runbook publication gate never runs on the event loop (#1417), nor in
+any thread of the API process: only in its worker (#2661).
 
 ``RunbookValidator.validate_content`` and ``QualityScorer.score_content`` are
 pure CPU over caller-supplied markdown. Measured on ``main``: 85.8 ms for the
@@ -14,7 +15,8 @@ transitively through a synchronous helper (``_scan_and_record`` ->
 ``_record_validation``) where a direct scan for the gate inside an ``async def``
 sees nothing. A guard that names sites would be wrong the same way. This one
 asks the question structurally, so a seventh site fails the build instead of
-shipping.
+shipping. Since #2661 a thread is no remedy either: the guard refuses a check
+handed to one, and its message names ``runbook_gate``'s async entry points.
 """
 
 from __future__ import annotations
@@ -145,15 +147,20 @@ def _reach_set(sources: list[pathlib.Path]) -> set[str]:
     return reach
 
 
-class _Scan(ast.NodeVisitor):
-    """Calls to a blocking name from a scope that is ITSELF an ``async def``.
+#: The calls that hand their callable argument to another thread.
+_OFFLOADS = {"to_thread", "run_in_executor", "submit"}
 
-    The innermost scope is what decides it, not any enclosing one. A plain
-    ``def`` nested inside an ``async def`` and handed to ``asyncio.to_thread``
-    does not block, and is the house idiom for exactly this fix
-    (``infrastructure/model_cache.py``, ``infrastructure/storage/filesystem.py``).
-    An ``any(enclosing scope is async)`` test — the first version here — called
-    that a violation and told the author to await a form that does not fit.
+
+class _Scan(ast.NodeVisitor):
+    """A gate check run anywhere but its worker (#2661): called in an ``async
+    def``, or in a ``def`` nested in one, or handed to a thread.
+
+    A thread was the fix of #1417, and it is no longer one. A check in a
+    thread has no deadline (cancelling its future does not stop it), and its
+    regexes hold the interpreter lock in C, so a nested ``def`` handed to
+    ``asyncio.to_thread``, the idiom this guard once certified, is refused like
+    an inline call. The checks run only in ``validation_worker``, whose plain
+    ``def``s no coroutine encloses.
     """
 
     def __init__(self, blocking: set[str]) -> None:
@@ -173,16 +180,25 @@ class _Scan(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _callee(node)
-        if name in self.blocking and self.scope and self.scope[-1][0] == "async":
+        enclosing = next((n for kind, n in self.scope if kind == "async"), None)
+        if name in self.blocking and enclosing is not None:
             self.hits.append((node.lineno, name, self.scope[-1][1]))
+        if name in _OFFLOADS:
+            for arg in node.args:
+                handed = arg.attr if isinstance(arg, ast.Attribute) else None
+                handed = handed or getattr(arg, "id", None)
+                if handed in self.blocking:
+                    where = self.scope[-1][1] if self.scope else "<module>"
+                    self.hits.append((node.lineno, handed, where))
         self.generic_visit(node)
 
 
 def test_no_async_function_calls_the_gate_synchronously():
-    """A blocking gate call inside an ``async def`` fails the build.
+    """A gate check run outside its worker fails the build.
 
-    The fix is never to add a name to an exemption list — it is to await the
-    ``a*`` form, or to hand a nested ``def`` to ``asyncio.to_thread``.
+    The fix is never to add a name to an exemption list — it is to await
+    ``runbook_gate``'s async entry points, which run the check in a worker its
+    deadline stops (#2661).
 
     There is no whole-file skip and no by-name wrapper exemption. The first
     version of this guard had both: it skipped ``runbook_validator.py`` outright
@@ -221,10 +237,12 @@ def test_no_async_function_calls_the_gate_synchronously():
 
     assert parsed > 200, f"only {parsed} files parsed — the scan is vacuous"
     assert offenders == [], (
-        "the runbook gate is CPU-bound (8.3 s at the 10 MB upload cap) and these "
-        "call it inline from a coroutine, stalling every request the process is "
-        "serving. Await the async form, or hand a nested def to "
-        "asyncio.to_thread:\n  " + "\n  ".join(offenders)
+        "these run a runbook gate check in the API process, inline from a "
+        "coroutine or in a thread, where no deadline can stop it (Principle 14, "
+        "#2661). Await runbook_gate.avalidate_and_score, "
+        "runbook_gate.aenforce_runbook_quality or "
+        "runbook_gate.aenforce_runbook_security, which run it in a worker:\n  "
+        + "\n  ".join(offenders)
     )
 
 
@@ -269,10 +287,10 @@ def test_the_guard_can_actually_see_a_violation():
 
     Driven against the shapes it must catch AND the shapes it must not, so a
     later "simplification" of the visitor cannot quietly turn it into a no-op.
-    The last two cases are the regression this version fixes: an `any(enclosing
-    scope is async)` test flagged a nested ``def`` handed to ``to_thread``,
-    which is correct, non-blocking, and the idiom used at
-    ``infrastructure/model_cache.py`` and ``infrastructure/storage/filesystem.py``.
+    A thread is no remedy since #2661: the wrapper that handed the gate to
+    ``to_thread``, a nested ``def`` handed to it, and a nested ``def`` called
+    directly are each refused. A plain ``def`` no coroutine encloses, the
+    worker's own, is not.
     """
     blocking = set(_SYNC_GATE) | {"_record_validation"}
 
@@ -296,25 +314,36 @@ def test_the_guard_can_actually_see_a_violation():
             0,
         ),
         (
-            "the wrapper itself (passes the gate as an ARGUMENT)",
+            "the thread wrapper (passes the gate as an ARGUMENT)",
             "async def avalidate_and_score(content):\n"
             "    return await asyncio.to_thread(validate_and_score, content)\n",
-            0,
+            1,
         ),
         (
-            "nested sync def handed to to_thread — the house idiom",
+            "the gate handed to an executor from a plain def",
+            "def schedule(loop, content):\n"
+            "    return loop.run_in_executor(None, validate_and_score, content)\n",
+            1,
+        ),
+        (
+            "nested sync def handed to to_thread",
             "async def handler(validator, content):\n"
             "    def work():\n"
             "        return validator.validate_content(content)\n"
             "    return await asyncio.to_thread(work)\n",
-            0,
+            1,
         ),
         (
-            "nested sync def called DIRECTLY is still a violation",
+            "nested sync def called directly",
             "async def handler(validator, content):\n"
             "    def work():\n"
             "        return validator.validate_content(content)\n"
             "    return work()\n",
+            1,
+        ),
+        (
+            "the worker's plain def",
+            "def _scored(content):\n" "    return rv.validate_and_score(content)\n",
             0,
         ),
     ]

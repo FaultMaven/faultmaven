@@ -61,10 +61,10 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.service imp
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+from faultmaven.modules.knowledge.exceptions import (
+    IngestOutcomeUnknown,
     RunbookQualityError,
 )
-from faultmaven.modules.knowledge.exceptions import IngestOutcomeUnknown
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     DatabaseKnowledgeItemRepository,
     KnowledgeItemRepositoryException,
@@ -251,8 +251,27 @@ async def test_an_upload_lands_where_foreign_keys_are_enforced(session_factory):
 
 
 async def test_a_body_ingestion_refuses_leaves_nothing(session_factory, monkeypatch):
-    """Past the upload's own gate, so the refusal is ``ingest_runbook``'s (#2012)."""
-    monkeypatch.setattr(knowledge_service, "aenforce_runbook_quality", AsyncMock())
+    """Past the upload's own gate, so the refusal is ``ingest_runbook``'s (#2012):
+    the passed gate hands back no security answer for this text, so ingest runs
+    the check itself."""
+    from faultmaven.modules.knowledge.domain.models.validation import QualityScore
+    from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+        SecurityAnswer,
+    )
+
+    score = QualityScore(
+        overall=90.0,
+        grade="A",
+        completeness=90.0,
+        clarity=90.0,
+        actionability=90.0,
+        comprehensiveness=90.0,
+    )
+    monkeypatch.setattr(
+        knowledge_service,
+        "aenforce_runbook_quality",
+        AsyncMock(return_value=(score, SecurityAnswer("another text", None))),
+    )
     anchor = 'psql -c "SELECT 1"'
     body = valid_runbook("Postgres Credential Rotation Runbook").replace(
         anchor, f"{anchor}\nexport AWS_ACCESS_KEY_ID={_AWS_KEY}", 1

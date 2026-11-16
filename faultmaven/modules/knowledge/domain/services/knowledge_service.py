@@ -89,12 +89,10 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retir
     discard_drafts_naming_item,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_gate import (
-    GateUnavailable,
+    SYSTEM_GATE_PRINCIPAL,
+    SecurityAnswer,
     aenforce_runbook_quality,
     aenforce_runbook_security,
-)
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.domain.trace_purge import (
     TRACE_ERASER_NOT_WIRED,
@@ -106,9 +104,11 @@ from faultmaven.modules.knowledge.domain.write_scope import (
     require_write_scope,
 )
 from faultmaven.modules.knowledge.exceptions import (
+    GateUnavailable,
     IngestNotRecorded,
     IngestOutcomeUnknown,
     KbReceiptExistsError,
+    RunbookQualityError,
 )
 from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.line_endings import normalize_line_endings
@@ -1203,6 +1203,7 @@ class KnowledgeService:
         replaces_generation: Optional[str] = None,
         record: "Optional[Callable[[AsyncSession], Awaitable[bool]]]" = None,
         index_window_seconds: Optional[float] = None,
+        security: Optional[SecurityAnswer] = None,
     ) -> int:
         """Promote runbook content to a fully-published KnowledgeItem.
 
@@ -1332,6 +1333,10 @@ class KnowledgeService:
                 ship as COMMUNITY without a verified_by FK value. When None,
                 falls back to the legacy derive so upload callers are
                 unchanged.
+            security: The security check's answer for this exact ``content``,
+                given earlier in the same request (#2661): enforced here, where
+                the check would run, instead of running it again. An answer for
+                any other text is ignored and the check runs.
             prechunked: Optional build-time ``(chunk_text, embedding)`` pairs
                 from a KB pack. When provided, the runbook is written without
                 chunking or loading BGE-M3 — the fast boot path for shipped
@@ -1417,9 +1422,16 @@ class KnowledgeService:
             # holding a credential is refused, never rewritten. Every
             # non-shipped publish converges here — upload, and ``verify_draft``
             # for a template, conversion or case draft, including a draft
-            # whose ``validation_passed`` predates the secret check. On every
-            # such path the owner is the user who asked: the check's principal.
-            await aenforce_runbook_security(content, principal=owner_id)
+            # whose ``validation_passed`` predates the secret check. The owner
+            # is the user who asked, the check's principal; an ingest with no
+            # owner checks as the system (#2661). A check this request already
+            # ran on this exact text is enforced, not run again.
+            if security is not None and security.content == content:
+                security.enforce()
+            else:
+                await aenforce_runbook_security(
+                    content, principal=owner_id or SYSTEM_GATE_PRINCIPAL
+                )
 
             # The title, before any row or vector carries it (#1981). A title
             # that cannot be scrubbed (``RedactionUnavailableError`` under a
@@ -2085,7 +2097,9 @@ class KnowledgeService:
             # gate runs: the upload route's second pass was deleted (#1214
             # review). The score it returns is stored with the draft row, so
             # reading the draft never runs the gate.
-            quality = await aenforce_runbook_quality(content, principal=owner_id)
+            quality, security = await aenforce_runbook_quality(
+                content, principal=owner_id or SYSTEM_GATE_PRINCIPAL
+            )
 
             from faultmaven.infrastructure.persistence.models import (
                 ConversionDraftModel,
@@ -2262,6 +2276,7 @@ class KnowledgeService:
                     team_id=team_id,
                     verified_by=None,
                     record=record,
+                    security=security,
                 )
             except IntegrityError as refused:
                 # ``record``'s flush, before the COMMIT, so the cleanup has
