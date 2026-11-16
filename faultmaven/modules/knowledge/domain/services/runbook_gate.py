@@ -44,11 +44,14 @@ from faultmaven.modules.knowledge.exceptions import (
 logger = logging.getLogger(__name__)
 
 #: Each check's CPU time, from its start, serialising its answer included
-#: (``ITIMER_PROF``). The legitimate worst at 100,000 characters is 0.04-0.22 s
-#: (the shipped pack and dense runbook-shaped bodies), so this is 14x to 75x
-#: that. Hostile shapes end here by design: a line of ``dd`` tokens (13-14 s,
-#: #2837) and a 45,000-item YAML alias list (3.2 s); a 49,000-word title (1.6 s)
-#: stays under it. The alias and title shapes are re-measured in #2661's 3b2.
+#: (``ITIMER_PROF``). Measured 2026-11-16 (#2661 3b2), alone and at full load
+#: (below): the legitimate worst at 100,000 characters, the pack's three
+#: slowest runbooks and a dense runbook-shaped body, is 0.13 s alone and 0.18 s
+#: at full load, so this is 17x that. Every shape got the same verdict at full
+#: load as alone. Hostile shapes end here by design: a 45,000-item YAML alias
+#: list and a line of ``dd`` tokens (#2837) reach it alone and loaded. A
+#: 49,000-word title (0.46-0.51 s alone, 0.47-0.51 s loaded) and 1.8 KB of
+#: nested frontmatter (1.15-1.23 s, 1.22-1.28 s) are refused within it.
 GATE_WORK_CPU_SECONDS = 3.0
 
 #: ``RLIMIT_CPU`` for a call of one check, the backstop if the timer fails: the
@@ -60,18 +63,25 @@ GATE_CPU_LIMIT_SECONDS = 10
 #: The share of the cores a check gets at worst: every slot of every Principle
 #: 14 worker running at once. Evidence Tier 1's ``max(2, cores)`` slots
 #: (``TIER1_SLOTS``, ``preprocessing_service.py``), document preparation's and
-#: the gate's.
+#: the gate's. "Full load" below is that, measured on two cores: each slot busy
+#: in a loop, Tier 1 with 10 MB of source code, preparation with a large DOCX.
 GATE_SLOTS = 4
 _CORES = index_cores()
 _CPU_SHARE = min(1.0, _CORES / (max(2, int(_CORES)) + PREPARATION_SLOTS + GATE_SLOTS))
 
 #: Spawn to ``ready``: the imports' 0.5 s of CPU, doubled, at the worst share.
+#: Measured 2026-11-16 (#2661 3b2): imports cost 0.34-0.75 s of CPU, and spawn
+#: to ``ready`` took 0.36-0.76 s alone and at most 2.36 s at full load on two
+#: cores, inside 0.75 of this (3 s).
 GATE_START_SECONDS = 1.0 / _CPU_SHARE
 
-#: Each check's wall-clock backstop, a 503: its CPU deadline plus the 1 s band
-#: the verdict may move in, at the worst share, so the CPU deadline is reached
-#: first. On two cores the share is 1/4: 16 s.
-GATE_WORK_WALL_SECONDS = (GATE_WORK_CPU_SECONDS + 1) / _CPU_SHARE
+#: Each check's wall-clock backstop, a 503: its CPU deadline plus 2 s, at the
+#: worst share, so the CPU deadline is reached first. On two cores the share is
+#: 1/4: 20 s. Measured 2026-11-16 (#2661 3b2) at full load on two cores, a
+#: check that ran to its 3 s deadline took 10.1-13.8 s of wall time. That is
+#: past 0.75 of the 16 s that plus 1 s gave; 2 s is the smallest whole value
+#: that keeps it inside 0.75 (15 s). No check at full load ended at this bound.
+GATE_WORK_WALL_SECONDS = (GATE_WORK_CPU_SECONDS + 2) / _CPU_SHARE
 
 #: Each transfer: at most 400 KB of UTF-8 in, the output limit out.
 GATE_TRANSFER_SECONDS = 1.0
@@ -80,15 +90,21 @@ GATE_TRANSFER_SECONDS = 1.0
 #: ``Retry-After`` of every 503 here. A request makes one call, of at most two
 #: checks (upload: quality and security; verify: the draft's security and the
 #: published text's). Its worst on two cores is wait + start + transfers + two
-#: walls = 5 + 4 + 2 + 2 x 16 = 43 s, inside a 60 s ingress read timeout. On one
-#: core the share is 1/8 and it is 79 s, past it: there the ingress can answer
-#: before the gate does.
+#: walls = 5 + 4 + 2 + 2 x 20 = 51 s, inside a 60 s ingress read timeout; the
+#: slowest upload call measured at full load took 15.3 s. On one core the share
+#: is 1/8 and it is 95 s, past it: there the ingress can answer before the gate
+#: does. Measured 2026-11-16 (#2661 3b2) at full load on two cores, with the
+#: four slots held by legitimate checks a fifth user got a slot in 0.08-1.06 s.
+#: With the four held by checks running to their deadline, four of five got
+#: the busy 503 at 5 s, as designed.
 GATE_SLOT_WAIT_SECONDS = RUNBOOK_CHECK_RETRY_AFTER_SECONDS
 
 #: A conversion's checks, which run after its model calls were paid for, wait
 #: for a slot as long as the longest call takes at worst (two checks), so a
 #: busy gate does not drop a paid-for draft. A case's conversion holds its
-#: case's in-flight lease meanwhile. 38 s on two cores.
+#: case's in-flight lease meanwhile. 46 s on two cores. Measured 2026-11-16
+#: (#2661 3b2) at full load on two cores, with the four slots held by checks
+#: running to their deadline, a conversion's check got a slot in 0.8-10.3 s.
 GATE_BACKGROUND_SLOT_WAIT_SECONDS = (
     GATE_START_SECONDS + 2 * GATE_TRANSFER_SECONDS + 2 * GATE_WORK_WALL_SECONDS
 )
