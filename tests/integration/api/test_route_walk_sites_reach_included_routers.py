@@ -459,6 +459,13 @@ SITES = {
         _api_canary("/debug/canary"),
         _call("faultmaven.api.routes.admin_config", "_debug_endpoints_are_mounted"),
     ),
+    "route-policy lookups (main._paths_served_by)": Site(
+        "faultmaven/main.py::_paths_served_by",
+        lambda: _app("/direct"),
+        lambda app: [_Context(APIRoute("/pre/canary", _canary_handler))],
+        lambda app: _call("faultmaven.main", "_paths_served_by")(app, _canary_handler)
+        == ["/pre/canary"],
+    ),
     "GET /debug/routes (main.debug_routes)": Site(
         "faultmaven/main.py::debug_routes",
         _debug_app,

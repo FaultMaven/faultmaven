@@ -200,11 +200,17 @@ logger.info("✅ Case endpoints added")
 from .api.middleware.route_policy import declare_route_policy
 from .modules.case.api.routes.conversation import submit_turn
 
-_TURN_ROUTE_PATHS = [
-    served.path
-    for served in iter_served_endpoints(app)
-    if served.endpoint is submit_turn
-]
+
+def _paths_served_by(served_app, *handlers) -> list[str]:
+    """The served path of each route ``served_app`` answers with one of ``handlers``."""
+    return [
+        served.path
+        for served in iter_served_endpoints(served_app)
+        if served.endpoint in handlers
+    ]
+
+
+_TURN_ROUTE_PATHS = _paths_served_by(app, submit_turn)
 if len(_TURN_ROUTE_PATHS) != 1:
     # Declaring nothing would leave the turn route replayable from the
     # middleware's cache with nothing to say so; refuse to compose instead.
@@ -218,11 +224,7 @@ declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
 # could reach its cached answer; no client keys it (#2624).
 from .modules.case.api.routes.cases import search_cases
 
-_SEARCH_ROUTE_PATHS = [
-    served.path
-    for served in iter_served_endpoints(app)
-    if served.endpoint is search_cases
-]
+_SEARCH_ROUTE_PATHS = _paths_served_by(app, search_cases)
 if len(_SEARCH_ROUTE_PATHS) != 1:
     raise RuntimeError(f"expected exactly one case search route: {_SEARCH_ROUTE_PATHS}")
 declare_route_policy(app, *_SEARCH_ROUTE_PATHS, never_replayed=True)
@@ -241,11 +243,7 @@ logger.info("✅ Document conversion endpoints added")
 from .modules.knowledge.api.conversion_routes import convert_document
 from .modules.knowledge.api.routes import upload_document
 
-_KB_RECEIPT_ROUTE_PATHS = [
-    served.path
-    for served in iter_served_endpoints(app)
-    if served.endpoint in (upload_document, convert_document)
-]
+_KB_RECEIPT_ROUTE_PATHS = _paths_served_by(app, upload_document, convert_document)
 if len(_KB_RECEIPT_ROUTE_PATHS) != 2:
     raise RuntimeError(
         f"expected the KB upload and conversion routes, found "
