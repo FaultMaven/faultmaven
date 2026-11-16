@@ -1068,11 +1068,17 @@ class RunbookValidator:
             return None
         try:
             loaded = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError, ValueError, TypeError):
-            # Unparseable frontmatter, whatever PyYAML raised: a syntax error,
-            # nesting deep enough to exhaust its recursion (#2838), or a
-            # constructor's own error on a scalar it resolved
-            # (``last_updated: 2026-11-31`` is a timestamp with no such day).
+        except MemoryError:
+            # The memory limit's own end (exit 3, the 422 ruled 2026-11-15),
+            # never a verdict about the frontmatter.
+            raise
+        except Exception:
+            # Unparseable frontmatter, whatever PyYAML raised, as
+            # ``parse_frontmatter`` treats it: a syntax error, nesting deep
+            # enough to exhaust its recursion (#2838), or a constructor's own
+            # error on a scalar it resolved (``last_updated: 2026-11-31`` is a
+            # timestamp with no such day, ``x: !!bool abc`` a bool with no
+            # such value).
             return None
         # None distinguishes "no frontmatter" from "empty frontmatter" here, so
         # this cannot just call parse_frontmatter. A non-mapping body is still

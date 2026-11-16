@@ -133,7 +133,19 @@ def _check(request, send):
     )
 
 
+def bound_refuses(check: str) -> dict:
+    return passes(check)  # never reached: its worker fails to bound itself
+
+
+def _refuse_bound(*_args) -> None:
+    raise ValueError("not allowed to raise maximum limit")
+
+
 if __name__ == "__main__":
     if os.environ.get("FM_GATE_STUB") == "never_starts":
         time.sleep(3600)
+    if os.environ.get("FM_GATE_STUB") == "bound_refuses":
+        # As ``setrlimit`` refusing a limit past the host's hard one: the
+        # worker fails before its work, in the request phase.
+        worker_process._bound = _refuse_bound
     sys.exit(worker_process.serve(_check, "test check", result_parts=lambda a: [a]))

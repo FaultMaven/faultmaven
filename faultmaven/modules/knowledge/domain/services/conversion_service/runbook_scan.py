@@ -310,8 +310,9 @@ async def _scan_for_runbooks_impl(
             continue
 
         # In a worker, validating ONCE (#1417, #2661). A refusal for this
-        # file's input alone is this file's error; a busy or failed check
-        # stops the scan (503), the files before it imported.
+        # file's input alone is this file's error. A check that is busy or
+        # could not run stops the scan (503), and one that raises stops it
+        # with the 500, the files before it imported.
         try:
             validation, quality = await avalidate_and_score(content, principal=user_id)
         except GateRefused as refused:

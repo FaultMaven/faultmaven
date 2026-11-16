@@ -350,6 +350,9 @@ async def test_a_check_past_its_deadline_is_killed_and_refused(
         ),
         pytest.param("raises", {}, GateFailed, 1, id="check-raises"),
         pytest.param(
+            "bound_refuses", {}, GateUnavailable, 1, id="failure-before-the-work"
+        ),
+        pytest.param(
             "fails_costly_to_report",
             {"GATE_WORK_CPU_SECONDS": 0.3, "FM_GATE_STUB_WORK_CPU": "0.3"},
             GateFailed,
@@ -378,8 +381,8 @@ async def test_each_end_of_a_worker_answers_as_ruled(
     """Only the input decides a 422 (CPU, memory, output). A check that
     raises is a defect, a 500 that no retry changes, and it is reported as
     that even when reporting it costs more CPU than the deadline left: the
-    timer ends with the check. A kill, the wall-clock backstop and a start
-    that never finishes are 503s."""
+    timer ends with the check. A kill, the wall-clock backstop, a start that
+    never finishes and a failure before the work are 503s."""
     _serve_stub(monkeypatch, stub)
     for name, value in limits.items():
         if name.startswith("FM_"):
@@ -590,18 +593,49 @@ async def test_a_check_that_raises_in_its_worker_is_a_500_at_upload(
     assert await _state(session_factory) == []
 
 
+async def test_a_worker_that_fails_before_its_work_is_a_503_at_upload(
+    monkeypatch, session_factory, client, spawned
+):
+    """A failure before the check runs (here its bounds refused, as a host
+    with a lower hard ``RLIMIT_CPU`` would) is a worker that could not start:
+    retryable, never the check's own defect."""
+    _serve_stub(monkeypatch, "bound_refuses")
+
+    async with asyncio.timeout(_HARNESS_SECONDS):
+        response = await _upload(client)
+
+    assert response.status_code == 503, response.text
+    assert response.headers["x-error-code"] == "RUNBOOK_VALIDATION_UNAVAILABLE"
+    assert response.headers["Retry-After"] == str(runbook_gate.GATE_SLOT_WAIT_SECONDS)
+    assert [p.returncode for p in spawned] == [1]
+    assert await _state(session_factory) == []
+
+
 @pytest.mark.parametrize(
     "frontmatter",
-    ["last_updated: 2026-11-31", "tags: [2024-02-30]"],
-    ids=["no-such-day", "no-such-day-in-a-list"],
+    [
+        "last_updated: 2026-11-31",
+        "tags: [2024-02-30]",
+        "x: !!bool abc",
+        "x: !!timestamp abc",
+        'x: "\\U99999999"',
+    ],
+    ids=[
+        "no-such-day",
+        "no-such-day-in-a-list",
+        "bool-tag-KeyError",
+        "timestamp-tag-AttributeError",
+        "code-point-OverflowError",
+    ],
 )
 async def test_a_scalar_yaml_cannot_construct_is_unparseable_frontmatter(
     session_factory, client, frontmatter
 ):
-    """PyYAML resolves these as dates and its constructor raises. They are the
+    """PyYAML's constructors raise on these: a date with no such day, a tag
+    over text it cannot hold, a code point past Unicode. Each is the
     frontmatter refusal the quality gate answers, never an end of its worker."""
     body = valid_runbook().replace("last_updated: 2026-08-28", frontmatter)
-    if frontmatter.startswith("tags"):
+    if not frontmatter.startswith("last_updated"):
         body = valid_runbook().replace("status: draft", f"status: draft\n{frontmatter}")
 
     async with asyncio.timeout(_HARNESS_SECONDS):
@@ -617,6 +651,19 @@ async def test_a_scalar_yaml_cannot_construct_is_unparseable_frontmatter(
     assert "No YAML frontmatter found" in detail
     assert "reason" not in response.json()
     assert await _state(session_factory) == []
+
+
+def test_a_memory_error_in_the_frontmatter_parse_is_not_a_verdict(monkeypatch):
+    """The parse refuses whatever PyYAML raises, except the memory limit's own
+    end: that stays exit 3 in a worker, the ruled 422 ``validation_too_large``."""
+
+    def exhausted(_text):
+        raise MemoryError
+
+    monkeypatch.setattr(runbook_validator.yaml, "safe_load", exhausted)
+
+    with pytest.raises(MemoryError):
+        runbook_validator.validate_and_score(valid_runbook())
 
 
 def test_every_gate_route_declares_its_answers(app):

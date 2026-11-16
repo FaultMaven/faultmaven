@@ -1594,7 +1594,7 @@ No gate check runs in the API process (Principle 14). The checks (`validate_and_
 | Past the wall-clock backstop, killed, or a worker that could not start | 503 `RUNBOOK_VALIDATION_UNAVAILABLE` + `Retry-After`: "The runbook check could not run. Try again in a moment." | As above | As above |
 | The check raised (a defect in it) | 500 `SERVICE_ERROR`, no `Retry-After`, logged with the worker's failure | The draft fails by the error's class, not retryable | 500; the files before it stay imported |
 
-Each 422 carries `reason`, and its sentence as `detail`, `message`, `help` and the one entry of `errors`. A stored unscored draft is checked once: its score, or a 422's refusal, is stored on the row, and a stored refusal answers the same 422 on every later read without a check; a 503 or 500 stores nothing. `verify-batch` records a 422 or a 500 as that draft's `failed`, and from a busy or failed check on defers that draft and the rest of the batch: "Not verified: the runbook check was busy or could not run. Verify it again."
+Each 422 carries `reason`, and its sentence as `detail`, `message`, `help` and the one entry of `errors`. A stored unscored draft is checked once: its score, or a 422's refusal, is stored on the row, and a stored refusal answers the same 422 on every later read without a check; a 503 or 500 stores nothing. `verify-batch` records a 422 or a 500 as that draft's `failed`, and from the first check that was busy or could not run, defers that draft and the rest of the batch: "Not verified: the runbook check was busy or could not run. Verify it again."
 
 ---
 

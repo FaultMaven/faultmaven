@@ -140,8 +140,10 @@ def _refusal(checks: List[str], end: worker_process.WorkerEnd) -> Exception:
     if end.code == worker_process.OUT_OF_MEMORY_EXIT:
         logger.warning("runbook checks %s ran past the memory limit", checks)
         return GateTooLarge()
-    if end.failure is not None or (end.code == 1 and end.phase == "work"):
-        # The check raised: a defect in it, which no retry changes.
+    if end.phase == "work" and (end.failure is not None or end.code == 1):
+        # The check raised: a defect in it, which no retry changes. A failure
+        # before the work (the request read, the bounds set) is a worker that
+        # could not start, below.
         logger.error("runbook checks %s failed: %s", checks, end.failure)
         return GateFailed()
     # The wall-clock backstop in any phase, a kill (the OOM killer's included),
