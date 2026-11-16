@@ -35,12 +35,18 @@ Reviewers are independent agents: they never wrote or planned what they review.
     --jq 'map(select(any(.labels[]; .name == "tracking") | not))'
   ```
 - **Every open issue outside `tracking` carries one priority label.** It is re-set by these definitions whenever the
-  item moves between piles, is edited down, or its reach changes (a met condition, a merged change that narrows it),
-  unless the owner set it or a ruling states it. Every lowering is listed under *Priorities I set*, with the item's
-  `**Reach:**` line:
-  - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in
-    normal use (a wrong result, a 5xx, lost work), or an issue filed as a `main red` (by 4.6 or step 2's alert sweep).
-    A `P0` label, if the owner uses one, is read as `P1`, ranked first;
+  item moves between piles, is edited down, or its reach changes (a met condition, a merged change that narrows it, a
+  reproduction recorded), unless the owner set it or a ruling states it. Every lowering is listed under *Priorities I
+  set*, with the item's `**Reach:**` line:
+  - `P1`: a security, tenancy or data-loss exposure (latent included), or a defect a user or operator hits in normal
+    use (a wrong result, a 5xx, lost work), or an issue filed as a `main red` (by 4.6 or step 2's alert sweep). A
+    wrong result covers an investigation conclusion or recommendation that is wrong or unsafe, when a simulator run or
+    a replayed case on `origin/main`, at the issue's cited commit or later, shows it at least once and the issue
+    records the runs made, how many showed it, and the commit (owner rulings, 2026-11-16); without that reproduction
+    this clause does not apply and the other definitions set its priority. A deterministic engine defect, shown at
+    `path:line` or by a test, needs no such run. This clause is not an exposure for *Pick*'s exposure lane. A run that
+    calls a live model is made only on the owner's approval, asked per item under *Needs your call* with its expected
+    cost. A `P0` label, if the owner uses one, is read as `P1`, ranked first;
   - `P2`: any other defect reachable today;
   - `P3`: everything else: latent shapes, cleanup, docs, test infrastructure, enhancements. The owner may raise
     any item, and a ruled feature takes the priority its ruling states (ask if it states none).
@@ -438,7 +444,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      item with that question. A re-set priority or class does not unapprove the item: it is built this round, and its
      result row states the change. The plan states which claims held and which did not; a claim that did not hold is
      corrected on the issue under `## Evidence — triage`. A defect that does not reproduce is built as a verification
-     item (below);
+     item (below); an engine conclusion or recommendation that does not reproduce is re-set by *State* rather than
+     closed, unless a reproduction showing it at the commit it cites no longer shows it on `origin/main`;
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
@@ -449,13 +456,14 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
    - **N,** for a duplicated rule, with the scan that counted it (run for the plan, not committed as a test);
    - **the consumers,** for a value whose meaning moves (the search that found them);
    - **the invariant:** one or two sentences that must hold after the merge;
-   - **the tests:** a regression test that reproduces each defect and asserts the behaviour, and for each behaviour on
-     `main` the change must not alter, the test that pins it (existing or new). For a change that must not alter
-     behaviour, the oracle is captured by running `main`, at the commit the plan names, on the same inputs, through
-     `main`'s entry points (its deciders) when the new units do not exist there; never typed by hand. No wall-clock or
-     performance thresholds. A repo-scanning guard, census or lint only when you can name an incident where the same
-     class came back after an earlier fix. Such a guard is exercised through the path that runs it, and reverting the
-     fix makes it fail;
+   - **the tests:** a regression test that reproduces each defect and asserts the behaviour (for an engine conclusion
+     reproduced only by live runs, the test pins the deterministic cause the plan finds, and the plan names the runs
+     that showed it), and for each behaviour on `main` the change must not alter, the test that pins it (existing or
+     new). For a change that must not alter behaviour, the oracle is captured by running `main`, at the commit the
+     plan names, on the same inputs, through `main`'s entry points (its deciders) when the new units do not exist
+     there; never typed by hand. No wall-clock or performance thresholds. A repo-scanning guard, census or lint only
+     when you can name an incident where the same class came back after an earlier fix. Such a guard is exercised
+     through the path that runs it, and reverting the fix makes it fail;
    - **the size budget:** estimated product and test lines. A product budget past twice the newest estimate (the
      proposal's, or a later one an owner ruling set) and 50 lines over it pulls the item before a lane, as 4.5 does.
      A stage over about 600 product lines is sub-staged here: the plan lists sub-stages that together deliver the
@@ -634,11 +642,13 @@ To **pull** an item:
 - **File it** when it is **true** (reproduced, or shown at `path:line` on `origin/main`), **valid** (a real defect or
   gap, reachable today or latent; a style preference, or a simplification that changes no outcome, is not) and **not
   part of the item** (a different root). Its body carries `**Reach:**`: who hits it today and how, or, for a latent
-  one, what would make it reachable, if known; its priority follows from that line by *State* (a latent one is a
-  ready `P3`, or `P1` if *State* makes it one). File it as you find it (a batched one in its item's batch issue,
-  below), with `Found while working on #<n>`, the evidence, a pile, a priority, a class and an area. A true, valid
-  finding is never left unrecorded: it is filed, a line in a batch issue, or an `## Evidence` comment, as these rules
-  place it. These rules govern how a finding is recorded and found again, never whether it is.
+  one, what would make it reachable, if known; for an engine conclusion or recommendation, the reproduction (the
+  simulator scenario or replayed case, the runs that showed it out of those made, and the commit), or
+  `not reproduced on origin/main`, naming nothing else from a private repo; its priority follows from that line by
+  *State* (a latent one is a ready `P3`, or `P1` if *State* makes it one). File it as you find it (a batched one in
+  its item's batch issue, below), with `Found while working on #<n>`, the evidence, a pile, a priority, a class and an
+  area. A true, valid finding is never left unrecorded: it is filed, a line in a batch issue, or an `## Evidence`
+  comment, as these rules place it. These rules govern how a finding is recorded and found again, never whether it is.
 - **Search open and closed issues first,** by words and by the root's code point (its file and function or symbol),
   and record the search: the new issue or batch line carries `**Searched:**` with each query and the issues it
   found, or `none`. A finding with the same root as an open issue is evidence there (`## Evidence`), whatever its
@@ -687,7 +697,10 @@ each PR in the round that first reports it. Then stop.
 - **Before pushing,** run `black --check faultmaven/ tests/`, `ruff check faultmaven/ tests/`, `lint-imports`, the
   tests that cover the change or pin text it edits, and the repo-wide guard suites (`tests/unit/ci`,
   `tests/unit/architecture`) in CI's environment, at most four workers, plus
-  `python scripts/check_contract_version.py` if `docs/reference/api/` moved. Not the rest of the suite: CI runs it.
+  `python scripts/check_contract_version.py` if `docs/reference/api/` moved. A push whose every changed path is one
+  CI's `.github/scripts/classify_docs_only.py` calls inert (`docs/` outside `docs/reference/api/`, `.claude/`, a root
+  `*.md`) skips black, ruff and `lint-imports`, and runs the tests that name a file it edits (search `tests/` for the
+  path) and the guard suites. Not the rest of the suite: CI runs it.
 - **Tests** reproduce the defect and assert behaviour. No wall-clock thresholds, and no repo-scanning guard unless
   the plan names one. Keep within the plan's size budget, and say so if you cannot.
 - **Closing keywords go in the PR body only**, never in the title or a commit message, one issue per line. The body
