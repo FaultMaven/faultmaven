@@ -114,13 +114,13 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 3 | the item in `pile:blocked` | it waits on its blocker |
 | 4 | its PR open, its newest `## Review` or `## Delta` clean or its findings waived by a live ruling, and a required check red because `main` is (a `main red` issue, step 4.6) or a service it needs is down; or a stage's PR with an `evidence` finding questioning the stage's own design and no live ruling since | waiting: leave it until that issue closes or the check passes when re-run (`gh run rerun <run-id> --failed`); then merge `main` in and go on at row 6 or 9. On the design finding: waiting on an owner ruling on its design, asked under *Needs your call*; never merge-ready until a live ruling sends it on (row 8 or 9) or rebuilds it (row 13) |
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
-| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta (not a rider's, row 8) gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when its `reason` is `failed_checks`; every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and a re-run of that required check on `H` after the removal is green. Re-queuing past it is re-running past the flake, so 4.6's flake rule applies. When the flake's code is on this PR's seam, its fix in this PR is this row's refresh, not a re-queue. Otherwise, met while settling (step 1), the flake's fix is the first row of the next proposal's *Building*, outside its items. Then post merge-ready again at the same head, quoting the run and the `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits until the flake fix's PR merges. Anything else is this row's refresh |
+| 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when its `reason` is `failed_checks`; every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and a re-run of that required check on `H` after the removal is green. Re-queuing past it is re-running past the flake, so 4.6's flake rule applies. When the flake's code is on this PR's seam, its fix in this PR is this row's refresh, not a re-queue. Otherwise, met while settling (step 1), the flake's fix is the first row of the next proposal's *Building*, outside its items. Then post merge-ready again at the same head, quoting the run and the `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits until the flake fix's PR merges. Anything else is this row's refresh |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked` (other than one a stage's PR closes whose line is `**Blocked on:** #<root>` for that stage's root), it is not merge-ready and waits on that item's blocker |
-| 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4); a rider's `fixed` finding meets none of these, and a rider's removal delta is neither a refresh's (row 6) nor a re-entry's (row 12). Else the fix commit (a rider's `fixed` finding excepted: the rider is taken out in its own commit, with a delta of only that change, outside the cap; it never spends the lead's fix rounds and never pulls the lead, *Pick*), then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
+| 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
 | 10 | its PR open, no review | *Verify*, then the review (steps 4.3–4.4) |
 | 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR | resume a lane on that plan, in the branch and worktree it names |
-| 12 | a pull that closed its PR, which has not merged since, and a live ruling granting one more fix and delta, an exception commit or a merge as is | re-entry: `gh pr reopen` it. A merge as is waives its outstanding findings, each filed as an issue: row 9. Else the lane adds one commit on its branch, and a delta of only that commit, outside the cap, where a `fixed` finding (not a rider's, row 8) pulls it again |
+| 12 | a pull that closed its PR, which has not merged since, and a live ruling granting one more fix and delta, an exception commit or a merge as is | re-entry: `gh pr reopen` it. A merge as is waives its outstanding findings, each filed as an issue: row 9. Else the lane adds one commit on its branch, and a delta of only that commit, outside the cap, where a `fixed` finding pulls it again |
 | 13 | a live ruling implying other work (a re-plan, a build at a new estimate) | rebuild: a plan for this round (step 4.1, with a critique when 4.1 calls for one) on a new branch, with its own review and PR; a closed PR stays closed |
 | 14 | none of the above | new: step 4.1 |
 
@@ -145,8 +145,7 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
-   owner ruling recorded since then places it; a rider whose newest pull is `## Pulled — taken out as a rider` goes
-   to `pile:ready` instead (owner ruling, 2026-11-15, ride-along).
+   owner ruling recorded since then places it.
 
 ## 2. Propose
 
@@ -193,7 +192,7 @@ echo "design checks due, not run: ${due:-none} · run since the last proposal: $
 hp=$(jq --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class:defect"]) and has(["P0", "P1", "P2"])
   and (refs(.number) | not))] | length' <<<"$open")
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
-  l=$(lines "$n"); grep ' ## Pulled' <<<"$l" | grep -v 'taken out as a rider' | grep -q . && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
+  l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
 cu=; cm=; for n in $(jq -r "$cls"'.[] | select(free and has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* condition"))) | .number' <<<"$open"); do
   h=$(lines "$n" | tr -d '\r' | grep -E '^[^ ]+ ## Evidence — condition: (met|not met)$' | tail -1)
   { [ -n "$h" ] && [ "${h%% *}" \> "$(ago 14)" ]; } || cu+="#$n "
@@ -351,7 +350,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        `class:defect`, no open PR carrying it), take the **defect order** (not on an open PR's seam): `P0`, then `P1`,
        then each `P2` older than 21 days (aged, by its creation date; its label stays `P2`; owner ruling, 2026-11-15),
        then the other `P2`s, oldest first within each, defects on one seam sharing a lane. A chore or a `P3` item leads
-       no such lane: a `P3` one rides along (below) or goes in the P3 batch.
+       no such lane; a `P3` one goes in the P3 batch.
      - **Next** items follow the lanes' order in every round: design stages first, within the design cap, then the
        defect order while a ready `P0`–`P2` defect exists, else the ordinary order. A P3 batch is never a Next item.
      - **Otherwise,** the lanes design leaves follow the ordinary order.
@@ -375,15 +374,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      the ready query), after `P3 batch (round <N>); then:` in a P3-batch round.
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
      on that PR's seam until it merges.
-   - Items on one seam share a lane and a PR. **Ride-along** (owner ruling, 2026-11-15): a defect lane's plan may
-     also take up to two ready `P3` items on its seam that no open PR carries, within its own estimate (4.1). Riders
-     count toward the round's 10-item cap; a lane adds them only while every lane's `P0`–`P2` items still fit. Never on a design-stage,
-     `main red`, flake or exposure lane, nor on a `root-candidate`'s seam; never an item that takes its own lane (a
-     security boundary or storage) or one on a root's `**Blocks:**` line. A rider that draws a `fixed` finding is
-     taken out, not fixed: the lane takes its part and its `Closes`/`Refs` line out of the PR (*To pull an item*,
-     step 3) in its own commit, which gets a delta of only that change, outside the cap. A rider's `fixed` finding
-     never spends its lead's fix rounds and never pulls the lead. Post `## Pulled — taken out as a rider` on the
-     rider; step 1.2 returns it to `pile:ready`.
+   - Items on one seam share a lane and a PR.
    - Size the round by review effort: at most 10 items and 4 lanes, plus up to 3 **Next** items the approval also covers,
      none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary
      (authentication, authorization, tenancy, secrets, TLS, or the validation of untrusted input) or storage (a schema,
@@ -465,10 +456,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      performance thresholds. A repo-scanning guard, census or lint only when you can name an incident where the same
      class came back after an earlier fix. Such a guard is exercised through the path that runs it, and reverting the
      fix makes it fail;
-   - **the size budget:** the lead's estimated product and test lines. Each rider's estimate, and the files its fix
-     touches, are stated apart and never enter the lead's budget or its comparison with the proposal's estimate. A
-     product budget past twice the newest estimate (the proposal's, or a later one an owner ruling set) and 50 lines
-     over it pulls the item before a lane, as 4.5 does.
+   - **the size budget:** estimated product and test lines. A product budget past twice the newest estimate (the
+     proposal's, or a later one an owner ruling set) and 50 lines over it pulls the item before a lane, as 4.5 does.
      A stage over about 600 product lines is sub-staged here: the plan lists sub-stages that together deliver the
      ruled change and builds the first, its PR saying `Refs #<stage>`, and step 1 edits the stage down. No sub-stage
      leaves `main` with a known defect that a later sub-stage or stage must repair; where avoiding one needs a change
@@ -553,20 +542,15 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      finding pulls the item, unless each such finding is either a comment, docstring, document or missing test whose
      fix touches only comments, docstrings no code reads (not a model's or a route's), `docs/` or `tests/`, or local:
      its fix is in one file, at most 10 lines, with no new mechanism. That fix, if its commit keeps to those bounds,
-     gets one exception commit and delta, once, outside the cap, where a `fixed` finding pulls the item. A rider's
-     `fixed` finding counts in neither: it takes the rider out (*Pick*).
+     gets one exception commit and delta, once, outside the cap, where a `fixed` finding pulls the item.
    - **Size.** Passing twice the plan's product budget (or the newest budget an owner ruling set after it; never one
-     you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. Only the
-     lead's product lines count against that bound. A rider whose product lines (in the files the plan names for it)
-     pass twice its own estimate and 50 lines over it is taken out (Ride-along's removal, *Pick*); a rider never pulls
-     the lead. Test lines
+     you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. Test lines
      never count against it (#2198). Any smaller overrun, and any test overrun, is stated, with the new estimate, in
      the delta and the merge-ready.
    - **Never review the same code twice.** Each plan gets at most one design critique, and each PR one adversarial
      review and two fix deltas, plus the exception one above; more fix rounds pull the item to the owner (a
-     rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution, a rider's removal (*Pick*)
-     or a change the owner asks for is a delta of only what is new, outside that cap; a rider's `fixed` finding
-     never spends its lead's fix rounds and never pulls the lead. A whole-PR review is never repeated, nor run as a delta.
+     rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
+     for is a delta of only what is new, outside that cap. A whole-PR review is never repeated, nor run as a delta.
    - **No cap narrows a design change.** A stage's budget is the one its ruling sets, split by sub-staging (4.1)
      when it is over about 600 product lines; the sub-stages together still deliver the ruled change. Reaching the
      size bound or the fix-round cap pulls it to the owner with the question, and never narrows the change.
@@ -671,8 +655,7 @@ To **pull** an item:
 - **An item's out-of-scope `P3` chore and latent `P3` defect findings are batched:** its chore findings go into one
   `class:chore` issue for the item, and its latent defect findings into one `class:defect` issue for the item, each a
   checklist with `Found while working on #<n>`, opened by its first finding (before the PR, if found while planning),
-  closed when its list is done, and planned one item per seam, in the P3 batch or riding along with a lane on its
-  seam (*Pick*).
+  closed when its list is done, and planned one item per seam, in the P3 batch (*Pick*).
   A reachable defect finding, and a `P1`/`P2` finding of either class (a `main red`, a flake), is filed one each.
 - **Fix the item's own root, a symptom of it, or a part of it in its PR;** file it only when a ruling waived it.
 
@@ -680,7 +663,7 @@ To **pull** an item:
 
 ```
 ## Round <N> — result
-| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · taken out as a rider (`## Pulled — taken out as a rider`) · waiting on main or <service>) | PR | product +/− | tests +/− |
+| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
 Data: 14-day ratio <r> · open at the last four proposals <a> → <b> → <c> → <d>
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each, and each line added to an earlier round's batch issue
