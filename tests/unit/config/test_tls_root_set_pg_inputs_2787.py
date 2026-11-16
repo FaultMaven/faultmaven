@@ -42,12 +42,27 @@ PASSWORD, HOST = "s3cret-pw", "db.internal.example"
 URL = f"postgresql+asyncpg://fm:{PASSWORD}@{HOST}:5432/fm"
 #: The real lookup, taken before the conftest fixture stubs it.
 REAL_CRL_DIRECTORIES = tls_root_set._crl_directories
-#: Keys libpq splits into tokens, one of them a root input (the review's bypass).
-DECORATED = {
+#: Query keys that are not plain option names. psycopg2 writes a key unescaped
+#: into the conninfo, so each reaches libpq as a root input: by its own tokens,
+#: or by ending the quoting of the value after it (the reviews' bypasses).
+MALFORMED = {
     "plus": "+sslcrl=/x",
     "encoded-space": "%20service=x",
     "inside-another-key": "application_name%3Dx%20sslcrl=/x",
+    "trailing-equals": "application_name%3D=%20sslcrl%3D/z",
+    "x-equals": "x%3D=%20sslcrl%3D/z",
+    "backslash": "a%5C=%20sslcrl%3D/z",
+    "quote": "a%27=%20sslcrl%3D/z",
+    "trailing-equals-service": "application_name%3D=%20service%3Dfm",
 }
+#: Every driver option is a plain name; these stay accepted.
+PLAIN = (
+    "sslmode=verify-full",
+    "ssl=require",
+    "application_name=fm",
+    "prepared_statement_cache_size=0",
+    "target_session_attrs=read-write",
+)
 _BOUNDS = SimpleNamespace(
     database_command_timeout_seconds=30.0,
     database_connect_timeout_seconds=10.0,
@@ -155,16 +170,46 @@ def test_a_query_urllib_cannot_see_is_read_as_the_engine_reads_it(monkeypatch, u
     assert PASSWORD not in message and HOST not in message
 
 
-@pytest.mark.parametrize("query", DECORATED.values(), ids=DECORATED)
-def test_a_decorated_key_refuses_by_the_token_libpq_reads(monkeypatch, query):
-    """psycopg2 writes the key unescaped into the conninfo; libpq splits it at
-    whitespace and ``=`` (the review reproduced an outside-CA handshake)."""
+@pytest.mark.parametrize("query", MALFORMED.values(), ids=MALFORMED)
+def test_a_key_that_is_not_a_plain_option_name_refuses_by_the_rule(monkeypatch, query):
+    """Named by the rule, never by its text, which can carry a value (the
+    reviews reproduced an outside-CA handshake and an opened CRL path)."""
     monkeypatch.setenv("DATABASE_URL", f"{URL}?{query}")
     message = _refusal()
-    assert "the database URL's query names" in message
+    assert "the database URL's query holds a query key that is not a plain " in message
+    assert "query names" not in message and "/x" not in message
+    assert "/z" not in message and "=fm" not in message
     assert PASSWORD not in message and HOST not in message
-    with pytest.raises(ValueError, match="query names (sslcrl|service),"):
+    with pytest.raises(ValueError, match="not a plain option name"):
         pg_connection.pg_connect_args(f"{URL}?{query}", _BOUNDS)
+
+
+@pytest.mark.parametrize("query", PLAIN)
+def test_a_plain_option_name_is_accepted(monkeypatch, query):
+    assert pg_root_inputs_in_url(f"{URL}?{query}") == []
+    monkeypatch.setenv("DATABASE_URL", f"{URL}?{query}")
+    apply_root_set()
+
+
+def test_a_value_holding_root_input_text_reaches_libpq_as_that_value_only():
+    """psycopg2 quotes a value, so its text never becomes an option: read back
+    from the conninfo SQLAlchemy's psycopg2 dialect builds. The same path with
+    a malformed key does hand libpq ``sslcrl`` (the control)."""
+    pytest.importorskip("psycopg2")
+    from psycopg2.extensions import make_dsn, parse_dsn
+    from sqlalchemy.dialects.postgresql.psycopg2 import PGDialect_psycopg2
+    from sqlalchemy.engine import make_url
+
+    def conninfo(query: str) -> dict:
+        url = make_url(f"postgresql://fm:{PASSWORD}@{HOST}/fm?{query}")
+        cargs, cparams = PGDialect_psycopg2().create_connect_args(url)
+        return parse_dsn(make_dsn(cargs[0] if cargs else None, **cparams))
+
+    value = "application_name=a%27%20sslcrl%3D%2Fz"
+    assert pg_root_inputs_in_url(f"{URL}?{value}") == []
+    assert conninfo(value)["application_name"] == "a' sslcrl=/z"
+    assert "sslcrl" not in conninfo(value)
+    assert "sslcrl" in conninfo(MALFORMED["trailing-equals"])
 
 
 @pytest.mark.parametrize(
@@ -172,7 +217,7 @@ def test_a_decorated_key_refuses_by_the_token_libpq_reads(monkeypatch, query):
     [
         "sqlite+aiosqlite:///./data/faultmaven.db",
         f"{URL}?sslmode=verify-full&sslrootcert=/etc/fm/db-ca.pem",
-        f"{URL}?application_name=a%20b%20sslcrl",  # a value, quoted for libpq
+        f"{URL}?application_name=a%27%20sslcrl%3D%2Fz",  # a value, quoted for libpq
         "not a url",
         f" {URL}?sslcrl=/x",  # the settings refuse surrounding whitespace
     ],

@@ -45,14 +45,15 @@ the URL keys and a service file only when handed a DSN (a URL's ``dsn``). No
 file is safe to export in their place (an empty one does not load, and any file
 that loads turns on CRL checking), so each one present at start refuses it,
 named without echoing the database URL: a variable with any value, a
-``DATABASE_URL`` query handing the driver one of ``PG_ROOT_INPUT_URL_KEYS``
-(``dsn`` too, which carries any of them; a key counts by each token libpq would
-split it into), and a ``root.crl`` under ``Path.home()`` or the effective user's
-password-database home (on Windows, under libpq's APPDATA folder too,
-``%APPDATA%\\postgresql``). Postgres CRL checking is not
-supported under the set. ``PGGSSENCMODE`` is set to ``disable`` unless already
-set (#2788), so libpq negotiates no GSSAPI encryption in place of TLS unless the
-URL's ``gssencmode`` or the environment names a mode.
+``DATABASE_URL`` query naming one of ``PG_ROOT_INPUT_URL_KEYS`` (``dsn`` too,
+which carries any of them) or holding any key that is not a plain option name
+(which can smuggle one into libpq's conninfo), and a ``root.crl`` under
+``Path.home()`` or the effective user's password-database home (on Windows,
+under libpq's APPDATA folder too, ``%APPDATA%\\postgresql``). Postgres CRL
+checking is not supported under the set. ``PGGSSENCMODE`` is set to
+``disable`` unless already set (#2788), so libpq negotiates no GSSAPI
+encryption in place of TLS unless the URL's ``gssencmode`` or the environment
+names a mode.
 """
 
 from __future__ import annotations
@@ -414,13 +415,18 @@ def _refuse(name: str, value: str, reason: str) -> NoReturn:
 
 
 def pg_root_inputs_in_url(database_url: str) -> list[str]:
-    """The ``PG_ROOT_INPUT_URL_KEYS`` that ``database_url``'s query hands a
-    driver, as the engine's own parser (``make_url``) reads it; none for a value
-    that does not parse, which no engine can open.
+    """What ``database_url``'s query would hand a driver outside the set, as the
+    engine's own parser (``make_url``) reads it: each ``PG_ROOT_INPUT_URL_KEYS``
+    it names, then ``MALFORMED_QUERY_KEY`` when any key is not a plain option
+    name. None for a value that does not parse, which no engine can open.
 
-    Judged on what the driver receives: psycopg2 writes a key unescaped into the
-    conninfo, where libpq splits it at whitespace and ``=``, so a decorated key
-    (``?+sslcrl=``, ``?application_name%3Dx%20sslcrl=``) counts by its tokens."""
+    psycopg2 writes a key into the conninfo unescaped, so a key holding ``=``,
+    whitespace, a backslash or a quote ends libpq's quoting of the value after
+    it, and text inside that value becomes an option of its own
+    (``?application_name%3D=%20sslcrl%3D/z``). Every libpq and asyncpg option
+    is a plain name, so any other key either fails in the driver or smuggles
+    one in; it is refused by that rule, never named, as its text can hold a
+    value."""
     from sqlalchemy.engine import make_url
     from sqlalchemy.exc import ArgumentError
 
@@ -428,21 +434,31 @@ def pg_root_inputs_in_url(database_url: str) -> list[str]:
         query = make_url(database_url).query
     except (ArgumentError, ValueError):
         return []
-    tokens = {token for key in query for token in _CONNINFO_SEPARATORS.split(key)}
-    return [key for key in PG_ROOT_INPUT_URL_KEYS if key in tokens]
+    found = [key for key in PG_ROOT_INPUT_URL_KEYS if key in query]
+    if any(not _OPTION_NAME.fullmatch(key) for key in query):
+        found.append(MALFORMED_QUERY_KEY)
+    return found
 
 
-_CONNINFO_SEPARATORS = re.compile(r"[\s=]+")
+#: What a database URL's query key must be: the shape of every driver option.
+_OPTION_NAME = re.compile(r"[a-z][a-z0-9_]*")
+MALFORMED_QUERY_KEY = "a query key that is not a plain option name"
 
 
-def pg_url_refusal(keys: list[str]) -> str:
-    """Why a database URL naming ``keys`` is refused: the keys only, never the
-    URL, which can hold a password. Not ``DATABASE_URL`` by name: an engine's
-    URL can come from a nested ``DATABASE`` setting or its caller."""
+def pg_url_refusal(found: list[str]) -> str:
+    """Why a database URL is refused for what ``pg_root_inputs_in_url`` found:
+    the keys or the rule only, never the URL, which can hold a password. Not
+    ``DATABASE_URL`` by name: an engine's URL can come from a nested
+    ``DATABASE`` setting or its caller."""
+    keys = [key for key in found if key != MALFORMED_QUERY_KEY]
+    reasons = [f"names {', '.join(keys)}, a Postgres root input"] if keys else []
+    if MALFORMED_QUERY_KEY in found:
+        reasons.append(
+            f"holds {MALFORMED_QUERY_KEY}, which can smuggle a Postgres root input"
+        )
     return (
-        f"the database URL's query names {', '.join(keys)}, a Postgres root "
-        f"input outside the TLS root set: remove it from the database URL. "
-        f"{_PG_REMEDY}"
+        f"the database URL's query {' and '.join(reasons)} outside the TLS root "
+        f"set: remove it from the database URL. {_PG_REMEDY}"
     )
 
 
@@ -515,7 +531,7 @@ def _crl_directories() -> list[str]:
                 None, 0x001A, None, 0, folder
             ):
                 appdata = folder.value
-        except (AttributeError, OSError):  # no shell32: the variable stands
+        except (ImportError, AttributeError, OSError):  # no ctypes or shell32
             pass
         if appdata:
             directories.append(os.path.join(appdata, "postgresql"))

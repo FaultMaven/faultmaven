@@ -20,7 +20,8 @@ Environment Variables:
         (#1704); offline (``--sql``) opens no database and only takes the
         dialect from it. A value with leading or trailing whitespace
         (#1789), or whose query names a Postgres root input outside the TLS
-        root set (#2787), is refused in both modes, exit 1. Only the URL is
+        root set or holds a key that is not a plain option name (#2787), is
+        refused in both modes, exit 1. Only the URL is
         read: no other database setting is validated here.
 
 Usage:
@@ -94,8 +95,8 @@ def get_database_url(*, require_persistent: bool) -> str:
 
     A value with leading or trailing whitespace is refused in both modes, exit
     1, as the app refuses it (#1789), and so is one whose query names a
-    Postgres root input outside the TLS root set (``pg_root_inputs_in_url``,
-    #2787). Otherwise offline (``--sql``) opens no database: the URL only names
+    Postgres root input outside the TLS root set or holds a key that is not a
+    plain option name (``pg_root_inputs_in_url``, #2787). Otherwise offline (``--sql``) opens no database: the URL only names
     the dialect, so it is not refused, and an empty value falls back to the
     default file URL.
 

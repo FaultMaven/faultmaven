@@ -6,8 +6,10 @@ as trusted roots, and a ``service`` (or a ``dsn`` carrying either) supplies
 ``apply_root_set``, its first statement, and in ``get_database_url``, which the
 second mode reaches by making ``apply_root_set`` a no-op in the child. The URL
 is a SQLite file, so nothing connects anywhere: without the refusal the
-migration would create it. A key counts by each token libpq would split it into
-(``+sslcrl``, ``%20service``, ``application_name%3Dx%20sslcrl``). The child runs
+migration would create it. A query key that is not a plain option name is
+refused too: psycopg2 writes it into the conninfo unescaped, where it hands
+libpq a root input (``+sslcrl``, ``application_name%3D=%20sslcrl%3D/z``). The
+child runs
 without the caller's Postgres root-input variables and with its ``HOME`` in
 ``tmp_path``; a ``root.crl`` in the password-database home, which ``HOME`` does
 not hide, skips the test rather than refuse for another reason.
@@ -31,11 +33,19 @@ pytestmark = pytest.mark.integration
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+NAMED, MALFORMED = "names service,", "holds a query key that is not a plain option"
+#: A root input by name, then keys that are not plain option names, each of which
+#: reaches libpq's conninfo as a root input.
 QUERIES = {
-    "service": ("service=fm", "service"),
-    "plus": ("+sslcrl=/x", "sslcrl"),
-    "encoded-space": ("%20service=x", "service"),
-    "inside-another-key": ("application_name%3Dx%20sslcrl=/x", "sslcrl"),
+    "service": ("service=fm", NAMED),
+    "plus": ("+sslcrl=/x", MALFORMED),
+    "encoded-space": ("%20service=x", MALFORMED),
+    "inside-another-key": ("application_name%3Dx%20sslcrl=/x", MALFORMED),
+    "trailing-equals": ("application_name%3D=%20sslcrl%3D/z", MALFORMED),
+    "x-equals": ("x%3D=%20sslcrl%3D/z", MALFORMED),
+    "backslash": ("a%5C=%20sslcrl%3D/z", MALFORMED),
+    "quote": ("a%27=%20sslcrl%3D/z", MALFORMED),
+    "trailing-equals-service": ("application_name%3D=%20service%3Dfm", MALFORMED),
 }
 
 
@@ -48,14 +58,14 @@ def _passwd_home_crl() -> Path | None:
     return crl if os.path.exists(crl) else None
 
 
-@pytest.mark.parametrize(("query", "key"), QUERIES.values(), ids=QUERIES)
+@pytest.mark.parametrize(("query", "reason"), QUERIES.values(), ids=QUERIES)
 @pytest.mark.parametrize(
     ("no_op_root_set", "prefix"),
     [(False, "TLS root set: "), (True, "Refusing to run: ")],
     ids=["at-the-start", "in-get-database-url"],
 )
 def test_a_migration_refuses_a_url_naming_a_root_input(
-    tmp_path, no_op_root_set, prefix, query, key
+    tmp_path, no_op_root_set, prefix, query, reason
 ):
     if _passwd_home_crl() is not None:
         pytest.skip(f"{_passwd_home_crl()} exists: every start refuses it first")
@@ -86,6 +96,6 @@ def test_a_migration_refuses_a_url_naming_a_root_input(
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300,
     )  # fmt: skip
     assert result.returncode == 1, result.stdout + result.stderr
-    refusal = f"{prefix}the database URL's query names {key},"
+    refusal = f"{prefix}the database URL's query {reason}"
     assert refusal in result.stderr, result.stderr
     assert not database.exists()

@@ -205,7 +205,8 @@ def pg_connect_args(
     Raises:
         ValueError: The URL's query sets one of these itself (see
             ``_OWNED_CONNECT_KEYWORDS``), or, for any database, names a
-            Postgres root input outside the TLS root set
+            Postgres root input outside the TLS root set or holds a key that
+            is not a plain option name, which can smuggle one in
             (``pg_root_inputs_in_url``, #2787): this engine's URL can come from
             a nested ``DATABASE`` variable or the caller, which the start's
             check does not read.
