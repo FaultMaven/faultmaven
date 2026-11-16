@@ -1413,8 +1413,9 @@ jobs:
 
       # The image installs requirements/image.txt, which no test job installs
       # (they take cloud.txt, with the test extra), so this is the one check
-      # that the app and every fm-* entry point import without a test package
-      # (#2231). Entry points are read from the installed metadata.
+      # that the app and every fm-* entry point import without the packages only
+      # the test extra needs (#2231; pytest is there, as a runtime dependency
+      # of opik). Entry points are read from the installed metadata.
       - name: The app imports in the image's environment
         timeout-minutes: 10
         run: |

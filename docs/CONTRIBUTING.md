@@ -49,7 +49,7 @@ To get started with local development for the `faultmaven` monolith:
         | `requirements/dev.txt` | Architecture Boundary Check, API Contract Drift Check |
         | `requirements/test.txt` | Test Standalone, Code Quality Checks, Test Packaging Configuration, Environment Smoke Check |
         | `requirements/cloud.txt` | Test Cloud, Test PostgreSQL Integration, Test PostgreSQL Integration (FIPS, PostgreSQL 18) |
-        | `requirements/image.txt` | `build`, through the `Dockerfile`: the TLS root-set check and the import smoke run in the image it builds. The cloud extra without the test extra, constrained by `cloud.txt`, so no test tool ships in the image |
+        | `requirements/image.txt` | `build`, through the `Dockerfile`: the TLS root-set check and the import smoke run in the image it builds. The cloud extra without the test extra, constrained by `cloud.txt`, so no package only the test extra needs ships in the image (pytest does, as a runtime dependency of `opik`) |
 
         Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
 

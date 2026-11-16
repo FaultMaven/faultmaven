@@ -23,7 +23,8 @@ ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
 
 # Copy lockfile first for better layer caching. image.txt is the cloud extra
-# alone; cloud.txt adds the test extra for the CI jobs, which the image must not ship.
+# alone; cloud.txt adds the test extra for the CI jobs. No package only the test
+# extra needs ships in the image; pytest does, as a runtime dependency of opik.
 COPY requirements/image.txt requirements.txt
 
 # Install Python dependencies from the lockfile, with CPU-only torch.

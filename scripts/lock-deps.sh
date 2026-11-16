@@ -50,8 +50,9 @@ uv pip compile pyproject.toml \
     -o requirements/cloud.txt \
     --quiet
 
-# The image's lockfile: the cloud extra alone, so no test package ships to
-# production. cloud.txt above keeps the test extra for the CI jobs (#2231), and
+# The image's lockfile: the cloud extra alone, so no package only the test
+# extra needs ships to production (pytest does, as a runtime dependency of
+# opik). cloud.txt above keeps the test extra for the CI jobs (#2231), and
 # constrains this compile, so every pin the image shares with it is the one
 # the cloud test jobs ran.
 echo "  requirements/image.txt (cloud, constrained by cloud.txt)"
