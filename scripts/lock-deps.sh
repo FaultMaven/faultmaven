@@ -4,7 +4,10 @@
 # Run this after changing any dependency in pyproject.toml.
 # Commit the updated lockfiles alongside your pyproject.toml changes.
 #
-# Requires: uv (pip install uv)
+# Requires: uv at exactly UV_VERSION. The lockfiles depend on how uv resolves
+# --python-version and markers and prints its header, so CI's lockfile gate
+# installs this same version, read from this line (#2777). Bump it deliberately.
+UV_VERSION=0.10.11
 
 set -euo pipefail
 
@@ -19,7 +22,12 @@ if [ -z "$PYTHON_VERSION" ]; then
 fi
 
 if ! command -v uv &> /dev/null; then
-    echo "ERROR: uv is required. Install with: pip install uv"
+    echo "ERROR: uv ${UV_VERSION} is required. Install with: pip install uv==${UV_VERSION}"
+    exit 1
+fi
+FOUND_UV="$(uv --version | awk '{print $2}')"
+if [ "$FOUND_UV" != "$UV_VERSION" ]; then
+    echo "ERROR: uv ${FOUND_UV} found; the lockfiles are made with uv ${UV_VERSION}. Install with: pip install uv==${UV_VERSION}"
     exit 1
 fi
 

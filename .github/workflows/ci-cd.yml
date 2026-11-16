@@ -314,7 +314,7 @@ jobs:
         # reuses existing pins when the output file exists, so this only fails
         # on genuine drift, not upstream releases.
         run: |
-          pip install uv
+          pip install "uv==$(sed -n 's/^UV_VERSION=//p' scripts/lock-deps.sh)"
           ./scripts/lock-deps.sh
           git diff --exit-code requirements/ || {
             echo "::error::requirements/ lockfiles are stale — run ./scripts/lock-deps.sh and commit the result alongside your pyproject.toml change."
