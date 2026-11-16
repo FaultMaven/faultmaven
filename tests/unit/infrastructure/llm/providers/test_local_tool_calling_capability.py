@@ -504,7 +504,7 @@ def test_non_local_remedy_is_unchanged():
             da_provider=None,
             allow_toolless_investigation=False,
             get_da_provider=lambda: NS(value="huggingface"),
-            get_da_model=lambda: "mistralai/Mistral-Large-Instruct-2411",
+            get_da_model=lambda: "meta-llama/Llama-3.3-70B-Instruct",
         )
     )
     with pytest.raises(InvestigationToolingError) as exc:

@@ -463,8 +463,8 @@ class LLMSettings(BaseSettings):
     # Keep this, registry.py default_model, and .env.example in sync —
     # scripts/check_env_example_sync.py enforces all three (CI + pre-commit).
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
-    # all tool-calling + large-context capable. HuggingFace is the exception: its
-    # Inference API can't do tool calling, so it is kept but not recommended.
+    # all tool-calling + large-context capable. HuggingFace is the exception: tool
+    # calling is not claimed for its routed models, so it is kept but not recommended.
     openai_model: str = Field(default="gpt-5.6-luna")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
@@ -481,7 +481,7 @@ class LLMSettings(BaseSettings):
     groq_model: str = Field(default="openai/gpt-oss-20b")
     cohere_model: str = Field(default="command-r-plus")
     gemini_model: str = Field(default="gemini-3.8-flash")
-    huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
+    huggingface_model: str = Field(default="meta-llama/Llama-3.3-70B-Instruct")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
     # The DEPLOYMENT name on the Azure resource. The default assumes the
     # deployment is named after its model; the inherited OpenAI capability
@@ -536,8 +536,10 @@ class LLMSettings(BaseSettings):
         default="https://generativelanguage.googleapis.com/v1beta",
         validation_alias="GEMINI_API_BASE",
     )
+    # Hugging Face's OpenAI-compatible router (#2111). An override names another
+    # billed Hugging Face base; a self-hosted server (TGI included) is LOCAL_LLM_URL.
     huggingface_base_url: str = Field(
-        default="https://api-inference.huggingface.co/models",
+        default="https://router.huggingface.co/v1",
         validation_alias="HUGGINGFACE_API_URL",
     )
     openrouter_base_url: str = Field(

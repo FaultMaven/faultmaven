@@ -529,8 +529,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             returned as-is.
 
             Two limits worth knowing. The floor is UNENFORCEABLE on a provider
-            that reports no stop reason (HuggingFace as called, or any finish
-            value newer than ``_STOP_REASON_ALIASES``): "cut" and "short" are
+            that reports no stop reason (or any finish value newer than
+            ``_STOP_REASON_ALIASES``): "cut" and "short" are
             indistinguishable there, so a starved-looking body is warned about
             and returned rather than raised on. And the pre-call bump raises
             ``max_tokens`` only TO the floor, which leaves no room for hidden
@@ -779,7 +779,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             #
             # This does NOT make ``bypass_cache`` redundant, and the two cover
             # disjoint halves. A provider that reports no stop reason
-            # (HuggingFace, or any parse gap) can hand back a cut body with
+            # (or any parse gap) can hand back a cut body with
             # ``is_truncated`` False: invisible here, so it IS stored, and the
             # engine's parse-time positional test is what catches it — with
             # ``bypass_cache`` the only thing stopping the retry being answered
@@ -853,8 +853,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             #                one. Correctly exempt.
             #   UNKNOWN    → NO SIGNAL. ``is_truncated`` reads False (its
             #                documented contract, base.py), so the floor does
-            #                NOT run. That is a real gap, not just a
-            #                HuggingFace footnote: ``normalize_stop_reason``
+            #                NOT run. That is a real gap, not a
+            #                corner case: ``normalize_stop_reason``
             #                maps every unrecognised value to UNKNOWN, so any
             #                finish reason a provider API adds after that table
             #                was written disables the floor on that provider.

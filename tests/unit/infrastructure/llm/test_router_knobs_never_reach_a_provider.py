@@ -14,10 +14,10 @@ that refusal.
 The same seam carries a second rule, found in review: the router forwards
 ``response_format``, ``tools``, ``tool_choice`` and ``messages`` as ``None``
 on every call that did not set them, and an adapter that tests key PRESENCE
-puts them in the body (``"response_format": null`` on Cohere, HuggingFace and
-the local OpenAI-compatible transport; ``format: "json"`` on EVERY Ollama
-call). Every kwarg a provider puts in a body must be one the API accepts, and
-an unset one is never a value.
+puts them in the body (``"response_format": null`` on Cohere, the retired
+HuggingFace text-generation adapter and the local OpenAI-compatible transport;
+``format: "json"`` on EVERY Ollama call). Every kwarg a provider puts in a body
+must be one the API accepts, and an unset one is never a value.
 
 Three layers are pinned here:
 
@@ -151,7 +151,6 @@ _ANTHROPIC_RESP = {
     "stop_reason": "end_turn",
     "usage": {"input_tokens": 5, "output_tokens": 5},
 }
-_HF_RESP = [{"generated_text": "ok"}]
 _OLLAMA_RESP = {
     "message": {"role": "assistant", "content": "ok"},
     "eval_count": 1,
@@ -192,7 +191,7 @@ TARGETS = [
     Target("cohere", "cohere", _COHERE_RESP),
     Target("gemini", "gemini", _GEMINI_RESP),
     Target("anthropic", "anthropic", _ANTHROPIC_RESP),
-    Target("huggingface", "huggingface", _HF_RESP),
+    Target("huggingface", "huggingface", _OPENAI_RESP),
     Target("local-openai", "local", _OPENAI_RESP),
     Target("local-ollama", "local", _OLLAMA_RESP, "http://localhost:11434/api"),
     Target("local-llamacpp", "local", _LLAMACPP_RESP, via_llamacpp_fallback=True),
@@ -377,9 +376,13 @@ def _skip_if_refused_by_design(label, shape):
     """The raw llama.cpp ``/completion`` fallback takes one prompt, so it refuses
     a call carrying ``messages`` before any request (#2016); the knob matrix has
     no body to inspect there. The refusal is pinned in
-    test_local_messages_transport_2016.py."""
+    test_local_messages_transport_2016.py. HuggingFace claims no tool calling,
+    so it refuses a call carrying tools the same way (pinned in
+    test_huggingface_router_2111.py)."""
     if label == "local-llamacpp" and shape == "tool_loop":
         pytest.skip("refused before any request (#2016)")
+    if label == "huggingface" and shape == "tool_loop":
+        pytest.skip("refused before any request (#2111)")
 
 
 # --- Assertions ---------------------------------------------------------------
@@ -632,7 +635,7 @@ _JSON_OBJECT_IS_SENT_AS = {
     "cohere": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-openai": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-llamacpp": lambda b: b["response_format"] == _JSON_OBJECT,
-    "huggingface": lambda b: b["parameters"]["response_format"] == _JSON_OBJECT,
+    "huggingface": lambda b: b["response_format"] == _JSON_OBJECT,
     "local-ollama": lambda b: b["format"] == "json",
     "gemini": lambda b: (
         b["generationConfig"]["response_mime_type"] == "application/json"

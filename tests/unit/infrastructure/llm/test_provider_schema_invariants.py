@@ -83,12 +83,11 @@ def test_every_offered_model_is_priced(provider: str) -> None:
     """
     from faultmaven.infrastructure.llm.pricing import lookup_rates
 
-    # NOTE the coverage limit: lookup_rates short-circuits _ZERO_COST_PROVIDERS
-    # ("local", "huggingface") to a zero rate before consulting the table, so
-    # for those two this assertion is trivially true and proves nothing about
-    # their model lists. That is a property of the pricing module's
-    # self-hosted-is-free assumption, not of this test; it is called out here
-    # so the green tick is not read as coverage it does not have.
+    # NOTE lookup_rates short-circuits _ZERO_COST_PROVIDERS to a zero rate
+    # before consulting the table. Its one member, "local", is a
+    # dynamic-catalog provider and is not checked here, so every provider this
+    # test checks is checked against the table itself (huggingface left the
+    # set in #2111: its router bills through the serving provider).
     unpriced = [
         model
         for model in PROVIDER_SCHEMA[provider]["available_models"]

@@ -11,6 +11,7 @@ from faultmaven.infrastructure.llm import pricing
 from faultmaven.infrastructure.llm.pricing import (
     estimate_cost_usd,
     lookup_rates,
+    rate_status,
     reload_rates,
 )
 
@@ -54,12 +55,27 @@ class TestEstimateCostUsd:
     def test_zero_cost_provider_is_priced_free(self):
         # Self-hosted providers are KNOWN to be free: priced=True, cost=0. This
         # keeps them out of the unpriced-calls counter.
-        for provider in ("local", "huggingface"):
-            cost, priced = estimate_cost_usd(
-                provider, "llama3.2", input_tokens=1_000_000
-            )
-            assert cost == 0.0
-            assert priced is True
+        cost, priced = estimate_cost_usd("local", "llama3.2", input_tokens=1_000_000)
+        assert cost == 0.0
+        assert priced is True
+
+    def test_huggingface_is_priced_by_its_row_not_as_free(self):
+        # The HF router bills each call through the serving provider (#2111):
+        # the default model prices from its row, and an unlisted model is
+        # unpriced (visible), never a known-free $0.
+        assert rate_status("huggingface", "llama3.2") == "unpriced"
+        cost, priced = estimate_cost_usd(
+            "huggingface",
+            "meta-llama/Llama-3.3-70B-Instruct",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        )
+        assert priced is True
+        assert cost == pytest.approx(0.74 + 0.74)
+        cost, priced = estimate_cost_usd(
+            "huggingface", "some-org/unlisted-model", input_tokens=1_000_000
+        )
+        assert (cost, priced) == (0.0, False)
 
     def test_substring_match_handles_prefixed_model_id(self):
         # OpenRouter / dated-snapshot ids still resolve via substring match.

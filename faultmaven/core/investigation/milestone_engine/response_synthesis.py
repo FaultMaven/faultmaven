@@ -33,8 +33,8 @@ def synthesized_agent_response(stop_reason: StopReason) -> str | None:
     - ``CONTENT_FILTER`` is kept apart from ``MAX_TOKENS`` because the remedies
       are opposite — a bigger budget fixes a cut and only pays to be refused
       again on a safety block.
-    - ``UNKNOWN`` is *no signal*, not *finished normally* (HuggingFace as we
-      call it reports none), so it does not share ``STOP``'s text.
+    - ``UNKNOWN`` is *no signal*, not *finished normally* (a reason we could
+      not parse), so it does not share ``STOP``'s text.
     - ``TOOL_CALLS`` gets **no** placeholder: a response that stopped to hand
       control to a tool is not a failure shape — it has no answer *yet*.
       Note what that arm does NOT cover: a response whose tool call IS the

@@ -60,8 +60,10 @@ pytestmark = [pytest.mark.unit, pytest.mark.llm]
 #                 admissible, so Gemini rides the marker tier.
 #   openrouter  — numeric ``error.code`` (the HTTP status), deliberately
 #                 skipped by the extractor; billing is the 402 itself.
-#   huggingface — ``{"error": "<string>"}``: ``error`` is not an object, so
-#                 there is no code to read; billing is the 402 itself.
+#   huggingface — ``{"error": "<string>"}``, the retired Inference API's shape:
+#                 ``error`` is not an object, so there is no code to read;
+#                 billing is the 402 itself. The router's error-body shape
+#                 (#2111) is unverified.
 #   cohere      — a bare ``{"message": ...}``, the repository's standing
 #                 example of "no machine signal".
 #   groq /

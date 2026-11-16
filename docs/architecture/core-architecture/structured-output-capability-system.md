@@ -289,7 +289,7 @@ FaultMaven ships 9 LLM providers (see `.claude/rules/llm-providers.md` § Suppor
 | **Gemini** | Gemini 2.0, Gemini 1.5 | Gemini 1.0 and older | - |
 | **Groq** | openai/gpt-oss-20b, openai/gpt-oss-120b | Llama-3.3, Mixtral, all other models | - |
 | **Fireworks** | - | All models (no strict json_schema enforcement upstream) | - |
-| **HuggingFace** | - | All models (Inference API has no json_schema enforcement) | - |
+| **HuggingFace** | - | All models (schema enforcement varies per routed provider and is unverified) | - |
 | **Cohere** | - | All models | - |
 | **OpenRouter** | Inherits from `OpenAIProvider` (routed via OpenAI-compatible API). Effective capability depends on the underlying model OpenRouter is proxying — verify per model | | |
 | **Local (Ollama / vLLM)** | - | Most models | Functionary, Hermes |

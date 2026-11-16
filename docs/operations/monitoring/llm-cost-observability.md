@@ -265,9 +265,9 @@ dollar figures as directional. Two honesty guarantees:
 - **Unknown models are flagged, not guessed:** an unpriced `(provider, model)`
   contributes `0` to `llm_cost_usd_total` and increments
   `llm_unpriced_calls_total`, so a missing entry shows up as visible
-  under-counting rather than a silently-wrong dollar figure. Self-hosted
-  providers (`local`, `huggingface`) are priced at `$0` (known-free), not
-  unpriced.
+  under-counting rather than a silently-wrong dollar figure. The self-hosted
+  `local` provider is priced at `$0` (known-free), not unpriced. `huggingface`
+  is not: its router bills each call through the serving provider.
 
 ## Prompt caching
 
