@@ -526,7 +526,9 @@ async def test_the_push_serves_only_the_rows_generation(mixed):
 
 async def test_search_documents_serves_only_the_rows_generation(mixed):
     found = await mixed.service.search_documents(
-        QUERY, limit=3, user=SimpleNamespace(user_id=OWNER, enterprise_id=None)
+        QUERY,
+        limit=3,
+        user=SimpleNamespace(user_id=OWNER, enterprise_id=STANDALONE_ENTERPRISE_ID),
     )
     assert [r["document_id"] for r in found["results"]] == [DOC]
     assert _markers(" ".join(r["content"] for r in found["results"])) == {"served"}

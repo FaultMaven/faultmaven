@@ -450,7 +450,7 @@ class KnowledgeBaseDocument(BaseModel):
     # tenant-authored content platform-wide, and the omission appeared
     # nowhere in the diff — the one failure shape review is worst at seeing.
     # The read side already fails CLOSED on the same omission (an
-    # unidentifiable principal collapses to {"scope": "global"}, i.e. reads
+    # unidentifiable principal collapses to the global arm alone, i.e. reads
     # LESS); the write side now does too, by refusing to be silent. The
     # dangerous tier is still reachable — it is just no longer reachable by
     # accident. The ChromaDB writer in this codebase,

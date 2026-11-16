@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         VerificationLevel,
     )
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import (
     get_current_billing_organization_id,
     usable_tenant_id,
@@ -196,37 +197,75 @@ def _read_tags(
 
 
 def build_kb_scope_filter(
-    owner_id: Optional[str], shared_ids: Optional[List[str]] = None
+    owner_id: Optional[str],
+    shared_ids: Optional[List[str]] = None,
+    *,
+    enterprise_id: Optional[str],
+    refuse_unusable: bool = False,
 ) -> Dict[str, Any]:
     """Build a vector-store ``where`` filter for the KB items a principal may read.
 
     The visible-id allowlist (ADR-011 D3): ``global`` ∪ items the principal
     ``owns`` ∪ items ``shared to any of the principal's teams``, as a ChromaDB
-    ``$or`` (or the bare single condition when only global applies):
+    ``$or`` (or the bare single arm when only global applies). Every arm carries
+    the tenant conjunct (#1775), so the stamp constrains all three and is never
+    a fourth way in. With ``E`` the caller's usable enterprise:
 
-    - ``{"scope": "global"}`` — platform corpus, readable by all.
-    - ``{"owner_id": owner_id}`` — the principal's own items, any scope (an
-      author always sees their own). Vector metadata tags only the immutable
-      floor (personal/global) + owner, never team, so this arm is unshare-proof.
-    - ``{"parent_document_id": {"$in": shared_ids}}`` — items shared to one of
-      the principal's teams. ``shared_ids`` (``knowledge_items.item_id`` values)
-      is resolved in SQL from the ``resource_shares`` table by the caller, which
-      is the single source of truth for team visibility. Omitted when empty
-      (ChromaDB rejects an empty ``$in``).
+    - ``scope == "global"`` and ``enterprise_id`` ∈ {E, the platform value} —
+      the platform corpus, which ``kb_seed`` and the single-tenant writers stamp
+      with ``STANDALONE_ENTERPRISE_ID`` (an ``$in`` of one when E is that value).
+    - ``owner_id == owner_id`` and ``enterprise_id == E`` — the principal's own
+      items, any scope (an author always sees their own). Vector metadata tags
+      only the immutable floor (personal/global) + owner, never team, so this
+      arm is unshare-proof.
+    - ``parent_document_id ∈ shared_ids`` and ``enterprise_id == E`` — items
+      shared to one of the principal's teams. ``shared_ids``
+      (``knowledge_items.item_id`` values) is resolved in SQL from the
+      ``resource_shares`` table by the caller, the single source of truth for
+      team visibility; the conjunct is the vector layer's own check behind it.
+      Omitted when empty (ChromaDB rejects an empty ``$in``).
 
-    Keyed entirely on the caller's own ids/allowlist, so a filter built for user
-    A can never surface user B's non-shared content. Shared by the QA retrieval
-    path (``search_documents``) and the KB cause-seeder pre-fetch
-    (``MilestoneEngine._prefetch_kb_context``).
+    ``enterprise_id`` is resolved through ``usable_tenant_id``, the predicate
+    ``resolve_shared_kb_ids`` uses. With none usable (``None``, or the
+    Standalone sentinel under ``TENANT_PROVIDER=multi``) the filter is the
+    platform tier alone — global chunks stamped with the platform value — and
+    the owner and shared arms are omitted: the pre-fetch, ``kb_qa`` and
+    ``POST /knowledge/search`` narrow. ``refuse_unusable`` raises
+    ``RuntimeError`` instead, for the callers whose empty answer is a claim (the
+    runbook dedup and the knowledge-base question lookup): a search that never
+    saw the driver's own runbooks must not answer "nothing similar" (#944).
+
+    A chunk with no ``enterprise_id`` matches no arm, so it is served to no one.
     """
-    scope_conditions: List[Dict[str, Any]] = [{"scope": "global"}]
+    tenant_id = usable_tenant_id(enterprise_id)
+    if tenant_id is None:
+        if refuse_unusable:
+            raise RuntimeError(
+                "build_kb_scope_filter: no usable enterprise for the KB read "
+                "scope; refusing to search the platform tier alone in place of "
+                "the principal's knowledge"
+            )
+        return {
+            "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+        }
+    global_tenants = [tenant_id]
+    if tenant_id != STANDALONE_ENTERPRISE_ID:
+        global_tenants.append(STANDALONE_ENTERPRISE_ID)
+    arms: List[Dict[str, Any]] = [
+        {"$and": [{"scope": "global"}, {"enterprise_id": {"$in": global_tenants}}]}
+    ]
     if owner_id:
-        scope_conditions.append({"owner_id": owner_id})
+        arms.append({"$and": [{"owner_id": owner_id}, {"enterprise_id": tenant_id}]})
     if shared_ids:
-        scope_conditions.append({"parent_document_id": {"$in": list(shared_ids)}})
-    return (
-        {"$or": scope_conditions} if len(scope_conditions) > 1 else scope_conditions[0]
-    )
+        arms.append(
+            {
+                "$and": [
+                    {"parent_document_id": {"$in": list(shared_ids)}},
+                    {"enterprise_id": tenant_id},
+                ]
+            }
+        )
+    return {"$or": arms} if len(arms) > 1 else arms[0]
 
 
 async def resolve_shared_kb_ids(
@@ -531,9 +570,11 @@ class KnowledgeService:
                 # Search via vector store interface if available
                 if self._vector_store:
                     with self._tracer.trace("knowledge_vector_search"):
-                        # Default to global scope when caller provides no filter —
-                        # prevents unintentional cross-tenant reads.
-                        effective_filters = filters if filters else {"scope": "global"}
+                        # No filter from the caller: the platform tier alone,
+                        # narrower than any caller's scope.
+                        effective_filters = filters or build_kb_scope_filter(
+                            None, enterprise_id=None
+                        )
                         results = await self._vector_store.hybrid_search(
                             collection_name=KB_COLLECTION,
                             query=sanitized_query,
@@ -2840,15 +2881,17 @@ class KnowledgeService:
 
             # Resolve the "shared-to-my-teams" arm from the share table (source
             # of truth), then build the visible-id allowlist filter
-            # (global ∪ owned ∪ shared). ADR-013 §D4 / ADR-011 D3. The share
-            # rows are matched against the caller's own org, so a row stamped
+            # (global ∪ owned ∪ shared), each arm conjuncted with the caller's
+            # enterprise (#1775). ADR-013 §D4 / ADR-011 D3. The share rows are
+            # matched against the caller's own enterprise, so a row stamped
             # with a foreign tenant never widens this filter.
+            enterprise_id = getattr(user, "enterprise_id", None) if user else None
             shared_ids = await resolve_shared_kb_ids(
-                self._share_repo,
-                team_ids,
-                getattr(user, "enterprise_id", None) if user else None,
+                self._share_repo, team_ids, enterprise_id
             )
-            scope_filter: Dict[str, Any] = build_kb_scope_filter(user_id, shared_ids)
+            scope_filter: Dict[str, Any] = build_kb_scope_filter(
+                user_id, shared_ids, enterprise_id=enterprise_id
+            )
 
             if document_type:
                 scope_filter = {

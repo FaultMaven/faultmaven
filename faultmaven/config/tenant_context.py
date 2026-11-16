@@ -186,17 +186,18 @@ def usable_tenant_id(enterprise_id: Optional[str]) -> Optional[str]:
       ``api/v1/auth_dependencies.require_actor_enterprise`` at the route both
       turn a ``None`` here into a 403 (:data:`UNSCOPED_REQUEST_MSG`);
     * **degrade** — the service-layer read paths (the case read allowlist, the
-      KB and agent team arms) turn it into an empty allowlist, which narrows
+      KB and agent team arms) turn it into an empty allowlist, and the KB read
+      scope (``build_kb_scope_filter``, #1775) into the platform tier alone for
+      the KB pre-fetch, ``kb_qa`` and ``POST /knowledge/search``: each narrows
       rather than breaks;
-    * **refuse, at the service layer** — the runbook-similarity consumers.
-      Degrading is only safe where an empty result *means* "you may see less".
-      On a dedup check it means "nothing similar exists", which the caller
-      turns into "generate a new runbook" — a substantive claim derived from a
-      search that was refused (#944). ``RunbookKnowledgeBase.search_by_text``
-      therefore raises ``KnowledgeBaseError`` rather than returning ``[]``.
-      ``terminal_transitions._find_similar_runbooks_for_case`` still checks
-      here first, so its common path stays a quiet logged skip that reports
-      "not checked" rather than an exception.
+    * **refuse, at the service layer** — the KB reads whose empty answer is a
+      claim: the runbook dedup (engine and report route) and the lookup for a
+      user's question about the knowledge base. Degrading is only safe where
+      an empty result *means* "you may see less". On a dedup check it means
+      "nothing similar exists", which the caller turns into "generate a new
+      runbook" — a substantive claim derived from a search that was refused
+      (#944). ``build_kb_scope_filter(refuse_unusable=True)`` therefore raises,
+      and each caller reports that it could not check.
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
     it identifies the single-tenant deployment. Refusing it here is what makes

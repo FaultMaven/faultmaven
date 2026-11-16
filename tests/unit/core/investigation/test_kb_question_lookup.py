@@ -229,6 +229,19 @@ class TestTheLookup:
         assert lookup.status is KbLookupStatus.UNAVAILABLE
         deps.knowledge_service.search_knowledge.assert_not_awaited()
 
+    async def test_a_case_with_no_usable_enterprise_is_unavailable_not_narrowed(
+        self,
+    ):
+        """#1775: every arm of the scope carries the case's enterprise; with
+        none, only the platform tier is left, which never saw the driver's own
+        runbooks — so "no runbook found" would be a claim it did not establish."""
+        deps = _deps([_hit("rb_1", 0.9)])
+        case = _case()
+        case.enterprise_id = None
+        lookup = await look_up_kb_question(deps, case, LOOKUP_QUESTION)
+        assert lookup.status is KbLookupStatus.UNAVAILABLE
+        deps.knowledge_service.search_knowledge.assert_not_awaited()
+
     async def test_no_knowledge_service_is_unavailable(self):
         deps = SimpleNamespace(
             knowledge_service=None, team_service=None, share_repository=None

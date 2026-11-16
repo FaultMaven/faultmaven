@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.core.investigation import terminal_transitions as tt
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.turn_commit import TurnCommitPlan
@@ -50,7 +51,17 @@ pytestmark = [pytest.mark.unit]
 
 _EMBED_QUERY = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
 
-_SCOPE = {"$or": [{"scope": "global"}, {"owner_id": "user-1"}]}
+_SCOPE = {
+    "$or": [
+        {
+            "$and": [
+                {"scope": "global"},
+                {"enterprise_id": {"$in": ["org-1", STANDALONE_ENTERPRISE_ID]}},
+            ]
+        },
+        {"$and": [{"owner_id": "user-1"}, {"enterprise_id": "org-1"}]},
+    ]
+}
 
 
 async def _scope_resolver():
@@ -142,7 +153,9 @@ async def test_unavailable_embedder_refuses_instead_of_recommending_generate():
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
             await service.get_available_report_types(
-                case=_case(), requester_user_id="user-1"
+                case=_case(),
+                requester_user_id="user-1",
+                requester_enterprise_id="org-1",
             )
 
     assert "No similar runbooks found" not in str(excinfo.value)

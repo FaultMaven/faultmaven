@@ -101,15 +101,12 @@ await knowledge_vector_store.add_documents(
 results = await knowledge_vector_store.search(
     query="DB timeouts",
     k=5,
-    # visible-id allowlist (ADR-011 D3): global ∪ owned ∪ shared-to-my-teams.
+    # visible-id allowlist (ADR-011 D3): global ∪ owned ∪ shared-to-my-teams,
+    # each arm conjuncted with the caller's enterprise (#1775).
     # shared_ids is resolved in SQL from resource_shares by the caller.
-    scope_filter={
-        "$or": [
-            {"scope": "global"},
-            {"owner_id": user_id},
-            {"parent_document_id": {"$in": shared_ids}},
-        ]
-    },
+    scope_filter=build_kb_scope_filter(
+        user_id, shared_ids, enterprise_id=enterprise_id
+    ),
 )
 
 # The unified kb_qa tool builds this filter automatically from the caller's identity.

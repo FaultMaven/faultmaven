@@ -185,9 +185,10 @@ async def test_search_documents_scopes_the_share_lookup_to_the_requesting_user(o
 
 @pytest.mark.security
 @pytest.mark.asyncio
-async def test_search_documents_still_scopes_by_owner_when_the_team_arm_collapses():
-    """An org-less requester loses the team arm but keeps the owner/global arms,
-    so the filter is narrower — never wider."""
+async def test_search_documents_reads_the_platform_tier_when_the_requester_has_no_enterprise():
+    """An enterprise-less requester loses the team arm and, since every arm
+    carries the enterprise conjunct (#1775), the owner arm too: the platform
+    tier alone, so the filter is narrower — never wider."""
     repo = _share_repo()
     store = _RecordingVectorStore()
     service = _knowledge_service(repo, store)
@@ -196,9 +197,9 @@ async def test_search_documents_still_scopes_by_owner_when_the_team_arm_collapse
     await service.search_documents("crashloop", user=user, team_ids=["team-1"])
 
     repo.list_resource_ids.assert_not_awaited()
-    where = store.wheres[0]
-    assert {"owner_id": "u1"} in where["$or"]
-    assert not any("parent_document_id" in cond for cond in where["$or"])
+    assert store.wheres == [
+        {"$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]}
+    ]
 
 
 # =============================================================================

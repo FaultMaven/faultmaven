@@ -397,6 +397,12 @@ stamp with a metadata merge, one document at a time, and only on chunks that
 still carried the stamp they were listed under at an id-only read just before
 the write. Chunks whose parent has no row are never written.
 
+**Why it matters to reads (#1775):** every KB read conjuncts `enterprise_id`
+onto each arm of its scope, so a chunk with no stamp is served to no one and a
+chunk with a wrong stamp is hidden from its own tenant. Nothing restamps at
+startup: a Standalone install that still holds chunks written before #1780 runs
+this job once (dry run, then `--no-dry-run`, as below) and its check.
+
 **A dry run unless `--no-dry-run`.** Run the dry run first and read the counts:
 
 ```bash
@@ -440,9 +446,10 @@ A row read that is not proven unfiltered writes nothing and fails the run.
 
 Every count except `items` is in chunks.
 
-**The check that unblocks #1775:** after the real run, a dry run reports
+**The check:** after the real run, a dry run reports
 `status: completed`, `proven: true`, `chunks > 0`, `already_correct == chunks`,
-`unstamped: 0` and `mismatched: 0`.
+`unstamped: 0` and `mismatched: 0`. It was #1775's gate, and it is what says
+every chunk with a row is served to its own tenant.
 
 **Reaching `unattributable: 0`** (the check above does not require it). After
 the backfill, the §1b sweep's `unattributed` bucket holds only orphans, so the

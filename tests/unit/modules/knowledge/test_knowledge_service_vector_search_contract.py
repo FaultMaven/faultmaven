@@ -127,12 +127,20 @@ def test_scope_filter_never_carries_team_metadata():
         build_kb_scope_filter,
     )
 
-    f = build_kb_scope_filter("user-1", ["kb_shared_1", "kb_shared_2"])
+    f = build_kb_scope_filter(
+        "user-1", ["kb_shared_1", "kb_shared_2"], enterprise_id="ent-1"
+    )
     flat = repr(f)
     assert "team_id" not in flat
     assert "'team'" not in flat  # no scope == 'team' condition
-    # The shared arm is an id allowlist against the immutable parent id.
-    assert {"parent_document_id": {"$in": ["kb_shared_1", "kb_shared_2"]}} in f["$or"]
+    # The shared arm is an id allowlist against the immutable parent id, under
+    # the caller's enterprise (#1775).
+    assert {
+        "$and": [
+            {"parent_document_id": {"$in": ["kb_shared_1", "kb_shared_2"]}},
+            {"enterprise_id": "ent-1"},
+        ]
+    } in f["$or"]
 
 
 def test_vector_metadata_has_no_team_field():
