@@ -55,11 +55,18 @@ async def case_retrieval_scope(
 
     A failed team lookup narrows the scope to global ∪ the driver's personal
     KB; it never widens it. ``raise_on_failure`` re-raises instead, and also
-    refuses a team service with no share repository and a case with no usable
-    enterprise, each of which would narrow it the same way. The runbook dedup
-    and the knowledge-base question lookup set it: a narrowed search would back
-    a "checked, nothing similar" or "no runbook found" claim it did not
-    establish, so each caller reports that it could not check instead.
+    refuses a team service with no share repository, which would narrow it the
+    same way. The runbook dedup and the knowledge-base question lookup set it:
+    a narrowed search would back a "checked, nothing similar" or "no runbook
+    found" claim it did not establish, so each caller reports that it could not
+    check instead.
+
+    For a case with no usable enterprise, ``raise_on_failure`` is only the
+    backstop: no caller reaches that refusal. Each checks ``usable_tenant_id``
+    first — the engine's runbook dedup skips ("did not run"), the
+    knowledge-base question lookup answers ``NOT_SEARCHABLE`` before it builds
+    a scope, and ``kb_qa`` refuses through a ``None`` scope on its tool
+    context. The pre-fetch, which does not set it, reads the platform tier.
     """
     from faultmaven.config.tenant_context import usable_tenant_id
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (

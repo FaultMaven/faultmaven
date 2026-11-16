@@ -382,8 +382,9 @@ def kb_lookup_verdict(
     """The lookup in a few lines, for the minimal prompt a turn falls back to
     when the full one does not fit (its block is then dropped with the rest).
 
-    Carries what the reply must not get wrong — found, nothing, or could not
-    search — and the candidates' titles, never their text. Empty when there is
+    Carries what the reply must not get wrong — found, nothing, could not
+    search, or cannot search for this case — and the candidates' titles, never
+    their text. Empty when there is
     no lookup. ``element(name, body)`` fences the titles, which are
     caller-controlled: the fallback passes its own, so its trust rule names
     the block.
