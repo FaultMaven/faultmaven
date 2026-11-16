@@ -2,9 +2,9 @@
 
 Every installed census client accepts a private CA given through
 ``TLS_EXTRA_CA_FILE`` once ``apply_root_set`` has run, and refuses it without,
-measured by loopback handshake. With ``apply_root_set`` made a no-op in every
-process the check starts (the behaviour before #2692), it fails, client by
-client. The Test Cloud job has every client; Test Standalone has the stdlib,
+measured by loopback handshake; and a Postgres CRL input refuses the start
+(#2787). With ``apply_root_set`` made a no-op in every process the check starts
+(the behaviour before #2692), it fails, client by client. The Test Cloud job has every client; Test Standalone has the stdlib,
 aiohttp, httpx, requests, redis, gRPC and asyncpg, and reports the rest.
 """
 
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.integration
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "check_tls_root_set.py"
-#: Fifteen rows, two runs each, each a fresh interpreter: well over a measured
+#: Eighteen rows, two runs each, each a fresh interpreter: well over a measured
 #: 35 s locally, and a hung client must not hang the job.
 BUDGET_SECONDS = 600
 

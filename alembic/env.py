@@ -18,9 +18,10 @@ Environment Variables:
         persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
         value that does not parse), an online migration refuses and exits 1
         (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. A value with leading or trailing whitespace is
-        refused in both modes, exit 1 (#1789). Only the URL is read: no other
-        database setting is validated here.
+        dialect from it. A value with leading or trailing whitespace
+        (#1789), or whose query names a Postgres root input outside the TLS
+        root set (#2787), is refused in both modes, exit 1. Only the URL is
+        read: no other database setting is validated here.
 
 Usage:
     alembic upgrade head
@@ -43,7 +44,11 @@ from faultmaven.config.settings import (
     DatabaseUrlWhitespaceError,
     configured_database_url,
 )
-from faultmaven.config.tls_root_set import apply_root_set
+from faultmaven.config.tls_root_set import (
+    apply_root_set,
+    pg_root_inputs_in_url,
+    pg_url_refusal,
+)
 
 # Load .env as the app does, before anything below reads the environment: the
 # working directory's file only (run alembic from the repository root), and
@@ -88,9 +93,11 @@ def get_database_url(*, require_persistent: bool) -> str:
     is validated, so a setting alembic never uses cannot refuse a migration.
 
     A value with leading or trailing whitespace is refused in both modes, exit
-    1, as the app refuses it (#1789). Otherwise offline (``--sql``) opens no
-    database: the URL only names the dialect, so it is not refused, and an
-    empty value falls back to the default file URL.
+    1, as the app refuses it (#1789), and so is one whose query names a
+    Postgres root input outside the TLS root set (``pg_root_inputs_in_url``,
+    #2787). Otherwise offline (``--sql``) opens no database: the URL only names
+    the dialect, so it is not refused, and an empty value falls back to the
+    default file URL.
 
     Returns:
         str: Database connection URL
@@ -99,6 +106,9 @@ def get_database_url(*, require_persistent: bool) -> str:
         url = configured_database_url()
     except DatabaseUrlWhitespaceError as exc:
         exit_refusing(str(exc))
+    root_inputs = pg_root_inputs_in_url(url) if url else []
+    if root_inputs:
+        exit_refusing(pg_url_refusal(root_inputs))
     if require_persistent and url is not None:
         # Set but EMPTY refuses too, rather than falling back to the default
         # file: the app's predicate refuses an empty URL, and the migration must

@@ -650,6 +650,17 @@ when that fails, connects in plaintext: put the server's CA in
 `DATABASE_URL` to fail closed. The API's asyncpg path under `prefer` is
 unaffected.
 
+The Postgres drivers also load roots from a CRL input and a service file, so
+each of these refuses the start, named, with no part of the URL shown:
+`PGSSLCRL`, `PGSSLCRLDIR` or `PGSERVICE` set to any value, empty included; a
+`DATABASE_URL` whose query names `sslcrl`, `sslcrldir`, `service` or `dsn`; and
+a `root.crl` file in `.postgresql` under your home directory (`HOME`, or the
+password database's home; on Windows also `%APPDATA%\postgresql`), which
+refuses a Standalone SQLite start too. Unset the variable, remove the key or
+the file, and put a private CA in `TLS_EXTRA_CA_FILE`. Postgres CRL checking is
+not supported under the set. FaultMaven sets `PGGSSENCMODE=disable` unless you
+set it, so libpq never uses GSSAPI encryption in place of TLS.
+
 ## Related Documentation
 
 - [Context Management Guide](./CONTEXT_MANAGEMENT.md)

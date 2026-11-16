@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy.engine import make_url
 
+from faultmaven.config.tls_root_set import pg_root_inputs_in_url, pg_url_refusal
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import DatabaseSettings
 
@@ -200,8 +202,15 @@ def pg_connect_args(
 
     Raises:
         ValueError: The URL's query sets one of these itself (see
-            ``_OWNED_CONNECT_KEYWORDS``).
+            ``_OWNED_CONNECT_KEYWORDS``), or, for any database, names a
+            Postgres root input outside the TLS root set
+            (``pg_root_inputs_in_url``, #2787): this engine's URL can come from
+            a nested ``DATABASE`` variable or the caller, which the start's
+            check does not read.
     """
+    root_inputs = pg_root_inputs_in_url(database_url)
+    if root_inputs:
+        raise ValueError(pg_url_refusal(root_inputs))
     if not is_asyncpg_url(database_url):
         return {}
     query = make_url(database_url).query

@@ -33,6 +33,24 @@ Configuration). ``root_set_status`` (``features.tls_root_set`` on ``GET
 /admin/config/status``) re-reads the set's sources, writing nothing, and
 compares them with the bytes of the file the environment names. Imports no
 client.
+
+The Postgres drivers have root inputs of their own outside these variables
+(#2786, #2834): a CRL source (``PGSSLCRL``, ``PGSSLCRLDIR``, a URL's ``sslcrl``
+or ``sslcrldir``, ``root.crl`` under ``~/.postgresql``), whose every
+certificate asyncpg and libpq load as a trusted root, and a service-file section
+(``PGSERVICE``, a URL's ``service``), whose ``sslrootcert`` and ``sslcrl`` win
+over the environment. libpq, the migration process, reads all of them. asyncpg,
+the app's driver, reads a CRL file through ``PGSSLCRL`` or the home default, and
+the URL keys and a service file only when handed a DSN (a URL's ``dsn``). No
+file is safe to export in their place (an empty one does not load, and any file
+that loads turns on CRL checking), so each one present at start refuses it,
+named without echoing the database URL:
+a variable with any value, a ``DATABASE_URL`` query naming one of
+``PG_ROOT_INPUT_URL_KEYS`` (``dsn`` too, which carries any of them), and a
+``root.crl`` under ``Path.home()`` or the effective user's password-database
+home (on Windows, ``%APPDATA%\\postgresql`` too). Postgres CRL checking is not
+supported under the set. ``PGGSSENCMODE`` is set to ``disable`` unless already
+set, so libpq never negotiates GSSAPI encryption in place of TLS (#2788).
 """
 
 from __future__ import annotations
@@ -50,6 +68,8 @@ from pathlib import Path
 from typing import NoReturn
 
 from faultmaven.config.settings import (
+    DatabaseUrlWhitespaceError,
+    configured_database_url,
     env_var_spellings,
     load_settings_dotenv,
     set_env_var,
@@ -79,6 +99,17 @@ FILE_VARIABLES = (
 #: and refused by httpx and requests).
 DIRECTORY_VARIABLE = "SSL_CERT_DIR"
 OWNED_VARIABLES = FILE_VARIABLES + (DIRECTORY_VARIABLE,)
+
+#: Postgres root inputs outside the set, refused when present with any value:
+#: libpq's (and asyncpg's) CRL file, libpq's CRL directory, and the service
+#: file's section name. ``PGSERVICEFILE`` and ``PGSYSCONFDIR`` name no section.
+PG_ROOT_INPUT_VARIABLES = ("PGSSLCRL", "PGSSLCRLDIR", "PGSERVICE")
+#: The same inputs as a database URL's query keys, plus ``dsn``: both dialects
+#: pass its value to the driver's ``connect(dsn=...)``, which can carry any.
+PG_ROOT_INPUT_URL_KEYS = ("sslcrl", "sslcrldir", "service", "dsn")
+#: libpq's default ``prefer`` negotiates GSSAPI encryption, not TLS, when
+#: Kerberos credentials are present; set to ``disable`` unless already set.
+GSSENC_VARIABLE = "PGGSSENCMODE"
 
 #: Shipped in the package (``pyproject.toml`` package data); holds only a README.
 EMPTY_CAPATH = str(Path(__file__).with_name("tls_empty_capath"))
@@ -121,11 +152,13 @@ def apply_root_set() -> RootSet:
     named = extra is None and os_file
     path = os_source if named else os.path.join(_set_directory(), _name(pem))
     _check_inherited(path, pem, extra)
+    _check_postgres_root_inputs()
     if not named:  # written, or re-written if missing or altered (self-heal)
         _write_set(path, pem)
     for name in FILE_VARIABLES:
         os.environ[name] = path
     os.environ[DIRECTORY_VARIABLE] = EMPTY_CAPATH
+    os.environ.setdefault(GSSENC_VARIABLE, "disable")  # an operator's value stays
     sources = (os_source,) + ((extra,) if extra else ())
     return RootSet(path, sources, extra, len(pem_digests(pem)))
 
@@ -376,6 +409,85 @@ def _refuse(name: str, value: str, reason: str) -> NoReturn:
         f"{name} itself: unset {name}, or put its CA certificates in "
         f"{EXTRA_CA_FILE_SETTING}."
     )
+
+
+def pg_root_inputs_in_url(database_url: str) -> list[str]:
+    """The ``PG_ROOT_INPUT_URL_KEYS`` in ``database_url``'s query, as the
+    engine's own parser (``make_url``) reads it; none for a value that does not
+    parse, which no engine can open."""
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.exc import ArgumentError
+
+    try:
+        query = make_url(database_url).query
+    except (ArgumentError, ValueError):
+        return []
+    return [key for key in PG_ROOT_INPUT_URL_KEYS if key in query]
+
+
+def pg_url_refusal(keys: list[str]) -> str:
+    """Why a database URL naming ``keys`` is refused: the keys only, never the
+    URL, which can hold a password."""
+    return (
+        f"DATABASE_URL's query names {', '.join(keys)}, a Postgres root input "
+        f"outside the TLS root set: remove it from DATABASE_URL. {_PG_REMEDY}"
+    )
+
+
+_PG_REMEDY = (
+    "The Postgres drivers trust every certificate a CRL input holds, and a "
+    "service file's sslrootcert and sslcrl win over the set; put a private CA "
+    f"in {EXTRA_CA_FILE_SETTING}. Postgres CRL checking is not supported under "
+    "the root set."
+)
+
+
+def _check_postgres_root_inputs() -> None:
+    """Refuse a Postgres CRL or service-file input present at start (#2786,
+    #2834), naming it; never a value or the database URL."""
+    for name in PG_ROOT_INPUT_VARIABLES:
+        if name in os.environ:
+            raise SystemExit(
+                f"TLS root set: {name} is set, a Postgres root input outside "
+                f"the set: unset {name}. {_PG_REMEDY}"
+            )
+    try:
+        url = configured_database_url()
+    except DatabaseUrlWhitespaceError:  # the settings refuse it themselves
+        url = None
+    keys = pg_root_inputs_in_url(url) if url else []
+    if keys:
+        raise SystemExit(f"TLS root set: {pg_url_refusal(keys)}")
+    for path in _root_crl_paths():
+        if os.path.exists(path):  # a directory fails closed; a dangling link is none
+            raise SystemExit(
+                f"TLS root set: {path} exists, a Postgres root input outside "
+                f"the set (the drivers' default CRL file): remove or rename it. "
+                f"{_PG_REMEDY}"
+            )
+
+
+def _root_crl_paths() -> list[str]:
+    """Each default ``root.crl`` a driver reads for this process: under
+    ``Path.home()`` (asyncpg; libpq when ``HOME`` is set) and the effective
+    user's password-database home (libpq otherwise), and on Windows under
+    ``%APPDATA%\\postgresql`` (libpq). A home that cannot be resolved is none."""
+    homes = []
+    try:
+        homes.append(str(Path.home()))
+    except (RuntimeError, KeyError):
+        pass
+    try:
+        import pwd
+
+        homes.append(pwd.getpwuid(os.geteuid()).pw_dir)
+    except (ImportError, KeyError):  # no password database (Windows), no entry
+        pass
+    paths = [os.path.join(home, ".postgresql", "root.crl") for home in homes]
+    appdata = os.environ.get("APPDATA") if sys.platform == "win32" else None
+    if appdata:
+        paths.append(os.path.join(appdata, "postgresql", "root.crl"))
+    return list(dict.fromkeys(paths))
 
 
 def _write_set(path: str, pem: bytes) -> None:

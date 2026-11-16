@@ -736,7 +736,8 @@ def _no_inherited_tls_root_set(monkeypatch):
     """Each test starts with no TLS root variable set, and leaves none (#2692).
 
     ``apply_root_set`` (every launcher and ``fm-*`` ``main()``) writes the
-    variables into ``os.environ``. Cleared before in every letter case (the
+    variables into ``os.environ``, and ``PGGSSENCMODE`` unless it is set
+    (#2788). Cleared before in every letter case (the
     setting binds in any), so an inherited one never refuses a test's launch;
     restored after, so no test leaks a root set.
 
@@ -747,9 +748,14 @@ def _no_inherited_tls_root_set(monkeypatch):
     it reached later module fixtures and subprocesses. Each name is set before
     it is deleted: ``delenv`` records nothing for an absent name.
     """
-    from faultmaven.config.tls_root_set import EXTRA_CA_FILE_SETTING, OWNED_VARIABLES
+    from faultmaven.config.tls_root_set import (
+        EXTRA_CA_FILE_SETTING,
+        GSSENC_VARIABLE,
+        OWNED_VARIABLES,
+    )
 
-    owned = {name.upper() for name in (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING)}
+    written = (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING, GSSENC_VARIABLE)
+    owned = {name.upper() for name in written}
     for name in owned | {key for key in os.environ if key.upper() in owned}:
         monkeypatch.setenv(name, "x")
         monkeypatch.delenv(name)
