@@ -54,6 +54,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.models.interfaces import (
@@ -64,7 +65,6 @@ from faultmaven.models.interfaces import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
-from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 
 @pytest.mark.asyncio
 async def test_service_with_interface_mocks():
@@ -73,7 +73,8 @@ async def test_service_with_interface_mocks():
     # interface does not declare, or a call with the wrong arguments, fails
     # the test
     vector_store = create_autospec(IKnowledgeVectorStore, instance=True)
-    vector_store.search.return_value = [
+    # search_knowledge reads through the store's hybrid pipeline
+    vector_store.hybrid_search.return_value = [
         {
             "id": "kb_pool_chunk_0",
             "content": "Raise the connection pool size",
@@ -98,7 +99,7 @@ async def test_service_with_interface_mocks():
 
     # Validate interactions
     sanitizer.asanitize.assert_awaited_once_with("database timeout")
-    vector_store.search.assert_awaited_once_with(
+    vector_store.hybrid_search.assert_awaited_once_with(
         collection_name=KB_COLLECTION,
         query="database timeout",
         k=3,
@@ -106,7 +107,11 @@ async def test_service_with_interface_mocks():
         where={
             "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
         },
+        min_score=None,
+        # The service's own row check, handed to the store (#2397)
+        admit=service.admitted_generations,
     )
+    vector_store.search.assert_not_awaited()
 
     # Validate results
     assert [r.title for r in results] == ["Database pool exhaustion"]
