@@ -509,6 +509,7 @@ async def _cancelled_mid_add(kb, item_id: str, *, shipped: bool) -> int:
                 scope="global",
                 prechunked=[(_text("late"), list(Q))],
                 shipped=shipped,
+                owner_id=None if shipped else OWNER,
                 record=None if shipped else record_nothing,
             )
         )
@@ -610,6 +611,7 @@ async def test_an_authored_cancel_after_completion_keeps_the_row_and_no_vector(k
                 enterprise_id=STANDALONE_ENTERPRISE_ID,
                 scope="global",
                 prechunked=[(_text("after-completion"), list(Q))],
+                owner_id=OWNER,
                 record=record_nothing,
             )
 
@@ -632,6 +634,7 @@ async def test_a_delete_whose_vector_delete_times_out_leaves_nothing_served(kb):
         enterprise_id=STANDALONE_ENTERPRISE_ID,
         scope="global",
         prechunked=[(_text("late"), list(Q))],
+        owner_id=OWNER,
         record=record_nothing,
     )
     assert AUTHORED_LATE in await _push(kb)  # control: a live document is served

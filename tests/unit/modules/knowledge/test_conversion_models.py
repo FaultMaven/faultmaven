@@ -10,17 +10,19 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     DraftStatus,
     DraftUpdateRequest,
     FailureModeAnalysis,
-    QualityScore,
     RedactionEntry,
     RedactionReport,
     SourceAssessment,
     SourceFileInfo,
     TriageResult,
-    ValidationResult,
     VerifyResponse,
     generate_conversion_id,
     generate_draft_id,
     generate_runbook_id,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
+    ValidationResult,
 )
 
 

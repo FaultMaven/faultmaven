@@ -88,10 +88,13 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retirement import (
     discard_drafts_naming_item,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+    GateUnavailable,
     aenforce_runbook_quality,
     aenforce_runbook_security,
+)
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.domain.trace_purge import (
     TRACE_ERASER_NOT_WIRED,
@@ -1414,8 +1417,9 @@ class KnowledgeService:
             # holding a credential is refused, never rewritten. Every
             # non-shipped publish converges here — upload, and ``verify_draft``
             # for a template, conversion or case draft, including a draft
-            # whose ``validation_passed`` predates the secret check.
-            await aenforce_runbook_security(content)
+            # whose ``validation_passed`` predates the secret check. On every
+            # such path the owner is the user who asked: the check's principal.
+            await aenforce_runbook_security(content, principal=owner_id)
 
             # The title, before any row or vector carries it (#1981). A title
             # that cannot be scrubbed (``RedactionUnavailableError`` under a
@@ -2077,14 +2081,11 @@ class KnowledgeService:
             # exists. A refusal must leave nothing behind, which is only free
             # if nothing has happened yet.
             #
-            # Off the event loop: the validator is pure CPU (compiled regexes +
-            # yaml.safe_load, no shared mutable state, so thread-safe) and
-            # measured at 31.5 ms on the largest shipped runbook (48 KB),
-            # scaling with size toward the upload cap. Blocking the loop for
-            # that long stalls every other in-flight request. This is the ONLY
-            # place the gate runs now — the upload route's second pass was
-            # deleted (#1214 review) — so one hop covers both publish paths.
-            await aenforce_runbook_quality(content)
+            # In a worker its deadline stops (#2661), the ONLY place the full
+            # gate runs: the upload route's second pass was deleted (#1214
+            # review). The score it returns is stored with the draft row, so
+            # reading the draft never runs the gate.
+            quality = await aenforce_runbook_quality(content, principal=owner_id)
 
             from faultmaven.infrastructure.persistence.models import (
                 ConversionDraftModel,
@@ -2214,6 +2215,8 @@ class KnowledgeService:
                         status="verified",
                         source_type="document",
                         validation_passed=True,
+                        quality_score=quality.overall,
+                        quality_details=quality.model_dump(),
                         knowledge_item_id=document_id,
                         domain=fm_meta.get("domain"),
                         service=fm_meta.get("service"),
@@ -2277,7 +2280,12 @@ class KnowledgeService:
 
             return response
 
-        except (RunbookQualityError, KbReceiptExistsError, IndexAdmissionRefused):
+        except (
+            RunbookQualityError,
+            KbReceiptExistsError,
+            IndexAdmissionRefused,
+            GateUnavailable,
+        ):
             # A refused draft is a client-side outcome (422), not a service
             # fault, and so is a document the indexing window refused (413/503,
             # #2055). Logged as a warning by the global handler; re-raised here
@@ -3098,7 +3106,7 @@ class KnowledgeService:
             }
 
     async def update_document_metadata(
-        self, document_id: str, **kwargs
+        self, document_id: str, *, principal: str, **kwargs
     ) -> Optional[Dict[str, Any]]:
         """Update a published runbook's fields in knowledge_items.
 
@@ -3115,7 +3123,8 @@ class KnowledgeService:
         new ``title`` is redacted (#1981). A ``content`` longer than the draft
         bound is refused with ``ValidationException`` (422), and one the
         indexing window cannot fit with ``IndexAdmissionRefused`` (413/503),
-        both before anything is embedded or written (#2055).
+        both before anything is embedded or written (#2055). ``principal``, the
+        user who asked, holds the check's slot (#2661).
 
         **A content change writes a new generation** (#2388, #952). The new
         content's chunks are written first, under a freshly minted
@@ -3239,7 +3248,7 @@ class KnowledgeService:
                 # the 91 shipped bodies — IP addresses, and commands cut
                 # (``get-login-password <PASSWORD_…> "$REGION"``) — on every
                 # edit, and redacted nothing on create.
-                await aenforce_runbook_security(content)
+                await aenforce_runbook_security(content, principal=principal)
                 updates["content"] = content
             if kwargs.get("title"):
                 updates["title"] = await sanitize_item_title(
@@ -3371,7 +3380,12 @@ class KnowledgeService:
                 ),
             }
 
-        except (RunbookQualityError, ValidationException, IndexAdmissionRefused):
+        except (
+            RunbookQualityError,
+            ValidationException,
+            IndexAdmissionRefused,
+            GateUnavailable,
+        ):
             # A refused body (422, the draft bound's included) or a document
             # the indexing window refused (413/503): client-side outcomes, not
             # faults, so re-raised without the ERROR line, as
@@ -3382,7 +3396,7 @@ class KnowledgeService:
             raise
 
     async def bulk_update_documents(
-        self, document_ids: List[str], updates: Dict[str, Any]
+        self, document_ids: List[str], updates: Dict[str, Any], *, principal: str
     ) -> Dict[str, Any]:
         """Bulk update document metadata. An ``updates`` naming ``content`` is
         refused with ``ValidationException`` (422) before any document is
@@ -3405,7 +3419,10 @@ class KnowledgeService:
 
         for doc_id in document_ids:
             try:
-                result = await self.update_document_metadata(doc_id, **updates)
+                fields = {k: v for k, v in updates.items() if k != "principal"}
+                result = await self.update_document_metadata(
+                    doc_id, principal=principal, **fields
+                )
                 if result:  # If not None (document found and updated)
                     updated_count += 1
                 else:

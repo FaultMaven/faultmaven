@@ -90,10 +90,12 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionDraft,
     ConversionStatus,
     DraftStatus,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (  # noqa: E501
@@ -845,7 +847,10 @@ class TestUpdate:
 
         with pytest.raises(RunbookQualityError) as refused:
             await service.update_document_metadata(
-                "kb_0123456789ab", content=body, title="Login fails (password=hunter2)"
+                "kb_0123456789ab",
+                principal="user-1",
+                content=body,
+                title="Login fails (password=hunter2)",
             )
 
         _assert_named_not_echoed(refused.value, entity_type, line, secret)
@@ -867,6 +872,7 @@ class TestUpdate:
 
         result = await service.update_document_metadata(
             "kb_0123456789ab",
+            principal="user-1",
             content=body.replace("\n", "\r\n"),
             title="Login fails (password=hunter2)",
         )
@@ -887,7 +893,9 @@ class TestUpdate:
 
         for path in bodies:
             text = path.read_text(encoding="utf-8")
-            await service.update_document_metadata("kb_0123456789ab", content=text)
+            await service.update_document_metadata(
+                "kb_0123456789ab", principal="user-1", content=text
+            )
             assert await _published(session_factory) == [text], path.name
 
 
@@ -1049,7 +1057,7 @@ class TestBulkUpdate:
         with caplog.at_level(logging.INFO, logger=name):
             with pytest.raises(ValidationException, match="metadata only"):
                 await service.bulk_update_documents(
-                    ["kb_0123456789ab"], {"content": body}
+                    ["kb_0123456789ab"], {"content": body}, principal="user-1"
                 )
 
         assert await _published(session_factory) == [valid_runbook()]

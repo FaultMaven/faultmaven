@@ -203,8 +203,8 @@ class TestUpdateDraftWritesTheTextWithItsVerdict:
         draft_id = created["draft"].draft_id
         real_gate = service_module.avalidate_and_score
 
-        async def _gate_then_discard(content):
-            verdict = await real_gate(content)
+        async def _gate_then_discard(content, *, principal, slot_wait=None):
+            verdict = await real_gate(content, principal=principal)
             async with session_factory() as session:
                 (await session.get(ConversionDraftModel, draft_id)).status = "discarded"
                 await session.commit()
@@ -730,8 +730,8 @@ class TestEditAndVerifyDoNotLoseEachOther:
             await session.commit()
         real_gate = service_module.avalidate_and_score
 
-        async def _gate_then_verify(content):
-            verdict = await real_gate(content)
+        async def _gate_then_verify(content, *, principal, slot_wait=None):
+            verdict = await real_gate(content, principal=principal)
             await pod.service.verify_draft(cid, did, "u1")
             return verdict
 
@@ -746,11 +746,12 @@ class TestEditAndVerifyDoNotLoseEachOther:
 
 
 class TestAnUploadsConversionOpens:
-    async def test_get_conversion_scores_a_row_with_no_stored_score(
+    async def test_an_uploads_draft_is_read_with_the_score_stored_with_it(
         self, session_factory, tmp_path, monkeypatch
     ):
-        """A KB upload stores no quality score; opening its conversion used to
-        500 on ``QualityScore(**{})``."""
+        """A KB upload stored no quality score, and opening its conversion
+        500'd on ``QualityScore(**{})``. It stores the gate's score with the
+        draft (#2661), and the read serves it."""
         from sqlalchemy import select
 
         monkeypatch.chdir(tmp_path)
@@ -764,7 +765,7 @@ class TestAnUploadsConversionOpens:
         )
         async with session_factory() as session:
             row = (await session.execute(select(ConversionDraftModel))).scalar_one()
-        assert row.quality_details is None
+        assert row.quality_details is not None
 
         opened = await _Replica(tmp_path, session_factory).service.get_conversion(
             row.conversion_id, "u1"
@@ -772,8 +773,8 @@ class TestAnUploadsConversionOpens:
 
         (draft,) = opened.drafts
         assert draft.content == content
+        assert draft.quality_score.model_dump() == row.quality_details
         assert draft.quality_score.overall > 0
-        assert draft.quality_score.grade
 
 
 # ---------------------------------------------------------------------------

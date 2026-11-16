@@ -322,7 +322,9 @@ async def test_an_edit_racing_an_unpublish_neither_reverts_it_nor_serves_it(race
     await race.seed(BUILTIN_ID, KnowledgeScope.GLOBAL)
     async with _HeldDelete(race.svc, BUILTIN_ID) as held:
         editing = asyncio.create_task(
-            race.svc.update_document_metadata(BUILTIN_ID, content="# edited\nbody2")
+            race.svc.update_document_metadata(
+                BUILTIN_ID, principal="user-1", content="# edited\nbody2"
+            )
         )
         await asyncio.sleep(0.4)
     edited = await asyncio.wait_for(editing, 10)

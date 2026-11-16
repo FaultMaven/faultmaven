@@ -84,6 +84,11 @@ from faultmaven.models.exceptions import (
     OAuthProtocolError,
 )
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
+    GateBusy,
+    GateRefused,
+    GateUnavailable,
+)
 from faultmaven.modules.knowledge.exceptions import (
     INGEST_OUTCOME_UNKNOWN_DETAIL,
     KB_INGEST_OUTCOME_UNKNOWN,
@@ -586,6 +591,55 @@ async def index_admission_refused_handler(
                 "Retry-After": str(busy.retry_after_seconds),
             },
         )
+    return await http_exception_handler(request, answer)
+
+
+async def gate_refused_handler(request: Request, exc: GateRefused) -> JSONResponse:
+    """A runbook check stopped for its input alone (#2661): the gate's 422 on
+    every route that runs it, with ``reason`` and its sentence. Nothing was
+    saved."""
+    logger.warning(
+        "Runbook check refused (%s): %s %s",
+        exc.reason,
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation Error",
+            "detail": exc.message,
+            "message": exc.message,
+            "errors": exc.errors,
+            "warnings": exc.warnings,
+            "help": exc.message,
+            "reason": exc.reason,
+        },
+    )
+
+
+async def gate_unavailable_handler(
+    request: Request, exc: GateUnavailable
+) -> JSONResponse:
+    """A runbook check with no slot within its wait (``RUNBOOK_VALIDATION_BUSY``)
+    or that could not run (``RUNBOOK_VALIDATION_UNAVAILABLE``): 503 +
+    ``Retry-After`` (#2661). The gate fails closed, so nothing was saved."""
+    logger.warning(
+        "Runbook check unavailable (%s): %s %s",
+        exc.error_code,
+        request.method,
+        request.url.path,
+    )
+    # The class's own sentence, never text the exception carries.
+    refusal = GateBusy if isinstance(exc, GateBusy) else GateUnavailable
+    answer = HTTPException(
+        status_code=503,
+        detail=refusal.message,
+        headers={
+            "x-error-code": refusal.error_code,
+            "Retry-After": str(refusal.retry_after_seconds),
+        },
+    )
     return await http_exception_handler(request, answer)
 
 
@@ -1275,6 +1329,8 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
         IngestOutcomeUnknown: ingest_outcome_unknown_handler,
         IndexAdmissionRefused: index_admission_refused_handler,
+        GateRefused: gate_refused_handler,
+        GateUnavailable: gate_unavailable_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

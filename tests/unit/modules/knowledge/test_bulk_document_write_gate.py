@@ -81,7 +81,7 @@ def _service():
         side_effect=lambda doc_id, user=None, team_ids=None: VISIBLE.get(doc_id)
     )
 
-    async def _bulk_update(document_ids, updates):
+    async def _bulk_update(document_ids, updates, *, principal):
         return {
             "success": True,
             "updated_count": len(document_ids),
@@ -345,7 +345,7 @@ class TestBulkUpdateGate:
         }
         # The gate must actually cut the list the service sees.
         service.bulk_update_documents.assert_awaited_once_with(
-            document_ids=[OWN], updates={"title": "X"}
+            document_ids=[OWN], updates={"title": "X"}, principal="u1"
         )
 
     def test_platform_admin_single_tenant_passes_every_target(self, single_tenant):
@@ -359,7 +359,7 @@ class TestBulkUpdateGate:
         assert body["updated_count"] == 3
         assert body["errors"] == []
         service.bulk_update_documents.assert_awaited_once_with(
-            document_ids=[OWN, OTHERS, GLOBAL], updates={}
+            document_ids=[OWN, OTHERS, GLOBAL], updates={}, principal="op"
         )
 
     def test_global_target_refused_under_multi_even_for_admin(self, monkeypatch):
@@ -381,7 +381,7 @@ class TestBulkUpdateGate:
             f"Document {OTHERS} not found",
         }
         service.bulk_update_documents.assert_awaited_once_with(
-            document_ids=[], updates={}
+            document_ids=[], updates={}, principal="op"
         )
 
     def test_the_caller_and_their_team_memberships_reach_the_visibility_check(
