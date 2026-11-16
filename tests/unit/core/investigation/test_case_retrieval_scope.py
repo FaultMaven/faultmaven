@@ -205,19 +205,21 @@ def _unusable_enterprises():
 async def test_no_usable_enterprise_reads_the_platform_tier_alone(
     monkeypatch, enterprise_id, provider
 ):
-    """The pre-fetch and ``kb_qa`` degrade (#1775): never the driver's own
-    chunks without a tenant to pin them to."""
+    """The pre-fetch degrades (#1775): never the driver's own chunks without a
+    tenant to pin them to, and no team lookup that would be thrown away."""
     if provider:
         monkeypatch.setattr(
             "faultmaven.providers.tenancy.factory.requested_tenant_provider",
             lambda: provider,
         )
+    teams, shares = _Teams(), _Shares()
 
     scope = await case_retrieval_scope(
-        _case(enterprise_id=enterprise_id), team_service=None, share_repository=None
+        _case(enterprise_id=enterprise_id), team_service=teams, share_repository=shares
     )
 
     assert scope == PLATFORM_TIER
+    assert teams.lookups == [] and shares.lookups == []
 
 
 @pytest.mark.parametrize("enterprise_id,provider", _unusable_enterprises())
@@ -232,13 +234,16 @@ async def test_raise_on_failure_refuses_a_case_with_no_usable_enterprise(
             lambda: provider,
         )
 
+    teams = _Teams()
+
     with pytest.raises(RuntimeError, match="no usable enterprise"):
         await case_retrieval_scope(
             _case(enterprise_id=enterprise_id),
-            team_service=None,
+            team_service=teams,
             share_repository=None,
             raise_on_failure=True,
         )
+    assert teams.lookups == []
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +435,37 @@ async def test_pull_after_a_hand_off_carries_the_drivers_scope():
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE
+
+
+async def test_pull_kb_qa_refuses_for_a_case_with_no_usable_enterprise():
+    """#1775: ``kb_qa`` refuses rather than answer from the platform tier as if
+    it were the driver's knowledge. The context carries no scope, so the
+    adapter's refusal answers and no search runs; the pre-fetch for the same
+    case still reads the platform tier."""
+    from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
+
+    case = _case(enterprise_id=None)
+    context = await _generator(_Teams(), _Shares()).build_tool_context(
+        case, user_id=DRIVER, redaction_ctx=disabled_redaction(), given_tools=NO_TOOLS
+    )
+    wrapped = MagicMock()
+    wrapped.answer = AsyncMock(return_value=("answer", []))
+
+    result = await KBToolAdapter(
+        wrapped, admit=admit_every_parent
+    ).execute_with_context({"question": "q"}, context)
+
+    assert context.kb_scope_filter is None
+    assert not result.success
+    assert "Knowledge base query refused" in result.error
+    wrapped.answer.assert_not_awaited()
+
+    from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+
+    deps = _deps(_Teams(), _Shares())
+    deps.knowledge_service = _SearchRecorder()
+    await KbPrefetcher(deps=deps).prefetch_kb_context(case, "X fails", "symptom")
+    assert deps.knowledge_service.filters_seen == [PLATFORM_TIER]
 
 
 async def test_dedup_the_resolver_refuses_a_case_with_no_usable_enterprise():

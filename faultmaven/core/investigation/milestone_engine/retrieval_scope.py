@@ -51,7 +51,7 @@ async def case_retrieval_scope(
 
     Every arm is conjuncted with the case's own enterprise (#1775). A case
     with no usable enterprise (``usable_tenant_id``) reads the platform tier
-    alone.
+    alone, decided before any team or share lookup runs.
 
     A failed team lookup narrows the scope to global ∪ the driver's personal
     KB; it never widens it. ``raise_on_failure`` re-raises instead, and also
@@ -61,6 +61,7 @@ async def case_retrieval_scope(
     a "checked, nothing similar" or "no runbook found" claim it did not
     establish, so each caller reports that it could not check instead.
     """
+    from faultmaven.config.tenant_context import usable_tenant_id
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         build_kb_scope_filter,
         resolve_shared_kb_ids,
@@ -68,6 +69,15 @@ async def case_retrieval_scope(
 
     driver_id = retrieval_principal(case)
     enterprise_id = getattr(case, "enterprise_id", None)
+    if usable_tenant_id(enterprise_id) is None:
+        # Every arm needs the enterprise: the builder degrades to the platform
+        # tier or refuses, and a team lookup would be thrown away.
+        return build_kb_scope_filter(
+            driver_id,
+            [],
+            enterprise_id=enterprise_id,
+            refuse_unusable=raise_on_failure,
+        )
     shared_kb_ids: List[str] = []
     if raise_on_failure and team_service is not None and share_repository is None:
         # Teams exist here but their shares cannot be read: the scope would be
@@ -87,7 +97,8 @@ async def case_retrieval_scope(
                 raise
             logger.warning(
                 "driver_team_kb_resolution_failed: KB retrieval scope narrowed "
-                "to global and the driver's personal KB",
+                "to global and the driver's personal KB, in the case's "
+                "enterprise",
                 extra={"case_id": getattr(case, "case_id", None)},
                 exc_info=True,
             )

@@ -255,8 +255,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
         # ``$and`` needs >= 2 operands (ChromaDB >= 1.0 also rejects the
         # multi-key implicit-AND form outright), which the document_type
         # operand plus the scope filter always satisfy. ``scope_filter``
-        # composes as ONE operand whether it is a bare single condition (the
-        # global-only case) or an ``$or`` of arms.
+        # composes as ONE operand whether it is the single global arm (the
+        # global-only case, itself an ``$and`` with its enterprise conjunct)
+        # or an ``$or`` of arms.
         where_clause: Dict[str, Any] = {
             "$and": [{"document_type": "runbook"}, scope_filter]
         }

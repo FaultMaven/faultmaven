@@ -211,7 +211,11 @@ async def test_a_requester_with_no_usable_enterprise_is_refused_not_narrowed(
     with none usable the only scope left is the platform tier — which never saw
     the requester's own runbooks. The search is refused, not run on it."""
     kb = _RecordingRunbookKB()
-    service = ReportRecommendationService(runbook_kb=kb)
+    team_service = MagicMock()
+    team_service.list_all_user_team_ids = AsyncMock(return_value=["team-1"])
+    service = ReportRecommendationService(
+        runbook_kb=kb, team_service=team_service, share_repository=MagicMock()
+    )
 
     with patch(
         "faultmaven.providers.tenancy.factory.requested_tenant_provider",
@@ -226,3 +230,4 @@ async def test_a_requester_with_no_usable_enterprise_is_refused_not_narrowed(
 
     assert excinfo.value.error_code == "RUNBOOK_SCOPE_RESOLUTION_FAILED"
     assert kb.scopes == [], "a query was issued under the platform tier alone"
+    team_service.list_all_user_team_ids.assert_not_awaited()

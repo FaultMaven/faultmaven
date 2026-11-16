@@ -64,6 +64,7 @@ from faultmaven.models.interfaces import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 
 @pytest.mark.asyncio
 async def test_service_with_interface_mocks():
@@ -101,7 +102,10 @@ async def test_service_with_interface_mocks():
         collection_name=KB_COLLECTION,
         query="database timeout",
         k=3,
-        where={"scope": "global"},
+        # No caller filter: the platform tier alone (#1775).
+        where={
+            "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+        },
     )
 
     # Validate results

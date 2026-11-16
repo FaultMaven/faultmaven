@@ -229,11 +229,14 @@ def build_kb_scope_filter(
     ``resolve_shared_kb_ids`` uses. With none usable (``None``, or the
     Standalone sentinel under ``TENANT_PROVIDER=multi``) the filter is the
     platform tier alone — global chunks stamped with the platform value — and
-    the owner and shared arms are omitted: the pre-fetch, ``kb_qa`` and
+    the owner and shared arms are omitted: the KB pre-fetch and
     ``POST /knowledge/search`` narrow. ``refuse_unusable`` raises
     ``RuntimeError`` instead, for the callers whose empty answer is a claim (the
-    runbook dedup and the knowledge-base question lookup): a search that never
-    saw the driver's own runbooks must not answer "nothing similar" (#944).
+    report route's runbook dedup and the knowledge-base question lookup): a
+    search that never saw the driver's own runbooks must not answer "nothing
+    similar" (#944). ``kb_qa`` and the engine's runbook dedup check
+    ``usable_tenant_id`` before they ask for a scope: ``kb_qa`` refuses, and
+    the dedup reports that it did not run.
 
     A chunk with no ``enterprise_id`` matches no arm, so it is served to no one.
     """

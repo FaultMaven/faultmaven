@@ -108,7 +108,7 @@ where = {"$or": [
 collection.query(query_texts=[question], where=where, n_results=k)
 ```
 
-The global arm's `$in` collapses to one value when the caller's enterprise is the Standalone one. A caller with no usable enterprise (`usable_tenant_id`: none, or the Standalone sentinel under `TENANT_PROVIDER=multi`) gets the platform tier alone, `{"$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]}`, on the pre-fetch, `kb_qa` and `POST /knowledge/search`; the runbook dedup and the knowledge-base question lookup refuse instead (`refuse_unusable=True`), since an empty answer there is a claim.
+The global arm's `$in` collapses to one value when the caller's enterprise is the Standalone one. A caller with no usable enterprise (`usable_tenant_id`: none, or the Standalone sentinel under `TENANT_PROVIDER=multi`) gets the platform tier alone, `{"$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]}`, on the pre-fetch and `POST /knowledge/search`. Where an empty answer is a claim, it does not: the report route's runbook dedup and the knowledge-base question lookup refuse (`refuse_unusable=True`), `kb_qa` refuses (its tool context carries no scope), and the engine's runbook dedup reports that it did not run.
 
 All tiers are **permanent** — knowledge persists until explicitly deleted by the owner (user, team admin, or system admin). This is in contrast to case evidence, which is ephemeral and tied to case lifecycle.
 
@@ -370,7 +370,7 @@ KB-arch owns the scope-filter construction. The full tool path (adapter → filt
 ]}
 ```
 
-`E` is the case's enterprise (#1775). A case with none usable reads the platform tier alone; the knowledge-base question lookup and the runbook dedup refuse instead.
+`E` is the case's enterprise (#1775). For a case with none usable, the tool context carries no scope and `kb_qa` refuses (the pre-fetch reads the platform tier alone); the knowledge-base question lookup refuses and the runbook dedup reports that it did not run.
 
 The `shared_ids` arm is resolved from `resource_shares` (`resolve_shared_kb_ids`) — the personal/global arms come straight from the driver's own ids, so a filter built for one user can never surface another's non-shared content. Empty `shared_ids` collapses the filter to `personal ∪ global`.
 

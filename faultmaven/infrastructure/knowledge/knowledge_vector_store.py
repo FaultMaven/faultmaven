@@ -11,8 +11,11 @@ scope key in its `where` clause or it is rejected with ValueError. That is a
 presence check and not a tenant check — see `_require_kb_filter_present`. The
 tenant control is `build_kb_scope_filter`, which conjuncts the `enterprise_id`
 stamp (#1168, refused on write in `add_documents` when absent) onto every arm
-of the read scope (#1775). A chunk written before #1168 carries no stamp until
-#1777's backfill restamps it, and matches no arm until then.
+of the read scope (#1775). A chunk written before #1168 carries no stamp, and
+no `vector_generation` either (that predates revision 022, #2388), so admission
+never served it: restamping it (#1777) changes nothing for reads. Its row is
+served again by the bootstrap repair or the pack re-ingest, which write fresh
+chunks with both.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
@@ -417,15 +420,17 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
         """Term index for a collection, built once and reused.
 
-        **Built over the GLOBAL tier only, and that is a tenant-isolation
-        property, not a convenience.** This is the one read in the store that
+        **Built over the platform tier only — global chunks stamped with the
+        platform enterprise (``_GLOBAL_TIER``, #1775) — and that is a
+        tenant-isolation property, not a convenience.** This is the one read in the store that
         needs chunk TEXT rather than ids, and an unscoped content read of
         ``faultmaven_kb`` would pull every tenant's personal and team runbooks
         into one process-wide index — the exact shape
         ``tests/integration/security/test_kb_tenant_isolation_probe.py`` exists
-        to refuse. Global chunks are platform-curated and readable by every
-        tenant by construction (migration 033), so their document frequencies
-        cross no boundary. The cost is that a tenant's own runbooks do not
+        to refuse. Platform-stamped global chunks are platform-curated and
+        readable by every tenant by construction (migration 033), so their
+        document frequencies cross no boundary; a global chunk stamped with a
+        tenant is left out. The cost is that a tenant's own runbooks do not
         influence the IDF weights; that is the right trade, and on the shipped
         corpus the global tier IS the corpus.
 
@@ -467,7 +472,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 return None
 
             # Signature is the WHOLE collection's size, while the documents read
-            # are the global ones: coarser than the thing it guards, so a change
+            # are the platform-stamped global ones: coarser than the thing it guards, so a change
             # in another tier also invalidates it. It cannot see a SAME-SIZE
             # change made by another replica or process: that index is served
             # until the size next changes (#2064). A same-size replace through
@@ -492,7 +497,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 # payload looked empty: the degenerate state is "this index
                 # indexed nothing", and only the built object can answer that.
                 self.logger.info(
-                    f"KB term index: '{collection_name}' has no global-tier "
+                    f"KB term index: '{collection_name}' has no platform-tier "
                     f"chunks yet — reranking uses unweighted term overlap"
                 )
                 return None
@@ -516,7 +521,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             self._term_stats[collection_name] = stats
         self.logger.info(
             f"KB term index built for '{collection_name}': {stats.n_chunks} "
-            f"global chunks"
+            f"platform-tier chunks"
         )
         return stats
 
@@ -1062,7 +1067,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         the right runbook back in the candidate set.
 
         **Unseen terms are ranked last but never dropped.** The index is built
-        over the global tier alone (see :meth:`_corpus_term_stats`), so a term
+        over the platform tier alone (see :meth:`_corpus_term_stats`), so a term
         with a document frequency of zero is one of two things: unmatchable
         anywhere, in which case the probe costs one cheap filtered query and
         returns nothing — or present only in the CALLER's own personal or

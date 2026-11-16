@@ -185,6 +185,44 @@ async def test_search_documents_scopes_the_share_lookup_to_the_requesting_user(o
 
 @pytest.mark.security
 @pytest.mark.asyncio
+async def test_search_documents_conjuncts_the_requesters_own_enterprise():
+    """``POST /knowledge/search``: every arm of the vector filter carries the
+    REQUESTER's enterprise (#1775) — not the platform value, which would read
+    the Standalone-stamped rows as if they were the requester's."""
+    repo = _share_repo()
+    store = _RecordingVectorStore()
+    service = _knowledge_service(repo, store)
+    user = MagicMock(user_id="u1", enterprise_id=ENTERPRISE_A)
+
+    await service.search_documents("crashloop", user=user, team_ids=["team-1"])
+
+    assert store.wheres == [
+        {
+            "$or": [
+                {
+                    "$and": [
+                        {"scope": "global"},
+                        {
+                            "enterprise_id": {
+                                "$in": [ENTERPRISE_A, STANDALONE_ENTERPRISE_ID]
+                            }
+                        },
+                    ]
+                },
+                {"$and": [{"owner_id": "u1"}, {"enterprise_id": ENTERPRISE_A}]},
+                {
+                    "$and": [
+                        {"parent_document_id": {"$in": ["kb-shared"]}},
+                        {"enterprise_id": ENTERPRISE_A},
+                    ]
+                },
+            ]
+        }
+    ]
+
+
+@pytest.mark.security
+@pytest.mark.asyncio
 async def test_search_documents_reads_the_platform_tier_when_the_requester_has_no_enterprise():
     """An enterprise-less requester loses the team arm and, since every arm
     carries the enterprise conjunct (#1775), the owner arm too: the platform

@@ -99,14 +99,14 @@ await knowledge_vector_store.add_documents(
 
 # Semantic search — scope filter is mandatory
 results = await knowledge_vector_store.search(
+    collection_name=KB_COLLECTION,
     query="DB timeouts",
     k=5,
+    admit=knowledge_service.admitted_generations,
     # visible-id allowlist (ADR-011 D3): global ∪ owned ∪ shared-to-my-teams,
     # each arm conjuncted with the caller's enterprise (#1775).
     # shared_ids is resolved in SQL from resource_shares by the caller.
-    scope_filter=build_kb_scope_filter(
-        user_id, shared_ids, enterprise_id=enterprise_id
-    ),
+    where=build_kb_scope_filter(user_id, shared_ids, enterprise_id=enterprise_id),
 )
 
 # The unified kb_qa tool builds this filter automatically from the caller's identity.

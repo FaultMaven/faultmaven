@@ -238,6 +238,27 @@ async def test_a_skipped_dedup_blames_nothing(ready_case):
 
 
 @pytest.mark.asyncio
+async def test_a_case_with_no_usable_enterprise_is_a_skip_not_an_outage(ready_case):
+    """#1775: every arm of the dedup scope carries the case's enterprise, so a
+    case with none cannot be searched honestly — and retrying never supplies
+    one. That is the "did not run" skip (#912), not "unavailable"; neither the
+    resolver nor the search runs."""
+    ready_case.enterprise_id = None
+    kb = _kb()
+    resolver = AsyncMock(side_effect=AssertionError("resolver must not run"))
+
+    suggestion = await tt.evaluate_runbook_suggestion(
+        ready_case, kb, scope_resolver=resolver
+    )
+
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "did not run" in suggestion.message
+    assert "unavailable" not in suggestion.message
+    resolver.assert_not_awaited()
+    kb.search_runbooks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_transient_dedup_failure_keeps_the_unavailable_wording(ready_case):
     """The transient causes keep the wording that fits them.
 

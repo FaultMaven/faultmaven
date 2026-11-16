@@ -54,7 +54,7 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 ]}
 ```
 
-With no usable enterprise the filter is the platform tier alone (global chunks stamped with the Standalone enterprise), or a refusal on the runbook dedup and the knowledge-base question lookup.
+With no usable enterprise the filter is the platform tier alone (global chunks stamped with the Standalone enterprise) for the pre-fetch and `POST /knowledge/search`; `kb_qa`, the runbook dedup and the knowledge-base question lookup refuse or skip instead.
 
 `shared_ids` comes from `resolve_shared_kb_ids`, which reads `resource_shares` in SQL. The `owner_id` arm is unshare-proof precisely because it is keyed on the caller, not on a stored team tag; the team arm is omitted when the list is empty (ChromaDB rejects an empty `$in`), collapsing retrieval to `personal ∪ global` — the fail-closed outcome.
 
@@ -243,7 +243,9 @@ await knowledge_service.list_documents(scope="global", limit=50, offset=0)
 await knowledge_service.get_document(document_id)  # knowledge_items row (content in-row)
 
 # ChromaDB methods (vector search only)
-await vector_store.search(query, k=5, filters={"scope": "global"})
+await vector_store.search(
+    KB_COLLECTION, query, k=5, where=scope_filter, admit=admitted_generations
+)  # scope_filter from build_kb_scope_filter
 await vector_store.delete_documents_by_parent_id(document_id)
 ```
 
@@ -321,10 +323,12 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
     user_teams = await get_user_teams(user_id)
 
     return await knowledge_vector_store.search(
+        collection_name=KB_COLLECTION,
         query=query,
         k=k,
+        admit=knowledge_service.admitted_generations,
         # build_kb_scope_filter(user_id, shared_ids, enterprise_id=...)
-        scope_filter={
+        where={
             "$or": [
                 {"$and": [{"scope": "global"},
                           {"enterprise_id": {"$in": [enterprise_id, STANDALONE_ENTERPRISE_ID]}}]},
@@ -336,7 +340,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
     )
 ```
 
-`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids and conjuncting the caller's enterprise onto every arm (#1775). The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries; an older chunk carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777), and is served to no one until then.
+`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids and conjuncting the caller's enterprise onto every arm (#1775). The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries. An older chunk has no stamp and no `vector_generation` (it predates revision 022, #2388), so admission never serves it: the `kb_vector_enterprise_backfill` job (#1777) can stamp it, but that changes nothing for reads. The bootstrap repair and the pack re-ingest are what bring its row back, with fresh chunks carrying both.
 
 ### 4.3 Performance Characteristics
 

@@ -17,6 +17,7 @@ Architecture Reference: docs/architecture/knowledge-and-ai/runbook-dedup.md
 import logging
 from typing import Any, List, Optional
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.exceptions import KnowledgeBaseError
@@ -195,6 +196,17 @@ class ReportRecommendationService:
         The route renders the refusal as its 503, alongside every other
         search-unavailable cause.
         """
+        if usable_tenant_id(requester_enterprise_id) is None:
+            # Every arm needs the enterprise; checked before any team lookup.
+            logger.warning(
+                "Requester scope for runbook dedup refused: no usable enterprise"
+            )
+            raise KnowledgeBaseError(
+                "Could not resolve the requester's knowledge-base scope: the "
+                "request names no usable enterprise, so no scoped runbook "
+                "similarity search can run",
+                error_code="RUNBOOK_SCOPE_RESOLUTION_FAILED",
+            )
         try:
             team_ids: List[str] = []
             if self._team_service:

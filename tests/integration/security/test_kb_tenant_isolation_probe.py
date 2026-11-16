@@ -98,9 +98,9 @@ the owner arm loses its ``enterprise_id`` conjunct              ``test_a_foreign
                                                                 the identifier-arm and system-sentinel cases
 the global arm loses its ``enterprise_id`` conjunct             ``test_a_tenant_stamped_global_chunk_...`` (both
                                                                 providers), ``test_an_unstamped_chunk_...``
-``build_kb_scope_filter`` skips ``usable_tenant_id``            ``test_case_retrieval_scope.py`` and
-                                                                ``test_report_recommendation_requester_scope.py``
-                                                                (unit, the ``sentinel-multi`` cases)
+``build_kb_scope_filter`` skips ``usable_tenant_id``            ``test_no_usable_enterprise_reads_...``,
+(``tenant_id = enterprise_id or None``)                         ``test_a_tenant_stamped_global_chunk_...[multi]``,
+                                                                and the unit ``sentinel-multi`` cases
 ``build_kb_scope_filter`` ignores ``refuse_unusable``           the same two unit files' refusal cases
 ``_GLOBAL_TIER`` back to ``{"scope": "global"}``                ``test_the_unfiltered_kb_readers_stay_id_only``
 ==============================================================  =============================================
@@ -683,6 +683,23 @@ async def _seed_global(store: KnowledgeVectorStore, parent: str, enterprise_id: 
     return chunk["id"]
 
 
+async def _seed_standalone_owned_by_a(store: KnowledgeVectorStore) -> str:
+    """A personal chunk owned by ``USER_A`` and stamped with the Standalone
+    enterprise. Under multi no tenant session writes one; it is seeded so that
+    a builder which used the Standalone sentinel as a tenant (skipping
+    ``usable_tenant_id``) would read it through the owner arm — the one thing
+    the sentinel tests must be able to see."""
+    chunk = _chunk(
+        "aaaa5555standalone",
+        "STANDALONE-OWNED-BY-A",
+        scope="personal",
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        owner_id=USER_A,
+    )
+    await store.add_documents([chunk], embeddings=[list(_VEC)])
+    return chunk["id"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "provider", [BUILTIN_SINGLE, BUILTIN_MULTI], ids=["single", "multi"]
@@ -692,8 +709,11 @@ async def test_a_tenant_stamped_global_chunk_reaches_only_its_own_tenant(
 ):
     """The global arm admits the caller's enterprise or the platform value, and
     nothing else: B's global-stamped chunk is not served to A, and is to B. The
-    platform-stamped chunk is served to both."""
+    platform-stamped chunk is served to both. The Standalone value is a
+    tenant only under single: there A's Standalone-stamped chunk is read under
+    it, and under multi the sentinel reads the platform tier alone."""
     forged_b = await _seed_global(store, "bbbbglobal0000", ENTERPRISE_B)
+    standalone_a = await _seed_standalone_owned_by_a(store)
 
     with patch(
         "faultmaven.providers.tenancy.factory.requested_tenant_provider",
@@ -705,7 +725,16 @@ async def test_a_tenant_stamped_global_chunk_reaches_only_its_own_tenant(
         seen_by_b = await _ids(
             store, build_kb_scope_filter(USER_B, [], enterprise_id=ENTERPRISE_B)
         )
+        seen_under_sentinel = await _ids(
+            store,
+            build_kb_scope_filter(USER_A, [], enterprise_id=STANDALONE_ENTERPRISE_ID),
+        )
 
+    assert seen_under_sentinel == (
+        {CHUNK_PLATFORM}
+        if provider == BUILTIN_MULTI
+        else {CHUNK_PLATFORM, standalone_a}
+    ), "the Standalone value was judged the wrong way for this provider"
     assert forged_b not in seen_by_a, "B's tenant-stamped global chunk reached A"
     assert seen_by_a == ENTITLED_TO_A
     assert forged_b in seen_by_b, "control: B reads its own global-stamped chunk"
@@ -718,6 +747,7 @@ async def test_no_usable_enterprise_reads_the_platform_tier_only(store):
     platform tier, never the caller's own personal chunk and never another
     tenant's global-stamped one."""
     forged_a = await _seed_global(store, "aaaaglobal0000", ENTERPRISE_A)
+    standalone_a = await _seed_standalone_owned_by_a(store)
 
     with patch(
         "faultmaven.providers.tenancy.factory.requested_tenant_provider",
@@ -733,6 +763,7 @@ async def test_no_usable_enterprise_reads_the_platform_tier_only(store):
 
     assert got == hybrid == {CHUNK_PLATFORM}
     assert CHUNK_A_PERSONAL not in got and forged_a not in got
+    assert standalone_a not in got, "the sentinel was used as A's tenant"
 
 
 @pytest.mark.asyncio

@@ -188,16 +188,21 @@ def usable_tenant_id(enterprise_id: Optional[str]) -> Optional[str]:
     * **degrade** — the service-layer read paths (the case read allowlist, the
       KB and agent team arms) turn it into an empty allowlist, and the KB read
       scope (``build_kb_scope_filter``, #1775) into the platform tier alone for
-      the KB pre-fetch, ``kb_qa`` and ``POST /knowledge/search``: each narrows
-      rather than breaks;
+      the KB pre-fetch and ``POST /knowledge/search``: each narrows rather
+      than breaks;
     * **refuse, at the service layer** — the KB reads whose empty answer is a
-      claim: the runbook dedup (engine and report route) and the lookup for a
-      user's question about the knowledge base. Degrading is only safe where
-      an empty result *means* "you may see less". On a dedup check it means
-      "nothing similar exists", which the caller turns into "generate a new
-      runbook" — a substantive claim derived from a search that was refused
-      (#944). ``build_kb_scope_filter(refuse_unusable=True)`` therefore raises,
-      and each caller reports that it could not check.
+      claim: ``kb_qa``, the runbook dedup (engine and report route) and the
+      lookup for a user's question about the knowledge base. Degrading is only
+      safe where an empty result *means* "you may see less". On a dedup check
+      it means "nothing similar exists", which the caller turns into "generate
+      a new runbook" — a substantive claim derived from a search that was
+      refused (#944). ``build_kb_scope_filter(refuse_unusable=True)`` therefore
+      raises for the report route and the question lookup, each of which
+      reports that it could not check; ``kb_qa``'s tool context carries no
+      scope, so the tool refuses; and
+      ``terminal_transitions.evaluate_runbook_suggestion`` checks here first,
+      so the engine's dedup is a quiet logged skip that reports "did not run"
+      rather than "unavailable" (#912).
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
     it identifies the single-tenant deployment. Refusing it here is what makes
