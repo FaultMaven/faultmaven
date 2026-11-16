@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
+from faultmaven.utils.exception_name import exception_class_name
 
 # Sidecar metadata suffix for orphan-file tracking
 # (evidence-failure-modes.md).
@@ -576,8 +577,16 @@ class FileStorageService(BaseService):
                 if await self.backend.delete_file(key):
                     deleted += 1
         except Exception as e:
-            self.log_error("erase_case", e, case_id=case_id)
-            raise ServiceError(f"Failed to erase the uploads of case {case_id}: {e}")
+            # By class only, here and in the error every caller logs: the
+            # backend's text can carry a storage key or its response (#2587).
+            reason = exception_class_name(e)
+            self.logger.error(
+                f"erase_case failed for case {case_id}: {reason}",
+                extra={"service": self.service_name, "error_type": reason},
+            )
+            raise ServiceError(
+                f"Failed to erase the uploads of case {case_id}: {reason}"
+            ) from e
         self.log_operation("erase_case", case_id=case_id, deleted=deleted)
         return deleted
 

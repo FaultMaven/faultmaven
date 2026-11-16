@@ -30,6 +30,8 @@ import math
 import secrets
 from typing import Any, Awaitable, Callable, Optional
 
+from faultmaven.utils.exception_name import exception_class_name
+
 logger = logging.getLogger(__name__)
 
 #: Compare-and-delete: release the claim only if this holder still has it.
@@ -112,7 +114,10 @@ class OwnedClaim:
         try:
             await self._redis.eval(RELEASE_IF_HELD, 1, self.name, self._token)
         except Exception as exc:  # noqa: BLE001 - the TTL is the backstop
-            logger.warning("Could not release claim %s: %r", self.name, exc)
+            # By class only: the client's text can carry its output (#2587).
+            logger.warning(
+                "Could not release claim %s: %s", self.name, exception_class_name(exc)
+            )
 
 
 async def take_claim(
