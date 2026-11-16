@@ -436,8 +436,10 @@ limit. Each starts at its row in
 merge-ready at either and not waiting at row 4 at the second, has not converged: it is pulled with a re-plan into
 smaller sub-stages (4.1) recommended, never given more fix rounds.
 
-1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>`. Items sharing a seam name
-   their lead as `Shares lane with #<lead>`. The plan covers:
+1. **Plan** it yourself on `origin/main`, posted on the issue as `## Plan — round <N>` (for an engine conclusion or
+   recommendation that does not reproduce, only its triage is posted, as `## Evidence — triage` with the runs made and
+   the `origin/main` commit, never as a plan). Items sharing a seam name their lead as `Shares lane with #<lead>`. The
+   plan covers:
    - **the triage,** done first. The issue is a report, not a spec: its description, code points, diagnosis, proposed
      fix, done-when, priority and class may be inaccurate or obsolete, so none is taken as given. Reproduce the defect
      on `origin/main` (or show it at `path:line`); a reproduction needing a live run the owner has not approved pulls
@@ -449,8 +451,9 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      change. The plan states which claims held and which did not; a claim that did not hold is corrected on the issue
      under `## Evidence — triage`. A defect that does not reproduce is built as a verification item (below); an engine
      conclusion or recommendation that does not reproduce is re-set by *State*, stays open and moves to `pile:blocked`
-     with `**Blocked on:** condition — a recorded run on origin/main newer than <this plan's date> shows it` (owner
-     rulings, 2026-11-16); it is not built this round;
+     with `**Blocked on:** condition — an ## Evidence comment on this issue records a simulator run or replayed case at
+     an origin/main commit after <the commit the triage ran on> that shows it` (owner rulings, 2026-11-16); it is not
+     built this round;
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
@@ -684,15 +687,16 @@ To **pull** an item:
 
 ```
 ## Round <N> — result
-| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
+| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · blocked on a condition (4.1) · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
 Data: 14-day ratio <r> · open at the last four proposals <a> → <b> → <c> → <d>
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each, and each line added to an earlier round's batch issue
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> -R FaultMaven/<repo> --match-head-commit <sha> (plus --squash outside core)
 ```
 
-Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled or waiting, with a row per
-item and its PR, and one per flake's fix (4.6); the PR column reads `private` for a private repo's PR (*Rules*).
+Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled, blocked on a condition or
+waiting, with a row per item and its PR (none for one blocked on a condition), and one per flake's fix (4.6); the PR
+column reads `private` for a private repo's PR (*Rules*).
 Every report states those four numbers, lists every issue filed and every line added to an earlier batch issue. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
