@@ -44,20 +44,24 @@ from faultmaven.modules.knowledge.exceptions import (
 logger = logging.getLogger(__name__)
 
 #: Each check's CPU time, from its start, serialising its answer included
-#: (``ITIMER_PROF``). Measured 2026-11-16 (#2661 3b2), alone and at full load
-#: (below): the legitimate worst at 100,000 characters, the pack's three
-#: slowest runbooks and a dense runbook-shaped body, is 0.13 s alone and 0.18 s
-#: at full load, so this is 17x that. Every shape got the same verdict at full
-#: load as alone. Hostile shapes end here by design: a 45,000-item YAML alias
-#: list and a line of ``dd`` tokens (#2837) reach it alone and loaded. A
-#: 49,000-word title (0.46-0.51 s alone, 0.47-0.51 s loaded) and 1.8 KB of
-#: nested frontmatter (1.15-1.23 s, 1.22-1.28 s) are refused within it.
+#: (``ITIMER_PROF``). The legitimate worst at 100,000 characters was 0.04-0.22 s
+#: in single runs (the shipped pack and dense runbook-shaped bodies), so this is
+#: 13.6x the 0.22 s. Measured 2026-11-16 (#2661 3b2), alone and at full load
+#: (below): the pack's three slowest runbooks and a dense runbook-shaped body
+#: of 99,989 characters cost at most 0.13 s a check alone and 0.18 s at full
+#: load (17x). Every shape got the same verdict at full load as alone. Hostile
+#: shapes end here by design: a 45,000-item YAML alias list and a line of
+#: ``dd`` tokens (#2837) reach it alone and loaded. A title of 49,000 one-letter
+#: words (``"title: " + "a " * 49000``, 98,020 characters; 0.46-0.51 s alone,
+#: 0.47-0.51 s loaded) and 900 nested flow sequences (``"a: " + "[" * 900 +
+#: "]" * 900``, 1,816 characters; 1.15-1.23 s, 1.22-1.28 s) are refused within
+#: it, each as the whole frontmatter of a document whose body is ``# T``.
 GATE_WORK_CPU_SECONDS = 3.0
 
 #: ``RLIMIT_CPU`` for a call of one check, the backstop if the timer fails: the
-#: worker's imports (0.5 s of CPU measured), the check's deadline and slack;
-#: each further check adds its deadline. SIGXCPU is then reachable only past a
-#: failed timer.
+#: worker's imports (0.34-0.75 s of CPU, #2661 3b2), the check's deadline and
+#: slack; each further check adds its deadline. SIGXCPU is then reachable only
+#: past a failed timer.
 GATE_CPU_LIMIT_SECONDS = 10
 
 #: The share of the cores a check gets at worst: every slot of every Principle
@@ -65,22 +69,28 @@ GATE_CPU_LIMIT_SECONDS = 10
 #: (``TIER1_SLOTS``, ``preprocessing_service.py``), document preparation's and
 #: the gate's. "Full load" below is that, measured on two cores: each slot busy
 #: in a loop, Tier 1 with 10 MB of source code, preparation with a large DOCX.
+#: The two-core figures below hold where ``index_cores()`` reads 2, as a
+#: two-core CPU quota makes it read. The measurement emulated that quota, since
+#: ``index_cores()`` ignores CPU affinity (#2822).
 GATE_SLOTS = 4
 _CORES = index_cores()
 _CPU_SHARE = min(1.0, _CORES / (max(2, int(_CORES)) + PREPARATION_SLOTS + GATE_SLOTS))
 
-#: Spawn to ``ready``: the imports' 0.5 s of CPU, doubled, at the worst share.
-#: Measured 2026-11-16 (#2661 3b2): imports cost 0.34-0.75 s of CPU, and spawn
-#: to ``ready`` took 0.36-0.76 s alone and at most 2.36 s at full load on two
+#: Spawn to ``ready``: 1.0 s of CPU at the worst share, which covers the
+#: imports' measured 0.34-0.75 s of CPU (#2661 3b2, 2026-11-16). Spawn to
+#: ``ready`` took 0.36-0.76 s alone and at most 2.36 s at full load on two
 #: cores, inside 0.75 of this (3 s).
 GATE_START_SECONDS = 1.0 / _CPU_SHARE
 
 #: Each check's wall-clock backstop, a 503: its CPU deadline plus 2 s, at the
 #: worst share, so the CPU deadline is reached first. On two cores the share is
-#: 1/4: 20 s. Measured 2026-11-16 (#2661 3b2) at full load on two cores, a
-#: check that ran to its 3 s deadline took 10.1-13.8 s of wall time. That is
-#: past 0.75 of the 16 s that plus 1 s gave; 2 s is the smallest whole value
-#: that keeps it inside 0.75 (15 s). No check at full load ended at this bound.
+#: 1/4: 20 s. A call's work is bounded by its check count times this, so it
+#: binds alone a call of one check (a conversion's draft, ``runbook_scan``).
+#: Measured 2026-11-16 (#2661 3b2) at full load on two cores, in calls of two
+#: checks, a check that ran to its 3 s deadline took 10.1-13.8 s of wall time.
+#: That is past 0.75 of the 16 s that plus 1 s gave; 2 s is the smallest whole
+#: value that keeps it inside 0.75 (15 s). No measured call of two checks ended
+#: at its work-phase wall (2 x this).
 GATE_WORK_WALL_SECONDS = (GATE_WORK_CPU_SECONDS + 2) / _CPU_SHARE
 
 #: Each transfer: at most 400 KB of UTF-8 in, the output limit out.
@@ -91,7 +101,7 @@ GATE_TRANSFER_SECONDS = 1.0
 #: checks (upload: quality and security; verify: the draft's security and the
 #: published text's). Its worst on two cores is wait + start + transfers + two
 #: walls = 5 + 4 + 2 + 2 x 20 = 51 s, inside a 60 s ingress read timeout; the
-#: slowest upload call measured at full load took 15.3 s. On one core the share
+#: slowest upload call measured at full load took 15.8 s. On one core the share
 #: is 1/8 and it is 95 s, past it: there the ingress can answer before the gate
 #: does. Measured 2026-11-16 (#2661 3b2) at full load on two cores, with the
 #: four slots held by legitimate checks a fifth user got a slot in 0.08-1.06 s.
@@ -102,7 +112,11 @@ GATE_SLOT_WAIT_SECONDS = RUNBOOK_CHECK_RETRY_AFTER_SECONDS
 #: A conversion's checks, which run after its model calls were paid for, wait
 #: for a slot as long as the longest call takes at worst (two checks), so a
 #: busy gate does not drop a paid-for draft. A case's conversion holds its
-#: case's in-flight lease meanwhile. 46 s on two cores. Measured 2026-11-16
+#: case's in-flight lease meanwhile. 46 s on two cores. A request waits on it
+#: too: ``POST /knowledge/convert`` runs its drafts' checks before it answers,
+#: so the gate's share of that request is wait + start + transfers + one wall
+#: = 46 + 4 + 2 + 20 = 72 s on two cores (60 s before 3b2), beside its
+#: document's preparation and model calls. Measured 2026-11-16
 #: (#2661 3b2) at full load on two cores, with the four slots held by checks
 #: running to their deadline, a conversion's check got a slot in 0.8-10.3 s.
 GATE_BACKGROUND_SLOT_WAIT_SECONDS = (
@@ -179,7 +193,9 @@ async def _run(
 ) -> List[Dict[str, Any]]:
     """The ``(check, text)`` pairs in one worker, in order, under the
     principal's slot: their answers up to the first refusal, or a refusal of
-    the call. A caller no request waits on passes its own ``slot_wait``."""
+    the call. A caller that may wait longer than a request's slot wait passes
+    its own ``slot_wait``: a conversion's drafts, whose model calls were paid
+    for, including those of the synchronous ``POST /knowledge/convert``."""
     if not isinstance(principal, str) or not principal:
         raise ValueError("a runbook check runs for the user who asked: none given")
     texts = list(dict.fromkeys(text for _, text in checks))
