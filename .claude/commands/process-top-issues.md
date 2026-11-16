@@ -116,7 +116,7 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 5 | its PR in the merge queue at a merge-ready's `H`, with none of row 6's triggers (`gh api graphql -f query='{repository(owner:"FaultMaven",name:"faultmaven"){pullRequest(number:<p>){isInMergeQueue timelineItems(last:5,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'`) | leave it |
 | 6 | its PR open after a merge-ready, and code after the merge-ready's head (the vouched-head check), an owner comment after the merge-ready, a conflict with `main`, a queue removal dated after it with the PR not back in the queue (row 5's query; quote its `reason`), or a red required check | refresh: merge `main` in, the change made (by the lane, by you for a conflict), a delta of what changed (step 4.5), CI, merge-ready again; a refresh with a `## Delta` after the merge-ready goes on at row 8 or 9, unless an owner comment, a conflict or a red check is newer than that delta. A `fixed` finding in that delta gets one fix commit and one delta; a `fixed` finding in that one pulls the item. A red check the merge base also has makes it row 4, never a pull. A queue removal is not a code change when its `reason` is `failed_checks`; every failed test in the merge-group run is the test an open flake issue names, with the same assertion; that issue records an occurrence on a run without this PR's commits; and a re-run of that required check on `H` after the removal is green. Re-queuing past it is re-running past the flake, so 4.6's flake rule applies. When the flake's code is on this PR's seam, its fix in this PR is this row's refresh, not a re-queue. Otherwise, met while settling (step 1), the flake's fix is the first row of the next proposal's *Building*, outside its items. Then post merge-ready again at the same head, quoting the run and the `reason`; the owner re-queues, or you do under a merge authority transcribed that session (*Rules*). Once per PR: a second such removal waits until the flake fix's PR merges. Anything else is this row's refresh |
 | 7 | its PR open after a merge-ready at `H` | merge-ready: carried under *Yours to run*; while an item it closes is in `pile:blocked` (other than one a stage's PR closes whose line is `**Blocked on:** #<root>` for that stage's root), it is not merge-ready and waits on that item's blocker |
-| 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit (for a rider's finding, the commit that takes the rider out, *Pick*), then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
+| 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit (a rider's `fixed` finding excepted: the rider is taken out in its own commit, with a delta of only that change, outside the cap; it never spends the lead's fix rounds and never pulls the lead, *Pick*), then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
 | 10 | its PR open, no review | *Verify*, then the review (steps 4.3–4.4) |
 | 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR | resume a lane on that plan, in the branch and worktree it names |
@@ -145,8 +145,8 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
-   owner ruling recorded since then places it; a rider whose `## Pulled` says it was taken out as a rider goes to
-   `pile:ready` instead (owner ruling, 2026-11-15, ride-along).
+   owner ruling recorded since then places it; a rider whose newest pull is `## Pulled — taken out as a rider` goes
+   to `pile:ready` instead (owner ruling, 2026-11-15, ride-along).
 
 ## 2. Propose
 
@@ -193,16 +193,16 @@ echo "design checks due, not run: ${due:-none} · run since the last proposal: $
 hp=$(jq --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class:defect"]) and has(["P0", "P1", "P2"])
   and (refs(.number) | not))] | length' <<<"$open")
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
-  l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
+  l=$(lines "$n"); grep ' ## Pulled' <<<"$l" | grep -qv 'taken out as a rider' && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
 cu=; cm=; for n in $(jq -r "$cls"'.[] | select(free and has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* condition"))) | .number' <<<"$open"); do
   h=$(lines "$n" | tr -d '\r' | grep -E '^[^ ]+ ## Evidence — condition: (met|not met)$' | tail -1)
   { [ -n "$h" ] && [ "${h%% *}" \> "$(ago 14)" ]; } || cu+="#$n "
   [[ "$h" == *": met" ]] && cm+="#$n "; done
 echo "conditions not checked in 14 days: ${cu:-none} · condition met, still blocked: ${cm:-none}"
 # the round this proposal opens: one past the newest result, else unknown (a stop); every third, and the one after
-# a proposal that says `P3 batch owed`, is a P3-batch round (Pick)
+# a proposal with a Health line beginning `P3 batch owed`, is a P3-batch round (Pick)
 rn=$(jq '[.[]? | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | max // empty | . + 1' <<<"$qc" 2>/dev/null)
-ow=$(jq -r 'map(select(.p)) | last.b // "" | contains("P3 batch owed")' <<<"$qc" 2>/dev/null)
+ow=$(jq -r 'map(select(.p)) | last.b // "" | test("(?m)^[-*• ]*P3 batch owed\\b")' <<<"$qc" 2>/dev/null)
 bt=false; [ -n "$rn" ] && { [ $((rn % 3)) -eq 0 ] || { [ $((rn % 3)) -eq 1 ] && [ "$ow" = true ]; }; } && bt=true
 # the lanes ahead of design: a main red, a flake's fix, the P1 exposure lane; anything but a count reads 0
 case "$xl" in 0|1|2|3|4) ;; *) xl=0;; esac
@@ -215,7 +215,7 @@ dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjso
   | (if $lim then 0 else [($ranked | length), (if $bt then [2, 3 - $xl] | min elif $hp > 0 then 3 - $xl else 4 - $xl end | [., 0] | max)] | min end) as $k
   | ($p | map(.k) | max // "P0") as $worst
   | [$ranked[] | select((.r | IN($pr[]) | not) and .k < $worst) | .r] as $skip
-  | "design lanes: roots picked \([$ranked[] | select(.r | IN($pr[]))] | length) of \($k) offered, stages picked \($p | length) (design cap \((if $bt then [2, 3 - $xl] | min elif $hp > 0 then 3 - $xl else 4 - $xl end | [., 0] | max))),"
+  | "design lanes: roots picked \([$ranked[] | select(.r | IN($pr[]))] | length) of \($k) offered, stages picked \($p | length) (design cap \((if $bt then [2, 3 - $xl] | min elif $hp > 0 then 3 - $xl else 4 - $xl end | [., 0] | max)), xl \($xl)),"
   + " higher-priority roots skipped: \($skip | map("#\(.)") | join(" ") | if . == "" then "none" end), stages with no root: \($all
     | map(select(.r == "?") | "#\(.n)") | join(" ") | if . == "" then "none" end), roots with two: \($p
     | map(select(.r != "?")) | group_by(.r) | map(select(length > 1) | "#\(.[0].r)") | join(" ") | if . == "" then "none" end)"
@@ -243,7 +243,7 @@ c=$(gh issue list -R $R --state closed --search "closed:>=$(ago 14 | cut -c1-10)
 jq -rn --argjson o "$o" --argjson c "$c" "$cls"'"14 days: opened \($o | length) (\($o | by("unlabelled"))) · closed \($c | length) (\($c | by("unlabelled")))
   · ratio \(if ($c | length) > 0 then ($o | length) / ($c | length) * 100 | round / 100 else "n/a" end)"' | tr -s '\n ' ' '; echo
 jq -r --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class:defect"]) and has(["P2"]) and (refs(.number) | not)
-  and (now - (.createdAt | fromdate)) > 1814400)] | "aged ready P2 defects (over 21 days): \(length) (target 0)"' <<<"$open"
+  and (now - (.createdAt | fromdate)) > 1814400)] | "aged ready P2 defects (over 21 days): \(length) (target 0)\(if length > 0 then ": " + (map("#\(.number)") | join(" ")) else "" end)"' <<<"$open"
 jq -rn --argjson o "$o" --argjson c "$c" '[$o, $c] | map([.[] | select(any(.labels[]; .name == "P3"))] | length)
   | "P3 14 days: opened \(.[0]) · closed \(.[1]) · net \(.[0] - .[1]) (target 0 or below)"'
 jq -r 'map(select(.p) | .b) | "open at the last four: \(
@@ -356,17 +356,17 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        defect order while a ready `P0`–`P2` defect exists, else the ordinary order. A P3 batch is never a Next item.
      - **Otherwise,** the lanes design leaves follow the ordinary order.
      - **The P3 batch** (owner ruling, 2026-11-15): every round whose number is divisible by 3 is a P3-batch round, and
-       so is the round after one whose proposal's *Health* says `P3 batch owed`. A debt is owed once and does not stack:
-       unpaid, it waits for the next third round. One lane, after a `main red`, a flake's fix and the exposure lane and
-       before design, takes a P3 batch whether or not a ready `P0`–`P2` defect exists. Count each ready `P3` issue that
-       is not a batch issue, and each unchecked line of a `P3` batch issue, defects and chores alike, leaving out any
-       that takes its own lane (a security boundary or storage), any on a root's `**Blocks:**` line, and any on the seam
-       of an open PR, of an open `root-candidate` or of a lane this round picks. The area with the most counted work is
-       the pool (on a tie, the one whose oldest counted item is oldest); the plan names one seam in it, the component
-       the fixes touch, and takes the counted items on that seam within the round's size limits, planned and reviewed as
-       one item and counted as one. A batch the round cannot run (a migration round, `in flight` past a limit, no lane
-       left, or no counted work) is owed to the next round: the proposal says `P3 batch owed` in one line under
-       *Health*, with the reason.
+       so is the round after one whose proposal has a *Health* line beginning `P3 batch owed`. A debt is owed once and
+       does not stack: unpaid, it waits for the next third round. One lane, after a `main red`, a flake's fix and the
+       exposure lane and before design, takes a P3 batch whether or not a ready `P0`–`P2` defect exists. Count each
+       ready `P3` issue that is not a batch issue, and each unchecked line of a `P3` batch issue, defects and chores
+       alike, leaving out any that takes its own lane (a security boundary or storage), any on a root's `**Blocks:**`
+       line, and any on the seam of an open PR, of an open `root-candidate` or of a lane this round picks. The area with
+       the most counted work is the pool (on a tie, the one whose oldest counted item is oldest); the plan names one
+       seam in it, the component the fixes touch, and takes the counted items on that seam within the round's size
+       limits, planned and reviewed as one item and counted as one. A batch the round cannot run (a migration round, `in
+       flight` past a limit, no lane left, or no counted work) is owed to the next round: the proposal's *Health* has
+       one line beginning `P3 batch owed`, with the reason.
      - **The ordinary order:** `P1`, the aged `P2`s, the other `P2`s, `P3`, oldest first within each, a chore after
        the defects of its priority.
 
@@ -381,8 +381,9 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      `main red`, flake or exposure lane, nor on a `root-candidate`'s seam; never an item that takes its own lane (a
      security boundary or storage) or one on a root's `**Blocks:**` line. A rider that draws a `fixed` finding is
      taken out, not fixed: the lane takes its part and its `Closes`/`Refs` line out of the PR (*To pull an item*,
-     step 3), and that removal is the fix commit for its finding (row 8). Post `## Pulled` on the rider saying it was
-     taken out as a rider; step 1.2 returns it to `pile:ready`.
+     step 3) in its own commit, which gets a delta of only that change, outside the cap. A rider's `fixed` finding
+     never spends its lead's fix rounds and never pulls the lead. Post `## Pulled — taken out as a rider` on the
+     rider; step 1.2 returns it to `pile:ready`.
    - Size the round by review effort: at most 10 items and 4 lanes, plus up to 3 **Next** items the approval also covers,
      none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary
      (authentication, authorization, tenancy, secrets, TLS, or the validation of untrusted input) or storage (a schema,
@@ -416,7 +417,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
 
    The health lines carry the rest of the scorecard. Its targets (`aged ready P2 defects` at 0, the `P3 14 days` net
    at or below 0) are read, never managed: an item leaves a count only for a reason these rules give, and the
-   proposal lists under *Health* each item that left the aged-`P2` count without a merged fix.
+   proposal lists under *Health* each item that left the aged-`P2` count without a merged fix, found by comparing that
+   line with the newest proposal's.
 
 ## 3. Take the answers
 
@@ -549,15 +551,17 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      finding pulls the item, unless each such finding is either a comment, docstring, document or missing test whose
      fix touches only comments, docstrings no code reads (not a model's or a route's), `docs/` or `tests/`, or local:
      its fix is in one file, at most 10 lines, with no new mechanism. That fix, if its commit keeps to those bounds,
-     gets one exception commit and delta, once, outside the cap, where a `fixed` finding pulls the item.
+     gets one exception commit and delta, once, outside the cap, where a `fixed` finding pulls the item. A rider's
+     `fixed` finding counts in neither: it takes the rider out (*Pick*).
    - **Size.** Passing twice the plan's product budget (or the newest budget an owner ruling set after it; never one
      you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. Test lines
      never count against it (#2198). Any smaller overrun, and any test overrun, is stated, with the new estimate, in
      the delta and the merge-ready.
    - **Never review the same code twice.** Each plan gets at most one design critique, and each PR one adversarial
      review and two fix deltas, plus the exception one above; more fix rounds pull the item to the owner (a
-     rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution or a change the owner asks
-     for is a delta of only what is new, outside that cap. A whole-PR review is never repeated, nor run as a delta.
+     rebuild, row 13, is a new plan and PR). A re-entry, a refresh, a conflict resolution, a rider's removal (*Pick*)
+     or a change the owner asks for is a delta of only what is new, outside that cap; a rider's `fixed` finding
+     never spends its lead's fix rounds and never pulls the lead. A whole-PR review is never repeated, nor run as a delta.
    - **No cap narrows a design change.** A stage's budget is the one its ruling sets, split by sub-staging (4.1)
      when it is over about 600 product lines; the sub-stages together still deliver the ruled change. Reaching the
      size bound or the fix-round cap pulls it to the owner with the question, and never narrows the change.
@@ -671,7 +675,7 @@ To **pull** an item:
 
 ```
 ## Round <N> — result
-| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · taken out as a rider · waiting on main or <service>) | PR | product +/− | tests +/− |
+| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · taken out as a rider (`## Pulled — taken out as a rider`) · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
 Data: 14-day ratio <r> · open at the last four proposals <a> → <b> → <c> → <d>
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each, and each line added to an earlier round's batch issue
