@@ -58,7 +58,7 @@ updates:
       # entire slot budget on day one, which is the exact stall this file
       # exists to prevent. Do not re-add "/" to "cover the floor": it does not
       # cover the floor, it duplicates this line.
-      - "/requirements"  # cloud.txt, dev.txt, test.txt
+      - "/requirements"  # cloud.txt, dev.txt, image.txt, test.txt
     schedule:
       interval: "weekly"
     allow:

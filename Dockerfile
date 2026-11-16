@@ -22,8 +22,9 @@ ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
 # Set work directory
 WORKDIR /app
 
-# Copy lockfile first for better layer caching
-COPY requirements/cloud.txt requirements.txt
+# Copy lockfile first for better layer caching. image.txt is the cloud extra
+# alone; cloud.txt adds the test extra for the CI jobs, which the image must not ship.
+COPY requirements/image.txt requirements.txt
 
 # Install Python dependencies from the lockfile, with CPU-only torch.
 # The lockfile pins the default (CUDA) torch wheel, which drags in ~4-5GB of

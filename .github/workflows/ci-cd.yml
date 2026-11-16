@@ -231,7 +231,7 @@ jobs:
       - name: Validate lockfiles exist
         run: |
           echo "Checking lockfiles..."
-          for f in requirements/test.txt requirements/cloud.txt requirements/dev.txt; do
+          for f in requirements/test.txt requirements/cloud.txt requirements/image.txt requirements/dev.txt; do
             if [ ! -f "$f" ]; then
               echo "ERROR: Lockfile $f is missing. Run: ./scripts/lock-deps.sh"
               exit 1
@@ -241,7 +241,7 @@ jobs:
 
       - name: Validate lockfiles are not empty stubs
         run: |
-          for f in requirements/test.txt requirements/cloud.txt requirements/dev.txt; do
+          for f in requirements/test.txt requirements/cloud.txt requirements/image.txt requirements/dev.txt; do
             lines=$(grep -c "==" "$f" || true)
             if [ "$lines" -lt 50 ]; then
               echo "ERROR: $f has only $lines pinned packages (expected 50+). Regenerate with: ./scripts/lock-deps.sh"
@@ -307,7 +307,7 @@ jobs:
           ruff check faultmaven/ tests/
 
       - name: Lockfiles match pyproject extras (#884)
-        # The Docker image installs requirements/cloud.txt, not pyproject — a
+        # The Docker image installs requirements/image.txt, not pyproject — a
         # dependency added to an extra without regenerating the lockfiles ships
         # an image missing a runtime dependency (workos was absent from the
         # cloud image this way; the DI container died at first request). uv

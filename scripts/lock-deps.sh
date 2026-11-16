@@ -50,6 +50,16 @@ uv pip compile pyproject.toml \
     -o requirements/cloud.txt \
     --quiet
 
+# The image's lockfile: the cloud extra alone, so no test package ships to
+# production. cloud.txt above keeps the test extra for the CI jobs (#2231).
+echo "  requirements/image.txt (cloud)"
+uv pip compile pyproject.toml \
+    --extra cloud \
+    --python-version "$PYTHON_VERSION" \
+    --python-platform linux \
+    -o requirements/image.txt \
+    --quiet
+
 echo "  requirements/dev.txt (dev + test)"
 uv pip compile pyproject.toml \
     --extra dev \
