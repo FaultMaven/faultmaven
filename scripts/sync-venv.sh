@@ -22,7 +22,7 @@
 # packages the lockfile omits. Leftovers matter: a package you have and CI does
 # not can make an optional import succeed locally and fail there.
 #
-# Requires: uv (pip install uv)
+# Requires: uv, installed outside the venvs it syncs (pipx install uv)
 
 set -euo pipefail
 
@@ -35,13 +35,14 @@ ROOT="$PWD"
 
 EXTRA="${1:-}"
 if [ -z "$EXTRA" ]; then
-    echo "usage: ./scripts/sync-venv.sh <dev|test|cloud> [venv-path]" >&2
+    echo "usage: ./scripts/sync-venv.sh <dev|test|cloud|image> [venv-path]" >&2
     echo "" >&2
     echo "  dev    requirements/dev.txt    — Architecture Boundary Check, API Contract Drift Check" >&2
     echo "  test   requirements/test.txt   — Test Standalone, Code Quality Checks," >&2
     echo "                                   Test Packaging Configuration, Environment Smoke Check" >&2
     echo "  cloud  requirements/cloud.txt  — Test Cloud, Test PostgreSQL Integration," >&2
     echo "                                   Test PostgreSQL Integration (FIPS, PostgreSQL 18)" >&2
+    echo "  image  requirements/image.txt  — the Docker image (cloud without the test extra)" >&2
     echo "" >&2
     echo "  (Security Scanning installs no lockfile — it audits the files themselves.)" >&2
     exit 1
@@ -56,7 +57,7 @@ if [ ! -f "$LOCKFILE" ]; then
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
-    echo "✗ uv is required. Install with: pip install uv" >&2
+    echo "✗ uv is required. Install it outside the project's venvs, e.g. pipx install uv" >&2
     exit 1
 fi
 UV_BIN="$(command -v uv)"
