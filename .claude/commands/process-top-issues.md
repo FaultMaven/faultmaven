@@ -127,7 +127,7 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
 | 10 | its PR open, no review | *Verify*, then the review (steps 4.3–4.4) |
-| 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR, unless that plan carries it unbuilt (4.1) | resume a lane on that plan, in the branch and worktree it names |
+| 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR, unless that plan says `Carried unbuilt` (4.1) | resume a lane on that plan, in the branch and worktree it names |
 | 12 | a pull that closed its PR, which has not merged since, and a live ruling granting one more fix and delta, an exception commit or a merge as is | re-entry: `gh pr reopen` it. A merge as is waives its outstanding findings, each filed as an issue: row 9. Else the lane adds one commit on its branch, and a delta of only that commit, outside the cap, where a `fixed` finding pulls it again |
 | 13 | a live ruling implying other work (a re-plan, a build at a new estimate) | rebuild: a plan for this round (step 4.1, with a critique when 4.1 calls for one) on a new branch, with its own review and PR; a closed PR stays closed |
 | 14 | none of the above | new: step 4.1 |
@@ -149,7 +149,9 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 
 1. **Each PR the last result named,** and each item it carries: do what its row in *Where an item stands* says.
    Rows 1–7 settle it, as does a closed PR (step 1.2 places its item). On rows 8–10, a PR with a `## Delta` after its
-   merge-ready, or reported waiting last round, goes on at its row; else a build was interrupted: report and stop.
+   merge-ready, or reported waiting last round, goes on at its row; else a build was interrupted: report and stop. An
+   engine conclusion or recommendation the last result reports `carried` because it did not reproduce (4.1) needs
+   nothing here: it stays in `pile:ready` for *Pick*.
 2. **Each issue row**, taking the first that matches: **closed**, nothing to do; **open with its PR merged**, close it
    if everything it asked for is delivered, else edit it down to the remainder, title and body; **`pulled`, or its PR
    closed unmerged**, `pile:blocked` with `**Blocked on:** an owner ruling on …` naming what stopped it, unless an
@@ -381,7 +383,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      defect order while any exist, else the defects of the ordinary order (its chores are not listed: read them from
      the ready query), after `P3 batch (round <N>); then:` in a P3-batch round.
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
-     on that PR's seam until it merges.
+     on that PR's seam until it merges. Skip, too, an engine conclusion or recommendation whose newest plan says
+     `Carried unbuilt` (4.1), until a recorded run newer than that plan shows it or an owner ruling places it.
    - Items on one seam share a lane and a PR.
    - Size the round by review effort: at most 10 items and 4 lanes, plus up to 3 **Next** items the approval also covers,
      none a migration; a flake's fix (4.6) takes a lane but is not an item. An item touching a security boundary
@@ -449,7 +452,8 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      change. The plan states which claims held and which did not; a claim that did not hold is corrected on the issue
      under `## Evidence — triage`. A defect that does not reproduce is built as a verification item (below); an engine
      conclusion or recommendation that does not reproduce is re-set by *State*, stays open and is not built this round
-     (owner ruling, 2026-11-16): its result row reads `carried`, with the runs made and the new priority;
+     (owner ruling, 2026-11-16): the plan says `Carried unbuilt`, and its result row reads `carried`, with the runs
+     made and the new priority;
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
