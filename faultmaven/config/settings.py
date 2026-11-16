@@ -537,7 +537,7 @@ class LLMSettings(BaseSettings):
         validation_alias="GEMINI_API_BASE",
     )
     # Hugging Face's OpenAI-compatible router (#2111). An override names another
-    # OpenAI-compatible base, such as a self-hosted TGI's /v1.
+    # billed Hugging Face base; a self-hosted server (TGI included) is LOCAL_LLM_URL.
     huggingface_base_url: str = Field(
         default="https://router.huggingface.co/v1",
         validation_alias="HUGGINGFACE_API_URL",

@@ -178,7 +178,7 @@ HUGGINGFACE_MODEL="meta-llama/Llama-3.3-70B-Instruct"
 CHAT_PROVIDER="huggingface"
 ```
 
-**Default model**: `meta-llama/Llama-3.3-70B-Instruct`. Requests go to Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1/chat/completions`), which serves any model a live inference provider maps. `HUGGINGFACE_API_URL` overrides the base, and must name another OpenAI-compatible base (a self-hosted TGI's `/v1` serves `/chat/completions` too). Router calls are billed by the serving provider, so they are not priced as free: an unlisted model counts as unpriced.
+**Default model**: `meta-llama/Llama-3.3-70B-Instruct`. Requests go to Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1/chat/completions`), which serves any model a live inference provider maps. `HUGGINGFACE_API_URL` overrides the base with another billed, OpenAI-compatible Hugging Face base. A self-hosted OpenAI-compatible server, TGI included, is configured as the `local` provider (`LOCAL_LLM_URL`), which is priced as known-free. Router calls are billed by the serving provider, so they are not priced as free: an unlisted model counts as unpriced.
 
 **Features**: Access to thousands of open source models, free tier available.
 

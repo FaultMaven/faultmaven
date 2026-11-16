@@ -881,10 +881,10 @@ class BaseLLMProvider(ABC):
         # same thing and surface it as "All providers failed".
         #
         # This is a deliberate SPLIT, not an inconsistency with the providers
-        # that do raise. ``route()`` and the three translating providers
-        # (OpenAI, OpenRouter via inheritance, Gemini) coerce and therefore
-        # raise, because they are about to ACT on the value and a typo there
-        # must fail at the call site that made it. This path only reports, so
+        # that do raise. ``route()`` and the providers that read the intent
+        # (OpenAI; OpenRouter, Azure and HuggingFace via inheritance; Gemini)
+        # coerce and therefore raise, because they are about to ACT on the
+        # value and a typo there must fail at the call site that made it. This path only reports, so
         # tolerance costs nothing and refusing costs a turn. Validate where you
         # act; tolerate where you narrate.
         intent_value = getattr(intent, "value", intent)

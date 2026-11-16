@@ -376,9 +376,13 @@ def _skip_if_refused_by_design(label, shape):
     """The raw llama.cpp ``/completion`` fallback takes one prompt, so it refuses
     a call carrying ``messages`` before any request (#2016); the knob matrix has
     no body to inspect there. The refusal is pinned in
-    test_local_messages_transport_2016.py."""
+    test_local_messages_transport_2016.py. HuggingFace claims no tool calling,
+    so it refuses a call carrying tools the same way (pinned in
+    test_huggingface_router_2111.py)."""
     if label == "local-llamacpp" and shape == "tool_loop":
         pytest.skip("refused before any request (#2016)")
+    if label == "huggingface" and shape == "tool_loop":
+        pytest.skip("refused before any request (#2111)")
 
 
 # --- Assertions ---------------------------------------------------------------
@@ -870,7 +874,6 @@ _TOOLS_ON_THE_WIRE = {
     "azure": _openai_tools,
     "groq": _openai_tools,
     "fireworks": _openai_tools,
-    "huggingface": _openai_tools,
     "local-openai": _openai_tools,
     "cohere": _cohere_tools,
     "gemini": _gemini_tools,
@@ -879,7 +882,7 @@ _TOOLS_ON_THE_WIRE = {
 
 
 def test_every_tool_carrying_target_is_checked():
-    carriers = {"local-ollama", "local-llamacpp"}
+    carriers = {"huggingface", "local-ollama", "local-llamacpp"}
     assert (
         set(_TOOLS_ON_THE_WIRE) == set(_LABELS) - carriers
     ), "a target that sends tools needs an entry in _TOOLS_ON_THE_WIRE"

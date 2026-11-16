@@ -514,7 +514,7 @@ Not recorded for it: a context window (no `model_context` entry matches the name
 
 ### HuggingFace
 - Requests use Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1`); the serverless `api-inference.huggingface.co` API is retired (#2111)
-- Tool support varies per routed provider and is unverified, so `supports_tool_calling()` always returns `False`
+- Tool support varies per routed provider and is unverified, so `supports_tool_calling()` always returns `False`, and a call carrying tools is refused with `CallShapeUnsupported` before any request
 
 ### Local Models (Ollama/vLLM)
 

@@ -15,7 +15,9 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.config.settings import LLMSettings
+from faultmaven.exceptions import CallShapeUnsupported, LLMException
 from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.huggingface import HuggingFaceProvider
 from faultmaven.infrastructure.llm.providers.registry import (
     PROVIDER_SCHEMA,
@@ -24,7 +26,7 @@ from faultmaven.infrastructure.llm.providers.registry import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
-from tests.model_content import vetted
+from tests.model_content import vetted, vetted_messages
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -93,3 +95,66 @@ def test_capability_claims_are_unchanged(hf_from_defaults):
         hf_from_defaults.get_structured_output_capability()
         == StructuredOutputCapability.BEST_EFFORT
     )
+
+
+async def test_a_call_carrying_tools_is_refused_before_any_request(
+    hf_from_defaults, mock_aiohttp_session
+):
+    """Tool calling is not claimed, so tools never reach the router: the call
+    is refused as a call shape (no provider failure, non-retryable)."""
+    session = mock_aiohttp_session(_OPENAI_RESP)
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "emit", "parameters": {"type": "object"}},
+        }
+    ]
+    with patch("aiohttp.ClientSession", return_value=session):
+        with pytest.raises(CallShapeUnsupported, match="carries tools") as refused:
+            await send_to_model(
+                hf_from_defaults,
+                prompt=vetted(""),
+                messages=vetted_messages([{"role": "user", "content": "go"}]),
+                tools=tools,
+                tool_choice="auto",
+            )
+    assert refused.value.retryable is False
+    session.post.assert_not_called()
+
+
+async def test_a_base_url_with_a_trailing_slash_posts_to_one_path(
+    mock_aiohttp_session,
+):
+    provider = HuggingFaceProvider(
+        ProviderConfig(
+            name="huggingface",
+            api_key="hf_test_key",
+            base_url="https://router.huggingface.co/v1/",
+            models=[_DEFAULT_MODEL],
+            default_model=_DEFAULT_MODEL,
+        )
+    )
+    session = mock_aiohttp_session(_OPENAI_RESP)
+    with patch("aiohttp.ClientSession", return_value=session):
+        await send_to_model(provider, prompt=vetted("hi"))
+    (url,), _ = session.post.call_args
+    assert url == _ROUTER_CHAT_URL
+
+
+@pytest.mark.parametrize(
+    "status, body, expected",
+    [
+        (500, {}, "huggingface API error 500"),
+        (200, {"choices": []}, "huggingface API returned no choices"),
+    ],
+)
+async def test_an_error_names_the_provider_that_raised_it(
+    hf_from_defaults, mock_aiohttp_session, status, body, expected
+):
+    """The inherited request path reports the subclass's own name, not
+    "OpenAI"."""
+    session = mock_aiohttp_session(body, status=status)
+    with patch("aiohttp.ClientSession", return_value=session):
+        with pytest.raises(LLMException) as failed:
+            await send_to_model(hf_from_defaults, prompt=vetted("hi"))
+    assert str(failed.value).startswith(expected)
