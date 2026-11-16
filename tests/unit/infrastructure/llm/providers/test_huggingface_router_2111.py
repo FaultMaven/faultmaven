@@ -122,23 +122,65 @@ async def test_a_call_carrying_tools_is_refused_before_any_request(
     session.post.assert_not_called()
 
 
+_COHERE_RESP = {
+    "message": {"content": "ok"},
+    "finish_reason": "COMPLETE",
+    "usage": {"tokens": {"input_tokens": 3, "output_tokens": 1}},
+}
+
+
+@pytest.mark.parametrize(
+    "provider_name, base_url, model, response, expected_url",
+    [
+        (
+            "huggingface",
+            "https://router.huggingface.co/v1/",
+            _DEFAULT_MODEL,
+            _OPENAI_RESP,
+            _ROUTER_CHAT_URL,
+        ),
+        (
+            "fireworks",
+            "https://api.fireworks.ai/inference/v1/",
+            "accounts/fireworks/models/deepseek-v4-flash",
+            _OPENAI_RESP,
+            "https://api.fireworks.ai/inference/v1/chat/completions",
+        ),
+        (
+            "groq",
+            "https://api.groq.com/openai/v1/",
+            "openai/gpt-oss-20b",
+            _OPENAI_RESP,
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+        (
+            "cohere",
+            "https://api.cohere.com/v2/",
+            "command-r-plus",
+            _COHERE_RESP,
+            "https://api.cohere.com/v2/chat",
+        ),
+    ],
+)
 async def test_a_base_url_with_a_trailing_slash_posts_to_one_path(
-    mock_aiohttp_session,
+    mock_aiohttp_session, provider_name, base_url, model, response, expected_url
 ):
-    provider = HuggingFaceProvider(
+    """Every request builder that joins a path onto the base strips a trailing
+    slash first, so an override ending in "/" never posts to ``//``."""
+    provider = PROVIDER_SCHEMA[provider_name]["provider_class"](
         ProviderConfig(
-            name="huggingface",
-            api_key="hf_test_key",
-            base_url="https://router.huggingface.co/v1/",
-            models=[_DEFAULT_MODEL],
-            default_model=_DEFAULT_MODEL,
+            name=provider_name,
+            api_key="test_key",
+            base_url=base_url,
+            models=[model],
+            default_model=model,
         )
     )
-    session = mock_aiohttp_session(_OPENAI_RESP)
+    session = mock_aiohttp_session(response)
     with patch("aiohttp.ClientSession", return_value=session):
         await send_to_model(provider, prompt=vetted("hi"))
     (url,), _ = session.post.call_args
-    assert url == _ROUTER_CHAT_URL
+    assert url == expected_url
 
 
 @pytest.mark.parametrize(

@@ -164,7 +164,7 @@ class CohereProvider(BaseLLMProvider):
             async with aiohttp.ClientSession() as session:
                 async with post_waiting_out_rate_limits(
                     session,
-                    f"{self.config.base_url}/chat",  # v2 endpoint
+                    f"{self.config.base_url.rstrip('/')}/chat",  # v2 endpoint
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=self.config.timeout),
