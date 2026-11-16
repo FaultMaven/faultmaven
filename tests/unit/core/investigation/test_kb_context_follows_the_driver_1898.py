@@ -156,8 +156,12 @@ class TestTheNextTurnsPrompt:
         assert await _turn(engine, case, SUBSTANTIVE)
 
         (scope,) = knowledge.filters
-        assert {"owner_id": DRIVER} in scope["$or"]
-        assert {"owner_id": case.user_id} not in scope["$or"]
+        owners = [
+            arm["$and"][0]["owner_id"]
+            for arm in scope["$or"]
+            if "owner_id" in arm["$and"][0]
+        ]
+        assert owners == [DRIVER]
         assert case.kb_context_origin["driver_id"] == DRIVER
         assert PREVIOUS_MARKER not in _prompt(engine)
 

@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.core.investigation import terminal_transitions as tt
 from faultmaven.core.investigation.milestone_engine.dependencies import EngineDeps
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
@@ -226,7 +227,17 @@ async def test_the_engine_resolver_builds_the_owner_scope_in_standalone():
 
     scope = await resolver()
 
-    assert scope == {"$or": [{"scope": "global"}, {"owner_id": OWNER}]}
+    assert scope == {
+        "$or": [
+            {
+                "$and": [
+                    {"scope": "global"},
+                    {"enterprise_id": {"$in": [ORG, STANDALONE_ENTERPRISE_ID]}},
+                ]
+            },
+            {"$and": [{"owner_id": OWNER}, {"enterprise_id": ORG}]},
+        ]
+    }
 
 
 @pytest.mark.asyncio
@@ -242,7 +253,12 @@ async def test_the_engine_resolver_includes_the_owners_team_shared_items():
 
     scope = await resolver()
 
-    assert {"parent_document_id": {"$in": ["kb-shared-1"]}} in scope["$or"]
+    assert {
+        "$and": [
+            {"parent_document_id": {"$in": ["kb-shared-1"]}},
+            {"enterprise_id": ORG},
+        ]
+    } in scope["$or"]
     team_service.list_all_user_team_ids.assert_awaited_once_with(OWNER)
 
 
@@ -300,4 +316,6 @@ async def test_the_engine_passes_its_injected_kb_and_owner_resolver_to_dedup(
 
     assert captured["runbook_kb"] is engine.deps.runbook_kb
     assert captured["scope_resolver"] is not None
-    assert (await captured["scope_resolver"]())["$or"][1] == {"owner_id": OWNER}
+    assert (await captured["scope_resolver"]())["$or"][1] == {
+        "$and": [{"owner_id": OWNER}, {"enterprise_id": ORG}]
+    }

@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, call, create_autospec
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.models import KnowledgeBaseDocument
@@ -76,7 +77,10 @@ async def test_search_knowledge_runs_on_interface_mocks() -> None:
         collection_name=KB_COLLECTION,
         query="database timeout",
         k=3,
-        where={"scope": "global"},
+        # No caller filter: the platform tier alone (#1775).
+        where={
+            "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+        },
         min_score=0.3,
         admit=service.admitted_generations,
     )

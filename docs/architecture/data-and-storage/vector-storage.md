@@ -37,19 +37,24 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Architecture**: Two ChromaDB clients created in the DI container — one for permanent KB collections (`kb_chromadb_client` at `data/chroma-kb/`), one for ephemeral case evidence (`evidence_chromadb_client` at `data/chroma-evidence/`). Local deployment uses `PersistentClient` (file-based), cloud uses `HttpClient` to external server. Separate instances ensure KB data is protected from evidence churn and can be backed up independently.
 
-**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries the **immutable visibility floor** — `scope` (`personal` or `global`) and `owner_id` — plus the owning tenant, `enterprise_id`: the `knowledge_items` row's own value, the Standalone enterprise for the global tier. Every chunk written **since #1168** carries it; chunks written before carry none until #1777's backfill, and the read conjunct (#1775) waits on that backfill. `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
+**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries the **immutable visibility floor** — `scope` (`personal` or `global`) and `owner_id` — plus the owning tenant, `enterprise_id`: the `knowledge_items` row's own value, the Standalone enterprise for the global tier. Every chunk written **since #1168** carries it; chunks written before carry none until #1777's backfill. Every KB read conjuncts it onto each arm of its scope (#1775), so an unstamped chunk is served to no one. `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
 
 **One adapter writes this collection for the service.** `KnowledgeService` is wired with `knowledge_vector_store` and nothing else: the `or vector_store` fallback to the plain `ChromaDBVectorStore` was removed in #1168, because that store checks no tenant stamp and was never selectable anyway (both factories are gated on the same `SKIP_SERVICE_CHECKS` flag). `KnowledgeVectorStore.add_documents` refuses, before any retry, a metadata key `VectorMetadata` does not declare (fm#1035) and a KB chunk with no non-blank `enterprise_id` (#1168); it does not otherwise normalize values through `VectorMetadata` — the caller, `KnowledgeService._index_document_in_vector_store`, builds its dict as `VectorMetadata(...).to_chroma_metadata()`. `KnowledgeVectorStore` is the only writer of the collection in this codebase. `ChromaDBVectorStore` has no method that writes a document (#1782): `container.vector_store` is one over `CHROMADB_COLLECTION` (default `faultmaven_kb`), read only by the vector-store health check (#2325), and runbook dedup builds its own over `KB_COLLECTION` (`RunbookKnowledgeBase.over_kb_collection`).
 
-`KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. `build_kb_scope_filter` (in `knowledge_service.py`) builds the combined filter the unified `answer_from_kb` tool uses:
+`KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. `build_kb_scope_filter` (in `knowledge_service.py`) builds the combined filter the unified `answer_from_kb` tool uses, with the caller's enterprise `E` inside each arm (#1775):
 
 ```python
 {"$or": [
-    {"scope": "global"},                              # platform corpus
-    {"owner_id": owner_id},                           # own items, any scope
-    {"parent_document_id": {"$in": shared_ids}},      # shared to one of the caller's teams
+    {"$and": [{"scope": "global"},                    # platform corpus
+              {"enterprise_id": {"$in": [E, STANDALONE_ENTERPRISE_ID]}}]},
+    {"$and": [{"owner_id": owner_id},                 # own items, any scope
+              {"enterprise_id": E}]},
+    {"$and": [{"parent_document_id": {"$in": shared_ids}},  # shared to one of the caller's teams
+              {"enterprise_id": E}]},
 ]}
 ```
+
+With no usable enterprise the filter is the platform tier alone (global chunks stamped with the Standalone enterprise) for the pre-fetch and `POST /knowledge/search`; `kb_qa` and the report route's runbook dedup refuse, the engine's runbook dedup skips, and the knowledge-base question lookup reports `not_searchable` instead.
 
 `shared_ids` comes from `resolve_shared_kb_ids`, which reads `resource_shares` in SQL. The `owner_id` arm is unshare-proof precisely because it is keyed on the caller, not on a stored team tag; the team arm is omitted when the list is empty (ChromaDB rejects an empty `$in`), collapsing retrieval to `personal ∪ global` — the fail-closed outcome.
 
@@ -238,7 +243,9 @@ await knowledge_service.list_documents(scope="global", limit=50, offset=0)
 await knowledge_service.get_document(document_id)  # knowledge_items row (content in-row)
 
 # ChromaDB methods (vector search only)
-await vector_store.search(query, k=5, filters={"scope": "global"})
+await vector_store.search(
+    KB_COLLECTION, query, k=5, where=scope_filter, admit=admitted_generations
+)  # scope_filter from build_kb_scope_filter
 await vector_store.delete_documents_by_parent_id(document_id)
 ```
 
@@ -316,19 +323,24 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
     user_teams = await get_user_teams(user_id)
 
     return await knowledge_vector_store.search(
+        collection_name=KB_COLLECTION,
         query=query,
         k=k,
-        scope_filter={
+        admit=knowledge_service.admitted_generations,
+        # build_kb_scope_filter(user_id, shared_ids, enterprise_id=...)
+        where={
             "$or": [
-                {"scope": "global"},
-                {"owner_id": user_id},
-                {"parent_document_id": {"$in": shared_ids}},
+                {"$and": [{"scope": "global"},
+                          {"enterprise_id": {"$in": [enterprise_id, STANDALONE_ENTERPRISE_ID]}}]},
+                {"$and": [{"owner_id": user_id}, {"enterprise_id": enterprise_id}]},
+                {"$and": [{"parent_document_id": {"$in": shared_ids}},
+                          {"enterprise_id": enterprise_id}]},
             ]
         },
     )
 ```
 
-`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids. The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries; an older chunk carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777). Conjuncting it on read is #1775.
+`KnowledgeVectorStore` rejects any `faultmaven_kb` query whose filter names no scope key. That is a **presence** check, not a tenant check (#1167): cross-tenant isolation comes from `build_kb_scope_filter`, keyed on the caller's own ids and conjuncting the caller's enterprise onto every arm (#1775). The vector layer's own tenant key is the `enterprise_id` every chunk written since #1168 carries. An older chunk has no stamp and no `vector_generation` (it predates revision 022, #2388), so admission never serves it: the `kb_vector_enterprise_backfill` job (#1777) can stamp it, but that changes nothing for reads. The bootstrap repair and the pack re-ingest are what bring its row back, with fresh chunks carrying both.
 
 ### 4.3 Performance Characteristics
 

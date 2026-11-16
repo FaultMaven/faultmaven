@@ -29,6 +29,7 @@ from faultmaven.core.investigation.kb_question import (
     QUERY_FROM_QUESTION,
     KbLookup,
     KbLookupStatus,
+    kb_lookup_verdict,
     kb_question_of,
     render_kb_lookup_block,
 )
@@ -57,6 +58,11 @@ from tests.case_builders import inquiry_case, investigating_case
 pytestmark = pytest.mark.unit
 
 LOOKUP_QUESTION = {"kind": "lookup", "topic": "kafka consumer lag"}
+#: The instruction ruled on #1775 (2026-11-16), verbatim.
+RULED_NOT_SEARCHABLE = (
+    "The knowledge base cannot be searched for this case. Tell the user you cannot check the knowled"
+    "ge base for this case. Do NOT say no runbook exists, and do not suggest trying again later."
+)
 
 
 def _hit(parent: str, score: float, title: str | None = None, text: str = "x"):
@@ -229,6 +235,26 @@ class TestTheLookup:
         assert lookup.status is KbLookupStatus.UNAVAILABLE
         deps.knowledge_service.search_knowledge.assert_not_awaited()
 
+    async def test_a_case_with_no_usable_enterprise_is_not_searchable(self, caplog):
+        """#1775: every arm of the scope carries the case's enterprise; with
+        none, no scoped search exists and retrying never supplies one. Decided
+        before the scope is built: no search, no team lookup, and an INFO log
+        with no traceback — it is not a failure."""
+        deps = _deps([_hit("rb_1", 0.9)])
+        deps.team_service = MagicMock()
+        deps.team_service.list_all_user_team_ids = AsyncMock(return_value=[])
+        deps.share_repository = MagicMock()
+        case = _case()
+        case.enterprise_id = None
+        with caplog.at_level("INFO"):
+            lookup = await look_up_kb_question(deps, case, LOOKUP_QUESTION)
+        assert lookup.status is KbLookupStatus.NOT_SEARCHABLE
+        deps.knowledge_service.search_knowledge.assert_not_awaited()
+        deps.team_service.list_all_user_team_ids.assert_not_awaited()
+        records = [r for r in caplog.records if "lookup not run" in r.getMessage()]
+        assert [r.levelname for r in records] == ["INFO"]
+        assert all(r.exc_info is None for r in caplog.records)
+
     async def test_no_knowledge_service_is_unavailable(self):
         deps = SimpleNamespace(
             knowledge_service=None, team_service=None, share_repository=None
@@ -307,6 +333,27 @@ class TestTheBlock:
         assert "couldn't find a runbook" in block
         assert "Never suggest that a runbook exists" in block
         assert "CANDIDATE" not in block
+
+    def test_not_searchable_carries_the_ruled_instruction(self):
+        """The instruction is the one ruled on #1775, verbatim, and the block
+        claims no search: nothing was searched."""
+        block = _render(
+            KbLookup(
+                status=KbLookupStatus.NOT_SEARCHABLE,
+                query="kafka consumer lag",
+                query_source=QUERY_FROM_QUESTION,
+            )
+        )
+        assert RULED_NOT_SEARCHABLE in block
+        assert "searched" not in block.replace(RULED_NOT_SEARCHABLE, "")
+        assert "could NOT run" not in block
+
+    def test_not_searchable_verdict_carries_the_ruled_instruction(self):
+        verdict = kb_lookup_verdict(
+            KbLookup(status=KbLookupStatus.NOT_SEARCHABLE, query="x"),
+            lambda name, body: body,
+        )
+        assert RULED_NOT_SEARCHABLE in verdict
 
     def test_unavailable_never_claims_nothing_exists(self):
         block = _render(KbLookup(status=KbLookupStatus.UNAVAILABLE, query="x"))

@@ -5,7 +5,7 @@ Every write-side default used to be ``global``, so a publish path that simply
 *neglected* to set a scope published tenant-authored content platform-wide —
 and an omission appears nowhere in a diff, which is the one failure shape review
 is worst at catching. The read side already fails CLOSED on the same omission
-(an unidentifiable principal collapses to ``{"scope": "global"}``, i.e. reads
+(an unidentifiable principal collapses to the global arm alone, i.e. reads
 LESS); this is what makes the write side do the same.
 
 The ChromaDB writer in this codebase that publishes to a tier is

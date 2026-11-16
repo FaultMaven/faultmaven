@@ -20,10 +20,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.core.investigation.milestone_engine.retrieval_scope import (
     case_retrieval_scope,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
 from tests.model_content import disabled_redaction
 from tests.utils import admit_every_parent
 
@@ -39,15 +41,34 @@ T_TEAMMATE = "team-of-teammate"
 KB_DRIVER_TEAM = "kb-of-driver-team"
 KB_TEAMMATE_TEAM = "kb-of-teammate-team"
 
-GLOBAL = {"scope": "global"}
+# Every arm carries the case's enterprise (#1775); the global arm also admits
+# the platform value the global tier is stamped with.
+GLOBAL = {
+    "$and": [
+        {"scope": "global"},
+        {"enterprise_id": {"$in": [ENT, STANDALONE_ENTERPRISE_ID]}},
+    ]
+}
 DRIVER_SCOPE = {
     "$or": [
         GLOBAL,
-        {"owner_id": DRIVER},
-        {"parent_document_id": {"$in": [KB_DRIVER_TEAM]}},
+        {"$and": [{"owner_id": DRIVER}, {"enterprise_id": ENT}]},
+        {
+            "$and": [
+                {"parent_document_id": {"$in": [KB_DRIVER_TEAM]}},
+                {"enterprise_id": ENT},
+            ]
+        },
     ]
 }
-DRIVER_PERSONAL_ONLY = {"$or": [GLOBAL, {"owner_id": DRIVER}]}
+DRIVER_PERSONAL_ONLY = {
+    "$or": [GLOBAL, {"$and": [{"owner_id": DRIVER}, {"enterprise_id": ENT}]}]
+}
+#: A case with no usable enterprise: global chunks stamped with the platform
+#: value, and nothing keyed on the driver.
+PLATFORM_TIER = {
+    "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+}
 
 
 class _Shares:
@@ -94,11 +115,11 @@ class _Teams:
         return list(self.memberships.get(user_id, []))
 
 
-def _case(user_id: Optional[str] = DRIVER) -> Any:
+def _case(user_id: Optional[str] = DRIVER, enterprise_id: Optional[str] = ENT) -> Any:
     return SimpleNamespace(
         case_id="case-1",
         user_id=user_id,
-        enterprise_id=ENT,
+        enterprise_id=enterprise_id,
         progress=None,
         kb_context=None,
     )
@@ -169,6 +190,60 @@ async def test_raise_on_failure_raises_instead_of_narrowing(failing):
             share_repository=_Shares(fail=failing == "shares"),
             raise_on_failure=True,
         )
+
+
+def _unusable_enterprises():
+    """A case enterprise ``usable_tenant_id`` refuses: none, or the Standalone
+    sentinel under ``TENANT_PROVIDER=multi``."""
+    return [
+        pytest.param(None, None, id="none"),
+        pytest.param(STANDALONE_ENTERPRISE_ID, BUILTIN_MULTI, id="sentinel-multi"),
+    ]
+
+
+@pytest.mark.parametrize("enterprise_id,provider", _unusable_enterprises())
+async def test_no_usable_enterprise_reads_the_platform_tier_alone(
+    monkeypatch, enterprise_id, provider
+):
+    """The pre-fetch degrades (#1775): never the driver's own chunks without a
+    tenant to pin them to, and no team lookup that would be thrown away."""
+    if provider:
+        monkeypatch.setattr(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            lambda: provider,
+        )
+    teams, shares = _Teams(), _Shares()
+
+    scope = await case_retrieval_scope(
+        _case(enterprise_id=enterprise_id), team_service=teams, share_repository=shares
+    )
+
+    assert scope == PLATFORM_TIER
+    assert teams.lookups == [] and shares.lookups == []
+
+
+@pytest.mark.parametrize("enterprise_id,provider", _unusable_enterprises())
+async def test_raise_on_failure_refuses_a_case_with_no_usable_enterprise(
+    monkeypatch, enterprise_id, provider
+):
+    """P1 of the #1775 critique: the dedup and the KB-question lookup refuse
+    rather than search a platform tier that never saw the driver's runbooks."""
+    if provider:
+        monkeypatch.setattr(
+            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+            lambda: provider,
+        )
+
+    teams = _Teams()
+
+    with pytest.raises(RuntimeError, match="no usable enterprise"):
+        await case_retrieval_scope(
+            _case(enterprise_id=enterprise_id),
+            team_service=teams,
+            share_repository=None,
+            raise_on_failure=True,
+        )
+    assert teams.lookups == []
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +435,46 @@ async def test_pull_after_a_hand_off_carries_the_drivers_scope():
     )
 
     assert context.kb_scope_filter == DRIVER_SCOPE
+
+
+async def test_pull_kb_qa_refuses_for_a_case_with_no_usable_enterprise():
+    """#1775: ``kb_qa`` refuses rather than answer from the platform tier as if
+    it were the driver's knowledge. The context carries no scope, so the
+    adapter's refusal answers and no search runs; the pre-fetch for the same
+    case still reads the platform tier."""
+    from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
+
+    case = _case(enterprise_id=None)
+    context = await _generator(_Teams(), _Shares()).build_tool_context(
+        case, user_id=DRIVER, redaction_ctx=disabled_redaction(), given_tools=NO_TOOLS
+    )
+    wrapped = MagicMock()
+    wrapped.answer = AsyncMock(return_value=("answer", []))
+
+    result = await KBToolAdapter(
+        wrapped, admit=admit_every_parent
+    ).execute_with_context({"question": "q"}, context)
+
+    assert context.kb_scope_filter is None
+    assert not result.success
+    assert "Knowledge base query refused" in result.error
+    wrapped.answer.assert_not_awaited()
+
+    from faultmaven.core.investigation.milestone_engine.kb_prefetch import KbPrefetcher
+
+    deps = _deps(_Teams(), _Shares())
+    deps.knowledge_service = _SearchRecorder()
+    await KbPrefetcher(deps=deps).prefetch_kb_context(case, "X fails", "symptom")
+    assert deps.knowledge_service.filters_seen == [PLATFORM_TIER]
+
+
+async def test_dedup_the_resolver_refuses_a_case_with_no_usable_enterprise():
+    resolver = _runbook_creator(_Teams(), _Shares())._runbook_dedup_scope_resolver(
+        _case(enterprise_id=None)
+    )
+
+    with pytest.raises(RuntimeError, match="no usable enterprise"):
+        await resolver()
 
 
 async def test_dedup_after_a_hand_off_resolves_the_drivers_scope():

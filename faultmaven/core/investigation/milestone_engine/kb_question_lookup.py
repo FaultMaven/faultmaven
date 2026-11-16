@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.kb_question import (
     KB_QUESTION_CANDIDATE_FLOOR,
     KB_QUESTION_FETCH_LIMIT,
@@ -63,7 +64,8 @@ async def look_up_kb_question(deps: Any, case: Any, question: dict) -> KbLookup:
 
     ``deps`` carries ``knowledge_service``, ``team_service`` and
     ``share_repository`` (the engine's dependencies). Never raises: a failure
-    is the ``UNAVAILABLE`` status.
+    is the ``UNAVAILABLE`` status, and a case with no usable enterprise, which
+    no scoped search can serve (#1775), is ``NOT_SEARCHABLE``.
     """
     if question["kind"] == "listing":
         return KbLookup(status=KbLookupStatus.LISTING)
@@ -74,6 +76,18 @@ async def look_up_kb_question(deps: Any, case: Any, question: dict) -> KbLookup:
     if knowledge_service is None:
         return KbLookup(
             status=KbLookupStatus.UNAVAILABLE, query=query, query_source=source
+        )
+    if usable_tenant_id(getattr(case, "enterprise_id", None)) is None:
+        # Every arm of the scope carries the case's enterprise (#1775): with
+        # none, no scoped search exists, and retrying never supplies one. Not
+        # a failure, so no traceback; the reply says it cannot check.
+        logger.info(
+            "Knowledge-base question lookup not run for case %s: the case has "
+            "no usable enterprise",
+            getattr(case, "case_id", None),
+        )
+        return KbLookup(
+            status=KbLookupStatus.NOT_SEARCHABLE, query=query, query_source=source
         )
     try:
         # A failed team lookup must not narrow the scope silently: a narrowed

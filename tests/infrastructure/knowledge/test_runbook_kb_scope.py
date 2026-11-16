@@ -207,10 +207,12 @@ async def test_a_personal_runbook_is_visible_to_its_owner_and_no_one_else(kb, st
     )
 
     seen_by_a = await kb.search_runbooks(
-        query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_A, [])
+        query_embedding=_vec(0.1),
+        scope_filter=build_kb_scope_filter(USER_A, [], enterprise_id=TENANT_ENTERPRISE),
     )
     seen_by_b = await kb.search_runbooks(
-        query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_B, [])
+        query_embedding=_vec(0.1),
+        scope_filter=build_kb_scope_filter(USER_B, [], enterprise_id=TENANT_ENTERPRISE),
     )
 
     assert [m.item_id for m in seen_by_a] == ["kb-a"], "owner cannot see own runbook"
@@ -226,7 +228,10 @@ async def test_a_global_runbook_is_visible_to_every_principal(kb, store):
 
     for user in (USER_A, USER_B, None):
         matches = await kb.search_runbooks(
-            query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(user, [])
+            query_embedding=_vec(0.1),
+            scope_filter=build_kb_scope_filter(
+                user, [], enterprise_id=TENANT_ENTERPRISE
+            ),
         )
         assert [m.item_id for m in matches] == [
             "kb-global"
@@ -246,11 +251,14 @@ async def test_the_team_arm_surfaces_a_shared_runbook_by_item_id(kb, store):
     )
 
     without_share = await kb.search_runbooks(
-        query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_B, [])
+        query_embedding=_vec(0.1),
+        scope_filter=build_kb_scope_filter(USER_B, [], enterprise_id=TENANT_ENTERPRISE),
     )
     with_share = await kb.search_runbooks(
         query_embedding=_vec(0.1),
-        scope_filter=build_kb_scope_filter(USER_B, ["kb-shared"]),
+        scope_filter=build_kb_scope_filter(
+            USER_B, ["kb-shared"], enterprise_id=TENANT_ENTERPRISE
+        ),
     )
 
     assert without_share == [], "unshared personal runbook leaked across users"
@@ -271,7 +279,8 @@ async def test_only_runbooks_match_never_other_kb_documents(kb, store):
     )
 
     matches = await kb.search_runbooks(
-        query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_A, [])
+        query_embedding=_vec(0.1),
+        scope_filter=build_kb_scope_filter(USER_A, [], enterprise_id=TENANT_ENTERPRISE),
     )
 
     assert [m.item_id for m in matches] == ["kb-rb"]
@@ -281,10 +290,11 @@ async def test_only_runbooks_match_never_other_kb_documents(kb, store):
 async def test_the_bare_global_filter_composes_under_and_against_real_chromadb(
     kb, store
 ):
-    """``build_kb_scope_filter(None, [])`` returns a BARE single condition, not
-    an ``$or`` — it must still compose as one ``$and`` operand that a real
-    ChromaDB accepts and evaluates. (ChromaDB rejects malformed where clauses
-    outright, so a mocked store cannot prove this.)"""
+    """``build_kb_scope_filter`` with no principal returns the BARE global arm
+    (itself an ``$and`` with the enterprise conjunct, #1775), not an ``$or`` —
+    it must still compose as one ``$and`` operand that a real ChromaDB accepts
+    and evaluates. (ChromaDB rejects malformed where clauses outright, so a
+    mocked store cannot prove this.)"""
     await store.seed(
         "kb-global_chunk_0", _chunk_metadata("kb-global", scope="global"), _vec(0.1)
     )
@@ -294,7 +304,7 @@ async def test_the_bare_global_filter_composes_under_and_against_real_chromadb(
         _vec(0.1),
     )
 
-    scope_filter = build_kb_scope_filter(None, [])
+    scope_filter = build_kb_scope_filter(None, [], enterprise_id=TENANT_ENTERPRISE)
     assert "$or" not in scope_filter, "precondition: the bare-condition shape"
 
     matches = await kb.search_runbooks(
@@ -344,7 +354,7 @@ async def test_a_multi_chunk_runbook_collapses_to_one_match_at_its_best_chunk(
 
     matches = await kb.search_runbooks(
         query_embedding=_vec(0.1),
-        scope_filter=build_kb_scope_filter(USER_A, []),
+        scope_filter=build_kb_scope_filter(USER_A, [], enterprise_id=TENANT_ENTERPRISE),
         top_k=2,
     )
 
@@ -376,7 +386,10 @@ async def test_an_empty_titled_runbook_produces_unreadable_chunks_that_refuse(
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
         await kb.search_runbooks(
-            query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_A, [])
+            query_embedding=_vec(0.1),
+            scope_filter=build_kb_scope_filter(
+                USER_A, [], enterprise_id=TENANT_ENTERPRISE
+            ),
         )
 
     assert excinfo.value.error_code == RESULTS_UNREADABLE_CODE
@@ -401,7 +414,8 @@ async def test_an_unreadable_chunk_outranked_by_a_readable_match_does_not_refuse
     )
 
     matches = await kb.search_runbooks(
-        query_embedding=_vec(0.1), scope_filter=build_kb_scope_filter(USER_A, [])
+        query_embedding=_vec(0.1),
+        scope_filter=build_kb_scope_filter(USER_A, [], enterprise_id=TENANT_ENTERPRISE),
     )
 
     assert [m.item_id for m in matches] == ["kb-ok"]

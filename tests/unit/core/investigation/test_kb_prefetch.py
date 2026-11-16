@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.kb_prefetch import (
     KB_CONTEXT_MAX_ENTRIES,
@@ -32,6 +33,15 @@ def _engine(knowledge_service=None):
     engine.deps.runbook_kb = None
     engine.kb_prefetcher = KbPrefetcher(deps=engine.deps)
     return engine
+
+
+#: The global arm of a case in enterprise "o1" (#1775).
+_GLOBAL_O1 = {
+    "$and": [
+        {"scope": "global"},
+        {"enterprise_id": {"$in": ["o1", STANDALONE_ENTERPRISE_ID]}},
+    ]
+}
 
 
 def _case():
@@ -232,7 +242,8 @@ class TestPrefetchFloorAndScope:
         ks = _SearchRecordingStub([_search_hit()])
         engine = _engine(ks)
         await engine.kb_prefetcher.prefetch_kb_context(_case(), "X fails", "symptom")
-        assert ks.filters_seen == [{"$or": [{"scope": "global"}, {"owner_id": "u1"}]}]
+        owner = {"$and": [{"owner_id": "u1"}, {"enterprise_id": "o1"}]}
+        assert ks.filters_seen == [{"$or": [_GLOBAL_O1, owner]}]
 
     @pytest.mark.asyncio
     async def test_prefetch_team_arm_uses_owner_shared_runbooks(self):
@@ -251,8 +262,15 @@ class TestPrefetchFloorAndScope:
         case.user_id = "owner_b"
         await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         scope_filter = ks.filters_seen[0]
-        assert {"parent_document_id": {"$in": ["rb_team_a"]}} in scope_filter["$or"]
-        assert {"owner_id": "owner_b"} in scope_filter["$or"]
+        assert {
+            "$and": [
+                {"parent_document_id": {"$in": ["rb_team_a"]}},
+                {"enterprise_id": "o1"},
+            ]
+        } in scope_filter["$or"]
+        assert {
+            "$and": [{"owner_id": "owner_b"}, {"enterprise_id": "o1"}]
+        } in scope_filter["$or"]
         engine.deps.team_service.list_all_user_team_ids.assert_awaited_once_with(
             "owner_b"
         )
@@ -271,8 +289,8 @@ class TestPrefetchFloorAndScope:
         case.user_id = "user_b"
         await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
         scope_filter = ks.filters_seen[0]
-        assert [c for c in scope_filter["$or"] if "owner_id" in c] == [
-            {"owner_id": "user_b"}
+        assert [c for c in scope_filter["$or"] if "owner_id" in c["$and"][0]] == [
+            {"$and": [{"owner_id": "user_b"}, {"enterprise_id": "o1"}]}
         ]
 
     @pytest.mark.asyncio
@@ -284,7 +302,7 @@ class TestPrefetchFloorAndScope:
         case = _case()
         case.user_id = None
         await engine.kb_prefetcher.prefetch_kb_context(case, "X fails", "symptom")
-        assert ks.filters_seen == [{"scope": "global"}]
+        assert ks.filters_seen == [_GLOBAL_O1]
 
     def test_prefetch_fetches_deeper_than_the_prompt_surface(self):
         # The fetch depth is the reranker's candidate pool, deeper than the

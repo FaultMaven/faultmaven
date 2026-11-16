@@ -88,7 +88,7 @@ def _context() -> ToolContext:
         user_id="user-1",
         session_id="session-1",
         enterprise_id="org-1",
-        kb_scope_filter=build_kb_scope_filter("user-1", []),
+        kb_scope_filter=build_kb_scope_filter("user-1", [], enterprise_id="org-1"),
         redaction_ctx=disabled_redaction(),
     )
 
