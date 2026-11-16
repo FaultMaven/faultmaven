@@ -257,6 +257,7 @@ class TestIngestRunbookDualWrite:
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-3",
+                owner_id="user-3",
                 record=record_nothing,
             )
 
@@ -291,6 +292,7 @@ class TestIngestRunbookDualWrite:
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
                 verified_by="user-4",
+                owner_id="user-4",
                 record=record_nothing,
             )
 
@@ -322,6 +324,7 @@ class TestIngestRunbookDualWrite:
             content="c",
             enterprise_id=DEFAULT_ENTERPRISE_ID,
             scope="global",
+            owner_id="user-3",
             record=record_nothing,
         )
         first_chroma_count = service._index_document_in_vector_store.await_count
@@ -336,6 +339,7 @@ class TestIngestRunbookDualWrite:
                 content="c2",
                 enterprise_id=DEFAULT_ENTERPRISE_ID,
                 scope="global",
+                owner_id="user-3",
                 record=record_nothing,
             )
 

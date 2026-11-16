@@ -397,7 +397,9 @@ async def test_an_update_leaves_only_the_new_generation(
     before = (await _row(world, authored)).vector_generation
 
     await world.service.update_document_metadata(
-        authored, content="# Authored\n\nRaise the pool size, then restart."
+        authored,
+        principal="user-1",
+        content="# Authored\n\nRaise the pool size, then restart.",
     )
 
     after = (await _row(world, authored)).vector_generation
@@ -712,7 +714,9 @@ async def test_an_update_between_the_row_read_and_the_listing_is_not_unserved(
 
     async def an_update_lands_then_list():
         await world.service.update_document_metadata(
-            authored, content="# Authored\n\nRaise the pool size, then restart."
+            authored,
+            principal="user-1",
+            content="# Authored\n\nRaise the pool size, then restart.",
         )
         return await real_list()
 

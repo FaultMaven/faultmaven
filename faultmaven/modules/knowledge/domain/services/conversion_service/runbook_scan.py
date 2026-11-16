@@ -45,10 +45,13 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.draft_retir
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
     _persist_job,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+from faultmaven.modules.knowledge.domain.services.runbook_gate import (
     avalidate_and_score,
 )
 from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
+from faultmaven.modules.knowledge.exceptions import (
+    GateRefused,
+)
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, member_value
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (
@@ -306,10 +309,15 @@ async def _scan_for_runbooks_impl(
             skipped += 1
             continue
 
-        # Off the event loop, and validating ONCE (#1417). The scan
-        # walks every runbook on disk, so this is the site where the
-        # duplicated validation pass cost the most in aggregate.
-        validation, quality = await avalidate_and_score(content)
+        # In a worker, validating ONCE (#1417, #2661). A refusal for this
+        # file's input alone is this file's error. A check that is busy or
+        # could not run stops the scan (503), and one that raises stops it
+        # with the 500, the files before it imported.
+        try:
+            validation, quality = await avalidate_and_score(content, principal=user_id)
+        except GateRefused as refused:
+            errors.append(f"{md_file.name}: {refused}")
+            continue
 
         draft_id = generate_draft_id()
         quality_warning = None

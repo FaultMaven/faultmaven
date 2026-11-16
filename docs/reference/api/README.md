@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.1.0
+**Version:** 15.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2819,6 +2819,12 @@ Get the conversion job and drafts for a specific case.
 
 Get conversion job details with all drafts.
 
+Every draft is stored with its score. Only a knowledge-base upload's draft
+stored before #2661, which has none, is checked on its first read, so that
+read alone can answer the runbook check's 422, 503 or 500. Its score, or
+the 422's refusal, is then stored: a stored refusal answers the same 422
+on every later read, with no check.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -2830,7 +2836,8 @@ Get conversion job details with all drafts.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -2862,7 +2869,8 @@ the resulting AuthorizationError maps to 403 via the global handlers.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -2941,8 +2949,8 @@ fit the window is refused before anything is written, and stays a draft:
 
 - `200` — Successful Response
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
+- `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3091,8 +3099,8 @@ when the indexing queued on this server leaves no room for it.
 - `201` — The runbook, published. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`. (`object`)
 - `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields).
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
+- `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3340,8 +3348,8 @@ serves what it served before (#2055).
 
 - `200` — Successful Response (`object`)
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
-- `422` — Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind.
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds.
+- `422` — Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind. With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3478,7 +3486,10 @@ With ``INDEX_REQUEST_WINDOW_SECONDS`` set, the drafts share the request's
 window (#2055): a draft the window has no room left for is ``deferred``
 (unverified; verify it again), as is every draft after it, and the envelope
 counts them in ``deferred``. A draft too large for any window is
-``failed``.
+``failed``. From the first draft the runbook check is busy for or cannot
+run on, every draft is ``deferred`` too; one it stops for its input alone
+is ``failed`` with the reason's sentence, and one whose check raised is
+``failed`` by the error's class (#2661).
 
 **Tags:** `knowledge-conversion`
 
@@ -3519,7 +3530,8 @@ with a generic detail, and nothing is saved.
 **Responses:**
 
 - `201` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
+- `503` — Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3557,6 +3569,12 @@ detail. It can do so MID-WALK: the files imported before the failing one
 stay imported (each is its own draft), and a second scan skips them and
 imports the rest.
 
+A file the runbook check stops for its input alone is listed in
+``errors``; a check that is busy or cannot run stops the scan the same way,
+with **503** ``RUNBOOK_VALIDATION_BUSY`` or
+``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661), and a check
+that raises with the generic **500** ``SERVICE_ERROR``.
+
 **Tags:** `knowledge-conversion`
 
 **Auth:** `HTTPBearer`
@@ -3564,6 +3582,7 @@ imports the rest.
 **Responses:**
 
 - `200` — Successful Response
+- `503` — Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 

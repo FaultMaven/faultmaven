@@ -86,11 +86,13 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     DraftStatus,
     FailureModeAnalysis,
     PreprocessingResult,
-    QualityScore,
     RedactionReport,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (  # noqa: E501
@@ -770,7 +772,9 @@ class TestUpdateDocument:
             **_ingest_args("personal", document_id="kb_0123456789ac", title=title)
         )
 
-        await service.update_document_metadata("kb_0123456789ab", title=title)
+        await service.update_document_metadata(
+            "kb_0123456789ab", principal="user-1", title=title
+        )
 
         async with session_factory() as session:
             rows = {
@@ -790,7 +794,9 @@ class TestUpdateDocument:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal"))
 
-        await service.update_document_metadata("kb_0123456789ab", title=title)
+        await service.update_document_metadata(
+            "kb_0123456789ab", principal="user-1", title=title
+        )
 
         (stored,) = await _runbook_titles(session_factory)
         _assert_scrubbed(stored, secret)
@@ -799,7 +805,9 @@ class TestUpdateDocument:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal", title="Old"))
 
-        await service.update_document_metadata("kb_0123456789ab", title=PLAIN_TITLE)
+        await service.update_document_metadata(
+            "kb_0123456789ab", principal="user-1", title=PLAIN_TITLE
+        )
 
         assert await _runbook_titles(session_factory) == [PLAIN_TITLE]
 
@@ -1135,7 +1143,7 @@ class TestEveryTextDerivedFromATitleIsScrubbed:
 
         with _data_dir(tmp_path):
             result = await conversion.scan_for_runbooks(
-                user_id=None, enterprise_id=None, is_platform_admin=True
+                user_id="user-1", enterprise_id=None, is_platform_admin=True
             )
 
         assert result["discovered"] == 1, result
@@ -1557,7 +1565,9 @@ class TestTheColumnCutComesAfterTheScrub:
         service = _knowledge(session_factory)
         await service.ingest_runbook(**_ingest_args("personal"))
 
-        await service.update_document_metadata("kb_0123456789ab", title="y" * 600)
+        await service.update_document_metadata(
+            "kb_0123456789ab", principal="user-1", title="y" * 600
+        )
 
         (stored,) = await _runbook_titles(session_factory)
         assert len(stored) == 512

@@ -56,6 +56,11 @@ class WorkerFailed(RuntimeError):
     wrote a malformed frame."""
 
 
+class WorkerOutputExceeded(WorkerFailed):
+    """The worker's output passed its limit: a ``WorkerFailed`` a caller whose
+    output depends only on its input can tell apart (#2661)."""
+
+
 class WorkerNotStarted(WorkerFailed):
     """The worker could not start; the ``OSError`` is the cause."""
 
@@ -161,12 +166,12 @@ async def _control(
         try:
             line = await proc.stdout.readline()
         except ValueError as e:  # one line past the stream's limit
-            raise WorkerFailed("the worker's output passed its limit") from e
+            raise WorkerOutputExceeded("the worker's output passed its limit") from e
         if not line.endswith(b"\n"):
             return None
         seen["received"] += len(line)
         if seen["received"] > output_limit_bytes:
-            raise WorkerFailed("the worker's output passed its limit")
+            raise WorkerOutputExceeded("the worker's output passed its limit")
         try:
             frame = json.loads(line)
             if not isinstance(frame, dict):
@@ -211,7 +216,7 @@ async def _parts(
         raise WorkerFailed("the worker wrote a malformed frame")
     seen["received"] += sum(sizes) + 1
     if seen["received"] > output_limit_bytes:
-        raise WorkerFailed("the worker's output passed its limit")
+        raise WorkerOutputExceeded("the worker's output passed its limit")
     try:
         data, parts, at = await proc.stdout.readexactly(sum(sizes) + 1), [], 0
         for n in sizes:

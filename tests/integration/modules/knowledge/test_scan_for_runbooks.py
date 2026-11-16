@@ -216,7 +216,7 @@ class TestScanForRunbooks:
         enterprise_id populated on all three (the NOT NULL tenancy
         invariant, ADR-017 D1)."""
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         assert result["discovered"] == 2
@@ -268,7 +268,7 @@ class TestScanForRunbooks:
         a comma-joined string raises TypeError because TagsArray validates
         the bind shape. This test catches the third leak from the cleanup."""
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -302,10 +302,10 @@ class TestScanForRunbooks:
         runbooks (deduplicated by the live draft's ``runbook_id``) and not
         error."""
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
         second = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         assert first["discovered"] == 2
@@ -326,7 +326,7 @@ class TestScanForRunbooks:
         """The import copies the file's text into ``conversion_drafts.content``
         (#1950): from then on the row, not the file, is the draft."""
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -360,13 +360,13 @@ class TestScanForRunbooks:
         draft the other pod wrote. The file decides nothing now: with every
         file deleted, the drafts and their text are untouched."""
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
         for path in runbook_dir.rglob("*.md"):
             path.unlink()
 
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         assert result["discovered"] == 0
@@ -398,7 +398,7 @@ class TestScanForRunbooks:
         assert explicit_enterprise != STANDALONE_ENTERPRISE_ID
 
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=explicit_enterprise, is_platform_admin=True
+            user_id="user-1", enterprise_id=explicit_enterprise, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:
@@ -458,7 +458,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         await self._publish_kb_item(seeded_session_factory, "redis-oom")
 
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         # Only the un-published runbook becomes a draft.
@@ -479,7 +479,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
     ):
         # First scan (nothing published yet) creates both drafts.
         first = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
         assert first["discovered"] == 2
 
@@ -490,7 +490,7 @@ class TestScanSkipsBootstrapIngestedRunbooks:
         # Second scan must DISCARD the now-redundant redis-oom draft and
         # leave the genuinely-pending pg-slow-queries draft alone.
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         async with seeded_session_factory() as session:

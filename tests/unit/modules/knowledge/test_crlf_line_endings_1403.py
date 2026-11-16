@@ -439,6 +439,7 @@ async def test_update_document_metadata_reindexes_lf(
     service._index_document_in_vector_store.reset_mock()
 
     await service.update_document_metadata(
+        principal="user-1",
         document_id=created["document_id"],
         content=_crlf(valid_runbook("Redis Notes For The Cache Tier")) + "\r\nmore\r\n",
     )

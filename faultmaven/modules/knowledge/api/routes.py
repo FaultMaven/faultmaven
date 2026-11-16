@@ -42,6 +42,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from pydantic import BaseModel
 
 from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
@@ -80,13 +81,17 @@ from faultmaven.modules.knowledge.domain.request_receipts import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-    RunbookQualityError,
-)
 from faultmaven.modules.knowledge.exceptions import (
+    GateFailed,
+    GateOutputTooLarge,
+    GateRefused,
+    GateTimedOut,
+    GateTooLarge,
+    GateUnavailable,
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
     KbReceiptExistsError,
+    RunbookQualityError,
 )
 from faultmaven.modules.knowledge.taxonomy import (
     KnowledgeScope,
@@ -160,6 +165,98 @@ INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
         },
     },
 }
+
+
+class RefusalDetail(BaseModel):
+    """A 422 that names what to fix in `detail` alone: the runbook body
+    refused for its content, or a draft past its bound."""
+
+    detail: str
+
+
+class RunbookCheckRefusal(BaseModel):
+    """The 422 of a runbook check stopped for the document alone (#2661):
+    `detail`, `message` and `help` are the reason's sentence, which is also the
+    one entry of `errors`."""
+
+    error: str
+    detail: str
+    message: str
+    errors: List[str]
+    warnings: List[str]
+    help: str
+    reason: Literal[GateTimedOut.reason, GateOutputTooLarge.reason, GateTooLarge.reason]
+
+
+#: The answers of a route that runs the runbook gate (#2661): raised by
+#: ``runbook_gate`` and answered by ``api.exception_handlers``. Nothing is saved.
+GATE_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    # Any of the three: the gate's refusal joins the request-binding 422 and
+    # the `detail` one these routes already answer, which it does not replace.
+    422: {
+        "content": {
+            "application/json": {
+                "schema": {
+                    "anyOf": [
+                        {"$ref": "#/components/schemas/HTTPValidationError"},
+                        RefusalDetail.model_json_schema(),
+                        RunbookCheckRefusal.model_json_schema(),
+                    ]
+                }
+            }
+        },
+        "description": (
+            "With `reason`, the runbook check stopped for the document alone, "
+            "and nothing was saved: `validation_timeout` (it took too long to "
+            "check), `validation_output_too_large` (too many problems to list) "
+            "or `validation_too_large` (too large to check). Split it into "
+            "smaller runbooks. Any other 422 carries `detail` alone."
+        ),
+    },
+    503: {
+        "description": (
+            "Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no "
+            "runbook check was free within its wait; "
+            "`RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry "
+            "after `Retry-After` seconds."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "RUNBOOK_VALIDATION_BUSY or "
+                "RUNBOOK_VALIDATION_UNAVAILABLE, when sent.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": "Seconds, with RUNBOOK_VALIDATION_BUSY or "
+                "RUNBOOK_VALIDATION_UNAVAILABLE.",
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+}
+
+
+def with_gate_responses(
+    responses: Dict[int | str, Dict[str, Any]], statuses: tuple = (422, 503)
+) -> Dict[int | str, Dict[str, Any]]:
+    """``responses`` and the ``GATE_RESPONSES`` of ``statuses``: a status or a
+    header both declare keeps both descriptions."""
+    merged = dict(responses)
+    for status in statuses:
+        gate, mine = GATE_RESPONSES[status], merged.get(status, {})
+        headers = dict(mine.get("headers", {}))
+        for name, header in gate.get("headers", {}).items():
+            if name in headers:
+                text = f"{headers[name]['description']} {header['description']}"
+                header = {**header, "description": text}
+            headers[name] = header
+        description = " ".join(
+            filter(None, [mine.get("description"), gate["description"]])
+        )
+        merged[status] = {**mine, **gate, "description": description}
+        if headers:
+            merged[status]["headers"] = headers
+    return merged
 
 
 def runbook_quality_detail(
@@ -368,10 +465,12 @@ def _document_location(document_id: str) -> str:
     "/documents",
     status_code=201,
     dependencies=[Depends(require_authentication)],
-    responses={
-        **keyed_responses(created="The runbook, published.", location=True),
-        **INDEX_REFUSAL_RESPONSES,
-    },
+    responses=with_gate_responses(
+        {
+            **keyed_responses(created="The runbook, published.", location=True),
+            **INDEX_REFUSAL_RESPONSES,
+        }
+    ),
 )
 @trace("api_upload_document")
 async def upload_document(
@@ -663,6 +762,10 @@ async def upload_document(
             receipt,
             headers={"Location": _document_location(receipt.response["document_id"])},
         )
+    except (GateRefused, GateUnavailable, GateFailed):
+        # The runbook check's 422 with its ``reason``, its 503, or its 500: the
+        # registered handlers' answers (#2661), never the quality help below.
+        raise
     except RunbookQualityError as quality_error:
         # The single gate's refusal, rendered as the structured 422 this route
         # has always answered. Without this the blanket handler below would
@@ -1228,16 +1331,18 @@ async def fulltext_search_documents(
 @router.put(
     "/documents/{document_id}",
     dependencies=[Depends(require_authentication)],
-    responses={
-        **INDEX_REFUSAL_RESPONSES,
-        422: {
-            "description": (
-                "Refused; nothing was saved. The new `content` holds a "
-                "credential or a destructive command, or is longer than a "
-                "draft may be (100,000 characters). Or the body did not bind."
-            )
-        },
-    },
+    responses=with_gate_responses(
+        {
+            **INDEX_REFUSAL_RESPONSES,
+            422: {
+                "description": (
+                    "Refused; nothing was saved. The new `content` holds a "
+                    "credential or a destructive command, or is longer than a "
+                    "draft may be (100,000 characters). Or the body did not bind."
+                )
+            },
+        }
+    ),
 )
 async def update_document(
     document_id: str,
@@ -1285,8 +1390,10 @@ async def update_document(
         if "tags" in update_data:
             update_data["tags"] = parse_comma_separated_tags(update_data["tags"])
 
+        # The caller is the check's principal (#2661), never a body field.
+        update_data.pop("principal", None)
         result = await knowledge_service.update_document_metadata(
-            document_id=document_id, **update_data
+            document_id=document_id, principal=current_user.user_id, **update_data
         )
 
         if not result:
@@ -1300,6 +1407,8 @@ async def update_document(
     except ItemTitleScrubUnavailable:
         # The redaction (#1981) could not run: the global handler's generic
         # 503, not the blanket 500 below. Nothing was saved.
+        raise
+    except (GateRefused, GateUnavailable, GateFailed):  # as on upload (#2661)
         raise
     except RunbookQualityError as quality_error:
         # The body holds a credential or a destructive command (#2012):
@@ -1402,7 +1511,7 @@ async def bulk_update_documents(
         )
 
         result = await knowledge_service.bulk_update_documents(
-            document_ids=permitted_ids, updates=updates
+            document_ids=permitted_ids, updates=updates, principal=current_user.user_id
         )
         result["errors"] = gate_errors + list(result.get("errors") or [])
         result["total_requested"] = len(document_ids)

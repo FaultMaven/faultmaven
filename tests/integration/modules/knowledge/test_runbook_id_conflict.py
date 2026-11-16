@@ -316,7 +316,7 @@ redis-cli INFO memory | grep used_memory_human
         (scope_dir / "c.md").write_text(self._runbook("redis-slow", "Redis Slow"))
 
         result = await service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
 
         minted = {d["runbook_id"] for d in result["drafts"]}

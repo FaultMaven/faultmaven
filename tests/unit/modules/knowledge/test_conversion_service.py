@@ -44,15 +44,17 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     DraftStatus,
     FailureModeAnalysis,
     PreprocessingResult,
-    QualityScore,
     RedactionReport,
     SourceAssessment,
     SourceFileInfo,
     SourceType,
     TriageResult,
-    ValidationResult,
     generate_draft_id,
     generate_runbook_id,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
+    ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.errors import (
     ConversionRejectedError,

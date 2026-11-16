@@ -65,7 +65,10 @@ from faultmaven.modules.knowledge.api.request_idempotency import (
     replay_committed_request,
     replayed,
 )
-from faultmaven.modules.knowledge.api.routes import INDEX_REFUSAL_RESPONSES
+from faultmaven.modules.knowledge.api.routes import (
+    INDEX_REFUSAL_RESPONSES,
+    with_gate_responses,
+)
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
     ConversionResponse,
@@ -478,7 +481,11 @@ async def list_all_drafts(
 # =============================================================================
 
 
-@router.post("/scan", dependencies=[Depends(_require_auth)])
+@router.post(
+    "/scan",
+    dependencies=[Depends(_require_auth)],
+    responses=with_gate_responses({}, statuses=(503,)),
+)
 async def scan_for_runbooks(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
@@ -510,6 +517,12 @@ async def scan_for_runbooks(
     detail. It can do so MID-WALK: the files imported before the failing one
     stay imported (each is its own draft), and a second scan skips them and
     imports the rest.
+
+    A file the runbook check stops for its input alone is listed in
+    ``errors``; a check that is busy or cannot run stops the scan the same way,
+    with **503** ``RUNBOOK_VALIDATION_BUSY`` or
+    ``RUNBOOK_VALIDATION_UNAVAILABLE`` + ``Retry-After`` (#2661), and a check
+    that raises with the generic **500** ``SERVICE_ERROR``.
     """
     return await service.scan_for_runbooks(
         user_id=current_user.user_id,
@@ -523,13 +536,23 @@ async def scan_for_runbooks(
 # =============================================================================
 
 
-@router.get("/conversions/{conversion_id}", dependencies=[Depends(_require_auth)])
+@router.get(
+    "/conversions/{conversion_id}",
+    dependencies=[Depends(_require_auth)],
+    responses=with_gate_responses({}),
+)
 async def get_conversion(
     conversion_id: str,
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Get conversion job details with all drafts."""
+    """Get conversion job details with all drafts.
+
+    Every draft is stored with its score. Only a knowledge-base upload's draft
+    stored before #2661, which has none, is checked on its first read, so that
+    read alone can answer the runbook check's 422, 503 or 500. Its score, or
+    the 422's refusal, is then stored: a stored refusal answers the same 422
+    on every later read, with no check."""
     result = await service.get_conversion(
         conversion_id=conversion_id,
         user_id=current_user.user_id,
@@ -547,6 +570,7 @@ async def get_conversion(
 @router.put(
     "/conversions/{conversion_id}/drafts/{draft_id}",
     dependencies=[Depends(_require_auth)],
+    responses=with_gate_responses({}),
 )
 async def update_draft(
     conversion_id: str,
@@ -599,7 +623,10 @@ async def verify_batch(
     window (#2055): a draft the window has no room left for is ``deferred``
     (unverified; verify it again), as is every draft after it, and the envelope
     counts them in ``deferred``. A draft too large for any window is
-    ``failed``.
+    ``failed``. From the first draft the runbook check is busy for or cannot
+    run on, every draft is ``deferred`` too; one it stops for its input alone
+    is ``failed`` with the reason's sentence, and one whose check raised is
+    ``failed`` by the error's class (#2661).
     """
     result = await service.verify_batch(
         draft_refs=[(ref.conversion_id, ref.draft_id) for ref in body.draft_ids],
@@ -617,7 +644,7 @@ async def verify_batch(
 @router.post(
     "/conversions/{conversion_id}/drafts/{draft_id}/verify",
     dependencies=[Depends(_require_auth)],
-    responses=INDEX_REFUSAL_RESPONSES,
+    responses=with_gate_responses(INDEX_REFUSAL_RESPONSES),
 )
 async def verify_draft(
     conversion_id: str,
@@ -743,7 +770,12 @@ class RunbookCreateRequest(BaseModel):
     team_id: Optional[str] = None
 
 
-@router.post("/runbooks/create", status_code=201, dependencies=[Depends(_require_auth)])
+@router.post(
+    "/runbooks/create",
+    status_code=201,
+    dependencies=[Depends(_require_auth)],
+    responses=with_gate_responses({}),
+)
 async def create_runbook_manually(
     body: RunbookCreateRequest,
     service: ConversionService = Depends(_get_conversion_service),

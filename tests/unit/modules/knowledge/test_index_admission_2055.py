@@ -466,7 +466,7 @@ class TestUpdate:
 
         with pytest.raises(ValidationException):
             await service.update_document_metadata(
-                ITEM, content="x" * (DRAFT_CONTENT_MAX_CHARS + 1)
+                ITEM, principal="user-1", content="x" * (DRAFT_CONTENT_MAX_CHARS + 1)
             )
 
         after = await _row(session_factory)
@@ -492,7 +492,7 @@ class TestUpdate:
 
         with pytest.raises(IndexAdmissionRefused) as refused:
             await service.update_document_metadata(
-                ITEM, content=valid_runbook() + "\nAnd uncordon.\n"
+                ITEM, principal="user-1", content=valid_runbook() + "\nAnd uncordon.\n"
             )
 
         assert refused.value.status_code == (503 if refusal == "busy" else 413)
@@ -677,7 +677,9 @@ class TestBulkUpdate:
 
         with pytest.raises(ValidationException, match="metadata only"):
             await service.bulk_update_documents(
-                [ITEM], {"content": valid_runbook() + "\nx\n", "tags": ["new"]}
+                [ITEM],
+                {"content": valid_runbook() + "\nx\n", "tags": ["new"]},
+                principal="user-1",
             )
 
         row = await _row(session_factory)
@@ -689,7 +691,9 @@ class TestBulkUpdate:
         service = _knowledge(session_factory)
         await _published(service)
 
-        result = await service.bulk_update_documents([ITEM], {"tags": ["new"]})
+        result = await service.bulk_update_documents(
+            [ITEM], {"tags": ["new"]}, principal="user-1"
+        )
 
         assert result["updated_count"] == 1 and result["errors"] == []
         assert list((await _row(session_factory)).tags) == ["new"]

@@ -59,9 +59,11 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionStatus,
     DraftStatus,
     PreprocessingResult,
-    QualityScore,
     SourceAssessment,
     SourceFileInfo,
+)
+from faultmaven.modules.knowledge.domain.models.validation import (
+    QualityScore,
     ValidationResult,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
@@ -230,7 +232,7 @@ class TestBothWritersStoreNoPath:
         self, conversion_service, session_factory
     ):
         result = await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
         assert result["discovered"] == 1, result
 
@@ -378,7 +380,7 @@ class TestNoConversionResponseCarriesAPath:
         runbook rows) project named fields out of this list, and none of them
         is a path. The list itself no longer holds one either."""
         await conversion_service.scan_for_runbooks(
-            user_id=None, enterprise_id=None, is_platform_admin=True
+            user_id="user-1", enterprise_id=None, is_platform_admin=True
         )
         async with session_factory() as session:
             await session.execute(update(ConversionJobModel).values(case_id="case_836"))
