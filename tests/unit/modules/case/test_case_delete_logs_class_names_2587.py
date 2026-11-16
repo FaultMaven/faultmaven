@@ -14,6 +14,7 @@ the backends under them raise.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,6 +30,7 @@ from faultmaven.infrastructure.concurrency.inflight import (
     CaseDeleteUnavailable,
     CaseWorkInProgress,
 )
+from faultmaven.infrastructure.concurrency.owned_claim import OwnedClaim
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
@@ -219,3 +221,29 @@ async def test_an_unavailable_store_answer_is_unchanged():
         "CASE_DELETE_UNAVAILABLE",
         "The case could not be deleted just now; try again.",
     )
+
+
+async def test_a_failed_renewal_logs_the_class_not_the_text(caplog_all):
+    """The delete's tombstone is a lease: its renewal's failure is a delete
+    path line too."""
+    redis = MagicMock()
+    redis.eval = AsyncMock(side_effect=_raise_leaky)
+    waits, parked = 0, asyncio.Event()
+
+    async def interval() -> None:
+        nonlocal waits
+        waits += 1
+        if waits > 1:  # the renewal failed and waits for the next interval
+            parked.set()
+            await asyncio.Event().wait()
+
+    claim = OwnedClaim(redis, "case-deleting:e:c", "token")
+    claim._keep(interval, 30_000)
+    try:
+        await asyncio.wait_for(parked.wait(), 5)
+    finally:
+        claim.renewal.cancel()
+
+    redis.eval.assert_awaited_once()
+    rendered = _assert_no_text_logged(caplog_all)
+    assert "Could not renew claim case-deleting:e:c: ApiError" in rendered

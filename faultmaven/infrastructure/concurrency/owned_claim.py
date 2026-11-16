@@ -95,7 +95,12 @@ class OwnedClaim:
                         RENEW_IF_HELD, 1, self.name, self._token, ttl_ms
                     )
                 except Exception as exc:  # noqa: BLE001 - retried next interval
-                    logger.warning("Could not renew claim %s: %r", self.name, exc)
+                    # By class only: the client's text can carry its output (#2587).
+                    logger.warning(
+                        "Could not renew claim %s: %s",
+                        self.name,
+                        exception_class_name(exc),
+                    )
                     continue
                 if not held:
                     return
