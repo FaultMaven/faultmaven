@@ -731,15 +731,24 @@ def _reset_observability_singletons():
                 container.clear()
 
 
+@pytest.fixture(scope="session")
+def _empty_crl_directory(tmp_path_factory):
+    """A directory with no ``root.crl``, for every test's root-set start."""
+    return str(tmp_path_factory.mktemp("no-root-crl"))
+
+
 @pytest.fixture(autouse=True)
-def _no_inherited_tls_root_set(monkeypatch):
+def _no_inherited_tls_root_set(monkeypatch, _empty_crl_directory):
     """Each test starts with no TLS root variable set, and leaves none (#2692).
 
     ``apply_root_set`` (every launcher and ``fm-*`` ``main()``) writes the
     variables into ``os.environ``, and ``PGGSSENCMODE`` unless it is set
     (#2788). Cleared before in every letter case (the
     setting binds in any), so an inherited one never refuses a test's launch;
-    restored after, so no test leaks a root set.
+    restored after, so no test leaks a root set. The Postgres root inputs it
+    refuses (#2787) are cleared too, and its default ``root.crl`` lookup reads
+    an empty directory, so a developer's ``PGSERVICE`` or
+    ``~/.postgresql/root.crl`` changes no in-process test.
 
     Through ``monkeypatch``, the instance the test shares, because its undo runs
     last in, first out: this fixture's records are undone after the test's own.
@@ -748,17 +757,22 @@ def _no_inherited_tls_root_set(monkeypatch):
     it reached later module fixtures and subprocesses. Each name is set before
     it is deleted: ``delenv`` records nothing for an absent name.
     """
+    from faultmaven.config import tls_root_set
     from faultmaven.config.tls_root_set import (
         EXTRA_CA_FILE_SETTING,
         GSSENC_VARIABLE,
         OWNED_VARIABLES,
+        PG_ROOT_INPUT_VARIABLES,
     )
 
     written = (*OWNED_VARIABLES, EXTRA_CA_FILE_SETTING, GSSENC_VARIABLE)
-    owned = {name.upper() for name in written}
+    owned = {name.upper() for name in (*written, *PG_ROOT_INPUT_VARIABLES)}
     for name in owned | {key for key in os.environ if key.upper() in owned}:
         monkeypatch.setenv(name, "x")
         monkeypatch.delenv(name)
+    monkeypatch.setattr(
+        tls_root_set, "_crl_directories", lambda: [_empty_crl_directory]
+    )
 
 
 @pytest.fixture(autouse=True)

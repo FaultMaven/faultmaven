@@ -1069,7 +1069,8 @@ def configured_database_url() -> Optional[str]:
     building the whole application's settings; an exact-name ``os.environ``
     read there disagreed with the app on a lowercase spelling (#1704). A nested
     JSON ``DATABASE`` reaches the app's settings but not this reader (#1785).
-    The app itself never calls it: it judges the built settings' URL.
+    The app judges the built settings' URL for everything else; it reads this
+    one only through ``apply_root_set``, at every start.
 
     Returns:
         The configured value, the empty string included, or ``None`` when the

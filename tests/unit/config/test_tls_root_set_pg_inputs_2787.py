@@ -7,7 +7,8 @@ certificate in it trusted as a root (#2786), and a service-file section
 ahead of the environment (#2834). No file is safe to export in their place, so
 each one present refuses the start, naming it and never the database URL.
 ``PGGSSENCMODE`` defaults to ``disable`` (#2788). The applied set is the host's
-real OS bundle; each test's homes are under its ``tmp_path``.
+real OS bundle; each test's homes are under its ``tmp_path``, read through the
+real ``_crl_directories`` (``tests/conftest.py`` stubs it for every other test).
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
+import dotenv
+import dotenv.main
 import pytest
 
 from faultmaven.config import tls_root_set
@@ -37,6 +40,20 @@ pytestmark = pytest.mark.unit
 
 PASSWORD, HOST = "s3cret-pw", "db.internal.example"
 URL = f"postgresql+asyncpg://fm:{PASSWORD}@{HOST}:5432/fm"
+#: The real lookup, taken before the conftest fixture stubs it.
+REAL_CRL_DIRECTORIES = tls_root_set._crl_directories
+#: Keys libpq splits into tokens, one of them a root input (the review's bypass).
+DECORATED = {
+    "plus": "+sslcrl=/x",
+    "encoded-space": "%20service=x",
+    "inside-another-key": "application_name%3Dx%20sslcrl=/x",
+}
+_BOUNDS = SimpleNamespace(
+    database_command_timeout_seconds=30.0,
+    database_connect_timeout_seconds=10.0,
+    database_statement_timeout_margin_seconds=2.0,
+    database_client_connection_check_interval_seconds=0.0,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +62,7 @@ def isolated(tmp_path, monkeypatch) -> SimpleNamespace:
     and the password database's, as libpq falls back to it."""
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
+    monkeypatch.setattr(tls_root_set, "_crl_directories", REAL_CRL_DIRECTORIES)
     for name in (*PG_ROOT_INPUT_VARIABLES, GSSENC_VARIABLE, "APPDATA"):
         monkeypatch.delenv(name, raising=False)
     for key in env_var_spellings(os.environ, "DATABASE_URL"):
@@ -84,6 +102,27 @@ def test_an_inherited_crl_or_service_variable_refuses_with_any_value(
     assert value == "" or value not in message
 
 
+def test_an_inherited_owned_variable_is_refused_before_a_postgres_input(
+    tmp_path, monkeypatch
+):
+    """The must-not-change order: ``_check_inherited`` refuses first."""
+    foreign = tmp_path / "foreign.pem"
+    foreign.write_bytes(b"not the set")
+    monkeypatch.setenv("SSL_CERT_FILE", str(foreign))
+    monkeypatch.setenv("PGSERVICE", "x")
+    with pytest.raises(SystemExit, match=r"^TLS root set: SSL_CERT_FILE="):
+        apply_root_set()
+
+
+def test_a_crl_variable_written_only_in_the_dotenv_refuses(tmp_path, monkeypatch):
+    """``load_settings_dotenv`` puts it in the environment the drivers read."""
+    (tmp_path / ".env").write_text("PGSSLCRL=/some/crl.pem\n")
+    monkeypatch.delenv("FAULTMAVEN_SKIP_DOTENV")
+    monkeypatch.setattr(dotenv, "dotenv_values", dotenv.main.dotenv_values)
+    monkeypatch.chdir(tmp_path)
+    assert "PGSSLCRL is set" in _refusal()
+
+
 # --- the database URL --------------------------------------------------------
 
 
@@ -116,15 +155,34 @@ def test_a_query_urllib_cannot_see_is_read_as_the_engine_reads_it(monkeypatch, u
     assert PASSWORD not in message and HOST not in message
 
 
+@pytest.mark.parametrize("query", DECORATED.values(), ids=DECORATED)
+def test_a_decorated_key_refuses_by_the_token_libpq_reads(monkeypatch, query):
+    """psycopg2 writes the key unescaped into the conninfo; libpq splits it at
+    whitespace and ``=`` (the review reproduced an outside-CA handshake)."""
+    monkeypatch.setenv("DATABASE_URL", f"{URL}?{query}")
+    message = _refusal()
+    assert "the database URL's query names" in message
+    assert PASSWORD not in message and HOST not in message
+    with pytest.raises(ValueError, match="query names (sslcrl|service),"):
+        pg_connection.pg_connect_args(f"{URL}?{query}", _BOUNDS)
+
+
 @pytest.mark.parametrize(
     "url",
     [
         "sqlite+aiosqlite:///./data/faultmaven.db",
         f"{URL}?sslmode=verify-full&sslrootcert=/etc/fm/db-ca.pem",
+        f"{URL}?application_name=a%20b%20sslcrl",  # a value, quoted for libpq
         "not a url",
         f" {URL}?sslcrl=/x",  # the settings refuse surrounding whitespace
     ],
-    ids=["sqlite", "sslrootcert-verify-full", "unparseable", "whitespace"],
+    ids=[
+        "sqlite",
+        "sslrootcert-verify-full",
+        "a-value-with-spaces",
+        "unparseable",
+        "whitespace",
+    ],
 )
 def test_a_url_naming_no_root_input_is_left_to_the_settings(monkeypatch, url):
     monkeypatch.setenv("DATABASE_URL", url)
@@ -135,12 +193,7 @@ def test_every_caller_reads_the_url_through_one_helper():
     """``pg_connect_args`` checks the engine's own URL: a nested ``DATABASE``
     variable or an explicit ``get_engine(database_url=...)`` skips the start's
     check (#1785)."""
-    settings = SimpleNamespace(
-        database_command_timeout_seconds=30.0,
-        database_connect_timeout_seconds=10.0,
-        database_statement_timeout_margin_seconds=2.0,
-        database_client_connection_check_interval_seconds=0.0,
-    )
+    settings = _BOUNDS
     assert pg_root_inputs_in_url(f"{URL}?service=a&dsn=b&sslcrl=c") == [
         "sslcrl",
         "service",
@@ -191,10 +244,29 @@ def test_a_home_that_cannot_be_resolved_is_no_source(isolated, monkeypatch):
     apply_root_set()
 
 
-def test_on_windows_libpqs_appdata_crl_is_a_source(tmp_path, monkeypatch):
+@pytest.mark.parametrize("known_folder", [True, False], ids=["shell32", "variable"])
+def test_on_windows_libpqs_appdata_crl_is_a_source(tmp_path, monkeypatch, known_folder):
+    """The known folder, as libpq resolves it; the variable without shell32."""
+    import ctypes
+
+    def shget_folder_path(owner, csidl, token, flags, folder):
+        assert csidl == 0x001A  # CSIDL_APPDATA
+        folder.value = str(tmp_path / "known")
+        return 0
+
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
-    expected = os.path.join(str(tmp_path / "roaming"), "postgresql", "root.crl")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "variable"))
+    if known_folder:  # the Windows ctypes surface, faked whole
+        shell32 = SimpleNamespace(SHGetFolderPathW=shget_folder_path)
+        monkeypatch.setattr(
+            ctypes, "windll", SimpleNamespace(shell32=shell32), raising=False
+        )
+        buffer = lambda size: SimpleNamespace(value="")  # noqa: E731
+        monkeypatch.setattr(ctypes, "create_unicode_buffer", buffer, raising=False)
+    else:
+        monkeypatch.delattr(ctypes, "windll", raising=False)
+    folder = "known" if known_folder else "variable"
+    expected = os.path.join(str(tmp_path / folder), "postgresql", "root.crl")
     assert tls_root_set._root_crl_paths()[-1] == expected
 
 

@@ -10,15 +10,16 @@ handshake; **bare** (as before #2692) passes when it fails with none.
 the set: applied refuses it, bare fails only after accepting it. The Postgres
 CRL rows (#2787) meet a server whose CA is outside the set, with a CRL input
 holding that CA and a CRL it signs (``PGSSLCRL``, or ``root.crl`` in the
-child's home): applied passes when the start itself refuses, naming the input,
-with no handshake; bare, with ``PGSSLROOTCERT`` naming the set's CA, passes when
+child's home): applied passes when the start itself refuses, naming the input
+(for ``root.crl``, the scratch home's file), with no handshake; bare, with ``PGSSLROOTCERT`` naming the set's CA, passes when
 the outside server verifies, the exposure the refusal closes. ``EXPECTED``
 gives each row's verdict rule. A client not installed fails only under
 ``--require-all``. Every row connects to ``127.0.0.1``, never a name. Each
 client process runs without ``PG*`` or ``*_proxy`` variables (any case, so
 ``grpc_proxy`` and ``no_proxy`` too), with the scratch directory as ``HOME``,
 and refuses a Python-level connect or lookup off loopback; gRPC's and libpq's C
-sockets are not patched.
+sockets are not patched. ``HOME`` does not hide the password-database home, so
+the check refuses to run while that home holds ``.postgresql/root.crl``.
 """
 
 from __future__ import annotations
@@ -221,8 +222,9 @@ CRL_INPUTS = {
 # "verifies": exit 0 after a handshake. "refuses": non-zero with none.
 # "accepts outside, then fails": the require row's bare leg completes a
 # handshake with the set's server and then the outside one, which it reports.
-# "refused at start": non-zero, no handshake, and the start's own refusal
-# ("TLS root set: ...") names the input; a timeout never passes.
+# "refused at start": non-zero, no handshake, and the start's own refusal opens
+# by naming the input ("TLS root set: PGSSLCRL is set", or the scratch home's
+# root.crl); a timeout never passes.
 EXPECTED = {
     "sqlalchemy asyncpg require": ("verifies", "accepts outside, then fails"),
     **dict.fromkeys(CRL_INPUTS, ("refused at start", "verifies")),
@@ -401,6 +403,27 @@ def _certificates(directory: Path, name: str):
     return files[0], context, chain, key
 
 
+def _named_input(name: str, env: dict) -> str:
+    """How the start's refusal opens for a CRL row: the variable, or the file
+    under the child's own (scratch) home."""
+    if CRL_INPUTS.get(name) == "root.crl":
+        return os.path.join(env["HOME"], ".postgresql", "root.crl") + " exists"
+    return f"{CRL_INPUTS.get(name)} is set"
+
+
+def _passwd_home_crl() -> str | None:
+    """The password-database home's ``root.crl``, which every applied child
+    would refuse on whatever its ``HOME``; ``None`` when there is none."""
+    try:
+        import pwd
+
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    except (ImportError, KeyError):
+        return None
+    crl = os.path.join(home, ".postgresql", "root.crl")
+    return crl if os.path.exists(crl) else None
+
+
 def _run(
     name: str, applied: bool, ports: dict, counts: dict, env: dict
 ) -> tuple[str, str]:
@@ -431,8 +454,7 @@ def _run(
         and "accepted a peer outside the set" in said,
         "refused at start": code != 0
         and delta == 0
-        and said.startswith("TLS root set: ")
-        and CRL_INPUTS.get(name, "?") in said,
+        and said.startswith(f"TLS root set: {_named_input(name, env)}"),
     }[expected]
     return ("PASS" if ok else "FAIL"), f"{delta} handshake(s); {said}"
 
@@ -450,6 +472,14 @@ def main(argv: list[str] | None = None) -> int:
         return _child(args.child, not args.bare, json.loads(args.ports))
     from faultmaven.config.tls_root_set import OWNED_VARIABLES
 
+    blocking = _passwd_home_crl()
+    if blocking:
+        print(
+            f"check_tls_root_set: {blocking} exists, and every applied row would "
+            "refuse it whatever the child's HOME: move it aside and re-run.",
+            file=sys.stderr,
+        )
+        return 1
     failed, ports, counts, listeners, grpc_server = False, {}, {}, [], None
     with tempfile.TemporaryDirectory(prefix="check-tls-root-set-") as scratch:
         ca_file, context, chain, key = _certificates(Path(scratch), "set")

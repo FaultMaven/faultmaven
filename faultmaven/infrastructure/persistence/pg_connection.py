@@ -22,7 +22,9 @@ check in ``bootstrap/data_init``:
    The server's ``statement_timeout`` sits below the command timeout
    (:func:`pg_bounds`, set per transaction by the engine's ``begin``
    listener), so a live but slow server cancels its own statement first and the
-   connection survives.
+   connection survives. It also refuses, for any database, a URL whose query
+   hands the driver a Postgres root input outside the TLS root set
+   (``pg_root_inputs_in_url``, #2787): the start checks only ``DATABASE_URL``.
 3. **TCP liveness on idle pooled connections** (:func:`enable_tcp_liveness`):
    keepalive and ``TCP_USER_TIMEOUT``, so a connection whose packets are lost
    while it sits in the pool is found dead. It does nothing for a frozen server

@@ -44,13 +44,15 @@ the app's driver, reads a CRL file through ``PGSSLCRL`` or the home default, and
 the URL keys and a service file only when handed a DSN (a URL's ``dsn``). No
 file is safe to export in their place (an empty one does not load, and any file
 that loads turns on CRL checking), so each one present at start refuses it,
-named without echoing the database URL:
-a variable with any value, a ``DATABASE_URL`` query naming one of
-``PG_ROOT_INPUT_URL_KEYS`` (``dsn`` too, which carries any of them), and a
-``root.crl`` under ``Path.home()`` or the effective user's password-database
-home (on Windows, ``%APPDATA%\\postgresql`` too). Postgres CRL checking is not
+named without echoing the database URL: a variable with any value, a
+``DATABASE_URL`` query handing the driver one of ``PG_ROOT_INPUT_URL_KEYS``
+(``dsn`` too, which carries any of them; a key counts by each token libpq would
+split it into), and a ``root.crl`` under ``Path.home()`` or the effective user's
+password-database home (on Windows, under libpq's APPDATA folder too,
+``%APPDATA%\\postgresql``). Postgres CRL checking is not
 supported under the set. ``PGGSSENCMODE`` is set to ``disable`` unless already
-set, so libpq never negotiates GSSAPI encryption in place of TLS (#2788).
+set (#2788), so libpq negotiates no GSSAPI encryption in place of TLS unless the
+URL's ``gssencmode`` or the environment names a mode.
 """
 
 from __future__ import annotations
@@ -412,9 +414,13 @@ def _refuse(name: str, value: str, reason: str) -> NoReturn:
 
 
 def pg_root_inputs_in_url(database_url: str) -> list[str]:
-    """The ``PG_ROOT_INPUT_URL_KEYS`` in ``database_url``'s query, as the
-    engine's own parser (``make_url``) reads it; none for a value that does not
-    parse, which no engine can open."""
+    """The ``PG_ROOT_INPUT_URL_KEYS`` that ``database_url``'s query hands a
+    driver, as the engine's own parser (``make_url``) reads it; none for a value
+    that does not parse, which no engine can open.
+
+    Judged on what the driver receives: psycopg2 writes a key unescaped into the
+    conninfo, where libpq splits it at whitespace and ``=``, so a decorated key
+    (``?+sslcrl=``, ``?application_name%3Dx%20sslcrl=``) counts by its tokens."""
     from sqlalchemy.engine import make_url
     from sqlalchemy.exc import ArgumentError
 
@@ -422,15 +428,21 @@ def pg_root_inputs_in_url(database_url: str) -> list[str]:
         query = make_url(database_url).query
     except (ArgumentError, ValueError):
         return []
-    return [key for key in PG_ROOT_INPUT_URL_KEYS if key in query]
+    tokens = {token for key in query for token in _CONNINFO_SEPARATORS.split(key)}
+    return [key for key in PG_ROOT_INPUT_URL_KEYS if key in tokens]
+
+
+_CONNINFO_SEPARATORS = re.compile(r"[\s=]+")
 
 
 def pg_url_refusal(keys: list[str]) -> str:
     """Why a database URL naming ``keys`` is refused: the keys only, never the
-    URL, which can hold a password."""
+    URL, which can hold a password. Not ``DATABASE_URL`` by name: an engine's
+    URL can come from a nested ``DATABASE`` setting or its caller."""
     return (
-        f"DATABASE_URL's query names {', '.join(keys)}, a Postgres root input "
-        f"outside the TLS root set: remove it from DATABASE_URL. {_PG_REMEDY}"
+        f"the database URL's query names {', '.join(keys)}, a Postgres root "
+        f"input outside the TLS root set: remove it from the database URL. "
+        f"{_PG_REMEDY}"
     )
 
 
@@ -468,10 +480,18 @@ def _check_postgres_root_inputs() -> None:
 
 
 def _root_crl_paths() -> list[str]:
-    """Each default ``root.crl`` a driver reads for this process: under
-    ``Path.home()`` (asyncpg; libpq when ``HOME`` is set) and the effective
-    user's password-database home (libpq otherwise), and on Windows under
-    ``%APPDATA%\\postgresql`` (libpq). A home that cannot be resolved is none."""
+    """Each default ``root.crl`` a driver reads for this process."""
+    directories = dict.fromkeys(_crl_directories())
+    return [os.path.join(directory, "root.crl") for directory in directories]
+
+
+def _crl_directories() -> list[str]:
+    """Where a driver looks for its default ``root.crl``: ``.postgresql`` under
+    ``Path.home()`` (asyncpg; libpq when ``HOME`` is set, ``USERPROFILE`` on
+    Windows) and under the effective user's password-database home (libpq
+    otherwise), and on Windows libpq's ``postgresql`` under the APPDATA known
+    folder, resolved as libpq resolves it (``SHGetFolderPathW``), else the
+    ``APPDATA`` variable. A home that cannot be resolved is none."""
     homes = []
     try:
         homes.append(str(Path.home()))
@@ -483,11 +503,23 @@ def _root_crl_paths() -> list[str]:
         homes.append(pwd.getpwuid(os.geteuid()).pw_dir)
     except (ImportError, KeyError):  # no password database (Windows), no entry
         pass
-    paths = [os.path.join(home, ".postgresql", "root.crl") for home in homes]
-    appdata = os.environ.get("APPDATA") if sys.platform == "win32" else None
-    if appdata:
-        paths.append(os.path.join(appdata, "postgresql", "root.crl"))
-    return list(dict.fromkeys(paths))
+    directories = [os.path.join(home, ".postgresql") for home in homes]
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        try:
+            import ctypes
+
+            folder = ctypes.create_unicode_buffer(260)
+            # CSIDL_APPDATA; 0 is S_OK
+            if not ctypes.windll.shell32.SHGetFolderPathW(
+                None, 0x001A, None, 0, folder
+            ):
+                appdata = folder.value
+        except (AttributeError, OSError):  # no shell32: the variable stands
+            pass
+        if appdata:
+            directories.append(os.path.join(appdata, "postgresql"))
+    return directories
 
 
 def _write_set(path: str, pem: bytes) -> None:
