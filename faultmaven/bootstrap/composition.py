@@ -637,8 +637,10 @@ async def compose_application(
     else a partial application is a development affordance and startup
     continues with a warning.
 
-    A refusal leaves nothing of composition behind. Whoever composes for a run
-    shuts the container down at the run's end, on every path, and for a
+    A refusal leaves nothing of composition behind but one name: once
+    published, ``app.state.di_container`` stays (``_OUTLIVES_DECOMPOSITION``),
+    naming the container singleton its shutdown has reset. Whoever composes for
+    a run shuts the container down at the run's end, on every path, and for a
     refused composition that end is here: before the exception propagates,
     :func:`decompose_application` takes back what composition got as far as
     installing, the container included, so a later lifespan composes afresh
