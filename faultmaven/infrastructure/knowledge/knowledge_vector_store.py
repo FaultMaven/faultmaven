@@ -9,11 +9,13 @@ and is designed for ephemeral per-case evidence collections.
 Filter-presence check: a query against faultmaven_kb MUST name at least one
 scope key in its `where` clause or it is rejected with ValueError. That is a
 presence check and not a tenant check — see `_require_kb_filter_present`. The
-tenant control is `build_kb_scope_filter`. ChromaDB's own tenant dimension is
-the `enterprise_id` stamp (#1168, refused on write in `add_documents` when
-absent): every KB chunk written SINCE #1168 carries it, while chunks written
-before carry none until #1777's backfill — unchanged pack runbooks are never
-re-ingested. Conjuncting it on read is #1775, which waits on that backfill.
+tenant control is `build_kb_scope_filter`, which conjuncts the `enterprise_id`
+stamp (#1168, refused on write in `add_documents` when absent) onto every arm
+of the read scope (#1775). A chunk written before #1168 carries no stamp, and
+no `vector_generation` either (that predates revision 022, #2388), so admission
+never served it: restamping it (#1777) changes nothing for reads. Its row is
+served again by the bootstrap repair or the pack re-ingest, which write fresh
+chunks with both.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
   Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
@@ -52,6 +54,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from chromadb.errors import NotFoundError
 
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.chroma_client import blocking_executor_for
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
@@ -145,8 +148,13 @@ KB_COLLECTION = "faultmaven_kb"
 # The one tier whose CONTENT any principal may read. Platform-curated, and
 # readable by every tenant by construction (migration 033's per-command RLS
 # policies). Used to scope the term-index build — the store's only content read
-# — so that corpus statistics are never derived from another tenant's runbooks.
-_GLOBAL_TIER = {"scope": "global"}
+# — so that corpus statistics are never derived from another tenant's runbooks:
+# global chunks stamped with the platform enterprise, the value `kb_seed` and
+# the single-tenant writers stamp (#1775), the same form `build_kb_scope_filter`
+# returns for a caller with no usable enterprise.
+_GLOBAL_TIER = {
+    "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+}
 
 # The keys `_require_kb_filter_present` looks for: a KB `where` clause naming
 # none of them is refused. Membership means a key CAN carry scope, never that a
@@ -160,9 +168,10 @@ _GLOBAL_TIER = {"scope": "global"}
 # carried it, `VectorMetadata` no longer declares it (a write naming it is
 # refused), and ADR-017 makes it billing attribution, never a visibility
 # predicate — so a clause keyed on it alone named a "scope" that matched
-# nothing, and is now refused as unscoped (#1168). Nor is `enterprise_id` here
-# yet: every KB write the service makes stamps it since #1168, and #1775
-# conjuncts it on read.
+# nothing, and is now refused as unscoped (#1168). Nor is `enterprise_id` here,
+# deliberately: `build_kb_scope_filter` conjuncts it INSIDE each arm (#1775),
+# and a clause keyed on it alone would read every personal runbook in the
+# tenant — it must stay refused as unscoped.
 SCOPE_FILTER_KEYS = {"scope", "owner_id", "parent_document_id"}
 
 # Common English stop words for term overlap scoring
@@ -316,9 +325,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     ``SCOPE_FILTER_KEYS`` in its `where` clause — see
     :meth:`_require_kb_filter_present`, which checks that a filter is *present*
     and not that it is *scoped*. It is not the tenant control; the tenant
-    control is ``build_kb_scope_filter``. The vector-layer one is the
-    ``enterprise_id`` stamp every KB write the service makes carries (#1168),
-    which #1775 conjuncts on read.
+    control is ``build_kb_scope_filter``, which conjuncts the ``enterprise_id``
+    stamp every KB write the service makes carries (#1168) onto each arm of
+    the read scope (#1775).
 
     Case evidence collections (case_{case_id}) are exempt from the check
     since they are already scoped by case ownership.
@@ -411,15 +420,17 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
         """Term index for a collection, built once and reused.
 
-        **Built over the GLOBAL tier only, and that is a tenant-isolation
-        property, not a convenience.** This is the one read in the store that
+        **Built over the platform tier only — global chunks stamped with the
+        platform enterprise (``_GLOBAL_TIER``, #1775) — and that is a
+        tenant-isolation property, not a convenience.** This is the one read in the store that
         needs chunk TEXT rather than ids, and an unscoped content read of
         ``faultmaven_kb`` would pull every tenant's personal and team runbooks
         into one process-wide index — the exact shape
         ``tests/integration/security/test_kb_tenant_isolation_probe.py`` exists
-        to refuse. Global chunks are platform-curated and readable by every
-        tenant by construction (migration 033), so their document frequencies
-        cross no boundary. The cost is that a tenant's own runbooks do not
+        to refuse. Platform-stamped global chunks are platform-curated and
+        readable by every tenant by construction (migration 033), so their
+        document frequencies cross no boundary; a global chunk stamped with a
+        tenant is left out. The cost is that a tenant's own runbooks do not
         influence the IDF weights; that is the right trade, and on the shipped
         corpus the global tier IS the corpus.
 
@@ -461,7 +472,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 return None
 
             # Signature is the WHOLE collection's size, while the documents read
-            # are the global ones: coarser than the thing it guards, so a change
+            # are the platform-stamped global ones: coarser than the thing it guards, so a change
             # in another tier also invalidates it. It cannot see a SAME-SIZE
             # change made by another replica or process: that index is served
             # until the size next changes (#2064). A same-size replace through
@@ -486,7 +497,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 # payload looked empty: the degenerate state is "this index
                 # indexed nothing", and only the built object can answer that.
                 self.logger.info(
-                    f"KB term index: '{collection_name}' has no global-tier "
+                    f"KB term index: '{collection_name}' has no platform-tier "
                     f"chunks yet — reranking uses unweighted term overlap"
                 )
                 return None
@@ -510,7 +521,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             self._term_stats[collection_name] = stats
         self.logger.info(
             f"KB term index built for '{collection_name}': {stats.n_chunks} "
-            f"global chunks"
+            f"platform-tier chunks"
         )
         return stats
 
@@ -548,13 +559,13 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         cross-tenant reads. What it buys is narrow and real — *a query that
         forgot to filter at all cannot run.* Isolation itself comes from
         ``build_kb_scope_filter``, whose output is keyed on the caller's own
-        identifiers, plus the AST pin that every filtered KB read derives its
-        clause from it. Giving ChromaDB a tenant dimension of its own is the
-        control this check is sometimes mistaken for: every KB write the
-        service makes now stamps ``enterprise_id`` into chunk metadata
-        (**#1168**, refused in
-        :meth:`add_documents` when absent), and conjuncting it on read, outside
-        the ``$or``, is **#1775**. Until that lands, no read consults the stamp.
+        identifiers and conjuncts the caller's enterprise onto every arm, plus
+        the AST pin that every filtered KB read derives its clause from it.
+        The tenant dimension is the ``enterprise_id`` stamp every KB write the
+        service makes carries (**#1168**, refused in :meth:`add_documents` when
+        absent), which that builder reads (**#1775**). It is not one of
+        ``SCOPE_FILTER_KEYS``: a clause naming only the enterprise would read
+        every personal runbook in the tenant, so it stays refused here.
 
         Exactly where the line falls is exercised against a live ChromaDB in
         ``tests/integration/security/test_kb_tenant_isolation_probe.py``
@@ -1056,7 +1067,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         the right runbook back in the candidate set.
 
         **Unseen terms are ranked last but never dropped.** The index is built
-        over the global tier alone (see :meth:`_corpus_term_stats`), so a term
+        over the platform tier alone (see :meth:`_corpus_term_stats`), so a term
         with a document frequency of zero is one of two things: unmatchable
         anywhere, in which case the probe costs one cheap filtered query and
         returns nothing — or present only in the CALLER's own personal or

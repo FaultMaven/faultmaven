@@ -96,7 +96,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
 OWNER = "user-2397"
 QUERY = "connection pool exhausted queries time out"
-SCOPE = build_kb_scope_filter(OWNER, [])
+SCOPE = build_kb_scope_filter(OWNER, [], enterprise_id=STANDALONE_ENTERPRISE_ID)
 _DIM = 8
 
 
@@ -295,7 +295,9 @@ async def _push(kb) -> List[str]:
 
 async def _documents(kb) -> List[str]:
     found = await kb.service.search_documents(
-        QUERY, limit=3, user=SimpleNamespace(user_id=OWNER, enterprise_id=None)
+        QUERY,
+        limit=3,
+        user=SimpleNamespace(user_id=OWNER, enterprise_id=STANDALONE_ENTERPRISE_ID),
     )
     assert "error" not in found, found
     return [r["document_id"] for r in found["results"]]
@@ -397,7 +399,7 @@ async def test_search_documents_answers_the_unavailable_body_when_the_check_fail
     app.state.team_service = None
     app.dependency_overrides[get_knowledge_service] = lambda: kb.service
     app.dependency_overrides[get_current_user_optional] = lambda: SimpleNamespace(
-        user_id=OWNER, enterprise_id=None
+        user_id=OWNER, enterprise_id=STANDALONE_ENTERPRISE_ID
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:

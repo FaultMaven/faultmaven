@@ -87,7 +87,12 @@ async def test_the_share_lookup_is_asked_for_the_enterprise_not_the_billing_org(
         share_repository.list_resource_ids.await_args.kwargs["enterprise_id"]
         == ENTERPRISE
     )
-    assert {"parent_document_id": {"$in": ["kb-shared-7"]}} in scope["$or"]
+    assert {
+        "$and": [
+            {"parent_document_id": {"$in": ["kb-shared-7"]}},
+            {"enterprise_id": ENTERPRISE},
+        ]
+    } in scope["$or"]
 
 
 async def test_the_route_hands_the_service_the_bound_enterprise():

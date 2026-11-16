@@ -397,6 +397,15 @@ stamp with a metadata merge, one document at a time, and only on chunks that
 still carried the stamp they were listed under at an id-only read just before
 the write. Chunks whose parent has no row are never written.
 
+**What it means for reads (#1775):** every KB read conjuncts `enterprise_id`
+onto each arm of its scope, so a chunk with a wrong stamp is hidden from its own
+tenant, and this job's `mismatched: 0` is what rules that out. A chunk written
+before #1780 also predates revision 022 (#2388): it carries no
+`vector_generation`, and admission never serves it. Restamping it changes
+nothing for reads. A Standalone install holding such chunks needs no run of this
+job to serve its rows: the KB bootstrap's repair (re-embedding an unserved row)
+and the pack re-ingest write fresh chunks that carry both.
+
 **A dry run unless `--no-dry-run`.** Run the dry run first and read the counts:
 
 ```bash
@@ -440,9 +449,11 @@ A row read that is not proven unfiltered writes nothing and fails the run.
 
 Every count except `items` is in chunks.
 
-**The check that unblocks #1775:** after the real run, a dry run reports
+**The check:** after the real run, a dry run reports
 `status: completed`, `proven: true`, `chunks > 0`, `already_correct == chunks`,
-`unstamped: 0` and `mismatched: 0`.
+`unstamped: 0` and `mismatched: 0`. It was #1775's gate: it is what says no
+chunk with a row carries another enterprise's stamp, which would hide it from
+its own tenant.
 
 **Reaching `unattributable: 0`** (the check above does not require it). After
 the backfill, the §1b sweep's `unattributed` bucket holds only orphans, so the

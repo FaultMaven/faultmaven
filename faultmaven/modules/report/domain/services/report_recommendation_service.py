@@ -17,6 +17,7 @@ Architecture Reference: docs/architecture/knowledge-and-ai/runbook-dedup.md
 import logging
 from typing import Any, List, Optional
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.exceptions import KnowledgeBaseError
@@ -95,7 +96,7 @@ class ReportRecommendationService:
         case: Case,
         *,
         requester_user_id: str,
-        requester_enterprise_id: Optional[str] = None,
+        requester_enterprise_id: Optional[str],
     ) -> ReportRecommendation:
         """
         Determine which report types to offer for case, for one requester.
@@ -108,13 +109,16 @@ class ReportRecommendationService:
             case: Case object with investigation context
             requester_user_id: The authenticated caller. The similarity search
                 is scoped to what THIS principal can read.
-            requester_enterprise_id: The ENTERPRISE the request is bound to;
-                consumed only by the team arm, which matches the share row's own
-                ``enterprise_id`` (ADR-017 D1/D4 — that match is what lets a team
-                span organizations). The ORGANIZATION is a billing fact and is
-                never a visibility predicate, so it must not appear here.
-                ``resolve_shared_kb_ids`` collapses the Standalone sentinel under
-                multi-tenant itself.
+            requester_enterprise_id: The ENTERPRISE the request is bound to.
+                The team arm matches the share row's own ``enterprise_id``
+                (ADR-017 D1/D4 — that match is what lets a team span
+                organizations), and every arm of the vector filter is
+                conjuncted with it (#1775). Required: with no usable enterprise
+                (``usable_tenant_id`` refuses ``None`` and, under multi-tenant,
+                the Standalone sentinel) the search is refused, never run
+                against the platform tier alone. The ORGANIZATION is a billing
+                fact and is never a visibility predicate, so it must not appear
+                here.
 
         Returns:
             ReportRecommendation with available types and runbook suggestion
@@ -185,11 +189,24 @@ class ReportRecommendationService:
         from the caller's OWN ids so a filter built for user A can never
         surface user B's personal runbooks.
 
-        A team-arm resolution failure is surfaced as a typed refusal, not
-        swallowed: a silently narrowed search would underpin a "checked,
-        nothing similar" claim it did not establish. The route renders the
-        refusal as its 503, alongside every other search-unavailable cause.
+        A team-arm resolution failure, or a requester with no usable
+        enterprise (each arm carries the enterprise conjunct, #1775), is
+        surfaced as a typed refusal, not swallowed: a silently narrowed search
+        would underpin a "checked, nothing similar" claim it did not establish.
+        The route renders the refusal as its 503, alongside every other
+        search-unavailable cause.
         """
+        if usable_tenant_id(requester_enterprise_id) is None:
+            # Every arm needs the enterprise; checked before any team lookup.
+            logger.warning(
+                "Requester scope for runbook dedup refused: no usable enterprise"
+            )
+            raise KnowledgeBaseError(
+                "Could not resolve the requester's knowledge-base scope: the "
+                "request names no usable enterprise, so no scoped runbook "
+                "similarity search can run",
+                error_code="RUNBOOK_SCOPE_RESOLUTION_FAILED",
+            )
         try:
             team_ids: List[str] = []
             if self._team_service:
@@ -198,6 +215,12 @@ class ReportRecommendationService:
                 )
             shared_ids = await resolve_shared_kb_ids(
                 self._share_repository, team_ids, requester_enterprise_id
+            )
+            return build_kb_scope_filter(
+                requester_user_id,
+                shared_ids,
+                enterprise_id=requester_enterprise_id,
+                refuse_unusable=True,
             )
         except Exception as e:
             logger.warning(
@@ -210,7 +233,6 @@ class ReportRecommendationService:
                 "narrower scope than the requester can read",
                 error_code="RUNBOOK_SCOPE_RESOLUTION_FAILED",
             ) from e
-        return build_kb_scope_filter(requester_user_id, shared_ids)
 
     async def _find_similar_runbooks(
         self,

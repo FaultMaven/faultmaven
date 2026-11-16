@@ -210,7 +210,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
         # POSITIVE — the owner's scope finds the runbook it just published.
         found = await kb.search_by_text(
             query_text="database connection pool exhausted, queries time out",
-            scope_filter=build_kb_scope_filter("user-a", []),
+            scope_filter=build_kb_scope_filter(
+                "user-a", [], enterprise_id=_ENTERPRISE_ID
+            ),
         )
 
         assert [m.item_id for m in found] == ["kb-pool-exhaustion"]
@@ -223,7 +225,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
         assert (
             await kb.search_by_text(
                 query_text="database connection pool exhausted, queries time out",
-                scope_filter=build_kb_scope_filter("user-b", []),
+                scope_filter=build_kb_scope_filter(
+                    "user-b", [], enterprise_id=_ENTERPRISE_ID
+                ),
             )
             == []
         ), "a personal runbook leaked into another user's dedup scope"
@@ -231,7 +235,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
         # ...unless it is team-shared to them (the parent_document_id arm).
         shared = await kb.search_by_text(
             query_text="database connection pool exhausted, queries time out",
-            scope_filter=build_kb_scope_filter("user-b", ["kb-pool-exhaustion"]),
+            scope_filter=build_kb_scope_filter(
+                "user-b", ["kb-pool-exhaustion"], enterprise_id=_ENTERPRISE_ID
+            ),
         )
         assert [m.item_id for m in shared] == ["kb-pool-exhaustion"]
 
@@ -244,7 +250,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
         assert (
             await kb.search_by_text(
                 query_text="entirely unrelated topic",
-                scope_filter=build_kb_scope_filter("user-a", []),
+                scope_filter=build_kb_scope_filter(
+                    "user-a", [], enterprise_id=_ENTERPRISE_ID
+                ),
             )
             == []
         )
@@ -287,7 +295,7 @@ async def test_the_dedup_reader_binds_the_writers_collection_not_the_settings_on
             > 0
         )
 
-    scope = build_kb_scope_filter(None, [])
+    scope = build_kb_scope_filter(None, [], enterprise_id=_ENTERPRISE_ID)
 
     # The mis-binding a CHROMADB_COLLECTION override would produce.
     misbound = RunbookKnowledgeBase(
@@ -354,7 +362,9 @@ async def test_a_pack_published_global_runbook_is_found_by_every_principal(
     for principal in ("user-a", None):
         matches = await kb.search_runbooks(
             query_embedding=list(_TOY_EMBEDDING),
-            scope_filter=build_kb_scope_filter(principal, []),
+            scope_filter=build_kb_scope_filter(
+                principal, [], enterprise_id=_ENTERPRISE_ID
+            ),
         )
         # Two chunks, ONE runbook: the chunk collapse holds on live-written
         # rows too.

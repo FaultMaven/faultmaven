@@ -15,28 +15,35 @@ clause mentions **any** key in ``SCOPE_FILTER_KEYS`` — it never asks whose
 tenant the clause names, and Attack 3 below shows filters that satisfy it while
 returning the entire corpus. It buys exactly one thing: a query that forgot to
 filter at all cannot run. Its name and docstring say only that as of #1167;
-the vector-layer tenant control it used to be mistaken for is #1168.
+the vector-layer tenant control it used to be mistaken for is #1168/#1775.
 
 The real control is :func:`build_kb_scope_filter`, whose output is keyed on the
-caller's own identifiers and nothing else::
+caller's own identifiers and the caller's own enterprise ``E``::
 
-    {"$or": [{"scope": "global"},                       # platform tier
-             {"owner_id": <caller>},                    # the caller's own items
-             {"parent_document_id": {"$in": <ids>}}]}   # shared to caller's teams
+    {"$or": [{"$and": [{"scope": "global"},             # platform tier
+                       {"enterprise_id": {"$in": [E, <platform>]}}]},
+             {"$and": [{"owner_id": <caller>},          # the caller's own items
+                       {"enterprise_id": E}]},
+             {"$and": [{"parent_document_id": {"$in": <ids>}},  # shared to
+                       {"enterprise_id": E}]}]}                  # caller's teams
 
-Note what is absent: ``enterprise_id``. Every KB write stamps it since #1168's
-first slice (``add_documents`` refuses a KB chunk without it), but **no read
-path filters on it** until #1775 conjuncts it on read — so ChromaDB still
-enforces no tenant dimension of its own. Cross-tenant isolation is therefore
-*derived* from three separate properties, and the probe attacks each one:
+Every KB write stamps ``enterprise_id`` since #1168's first slice
+(``add_documents`` refuses a KB chunk without it), and since #1775 every arm of
+every read carries it, so ChromaDB enforces a tenant dimension of its own. A
+caller with no usable enterprise reads the platform tier alone, or is refused
+where an empty answer would be a claim. Cross-tenant isolation still rests on
+three properties, each now with a vector-layer check behind it, and the probe
+attacks each one:
 
 1. ``owner_id`` is a per-user identifier, so an owner arm can only ever name one
-   tenant's user (Attack 1).
-2. the shared-id arm is an allowlist of item ids the **vector layer takes on
-   trust** — the tenant predicate that produces it lives in SQL, in
-   ``resolve_shared_kb_ids`` → ``ShareRepository.list_resource_ids`` (Attack 2).
-3. ``scope: "global"`` is unconditional and readable by everyone, so it is only
-   safe while no tenant session can *write* a global-scope chunk (Attack 4).
+   tenant's user — and the conjunct pins it to the caller's tenant (Attack 1).
+2. the shared-id arm is an allowlist of item ids resolved in SQL, in
+   ``resolve_shared_kb_ids`` → ``ShareRepository.list_resource_ids``; the
+   conjunct refuses a foreign id that reaches it anyway (Attack 2).
+3. ``scope: "global"`` is readable by every tenant, so it is only safe while no
+   tenant session can *write* a global-scope chunk (Attack 4); the conjunct
+   admits a global chunk only when it carries the platform value or the
+   caller's own enterprise.
 
 Where the corpus is real
 ------------------------
@@ -85,6 +92,17 @@ a read site carrying two filter kwargs, the second a literal    ``test_every_kb_
 ``list_all_chunk_ids_by_parent`` widened to                         ``test_the_unfiltered_kb_readers_stay_id_only``
 ``include=["documents", "metadatas"]``
 a second unfiltered ``collection.get`` on the KB collection     ``test_the_unfiltered_kb_readers_stay_id_only``
+the shared arm loses its ``enterprise_id`` conjunct (#1775)     ``test_a_foreign_item_id_in_the_shared_arm_is_not_read``,
+                                                                ``test_an_unstamped_chunk_...``, the key-set guard
+the owner arm loses its ``enterprise_id`` conjunct              ``test_a_foreign_owner_id_is_not_read_either``,
+                                                                the identifier-arm and system-sentinel cases
+the global arm loses its ``enterprise_id`` conjunct             ``test_a_tenant_stamped_global_chunk_...`` (both
+                                                                providers), ``test_an_unstamped_chunk_...``
+``build_kb_scope_filter`` skips ``usable_tenant_id``            ``test_no_usable_enterprise_reads_...``,
+(``tenant_id = enterprise_id or None``)                         ``test_a_tenant_stamped_global_chunk_...[multi]``,
+                                                                and the unit ``sentinel-multi`` cases
+``build_kb_scope_filter`` ignores ``refuse_unusable``           the same two unit files' refusal cases
+``_GLOBAL_TIER`` back to ``{"scope": "global"}``                ``test_the_unfiltered_kb_readers_stay_id_only``
 ==============================================================  =============================================
 
 Every one was caught; none survived. Re-run them rather than trusting this
@@ -101,16 +119,16 @@ order asserts nothing in particular; run this file both alone and alongside
 What this probe found
 ---------------------
 **No cross-tenant read is reachable today.** Every live KB read path that
-carries a filter builds it from ``build_kb_scope_filter``, at one of three origin
+carries a filter builds it from ``build_kb_scope_filter``, at one of four origin
 sites (pinned by ``test_every_kb_read_filter_originates_from_build_kb_scope_filter``),
 and every global-authoring entry point refuses a tenant session. There is
 exactly one live read with no filter at all — the boot-time reconcile
 enumeration, which returns ids and nothing else and is pinned separately by
-``test_the_unfiltered_kb_readers_stay_id_only``. F1 and F2 below
-are *latent* — each is a property nothing enforces, recorded here as an
-executable description of what breaks if it stops holding. F3 was latent when
-this probe was written and has since been fixed (#1166); its tests now pin the
-fix rather than the defect:
+``test_the_unfiltered_kb_readers_stay_id_only``. F1 below is *latent* — a
+property nothing enforces, recorded here as an executable description of what
+breaks if it stops holding. F2 and F3 were latent when this probe was written
+and have since been fixed (#1775, #1166); their tests now pin the fix rather
+than the defect:
 
 * **F1 — the presence check cannot see tenancy.** ``{"scope": {"$ne": "x"}}``
   and ``{"owner_id": {"$nin": ["x"]}}`` satisfy ``_require_kb_filter_present``
@@ -118,9 +136,11 @@ fix rather than the defect:
   keeps such a clause out of the store; the AST pin is what makes that
   convention checkable. #1167 corrected the check's name and docstring to claim
   only what it checks; the tenant control itself is #1168.
-* **F2 — the shared-id arm is unauthenticated at the vector layer.** Any item id
-  that reaches the ``parent_document_id`` arm is read verbatim, foreign tenant or not
-  (Attack 2). The single tenant predicate protecting it is one SQL ``WHERE``.
+* **F2 — the shared-id arm was unauthenticated at the vector layer. FIXED
+  (#1775).** Any item id that reached the ``parent_document_id`` arm was read
+  verbatim, foreign tenant or not, and the single tenant predicate protecting
+  it was one SQL ``WHERE``. The arm now carries the caller's enterprise, so a
+  foreign id that reaches it reads nothing (Attack 2 pins the inversion).
 * **F3 — every write-side scope default was ``global``. FIXED (#1166).**
   ``KnowledgeBaseDocument.scope``, ``ingest_runbook``, ``upload_document`` and
   ``_index_document_in_vector_store``'s ``getattr(document, "scope", "global")``
@@ -182,10 +202,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.security]
 # Enterprises isolate (ADR-017). Each seeded tenant chunk carries its
 # enterprise as the ``enterprise_id`` stamp (#1168), exactly as the live
 # indexer writes it; the platform and "system" rows carry the Standalone
-# enterprise, the value production writes for the global tier. No read filters
-# on the stamp until #1775. The share-resolution arm is the one place these ids
-# reach a KB read today. Organizations bill and appear nowhere in vector
-# metadata.
+# enterprise, the value production writes for the global tier. Every read
+# conjuncts the stamp onto each arm (#1775), and the share-resolution arm
+# matches it in SQL. Organizations bill and appear nowhere in vector metadata.
 ENTERPRISE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"  # the caller's own tenant
 ENTERPRISE_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # the tenant being attacked
 
@@ -400,7 +419,9 @@ async def _ids(
 
 @pytest.mark.asyncio
 async def test_org_bs_runbooks_are_absent_from_org_as_vector_search(store):
-    got = await _ids(store, build_kb_scope_filter(USER_A, []))
+    got = await _ids(
+        store, build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
+    )
 
     assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
@@ -408,7 +429,11 @@ async def test_org_bs_runbooks_are_absent_from_org_as_vector_search(store):
 
 @pytest.mark.asyncio
 async def test_org_bs_runbooks_are_absent_from_org_as_hybrid_search(store):
-    got = await _ids(store, build_kb_scope_filter(USER_A, []), hybrid=True)
+    got = await _ids(
+        store,
+        build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A),
+        hybrid=True,
+    )
 
     assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
@@ -431,7 +456,7 @@ async def test_the_identifier_arm_of_hybrid_search_carries_the_same_filter(store
         probes.append(kwargs.get("where"))
         return await original(self, **kwargs)
 
-    scope_filter = build_kb_scope_filter(USER_A, [])
+    scope_filter = build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
     with patch.object(KnowledgeVectorStore, "_single_keyword_search", _spy):
         got = await _ids(
             store,
@@ -444,6 +469,10 @@ async def test_the_identifier_arm_of_hybrid_search_carries_the_same_filter(store
     assert all(
         p == scope_filter for p in probes
     ), f"a keyword probe queried with a different filter: {probes}"
+    assert all(
+        {"enterprise_id": ENTERPRISE_A} in arm["$and"]
+        for arm in scope_filter["$or"][1:]
+    ), "the filter both arms queried with carries no enterprise conjunct"
     assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
     assert got == ENTITLED_TO_A
 
@@ -459,7 +488,7 @@ async def test_hard_context_filter_cannot_displace_the_scope_arm(store):
     """
     got = await _ids(
         store,
-        build_kb_scope_filter(USER_A, []),
+        build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A),
         hybrid=True,
         context_metadata={"domain": "database", "service": "postgres"},
         filter_mode="hard",
@@ -521,7 +550,9 @@ def _tool_context(**overrides) -> ToolContext:
         "user_id": USER_A,
         # What case_retrieval_scope builds for user A's unshared case in a
         # deployment with no team shares (#1919).
-        "kb_scope_filter": build_kb_scope_filter(USER_A, []),
+        "kb_scope_filter": build_kb_scope_filter(
+            USER_A, [], enterprise_id=ENTERPRISE_A
+        ),
         # The turn's case redaction context, required (#1998): one that
         # redacts nothing, as SANITIZE_PII=false builds.
         "redaction_ctx": disabled_redaction(),
@@ -582,7 +613,9 @@ async def test_a_prompt_injected_question_cannot_move_the_filter(store):
     params = {
         "question": injected,
         "user_id": USER_B,
-        "kb_scope_filter": build_kb_scope_filter(USER_B, [DOC_B_TEAM]),
+        "kb_scope_filter": build_kb_scope_filter(
+            USER_B, [DOC_B_TEAM], enterprise_id=ENTERPRISE_B
+        ),
         "scope_filter": {"owner_id": USER_B},
         "filters": {"owner_id": USER_B},
     }
@@ -592,7 +625,7 @@ async def test_a_prompt_injected_question_cannot_move_the_filter(store):
 
     assert result.success, result.error
     assert captured == [
-        build_kb_scope_filter(USER_A, [])
+        build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
     ], f"the injected question changed the KB filter: {captured}"
     assert SECRET_B not in "\n".join(router.prompts)
 
@@ -606,20 +639,171 @@ async def test_a_prompt_injected_question_cannot_move_the_filter(store):
 
 
 @pytest.mark.asyncio
-async def test_a_foreign_item_id_in_the_shared_arm_is_read_verbatim(store):
-    """F2: the vector layer does not re-check whose item a shared id names.
+async def test_a_foreign_item_id_in_the_shared_arm_is_not_read(store):
+    """F2, fixed (#1775): the vector layer re-checks whose item a shared id names.
 
-    This is not a reachable leak — it is the statement of what the SQL
-    predicate in ``list_resource_ids`` is holding up. If a foreign id ever
-    reaches the shared arm, ChromaDB serves the chunk without a murmur,
-    because ``parent_document_id`` is an allowlist entry and allowlists do not
-    argue.
+    Before the conjunct, a foreign id that reached the ``parent_document_id``
+    arm was served verbatim — the SQL predicate in ``list_resource_ids`` was
+    the whole of the protection. Now the arm carries the caller's enterprise,
+    so the same id reads nothing. The positive half: the caller still gets
+    everything they are entitled to, so an empty corpus cannot pass this.
     """
-    got = await _ids(store, build_kb_scope_filter(USER_A, [DOC_B_TEAM]))
+    got = await _ids(
+        store, build_kb_scope_filter(USER_A, [DOC_B_TEAM], enterprise_id=ENTERPRISE_A)
+    )
 
-    assert CHUNK_B_TEAM in got, (
-        "if this ever stops holding, the note below is stale: the team arm "
-        "would have grown a check of its own"
+    assert CHUNK_B_TEAM not in got, "a foreign item id in the shared arm was read"
+    assert got == ENTITLED_TO_A
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_owner_id_is_not_read_either(store):
+    """The owner arm is pinned to the caller's tenant too: B's user id, keyed
+    under A's enterprise, reads none of B's chunks."""
+    got = await _ids(
+        store, build_kb_scope_filter(USER_B, [], enterprise_id=ENTERPRISE_A)
+    )
+
+    assert got & ENTERPRISE_B_CHUNKS == set(), f"org B content reached org A: {got}"
+    assert got == {CHUNK_PLATFORM}, "control: the platform tier still reads"
+
+
+async def _seed_global(store: KnowledgeVectorStore, parent: str, enterprise_id: str):
+    """Forge a ``scope: global`` chunk stamped with ``enterprise_id`` straight
+    into the store. No live writer produces a tenant-stamped global row (a
+    tenant session cannot author the platform tier); this is the shape the
+    global arm's conjunct exists to judge."""
+    chunk = _chunk(
+        parent,
+        f"GLOBAL-OF-{enterprise_id}",
+        scope="global",
+        enterprise_id=enterprise_id,
+    )
+    await store.add_documents([chunk], embeddings=[list(_VEC)])
+    return chunk["id"]
+
+
+async def _seed_standalone_owned_by_a(store: KnowledgeVectorStore) -> str:
+    """A personal chunk owned by ``USER_A`` and stamped with the Standalone
+    enterprise. Under multi no tenant session writes one; it is seeded so that
+    a builder which used the Standalone sentinel as a tenant (skipping
+    ``usable_tenant_id``) would read it through the owner arm — the one thing
+    the sentinel tests must be able to see."""
+    chunk = _chunk(
+        "aaaa5555standalone",
+        "STANDALONE-OWNED-BY-A",
+        scope="personal",
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        owner_id=USER_A,
+    )
+    await store.add_documents([chunk], embeddings=[list(_VEC)])
+    return chunk["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider", [BUILTIN_SINGLE, BUILTIN_MULTI], ids=["single", "multi"]
+)
+async def test_a_tenant_stamped_global_chunk_reaches_only_its_own_tenant(
+    store, provider
+):
+    """The global arm admits the caller's enterprise or the platform value, and
+    nothing else: B's global-stamped chunk is not served to A, and is to B. The
+    platform-stamped chunk is served to both. The Standalone value is a
+    tenant only under single: there A's Standalone-stamped chunk is read under
+    it, and under multi the sentinel reads the platform tier alone."""
+    forged_b = await _seed_global(store, "bbbbglobal0000", ENTERPRISE_B)
+    standalone_a = await _seed_standalone_owned_by_a(store)
+
+    with patch(
+        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+        return_value=provider,
+    ):
+        seen_by_a = await _ids(
+            store, build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
+        )
+        seen_by_b = await _ids(
+            store, build_kb_scope_filter(USER_B, [], enterprise_id=ENTERPRISE_B)
+        )
+        seen_under_sentinel = await _ids(
+            store,
+            build_kb_scope_filter(USER_A, [], enterprise_id=STANDALONE_ENTERPRISE_ID),
+        )
+
+    assert seen_under_sentinel == (
+        {CHUNK_PLATFORM}
+        if provider == BUILTIN_MULTI
+        else {CHUNK_PLATFORM, standalone_a}
+    ), "the Standalone value was judged the wrong way for this provider"
+    assert forged_b not in seen_by_a, "B's tenant-stamped global chunk reached A"
+    assert seen_by_a == ENTITLED_TO_A
+    assert forged_b in seen_by_b, "control: B reads its own global-stamped chunk"
+    assert CHUNK_PLATFORM in seen_by_b
+
+
+@pytest.mark.asyncio
+async def test_no_usable_enterprise_reads_the_platform_tier_only(store):
+    """Under multi the Standalone sentinel names no tenant: the scope is the
+    platform tier, never the caller's own personal chunk and never another
+    tenant's global-stamped one."""
+    forged_a = await _seed_global(store, "aaaaglobal0000", ENTERPRISE_A)
+    standalone_a = await _seed_standalone_owned_by_a(store)
+
+    with patch(
+        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+        return_value=BUILTIN_MULTI,
+    ):
+        scope_filter = build_kb_scope_filter(
+            USER_A, [DOC_B_TEAM], enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
+        got = await _ids(store, scope_filter)
+        hybrid = await _ids(
+            store, scope_filter, query=f"{IDENTIFIER} connection pool", hybrid=True
+        )
+
+    assert got == hybrid == {CHUNK_PLATFORM}
+    assert CHUNK_A_PERSONAL not in got and forged_a not in got
+    assert standalone_a not in got, "the sentinel was used as A's tenant"
+
+
+@pytest.mark.asyncio
+async def test_an_unstamped_chunk_is_served_to_no_one(store):
+    """A chunk with no ``enterprise_id`` (written before #1168 and never
+    backfilled) matches no arm. Written straight into ChromaDB, since
+    ``add_documents`` refuses it."""
+    unstamped = "cccc9999cccc9999_chunk_0"
+    collection = store.client.get_collection(KB_COLLECTION)
+    for scope, owner in (("global", None), ("personal", USER_A)):
+        metadata = {
+            "document_type": "runbook",
+            "scope": scope,
+            "parent_document_id": "cccc9999cccc9999",
+            "vector_generation": TEST_GENERATION,
+        }
+        if owner:
+            metadata["owner_id"] = owner
+        collection.upsert(
+            ids=[unstamped],
+            documents=[f"unstamped {IDENTIFIER}"],
+            metadatas=[metadata],
+            embeddings=[list(_VEC)],
+        )
+        for where in (
+            build_kb_scope_filter(
+                USER_A, ["cccc9999cccc9999"], enterprise_id=ENTERPRISE_A
+            ),
+            build_kb_scope_filter(USER_B, [], enterprise_id=ENTERPRISE_B),
+            build_kb_scope_filter(None, [], enterprise_id=None),
+        ):
+            assert unstamped not in await _ids(store, where), (scope, where)
+            assert unstamped not in await _ids(
+                store, where, query=f"{IDENTIFIER} pool", hybrid=True
+            ), (scope, where)
+
+    # Control: the same chunk, stamped, is read by its owner.
+    collection.update(ids=[unstamped], metadatas=[{"enterprise_id": ENTERPRISE_A}])
+    assert unstamped in await _ids(
+        store, build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
     )
 
 
@@ -648,14 +832,16 @@ async def test_the_share_resolver_is_where_the_tenant_predicate_lives():
 
 @pytest.mark.asyncio
 async def test_the_share_lookups_sql_carries_the_tenant_predicate():
-    """One SQL ``WHERE`` is the whole of F2's protection — read it, don't assume it.
+    """One SQL ``WHERE`` is the first half of F2's protection — read it, don't
+    assume it.
 
     The test above proves the caller's org reaches the repository. This proves
     the repository puts it in the statement: the rendered SQL must constrain
     ``enterprise_id`` as well as the team scope. Without that clause a share
-    row stamped by another tenant is an allowlist entry, and the vector layer —
-    as ``test_a_foreign_item_id_in_the_shared_arm_is_read_verbatim`` shows —
-    will serve the chunk it names.
+    row stamped by another tenant is an allowlist entry; the vector layer's
+    enterprise conjunct (#1775,
+    ``test_a_foreign_item_id_in_the_shared_arm_is_not_read``) is the second
+    half, and refuses the chunk it names.
     """
     from faultmaven.infrastructure.persistence.share_repository import (
         PostgreSQLShareRepository,
@@ -757,7 +943,9 @@ async def test_an_unresolvable_principal_collapses_to_the_platform_tier(
     store, principal
 ):
     """A caller the orchestrator could not identify reads global only."""
-    got = await _ids(store, build_kb_scope_filter(principal, []))
+    got = await _ids(
+        store, build_kb_scope_filter(principal, [], enterprise_id=ENTERPRISE_A)
+    )
 
     assert got == {CHUNK_PLATFORM}
 
@@ -774,11 +962,27 @@ async def test_the_system_sentinel_is_a_real_owner_arm_not_an_inert_one(store):
     about DATA, not an enforced invariant, so any chunk ever stamped
     ``owner_id="system"`` becomes readable to any filter keyed on that string.
     Recorded so a writer that starts stamping it trips something.
-    """
-    scope_filter = build_kb_scope_filter("system", [])
 
-    assert {"owner_id": "system"} in scope_filter["$or"]
+    It is also the single-tenant positive control through the real
+    ``usable_tenant_id``: there the Standalone enterprise is the one real
+    tenant, so its arms read the rows stamped with it. Since #1775 the owner arm
+    carries that enterprise, so the same string keyed under another tenant
+    does not reach the Standalone-stamped chunk.
+    """
+    with patch(
+        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+        return_value=BUILTIN_SINGLE,
+    ):
+        scope_filter = build_kb_scope_filter(
+            "system", [], enterprise_id=STANDALONE_ENTERPRISE_ID
+        )
+        under_a = build_kb_scope_filter("system", [], enterprise_id=ENTERPRISE_A)
+
+    assert {
+        "$and": [{"owner_id": "system"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+    } in scope_filter["$or"]
     assert await _ids(store, scope_filter) == {CHUNK_PLATFORM, CHUNK_SYSTEM}
+    assert await _ids(store, under_a) == {CHUNK_PLATFORM}
 
 
 # =============================================================================
@@ -854,7 +1058,15 @@ async def test_the_scope_guard_admits_filters_that_name_someone_else(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "where",
-    [None, {}, {"document_type": "runbook"}, {"$and": [{"domain": "database"}]}],
+    [
+        None,
+        {},
+        {"document_type": "runbook"},
+        {"$and": [{"domain": "database"}]},
+        # The tenant conjunct alone is not a scope: it would read every
+        # personal runbook in the tenant (#1775).
+        {"enterprise_id": ENTERPRISE_A},
+    ],
 )
 async def test_the_guard_does_refuse_the_one_thing_it_checks(store, where):
     """The positive control: a clause naming no scope key never runs."""
@@ -865,11 +1077,25 @@ async def test_the_guard_does_refuse_the_one_thing_it_checks(store, where):
 def test_the_guards_key_set_is_the_read_filters_key_set():
     """Drift here is silent: a filter arm the guard does not know about would
     make a correctly-scoped query look unscoped, and the fix under deadline is
-    to widen the guard rather than narrow the filter."""
-    arms = build_kb_scope_filter(USER_A, [DOC_B_TEAM])["$or"]
-    used = {key for arm in arms for key in arm}
+    to widen the guard rather than narrow the filter.
 
-    assert used <= SCOPE_FILTER_KEYS, f"read filter uses keys the guard misses: {used}"
+    The arms are nested (``$and`` of a scope key and the enterprise conjunct,
+    #1775), so each is flattened. Every arm must name a guard key of its own,
+    and the only other key it may carry is ``enterprise_id``, which is
+    deliberately NOT a guard key: a clause naming only the enterprise would
+    pass the presence check and read every personal runbook in the tenant.
+    """
+    arms = build_kb_scope_filter(USER_A, [DOC_B_TEAM], enterprise_id=ENTERPRISE_A)[
+        "$or"
+    ]
+    assert len(arms) == 3, "precondition: all three arms built"
+    for arm in arms:
+        keys = kvs_module._flatten_filter_keys(arm)
+        assert keys & SCOPE_FILTER_KEYS, f"an arm names no guard key: {arm}"
+        assert keys - SCOPE_FILTER_KEYS == {
+            "enterprise_id"
+        }, f"read filter uses keys the guard misses: {keys - SCOPE_FILTER_KEYS}"
+    assert "enterprise_id" not in SCOPE_FILTER_KEYS
 
 
 # =============================================================================
@@ -961,7 +1187,9 @@ async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
     await store.add_documents([captured[0][0]], embeddings=[list(_VEC)])
     chunk_id = captured[0][0]["id"]
 
-    seen_by_foreign = chunk_id in await _ids(store, build_kb_scope_filter(USER_B, []))
+    seen_by_foreign = chunk_id in await _ids(
+        store, build_kb_scope_filter(USER_B, [], enterprise_id=ENTERPRISE_B)
+    )
     assert seen_by_foreign is foreign_tenant_reads_it, (
         f"a {stated_tier!r} document is "
         f"{'not ' if foreign_tenant_reads_it else ''}visible to a tenant that "
@@ -971,7 +1199,9 @@ async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
     # The paired positive: whatever the foreign tenant can or cannot see, the
     # AUTHOR can always see it. Without this, a write that landed nowhere at all
     # would satisfy every negative arm above.
-    assert chunk_id in await _ids(store, build_kb_scope_filter(USER_A, []))
+    assert chunk_id in await _ids(
+        store, build_kb_scope_filter(USER_A, [], enterprise_id=ENTERPRISE_A)
+    )
 
 
 @pytest.mark.parametrize("is_platform_admin", [True, False])
@@ -1065,12 +1295,14 @@ def _filter_expressions(name: str, node: ast.Call) -> list[ast.AST]:
 
 
 #: Every place a KB read filter is CONSTRUCTED, with the principal it is keyed
-#: on. Three sites; each passes ids belonging to the caller, or, for the
-#: engine's one site, to the case driver (the case owner until #1898 —
-#: deliberate, so a user's own resolved cases seed their own future
-#: investigations).
+#: on. Four sites; three pass ids and the enterprise belonging to the caller,
+#: or, for the engine's one site, to the case driver (the case owner until
+#: #1898 — deliberate, so a user's own resolved cases seed their own future
+#: investigations). The fourth, ``search_knowledge``, builds the platform tier
+#: (no principal, no enterprise) as its no-filter fallback (#1775).
 _FILTER_ORIGINS = {
     ("modules/knowledge/domain/services/knowledge_service.py", "search_documents"),
+    ("modules/knowledge/domain/services/knowledge_service.py", "search_knowledge"),
     # The case driver's knowledge (#1919): the pre-fetch, kb_qa and the
     # runbook dedup all take their filter from here.
     (
@@ -1087,7 +1319,8 @@ _FILTER_ORIGINS = {
 #: Two of them are origins above (they build and read in one function); the rest
 #: forward a value they were given, and none may compose or default a clause —
 #: except ``search_knowledge``, whose no-filter fallback is the platform tier
-#: alone (``{"scope": "global"}``), which is narrower than any caller's scope.
+#: alone, built by ``build_kb_scope_filter`` and narrower than any caller's
+#: scope.
 _KB_READ_SITES = {
     # store internals: forward their own `where` parameter to `_recall`
     ("infrastructure/knowledge/knowledge_vector_store.py", "search"),
@@ -1158,8 +1391,9 @@ def test_every_kb_read_filter_originates_from_build_kb_scope_filter():
     Attack 3 showed a hand-written clause can satisfy the store's guard and
     return the whole corpus. Nothing in the store can tell such a clause from a
     legitimate one, so the property that keeps it unreachable is a property of
-    the CALL SITES: every filter comes from ``build_kb_scope_filter``, at three
-    places, keyed on ids the caller owns or on the case driver's knowledge.
+    the CALL SITES: every filter comes from ``build_kb_scope_filter``, at four
+    places, keyed on ids the caller owns, on the case driver's knowledge, or on
+    no principal at all (the platform tier).
     This pins both halves of that —
     the set of constructors and the set of forwarders — so a new read path
     fails here until someone states which it is.
@@ -1226,25 +1460,29 @@ def test_the_unfiltered_kb_readers_stay_id_only():
     **One content read is permitted, and only on the global tier.** The #1272
     term index needs chunk TEXT to compute document frequencies, which no
     id-level get can supply. It is allowed to read documents *because* it
-    carries ``where={"scope": "global"}``: global chunks are platform-curated
-    and readable by every tenant by construction (migration 033), so no tenant
-    boundary is crossed. The pairing is what makes it safe, so the pairing is
+    carries ``where=_GLOBAL_TIER``, the global chunks stamped with the platform
+    enterprise (#1775): platform-curated and readable by every tenant by
+    construction (migration 033), so no tenant boundary is crossed. The pairing is what makes it safe, so the pairing is
     what is asserted — a content read must carry the global filter, and an
     unfiltered read must stay id-only. Neither half is waived on its own.
     """
     module = _SOURCE_ROOT / "infrastructure/knowledge/knowledge_vector_store.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
 
+    #: The platform tier: global chunks stamped with the platform enterprise
+    #: (#1775), so a tenant-stamped global chunk never feeds the shared term
+    #: statistics.
+    platform_tier = {
+        "$and": [{"scope": "global"}, {"enterprise_id": STANDALONE_ENTERPRISE_ID}]
+    }
+
     def _is_global_tier(expression):
-        """Does this ``where`` argument pin the read to scope == global?"""
+        """Does this ``where`` argument pin the read to the platform tier?"""
         if isinstance(expression, ast.Name):
-            return expression.id == "_GLOBAL_TIER"
-        if isinstance(expression, ast.Dict):
-            return [
-                (k.value, v.value)
-                for k, v in zip(expression.keys, expression.values)
-                if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
-            ] == [("scope", "global")]
+            return (
+                expression.id == "_GLOBAL_TIER"
+                and kvs_module._GLOBAL_TIER == platform_tier
+            )
         return False
 
     unfiltered = []

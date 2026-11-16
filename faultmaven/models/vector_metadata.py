@@ -29,10 +29,9 @@ class VectorMetadata(BaseModel):
     # The owning tenant: the ``enterprise_id`` of the ``knowledge_items`` row
     # this chunk belongs to, stamped on every KB write since #1168 (and refused
     # by ``KnowledgeVectorStore.add_documents`` when absent). Global-tier rows
-    # carry the platform (Standalone) value their SQL row carries. No read path
-    # filters on it yet: slice 2 (#1775) conjuncts it onto every KB read,
-    # outside the ``$or``, once the backfill of chunks written before the stamp
-    # existed (#1777) reports none left unstamped.
+    # carry the platform (Standalone) value their SQL row carries. Every KB
+    # read conjuncts it onto each arm of its scope (``build_kb_scope_filter``,
+    # #1775), so a chunk without it is served to no one.
     #
     # There is deliberately NO ``organization_id``. Under ADR-017 the
     # organization bills and is never a visibility predicate, and a declared
@@ -121,10 +120,9 @@ class VectorMetadata(BaseModel):
         """Raise unless ``value`` names an owning tenant (#1168). THE rule.
 
         Every chunk in the KB collection carries the ``enterprise_id`` of the
-        ``knowledge_items`` row it belongs to. Slice 2 (#1775) conjuncts that
-        key onto every KB read, so a chunk written without it would silently
-        fall out of every tenant's results — and until then it would be one
-        more chunk the backfill (#1777) has to find.
+        ``knowledge_items`` row it belongs to. Every KB read conjuncts that
+        key onto each arm of its scope (#1775), so a chunk written without it
+        would silently fall out of every tenant's results.
 
         A non-blank ``str`` only: an empty or whitespace value names no tenant,
         and a non-string (``7``, ``b"ent"``, ``True``) is not an enterprise id

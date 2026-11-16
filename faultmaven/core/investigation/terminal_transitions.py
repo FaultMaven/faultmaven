@@ -30,6 +30,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Callable, Iterable, Optional
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     FIX_FAILED,
@@ -2114,7 +2115,9 @@ async def evaluate_runbook_suggestion(
             is the case's effective driver, ADR-020). Supplied by the engine, which owns the team-membership and share-table dependencies. Required for dedup to
             run: without it the search cannot be honestly scoped, so dedup is
             SKIPPED with the "did not run" caveat rather than quietly searching
-            a narrower scope. If the resolver RAISES (e.g. the team arm could
+            a narrower scope. A case with no usable enterprise is SKIPPED the
+            same way (#1775): every arm of the scope carries it, and retrying
+            never supplies one. If the resolver RAISES (e.g. the team arm could
             not be resolved), dedup is treated as FAILED — surfacing the
             failure rather than degrading to a narrower scope, because a
             silently narrowed search would underpin a "checked, nothing
@@ -2174,7 +2177,23 @@ async def evaluate_runbook_suggestion(
             f"one already exists in the KB.",
             extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
         )
-    if runbook_kb and scope_resolver is not None:
+    elif usable_tenant_id(getattr(case, "enterprise_id", None)) is None:
+        # No usable tenant: every arm of the scope carries the case's
+        # enterprise (#1775), so no honestly scoped search exists. Skipped,
+        # not failed — retrying never clears it, so "unavailable" would be the
+        # wrong remedy (#912).
+        logger.warning(
+            f"Runbook deduplication skipped for case {case.case_id}: "
+            f"the case has no usable enterprise to scope the search to. "
+            f"Duplicate runbooks may be created if a similar one already "
+            f"exists in the KB.",
+            extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
+        )
+    if (
+        runbook_kb
+        and scope_resolver is not None
+        and usable_tenant_id(getattr(case, "enterprise_id", None)) is not None
+    ):
         try:
             # Scope resolution runs INSIDE this try on purpose: a failure here
             # (team arm unresolvable, say) must surface as a failed dedup and

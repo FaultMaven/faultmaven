@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.lifecycle_metrics import (
     inference_starved_total,
     prompt_context_recovery_total,
@@ -1572,10 +1573,17 @@ class StructuredOutputGenerator:
             case_id=case.case_id,
             enterprise_id=enterprise_id,
             user_id=user_id,
-            kb_scope_filter=await case_retrieval_scope(
-                case,
-                team_service=self.deps.team_service,
-                share_repository=self.deps.share_repository,
+            # No usable enterprise: no scope at all, so ``kb_qa`` refuses
+            # rather than answer from the platform tier as if it were the
+            # driver's knowledge (#1775). The pre-fetch keeps that degrade.
+            kb_scope_filter=(
+                await case_retrieval_scope(
+                    case,
+                    team_service=self.deps.team_service,
+                    share_repository=self.deps.share_repository,
+                )
+                if usable_tenant_id(enterprise_id)
+                else None
             ),
             case_repository=self.deps.repository,
             metadata=metadata,

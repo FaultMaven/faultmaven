@@ -104,6 +104,9 @@ class KbLookupStatus(str, Enum):
     NOTHING = "nothing"
     #: The search could not run. Establishes nothing about the knowledge base.
     UNAVAILABLE = "unavailable"
+    #: The case has no usable enterprise, so no scoped search exists for it
+    #: (#1775). Not searched; retrying never changes that, unlike UNAVAILABLE.
+    NOT_SEARCHABLE = "not_searchable"
     #: The question named no topic and the case has no problem statement.
     NO_TOPIC = "no_topic"
     #: The user asked what runbooks there are; chat does not list them.
@@ -241,6 +244,15 @@ _SAME_TURN_SEARCH = (
 )
 
 
+#: The instruction for a case whose knowledge base cannot be searched (#1775),
+#: verbatim as ruled on #1775 (2026-11-16).
+KB_NOT_SEARCHABLE_INSTRUCTION = (
+    "The knowledge base cannot be searched for this case. Tell the user you "
+    "cannot check the knowledge base for this case. Do NOT say no runbook "
+    "exists, and do not suggest trying again later."
+)
+
+
 def render_kb_lookup_block(lookup: Optional[KbLookup], fence: Any) -> str:
     """The prompt block for ``lookup``: renderer prose, then fenced data.
 
@@ -277,6 +289,10 @@ def render_kb_lookup_block(lookup: Optional[KbLookup], fence: Any) -> str:
             "to search with, so nothing was searched. Ask which topic or runbook "
             "they mean. Do not say whether a runbook exists."
         )
+        return "\n".join(lines) + "\n\n"
+    if status is KbLookupStatus.NOT_SEARCHABLE:
+        # Before the query lines: nothing was searched, so none of them is true.
+        lines.append(KB_NOT_SEARCHABLE_INSTRUCTION)
         return "\n".join(lines) + "\n\n"
 
     if lookup.query_source == QUERY_FROM_PROBLEM_STATEMENT:
@@ -366,8 +382,9 @@ def kb_lookup_verdict(
     """The lookup in a few lines, for the minimal prompt a turn falls back to
     when the full one does not fit (its block is then dropped with the rest).
 
-    Carries what the reply must not get wrong — found, nothing, or could not
-    search — and the candidates' titles, never their text. Empty when there is
+    Carries what the reply must not get wrong — found, nothing, could not
+    search, or cannot search for this case — and the candidates' titles, never
+    their text. Empty when there is
     no lookup. ``element(name, body)`` fences the titles, which are
     caller-controlled: the fallback passes its own, so its trust rule names
     the block.
@@ -386,6 +403,10 @@ def kb_lookup_verdict(
         verdict = (
             "The user asked about the knowledge base, but it could not be "
             "searched this turn: say so, and do not say no runbook exists."
+        )
+    elif status is KbLookupStatus.NOT_SEARCHABLE:
+        verdict = (
+            "The user asked about the knowledge base. " + KB_NOT_SEARCHABLE_INSTRUCTION
         )
     elif status is KbLookupStatus.NOTHING:
         verdict = (

@@ -631,9 +631,10 @@ async def upload_document(
             # REQUIRED for personal scope, and it was never passed while this
             # route only wrote global. `owner_id` decides, through
             # `build_kb_scope_filter`, whether the author can see their own
-            # item at all — the filter admits a non-global row by
-            # `{"owner_id": owner_id}`. Omitted, a personal upload would
-            # succeed and then be invisible to the person who made it.
+            # item at all — the filter admits a non-global row by its owner
+            # arm, `owner_id` within the author's enterprise. Omitted, a
+            # personal upload would succeed and then be invisible to the
+            # person who made it.
             owner_id=current_user.user_id,
             category=category,
             tags=tag_list,
