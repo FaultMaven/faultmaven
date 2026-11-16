@@ -82,6 +82,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
+from faultmaven.utils.exception_name import exception_class_chain
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -236,8 +237,13 @@ async def delete_case(
             },
         )
     except CaseDeleteUnavailable as unavailable:
-        # Logged with its cause, never sent: the response names only the code.
-        logger.error(f"Refused delete of case {case_id}: {unavailable.__cause__!r}")
+        # The cause is the lease store client's error: logged by class only, as
+        # its text can carry the client's output (#2587); never sent.
+        cause = unavailable.__cause__
+        logger.error(
+            f"Refused delete of case {case_id}: "
+            f"{exception_class_chain(cause) if cause is not None else 'no cause'}"
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=ErrorResponse(
@@ -272,8 +278,10 @@ async def delete_case(
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as e:
+        # By class only: a store's or repository's error interpolates its
+        # client's text (#2587).
         logger.error(
-            f"Unexpected error in delete_case: {e}",
+            f"Unexpected error in delete_case {case_id}: {exception_class_chain(e)}"
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
