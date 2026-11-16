@@ -357,3 +357,35 @@ def test_served_endpoints_reach_what_the_router_serves_in_its_order():
     assert {e.path for e in endpoints if e.include_in_schema} == set(
         app.openapi()["paths"]
     )
+
+
+# =============================================================================
+# FastAPI 0.137.0-0.137.1: placeholders and no flattener (#2178)
+# =============================================================================
+
+
+class _IncludedRouter:
+    """Named as FastAPI 0.137.0's placeholder class, which the refusal matches."""
+
+
+@pytest.mark.parametrize(
+    "enumerate_",
+    [
+        route_enumeration.iter_served_routes,
+        route_enumeration.iter_documented_routes,
+        route_enumeration.iter_served_endpoints,
+        route_enumeration.iter_unresolved_routes,
+    ],
+)
+def test_the_flat_arm_refuses_a_table_it_cannot_read_whole(monkeypatch, enumerate_):
+    """On 0.137.0 and 0.137.1 a flat read returns only the direct routes.
+
+    The table holds a directly added route and an included router's
+    placeholder. Read flat, the answer would be ``/direct`` alone, with every
+    included route missing and nothing to say so.
+    """
+    monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
+    app = SimpleNamespace(routes=[APIRoute("/direct", _handler), _IncludedRouter()])
+
+    with pytest.raises(RuntimeError, match="0.137.0-0.137.1"):
+        enumerate_(app)

@@ -289,7 +289,7 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     logger.info("✅ DI container initialized successfully with authentication services")
 
     # Make container available to app for access by other components
-    app.extra["di_container"] = container
+    app.state.di_container = container
 
     # ============================================================
     # Bootstrap Application (deployment-agnostic architecture)
@@ -711,7 +711,7 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     Stops the config watcher composition started, releases the container, takes
     what composition published back off ``app.state`` (``published``, as
     :func:`compose_application` returns it), and, last, disposes the database
-    engine. ``app.extra["di_container"]`` is the container singleton itself,
+    engine. ``app.state.di_container`` is the container singleton itself,
     which its last shutdown resets, and stays.
 
     Each step runs whatever the one before it did (:func:`run_teardown`). One

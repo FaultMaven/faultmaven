@@ -68,7 +68,7 @@ logger = get_logger(__name__)
 # — imported rather than redeclared, so there is still exactly one. See the
 # comment beside it there.
 from .api.models import BackendCapabilities
-from .api.route_enumeration import iter_served_routes
+from .api.route_enumeration import iter_served_endpoints, iter_served_routes
 
 # Admin routes
 from .api.routes.admin import router as admin_users_router
@@ -194,14 +194,16 @@ logger.info("✅ Case endpoints added")
 # ``never_collapsed``; deduplication never saw a turn anyway (the copilot posts
 # multipart, the Slack agent sends no session id). Declared by the route's
 # TEMPLATE, read off the mounted app (prefix included), so the declaration
-# cannot drift from the route.
+# cannot drift from the route. Read through ``route_enumeration``, never a
+# direct ``app.routes`` walk: from FastAPI 0.137.0 that table holds one
+# placeholder per included router (#2178).
 from .api.middleware.route_policy import declare_route_policy
 from .modules.case.api.routes.conversation import submit_turn
 
 _TURN_ROUTE_PATHS = [
-    route.path
-    for route in app.routes
-    if getattr(route, "endpoint", None) is submit_turn
+    served.path
+    for served in iter_served_endpoints(app)
+    if served.endpoint is submit_turn
 ]
 if len(_TURN_ROUTE_PATHS) != 1:
     # Declaring nothing would leave the turn route replayable from the
@@ -217,9 +219,9 @@ declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
 from .modules.case.api.routes.cases import search_cases
 
 _SEARCH_ROUTE_PATHS = [
-    route.path
-    for route in app.routes
-    if getattr(route, "endpoint", None) is search_cases
+    served.path
+    for served in iter_served_endpoints(app)
+    if served.endpoint is search_cases
 ]
 if len(_SEARCH_ROUTE_PATHS) != 1:
     raise RuntimeError(f"expected exactly one case search route: {_SEARCH_ROUTE_PATHS}")
@@ -240,9 +242,9 @@ from .modules.knowledge.api.conversion_routes import convert_document
 from .modules.knowledge.api.routes import upload_document
 
 _KB_RECEIPT_ROUTE_PATHS = [
-    route.path
-    for route in app.routes
-    if getattr(route, "endpoint", None) in (upload_document, convert_document)
+    served.path
+    for served in iter_served_endpoints(app)
+    if served.endpoint in (upload_document, convert_document)
 ]
 if len(_KB_RECEIPT_ROUTE_PATHS) != 2:
     raise RuntimeError(
@@ -470,7 +472,7 @@ if _is_debug_enabled(settings=_debug_settings):
         strictly larger surface than the published contract.
 
         Flattened through ``iter_route_contexts``, not by walking ``app.routes``
-        directly. FastAPI 0.139 stopped copying an included router's routes into
+        directly. FastAPI 0.137.0 stopped copying an included router's routes into
         ``app.routes`` and records one ``_IncludedRouter`` placeholder per
         ``include_router`` instead, so the flat walk this used to do reported
         **24 of 147 routes** on fastapi 0.141.1 — a strict SUBSET of the
@@ -972,8 +974,8 @@ async def health_check():
 
     # Add DI container health if available
     try:
-        if "di_container" in app.extra:
-            container_instance = app.extra["di_container"]
+        container_instance = getattr(app.state, "di_container", None)
+        if container_instance is not None:
             if hasattr(container_instance, "health_check"):
                 container_health = container_instance.health_check()
                 health_status["services"]["di_container"] = container_health["status"]

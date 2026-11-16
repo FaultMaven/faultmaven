@@ -9,13 +9,16 @@ already drifted: two skipped empty paths, one demanded a ``dependant`` and one
 did not. A rule with three implementations is three rules.
 
 **Why a flat ``app.routes`` scan is not enough, and why it is also not wrong.**
-FastAPI 0.139 stopped copying an included router's routes into ``app.routes``
+FastAPI 0.137.0 stopped copying an included router's routes into ``app.routes``
 and records one ``_IncludedRouter`` placeholder per ``include_router`` instead,
 moving BOTH the effective path and the resolved dependency tree onto a route
-context. Before that, the eager copy merged the prefix into the path and the
-contributed dependencies into the route's own dependant. Measured, on a router
-included at ``prefix="/pre"`` with an app-level dependency, a router-level one
-and a handler parameter:
+context. Its flattener, ``iter_route_contexts``, arrived in 0.137.2, so on
+0.137.0 and 0.137.1 the table is placeholders with nothing to expand them: the
+flat arm REFUSES such a table rather than return part of it (#2178). Before
+that, the eager copy merged the prefix into the path and the contributed
+dependencies into the route's own dependant. Measured, on a router included
+at ``prefix="/pre"`` with an app-level dependency, a router-level one and a
+handler parameter:
 
     fastapi==0.136.0  (PINNED in requirements/{test,dev,cloud}.txt)
       app.routes types      ['APIRoute', 'Route']
@@ -53,16 +56,36 @@ from typing import NamedTuple
 
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
-try:  # pragma: no cover - exercised on FastAPI >= 0.139
+try:  # pragma: no cover - exercised on FastAPI >= 0.137.2
     from fastapi.routing import iter_route_contexts
-except ImportError:  # pragma: no cover - FastAPI < 0.139
+except ImportError:  # pragma: no cover - FastAPI < 0.137.2
     iter_route_contexts = None
+
+
+def _flat_table(app) -> list:
+    """``app.routes``, for a FastAPI with no flattener, refused when it is partial.
+
+    Before 0.137.0 the eager copy makes the flat table the whole table. On
+    0.137.0 and 0.137.1 it holds an ``_IncludedRouter`` placeholder per
+    ``include_router`` and nothing can expand it, so every included route would
+    silently vanish from the answer. Matched by class name: the class is
+    private, and absent from the FastAPI this module must also import on.
+    """
+    routes = list(app.routes)
+    if any(type(route).__name__ == "_IncludedRouter" for route in routes):
+        raise RuntimeError(
+            "this FastAPI records included routers as _IncludedRouter "
+            "placeholders but provides no fastapi.routing.iter_route_contexts "
+            "to expand them (FastAPI 0.137.0-0.137.1), so the route table "
+            "cannot be read whole. Use FastAPI 0.137.2 or later."
+        )
+    return routes
 
 
 class ServedRoute(NamedTuple):
     """One served operation: its EFFECTIVE path, its verbs, its RESOLVED tree.
 
-    The third field is the point. On >= 0.139 ``route.dependant`` is not the
+    The third field is the point. On >= 0.137 ``route.dependant`` is not the
     tree that runs for a route reached through ``include_router`` — it carries
     only what the handler declares. Measured on the composed app under 0.141.1:
     132 of 147 routes had ``ctx.dependant is not route.dependant``, and all 132
@@ -85,10 +108,10 @@ def iter_served_routes(app) -> list[ServedRoute]:
             reinstate the defect above, on a future version, with every caller
             still green — so it is refused loudly instead.
     """
-    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+    if iter_route_contexts is None:  # FastAPI < 0.137.2: the flat table
         return [
             ServedRoute(route.path, frozenset(route.methods or ()), route.dependant)
-            for route in app.routes
+            for route in _flat_table(app)
             if isinstance(route, APIRoute)
         ]
 
@@ -108,7 +131,7 @@ def iter_served_routes(app) -> list[ServedRoute]:
                 f"{getattr(context, 'path', '?')}: this FastAPI's route context "
                 "carries no resolved dependant, so the dependency tree that "
                 "actually runs cannot be read. Do NOT fall back to "
-                "route.dependant — on >= 0.139 that is the handler's tree only."
+                "route.dependant — on >= 0.137 that is the handler's tree only."
             )
         served.append(
             ServedRoute(
@@ -137,18 +160,18 @@ def iter_documented_routes(app) -> list[ServedRoute]:
     compare against the document, and ``iter_served_routes`` stays the set to
     compare against what the router will match.
 
-    The flag is read off the CONTEXT on >= 0.139, for the same reason as the
+    The flag is read off the CONTEXT on >= 0.137, for the same reason as the
     tree. ``include_router(r, include_in_schema=False)`` hides every route of
-    ``r``, and before 0.139 the eager copy folded that into each copied route's
+    ``r``, and before 0.137 the eager copy folded that into each copied route's
     own flag. On 0.141.1 the route keeps its handler-level ``True`` and only
     the context carries the ``False`` — so reading ``route.include_in_schema``
     there counts a whole hidden router as documented. Measured: the document
     has no paths, and that reading reported ``['/pre/hidden-by-include']``.
     """
-    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+    if iter_route_contexts is None:  # FastAPI < 0.137.2: the flat table
         return [
             ServedRoute(route.path, frozenset(route.methods or ()), route.dependant)
-            for route in app.routes
+            for route in _flat_table(app)
             if isinstance(route, APIRoute) and route.include_in_schema
         ]
 
@@ -163,7 +186,7 @@ def iter_documented_routes(app) -> list[ServedRoute]:
                 f"{getattr(context, 'path', '?')}: this FastAPI's route context "
                 "carries no resolved dependant, so the dependency tree that "
                 "actually runs cannot be read. Do NOT fall back to "
-                "route.dependant — on >= 0.139 that is the handler's tree only."
+                "route.dependant — on >= 0.137 that is the handler's tree only."
             )
         documented.append(
             ServedRoute(
@@ -181,7 +204,7 @@ class ServedEndpoint(NamedTuple):
     For a caller that has to say WHICH handler a path reaches — a duplicate
     registration is only reportable by its definition site — without being
     handed the route object, whose ``path``, ``path_regex`` and ``dependant``
-    are the handler's own on >= 0.139 rather than the served ones. ``path`` is
+    are the handler's own on >= 0.137 rather than the served ones. ``path`` is
     the effective, still-templated path; derive a matcher from it with
     ``starlette.routing.compile_path``, which is what ``APIRoute`` itself does.
 
@@ -202,9 +225,9 @@ def iter_served_endpoints(app) -> list[ServedEndpoint]:
     serves the FIRST route that matches, and the flattener expands each
     ``_IncludedRouter`` in place, so this order is the match order on both
     arms. ``include_in_schema`` is the effective flag — see
-    ``iter_documented_routes`` for why that is the context's on >= 0.139.
+    ``iter_documented_routes`` for why that is the context's on >= 0.137.
     """
-    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+    if iter_route_contexts is None:  # FastAPI < 0.137.2: the flat table
         return [
             ServedEndpoint(
                 route.path,
@@ -212,7 +235,7 @@ def iter_served_endpoints(app) -> list[ServedEndpoint]:
                 route.endpoint,
                 bool(route.include_in_schema),
             )
-            for route in app.routes
+            for route in _flat_table(app)
             if isinstance(route, APIRoute)
         ]
 
@@ -282,16 +305,16 @@ def iter_unresolved_routes(app) -> list[UnresolvedRoute]:
     router included with NO prefix does not even get dropped quietly:
     ``include_router`` reads ``route.path`` off it and raises.)
 
-    On >= 0.139 the context of a route reached through ``include_router``
+    On >= 0.137 the context of a route reached through ``include_router``
     carries an empty ``path``; the served, prefixed one is on the copy FastAPI
     dispatches to, ``starlette_route``. When neither yields a path the entry is
     reported with ``""`` rather than dropped: an unnameable entry is still
     served, and a caller that exempts known paths must see it fail closed.
     """
-    if iter_route_contexts is None:  # FastAPI < 0.139: the eager-copy shape
+    if iter_route_contexts is None:  # FastAPI < 0.137.2: the flat table
         return [
             _unresolved(route, route)
-            for route in app.routes
+            for route in _flat_table(app)
             if not isinstance(route, _DEPENDENCY_RESOLVING)
         ]
 

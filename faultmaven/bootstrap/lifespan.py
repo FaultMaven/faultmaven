@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
         logger.info("Configuration validated successfully")
 
         # Make configuration available to app
-        app.extra["settings"] = settings
+        app.state.settings = settings
     except Exception as e:
         logger.error(f"Configuration initialization failed: {e}")
         raise
