@@ -411,17 +411,17 @@ def _named_input(name: str, env: dict) -> str:
     return f"{CRL_INPUTS.get(name)} is set"
 
 
-def _passwd_home_crl() -> str | None:
-    """The password-database home's ``root.crl``, which every applied child
-    would refuse on whatever its ``HOME``; ``None`` when there is none."""
+def _passwd_home_holds_crl() -> bool:
+    """Whether the password-database home holds ``.postgresql/root.crl``,
+    which every applied child would refuse whatever its ``HOME``. A yes or no
+    only: the path, read from the password database, is never printed."""
     try:
         import pwd
 
         home = pwd.getpwuid(os.geteuid()).pw_dir
     except (ImportError, KeyError):
-        return None
-    crl = os.path.join(home, ".postgresql", "root.crl")
-    return crl if os.path.exists(crl) else None
+        return False
+    return os.path.exists(os.path.join(home, ".postgresql", "root.crl"))
 
 
 def _run(
@@ -472,11 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         return _child(args.child, not args.bare, json.loads(args.ports))
     from faultmaven.config.tls_root_set import OWNED_VARIABLES
 
-    blocking = _passwd_home_crl()
-    if blocking:
+    if _passwd_home_holds_crl():
         print(
-            f"check_tls_root_set: {blocking} exists, and every applied row would "
-            "refuse it whatever the child's HOME: move it aside and re-run.",
+            "check_tls_root_set: the password database's home directory holds "
+            ".postgresql/root.crl, and every applied row would refuse it "
+            "whatever the child's HOME: move it aside and re-run.",
             file=sys.stderr,
         )
         return 1

@@ -49,13 +49,13 @@ QUERIES = {
 }
 
 
-def _passwd_home_crl() -> Path | None:
+def _passwd_home_holds_crl() -> bool:
     try:
         import pwd
     except ImportError:
-        return None
+        return False
     crl = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".postgresql" / "root.crl"
-    return crl if os.path.exists(crl) else None
+    return os.path.exists(crl)
 
 
 @pytest.mark.parametrize(("query", "reason"), QUERIES.values(), ids=QUERIES)
@@ -67,8 +67,11 @@ def _passwd_home_crl() -> Path | None:
 def test_a_migration_refuses_a_url_naming_a_root_input(
     tmp_path, no_op_root_set, prefix, query, reason
 ):
-    if _passwd_home_crl() is not None:
-        pytest.skip(f"{_passwd_home_crl()} exists: every start refuses it first")
+    if _passwd_home_holds_crl():
+        pytest.skip(
+            "the password database's home holds .postgresql/root.crl: every "
+            "start refuses it first"
+        )
     shutil.copy2(PROJECT_ROOT / "alembic.ini", tmp_path / "alembic.ini")
     shutil.copytree(
         PROJECT_ROOT / "alembic",
