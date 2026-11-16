@@ -1,7 +1,7 @@
 """The one publisher and the one read rule for a local secret file (#1788).
 
 ``publish_secret_once`` publishes the standalone JWT secret and the redaction
-pseudonym key; ``tighten_secret_file_mode`` runs before either is used.
+pseudonym key; ``prepare_secret_file_for_read`` runs before either is used.
 """
 
 import errno

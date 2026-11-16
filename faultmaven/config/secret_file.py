@@ -4,15 +4,26 @@ Two secrets can live in local files: the standalone HS256 JWT secret
 (``settings.resolve_local_jwt_secret``) and the redaction pseudonym key
 (``infrastructure.security.pseudonym_key``). This module is the one way such a
 file is published, and the one rule applied before one is read (#1788).
+
+A published name is made durable: the directory is fsynced once the temp name
+is gone. Before each read, a publisher-shaped second name of the live secret
+(a crash between the link and the temp unlink) is removed, so deleting the
+file to rotate it leaves no copy behind. A publisher-shaped file with its own
+inode is never deleted: it may be a candidate not yet or never published, or
+the only copy of a secret from before a rotation, so it is left to the
+operator with a WARNING at every read (#2324).
 """
 
 import errno
 import logging
 import os
+import re
 import secrets
 import stat
 from pathlib import Path
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 #: ``os.link`` failing with one of these means the filesystem has no hard
 #: links. Only then is the secret published by ``os.replace`` under the lock;
@@ -62,12 +73,12 @@ def publish_secret_once(
             os.fsync(handle.fileno())
         try:
             os.link(tmp, path)
-            return True
+            published = True
         except FileExistsError:
             # Another process published first; its secret is the deployment's.
             if replace_if is None or not replace_if(path.read_bytes()):
                 return False
-            return _publish_under_lock(path, tmp, replace_if)
+            published = _publish_under_lock(path, tmp, replace_if)
         except OSError as exc:
             if exc.errno not in _NO_HARD_LINKS:
                 raise
@@ -82,12 +93,41 @@ def publish_secret_once(
             # window described above: a crash or ENOSPC between the two left a
             # permanent zero-byte file, and a concurrent reader could observe
             # it and refuse to boot.
-            return _publish_under_lock(path, tmp, replace_if)
+            published = _publish_under_lock(path, tmp, replace_if)
     finally:
         try:
             os.unlink(tmp)
         except FileNotFoundError:
             pass
+    # After the temp unlink, so the new name and the old one's removal are
+    # made durable together and the two-name window stays as short as it was.
+    if published:
+        _fsync_directory(path.parent, logger)
+    return published
+
+
+def _fsync_directory(directory: Path, log: logging.Logger) -> None:
+    """Make ``directory``'s entries durable; a WARNING, never a raise, if not.
+
+    Raising after a publish buys no durability, and the JWT caller would then
+    set no secret although the file is live. Without ``O_DIRECTORY``
+    (Windows) there is nothing to open.
+    """
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        log.warning(
+            "Could not fsync directory %s (%s); a power loss now may lose the "
+            "secret file name just written there",
+            directory,
+            errno.errorcode.get(exc.errno or 0, exc.errno),
+        )
 
 
 def _publish_under_lock(
@@ -141,7 +181,92 @@ def _publish_under_lock(
         return True
 
 
-def tighten_secret_file_mode(
+def prepare_secret_file_for_read(
+    path: Path, *, advice: str, logger: logging.Logger
+) -> None:
+    """Remove the publisher's leftover names, then make the file private.
+
+    Run before an existing secret file is read. Never raises: a secret that may
+    have leaked is still this deployment's secret until the operator rotates
+    it.
+    """
+    _remove_publish_leftovers(path, logger)
+    _tighten_secret_file_mode(path, advice=advice, logger=logger)
+
+
+def _remove_publish_leftovers(path: Path, logger: logging.Logger) -> None:
+    """Unlink publisher-shaped names of the live secret; keep everything else.
+
+    A crash between ``publish_secret_once``'s link and its temp unlink leaves
+    ``<name>.tmp.<pid>.<hex>`` as a second name for the secret. Only that exact
+    shape, beside the resolved file, is considered. One on the secret's inode
+    is unlinked; one with its own inode is kept with a WARNING at every read
+    until the operator removes it, since it may be the only copy of a secret
+    from before a rotation.
+    """
+    try:
+        resolved = Path(os.path.realpath(path))
+        st = os.stat(resolved)
+    except OSError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        return
+    shape = re.compile(re.escape(resolved.name) + r"\.tmp\.\d+\.[0-9a-f]{8}")
+    try:
+        names = sorted(n for n in os.listdir(resolved.parent) if shape.fullmatch(n))
+    except OSError:
+        names = []
+    removed = False
+    for name in names:
+        entry = resolved.parent / name
+        try:
+            est = os.lstat(entry)
+            if (est.st_dev, est.st_ino) != (st.st_dev, st.st_ino):
+                logger.warning(
+                    "Kept %s beside the secret file %s: it may be a candidate "
+                    "a concurrent start has not yet published, a candidate "
+                    "that never published, or a secret from before a "
+                    "rotation; delete it once it is no longer needed",
+                    entry,
+                    resolved,
+                )
+                continue
+            os.unlink(entry)
+        except FileNotFoundError:
+            continue  # its publisher removed it meanwhile
+        except OSError as exc:
+            logger.warning(
+                "Could not remove %s, a second name for the secret file %s (%s)",
+                entry,
+                resolved,
+                exc.strerror,
+            )
+            continue
+        removed = True
+        logger.warning(
+            "Removed %s, a second name for the secret file %s left by an "
+            "interrupted publish",
+            entry,
+            resolved,
+        )
+    if removed:
+        _fsync_directory(resolved.parent, logger)
+    try:
+        remaining = os.stat(resolved).st_nlink
+    except OSError:
+        return
+    if remaining > 1:
+        logger.warning(
+            "The secret file %s still has %d names; another name for it exists "
+            "outside the publisher's pattern, and deleting %s will not remove "
+            "the secret from disk",
+            resolved,
+            remaining,
+            resolved,
+        )
+
+
+def _tighten_secret_file_mode(
     path: Path, *, advice: str, logger: logging.Logger
 ) -> None:
     """Make an existing secret file private to its owner before it is read.
