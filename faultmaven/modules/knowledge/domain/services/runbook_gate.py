@@ -52,10 +52,11 @@ logger = logging.getLogger(__name__)
 #: load (17x). Every shape got the same verdict at full load as alone. Hostile
 #: shapes end here by design: a 45,000-item YAML alias list and a line of
 #: ``dd`` tokens (#2837) reach it alone and loaded. A title of 49,000 one-letter
-#: words (``"title: " + "a " * 49000``, 98,020 characters; 0.46-0.51 s alone,
-#: 0.47-0.51 s loaded) and 900 nested flow sequences (``"a: " + "[" * 900 +
-#: "]" * 900``, 1,816 characters; 1.15-1.23 s, 1.22-1.28 s) are refused within
-#: it, each as the whole frontmatter of a document whose body is ``# T``.
+#: words (``"title: " + "a " * 49000``, a document of 98,020 characters;
+#: 0.46-0.51 s alone, 0.47-0.51 s loaded) and 900 nested flow sequences
+#: (``"a: " + "[" * 900 + "]" * 900``, a document of 1,816 characters;
+#: 1.15-1.23 s, 1.22-1.28 s) are refused within it, each as the whole
+#: frontmatter of a document whose body is ``# T``.
 GATE_WORK_CPU_SECONDS = 3.0
 
 #: ``RLIMIT_CPU`` for a call of one check, the backstop if the timer fails: the
@@ -85,12 +86,12 @@ GATE_START_SECONDS = 1.0 / _CPU_SHARE
 #: Each check's wall-clock backstop, a 503: its CPU deadline plus 2 s, at the
 #: worst share, so the CPU deadline is reached first. On two cores the share is
 #: 1/4: 20 s. A call's work is bounded by its check count times this, so it
-#: binds alone a call of one check (a conversion's draft, ``runbook_scan``).
+#: binds alone a call of one check (e.g. a conversion's draft, ``runbook_scan``).
 #: Measured 2026-11-16 (#2661 3b2) at full load on two cores, in calls of two
 #: checks, a check that ran to its 3 s deadline took 10.1-13.8 s of wall time.
 #: That is past 0.75 of the 16 s that plus 1 s gave; 2 s is the smallest whole
 #: value that keeps it inside 0.75 (15 s). No measured call of two checks ended
-#: at its work-phase wall (2 x this).
+#: at its work-phase wall (then 2 x 16 s).
 GATE_WORK_WALL_SECONDS = (GATE_WORK_CPU_SECONDS + 2) / _CPU_SHARE
 
 #: Each transfer: at most 400 KB of UTF-8 in, the output limit out.
