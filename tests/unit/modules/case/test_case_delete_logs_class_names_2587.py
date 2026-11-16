@@ -24,6 +24,7 @@ import pytest
 from fastapi import FastAPI
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.exceptions import ServiceError
 from faultmaven.infrastructure.concurrency.inflight import (
     DELETE_UNAVAILABLE_RETRY_AFTER_SECONDS,
     CaseDeleteGate,
@@ -41,6 +42,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 )
 from tests.unit.modules.case.test_turn_receipt_1888 import (
     CASE_ID,
+    ENTERPRISE,
     OWNER,
     _investigating_case,
     _user,
@@ -165,8 +167,12 @@ async def test_the_503_logs_the_causes_class_and_the_release_its_own(caplog_all)
     assert answer.json()["detail"]["error"]["code"] == "CASE_DELETE_UNAVAILABLE"
     rendered = _assert_no_text_logged(caplog_all)
     assert f"Refused delete of case {CASE_ID}: ApiError <- ConnectionError" in rendered
-    assert "Could not release claim" in rendered
-    assert ": ApiError" in rendered.split("Could not release claim", 1)[1]
+    (release,) = [
+        record.getMessage()
+        for record in caplog_all.records
+        if record.getMessage().startswith("Could not release claim")
+    ]
+    assert release.endswith(": ApiError")
     repository.delete.assert_not_awaited()
 
 
@@ -185,8 +191,9 @@ async def test_an_uploads_eraser_failure_logs_classes_and_keeps_the_case(
 ):
     backend = MagicMock()
     backend.list_keys = AsyncMock(side_effect=_raise_leaky)
+    uploads = FileStorageService(backend=backend)
     service, repository = _real_service(
-        store_erasers=[FileStorageService(backend=backend)],
+        store_erasers=[uploads],
         delete_gate=CaseDeleteGate(fakeredis_aio.FakeRedis(decode_responses=True)),
     )
 
@@ -202,6 +209,12 @@ async def test_an_uploads_eraser_failure_logs_classes_and_keeps_the_case(
         in rendered
     )
     repository.delete.assert_not_awaited()
+    # The error every caller of the eraser logs holds no text either.
+    with pytest.raises(ServiceError) as raised:
+        await uploads.erase_case(CASE_ID, ENTERPRISE)
+    assert str(raised.value) == (
+        f"Failed to erase the uploads of case {CASE_ID}: ApiError"
+    )
 
 
 async def test_a_refused_delete_keeps_the_holders_retry_after():

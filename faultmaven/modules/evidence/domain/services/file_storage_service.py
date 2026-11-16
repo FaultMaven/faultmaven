@@ -582,7 +582,11 @@ class FileStorageService(BaseService):
             reason = exception_class_name(e)
             self.logger.error(
                 f"erase_case failed for case {case_id}: {reason}",
-                extra={"service": self.service_name, "error_type": reason},
+                extra={
+                    "service": self.service_name,
+                    "error_type": reason,
+                    "case_id": case_id,
+                },
             )
             raise ServiceError(
                 f"Failed to erase the uploads of case {case_id}: {reason}"

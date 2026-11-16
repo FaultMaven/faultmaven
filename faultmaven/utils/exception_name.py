@@ -3,11 +3,14 @@
 An exception's text can carry a connection URI with its password, SQL with its
 values, or an internal host or storage key. Its class name carries none of
 that, so a failure reported to a case reader, or to the model whose answer a
-case reader is served, names the class and leaves the text to the server log
-(#2072, #2332).
+case reader is served, names the class (#2072, #2332). So do the case delete
+path's server log lines (#2587); the rule for the server log in general is
+pending #2844.
 """
 
 import re
+
+from faultmaven.exceptions import walk_cause_chain
 
 # A plain ASCII identifier. ``str.isidentifier`` is wider (it accepts non-ASCII
 # letters), and a class's ``__name__`` is whatever string its creator chose.
@@ -20,18 +23,9 @@ def exception_class_name(exc: BaseException) -> str:
     return name if re.fullmatch(CLASS_NAME_PATTERN, name) else "Exception"
 
 
-#: The most links :func:`exception_class_chain` names (a chain can be a cycle).
-CLASS_CHAIN_LINKS = 5
-
-
 def exception_class_chain(exc: BaseException) -> str:
-    """``exc``'s class name, then its ``__cause__``'s (or ``__context__``'s
-    when it has no cause) and so on, joined by ``" <- "``, at most
-    :data:`CLASS_CHAIN_LINKS` links. For a log line that may hold no
+    """The class names of ``exc`` and of each ``__cause__`` ancestor
+    (:func:`~faultmaven.exceptions.walk_cause_chain`: explicit links only,
+    cycle-guarded), joined by ``" <- "``. For a log line that may hold no
     exception's text (#2587)."""
-    names = []
-    link: BaseException | None = exc
-    while link is not None and len(names) < CLASS_CHAIN_LINKS:
-        names.append(exception_class_name(link))
-        link = link.__cause__ or link.__context__
-    return " <- ".join(names)
+    return " <- ".join(exception_class_name(link) for link in walk_cause_chain(exc))
