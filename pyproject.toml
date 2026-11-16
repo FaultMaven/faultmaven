@@ -148,7 +148,6 @@ dependencies = [
     "pandas-stubs>=2.0.0",
     "pylogrus>=0.1.2",
     "scikit-learn>=1.5.0",
-    "pyod>=2.0.1",
     # >=5.29.6: GHSA-7gcm-g887-7qv7 + GHSA-8qvm-5x2c-j2w7 fixes. <6 is a
     # deliberate major-version boundary (the locked consumers allow 6.x per
     # their metadata) — lift it deliberately when a 6.x need arises.
