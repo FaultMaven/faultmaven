@@ -376,7 +376,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      Skip an item that an open PR from an earlier round still carries (its PR, *Where an item stands*), and any item
      on that PR's seam until it merges.
    - Items on one seam share a lane and a PR. **Ride-along** (owner ruling, 2026-11-15): a defect lane's plan may
-     also take up to two ready `P3` items on its seam that no open PR carries, within the plan's size budget (its own estimate, 4.1). Riders
+     also take up to two ready `P3` items on its seam that no open PR carries, within its own estimate (4.1). Riders
      count toward the round's 10-item cap; a lane adds them only while every lane's `P0`–`P2` items still fit. Never on a design-stage,
      `main red`, flake or exposure lane, nor on a `root-candidate`'s seam; never an item that takes its own lane (a
      security boundary or storage) or one on a root's `**Blocks:**` line. A rider that draws a `fixed` finding is
@@ -465,8 +465,10 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      performance thresholds. A repo-scanning guard, census or lint only when you can name an incident where the same
      class came back after an earlier fix. Such a guard is exercised through the path that runs it, and reverting the
      fix makes it fail;
-   - **the size budget:** estimated product and test lines, stating each rider's estimate within it. A product budget past twice the newest estimate (the
-     proposal's, or a later one an owner ruling set) and 50 lines over it pulls the item before a lane, as 4.5 does.
+   - **the size budget:** the lead's estimated product and test lines. Each rider's estimate, and the files its fix
+     touches, are stated apart and never enter the lead's budget or its comparison with the proposal's estimate. A
+     product budget past twice the newest estimate (the proposal's, or a later one an owner ruling set) and 50 lines
+     over it pulls the item before a lane, as 4.5 does.
      A stage over about 600 product lines is sub-staged here: the plan lists sub-stages that together deliver the
      ruled change and builds the first, its PR saying `Refs #<stage>`, and step 1 edits the stage down. No sub-stage
      leaves `main` with a known defect that a later sub-stage or stage must repair; where avoiding one needs a change
@@ -554,10 +556,10 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      gets one exception commit and delta, once, outside the cap, where a `fixed` finding pulls the item. A rider's
      `fixed` finding counts in neither: it takes the rider out (*Pick*).
    - **Size.** Passing twice the plan's product budget (or the newest budget an owner ruling set after it; never one
-     you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. A rider
-     never takes the PR past that bound: while the PR's product lines pass it with a rider on it, the lane takes riders
-     out, largest first (Ride-along's removal, *Pick*). A rider taken out, for this or for a `fixed` finding, takes its
-     own estimate out of the budget; the lines left count against the bound, which pulls the lead. Test lines
+     you restated) and 50 lines over it pulls the item, as does growth carrying an owner-reserved decision. Only the
+     lead's product lines count against that bound. A rider whose product lines (in the files the plan names for it)
+     pass twice its own estimate and 50 lines over it is taken out (Ride-along's removal, *Pick*); a rider never pulls
+     the lead. Test lines
      never count against it (#2198). Any smaller overrun, and any test overrun, is stated, with the new estimate, in
      the delta and the merge-ready.
    - **Never review the same code twice.** Each plan gets at most one design critique, and each PR one adversarial
