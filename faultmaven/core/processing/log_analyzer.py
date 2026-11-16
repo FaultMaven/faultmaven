@@ -19,7 +19,7 @@ Key Components:
 
 Technology Stack:
 --------------------------------------------------------------------------------
-pandas, PyOD, scikit-learn, MemoryService, PatternLearner
+pandas, scikit-learn, MemoryService, PatternLearner
 
 Core Design Principles:
 --------------------------------------------------------------------------------

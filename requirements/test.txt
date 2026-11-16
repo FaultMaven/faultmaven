@@ -86,8 +86,6 @@ click==8.4.2
     #   uvicorn
 configargparse==1.7.5
     # via locust
-contourpy==1.3.3
-    # via matplotlib
 coverage==7.13.5
     # via
     #   faultmaven (pyproject.toml)
@@ -100,8 +98,6 @@ cuda-pathfinder==1.5.3
     # via cuda-bindings
 cuda-toolkit==13.0.3.0
     # via torch
-cycler==0.12.1
-    # via matplotlib
 distro==1.9.0
     # via
     #   anthropic
@@ -137,8 +133,6 @@ flask-login==0.6.3
     # via locust
 flatbuffers==25.12.19
     # via onnxruntime
-fonttools==4.62.1
-    # via matplotlib
 freezegun==1.5.5
     # via faultmaven (pyproject.toml)
 frozenlist==1.8.0
@@ -218,19 +212,13 @@ jiter==0.14.0
     #   anthropic
     #   openai
 joblib==1.5.3
-    # via
-    #   pyod
-    #   scikit-learn
+    # via scikit-learn
 jsonschema==4.26.0
     # via chromadb
 jsonschema-specifications==2025.9.1
     # via jsonschema
-kiwisolver==1.5.0
-    # via matplotlib
 kubernetes==35.0.0
     # via chromadb
-llvmlite==0.47.0
-    # via numba
 locust==2.43.4
     # via faultmaven (pyproject.toml)
 lupa==2.8
@@ -247,8 +235,6 @@ markupsafe==3.0.3
     #   jinja2
     #   mako
     #   werkzeug
-matplotlib==3.10.8
-    # via pyod
 mccabe==0.7.0
     # via flake8
 mdurl==0.1.2
@@ -267,19 +253,13 @@ mypy-extensions==1.1.0
     # via black
 networkx==3.6.1
     # via torch
-numba==0.65.0
-    # via pyod
 numpy==1.26.4
     # via
     #   faultmaven (pyproject.toml)
     #   chromadb
-    #   contourpy
-    #   matplotlib
-    #   numba
     #   onnxruntime
     #   pandas
     #   pandas-stubs
-    #   pyod
     #   scikit-learn
     #   scipy
     #   sentence-transformers
@@ -364,7 +344,6 @@ packaging==26.3
     #   black
     #   build
     #   huggingface-hub
-    #   matplotlib
     #   onnxruntime
     #   pytest
     #   transformers
@@ -374,8 +353,6 @@ pandas-stubs==3.0.0.260204
     # via faultmaven (pyproject.toml)
 pathspec==1.0.4
     # via black
-pillow==13.0.0
-    # via matplotlib
 platformdirs==4.9.6
     # via black
 pluggy==1.6.0
@@ -428,10 +405,6 @@ pyjwt==2.15.1
     # via faultmaven (pyproject.toml)
 pylogrus==0.4.0
     # via faultmaven (pyproject.toml)
-pyod==3.2.1
-    # via faultmaven (pyproject.toml)
-pyparsing==3.3.2
-    # via matplotlib
 pypdf==6.21.4
     # via faultmaven (pyproject.toml)
 pypika==0.51.1
@@ -469,7 +442,6 @@ python-dateutil==2.9.0.post0
     # via
     #   freezegun
     #   kubernetes
-    #   matplotlib
     #   pandas
 python-docx==1.2.0
     # via faultmaven (pyproject.toml)
@@ -546,11 +518,9 @@ safetensors==0.8.0
 scikit-learn==1.8.0
     # via
     #   faultmaven (pyproject.toml)
-    #   pyod
     #   sentence-transformers
 scipy==1.17.1
     # via
-    #   pyod
     #   scikit-learn
     #   sentence-transformers
 sentence-transformers==6.1.0
