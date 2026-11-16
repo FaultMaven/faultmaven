@@ -80,8 +80,9 @@ Reviewers are independent agents: they never wrote or planned what they review.
   split only by ruling. A stage carries `design-stage`, `class:design`, its root's priority and the body line
   `**Stage of:** #<root>`.
 - **An issue closes only for a reason:** it is fixed; it duplicates another issue; you verified its premise is dead
-  (never an engine conclusion or recommendation for not reproducing); it is a tracker whose tracked work has all
-  closed; or an owner ruling closes it. Nothing closes an issue to lower the count: not age, not a timer, not silence.
+  (never an engine conclusion or recommendation, which closes only when fixed, as a duplicate, or by an owner ruling);
+  it is a tracker whose tracked work has all closed; or an owner ruling closes it. Nothing closes an issue to lower
+  the count: not age, not a timer, not silence.
 - **A blocked item's body** has one line: `**Blocked on:** #N …`; `**Blocked on:** an owner ruling on …` (also for a
   pull or a PR closed unmerged, with the question that settles it); or
   `**Blocked on:** condition — <a check you can run>` (a future event too, e.g. "redis-py ≥ 8 is pinned").
@@ -126,7 +127,7 @@ gh search prs --owner FaultMaven --match body "FaultMaven/faultmaven#<n>" --limi
 | 8 | its PR open; its newest `## Review` or `## Delta` has a `fixed` finding neither landed nor waived by a live ruling | a pull trigger met since its newest live ruling, or ever when it has none, pulls it: the cap or size (step 4.5), or a `fixed` finding in a re-entry delta (row 12) or in a refresh's second delta (row 6), or a stage's PR not converging (step 4). Else the fix commit, then a delta of the commits since `R` (row 12's, when its live ruling grants a re-entry) |
 | 9 | its PR open; its newest `## Review` or `## Delta` is clean, or its findings are waived by a live ruling | the vouched-head check from `R` (step 4.6); code after `R` gets a delta first; then merge-ready, or row 7's wait while an item it closes is in `pile:blocked` |
 | 10 | its PR open, no review | *Verify*, then the review (steps 4.3–4.4) |
-| 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR | resume a lane on that plan, in the branch and worktree it names |
+| 11 | a `## Plan — round <N>` newer than any pull, live ruling and PR of the item, and no open PR, unless that plan carries it unbuilt (4.1) | resume a lane on that plan, in the branch and worktree it names |
 | 12 | a pull that closed its PR, which has not merged since, and a live ruling granting one more fix and delta, an exception commit or a merge as is | re-entry: `gh pr reopen` it. A merge as is waives its outstanding findings, each filed as an issue: row 9. Else the lane adds one commit on its branch, and a delta of only that commit, outside the cap, where a `fixed` finding pulls it again |
 | 13 | a live ruling implying other work (a re-plan, a build at a new estimate) | rebuild: a plan for this round (step 4.1, with a critique when 4.1 calls for one) on a new branch, with its own review and PR; a closed PR stays closed |
 | 14 | none of the above | new: step 4.1 |
@@ -444,10 +445,11 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      code, re-set its priority and class by *State* (never one the owner set or a ruling states), and find its root
      (below) before choosing a change. An owner ruling stays the item's spec: a ruling whose premise the triage
      contradicts pulls the item with that question. A re-set priority or class does not unapprove the item: it is
-     built this round, and its result row states the change. The plan states which claims held and which did not; a
-     claim that did not hold is corrected on the issue under `## Evidence — triage`. A defect that does not reproduce
-     is built as a verification item (below); an engine conclusion or recommendation that does not reproduce is re-set
-     by *State* and stays open (owner ruling, 2026-11-16);
+     built this round (an engine conclusion that does not reproduce aside, below), and its result row states the
+     change. The plan states which claims held and which did not; a claim that did not hold is corrected on the issue
+     under `## Evidence — triage`. A defect that does not reproduce is built as a verification item (below); an engine
+     conclusion or recommendation that does not reproduce is re-set by *State*, stays open and is not built this round
+     (owner ruling, 2026-11-16): its result row reads `carried`, with the runs made and the new priority;
    - **the root,** with its code points. The root is where the defect starts, however deep. When investigating shows
      the cause sits in a deeper layer than the issue names, that deeper cause is this item's root and this PR fixes
      it. Never fix a symptom and file its root. A root that needs a ruling, or a budget past the bound below, pulls
@@ -495,10 +497,11 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
    rulings, your plan, the done-when, the branch, directory and base the plan names (new, or on an existing branch:
    rows 2, 6, 8, 10, 11, 12), and *Lane rules* below, pasted in verbatim.
    Run lanes in the background. Meanwhile, plan the next item; and once a round, check the 5 oldest ready `P3`s
-   outside the round with no `## Evidence — premise` in 30 days. One is dead only when a reproduction showing its
-   defect at the commit it cites no longer shows it on `origin/main` (never a latent one, an engine conclusion or
-   recommendation, or one without such a reproduction; an error or a moved code point is not death): close it under
-   `## Closed` with both runs; on each other, post `## Evidence — premise` with what you ran.
+   outside the round, other than engine conclusions or recommendations, with no `## Evidence — premise` in 30 days.
+   One is dead only when a reproduction showing its defect at the commit it cites no longer shows it on `origin/main`
+   (never a latent one, an engine conclusion or recommendation, or one without such a reproduction; an error or a
+   moved code point is not death): close it under `## Closed` with both runs; on each other, post
+   `## Evidence — premise` with what you ran.
 3. **Verify.**
    - Bring the head up to `origin/main` first: merge it in, and send a conflict back to the lane. If `main` has
      moved since you planned, re-run the plan's consumer and N searches, and re-capture an oracle (4.1) whose
@@ -524,10 +527,10 @@ smaller sub-stages (4.1) recommended, never given more fix rounds.
      until the owner rules;
    - **filed:** it is true, valid and not part of this item (*Filing what you find*, below); the verdict gives it one
      line: its root, and why that root is not this item's;
-   - **declined:** one line in the PR body saying why. Either it is not true (not reproduced, and not shown at
-     `path:line` on `origin/main` or the PR head), or it is not valid (as defined below), or an open issue already
-     covers it (add the evidence there), or, on an exception delta (4.5), it is a mutation-survival or adversarial-edit
-     finding against a test already shown to fail on `main`.
+   - **declined:** one line in the PR body saying why. Either it is not true (not reproduced, not shown at `path:line`
+     on `origin/main` or the PR head, and, for an engine conclusion, not shown by a recorded run), or it is not valid
+     (as defined below), or an open issue already covers it (add the evidence there), or, on an exception delta (4.5),
+     it is a mutation-survival or adversarial-edit finding against a test already shown to fail on `main`.
 
    Post the verdict on the PR as `## Review — <head>`, with the fix list, the `evidence` findings and the issues
    filed. A review or delta is
@@ -648,12 +651,14 @@ To **pull** an item:
   part of the item** (a different root). Its body carries `**Reach:**`: who hits it today and how, or, for a latent
   one, what would make it reachable, if known; for an engine conclusion or recommendation (never a deterministic
   defect), it adds the reproduction (the simulator scenario or replayed case, the runs that showed it out of those
-  made, and the commit), or `not reproduced on origin/main`, naming nothing else from a private repo, and an
-  unreproduced one is filed only when true as above; its priority follows from that line by *State* (a latent one is a
-  ready `P3`, or `P1` if *State* makes it one). File it as you find it (a batched one in its item's batch issue,
-  below), with `Found while working on #<n>`, the evidence, a pile, a priority, a class and an area. A true, valid
-  finding is never left unrecorded: it is filed, a line in a batch issue, or an `## Evidence` comment, as these rules
-  place it. These rules govern how a finding is recorded and found again, never whether it is.
+  made, and the commit), or `not reproduced on origin/main`, naming nothing else from a private repo, and one not
+  reproduced on `origin/main` is filed only when a recorded run at any commit or on a branch showed it, naming that
+  run (for an engine conclusion, that run is what makes it true under this rule and under *Rules*); its priority
+  follows from that line by *State* (a latent one is a ready `P3`, or `P1` if *State* makes it one). File it as you
+  find it (a batched one in its item's batch issue, below), with `Found while working on #<n>`, the evidence, a pile,
+  a priority, a class and an area. A true, valid finding is never left unrecorded: it is filed, a line in a batch
+  issue, or an `## Evidence` comment, as these rules place it. These rules govern how a finding is recorded and found
+  again, never whether it is.
 - **Search open and closed issues first,** by words and by the root's code point (its file and function or symbol),
   and record the search: the new issue or batch line carries `**Searched:**` with each query and the issues it
   found, or `none`. A finding with the same root as an open issue is evidence there (`## Evidence`), whatever its
@@ -678,15 +683,16 @@ To **pull** an item:
 
 ```
 ## Round <N> — result
-| # | outcome (merged · merge-ready · carried · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
+| # | outcome (merged · merge-ready · carried (also an engine conclusion that did not reproduce, 4.1) · closed by verification or sweep · pulled · waiting on main or <service>) | PR | product +/− | tests +/− |
 Closed <x> · Filed <y> · Net lines: product <p>, tests <t> · Open <before> → <after>
 Data: 14-day ratio <r> · open at the last four proposals <a> → <b> → <c> → <d>
 Filed: #<n> (P<k>) — <what, found while working on #<m>> — one line each, and each line added to an earlier round's batch issue
 Waiting on you: queue each PR at its vouched head: gh pr merge <n> -R FaultMaven/<repo> --match-head-commit <sha> (plus --squash outside core)
 ```
 
-Post it when every dispatched item and flake's fix is merged, merge-ready, closed, pulled or waiting, with a row per
-item and its PR, and one per flake's fix (4.6); the PR column reads `private` for a private repo's PR (*Rules*).
+Post it when every dispatched item and flake's fix is merged, merge-ready, carried, closed, pulled or waiting, with a
+row per item and its PR, and one per flake's fix (4.6); the PR column reads `private` for a private repo's PR
+(*Rules*).
 Every report states those four numbers, lists every issue filed and every line added to an earlier batch issue. It carries forward a row for every PR still open
 from an earlier round, until that PR merges or closes; a carried row adds nothing to the four numbers, which count
 each PR in the round that first reports it. Then stop.
@@ -728,5 +734,6 @@ each PR in the round that first reports it. Then stop.
 - **Never stack PRs.** Never hand over a PR that is not merge-ready.
 - **Never quote a closing keyword followed by an issue number** in a PR body or comment, not even in a code span:
   the queries here read code spans.
-- **Never file or relay a finding you have not verified:** reproduced, or shown at `path:line` on `origin/main`.
+- **Never file or relay a finding you have not verified:** reproduced, or shown at `path:line` on `origin/main`; for
+  an engine conclusion, a recorded run that showed it (*Filing what you find*).
 - **Never poll CI in the foreground,** and never from a lane or a review.
