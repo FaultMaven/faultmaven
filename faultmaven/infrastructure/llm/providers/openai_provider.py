@@ -935,7 +935,7 @@ class OpenAIProvider(BaseLLMProvider):
             async with aiohttp.ClientSession() as session:
                 async with post_waiting_out_rate_limits(
                     session,
-                    f"{self.config.base_url}/chat/completions",
+                    f"{self.config.base_url.rstrip('/')}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=self.config.timeout),
@@ -944,7 +944,7 @@ class OpenAIProvider(BaseLLMProvider):
                     if response.status != 200:
                         error_text = await response.text()
                         raise LLMException(
-                            f"OpenAI API error {response.status}: {error_text}",
+                            f"{self.provider_name} API error {response.status}: {error_text}",
                             status_code=response.status,
                             provider_error_code=extract_provider_error_code(error_text),
                         )
@@ -953,7 +953,9 @@ class OpenAIProvider(BaseLLMProvider):
 
                     # Extract response content
                     if not data.get("choices") or len(data["choices"]) == 0:
-                        raise LLMException("OpenAI API returned no choices")
+                        raise LLMException(
+                            f"{self.provider_name} API returned no choices"
+                        )
 
                     choice = data["choices"][0]
                     message = choice["message"]
@@ -1010,14 +1012,14 @@ class OpenAIProvider(BaseLLMProvider):
                     )
         except asyncio.TimeoutError:
             raise LLMException(
-                f"OpenAI API request timed out after {self.config.timeout}s "
+                f"{self.provider_name} API request timed out after {self.config.timeout}s "
                 f"(model: {effective_model})",
                 status_code=504,  # gateway timeout — transient/retryable
             )
         except aiohttp.ClientError as e:
             # Transport failure with no HTTP status — typed so retryability is
             # DECLARED rather than inferred from aiohttp's wording (#1287).
-            # Inherited by OpenRouter, which subclasses this provider.
+            # Inherited by every subclass (OpenRouter, Azure, HuggingFace).
             raise LLMException(
                 f"{self.provider_name} connection error: {str(e)}", retryable=True
             )

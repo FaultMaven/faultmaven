@@ -163,7 +163,7 @@ class FireworksProvider(BaseLLMProvider):
             async with aiohttp.ClientSession() as session:
                 async with post_waiting_out_rate_limits(
                     session,
-                    f"{self.config.base_url}/chat/completions",
+                    f"{self.config.base_url.rstrip('/')}/chat/completions",
                     headers=headers,
                     json=payload,
                     timeout=aiohttp.ClientTimeout(total=effective_timeout),

@@ -512,9 +512,9 @@ Probe of an Azure deployment of `gpt-6-luna-2026-09-22`, named `gpt-6-luna-1`, r
 
 Not recorded for it: a context window (no `model_context` entry matches the name, so the window is unknown: the prompt budget is `PROMPT_TARGET_TOKENS` and the context-overflow check is skipped; `MODEL_CONTEXT_WINDOWS` declares one). Its rates are in `pricing.py` under `openai` and `azure` ($0.10 in, $0.50 out, $0.01 cache read, $0.125 cache write per 1M tokens, short-context tier).
 
-### HuggingFace Inference API
-- Does not support OpenAI-compatible tool calling
-- `supports_tool_calling()` always returns `False`
+### HuggingFace
+- Requests use Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1`); the serverless `api-inference.huggingface.co` API is retired (#2111)
+- Tool support varies per routed provider and is unverified, so `supports_tool_calling()` always returns `False`, and a call carrying tools is refused with `CallShapeUnsupported` before any request
 
 ### Local Models (Ollama/vLLM)
 

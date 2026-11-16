@@ -586,7 +586,7 @@ class TestHuggingFaceProviderOverride:
         config = ProviderConfig(
             name="openai",
             api_key="test-key",
-            base_url="https://api-inference.huggingface.co/models",
+            base_url="https://router.huggingface.co/v1",
             models=["microsoft/DialoGPT-medium"],
             default_model="microsoft/DialoGPT-medium",
         )
@@ -602,7 +602,7 @@ class TestHuggingFaceProviderOverride:
         config = ProviderConfig(
             name="openai",
             api_key="test-key",
-            base_url="https://api-inference.huggingface.co/models",
+            base_url="https://router.huggingface.co/v1",
             models=["tiiuae/falcon-7b-instruct"],
             default_model="tiiuae/falcon-7b-instruct",
         )
@@ -825,7 +825,7 @@ class TestProviderOverrideConsistency:
                 ProviderConfig(
                     name="huggingface",
                     api_key="test",
-                    base_url="https://api-inference.huggingface.co/models",
+                    base_url="https://router.huggingface.co/v1",
                     models=["microsoft/DialoGPT-medium"],
                     default_model="microsoft/DialoGPT-medium",
                 ),
