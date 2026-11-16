@@ -184,49 +184,32 @@ def _publish_under_lock(
 def prepare_secret_file_for_read(
     path: Path, *, advice: str, logger: logging.Logger
 ) -> None:
-    """Remove the publisher's leftover names, then make the file private.
-
-    Run before an existing secret file is read. Never raises: a secret that may
-    have leaked is still this deployment's secret until the operator rotates
-    it.
-    """
+    """Before an existing secret file is read: drop the publisher's leftover
+    names of it (module docstring), then apply the mode rule. Never raises."""
     _remove_publish_leftovers(path, logger)
     _tighten_secret_file_mode(path, advice=advice, logger=logger)
 
 
 def _remove_publish_leftovers(path: Path, logger: logging.Logger) -> None:
-    """Unlink publisher-shaped names of the live secret; keep everything else.
-
-    A crash between ``publish_secret_once``'s link and its temp unlink leaves
-    ``<name>.tmp.<pid>.<hex>`` as a second name for the secret. Only that exact
-    shape, beside the resolved file, is considered. One on the secret's inode
-    is unlinked; one with its own inode is kept with a WARNING at every read
-    until the operator removes it, since it may be the only copy of a secret
-    from before a rotation.
-    """
     try:
         resolved = Path(os.path.realpath(path))
         st = os.stat(resolved)
-    except OSError:
-        return
-    if not stat.S_ISREG(st.st_mode):
-        return
-    shape = re.compile(re.escape(resolved.name) + r"\.tmp\.\d+\.[0-9a-f]{8}")
-    try:
+        if not stat.S_ISREG(st.st_mode):
+            return
+        shape = re.compile(re.escape(resolved.name) + r"\.tmp\.\d+\.[0-9a-f]{8}")
         names = sorted(n for n in os.listdir(resolved.parent) if shape.fullmatch(n))
     except OSError:
-        names = []
+        return
     removed = False
-    for name in names:
-        entry = resolved.parent / name
+    for entry in (resolved.parent / name for name in names):
         try:
             est = os.lstat(entry)
             if (est.st_dev, est.st_ino) != (st.st_dev, st.st_ino):
                 logger.warning(
-                    "Kept %s beside the secret file %s: it may be a candidate "
-                    "a concurrent start has not yet published, a candidate "
-                    "that never published, or a secret from before a "
-                    "rotation; delete it once it is no longer needed",
+                    "Kept %s beside the secret file %s: it may be a candidate a "
+                    "concurrent start has not yet published, one that never "
+                    "published, or a secret from before a rotation; delete it "
+                    "once it is no longer needed",
                     entry,
                     resolved,
                 )
@@ -236,7 +219,7 @@ def _remove_publish_leftovers(path: Path, logger: logging.Logger) -> None:
             continue  # its publisher removed it meanwhile
         except OSError as exc:
             logger.warning(
-                "Could not remove %s, a second name for the secret file %s (%s)",
+                "Could not remove %s, a second name for %s (%s)",
                 entry,
                 resolved,
                 exc.strerror,
@@ -252,18 +235,14 @@ def _remove_publish_leftovers(path: Path, logger: logging.Logger) -> None:
     if removed:
         _fsync_directory(resolved.parent, logger)
     try:
-        remaining = os.stat(resolved).st_nlink
+        if os.stat(resolved).st_nlink > 1:
+            logger.warning(
+                "The secret file %s still has another name, outside the "
+                "publisher's pattern: deleting it will not remove the secret",
+                resolved,
+            )
     except OSError:
-        return
-    if remaining > 1:
-        logger.warning(
-            "The secret file %s still has %d names; another name for it exists "
-            "outside the publisher's pattern, and deleting %s will not remove "
-            "the secret from disk",
-            resolved,
-            remaining,
-            resolved,
-        )
+        pass
 
 
 def _tighten_secret_file_mode(

@@ -296,7 +296,7 @@ def test_names_outside_the_publishers_shape_are_never_touched(tmp_path, caplog):
 
     assert backup.read_bytes() == b"the-secret" and lock.exists()
     assert os.stat(path).st_nlink == 2
-    warned = [w for w in _warnings(caplog) if "2 names" in w]
+    warned = [w for w in _warnings(caplog) if "still has another name" in w]
     assert len(warned) == 1 and str(path) in warned[0], caplog.text
 
 
