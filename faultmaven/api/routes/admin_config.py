@@ -523,8 +523,9 @@ def _rate_limiting_installed(app) -> bool:
       no longer affects what is installed. Wrong in both directions, and never
       right except by accident.
     * ``settings.protection`` — that is PII redaction, a different subsystem.
-    * ``app.extra["protection_info"]`` — a record of what setup *intended*, and
-      absent entirely on the paths that skip or fail setup.
+    * the dict ``setup_protection_middleware`` returns — a record of what
+      setup *intended*, logged and kept nowhere, and absent entirely on the
+      paths that skip or fail setup.
 
     ``user_middleware`` cannot disagree with what is installed, because it is
     what Starlette builds the stack from. ``main.py``'s CORS-outermost guard
@@ -552,8 +553,8 @@ def _installed_bypass_headers(app) -> Optional[List[str]]:
     the worse of the two rather than folding them together.
 
     Read from the ``ProtectionSettings`` the middleware was actually installed
-    with, for the reason ``_rate_limiting_installed`` gives about
-    ``app.extra["protection_info"]``: that dict records what setup *intended*
+    with, for the reason ``_rate_limiting_installed`` gives about the dict
+    ``setup_protection_middleware`` returns: it records what setup *intended*
     and is absent on the paths that skip or fail setup. ``user_middleware``
     holds the kwargs Starlette will build the stack from, so it cannot disagree
     with what runs — and it is readable without starting the app, which
@@ -799,7 +800,7 @@ def _oauth_flow_is_mounted(app) -> bool:
     ``_rate_limiting_installed`` asks ``user_middleware``.
 
     Enumerated through ``iter_served_routes``, NOT by walking ``app.routes``.
-    The OAuth router arrives via ``include_router``, and FastAPI 0.139 stopped
+    The OAuth router arrives via ``include_router``, and FastAPI 0.137.0 stopped
     copying an included router's routes into ``app.routes`` — it records one
     ``_IncludedRouter`` placeholder instead. A flat walk therefore cannot see
     this route on any FastAPI at or above that, and the feature reports

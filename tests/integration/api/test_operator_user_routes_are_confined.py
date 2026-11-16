@@ -111,7 +111,7 @@ def _operator_user_operations(app) -> dict[tuple[str, str], ServedRoute]:
     """Every operation the LIVE app exposes on the operator user surface.
 
     Flattened through ``iter_served_routes``. These routers reach the app by
-    ``include_router``, and FastAPI 0.139 stopped copying an included router's
+    ``include_router``, and FastAPI 0.137.0 stopped copying an included router's
     routes into ``app.routes`` — so the flat walk this replaced discovered
     NOTHING and ``test_the_surface_under_test_is_not_empty`` fired, which is
     that test doing its job: the sweep had stopped being able to see its own

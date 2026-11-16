@@ -639,7 +639,7 @@ def _routes_the_binder_does_not_cover(app) -> list:
     Measured, with a global dependency that records each call, on 0.136.0 and
     0.141.1 alike: it never ran for any of those four.
 
-    Through ``route_enumeration``, not ``app.routes``. On FastAPI >= 0.139 a
+    Through ``route_enumeration``, not ``app.routes``. On FastAPI >= 0.137.0 a
     Mount, Host or Route added to a router that is then included is absent from
     ``app.routes``; the first two are also newly SERVED there (the pinned
     0.136.0 drops them in the eager copy). A flat scan cannot see the escapes

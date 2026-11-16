@@ -90,7 +90,7 @@ import faultmaven.api.routes.admin_config  # noqa: E402
 # and this module drives THAT rather than keeping a fourth copy. The tests below
 # monkeypatch ``route_enumeration.iter_route_contexts``, which is why the import
 # is at module level there: a function-local import cannot be patched, and the
-# >= 0.139 arm would then be unexecuted on the pinned ``fastapi==0.136.0`` that
+# >= 0.137.2 arm would then be unexecuted on the pinned ``fastapi==0.136.0`` that
 # CI and the image install.
 from faultmaven.api import route_enumeration  # noqa: E402
 
@@ -1429,7 +1429,7 @@ def test_the_debug_routes_refuse_anonymous_and_non_operator_callers():
                 # ``/debug/routes`` claims in its own docstring to be "a
                 # strictly larger surface than the published contract". That
                 # was FALSE until this change: the handler walked ``app.routes``
-                # flat, which on FastAPI >= 0.139 sees one ``_IncludedRouter``
+                # flat, which on FastAPI >= 0.137.0 sees one ``_IncludedRouter``
                 # placeholder per ``include_router`` — 24 of 147 routes, a
                 # strict SUBSET of the contract, with an operator told "not
                 # registered" about a hundred routes that are. Asserted rather
@@ -1632,7 +1632,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
     assert len(routes) > 100, (
         f"only {len(routes)} API routes were found — the enumeration is not "
         "seeing the composed application, and this guard measured almost "
-        "nothing. On FastAPI >= 0.139 a flat app.routes scan finds 20 of 144; "
+        "nothing. On FastAPI >= 0.137.0 a flat app.routes scan finds 20 of 144; "
         "on the pinned 0.136 it finds all of them, so a shortfall here means "
         "something else"
     )
@@ -1685,7 +1685,7 @@ def test_no_gated_operation_resolves_a_collaborator_before_its_gate():
 
 
 # ---------------------------------------------------------------------------
-# The FastAPI >= 0.139 arm of ``_served_api_routes``, made reachable on the
+# The FastAPI >= 0.137.2 arm of ``_served_api_routes``, made reachable on the
 # version that actually ships.
 #
 # ``requirements/{test,dev,cloud}.txt`` all pin ``fastapi==0.136.0`` — that is
@@ -1759,7 +1759,7 @@ def _route_and_trees():
 @pytest.mark.integration
 @pytest.mark.security
 def test_the_flattener_arm_reads_the_contexts_dependant_not_the_routes(monkeypatch):
-    """The >= 0.139 arm, executed on the pinned 0.136.
+    """The >= 0.137.2 arm, executed on the pinned 0.136.
 
     The bug this forbids is subtle and was shipped once: flattening with
     ``iter_route_contexts`` for the PATH while still reading ``route.dependant``
@@ -1791,7 +1791,7 @@ def test_the_flattener_arm_reads_the_contexts_dependant_not_the_routes(monkeypat
     )
     assert served[0].methods == frozenset({"GET"})
     assert served[0].dependant is resolved, (
-        "the flattened arm returned the ROUTE's dependant. On >= 0.139 that is "
+        "the flattened arm returned the ROUTE's dependant. On >= 0.137.0 that is "
         "the handler's tree only — the path comes from the context and the tree "
         "must come from the same place"
     )
@@ -1824,7 +1824,7 @@ def test_a_context_without_a_dependant_is_refused_rather_than_defaulted(monkeypa
 
 @pytest.mark.integration
 @pytest.mark.security
-def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
+def test_the_pre_0_137_2_arm_is_the_flat_scan(monkeypatch):
     """And it is CORRECT there, not a degraded fallback.
 
     On the pinned ``fastapi==0.136.0`` ``include_router`` copies eagerly, with
@@ -1866,7 +1866,7 @@ def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
 
 
 def _flattener_is_available() -> bool:
-    """Does THIS interpreter's FastAPI expose the route flattener? (>= 0.139)
+    """Does THIS interpreter's FastAPI expose the route flattener? (>= 0.137.2)
 
     Asked as a function rather than read off the module-level name, because
     ``skipif(iter_route_contexts is None, ...)`` folds to a literal on the
@@ -1887,7 +1887,7 @@ def _flattener_is_available() -> bool:
 @pytest.mark.security
 @pytest.mark.skipif(
     not _flattener_is_available(),
-    reason="fastapi < 0.139 copies included routes in eagerly; nothing to flatten",
+    reason="fastapi < 0.137.2 has no route flattener (before 0.137.0 nothing to flatten)",
 )
 def test_a_really_included_router_is_flattened_with_its_resolved_tree():
     """The live arm. Skipped on the pin, real the moment it moves.

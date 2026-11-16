@@ -289,7 +289,7 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     logger.info("✅ DI container initialized successfully with authentication services")
 
     # Make container available to app for access by other components
-    app.extra["di_container"] = container
+    app.state.di_container = container
 
     # ============================================================
     # Bootstrap Application (deployment-agnostic architecture)
@@ -599,6 +599,12 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 # The value a name held before composition when it held none.
 _ABSENT = object()
 
+# Published by composition and left in place by its teardown. The container is
+# the process's singleton, which its last shutdown resets rather than replaces,
+# so a request served without a lifespan (a test reusing ``main.app``) still
+# finds it, as it did when it lived on ``app.extra`` (#2170).
+_OUTLIVES_DECOMPOSITION = frozenset({"di_container"})
+
 
 def _state_values(app: FastAPI) -> dict[str, Any]:
     return {name: app.state[name] for name in app.state}
@@ -608,13 +614,15 @@ def _published_since(app: FastAPI, before: Mapping[str, Any]) -> dict[str, Any]:
     """What composition published on ``app.state`` since ``before``.
 
     Each name it set, mapped to the value that name held before (``_ABSENT``
-    for a name it added). The one identity diff, read both when composition
-    returns and when it is refused part-way.
+    for a name it added), except those in ``_OUTLIVES_DECOMPOSITION``. The one
+    identity diff, read both when composition returns and when it is refused
+    part-way.
     """
     return {
         name: before.get(name, _ABSENT)
         for name, value in _state_values(app).items()
         if before.get(name, _ABSENT) is not value
+        and name not in _OUTLIVES_DECOMPOSITION
     }
 
 
@@ -629,8 +637,10 @@ async def compose_application(
     else a partial application is a development affordance and startup
     continues with a warning.
 
-    A refusal leaves nothing of composition behind. Whoever composes for a run
-    shuts the container down at the run's end, on every path, and for a
+    A refusal leaves nothing of composition behind but one name: once
+    published, ``app.state.di_container`` stays (``_OUTLIVES_DECOMPOSITION``),
+    naming the container singleton its shutdown has reset. Whoever composes for
+    a run shuts the container down at the run's end, on every path, and for a
     refused composition that end is here: before the exception propagates,
     :func:`decompose_application` takes back what composition got as far as
     installing, the container included, so a later lifespan composes afresh
@@ -711,8 +721,9 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     Stops the config watcher composition started, releases the container, takes
     what composition published back off ``app.state`` (``published``, as
     :func:`compose_application` returns it), and, last, disposes the database
-    engine. ``app.extra["di_container"]`` is the container singleton itself,
-    which its last shutdown resets, and stays.
+    engine. ``app.state.di_container`` is the container singleton itself,
+    which its last shutdown resets, and stays: ``published`` never names it
+    (``_OUTLIVES_DECOMPOSITION``).
 
     Each step runs whatever the one before it did (:func:`run_teardown`). One
     that raises is logged, so a refusal being undone propagates as itself. One

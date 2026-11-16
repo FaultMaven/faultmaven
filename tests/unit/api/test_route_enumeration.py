@@ -1,7 +1,7 @@
 """``api/route_enumeration``: the flat arm on the pin, the flattened arm past it.
 
 Every CI job installs ``fastapi==0.136.0``, where ``include_router`` copies
-eagerly and a flat ``app.routes`` scan is exactly right — so the ``>= 0.139``
+eagerly and a flat ``app.routes`` scan is exactly right — so the ``>= 0.137.2``
 arm cannot run there on its own. It is exercised here by INJECTION:
 ``iter_route_contexts`` is replaced with stub contexts shaped like the ones
 FastAPI 0.141 yields, and each such test FAILS against a flat walk on the pinned
@@ -11,7 +11,7 @@ on the pin, and the load-bearing check the moment the pin moves. The same
 pattern covers ``iter_served_routes`` in
 ``tests/integration/api/test_no_unauthenticated_operations.py``.
 
-fm#1308: three readers still took the pre-0.139 shape for granted — the
+fm#1308: three readers still took the pre-0.137.0 shape for granted — the
 tenant-binder probe's escape scan and the duplicate-registration guard walked
 ``app.routes`` flatly, and ``iter_documented_routes`` read the route's own
 ``include_in_schema`` where only the context carries an included router's
@@ -65,7 +65,7 @@ class _Context:
 
 
 class _IncludedRouterPlaceholder:
-    """What ``app.routes`` holds for an included router on >= 0.139.
+    """What ``app.routes`` holds for an included router on >= 0.137.0.
 
     Neither a route nor a container: no ``path``, no ``methods``, no
     ``routes``. A flat scan over a table containing it finds nothing inside.
@@ -110,7 +110,7 @@ _FASTAPI_DOCS = {
 def test_a_sub_app_inside_an_included_router_is_reported_by_the_flattened_arm(
     monkeypatch,
 ):
-    """The >= 0.139 arm, executed on the pinned 0.136 by injection.
+    """The >= 0.137.2 arm, executed on the pinned 0.136 by injection.
 
     The table below is the real 0.141.1 shape: the top-level Mount sits in
     ``app.routes`` and the included router is one opaque placeholder. A flat
@@ -166,7 +166,7 @@ def test_an_entry_whose_path_cannot_be_recovered_is_still_reported(monkeypatch):
     assert _unresolved(SimpleNamespace(routes=[])) == {("Mount", "", None)}
 
 
-def test_the_pre_0_139_arm_is_the_flat_scan(monkeypatch):
+def test_the_pre_0_137_2_arm_is_the_flat_scan(monkeypatch):
     """Complete there: the eager copy drops a nested Mount or Host.
 
     Built without ``include_router`` so that this also holds when the flat arm
@@ -241,7 +241,7 @@ def test_every_unresolved_entry_the_router_serves_is_enumerated():
 def test_a_router_hidden_by_include_is_not_documented_on_the_flattened_arm(
     monkeypatch,
 ):
-    """``include_router(r, include_in_schema=False)`` on >= 0.139, injected.
+    """``include_router(r, include_in_schema=False)`` on >= 0.137.2, injected.
 
     The route keeps its handler-level ``include_in_schema=True`` and only the
     context carries the ``False``. Reading the route's flag counts the whole
@@ -293,7 +293,7 @@ def test_served_endpoints_take_path_and_flag_from_the_context(monkeypatch):
 
     Injected with a context whose path differs from its route's, so a reading
     of ``route.path`` (``/leaf``, the unprefixed handler-level spelling on
-    >= 0.139) cannot pass for the served one.
+    >= 0.137.0) cannot pass for the served one.
     """
     route = APIRoute("/leaf", _handler, methods=["POST"])
     monkeypatch.setattr(
@@ -314,7 +314,7 @@ def test_served_endpoints_take_path_and_flag_from_the_context(monkeypatch):
     ]
 
 
-def test_the_pre_0_139_endpoint_arm_is_the_flat_scan(monkeypatch):
+def test_the_pre_0_137_2_endpoint_arm_is_the_flat_scan(monkeypatch):
     monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
     app = FastAPI()
     app.add_api_route("/direct", _handler, include_in_schema=False)
@@ -357,3 +357,35 @@ def test_served_endpoints_reach_what_the_router_serves_in_its_order():
     assert {e.path for e in endpoints if e.include_in_schema} == set(
         app.openapi()["paths"]
     )
+
+
+# =============================================================================
+# FastAPI 0.137.0-0.137.1: placeholders and no flattener (#2178)
+# =============================================================================
+
+
+class _IncludedRouter:
+    """Named as FastAPI 0.137.0's placeholder class, which the refusal matches."""
+
+
+@pytest.mark.parametrize(
+    "enumerate_",
+    [
+        route_enumeration.iter_served_routes,
+        route_enumeration.iter_documented_routes,
+        route_enumeration.iter_served_endpoints,
+        route_enumeration.iter_unresolved_routes,
+    ],
+)
+def test_the_flat_arm_refuses_a_table_it_cannot_read_whole(monkeypatch, enumerate_):
+    """On 0.137.0 and 0.137.1 a flat read returns only the direct routes.
+
+    The table holds a directly added route and an included router's
+    placeholder. Read flat, the answer would be ``/direct`` alone, with every
+    included route missing and nothing to say so.
+    """
+    monkeypatch.setattr(route_enumeration, "iter_route_contexts", None)
+    app = SimpleNamespace(routes=[APIRoute("/direct", _handler), _IncludedRouter()])
+
+    with pytest.raises(RuntimeError, match="0.137.0-0.137.1"):
+        enumerate_(app)

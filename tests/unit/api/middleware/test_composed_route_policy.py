@@ -359,7 +359,7 @@ def test_the_gate_refuses_a_declaration_naming_no_route():
 
 
 # ---------------------------------------------------------------------------
-# Lazily-included routers (fm#1305). FastAPI >= 0.139 stopped copying an
+# Lazily-included routers (fm#1305). FastAPI >= 0.137.0 stopped copying an
 # included router's routes into ``app.routes``.
 #
 # The arm below cannot run against the pinned fastapi==0.136.0 — the flattener
@@ -504,7 +504,7 @@ def test_a_complete_enumeration_still_refuses_an_unknown_path():
 
 @pytest.mark.skipif(
     route_policy.iter_route_contexts is None,
-    reason="fastapi < 0.139 copies included routes eagerly; nothing to flatten",
+    reason="fastapi < 0.137.2 has no route flattener (before 0.137.0 nothing to flatten)",
 )
 def test_a_real_included_router_is_enumerated_including_its_mount_prefix():
     """The end-to-end version, live from the FastAPI bump onward.

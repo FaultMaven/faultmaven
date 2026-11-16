@@ -58,7 +58,7 @@ from typing import Dict, Mapping, NamedTuple, Optional
 
 from starlette.routing import compile_path
 
-try:  # pragma: no cover - exercised on FastAPI >= 0.139; see _flattened_post_paths
+try:  # pragma: no cover - exercised on FastAPI >= 0.137.2; see _flattened_post_paths
     from fastapi.routing import iter_route_contexts
 except ImportError:
     iter_route_contexts = None
@@ -143,7 +143,7 @@ class RouteTable(NamedTuple):
 def _flattened_post_paths(route) -> RouteTable:
     """POST paths inside a route object that is not itself a route or container.
 
-    FastAPI 0.139 stopped copying an included router's routes into
+    FastAPI 0.137.0 stopped copying an included router's routes into
     ``app.routes`` and records an ``_IncludedRouter`` placeholder instead, which
     carries neither ``routes`` nor ``methods``. Walking it as if it did finds
     nothing, so every ``include_router`` route vanished and
@@ -152,10 +152,11 @@ def _flattened_post_paths(route) -> RouteTable:
 
     ``iter_route_contexts`` is FastAPI's own flattener for exactly this, and it
     resolves the effective path including any prefix passed to
-    ``include_router``. It does not exist before 0.139, where it is not needed;
-    the import guard below therefore only reports when this function is actually
+    ``include_router``. It arrived in 0.137.2: before 0.137.0 it is not needed,
+    and on 0.137.0 and 0.137.1 this arm reports the table incomplete. The import
+    guard below therefore only reports when this function is actually
     *reached*, which is the honest signal — silence on an older FastAPI, a loud
-    report if a future one renames it and this arm starts finding nothing.
+    report on one that holds placeholders it cannot expand.
 
     One shape stays out of reach: a ``Mount`` nested inside an included router.
     Its context carries an empty ``path`` and the router prefix is not

@@ -219,7 +219,7 @@ def _service_operations(app: FastAPI) -> set[tuple[str, str]]:
     """Gated operations on this surface whose tree holds one of :data:`_SERVICES`.
 
     Through ``route_enumeration`` rather than a flat ``app.routes`` scan: on
-    FastAPI >= 0.139 ``include_router`` records a ``_IncludedRouter``
+    FastAPI >= 0.137.0 ``include_router`` records a ``_IncludedRouter``
     placeholder instead of copying the routes, so a flat scan of this app finds
     nothing. CI's pinned 0.136.0 still copies — the drift that module absorbs.
     """

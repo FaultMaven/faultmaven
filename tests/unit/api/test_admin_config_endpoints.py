@@ -1775,7 +1775,7 @@ def _mount_oauth_router(app: FastAPI) -> FastAPI:
 
     app.include_router(oauth_router, prefix="/api/v1")
     # The fixture's own premise, asserted — through the flattener, because the
-    # router arrives by ``include_router`` and FastAPI 0.139 stopped copying an
+    # router arrives by ``include_router`` and FastAPI 0.137.0 stopped copying an
     # included router's routes into ``app.routes``. A flat walk here asserts the
     # premise is FALSE on any FastAPI at or above that, so the fixture errors
     # and takes its whole class with it while the code under test is fine.
