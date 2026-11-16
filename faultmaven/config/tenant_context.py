@@ -196,13 +196,15 @@ def usable_tenant_id(enterprise_id: Optional[str]) -> Optional[str]:
       safe where an empty result *means* "you may see less". On a dedup check
       it means "nothing similar exists", which the caller turns into "generate
       a new runbook" — a substantive claim derived from a search that was
-      refused (#944). ``build_kb_scope_filter(refuse_unusable=True)`` therefore
-      raises for the report route and the question lookup, each of which
-      reports that it could not check; ``kb_qa``'s tool context carries no
-      scope, so the tool refuses; and
-      ``terminal_transitions.evaluate_runbook_suggestion`` checks here first,
-      so the engine's dedup is a quiet logged skip that reports "did not run"
-      rather than "unavailable" (#912).
+      refused (#944). Each checks here before it asks for a scope:
+      ``ReportRecommendationService._resolve_requester_scope`` refuses
+      (``RUNBOOK_SCOPE_RESOLUTION_FAILED``); ``kb_qa``'s tool context carries
+      no scope, so the tool refuses; the question lookup answers
+      ``NOT_SEARCHABLE``, "cannot check"; and
+      ``terminal_transitions.evaluate_runbook_suggestion`` is a quiet logged
+      skip that reports "did not run" rather than "unavailable" (#912).
+      ``build_kb_scope_filter(refuse_unusable=True)`` is the backstop behind
+      those checks: it raises rather than return the platform tier.
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
     it identifies the single-tenant deployment. Refusing it here is what makes

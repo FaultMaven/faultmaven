@@ -54,7 +54,7 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 ]}
 ```
 
-With no usable enterprise the filter is the platform tier alone (global chunks stamped with the Standalone enterprise) for the pre-fetch and `POST /knowledge/search`; `kb_qa`, the runbook dedup and the knowledge-base question lookup refuse or skip instead.
+With no usable enterprise the filter is the platform tier alone (global chunks stamped with the Standalone enterprise) for the pre-fetch and `POST /knowledge/search`; `kb_qa` and the report route's runbook dedup refuse, the engine's runbook dedup skips, and the knowledge-base question lookup reports `not_searchable` instead.
 
 `shared_ids` comes from `resolve_shared_kb_ids`, which reads `resource_shares` in SQL. The `owner_id` arm is unshare-proof precisely because it is keyed on the caller, not on a stored team tag; the team arm is omitted when the list is empty (ChromaDB rejects an empty `$in`), collapsing retrieval to `personal ∪ global` — the fail-closed outcome.
 

@@ -230,13 +230,14 @@ def build_kb_scope_filter(
     Standalone sentinel under ``TENANT_PROVIDER=multi``) the filter is the
     platform tier alone — global chunks stamped with the platform value — and
     the owner and shared arms are omitted: the KB pre-fetch and
-    ``POST /knowledge/search`` narrow. ``refuse_unusable`` raises
-    ``RuntimeError`` instead, for the callers whose empty answer is a claim (the
-    report route's runbook dedup and the knowledge-base question lookup): a
-    search that never saw the driver's own runbooks must not answer "nothing
-    similar" (#944). ``kb_qa`` and the engine's runbook dedup check
-    ``usable_tenant_id`` before they ask for a scope: ``kb_qa`` refuses, and
-    the dedup reports that it did not run.
+    ``POST /knowledge/search`` narrow. The callers whose empty answer is a
+    claim — the runbook dedup (report route and engine), the knowledge-base
+    question lookup and ``kb_qa`` — check ``usable_tenant_id`` themselves before
+    they ask for a scope, and refuse, skip or answer "cannot check" (#944).
+    ``refuse_unusable`` is the backstop behind those checks (the report route's
+    service sets it after its own refusal, ``case_retrieval_scope`` under
+    ``raise_on_failure``): it raises ``RuntimeError`` rather than return the
+    platform tier.
 
     A chunk with no ``enterprise_id`` matches no arm, so it is served to no one.
     """
