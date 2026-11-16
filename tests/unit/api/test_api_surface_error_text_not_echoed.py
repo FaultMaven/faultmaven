@@ -165,9 +165,9 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
         "setup_protection_middleware",
         "setup_info",
     ): (
-        "Not a response. Bootstrap-only: `main.py` logs two keys and parks the "
-        "dict in `app.state.protection_info`, which no route, dependency or "
-        "middleware reads into a body."
+        "Not a response. Bootstrap-only: `bootstrap/middleware.setup_middleware` "
+        "logs two keys and keeps the dict nowhere, so no route, dependency or "
+        "middleware reads it into a body."
     ),
     (
         "faultmaven/api/routes/admin_config.py",

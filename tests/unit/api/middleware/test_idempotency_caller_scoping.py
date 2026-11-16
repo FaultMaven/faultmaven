@@ -830,7 +830,7 @@ def test_exclusions_do_not_over_catch_any_real_post_route():
     mint.
 
     Enumerated through ``route_policy._post_route_paths`` rather than by walking
-    ``real_app.routes`` directly: FastAPI >= 0.139 records an ``_IncludedRouter``
+    ``real_app.routes`` directly: FastAPI >= 0.137.0 records an ``_IncludedRouter``
     placeholder instead of copying an included router's routes, so an isinstance
     walk sees ~19 of the ~145 routes served and the vacuity guard below is the
     only thing that would notice (fm#1305). Not ``app.openapi()`` either — that

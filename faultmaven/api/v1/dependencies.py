@@ -224,7 +224,7 @@ async def get_tracer(request: Request):
 # ``get_protection_system`` used to sit here, reading a ``protection_system``
 # slot off the app.
 # Both writers of that slot were on the ``ProtectionSystem`` path, which never ran
-# and is gone (#974); the live path writes ``protection_info`` instead. With no
+# and is gone (#974); the live path keeps no protection object on the app. With no
 # writer left the accessor could only ever raise 503, and no route depended on it.
 
 

@@ -227,7 +227,7 @@ def _schema_routes(app):
     Routes with ``include_in_schema=False`` are deliberately absent from the
     document, so there is nothing to agree or disagree with.
 
-    Flattened, NOT a walk of ``app.routes``: FastAPI 0.139 stopped copying an
+    Flattened, NOT a walk of ``app.routes``: FastAPI 0.137.0 stopped copying an
     included router's routes into it, so on 0.141.1 the flat walk saw 15 of
     144 operations and ``test_served_and_documented_operation_counts_agree``
     reported the app serving a strict SUBSET of its own document — the
@@ -503,7 +503,7 @@ def _served_operations(app):
     registration of a ``(method, path)`` that already exists is the whole
     subject here, and it is only visible as a repeat.
 
-    Through the flattener, not a flat ``app.routes`` walk. FastAPI 0.139 stopped
+    Through the flattener, not a flat ``app.routes`` walk. FastAPI 0.137.0 stopped
     copying an included router's routes into ``app.routes``, so on 0.141.1 the
     flat walk inspected 20 of 144 operations and went on reporting "no
     duplicates" while blind to 86% of the surface. ``iter_served_endpoints``
@@ -732,7 +732,7 @@ def test_served_and_documented_operation_counts_agree(published_app):
 
     # Counted through the FLATTENER, not a flat ``app.routes`` walk.
     #
-    # The difference is a version gate, not a taste. FastAPI 0.139 stopped
+    # The difference is a version gate, not a taste. FastAPI 0.137.0 stopped
     # copying an included router's routes into ``app.routes``; on 0.141.1 the
     # flat walk counts 15 served against 147 documented, so this test reports
     # the document describing a superset of what is served — the reverse of

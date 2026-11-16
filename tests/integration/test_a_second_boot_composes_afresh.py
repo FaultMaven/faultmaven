@@ -109,3 +109,23 @@ def test_every_boot_in_a_process_serves_from_a_working_redis():
             broker.release()
 
     assert answers == [(200, True)] * 3
+
+
+def test_the_container_stays_on_app_state_when_a_boot_ends(monkeypatch):
+    """``di_container`` outlives the lifespan, as it did on ``app.extra`` (#2170).
+
+    Taken off first, so this boot is the one that publishes it: a name already
+    present before composition is never counted as published, so a boot after
+    another would keep it with or without the exemption.
+    """
+    from faultmaven.main import app
+
+    monkeypatch.delattr(app.state, "di_container", raising=False)
+    broker = _RealAppBoot()
+    try:
+        broker.client()
+        composed = app.state.di_container
+    finally:
+        broker.release()
+
+    assert getattr(app.state, "di_container", None) is composed

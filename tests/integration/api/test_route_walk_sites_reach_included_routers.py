@@ -42,7 +42,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.security]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-try:  # FastAPI >= 0.139: the real flattener supplies the app's own contexts
+try:  # FastAPI >= 0.137.2: the real flattener supplies the app's own contexts
     from fastapi.routing import iter_route_contexts as _fastapi_flattener
 except ImportError:  # the pin: the eager copy is flat AND complete
     _fastapi_flattener = None
@@ -283,6 +283,21 @@ def _debug_routes_reports(path: str):
     return sees
 
 
+def _sees_served_path(path: str):
+    """``main._served_path_of`` names ``path``; it refuses (raises) when it sees none."""
+
+    def sees(app):
+        try:
+            return (
+                _call("faultmaven.main", "_served_path_of")(app, _canary_handler)
+                == path
+            )
+        except RuntimeError:
+            return False
+
+    return sees
+
+
 def _call(module_name: str, name: str):
     def call(*args):
         import importlib
@@ -459,12 +474,11 @@ SITES = {
         _api_canary("/debug/canary"),
         _call("faultmaven.api.routes.admin_config", "_debug_endpoints_are_mounted"),
     ),
-    "route-policy lookups (main._paths_served_by)": Site(
-        "faultmaven/main.py::_paths_served_by",
+    "route-policy lookups (main._served_path_of)": Site(
+        "faultmaven/main.py::_served_path_of",
         lambda: _app("/direct"),
         lambda app: [_Context(APIRoute("/pre/canary", _canary_handler))],
-        lambda app: _call("faultmaven.main", "_paths_served_by")(app, _canary_handler)
-        == ["/pre/canary"],
+        _sees_served_path("/pre/canary"),
     ),
     "GET /debug/routes (main.debug_routes)": Site(
         "faultmaven/main.py::debug_routes",
@@ -490,7 +504,7 @@ def test_the_site_reports_a_route_only_the_flattener_can_see(name, monkeypatch):
 
     assert site.sees_canary(app), (
         f"{name} did not report a route that is served but absent from "
-        "app.routes — the shape FastAPI >= 0.139 gives every route reached "
+        "app.routes — the shape FastAPI >= 0.137.0 gives every route reached "
         "through include_router. It is walking app.routes flatly: route it "
         "through faultmaven.api.route_enumeration."
     )

@@ -79,6 +79,8 @@ def test_only_the_flattener_and_route_policy_read_the_route_table():
         "def f(request):\n    for route in request.app.routes:\n        pass\n",
         "class A:\n    def f(self):\n        return len(self.app.routes)\n",
         "table = getattr(app, 'routes', [])\n",
+        "table = getattr(app.router, 'routes')\n",
+        "nested = hasattr(route, 'routes')\n",
     ],
 )
 def test_the_scan_flags_a_direct_read(tmp_path, source):

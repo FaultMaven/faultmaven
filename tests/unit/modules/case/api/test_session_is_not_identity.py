@@ -80,7 +80,7 @@ def _case_routes() -> list[ServedRoute]:
     # describing a served route.
     app = FastAPI()
     app.include_router(case_router, prefix="/api/v1")
-    # Flattened, NOT a walk of ``app.routes``. FastAPI 0.139 stopped copying an
+    # Flattened, NOT a walk of ``app.routes``. FastAPI 0.137.0 stopped copying an
     # included router's routes into ``app.routes`` and records one
     # ``_IncludedRouter`` placeholder instead, so the flat walk saw ZERO of
     # these routes and the floor below fired with "only 0 case routes mounted"

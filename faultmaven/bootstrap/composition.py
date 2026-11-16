@@ -599,6 +599,12 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
 # The value a name held before composition when it held none.
 _ABSENT = object()
 
+# Published by composition and left in place by its teardown. The container is
+# the process's singleton, which its last shutdown resets rather than replaces,
+# so a request served without a lifespan (a test reusing ``main.app``) still
+# finds it, as it did when it lived on ``app.extra`` (#2170).
+_OUTLIVES_DECOMPOSITION = frozenset({"di_container"})
+
 
 def _state_values(app: FastAPI) -> dict[str, Any]:
     return {name: app.state[name] for name in app.state}
@@ -608,13 +614,15 @@ def _published_since(app: FastAPI, before: Mapping[str, Any]) -> dict[str, Any]:
     """What composition published on ``app.state`` since ``before``.
 
     Each name it set, mapped to the value that name held before (``_ABSENT``
-    for a name it added). The one identity diff, read both when composition
-    returns and when it is refused part-way.
+    for a name it added), except those in ``_OUTLIVES_DECOMPOSITION``. The one
+    identity diff, read both when composition returns and when it is refused
+    part-way.
     """
     return {
         name: before.get(name, _ABSENT)
         for name, value in _state_values(app).items()
         if before.get(name, _ABSENT) is not value
+        and name not in _OUTLIVES_DECOMPOSITION
     }
 
 
@@ -712,7 +720,8 @@ async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> N
     what composition published back off ``app.state`` (``published``, as
     :func:`compose_application` returns it), and, last, disposes the database
     engine. ``app.state.di_container`` is the container singleton itself,
-    which its last shutdown resets, and stays.
+    which its last shutdown resets, and stays: ``published`` never names it
+    (``_OUTLIVES_DECOMPOSITION``).
 
     Each step runs whatever the one before it did (:func:`run_teardown`). One
     that raises is logged, so a refusal being undone propagates as itself. One

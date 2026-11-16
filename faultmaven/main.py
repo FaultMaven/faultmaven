@@ -201,32 +201,34 @@ from .api.middleware.route_policy import declare_route_policy
 from .modules.case.api.routes.conversation import submit_turn
 
 
-def _paths_served_by(served_app, *handlers) -> list[str]:
-    """The served path of each route ``served_app`` answers with one of ``handlers``."""
-    return [
+def _served_path_of(served_app, handler) -> str:
+    """The served path of the one route ``served_app`` answers with ``handler``.
+
+    Refuses anything but exactly one, per handler: declaring nothing would
+    leave that route replayable from the middleware's cache with nothing to say
+    so, so composition stops instead.
+    """
+    paths = [
         served.path
         for served in iter_served_endpoints(served_app)
-        if served.endpoint in handlers
+        if served.endpoint is handler
     ]
+    if len(paths) != 1:
+        raise RuntimeError(
+            f"expected exactly one route served by {handler.__qualname__}, "
+            f"found {paths}"
+        )
+    return paths[0]
 
 
-_TURN_ROUTE_PATHS = _paths_served_by(app, submit_turn)
-if len(_TURN_ROUTE_PATHS) != 1:
-    # Declaring nothing would leave the turn route replayable from the
-    # middleware's cache with nothing to say so; refuse to compose instead.
-    raise RuntimeError(
-        f"expected exactly one turn route on the case router, found "
-        f"{_TURN_ROUTE_PATHS}"
-    )
+_TURN_ROUTE_PATHS = [_served_path_of(app, submit_turn)]
 declare_route_policy(app, *_TURN_ROUTE_PATHS, never_replayed=True)
 
 # Case search answers many cases' content and declares none, so no case delete
 # could reach its cached answer; no client keys it (#2624).
 from .modules.case.api.routes.cases import search_cases
 
-_SEARCH_ROUTE_PATHS = _paths_served_by(app, search_cases)
-if len(_SEARCH_ROUTE_PATHS) != 1:
-    raise RuntimeError(f"expected exactly one case search route: {_SEARCH_ROUTE_PATHS}")
+_SEARCH_ROUTE_PATHS = [_served_path_of(app, search_cases)]
 declare_route_policy(app, *_SEARCH_ROUTE_PATHS, never_replayed=True)
 
 app.include_router(knowledge_router, prefix="/api/v1")
@@ -243,12 +245,10 @@ logger.info("✅ Document conversion endpoints added")
 from .modules.knowledge.api.conversion_routes import convert_document
 from .modules.knowledge.api.routes import upload_document
 
-_KB_RECEIPT_ROUTE_PATHS = _paths_served_by(app, upload_document, convert_document)
-if len(_KB_RECEIPT_ROUTE_PATHS) != 2:
-    raise RuntimeError(
-        f"expected the KB upload and conversion routes, found "
-        f"{_KB_RECEIPT_ROUTE_PATHS}"
-    )
+_KB_RECEIPT_ROUTE_PATHS = [
+    _served_path_of(app, upload_document),
+    _served_path_of(app, convert_document),
+]
 declare_route_policy(app, *_KB_RECEIPT_ROUTE_PATHS, never_replayed=True)
 
 app.include_router(report_router, prefix="/api/v1")

@@ -118,12 +118,12 @@ def setup_protection_middleware(
     so the three cannot drift.
 
     The composition root re-mutes the raise for exactly the same set of boxes:
-    ``main.setup_middleware`` catches it and, on a development environment that
-    is not a cloud deployment, logs an ungated warning and continues with an
-    unprotected app rather than refusing to boot. Staging, production, any
-    unrecognised value and any cloud deployment propagate. Read the guarantee
-    as "every deployed environment refuses", not "nothing ever boots
-    unprotected".
+    ``bootstrap/middleware.setup_middleware`` catches it and, on a development
+    environment that is not a cloud deployment, logs an ungated warning and
+    continues with an unprotected app rather than refusing to boot. Staging,
+    production, any unrecognised value and any cloud deployment propagate.
+    Read the guarantee as "every deployed environment refuses", not "nothing
+    ever boots unprotected".
     """
     profile = resolve_protection_profile(
         environment, is_cloud_deployment=is_cloud_deployment
@@ -313,9 +313,9 @@ def setup_protection_middleware(
         # Safe in place, and allowlisted as such in
         # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``: this
         # runs once during application bootstrap, and ``setup_info`` is
-        # returned to ``main.py``, which logs two of its keys and parks the
-        # dict in ``app.state.protection_info``. No route, dependency or
-        # middleware reads that key into a body — ``GET /admin/config/status``
+        # returned to ``bootstrap/middleware.setup_middleware``, which logs two
+        # of its keys and keeps the dict nowhere. No route, dependency or
+        # middleware reads it into a body — ``GET /admin/config/status``
         # reports the installed posture by inspecting the live middleware
         # stack instead. (The sibling handler above writes the same key and
         # then re-raises, so its dict never reaches a caller either.)

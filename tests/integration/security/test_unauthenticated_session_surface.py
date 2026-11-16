@@ -480,7 +480,7 @@ def _ungated_operations(app) -> list[str]:
     """Every served operation whose resolved tree lacks ``require_authentication``.
 
     Through the flattener: the router arrives by ``include_router``, which on
-    FastAPI >= 0.139 leaves ``app.routes`` holding a placeholder instead of the
+    FastAPI >= 0.137.0 leaves ``app.routes`` holding a placeholder instead of the
     routes, and a route's own ``dependant`` there omits what the include added.
     """
     return sorted(
