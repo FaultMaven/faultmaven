@@ -17,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from faultmaven.bootstrap.kb_pack import KbPack
+
 pytestmark = pytest.mark.unit
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "check_kb_pack.py"
@@ -36,8 +38,10 @@ def check(capsys):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    def _check(pack=None):
-        code = module.main(pack, pack.parent / "src") if pack else module.main()
+    def _check(pack=None, src=None):
+        if pack is None:
+            return module.main(None, src), capsys.readouterr().out
+        code = module.main(pack, src or pack.parent / "src")
         return code, capsys.readouterr().out
 
     return _check
@@ -236,6 +240,75 @@ def test_malformed_chunk_text_is_reported_not_raised(check, tmp_path, text):
     code, out = check(_edit(_build(tmp_path, _vectors()), edit))
     assert code == 1
     assert "global/net/beta.md chunk 1: text is not a UTF-8 string" in out
+
+
+@pytest.mark.parametrize(
+    "indices", [[1, 0, 2], [0, 0, 2]], ids=["swapped", "duplicated"]
+)
+def test_chunk_index_not_in_order_fails(check, tmp_path, indices):
+    """Startup refuses such a runbook (``kb_init``); the gate names it (#2245)."""
+
+    def edit(manifest):
+        for chunk, ci in zip(manifest["runbooks"][1]["chunks"], indices):
+            chunk["chunk_index"] = ci
+
+    code, out = check(_edit(_build(tmp_path, _vectors()), edit))
+    assert code == 1
+    assert f"global/net/beta.md: chunk_index sequence {indices} is not 0..2" in out
+
+
+def test_source_runbook_deleted_fails(check, tmp_path):
+    """The vendored pack against its sources less one runbook (#2246)."""
+    src = tmp_path / "src"
+    shutil.copytree(SCRIPT.parents[1] / "resources" / "knowledge" / "runbooks", src)
+    (src / "application" / "argocd-sync-failure.md").unlink()
+    code, out = check(src=src)
+    assert code == 1
+    assert (
+        "pack runbook not in sources (deleted, or edited without a rebuild): "
+        "global/application/argocd-sync-failure.md"
+    ) in out
+
+
+def _vectors_as(pack: Path, vectors: np.ndarray) -> Path:
+    np.savez(pack / "vectors.npz", vectors=vectors)
+    return pack
+
+
+@pytest.mark.parametrize(
+    "corrupt, expected",
+    [
+        (
+            lambda p: _vectors_as(p, np.full((5, 1024), "a")),
+            "vectors dtype is <U1, not float32",
+        ),
+        (
+            lambda p: _vectors_as(p, _vectors().astype(np.float64)),
+            "vectors dtype is float64, not float32",
+        ),
+        (
+            lambda p: _edit(p, lambda m: m["runbooks"][1].update(content_hash=[])),
+            "runbook 'kb_beta' has a content_hash of type list",
+        ),
+        (
+            lambda p: _edit(p, lambda m: m["runbooks"][1].update(content_hash={})),
+            "runbook 'kb_beta' has a content_hash of type dict",
+        ),
+    ],
+    ids=["str-vectors", "float64-vectors", "list-hash", "dict-hash"],
+)
+def test_wrongly_typed_value_is_refused_by_the_loader(
+    check, tmp_path, caplog, corrupt, expected
+):
+    """``KbPack.load`` refuses the pack, naming the value; the gate exits 1 (#2248)."""
+    pack = corrupt(_build(tmp_path, _vectors()))
+    with caplog.at_level("ERROR", logger="faultmaven.bootstrap.kb_pack"):
+        assert KbPack.load(pack) is None
+        code, out = check(pack)
+    assert code == 1
+    assert "no valid KB pack" in out
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 2 and all(expected in e for e in errors), errors
 
 
 def test_vendored_pack_passes(check):

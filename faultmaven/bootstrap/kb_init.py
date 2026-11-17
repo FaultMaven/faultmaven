@@ -424,6 +424,7 @@ async def _ingest_pack_runbook(
     repository wired, a team share the row lacks) is a change whatever the
     hash (#2386). A skipped row has the shares its read found stale deleted.
     """
+    from faultmaven.bootstrap.kb_pack import chunks_in_order
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         PACK_CONTENT_HASH_KEY,
@@ -449,8 +450,8 @@ async def _ingest_pack_runbook(
     #     duplicate indices — those ids would silently misalign from the manifest
     #     the pack builder wrote. Require canonical ``0..n-1`` order so a malformed
     #     pack fails loudly instead of misaligning ids.
-    declared_indices = [c.chunk_index for c in runbook.chunks]
-    if declared_indices != list(range(len(declared_indices))):
+    if not chunks_in_order(runbook.chunks):
+        declared_indices = [c.chunk_index for c in runbook.chunks]
         raise RuntimeError(
             f"KB pack chunk ordering invalid for {runbook.relpath}: chunk_index "
             f"sequence {declared_indices} is not contiguous 0..{len(declared_indices) - 1} "

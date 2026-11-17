@@ -364,7 +364,13 @@ async def test_bootstrap_fails_runbook_on_noncanonical_chunk_indices(
     assert len(result.failed) == 1
     failed_file, reason = result.failed[0]
     assert failed_file == "global/example.md"
-    assert "chunk ordering invalid" in reason
+    # The refusal's text, pinned whole: it now comes from the predicate the
+    # pack gate shares (#2245).
+    assert reason == (
+        "RuntimeError: KB pack chunk ordering invalid for global/example.md: "
+        f"chunk_index sequence {list(bad_indices)} is not contiguous 0..2 in "
+        "list order — the pack is malformed (rebuild required)."
+    )
     knowledge_service.ingest_runbook.assert_not_awaited()
 
 

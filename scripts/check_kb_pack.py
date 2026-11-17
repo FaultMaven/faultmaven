@@ -7,11 +7,13 @@ is the compiled artifact (built by faultmaven-kb-toolkit's ``kb-build-pack``).
 This check verifies three things:
 
 1. **Integrity** — the committed pack loads, every runbook's stored content hash
-   matches its bundled markdown, and every chunk has a full-dimension vector.
-2. **Freshness** — every source runbook under ``resources/knowledge/runbooks/`` is
-   represented in the pack (by content hash). This catches a runbook edited or
-   added without rebuilding the pack — i.e. a contributor's PR that changed a
-   ``.md`` but not the pack.
+   matches its bundled markdown, its chunks' ``chunk_index`` run ``0..n-1`` in
+   list order (as startup requires), and every chunk has a full-dimension vector.
+2. **Freshness** — both directions, by content hash: every source runbook under
+   ``resources/knowledge/runbooks/`` is in the pack, and every pack runbook is a
+   source runbook. This catches a runbook edited, added or deleted without
+   rebuilding the pack — i.e. a contributor's PR that changed a ``.md`` but not
+   the pack.
 3. **Pairing** (#1286) — each chunk's text is the text its vector was embedded
    from: ``text_sha256`` and ``pair_sha256`` (the producer's recipe) match the
    chunk's text and ``vectors[vector_row]``, the rows run ``0..n-1`` in manifest
@@ -39,6 +41,7 @@ from faultmaven.bootstrap.kb_pack import (  # noqa: E402
     VECTORS_NPZ,
     KbPack,
     baseline_pack_dir,
+    chunks_in_order,
 )
 
 RUNBOOKS_SRC = PROJECT_ROOT / "resources" / "knowledge" / "runbooks"
@@ -123,6 +126,12 @@ def main(pack_dir: Optional[Path] = None, runbooks_src: Optional[Path] = None) -
             problems.append(f"{rb.relpath}: content_hash != sha256(bundled md)")
         if not rb.chunks:
             problems.append(f"{rb.relpath}: 0 chunks")
+        if not chunks_in_order(rb.chunks):
+            indices = [c.chunk_index for c in rb.chunks]
+            problems.append(
+                f"{rb.relpath}: chunk_index sequence {indices} is not "
+                f"0..{len(indices) - 1}"
+            )
         for c in rb.chunks:
             if len(c.embedding) != EMBEDDING_DIM:
                 problems.append(
@@ -131,16 +140,27 @@ def main(pack_dir: Optional[Path] = None, runbooks_src: Optional[Path] = None) -
                 )
                 break
 
-    # 2) Freshness — every source runbook is in the pack. Skip non-runbook
-    # markdown (README etc.): runbooks start with YAML frontmatter, docs do not.
+    # 2) Freshness — every source runbook is in the pack, and every pack
+    # runbook is a source runbook. Skip non-runbook markdown (README etc.):
+    # runbooks start with YAML frontmatter, docs do not. Pack relpaths carry a
+    # scope prefix (``global/...``), so the match is by hash, not path.
     stale = []
     if runbooks_src.exists():
+        source_hashes = set()
         for md in sorted(runbooks_src.rglob("*.md")):
             content = md.read_text(encoding="utf-8")
             if not content.lstrip().startswith("---"):
                 continue
-            if hashlib.sha256(content.encode("utf-8")).hexdigest() not in pack_hashes:
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            source_hashes.add(digest)
+            if digest not in pack_hashes:
                 stale.append(str(md.relative_to(runbooks_src)))
+        for rb in pack.runbooks:
+            if rb.content_hash not in source_hashes:
+                problems.append(
+                    "pack runbook not in sources (deleted, or edited without a "
+                    f"rebuild): {rb.relpath}"
+                )
     for s in stale:
         problems.append(f"source runbook not in pack (rebuild needed): {s}")
 

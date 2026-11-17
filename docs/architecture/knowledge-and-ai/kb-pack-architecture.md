@@ -161,6 +161,11 @@ silent-corruption failure modes are guarded rather than left to chance:
   hashes and row order the CI gate checks (below). The gate checks only that pack:
   a pack read from `KB_PACK_DIR` is not checked at load.
 
+- **Value types** (`KbPack.load`, #2248). A `vectors` array whose dtype is not
+  `float32`, or a runbook whose `content_hash` is not a string, logs an `ERROR`
+  naming the dtype or the runbook and type, and **refuses the pack whole**, as
+  the guards above do.
+
 ### Per-Cause `causes` record (toolkit-emitted, ignored by the app)
 
 Each runbook entry also ships a **`causes`** array — one record per `### Cause`
@@ -240,6 +245,9 @@ copy and no drift.) The app *consumes* a vendored baseline snapshot of the pack.
   the committed pack is structurally valid **and in sync with the sources** under
   `resources/knowledge/runbooks/` — so a PR that edits a runbook without rebuilding
   the pack fails CI. (`kb-build-pack --check` does the same on the toolkit side.)
+  It also fails on a pack runbook that matches no source by content hash (deleted,
+  or edited without a rebuild), and on a runbook whose `chunk_index` values do not
+  run `0..n-1` in list order (which startup refuses).
   It also checks that each chunk's text is the text its vector was embedded from
   (#1286): per chunk, `text_sha256` (of the text) and `pair_sha256` (of that hash
   plus the `vectors[vector_row]` bytes, little-endian float32); in the manifest,
