@@ -535,7 +535,9 @@ def test_older_attempts_are_counted_not_dropped():
         dict(cause=False, problem=True),
         # MITIGATION, its attempt dated after the only relief: no ask prints,
         # so the gate's refusal is not read (#2811 S2b-1a).
-        dict(stage="mitigation", problem=True, mitigated=True),
+        dict(stage="mitigation", problem=True, mitigated=dict(attempt=6)),
+        # TREATMENT, a verified mitigation's relief holding: no ask prints.
+        dict(problem=True, mitigated=dict(attempt=4, relief=5), verified=True),
     ],
 )
 def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
@@ -545,10 +547,11 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
     )
 
     shape = {"stage": "treatment", **shape}
-    dated = shape.pop("mitigated", False)
+    dated, verified = shape.pop("mitigated", None), shape.pop("verified", False)
     case = _case(**shape)
     if dated:
-        mitigated(case, attempt=6)
+        mitigated(case, **dated)
+        case.progress.mitigation.verified = verified
         assert block_module._shown(case), "premise: the block is shown"
     # The prompt assembly's record, folded before the count (#2811 S2b-1a).
     fold = NarrationFold(case)
