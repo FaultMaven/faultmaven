@@ -278,6 +278,9 @@ def _outcome() -> CaseOutcome:
                 ConfirmationGap.PROBLEM_UNRECHECKED,
                 ConfirmationGap.NO_SYMPTOM_ROW,
             ],
+            # Shape 3 (#2811 S2b-1a).
+            off_cause_turn=8,
+            unrechecked_row_ids=["ev_s"],
         ),
         unbound_rechecks=[
             UnboundRecheck(evidence_id="ev_3", observed_turn=7, uncited=True)

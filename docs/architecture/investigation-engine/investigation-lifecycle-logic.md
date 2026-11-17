@@ -1132,10 +1132,12 @@ written*, as amended by #2811, ruled 2026-11-15):
   text an id names through one accessor with no predicate, `content(id)`, with
   the selected ids the record holds for it (stage S2b). The first is the
   `<fix_verification>` block (S2b-1a, `narration.fix_verification`): all but
-  its needs lines rendered from the record, the identity fields, `content`
-  (proposed actions) and the window verdicts ruling Q1 (a) keeps fresh until
-  S3 (`FixVerificationFresh`). A fold or fresh read that raises replaces the
-  block with one declared line, counted on
+  its needs lines rendered from the record, the identity fields, `content(id)`
+  (`content_by_id`, proposed actions) and the window verdicts ruling Q1 (a)
+  keeps fresh until S3 (`FixVerificationFresh`). The record is folded at most
+  once per prompt assembly (`NarrationFold`), and only where the block is
+  shown. A fold, fresh read or render that raises replaces the block with one
+  declared line, counted once per assembly on
   `case_outcome_write_failures_total{at="narration"}`.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound

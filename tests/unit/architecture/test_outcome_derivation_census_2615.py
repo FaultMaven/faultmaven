@@ -36,9 +36,10 @@ Module level is ``<module>``. Three tables:
 * ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
   offer record's three writers (``open_offer``, ``answer_offer``,
   ``lapse_offers``), the transitions' two executors, and the entries that
-  open, answer or close through them. Each row's note says what that caller
-  opens, answers or closes. An entry referenced other than by a call fails, so
-  every way in stays visible here.
+  open, answer or close through them; and the narrators' one accessor of a
+  case's text, ``content_by_id`` (#2811). Each row's note says what that
+  caller opens, answers, closes or reads. An entry referenced other than by a
+  call fails, so every way in stays visible here.
 
 Also counted: a call of the builtin ``getattr(x, "name")`` whose name is a
 constant string, as a reference to that name (for an entry, one that is not a
@@ -187,9 +188,9 @@ FIELDS: dict[str, tuple[str, str]] = {
     "closure_reason": (_CASE + "domain/models/case.py", "Case"),
 }
 
-#: The offer record's writers, the transitions' executors, and the entries that
-#: open, answer or close through them (#2615, *Closure on demand*), by the
-#: module that defines each.
+#: The offer record's writers, the transitions' executors, the entries that
+#: open, answer or close through them (#2615, *Closure on demand*), and the
+#: narrators' text accessor (#2811), by the module that defines each.
 ENTRIES: dict[str, str] = {
     "_execute_closed_transition": _TT,
     "_execute_resolved_transition": _TT,
@@ -200,6 +201,10 @@ ENTRIES: dict[str, str] = {
     "open_offer": _OFFERS,
     "answer_offer": _OFFERS,
     "lapse_offers": _OFFERS,
+    # #2811 S2b-1a: not a closure entry. The narrators' one accessor of a
+    # case's immutable text, by id (ruling 5 of 2026-11-15): every caller is
+    # enumerated, so a narrator reading the case through it is seen here.
+    "content_by_id": _INV + "narration/fix_verification.py",
 }
 
 #: (path, qualname) -> {derivation: references}.
@@ -383,6 +388,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_resolution"): {
         "assess_resolution_readiness": 1,
         "confirmation_stamp_rows": 1,
+        "off_cause_attempt": 1,
         "resolution_record_lines": 1,
         "symptom_elimination_rows": 1,
     },
@@ -404,13 +410,15 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt. The fix-verification block renders from the record
-    # (#2811 S2b-1a, ``narration.fix_verification``): its fold, and the one
-    # window list its fresh verdicts (ruling Q1 (a)) and the held need read,
-    # until stage S3.
+    # (#2811 S2b-1a, ``narration.fix_verification``): the assembly's one fold,
+    # and the one window list its fresh verdicts (ruling Q1 (a)) and the held
+    # need read, until stage S3.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
+    (_CB + "fix_verification_block.py", "NarrationFold.outcome"): {
+        "narration_outcome": 1
+    },
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
-        "fix_windows": 1,
-        "narration_outcome": 1,
+        "fix_windows": 1
     },
     # The API, the knowledge harvest and the report.
     (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},
@@ -459,9 +467,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
         "solution_verified": 1,
         "verified": 1,
     },
-    # #2811 S2b-1a: the stored verdict ``assembly`` prints, kept fresh in the
-    # block's ``FixVerificationFresh`` by ruling Q1 (a) until stage S3.
-    (_CB + "fix_verification_block.py", "_fresh"): {"verified": 1},
     (_INV + "prompts/templates/fallback.py", "_fallback_body"): {
         "closure_reason": 1,
         "solution_verified": 1,
@@ -523,6 +528,12 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
 
 #: (path, qualname) -> ({entry: calls}, what the caller answers or closes).
 ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
+    (_CB + "fix_verification_block.py", "build_fix_verification_block"): (
+        {"content_by_id": 1},
+        "binds the narration's text accessor to the case for the "
+        "fix-verification renderer, which reads an action's description by "
+        "id (#2811 S2b-1a)",
+    ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl._answer"): (
         {"answer_offer": 1},
         "answers the open resolve or close offer declined or withdrawn, on a "

@@ -1880,13 +1880,12 @@ def latest_fix_window(case: "Case") -> FixWindow:
     return fix_windows(case)[-1]
 
 
-def latest_decided_fix_window(case: "Case", windows=None) -> FixWindow | None:
+def latest_decided_fix_window(case: "Case") -> FixWindow | None:
     """The latest window with a verdict (SUCCEEDED or FAILED), or None. A
     newer window whose fix has not been observed yet does not erase an older
     window's failure: "still 503, so I'm putting pgbouncer in" records the
-    failure and the next fix in one turn. ``windows`` is the caller's
-    ``fix_windows(case)``."""
-    for window in reversed(fix_windows(case) if windows is None else windows):
+    failure and the next fix in one turn."""
+    for window in reversed(fix_windows(case)):
         if window.state != FIX_UNKNOWN:
             return window
     return None

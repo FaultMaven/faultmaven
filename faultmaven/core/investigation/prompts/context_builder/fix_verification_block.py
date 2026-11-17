@@ -22,12 +22,14 @@ hold (#2427, turn 11). It shows, one line each:
   resolution legs (#2100).
 
 All but the needs lines are rendered from the case outcome record by
-``narration.fix_verification`` (#2811 S2b-1a): this call site folds the record
-(``narration_outcome``) and computes the window verdicts ruling Q1 (a) keeps
-fresh (``FixVerificationFresh``) inside one guard. If either raises, the
-block is the one declared line ``OMITTED``, the failure is counted once on
-``case_outcome_write_failures_total{at="narration"}`` and logged, and the
-rest of the prompt is unchanged. The needs lines, the held need's mark and
+``narration.fix_verification`` (#2811 S2b-1a). Where ``main`` showed a block,
+this call site asks the prompt assembly's ``NarrationFold`` for the record
+(``narration_outcome``, folded at most once per assembly), then computes the
+window verdicts ruling Q1 (a) keeps fresh (``FixVerificationFresh``) and
+renders, inside one guard. If any of it raises, the block is the one declared
+line ``OMITTED``, the failure is logged and counted once per assembly on
+``case_outcome_write_failures_total{at="narration"}``, and the rest of the
+prompt is unchanged. The needs lines, the held need's mark and
 ``DECLINE_STILL_BINDS`` still read the case (stage S2b-1b).
 
 Informational: no gate reads it. It cites ids and never repeats the
@@ -44,12 +46,13 @@ the long post-fix cases that need this block bring.
 """
 
 import logging
-from functools import partial
+from typing import Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
-    SUBJECT_PROBLEM,
+    _dated_fixes,
     fix_windows,
+    mitigation_attempt_turn,
     pending_symptom_check,
     subject_index,
 )
@@ -68,10 +71,10 @@ from faultmaven.core.investigation.narration.fix_verification import (
     FixFresh,
     FixVerificationFresh,
     ProblemLeg,
-    content,
+    content_by_id,
     render_fix_verification,
 )
-from faultmaven.core.investigation.outcome import narration_outcome
+from faultmaven.core.investigation.outcome import _problem_rows, narration_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
     declined_resolve_entry,
@@ -80,7 +83,6 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseOutcome,
     CaseState,
-    EvidenceCategory,
     FixWindowState,
     InvestigationStage,
     NeedPurpose,
@@ -89,7 +91,6 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .budget import TokenBudget
-from .causal_graph_block import fix_confirmed
 from .history import _truncate_request_text
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,56 @@ FIX_VERIFICATION_MAX_TOKENS = 600
 #: The outstanding needs shown.
 MAX_NEEDS = 5
 
-_SHOWN_IN = (InvestigationStage.TREATMENT, InvestigationStage.MITIGATION)
+_OMITTED_BLOCK = "\n".join([OPEN_TAG, OMITTED, CLOSE_TAG])
+
+
+class NarrationFold:
+    """One prompt assembly's narration fold (#2811 S2b-1a): the record
+    ``narration_outcome`` folds, computed at most once, on the first request,
+    and cached with its failure. ``get_prompt_for_case`` makes one per
+    assembly, so the context it builds up to three times folds once and a
+    failure is logged and counted once (``fail``)."""
+
+    def __init__(self, case: Case) -> None:
+        self._case = case
+        self._outcome: Optional[CaseOutcome] = None
+        self._asked = False
+        self._failed = False
+
+    def outcome(self) -> Optional[CaseOutcome]:
+        """The record, or None when the fold raised."""
+        if not self._asked:
+            self._asked = True
+            try:
+                self._outcome = narration_outcome(self._case)
+            except Exception:  # noqa: BLE001 — only the block is lost
+                self.fail()
+        return self._outcome
+
+    def fail(self) -> None:
+        """Log the exception being handled and count it, once per assembly;
+        a metrics error is logged and swallowed."""
+        if self._failed:
+            return
+        self._failed = True
+        logger.exception(
+            "Case %s: the fix-verification block was not rendered (#2811)",
+            getattr(self._case, "case_id", None),
+        )
+        try:
+            case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
+        except Exception:  # noqa: BLE001 — the block is omitted either way
+            logger.exception("The narration failure was not counted (#2811)")
+
+
+def _shown(case: Case) -> bool:
+    """Where ``main`` shows the block: in TREATMENT, and in MITIGATION once a
+    SOLUTION or the mitigation's attempt is dated."""
+    stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
+    return stage == InvestigationStage.TREATMENT or (
+        stage == InvestigationStage.MITIGATION
+        and (bool(_dated_fixes(case)) or mitigation_attempt_turn(case) is not None)
+    )
 
 
 def _need_lines(case: Case, held) -> list[str]:
@@ -161,19 +211,19 @@ def _held_mark(case: Case, need) -> str:
 
 def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
     """The verdicts ruling Q1 (a) keeps read fresh until stage S3, by today's
-    deciders: each dated attempt's window (joined by action id), what the
-    latest window says of the problem, ``fix_confirmed``, the stored
-    ``mitigation.verified`` and whether the gate would refuse it. A cause
-    re-check is owed only where readiness would ask for one: in the latest
-    window, while the legs do not stand."""
+    deciders: each dated attempt's window, joined by action id at the
+    action's current execution turn; what the latest window says of the
+    problem; and whether the gate would refuse ``mitigation_verified``. A
+    cause re-check is owed only where readiness would ask for one: in the
+    latest window, while the legs do not stand."""
     latest = windows[-1]
     legs = outcome.resolution.cause_row_ids and outcome.resolution.problem_row_ids
     by_turn = {w.fix_turn: w for w in windows if w.fix_turn is not None}
     fixes = {}
-    for attempt in outcome.attempts:
-        window = by_turn.get(attempt.accepted_in_turn)
-        if attempt.action_id is not None and window is not None:
-            fixes[attempt.action_id] = FixFresh(
+    for action in _dated_fixes(case):
+        window = by_turn.get(action.accepted_in_turn)
+        if window is not None:
+            fixes[action.action_id] = FixFresh(
                 state=FixWindowState(window.state),
                 failure_turn=window.failure_turn,
                 relief_turn=window.relief_turn,
@@ -187,53 +237,47 @@ def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
         leg, turn = ProblemLeg.FAILED, latest.failure_turn
     elif _relief_without_cause_recheck(case, latest, subjects):
         leg, turn = ProblemLeg.RELIEF, latest.relief_turn
-        gone = tuple(
-            e.evidence_id
-            for e in subjects.rows.values()
-            if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
-            and subjects.subject(e) == SUBJECT_PROBLEM
-            and latest.holds(subjects.observed(e))
-        )
-    mitigation = case.progress.mitigation
+        gone = tuple(_problem_rows(latest, subjects))
     return FixVerificationFresh(
         fixes=fixes,
         problem_leg=leg,
         problem_leg_turn=turn,
         gone_row_ids=gone,
-        fix_confirmed=fix_confirmed(case, windows),
-        mitigation_verified=bool(mitigation is not None and mitigation.verified),
         mitigation_verify_refused=(
             outcome.mitigation is None or _mitigation_verify_refusal(case) is not None
         ),
     )
 
 
-def build_fix_verification_block(case: Case) -> str:
+def build_fix_verification_block(
+    case: Case, fold: Optional[NarrationFold] = None
+) -> str:
     """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION or
     the mitigation's attempt is dated; with only the mitigation dated, its
-    lines alone (#2100). One ``SubjectIndex`` and one ``fix_windows`` list
-    serve the fresh verdicts and the held need (``pending_symptom_check``),
-    beside the record's fold (``narration_outcome``); a held need's mark
-    reads the resolve decline (``declined_resolve_entry``, through the
-    closure verdict), which builds its own."""
-    stage = case.current_stage if case.state == CaseState.INVESTIGATING else None
-    if stage not in _SHOWN_IN:
+    lines alone (#2100). ``fold`` is the prompt assembly's record (a fresh
+    one per build without it). One ``SubjectIndex`` and one ``fix_windows``
+    list serve the fresh verdicts and the held need (``pending_symptom_check``);
+    a held need's mark reads the resolve decline (``declined_resolve_entry``,
+    through the closure verdict), which builds its own."""
+    if not _shown(case):
         return ""
+    fold = NarrationFold(case) if fold is None else fold
     try:
-        outcome = narration_outcome(case)
+        outcome = fold.outcome()
+        if outcome is None:
+            return _OMITTED_BLOCK
         subjects = subject_index(case)
         windows = fix_windows(case, subjects)
         fresh = _fresh(case, outcome, subjects, windows)
-    except Exception:  # noqa: BLE001 — only this block is lost (#2811)
-        logger.exception(
-            "Case %s: the fix-verification block was not rendered (#2811)",
-            getattr(case, "case_id", None),
+        head = render_fix_verification(
+            outcome,
+            CaseIdentity.of(case),
+            lambda item_id: content_by_id(case, item_id),
+            fresh,
         )
-        case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
-        return "\n".join([OPEN_TAG, OMITTED, CLOSE_TAG])
-    head = render_fix_verification(
-        outcome, CaseIdentity.of(case), partial(content, case), fresh
-    )
+    except Exception:  # noqa: BLE001 — only this block is lost (#2811)
+        fold.fail()
+        return _OMITTED_BLOCK
     if head is None:
         return ""
     needs = []

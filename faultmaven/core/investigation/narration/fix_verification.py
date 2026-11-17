@@ -3,7 +3,7 @@
 
 ``render_fix_verification`` is pure: it reads the record (``CaseOutcome``,
 ``narration_outcome``), the case's identity (``CaseIdentity``), an action's
-text by id (``content``) and the window verdicts ruling Q1 (a) keeps read
+text by id (``content_by_id``, ruling 5's ``content(id)``) and the window verdicts ruling Q1 (a) keeps read
 fresh until the deciders switch (stage S3), which the call site computes with
 today's deciders and passes in as ``FixVerificationFresh``. It renders every
 line of the block but the outstanding symptom-verification needs, the held
@@ -62,7 +62,7 @@ class CaseIdentity(NamedTuple):
         return cls(case.case_id, case.state, case.current_stage, case.current_turn)
 
 
-def content(case, item_id: str) -> Optional[str]:
+def content_by_id(case, item_id: str) -> Optional[str]:
     """The immutable text of a proposed action, by id (ruling 5 of
     2026-11-15): its description, or None when no action has the id."""
     for action in case.proposed_actions or []:
@@ -103,14 +103,13 @@ class FixVerificationFresh:
     flags and codes only."""
 
     fixes: Mapping[str, FixFresh] = field(default_factory=dict)
-    """Each dated attempt's window, by action id; absent with no window."""
+    """Each dated attempt's window, by action id, read at the action's
+    current execution turn; absent with no window."""
     problem_leg: ProblemLeg = ProblemLeg.PENDING
     problem_leg_turn: Optional[int] = None
     """The failure turn (FAILED) or the relief turn (RELIEF)."""
     gone_row_ids: tuple[str, ...] = ()
     """RELIEF's problem-gone rows in the latest window."""
-    fix_confirmed: bool = False
-    mitigation_verified: bool = False
     mitigation_verify_refused: bool = True
 
 

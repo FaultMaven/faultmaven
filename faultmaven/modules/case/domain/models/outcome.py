@@ -379,16 +379,16 @@ class ResolutionOutcome(BaseModel):
     off_cause_turn: Optional[int] = Field(
         default=None,
         description=(
-            "The latest attempt's turn when it acted on no cause now "
-            "identified, as readiness read it (``off_cause_attempt``), or "
-            "None (shape 3)"
+            "The latest attempt's turn when no fix of the cause now "
+            "identified can confirm it (``off_cause_attempt``), whatever "
+            "readiness answered, or None (shape 3)"
         ),
     )
     unrechecked_row_ids: List[str] = Field(
         default_factory=list,
         description=(
-            "The rows that showed the problem which no problem-leg row "
-            "re-checks (shape 3)"
+            "With the cause leg standing, the rows that showed the problem "
+            "which no problem-leg row re-checks; empty without it (shape 3)"
         ),
     )
     confirmed_row_ids: List[str] = Field(

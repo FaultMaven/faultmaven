@@ -16,6 +16,10 @@ import inspect
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.narration.fix_verification import (
+    CLOSE_TAG,
+    OPEN_TAG,
+)
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     _allocate_sections,
 )
@@ -24,9 +28,8 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
     TokenBudget,
 )
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
-    CLOSE_TAG,
     FIX_VERIFICATION_MAX_TOKENS,
-    OPEN_TAG,
+    NarrationFold,
     build_fix_verification_block,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
@@ -532,10 +535,9 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
     )
 
     case = _case("treatment", **shape)
-    # The record's fold reads its own (#2811 S2b-1a): the block's reads are
-    # counted beside it.
-    outcome = block_module.narration_outcome(case)
-    monkeypatch.setattr(block_module, "narration_outcome", lambda _case: outcome)
+    # The prompt assembly's record, folded before the count (#2811 S2b-1a).
+    fold = NarrationFold(case)
+    assert fold.outcome() is not None
     calls = {"subject_index": 0, "fix_windows": 0}
     for name in calls:
         real = getattr(cause_assurance, name)
@@ -547,7 +549,7 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
         for module in (cause_assurance, block_module, terminal_transitions):
             if hasattr(module, name):
                 monkeypatch.setattr(module, name, counted)
-    build_fix_verification_block(case)
+    build_fix_verification_block(case, fold)
     assert calls == {"subject_index": 1, "fix_windows": 1}
 
 

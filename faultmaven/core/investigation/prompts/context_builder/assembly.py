@@ -56,6 +56,7 @@ from .evidence import (
 )
 from .evidence_needs import _build_evidence_needs_block
 from .fix_verification_block import (
+    NarrationFold,
     build_fix_verification_block,
     cap_fix_verification_block,
 )
@@ -599,6 +600,7 @@ def build_investigation_context(
     given_tools: GivenTools = NO_TOOLS,
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
@@ -612,6 +614,11 @@ def build_investigation_context(
 
     ``kb_lookup`` is this turn's knowledge-base question lookup
     (``milestone_engine/kb_question.py``), rendered as ``ctx["kb_lookup"]``.
+
+    ``narration_fold`` is the prompt assembly's record for the
+    ``<fix_verification>`` block (#2811 S2b-1a): one per assembly, so a
+    context built again at a tighter budget folds once; a fresh one per
+    build without it.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -1120,7 +1127,7 @@ def build_investigation_context(
     # activation; design §10.6).
     evidence_needs_str = _build_evidence_needs_block(case)
     # The fix, its legs and the open asks (#1906 D7): MITIGATION and TREATMENT.
-    fix_verification_str = build_fix_verification_block(case)
+    fix_verification_str = build_fix_verification_block(case, narration_fold)
 
     # =====================================================================
     # Budget allocation

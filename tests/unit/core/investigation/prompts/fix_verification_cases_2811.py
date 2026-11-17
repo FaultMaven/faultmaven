@@ -5,7 +5,10 @@ The 25 narration fixtures of ``test_narrator_record_parity_2811`` (its 11
 renders: the mitigation's lines (each state, the unregistered relief with and
 without the gate's refusal, no rows on record, beside a dated fix), "Fix
 attempts: none recorded", "…and N earlier", an interception seen gone, the
-cited basis withheld after an off-cause attempt, and a repeated pending why.
+cited basis withheld after an off-cause attempt, a repeated pending why, each
+re-check reason's text no parity fixture renders in the block, an id list and
+a description past their bounds, and a problem-gone row outside the latest
+window. ``DECLARED`` adds one fixture per declared difference.
 
 ``render_all`` renders each through ``build_fix_verification_block``. Its
 output on ``main`` at 9b4d0b1e1 is ``fix_verification_oracle_2811.json``,
@@ -118,6 +121,85 @@ async def _repeated_why():
     return case
 
 
+async def _treatment(build):
+    """A parity fixture in DIAGNOSIS, moved to TREATMENT."""
+    case = await build()
+    case.progress.solution_accepted = True
+    return case
+
+
+async def _other_cause_and_a_disconfirmation():
+    """A re-check of the other root (OTHER_CAUSE), and the fixed root's
+    re-check REFUTES-linked with an engine marker (DISCONFIRMATION)."""
+    from faultmaven.modules.case.contracts import (
+        CausalNode,
+        EvidenceStance,
+        NodeEvidenceLink,
+        NodeType,
+    )
+    from tests.unit.core.investigation.test_declined_resolution_binds_the_model_1895 import (
+        _engine_disconfirmation,
+    )
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _eid,
+    )
+
+    case = await parity._other_cause()
+    marker = _engine_disconfirmation(7)
+    case.evidence.append(marker)
+    node = CausalNode(
+        statement="the restart cleared the pool",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=7,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=i, stance=EvidenceStance.REFUTES, reasoning="x"
+            )
+            for i in (marker.evidence_id, _eid("poolgone"))
+        ],
+    )
+    case.causal_nodes[node.node_id] = node
+    return case
+
+
+async def _outside_the_window():
+    """A cause re-check from before the fix, whose window the problem's
+    persistence observed."""
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _case,
+    )
+
+    case = _case("treatment", cause=False, persists=True)
+    bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=2)
+    return case
+
+
+async def _past_the_bounds():
+    """Seven cause re-checks (one past ``MAX_IDS``) and a description past
+    80 characters, its whitespace runs collapsed."""
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _case,
+    )
+
+    case = _case("treatment")
+    for _ in range(6):
+        bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=4)
+    case.proposed_actions[0].description = (
+        "Point   ExecStart at /usr/bin/billing-exporter,\n reload systemd, restart "
+        "the unit and confirm the scrape target reports UP again"
+    )
+    return case
+
+
+async def _gone_outside_the_window():
+    """The problem re-checked gone before the fix too: only the latest
+    window's rows are named."""
+    case = await parity._uncited(True)
+    shown = case.problem_verification.verifying_evidence_ids[0]
+    bound_row(case, _GONE, turn=2, rechecks=shown)
+    return case
+
+
 #: The fixtures this corpus adds, one per block line no parity fixture shows.
 ADDED = {
     "M:not_rechecked": lambda: _mitigation(),
@@ -131,13 +213,66 @@ ADDED = {
     "T:interception_seen_gone": _interception_seen_gone,
     "T:interception_only": _interception_only,
     "T:repeated_why": _repeated_why,
+    "T:predates_failed_fix": lambda: _treatment(parity._before_the_failed_fix),
+    "T:uncited_no_root": lambda: _treatment(parity._uncited_with_no_root),
+    "T:other_cause_disconfirmation": _other_cause_and_a_disconfirmation,
+    "T:outside_window": _outside_the_window,
+    "T:past_the_bounds": _past_the_bounds,
+    "T:gone_outside_window": _gone_outside_the_window,
 }
 
-#: Every fixture, by name: the parity corpus's 25, then the added ones.
+
+async def _closure_disagrees():
+    """A closed case whose stored reason moved since its terminal write."""
+    from faultmaven.modules.case.contracts import ClosureReason
+
+    case = await parity._terminal_qa()
+    case.closure_reason = ClosureReason.CLOSED_FALSE_ALARM
+    return case
+
+
+async def _carried_turn():
+    """The fix's turn minted final, then its execution turn moved by one."""
+    case = await parity._2595()
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    for action in case.proposed_actions:
+        if action.accepted_in_turn is not None:
+            action.accepted_in_turn += 1
+    return case
+
+
+async def _gone_action():
+    """A FAILED window minted final, then its action dropped from the case."""
+    case = await parity._held_check_then_interception()
+    case.proposed_actions = [
+        a for a in case.proposed_actions if a.accepted_in_turn != 6
+    ]
+    return case
+
+
+async def _unreadable_record():
+    """A stored record of a shape no step reaches: the fold raises."""
+    case = await parity._other_cause()
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    case.progress.outcome = case.progress.outcome.model_copy(update={"shape": 0})
+    return case
+
+
+#: One fixture per declared difference, by the difference it shows.
+DECLARED = {
+    "closure": ("D:closure", _closure_disagrees),
+    "accepted_in_turn": ("D:carried_turn", _carried_turn),
+    "gone_action": ("D:gone_action", _gone_action),
+    "omitted": ("D:omitted", _unreadable_record),
+}
+
+#: Every fixture, by name: the parity corpus's 25, the added ones, then the
+#: declared differences'.
 CASES = {
     **{name: build for name, (build, _declared) in parity.FIXTURES.items()},
     **{f"R:{name}": build for name, (build, _shows) in parity.REASONS.items()},
     **ADDED,
+    **dict(DECLARED.values()),
 }
 
 

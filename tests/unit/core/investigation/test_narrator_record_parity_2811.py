@@ -29,6 +29,7 @@ from faultmaven.core.investigation.cause_assurance import (
     latest_decided_fix_window,
     latest_disconfirmation_turn,
     mitigation_observation,
+    off_cause_attempt,
     pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
@@ -116,6 +117,12 @@ def derived(case) -> dict:
     window = latest_decided_fix_window(case)
     stored = case.progress.mitigation
     attempts = _dated(case)
+    problem_rows = (
+        symptom_elimination_rows(case, cause_rows, subjects=subjects, windows=windows)
+        if cause_rows
+        else []
+    )
+    named = {getattr(e, "rechecks_evidence_id", None) for e in problem_rows}
     return {
         "recheck": [
             (
@@ -153,16 +160,14 @@ def derived(case) -> dict:
         "fix_confirmed": window is not None and window.state == FIX_SUCCEEDED,
         "legs": (
             [e.evidence_id for e in cause_rows],
-            [
-                e.evidence_id
-                for e in (
-                    symptom_elimination_rows(
-                        case, cause_rows, subjects=subjects, windows=windows
-                    )
-                    if cause_rows
-                    else []
-                )
-            ],
+            [e.evidence_id for e in problem_rows],
+        ),
+        # Shape 3 (#2811 S2b-1a): what the fix-verification block reads.
+        "off_cause": off_cause_attempt(case, windows),
+        "unrechecked": (
+            [v for v in subjects.verifying if v in subjects.rows and v not in named]
+            if cause_rows
+            else []
         ),
         "bindable": (
             [e.evidence_id for e in problem],
@@ -234,6 +239,8 @@ def recorded(outcome, case) -> dict:
         "fix_confirmed": bool(decided)
         and decided[-1].state == FixWindowState.SUCCEEDED,
         "legs": (resolution.cause_row_ids, resolution.problem_row_ids),
+        "off_cause": resolution.off_cause_turn,
+        "unrechecked": resolution.unrechecked_row_ids,
         "bindable": (outcome.bindable.problem_row_ids, outcome.bindable.cause_row_ids),
         "held_need": resolution.pending_check_need_id,
         "declined": resolution.declined_stands,

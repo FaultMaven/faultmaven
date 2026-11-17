@@ -1262,8 +1262,8 @@ def test_both_counters_expose_every_series_at_zero_from_import():
 #: The write points that never label the write-failure counter: the
 #: backfill's first record and repair fold through ``compute_case_outcome``,
 #: and ``shape`` marks an upgrade rather than naming a fold. Narration folds
-#: in memory and stores nothing, but labels it when the fix-verification
-#: block's fold fails (#2811 S2b-1a).
+#: in memory and stores nothing, but labels it, once per prompt assembly, when
+#: the fix-verification block cannot read the record (#2811 S2b-1a).
 _UNRECORDED = {
     WritePoint.REPAIR,
     WritePoint.BACKFILL,
