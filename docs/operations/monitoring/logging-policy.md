@@ -58,8 +58,7 @@ except Exception as e:
 - Decision records: target 5–10% sampling if volume high; otherwise 100% during hardening
 
 ## Structure
-- JSON logs with fields: timestamp, level, component, claimed_session_id, claimed_case_id, event, payload
-  (`payload` is pending S4, #2890: today it can carry case content)
+- JSON logs with fields: timestamp, level, component, claimed_session_id, claimed_case_id, event
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.

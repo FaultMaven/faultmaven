@@ -691,7 +691,7 @@ faultmaven_knowledge_search_results_count
 | One switch, one path | Importing each collector-defining module with the switch off registers nothing. Outside the shim, no module imports from `prometheus_client` beyond a listed set of exposition, registry and parser names, and none takes a `Prometheus*` class from the shim, by import or attribute (#2745, S1's pin 2). | Enforced by `tests/unit/infrastructure/shims/test_metrics_one_path_2748.py` |
 | Bounded labels | S2's pins 4-6: each label's vocabulary tied to its producer, an out-of-set value raising under tests, and no collector without a writer. | Pending: #2749 |
 | The redactor table's enforced rows (rule 6) | A URL query string and a credential header value are blanked on the API process's rendered lines (in a message, a field or a traceback) and in the jobs' rendered message, at a cost linear in the line. Not tested: a job's traceback. Not covered: `jobs/run.py:766`'s print. | Enforced by `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` and `tests/unit/infrastructure/logging/test_url_query_redaction.py` |
-| Frames and class names; one chain (rules 4 and 5) | #2888's pins | Pending: S2, #2888 |
+| Frames and class names; one chain (rules 4 and 5) | #2888's pins, for the outputs S2 delivers; #2898 for the outputs that read "No stage yet" | Pending: S2, #2888; #2898 |
 | What a line holds: the message channel (rule 1) | #2889's pins | Pending: S3, #2889 |
 | No case content (rule 3) | #2890's pins | Pending: S4, #2890 |
 | The redactor table's pending row (rule 6) | #2891's pins | Pending: S5, #2891 |
