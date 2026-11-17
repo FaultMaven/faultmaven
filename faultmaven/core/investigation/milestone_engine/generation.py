@@ -872,8 +872,13 @@ class StructuredOutputGenerator:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                # Cache the stable prefix (system + tools) across the tool-loop
-                # iterations. Only Anthropic acts on this; other providers pop it.
+                # Ask for the request to be cached, so the next call that
+                # re-sends it reads it back: the next iteration, a truncation
+                # retry, the next turn's prefix. Anthropic marks breakpoints
+                # (the end of the request only when it offers more than one
+                # tool, so a schema-only call caches just its prefix, which
+                # the next turn's schema-only call reads); llama.cpp reuses
+                # its KV cache; every other provider pops it.
                 cache_prompt=True,
             )
             if direct_provider:
@@ -2109,6 +2114,10 @@ class StructuredOutputGenerator:
                 "case_id": case.case_id if case is not None else None,
                 # Never answered from cache after a refusal (#1770) either.
                 "bypass_cache": max_tokens_state["bumped"] or reduced,
+                # The provider's prompt cache, not the response cache above:
+                # the next single-shot turn on this route re-sends the same
+                # standing prefix (#613). Anthropic marks it; others pop it.
+                "cache_prompt": True,
             }
             if reduced:  # nor stored, to be served to a full-schema call
                 generate_params["store_in_cache"] = False

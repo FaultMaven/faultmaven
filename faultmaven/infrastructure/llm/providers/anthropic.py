@@ -561,11 +561,23 @@ class AnthropicProvider(BaseLLMProvider):
         # with a real mapping (intent → `thinking` config, floor → the
         # budget_tokens/max_tokens partition).
         self._discard_reasoning_kwargs(kwargs, model=selected_model)
+        if cache_prompt and not messages and isinstance(prompt, str) and prompt:
+            # A cached prompt-only call (the single shot) is one user message,
+            # so it takes the same marks as the tool loop's first message: the
+            # boundary splits its durable prefix from this turn's case.
+            messages = [{"role": "user", "content": prompt}]
         if messages:
             converted = self._convert_messages_to_anthropic(messages)
             anthropic_messages = converted["messages"]
             if cache_prompt:
                 _mark_cache_boundary(anthropic_messages)
+                # Only a request offering more than one tool can be extended
+                # by a tool round. One offering a single tool (the schema-only
+                # call, the single shot) is answered by that tool's call and
+                # ends the turn, so a mark at its end would buy a 1.25x write
+                # that nothing reads.
+                if len(kwargs.get("tools") or ()) > 1:
+                    _mark_rolling_breakpoint(anthropic_messages)
             request_body["messages"] = anthropic_messages
             if converted.get("system"):
                 request_body["system"] = converted["system"]
@@ -578,7 +590,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Apply the cache breakpoint once, after `system` is finalized. Caching
         # the system block also caches the tool definitions (the large, stable
-        # prefix). When there is no system prompt, cache the sole user turn.
+        # prefix).
         if cache_prompt:
             system_text = request_body.get("system")
             if isinstance(system_text, str) and system_text:
@@ -587,19 +599,6 @@ class AnthropicProvider(BaseLLMProvider):
                         "type": "text",
                         "text": system_text,
                         "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-            elif not messages and isinstance(prompt, str) and prompt:
-                request_body["messages"] = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
                     }
                 ]
 
@@ -1158,3 +1157,63 @@ def _mark_cache_boundary(messages: list) -> None:
             {"type": "text", "text": tail},
         ],
     }
+
+
+# Block types a cache_control breakpoint may not sit on: Anthropic caches
+# thinking blocks only as part of the prefix they belong to, never directly.
+_UNMARKABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _mark_rolling_breakpoint(messages: list) -> None:
+    """Put a breakpoint at the END of a tool-loop request that can be extended.
+
+    The system and boundary breakpoints cache only the standing prefix. Each
+    tool-loop iteration re-sends everything after it, too: this turn's case,
+    and every earlier tool call and result. Without a mark at the end, those
+    bytes are paid in full on every iteration. A breakpoint on the request's
+    last block writes them once, and the next iteration, whose request extends
+    this one, reads them back: the breakpoint lookback (20 positions) finds the
+    earlier entry a few positions back. On the Claude API a run of parallel
+    tool_use blocks is one position and so is a run of tool_result blocks, so
+    one iteration adds those two plus any thinking and text blocks.
+
+    The write costs 1.25x input and pays back on the first read (0.1x). An
+    iteration whose reply calls no tool is not extended, and its write is the
+    price of the bet; the caller marks only requests offering more than one
+    tool, so the schema-only call and the single shot never pay it.
+
+    Every string-content user message becomes one text block first, wherever
+    it sits. A nudge or an elision marker is the last message on one iteration
+    and an earlier one on the next; shaping it alike in both is what keeps the
+    two requests the same bytes up to the new end. ``_mark_cache_boundary``
+    runs first, so a first message holding the boundary is already split; one
+    without it is wrapped like the rest.
+
+    The mark goes on the last message's last block that can carry one: never a
+    thinking block, never an empty text block (both refused), and nothing
+    when that block already holds a breakpoint. The original blocks are copied,
+    not mutated: an assistant message echoes the caller's own saved blocks.
+    Breakpoints stay within the API's four: system, boundary and this one.
+    """
+    for i, msg in enumerate(messages):
+        content = msg.get("content")
+        if msg.get("role") == "user" and isinstance(content, str) and content.strip():
+            messages[i] = {**msg, "content": [{"type": "text", "text": content}]}
+    if not messages:
+        return
+    last = messages[-1]
+    blocks = last.get("content")
+    if not isinstance(blocks, list):
+        return
+    for j in range(len(blocks) - 1, -1, -1):
+        block = blocks[j]
+        if not isinstance(block, dict) or block.get("type") in _UNMARKABLE_BLOCK_TYPES:
+            continue
+        if block.get("type") == "text" and not str(block.get("text", "")).strip():
+            continue
+        if "cache_control" in block:
+            return
+        marked = list(blocks)
+        marked[j] = {**block, "cache_control": {"type": "ephemeral"}}
+        messages[-1] = {**last, "content": marked}
+        return

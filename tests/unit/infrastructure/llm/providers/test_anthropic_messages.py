@@ -451,7 +451,10 @@ def _loop_messages(user_content: str) -> list[dict]:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestAnthropicCacheBoundaryBreakpoint:
-    """``cache_prompt`` places a second breakpoint at the end of the boundary line."""
+    """``cache_prompt`` places a second breakpoint at the end of the boundary line.
+
+    These requests offer no tool, so nothing can extend them and they carry
+    no rolling breakpoint (``TestAnthropicRollingBreakpoint``)."""
 
     async def test_boundary_once_splits_the_first_user_message(self, provider):
         body = await _sent_body(
@@ -484,7 +487,8 @@ class TestAnthropicCacheBoundaryBreakpoint:
             }
         ]
 
-    async def test_no_boundary_leaves_the_content_untouched(self, provider):
+    async def test_no_boundary_is_not_split(self, provider):
+        """No boundary, no split and no breakpoint in the message."""
         prompt = "You are FaultMaven.\nSTATE: INVESTIGATING\n"
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
         assert body["messages"][0]["content"] == prompt
@@ -549,3 +553,195 @@ class TestAnthropicCacheBoundaryBreakpoint:
                 }
             ],
         }
+        assert "cache_control" not in body["messages"][0]["content"][1]
+
+
+def _strip_cache_control(value):
+    """*value* with every ``cache_control`` key removed, recursively."""
+    if isinstance(value, dict):
+        return {
+            k: _strip_cache_control(v) for k, v in value.items() if k != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_strip_cache_control(v) for v in value]
+    return value
+
+
+def _breakpoints(body: dict) -> list:
+    """Every block of *body* that carries a ``cache_control`` breakpoint."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if "cache_control" in value:
+                found.append(value)
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(body)
+    return found
+
+
+def _tool_round(n: int) -> list[dict]:
+    """One tool-loop round as the engine appends it: a call and its result."""
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_{n}",
+                    "type": "function",
+                    "function": {"name": "search_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"call_{n}", "content": f"result {n}"},
+    ]
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"The {name} tool.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    # An iteration offers the investigation tools and the schema tool.
+    for name in ("search_file", "submit_response")
+]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAnthropicRollingBreakpoint:
+    """``cache_prompt`` also marks the END of a request offering more than one
+    tool, so the next tool-loop iteration reads this one's whole request back
+    from the cache, not only the standing prefix."""
+
+    async def _iterations(self, provider) -> list[dict]:
+        """Bodies of four consecutive tool-loop iterations of one turn, the
+        third carrying the engine's plain-string nudge as its last message."""
+        base = _loop_messages(_PREFIX + _TAIL)
+        nudge = {"role": "user", "content": "Call one of the tools."}
+        histories = [
+            base,
+            base + _tool_round(1),
+            base + _tool_round(1) + [nudge],
+            base + _tool_round(1) + [nudge] + _tool_round(2),
+        ]
+        return [
+            await _sent_body(
+                provider, h, cache_prompt=True, tools=_TOOLS, tool_choice="auto"
+            )
+            for h in histories
+        ]
+
+    async def test_the_last_block_of_every_iteration_is_marked(self, provider):
+        for body in await self._iterations(provider):
+            last_block = body["messages"][-1]["content"][-1]
+            assert last_block["cache_control"] == {"type": "ephemeral"}
+
+    async def test_each_iteration_extends_the_previous_one(self, provider):
+        """Up to the moved breakpoint, iteration k+1 re-sends iteration k's
+        request unchanged: the same tools, system and tool_choice, and k's
+        messages as the first messages of k+1. A string nudge is a text block
+        both when it is last and when it is not."""
+        bodies = [_strip_cache_control(b) for b in await self._iterations(provider)]
+        for before, after in zip(bodies, bodies[1:]):
+            for key in ("tools", "system", "tool_choice"):
+                assert before.get(key) == after.get(key)
+            n = len(before["messages"])
+            assert after["messages"][:n] == before["messages"]
+        assert bodies[2]["messages"][-1]["content"] == [
+            {"type": "text", "text": "Call one of the tools."}
+        ]
+
+    async def test_breakpoints_stay_within_the_api_limit(self, provider):
+        """System, boundary and the rolling one: three of the API's four."""
+        for body in await self._iterations(provider):
+            assert len(_breakpoints(body)) == 3
+
+    async def test_a_thinking_block_is_never_marked(self, provider):
+        """A thinking or redacted_thinking block cannot carry a breakpoint, nor
+        can an empty text block: the mark goes on the last block that can."""
+        echoed = [
+            {"type": "text", "text": "Looking."},
+            {"type": "text", "text": ""},
+            {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            {"type": "redacted_thinking", "data": "opaque"},
+        ]
+        messages = _loop_messages(_PREFIX + _TAIL) + [
+            {
+                "role": "assistant",
+                "content": "Looking.",
+                "provider_metadata": {"assistant_content": echoed},
+            }
+        ]
+        body = await _sent_body(
+            provider, messages, cache_prompt=True, tools=_TOOLS, tool_choice="auto"
+        )
+        last = body["messages"][-1]["content"]
+        assert last[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in last[1]
+        assert "cache_control" not in last[2]
+        assert "cache_control" not in last[3]
+
+    async def test_a_single_tool_request_marks_only_its_prefix(self, provider):
+        """The schema-only call offers one tool, and its reply ends the loop:
+        nothing extends it, so its end is not written to the cache. The system
+        and boundary marks stay, for the next turn's schema-only call."""
+        messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)
+        body = await _sent_body(
+            provider,
+            messages,
+            cache_prompt=True,
+            tools=_TOOLS[1:],
+            tool_choice="required",
+        )
+        assert len(_breakpoints(body)) == 2
+        assert "cache_control" in body["system"][0]
+        assert "cache_control" in body["messages"][0]["content"][0]
+
+    async def test_a_cached_prompt_only_call_marks_its_boundary(self, provider):
+        """The single shot sends ``prompt`` alone. It takes the boundary mark,
+        so the next turn reads the standing prefix back, and no mark at its
+        end, which only this call's own retry could read."""
+        response_data = {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await send_to_model(
+                provider,
+                prompt=vetted(_PREFIX + _TAIL),
+                cache_prompt=True,
+                tools=_TOOLS[1:],
+                tool_choice="required",
+            )
+        body = mock_session.post.call_args.kwargs["json"]
+        assert body["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _PREFIX,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": _TAIL},
+                ],
+            }
+        ]
+
+    async def test_cache_prompt_off_marks_nothing(self, provider):
+        messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)
+        body = await _sent_body(provider, messages, tools=_TOOLS, tool_choice="auto")
+        assert _breakpoints(body) == []
+        assert body["messages"][0]["content"] == _PREFIX + _TAIL

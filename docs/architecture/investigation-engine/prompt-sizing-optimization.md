@@ -254,9 +254,12 @@ tool-less build keeps the full extract (safety verified). A playbook-S9 eval sho
   (base + accumulated tool calls/results) on every iteration, so per-turn cost
   scales with iteration count, not base size (the §4.2 base shrink is real but
   ~10% of a tool-heavy turn). Provider **prompt caching** now absorbs most of that
-  re-send and is observed live: OpenAI automatic prefix caching (nonzero
-  `cache_read`, no separate `cache_write`) and Anthropic explicit `cache_control`
-  (a `cache_write` on the prefix write, then `cache_read` on reuse). The
+  re-send: OpenAI automatic prefix caching (nonzero `cache_read`, no separate
+  `cache_write`, observed live) and Anthropic explicit `cache_control` (a
+  `cache_write`, then `cache_read` on reuse). Until the rolling breakpoint on
+  the request's last block, Anthropic's breakpoints stopped at the durable
+  prefix, so its re-send of this turn's case and the tool results was paid in
+  full on every iteration ([prompt-assembly-architecture.md §3.3](./prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). The
   cost-weighting above exists precisely so these cached re-sends register at their
   true (discounted) cost. The cross-turn win — segregating the durable prefix
   from the per-turn tail so consecutive turns reuse the standing instructions

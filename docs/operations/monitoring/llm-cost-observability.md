@@ -271,13 +271,16 @@ dollar figures as directional. Two honesty guarantees:
 
 ## Prompt caching
 
-The tool-augmented investigation loop marks its calls cacheable
-(`cache_prompt=True`). The **Anthropic** provider acts on it: it adds an
-ephemeral (5-minute) `cache_control` breakpoint on the stable system + tools
-prefix, and a second one at the end of the investigation prompt's durable
-prefix (the `CACHE_BOUNDARY` line, #613), so the standing instructions bill at
-the reduced cache-read rate across the loop's iterations and across
-consecutive turns inside the TTL. The **local** provider's llama.cpp transport
+The investigation engine marks its calls cacheable (`cache_prompt=True`): the
+tool loop and the single-shot structured call. The **Anthropic** provider acts
+on it with up to three ephemeral (5-minute) `cache_control` breakpoints: on the
+stable system + tools prefix, at the end of the investigation prompt's durable
+prefix (the `CACHE_BOUNDARY` line, #613), and, on a tool-loop iteration (a
+request offering more than one tool), on the request's last block. The standing
+instructions bill at the reduced cache-read rate across consecutive turns
+inside the TTL; within a turn, each iteration also reads the previous
+iteration's whole request (this turn's case and the tool results so far) back
+from the cache. The **local** provider's llama.cpp transport
 forwards it as llama.cpp's own `cache_prompt` body field, which reuses the KV
 cache for a shared prompt prefix. Every other provider pops the flag
 (OpenAI-family, Gemini and Fireworks cache prompts automatically server-side,
