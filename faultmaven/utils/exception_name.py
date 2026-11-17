@@ -10,8 +10,10 @@ text of an exception whose message can carry a third party's output: a
 client's, a backend's or a store's. It names the class chain
 (:func:`exception_class_chain`), and where the frames matter it adds them
 without the messages (:func:`exception_frames`). The rendered-line redactor
-(``infrastructure/logging/url_redaction.py``), which strips URL query strings,
-is defence in depth under this rule, not a licence to log text.
+(``infrastructure/logging/url_redaction.py``), which strips URL query strings
+and blanks credential header values (``cookie``, ``set-cookie``,
+``authorization``, ``proxy-authorization``), is defence in depth under this
+rule, not a licence to log text.
 """
 
 import re
