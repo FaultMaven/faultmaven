@@ -1,18 +1,20 @@
 """Evidence Milestone Validation
 
-Validates that LLM milestone claims are supported by cited evidence.
+Validates that LLM milestone claims are supported by the case's evidence.
 
 The LLM is the sole authority for milestone advancement via structured output.
-This module does NOT independently advance milestones. Instead, it validates
-that when the LLM claims a milestone has been reached, it has cited sufficient
-evidence IDs to justify that claim.
+This module does NOT independently advance milestones. For each claim it counts
+the evidence in the claim's expected categories: the current turn's first and,
+when that falls short, the evidence collected on the turns the LLM cites as
+``turn_N`` in ``evidence_trail.evidence_analyzed`` (turn references, never
+``ev_`` IDs).
 
 Design Decision (Issue A):
 - LLM structured output is the sole authority for milestone advancement.
 - The evidence processor is a validation layer, not a discovery layer.
-- If the LLM claims a milestone without citing evidence, the claim is logged
-  as a warning but still applied (the LLM may have reasoning not captured in
-  evidence). Future iterations may reject unsupported claims.
+- An unsupported claim is reverted by the caller (``ResponseApplier`` step 2b):
+  the milestone leaves the turn's completed milestones, and the symptom claim
+  is withdrawn through ``unverify_problem``.
 
 Reference: workflow-design-review.md Issue A
 """
@@ -26,7 +28,7 @@ from faultmaven.modules.case.contracts import Case, EvidenceCategory
 logger = logging.getLogger(__name__)
 
 
-# Minimum evidence citations expected per milestone for validation
+# Minimum evidence items expected per milestone for validation
 MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
     "symptom_verified": {
         "min_evidence": 1,
@@ -60,7 +62,7 @@ MILESTONE_EVIDENCE_EXPECTATIONS: Dict[str, Dict] = {
 
 @dataclass
 class MilestoneValidationResult:
-    """Result of validating a milestone claim against cited evidence."""
+    """Result of validating a milestone claim against the case's evidence."""
 
     milestone: str
     is_valid: bool

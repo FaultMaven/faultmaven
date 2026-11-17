@@ -742,7 +742,7 @@ evidence directly. You may do several in one turn if the evidence supports it.
         + """
    **Deployment/change evidence — two distinct steps:**
    - Step 1: Find the **change event** (deployment timestamp, config push applied,
-     scaling event). Name it as the trigger in your answer, but do NOT
+     scaling event). Record it as a journal entry (journal_entries) but do NOT
      create an evidence_to_add row yet — it's a trigger observation,
      not a claim-anchored finding.
    - Step 2: Drill into the **specific changes made** (config value before/after, code

@@ -2000,8 +2000,12 @@ Parse-time robustness for malformed LLM structured output (the general never-500
 
 The LLM structured output is the **sole authority** for milestone advancement.
 When the LLM claims a milestone has been reached (via the `milestones` field in
-its response schema), the evidence processor validates the claim against cited
-evidence. It does NOT independently advance milestones.
+its response schema), the evidence processor validates the claim against the
+case's evidence. It does NOT independently advance milestones. `ResponseApplier`
+step 2b reviews the claims `llm_claimable_milestones` admits (engine-derived
+milestones such as `root_cause_identified` are excluded) and reverts every
+unsupported one: the milestone leaves the turn's completed milestones, and the
+symptom claim is withdrawn through `unverify_problem`.
 
 **Design Decision (Issue A)**: The evidence processor was previously a
 keyword-based discovery layer that parsed LLM-generated analysis text to find
@@ -2015,25 +2019,31 @@ def validate_milestone_claims(
     reasoning: Optional[EvidenceTrail] = None,
 ) -> List[MilestoneValidationResult]:
     """
-    Validate that LLM milestone claims are supported by cited evidence.
+    Validate that LLM milestone claims are supported by evidence.
 
-    This does NOT advance milestones. It checks whether the LLM's claims
-    are justified by the evidence IDs cited in evidence_trail.
+    This does NOT advance milestones. It counts the current turn's evidence
+    in each claim's expected categories and, when that falls short, the
+    evidence collected on the turns cited as turn references ("turn_N") in
+    evidence_trail.evidence_analyzed.
 
-    Called: After LLM sets milestones in structured output
+    Called: by ResponseApplier step 2b, which reverts every claim this
+    finds unsupported
     """
+    cited_turns = turn_references(reasoning)  # "turn_N" entries only
 
     for milestone in milestones_claimed:
         expectations = MILESTONE_EVIDENCE_EXPECTATIONS[milestone]
 
-        # Count evidence in expected categories among cited IDs
-        relevant = count_cited_evidence(case, reasoning, expectations)
+        # The current turn's evidence first; cited turns only when it falls short
+        relevant = count_current_turn_evidence(case, expectations)
+        if relevant < expectations["min_evidence"]:
+            relevant += count_cited_turn_evidence(case, cited_turns, expectations)
 
         if relevant < expectations["min_evidence"]:
             log_warning(
                 f"Milestone '{milestone}' claimed with {relevant} relevant evidence "
                 f"(expected >= {expectations['min_evidence']})"
-            )
+            )  # the result is invalid; the caller reverts the milestone
 
 # PROGRESS_MILESTONE_EVIDENCE_EXPECTATIONS and the gate-milestone triggers
 # are canonical in investigation-data-models.md §1.2 "Progress Milestone

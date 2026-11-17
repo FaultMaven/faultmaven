@@ -1358,7 +1358,7 @@ new.action_attempts = []
 | Prompt stage instructions | 4 templates | 3 templates (TREATMENT includes extended diagnosis) |
 | Mitigation | Path modifier (one-shot) | Distinct stage (iterative until verified) |
 | Path selection | USER_CHOICE in matrix | Removed — no prospective fork. Mitigation is an opportunistic insert; the direct-vs-mitigated shape is retrospectively derivable from `progress.mitigation is not None` — no shape field in code (see [Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert)) |
-| Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones set by LLM (advisory, non-blocking) |
+| Milestone validation | Consistency check (blocking) | Gate milestones inferred from behavior; progress milestones claimed by the LLM are checked against evidence and reverted when unsupported (blocking; engine-derived milestones such as `root_cause_identified` are not reviewed) |
 | Compliance detection | N/A (explicit confirmation) | Post-LLM, default no-transition when ambiguous (Section 15, decisions 5-6) |
 | "Jump ahead" | Allowed and encouraged | Removed (no sub-stages to jump between) |
 
