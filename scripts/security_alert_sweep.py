@@ -6,8 +6,8 @@ read-only: it files, comments on and dismisses nothing. Each open Dependabot,
 code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
 
 - ``fixable`` (Dependabot): an exception (below) whose advisory lists a
-  patched version, shown with ``fix available <version>``: an exception holds
-  only while no fix exists (#2160);
+  patched version and that is not ``tracked`` (below), shown with ``fix
+  available <version>``: an exception holds only while no fix exists (#2160);
 - ``exception`` (Dependabot): its GHSA is in the repo's ``package.json``
   ``pnpm.auditConfig.ignoreGhsas`` or, for core, in ``EXCEPTIONS_DOC`` above
   its ``## Closed exceptions`` heading;
@@ -353,14 +353,15 @@ class Sweep:
             alert.cls, alert.detail = "unknown", "a source is unavailable (above)"
 
     def verdict(self, alert: Alert) -> tuple[str, str]:
-        stale = ""
+        stale = fixable = ""
         if alert.kind == "dependabot":
             if detail := self.exception_detail(alert):
                 fix = alert.item["security_vulnerability"].get("first_patched_version")
-                if fix:  # its premise, that no fix exists, no longer holds
-                    return "fixable", f"{detail}, fix available {fix['identifier']}"
-                return "exception", detail
-            if lag := self.lag_detail(alert):
+                if not fix:
+                    return "exception", detail
+                # Its premise, that no fix exists, fails: fixable unless tracked.
+                fixable = f"{detail}, fix available {fix['identifier']}"
+            elif lag := self.lag_detail(alert):
                 resolved, age = lag
                 days = f"{age / timedelta(days=1):.1f}d"
                 if age <= LAG_DAYS:
@@ -370,7 +371,9 @@ class Sweep:
         if self.issues is None or prs is None:
             raise Unreadable("trackers")
         found = [label for label, text in self.issues + prs if carries(text, alert.url)]
-        return ("tracked", ", ".join(found)) if found else ("untracked", stale)
+        if found:
+            return "tracked", ", ".join(found)
+        return ("fixable", fixable) if fixable else ("untracked", stale)
 
     def collect(self, repo: str, kind: str) -> list[dict]:
         try:
@@ -550,7 +553,7 @@ class Sweep:
         )
         unknown = sum(a.cls == "unknown" for a in shared)
         failed = sum(1 for secret, _ in self.unavailable if not secret)
-        fixable = sum(a.cls == "fixable" for a in shared)
+        fixable = sum(1 for _, c in rows if c[5] == "fixable")  # groups, not alerts
         lines.append(
             f"queue: alerts {len(shared)} (secret scanning excluded): untracked groups"
             f" {groups_u}, unknown {unknown}, unavailable {failed},"

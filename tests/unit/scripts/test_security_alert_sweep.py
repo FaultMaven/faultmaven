@@ -447,6 +447,54 @@ def test_an_exception_whose_advisory_lists_a_fix_is_fixable(mod, source, fix):
     )
 
 
+def minimatch(n, fix=True):
+    """A copilot alert its ``ignoreGhsas`` (``IGNORES``) excepts; fixed at 2.0.0."""
+    alert = dependabot(COPILOT, n, "minimatch", manifest=LOCK)
+    if not fix:
+        alert["security_vulnerability"]["first_patched_version"] = None
+    return alert
+
+
+IGNORES = {(COPILOT, "package.json"): IGNORED}
+FIXABLE = "pnpm.auditConfig.ignoreGhsas, fix available 2.0.0"
+
+
+@pytest.mark.parametrize(
+    "body, error, cls, detail",
+    [
+        (f"**Alerts:** {minimatch(1)['html_url']}", None, "tracked", "#7"),
+        ("unrelated", None, "fixable", FIXABLE),
+        ("unrelated", "HTTP 502", "unknown", "a source is unavailable (above)"),
+    ],
+)
+def test_a_tracker_carrying_a_fixable_exceptions_url_makes_it_tracked(
+    mod, body, error, cls, detail
+):
+    gh = fake(mod, COPILOT, minimatch(1), issues=[issue(7, body)], files=IGNORES)
+    gh.errors.update({f"{CORE}/issues": error} if error else {})
+    assert (row(mod, gh)["cls"], row(mod, gh)["detail"]) == (cls, detail)
+
+
+@pytest.mark.parametrize(
+    "fixed, carried, counts",
+    [
+        (False, False, "tracked 0 · exception 1 · fixable 1"),  # exception < fixable
+        (True, True, "tracked 1 · exception 0 · fixable 1"),  # tracked < fixable
+        (True, False, "tracked 0 · exception 0 · fixable 2"),  # two alerts, one group
+    ],
+)
+def test_a_group_with_a_fixable_member_shows_fixable_and_counts_once(
+    mod, fixed, carried, counts
+):
+    other = minimatch(1, fix=fixed)
+    body = f"**Alerts:** {other['html_url']}" if carried else "unrelated"
+    gh = fake(mod, COPILOT, other, minimatch(2), issues=[issue(7, body)], files=IGNORES)
+    report = mod.sweep(gh, NOW)
+    assert [r["cls"] for r in table(report)] == ["fixable"]
+    assert f"alerts 2: {counts} · " in summary(report)
+    assert ", exceptions with a fix 1, " in summary(report, "queue: ")
+
+
 # --- Redaction ----------------------------------------------------------------
 
 
@@ -773,12 +821,15 @@ def test_failing_audits_move_only_the_queue_lines_new_count(mod):
     )
 
 
+HIDDEN_ERROR = "HTTP 502: zq-hidden-audit-error (https://x/zq-hidden)"
+
+
 @pytest.mark.parametrize(
     "conclusion, error, failing",
     [
         ("success", None, 0),
         ("failure", None, 1),
-        ("success", "HTTP 502: Bad Gateway (https://x/hidden)", 1),  # unreadable
+        ("success", HIDDEN_ERROR, 1),  # unreadable
     ],
 )
 def test_a_repo_not_known_public_is_read_and_counted_but_not_named(
@@ -796,8 +847,12 @@ def test_a_repo_not_known_public_is_read_and_counted_but_not_named(
         f"scheduled audit: {CORE} success 1.00d ago",
         f"scheduled audit: 1 repo not known public, failing {failing}",
     ]
-    assert [w for w in (DASHBOARD, "failure", "Bad Gateway") if w in report] == []
-    assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+    leaks = (DASHBOARD, "failure", "zq-hidden", WORKFLOW)
+    assert [leak for leak in leaks if leak in report] == []
+    assert summary(report).endswith(" · unknown 0 · disabled 0 · unavailable 0")
+    assert summary(report, "queue: ").endswith(
+        f", unavailable 0, exceptions with a fix 0, scheduled audits failing {failing}"
+    )
     gh.calls.clear()
     gh.errors["repo list"] = "HTTP 502: Bad Gateway"  # no repo is known public
     hidden = [f"scheduled audit: 4 repos not known public, failing {failing}"]
