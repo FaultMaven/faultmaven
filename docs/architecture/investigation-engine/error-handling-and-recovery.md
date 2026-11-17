@@ -166,7 +166,7 @@ The `BaseExternalClient.call_external()` method checks `retryable` before retryi
 
 1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation;
 2. service-scoped: quota, rejected credentials (the breaker then latches their `error_code`);
-3. counted and retryable: a 5xx, a timeout, an unclassified exception (one with no status, such as "returned no choices");
+3. a 5xx, a timeout, or an unclassified failure (one with no status, such as "returned no choices"); the breaker counts the retryable ones;
 4. a throttle the provider's waits did not outlast;
 5. any other request-scoped rejection: a 4xx status;
 6. `CallShapeUnsupported`.

@@ -143,15 +143,15 @@ def chain_failure_rank(exc: BaseException) -> int:
 
     ``route_request`` raises the highest-ranked failure, the later one on a
     tie: 6 a caller remedy (context overflow, output truncation); 5
-    service-scoped (quota, rejected credentials); 4 counted and retryable or
-    unclassified (a 5xx, a timeout, a failure with no status); 3 a throttle;
+    service-scoped (quota, rejected credentials); 4 a 5xx, a timeout, or an
+    unclassified failure (one with no status); 3 a throttle;
     2 any other request-scoped rejection (a 4xx status); 1
     ``CallShapeUnsupported``. Fields are read from ``_failure_read(exc)``.
     """
     failure = _failure_read(exc)
     if isinstance(failure, CallShapeUnsupported):
         return 1
-    if declared_llm_category(exc) in _CALLER_REMEDY_CATEGORIES:
+    if declared_llm_category(failure) in _CALLER_REMEDY_CATEGORIES:
         return 6
     if getattr(failure, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
         return 5
