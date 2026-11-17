@@ -522,7 +522,7 @@ async def _ingest_pack_runbook(
         if pack_unchanged and not unserved:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             await _drop_stale_shares(
-                runbook.item_id, own_share, shares, db_session_factory
+                existing_row, own_share, shares, db_session_factory
             )
             return "skipped"
         if pack_unchanged and _content_hash(existing_row.content) != (
@@ -537,7 +537,7 @@ async def _ingest_pack_runbook(
                 "repair, which keeps the edit"
             )
             await _drop_stale_shares(
-                runbook.item_id, own_share, shares, db_session_factory
+                existing_row, own_share, shares, db_session_factory
             )
             return "skipped"
         logger.info(
@@ -584,22 +584,31 @@ async def _ingest_pack_runbook(
 
 
 async def _drop_stale_shares(
-    item_id: str,
+    row: Any,
     own_share: Optional[Tuple[str, str]],
     shares: Dict[str, Tuple[str, str]],
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> None:
     """Delete exactly the stale shares the skip's read found (#2386), in a
-    transaction of their own: a share a peer wrote since is never touched."""
+    transaction of their own: a share a peer wrote since is never touched.
+    The DELETE matches only while ``row`` (the row the skip read) still holds
+    its generation and scope; under PostgreSQL it share-locks that row, so a
+    peer's re-ingest either replaced it first or waits for this commit."""
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
     stale = [sid for sid, scope in shares.items() if scope != own_share]
     if not stale:
         return
+    unmoved = select(KnowledgeItemModel.item_id).filter_by(
+        item_id=row.item_id, vector_generation=row.vector_generation, scope=row.scope
+    )
     async with db_session_factory() as session:
         await PostgreSQLShareRepository(session).delete_other_scopes(
             resource_type="knowledge_item",
-            resource_id=item_id,
+            resource_id=row.item_id,
             keep=own_share,
             share_ids=stale,
+            guard=(unmoved.with_for_update(read=True).exists(),),
         )
         await session.commit()
 

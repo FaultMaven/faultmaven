@@ -400,3 +400,41 @@ async def test_the_skip_repair_spares_a_share_written_after_its_read(
         assert await _seed(world, _pack("v1", "team", T1)) == "skipped"
 
     assert [s[:2] for s in await _shares(world)] == [("team", T1), ("team", T2)]
+
+
+async def _move_scope(world, scope: str) -> None:
+    async with world.factory() as session:
+        (await session.get(KnowledgeItemModel, DOC)).scope = scope
+        await session.commit()
+
+
+@pytest.mark.parametrize(
+    "peer",
+    [
+        # A peer on the new pack re-ingests the row at T3 and keeps the stale
+        # T3 share's id as its own (``share`` does nothing on conflict).
+        lambda world: _seed(world, _pack("v2", "team", T3)),
+        lambda world: _move_scope(world, "personal"),
+    ],
+    ids=["reingested-at-t3", "scope-changed"],
+)
+async def test_the_skip_repair_deletes_nothing_once_the_row_moved(
+    factory, tmp_path, peer  # noqa: F811
+):
+    """The repair deletes the stale ids only while the row still carries the
+    generation and scope the skip read, in the DELETE itself: a row a peer
+    moved between that read and the repair keeps every share."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+    await _share_to(world, T3)
+    stale_t3 = [s for s in await _shares(world) if s[1] == T3]
+    real = kb_init._drop_stale_shares
+
+    async def peer_moves_it_first(*args):
+        await peer(world)
+        await real(*args)
+
+    with patch.object(kb_init, "_drop_stale_shares", peer_moves_it_first):
+        assert await _seed(world, _pack("v1", "team", T1)) == "skipped"
+
+    assert stale_t3 and set(stale_t3) <= set(await _shares(world))

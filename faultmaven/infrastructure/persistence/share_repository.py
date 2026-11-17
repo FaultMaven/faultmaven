@@ -14,7 +14,7 @@ to a soft-deleted team are already unreachable (``list_all_user_team_ids`` filte
 
 import logging
 import uuid
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,12 +128,14 @@ class PostgreSQLShareRepository(IShareRepository):
         resource_id: str,
         keep: Optional[Tuple[str, str]],
         share_ids: Optional[List[str]] = None,
+        guard: Tuple[Any, ...] = (),
     ) -> int:
         """Delete the resource's shares other than ``keep`` (``(scope_type,
         scope_id)``; every share when None), or exactly ``share_ids`` when a
-        caller already read them as stale; never commits, as :meth:`share`
-        (#2386). A DELETE is issued only for a share found: a SELECT-only role
-        is refused a DELETE even when it matches no row."""
+        caller already read them as stale, while every ``guard`` clause holds
+        (in the DELETE itself); never commits, as :meth:`share` (#2386). A
+        DELETE is issued only for a share found: a SELECT-only role is refused
+        a DELETE even when it matches no row."""
         if share_ids is None:
             stale = select(ResourceShareModel.share_id).where(
                 ResourceShareModel.resource_type == resource_type,
@@ -152,6 +154,7 @@ class PostgreSQLShareRepository(IShareRepository):
                 delete(ResourceShareModel).where(
                     ResourceShareModel.resource_id == resource_id,
                     ResourceShareModel.share_id.in_(share_ids),
+                    *guard,
                 )
             )
             logger.info(f"Removing {len(share_ids)} other share(s) of {resource_id}")
