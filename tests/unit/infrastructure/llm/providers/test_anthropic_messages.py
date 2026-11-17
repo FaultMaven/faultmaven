@@ -466,7 +466,8 @@ class TestAnthropicCacheBoundaryBreakpoint:
                 "text": _PREFIX,
                 "cache_control": {"type": "ephemeral"},
             },
-            {"type": "text", "text": _TAIL},
+            # The request's last block: the rolling breakpoint.
+            {"type": "text", "text": _TAIL, "cache_control": {"type": "ephemeral"}},
         ]
         assert content[0]["text"].endswith(CACHE_BOUNDARY + "\n")
         # The model reads the same prompt: the blocks concatenate to it.
@@ -484,10 +485,14 @@ class TestAnthropicCacheBoundaryBreakpoint:
             }
         ]
 
-    async def test_no_boundary_leaves_the_content_untouched(self, provider):
+    async def test_no_boundary_is_not_split(self, provider):
+        """No boundary, no split: the message is one block, and as the request's
+        last block it carries only the rolling breakpoint."""
         prompt = "You are FaultMaven.\nSTATE: INVESTIGATING\n"
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
-        assert body["messages"][0]["content"] == prompt
+        assert body["messages"][0]["content"] == [
+            {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
+        ]
 
     async def test_case_content_quoting_the_boundary_splits_at_the_first(
         self, provider
@@ -504,14 +509,20 @@ class TestAnthropicCacheBoundaryBreakpoint:
                 "text": _PREFIX,
                 "cache_control": {"type": "ephemeral"},
             },
-            {"type": "text", "text": _TAIL + quoted},
+            {
+                "type": "text",
+                "text": _TAIL + quoted,
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
 
     async def test_boundary_with_nothing_after_it_is_not_split(self, provider):
         """Anthropic rejects a blank text block, so a blank tail is not split off."""
         prompt = _PREFIX + "  \n"
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
-        assert body["messages"][0]["content"] == prompt
+        assert body["messages"][0]["content"] == [
+            {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
+        ]
 
     async def test_cache_prompt_off_leaves_the_content_untouched(self, provider):
         body = await _sent_body(provider, _loop_messages(_PREFIX + _TAIL))
@@ -546,6 +557,147 @@ class TestAnthropicCacheBoundaryBreakpoint:
                     "type": "tool_result",
                     "tool_use_id": "call_1",
                     "content": CACHE_BOUNDARY,
+                    # The request's last block: the rolling breakpoint.
+                    "cache_control": {"type": "ephemeral"},
                 }
             ],
         }
+        # The tail is no longer the last block, so it carries no mark of its own.
+        assert "cache_control" not in body["messages"][0]["content"][1]
+
+
+def _strip_cache_control(value):
+    """*value* with every ``cache_control`` key removed, recursively."""
+    if isinstance(value, dict):
+        return {
+            k: _strip_cache_control(v) for k, v in value.items() if k != "cache_control"
+        }
+    if isinstance(value, list):
+        return [_strip_cache_control(v) for v in value]
+    return value
+
+
+def _breakpoints(body: dict) -> list:
+    """Every block of *body* that carries a ``cache_control`` breakpoint."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if "cache_control" in value:
+                found.append(value)
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(body)
+    return found
+
+
+def _tool_round(n: int) -> list[dict]:
+    """One tool-loop round as the engine appends it: a call and its result."""
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"call_{n}",
+                    "type": "function",
+                    "function": {"name": "search_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": f"call_{n}", "content": f"result {n}"},
+    ]
+
+
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_file",
+            "description": "Search a file.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAnthropicRollingBreakpoint:
+    """``cache_prompt`` also marks the request's END, so the next tool-loop
+    iteration reads this one's whole request back from the cache, not only the
+    standing prefix."""
+
+    async def _iterations(self, provider) -> list[dict]:
+        """Bodies of four consecutive tool-loop iterations of one turn, the
+        third carrying the engine's plain-string nudge as its last message."""
+        base = _loop_messages(_PREFIX + _TAIL)
+        nudge = {"role": "user", "content": "Call one of the tools."}
+        histories = [
+            base,
+            base + _tool_round(1),
+            base + _tool_round(1) + [nudge],
+            base + _tool_round(1) + [nudge] + _tool_round(2),
+        ]
+        return [
+            await _sent_body(
+                provider, h, cache_prompt=True, tools=_TOOLS, tool_choice="auto"
+            )
+            for h in histories
+        ]
+
+    async def test_the_last_block_of_every_iteration_is_marked(self, provider):
+        for body in await self._iterations(provider):
+            last_block = body["messages"][-1]["content"][-1]
+            assert last_block["cache_control"] == {"type": "ephemeral"}
+
+    async def test_each_iteration_extends_the_previous_one(self, provider):
+        """Up to the moved breakpoint, iteration k+1 re-sends iteration k's
+        request unchanged: the same tools, system and tool_choice, and k's
+        messages as the first messages of k+1. A string nudge is a text block
+        both when it is last and when it is not."""
+        bodies = [_strip_cache_control(b) for b in await self._iterations(provider)]
+        for before, after in zip(bodies, bodies[1:]):
+            for key in ("tools", "system", "tool_choice"):
+                assert before.get(key) == after.get(key)
+            n = len(before["messages"])
+            assert after["messages"][:n] == before["messages"]
+        assert bodies[2]["messages"][-1]["content"] == [
+            {"type": "text", "text": "Call one of the tools."}
+        ]
+
+    async def test_breakpoints_stay_within_the_api_limit(self, provider):
+        """System, boundary and the rolling one: three of the API's four."""
+        for body in await self._iterations(provider):
+            assert len(_breakpoints(body)) == 3
+
+    async def test_a_thinking_block_is_never_marked(self, provider):
+        """A thinking block cannot carry a breakpoint, nor can an empty text
+        block: the mark goes on the last block that can."""
+        echoed = [
+            {"type": "text", "text": "Looking."},
+            {"type": "text", "text": ""},
+            {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+        ]
+        messages = _loop_messages(_PREFIX + _TAIL) + [
+            {
+                "role": "assistant",
+                "content": "Looking.",
+                "provider_metadata": {"assistant_content": echoed},
+            }
+        ]
+        body = await _sent_body(provider, messages, cache_prompt=True)
+        last = body["messages"][-1]["content"]
+        assert last[0]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in last[1]
+        assert "cache_control" not in last[2]
+
+    async def test_cache_prompt_off_marks_nothing(self, provider):
+        messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)
+        body = await _sent_body(provider, messages, tools=_TOOLS, tool_choice="auto")
+        assert _breakpoints(body) == []
+        assert body["messages"][0]["content"] == _PREFIX + _TAIL

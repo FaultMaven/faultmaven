@@ -570,6 +570,7 @@ class AnthropicProvider(BaseLLMProvider):
             anthropic_messages = converted["messages"]
             if cache_prompt:
                 _mark_cache_boundary(anthropic_messages)
+                _mark_rolling_breakpoint(anthropic_messages)
             request_body["messages"] = anthropic_messages
             if converted.get("system"):
                 request_body["system"] = converted["system"]
@@ -1162,3 +1163,56 @@ def _mark_cache_boundary(messages: list) -> None:
             {"type": "text", "text": tail},
         ],
     }
+
+
+# Block types a cache_control breakpoint may not sit on: Anthropic caches
+# thinking blocks only as part of the prefix they belong to, never directly.
+_UNMARKABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _mark_rolling_breakpoint(messages: list) -> None:
+    """Put a breakpoint at the END of a ``cache_prompt`` request (the tool loop).
+
+    The system and boundary breakpoints cache only the standing prefix. Each
+    tool-loop iteration re-sends everything after it, too: this turn's case,
+    and every earlier tool call and result. Without a mark at the end, those
+    bytes are paid in full on every iteration. A breakpoint on the request's
+    last block writes them once, and the next iteration, whose request extends
+    this one, reads them back: the breakpoint lookback finds the earlier entry,
+    which sits two positions back (one tool_use run, one tool_result run).
+
+    Every string-content user message becomes one text block first, wherever
+    it sits. A nudge or an elision marker is the last message on one iteration
+    and an earlier one on the next; shaping it alike in both is what keeps the
+    two requests the same bytes up to the new end. ``_mark_cache_boundary``
+    runs first, so a first message holding the boundary is already split; one
+    without it is wrapped like the rest.
+
+    The mark goes on the last message's last block that can carry one: never a
+    thinking block, never an empty text block (both refused), and nothing
+    when that block already holds a breakpoint. The original blocks are copied,
+    not mutated: an assistant message echoes the caller's own saved blocks.
+    Breakpoints stay within the API's four: system, boundary and this one.
+    """
+    for i, msg in enumerate(messages):
+        content = msg.get("content")
+        if msg.get("role") == "user" and isinstance(content, str) and content.strip():
+            messages[i] = {**msg, "content": [{"type": "text", "text": content}]}
+    if not messages:
+        return
+    last = messages[-1]
+    blocks = last.get("content")
+    if not isinstance(blocks, list):
+        return
+    for j in range(len(blocks) - 1, -1, -1):
+        block = blocks[j]
+        if not isinstance(block, dict) or block.get("type") in _UNMARKABLE_BLOCK_TYPES:
+            continue
+        if block.get("type") == "text" and not str(block.get("text", "")).strip():
+            continue
+        if "cache_control" in block:
+            return
+        marked = list(blocks)
+        marked[j] = {**block, "cache_control": {"type": "ephemeral"}}
+        messages[-1] = {**last, "content": marked}
+        return

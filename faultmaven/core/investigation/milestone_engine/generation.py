@@ -872,9 +872,15 @@ class StructuredOutputGenerator:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                # Cache the stable prefix (system + tools) across the tool-loop
-                # iterations. Only Anthropic acts on this; other providers pop it.
-                cache_prompt=True,
+                # Ask for the request to be cached, so the next iteration reads
+                # back what this one sent. Anthropic (explicit breakpoints) and
+                # llama.cpp act on it; every other provider pops it. Not on a
+                # schema-only call (final, force_schema, ceiling): it offers a
+                # different tool set, which invalidates every cached entry, so
+                # its writes could never be read back.
+                cache_prompt=not (
+                    tools_for_call is schema_tools and investigation_tools
+                ),
             )
             if direct_provider:
                 if self.deps.da_model:
