@@ -13318,7 +13318,7 @@
     },
     "/api/v1/knowledge/conversions/by-case/{case_id}": {
       "get": {
-        "description": "Get the conversion job and drafts for a specific case.",
+        "description": "Get the conversion job and drafts for a specific case: its latest job,\nas `GET /knowledge/conversions/{conversion_id}` returns it.",
         "operationId": "get_conversion_by_case_api_v1_knowledge_conversions_by_case__case_id__get",
         "parameters": [
           {
@@ -13901,7 +13901,7 @@
                 "schema": {}
               }
             },
-            "description": "The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the job as `GET /knowledge/conversions/{conversion_id}` returns it now: drafts as edited or verified since, discarded drafts left out, in that read's order, and carries `X-Idempotency-Replayed: true`.",
+            "description": "The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the job as `GET /knowledge/conversions/{conversion_id}` returns it now: drafts as edited or verified since, discarded drafts left out, in that read's order (unsorted), and carries `X-Idempotency-Replayed: true`.",
             "headers": {
               "X-Idempotency-Replayed": {
                 "description": "`true` when this response replays a request that already published under this `Idempotency-Key`; absent otherwise.",

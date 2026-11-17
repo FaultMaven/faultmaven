@@ -156,10 +156,10 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         title=(
             "A keyed `POST /knowledge/convert` retry is answered with the "
             "conversion as `GET /knowledge/conversions/{conversion_id}` returns "
-            "it now, not a stored copy of the first answer (#2452), and that "
-            "read returns each draft's `quality_warning` and a `created_at` "
-            "with a UTC offset (#2451). MINOR: no field or status is added or "
-            "removed."
+            "it now, not a stored copy of the first answer (#2452). That read, "
+            "and `GET /knowledge/conversions/by-case/{case_id}`, return each "
+            "draft's `quality_warning` and a `created_at` in `Z` (#2451). "
+            "MINOR: no field or status is added or removed."
         ),
         body=r"""The receipt of a keyed conversion stores the job's id and none of
 its drafts, so text edited out of a draft is no longer kept, or served, under
@@ -171,17 +171,25 @@ it now stands:
   `verified` status;
 * a discarded draft is left out, so `drafts` is `[]` once every draft is
   discarded;
-* the drafts come in the read's order, which for a job of more than one
-  draft can differ from the first answer's: match them by `draft_id`.
+* the drafts come in the read's order, unsorted: on SQLite the order they
+  were written, which is the first answer's; on PostgreSQL the order can
+  differ, so match them by `draft_id`.
 
 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` now means the conversion committed and its
-job can no longer be read (reload your conversions).
+job can no longer be read, because it is gone or its stored rows no longer
+parse (reload your conversions).
 
-`GET /knowledge/conversions/{conversion_id}` now returns each draft's
-`quality_warning` as the conversion's first answer gave it (null at a score of
-50 or above, and for a knowledge-base upload's draft), where it returned null,
-and answers in JSON mode: `created_at` carries a UTC offset (`Z`) on every
-database, where SQLite's read had none.""",
+`GET /knowledge/conversions/{conversion_id}` and
+`GET /knowledge/conversions/by-case/{case_id}` now return a `quality_warning`
+on each draft still in `draft` status whose stored score is below 50, where
+they returned null. Its text is the one the draft's writer uses (a document
+or case conversion, the template, the scan), chosen by the job's stored
+analysis; it is null at 50 or above, on a verified draft, and on a
+knowledge-base upload's draft. After an edit, the stored score is the edited
+text's, so the warning follows the edit while keeping the writer's text,
+not the edit route's. Both routes answer in JSON mode: `created_at` reads
+`...Z` on every database, where SQLite's read had no offset and PostgreSQL's
+read `+00:00`.""",
     ),
     ContractChange(
         version="15.2.0",

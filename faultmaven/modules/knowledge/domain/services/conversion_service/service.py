@@ -1350,11 +1350,11 @@ class ConversionService:
     ) -> Optional[ConversionResponse]:
         """Get conversion job with all drafts.
 
-        It answers as the conversion's first answer did (#2451): each draft's
-        ``quality_warning`` from its stored score, and ``created_at`` in UTC.
-        A keyed conversion's retry is answered with this read (#2452). Drafts
-        are in ``(created_at, id)`` order: every draft of a job shares its
-        ``created_at``, and no column holds the first answer's order."""
+        Each draft that is still a draft carries a ``quality_warning`` below
+        the threshold, its writer's text paired with the stored score (#2451),
+        and ``created_at`` is UTC. A keyed conversion's retry is answered with
+        this read (#2452). The drafts are not sorted: they come in the order
+        the database returns them, on SQLite the order they were written."""
         if not self._db_session_factory:
             return None
 
@@ -1374,12 +1374,10 @@ class ConversionService:
                 return None
 
             draft_result = await session.execute(
-                select(ConversionDraftModel)
-                .where(
+                select(ConversionDraftModel).where(
                     ConversionDraftModel.conversion_id == conversion_id,
                     ConversionDraftModel.status != DraftStatus.DISCARDED.value,
                 )
-                .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
             )
             draft_models = draft_result.scalars().all()
 
@@ -1451,9 +1449,12 @@ class ConversionService:
                     quality_score=quality,
                     content_preview=dm.content[:500],
                     content=dm.content,
+                    # A draft's warning is advice before verification: a
+                    # verified draft carries none.
                     quality_warning=(
                         warning_text
-                        if quality.overall < QUALITY_WARNING_THRESHOLD
+                        if dm.status == DraftStatus.DRAFT.value
+                        and quality.overall < QUALITY_WARNING_THRESHOLD
                         else None
                     ),
                 )

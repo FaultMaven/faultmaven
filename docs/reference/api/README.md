@@ -2794,7 +2794,8 @@ List the current user's conversion jobs.
 
 **Get Conversion By Case**
 
-Get the conversion job and drafts for a specific case.
+Get the conversion job and drafts for a specific case: its latest job,
+as `GET /knowledge/conversions/{conversion_id}` returns it.
 
 **Tags:** `knowledge-conversion`
 
@@ -2991,7 +2992,7 @@ request converts again.
 
 **Responses:**
 
-- `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the job as `GET /knowledge/conversions/{conversion_id}` returns it now: drafts as edited or verified since, discarded drafts left out, in that read's order, and carries `X-Idempotency-Replayed: true`.
+- `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the job as `GET /knowledge/conversions/{conversion_id}` returns it now: drafts as edited or verified since, discarded drafts left out, in that read's order (unsorted), and carries `X-Idempotency-Replayed: true`.
 - `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the conversion committed and can no longer be read: reload your conversions). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 

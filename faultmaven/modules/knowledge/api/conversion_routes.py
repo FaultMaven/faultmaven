@@ -33,7 +33,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.api.exception_handlers import (
     global_service_exception_http_exception,
@@ -160,19 +160,33 @@ async def _replayed_conversion(
 ) -> JSONResponse:
     """The receipt's job as ``GET /knowledge/conversions/{id}`` reads it now,
     marked a replay (#2452): the receipt holds no copy of its drafts. A job
-    that can no longer be read is 409 ``IDEMPOTENCY_REPLAY_UNAVAILABLE``."""
-    conversion = (
-        await service.get_conversion(receipt.conversion_id, user_id)
-        if receipt.conversion_id
-        else None
+    that is gone, or whose stored rows no longer parse, is 409
+    ``IDEMPOTENCY_REPLAY_UNAVAILABLE``."""
+    unavailable = HTTPException(
+        status_code=409,
+        detail="This conversion committed; reload your conversions.",
+        headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
     )
-    if conversion is None:
-        logger.error("A conversion receipt names a job that cannot be read")
-        raise HTTPException(
-            status_code=409,
-            detail="This conversion committed; reload your conversions.",
-            headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
+    try:
+        conversion = (
+            await service.get_conversion(receipt.conversion_id, user_id)
+            if receipt.conversion_id
+            else None
         )
+    except (ValidationError, ValueError) as unreadable:
+        # The class only: the message would carry the stored row's values.
+        logger.error(
+            "Conversion %s cannot be replayed: its rows no longer parse (%s)",
+            receipt.conversion_id,
+            type(unreadable).__name__,
+        )
+        raise unavailable from None
+    if conversion is None:
+        logger.warning(
+            "Conversion %s cannot be replayed: its job is gone",
+            receipt.conversion_id,
+        )
+        raise unavailable
     return replayed(receipt, content=conversion.model_dump(mode="json"))
 
 
@@ -186,7 +200,7 @@ async def _replayed_conversion(
         replay_body=(
             "the job as `GET /knowledge/conversions/{conversion_id}` returns it "
             "now: drafts as edited or verified since, discarded drafts left "
-            "out, in that read's order"
+            "out, in that read's order (unsorted)"
         ),
         conflicts=(
             f" `{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the conversion committed and "
@@ -861,11 +875,13 @@ async def get_conversion_by_case(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Get the conversion job and drafts for a specific case."""
+    """Get the conversion job and drafts for a specific case: its latest job,
+    as `GET /knowledge/conversions/{conversion_id}` returns it."""
     result = await service.get_conversion_by_case(
         case_id=case_id,
         user_id=current_user.user_id,
     )
     if not result:
         raise HTTPException(status_code=404, detail="No conversion found for this case")
-    return result.model_dump()
+    # JSON mode, as ``GET /conversions/{id}`` answers: ``created_at`` in Z.
+    return result.model_dump(mode="json")

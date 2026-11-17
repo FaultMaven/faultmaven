@@ -336,13 +336,14 @@ async def test_a_duplicate_that_ran_without_a_claim_is_answered_with_the_first(
 
 
 @pytest.mark.parametrize("claimless", [False, True], ids=["retry", "claimless"])
-async def test_a_conversion_whose_job_is_gone_is_not_replayed(world, claimless):
+async def test_a_conversion_whose_job_is_gone_is_not_replayed(world, claimless, caplog):
     """A retry is answered from the job the receipt names (#2452). A job
     deleted between the receipt read and the job read is a 409, on a retry and
     on a claimless duplicate's read-back alike, as the turn's replay is."""
     if claimless:
         world.app.state.redis_client = None
-    assert (await world.post("convert")).status_code == 201
+    first = await world.post("convert")
+    assert first.status_code == 201, first.text
     real, calls = world.conversion.get_request_receipt, []
 
     async def lookup(key):
@@ -362,6 +363,9 @@ async def test_a_conversion_whose_job_is_gone_is_not_replayed(world, claimless):
     assert again.status_code == 409, again.text
     assert again.headers["x-error-code"] == IDEMPOTENCY_REPLAY_UNAVAILABLE
     assert await world.published("convert") == 0
+    gone = [r for r in caplog.records if r.name == conversion_routes.__name__]
+    assert [r.levelname for r in gone] == ["WARNING"]
+    assert first.json()["conversion_id"] in gone[0].getMessage()
 
 
 @pytest.mark.parametrize("landed", [True, False], ids=["landed", "refused"])

@@ -16,7 +16,7 @@ stubbed), so the naive-datetime read is the one exercised.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,7 +24,10 @@ import pytest
 from sqlalchemy import func, select, update
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_REPLAY_UNAVAILABLE,
+    IDEMPOTENCY_REPLAYED_HEADER,
+)
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -32,7 +35,10 @@ from faultmaven.infrastructure.persistence.models import (
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
+    ConversionDraft,
+    ConversionStatus,
     SourceAssessment,
+    SourceFileInfo,
 )
 from faultmaven.modules.knowledge.domain.models.validation import (
     QualityScore,
@@ -43,6 +49,9 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     service as conversion_module,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service.job_persistence import (
+    _persist_job,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_scan import (
     CONVERSION_QUALITY_WARNING,
@@ -59,6 +68,7 @@ from tests.integration.modules.knowledge.test_kb_request_receipts_2433 import ( 
     world,
 )
 from tests.runbook_samples import valid_runbook
+from tests.utils import regex_only_sanitizer
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -83,16 +93,20 @@ def _scored(low_word: str):
 
     async def check(content, **_kwargs):
         overall = 30.0 if low_word in content.lower() else 80.0
-        return ValidationResult(passed=True), QualityScore(
-            overall=overall,
-            grade="F" if overall < 50 else "B",
-            completeness=overall,
-            clarity=overall,
-            actionability=overall,
-            comprehensiveness=overall,
-        )
+        return ValidationResult(passed=True), _score(overall)
 
     return check
+
+
+def _score(overall: float) -> QualityScore:
+    return QualityScore(
+        overall=overall,
+        grade="F" if overall < 50 else "B",
+        completeness=overall,
+        clarity=overall,
+        actionability=overall,
+        comprehensiveness=overall,
+    )
 
 
 @pytest.fixture
@@ -113,8 +127,9 @@ def _drafts_by_id(body: dict) -> dict:
 
 
 def _ordered(body: dict) -> dict:
-    """``body`` with its drafts in ``draft_id`` order: the read's order is not
-    the first answer's, so bodies are compared by draft."""
+    """``body`` with its drafts in ``draft_id`` order. The read is unsorted:
+    on PostgreSQL its order need not be the first answer's, so bodies are
+    compared by draft."""
     return {**body, "drafts": sorted(body["drafts"], key=lambda d: d["draft_id"])}
 
 
@@ -129,6 +144,18 @@ async def _receipt_response(world) -> dict:
         return (
             await session.execute(select(KbRequestReceiptModel.response))
         ).scalar_one()
+
+
+async def _set_status(world, draft_id: str, status: str) -> None:
+    """The row as a discard or a verify leaves it (both run more, which this
+    harness does not wire: the trace eraser, the indexing)."""
+    async with world.factory() as session:
+        await session.execute(
+            update(ConversionDraftModel)
+            .where(ConversionDraftModel.id == draft_id)
+            .values(status=status)
+        )
+        await session.commit()
 
 
 async def _count(world, model) -> int:
@@ -221,7 +248,7 @@ async def test_get_answers_the_convert_body(two_drafts):
     read = await _read(two_drafts, answer.json()["conversion_id"])
 
     assert read["created_at"].endswith("Z")
-    assert _ordered(read) == _ordered(answer.json())
+    assert read == answer.json()
 
 
 async def test_a_two_draft_replay_answers_each_draft(two_drafts):
@@ -319,24 +346,87 @@ async def test_a_replay_shows_discards_and_verifies_since(two_drafts):
         assert again.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
         return [(d["draft_id"], d["status"]) for d in again.json()["drafts"]]
 
-    async def set_status(draft_id, status):
-        """The row as a discard or a verify leaves it (both run more, which
-        this harness does not wire: the trace eraser, the indexing)."""
-        async with two_drafts.factory() as session:
-            await session.execute(
-                update(ConversionDraftModel)
-                .where(ConversionDraftModel.id == draft_id)
-                .values(status=status)
-            )
-            await session.commit()
-
-    await set_status(dropped, "discarded")
+    await _set_status(two_drafts, dropped, "discarded")
     assert await statuses() == [(kept, "draft")]
-    await set_status(kept, "verified")
+    await _set_status(two_drafts, kept, "verified")
     assert await statuses() == [(kept, "verified")]
-    await set_status(kept, "discarded")
+    await _set_status(two_drafts, kept, "discarded")
     assert await statuses() == []
     assert await _count(two_drafts, ConversionJobModel) == 1
+
+
+async def test_a_verified_draft_reads_back_with_no_warning(two_drafts):
+    """The warning is advice before verification: a verified draft below the
+    threshold carries none on the read."""
+    body = (await two_drafts.post("convert", key=None)).json()
+    low = next(d["draft_id"] for d in body["drafts"] if d["quality_warning"])
+    await _set_status(two_drafts, low, "verified")
+
+    read = _drafts_by_id(await _read(two_drafts, body["conversion_id"]))
+
+    assert read[low]["status"] == "verified"
+    assert read[low]["quality_score"]["overall"] < 50
+    assert read[low]["quality_warning"] is None
+
+
+async def test_the_read_keeps_the_written_draft_order(world):
+    """On SQLite the read returns a job's drafts in the order the convert's
+    writer stored them, its answer's ``drafts`` order. Ids in neither
+    ascending nor descending order catch any sort."""
+    order = ["draft_9", "draft_5", "draft_7"]
+    await _persist_job(
+        world.factory,
+        None,
+        conversion_id="conv_order",
+        user_id=OWNER,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        scope="personal",
+        team_id=None,
+        status=ConversionStatus.COMPLETED,
+        source_file=SourceFileInfo(filename="doc.md", size_bytes=1, content_type="x"),
+        analysis=TWO_MODES,
+        drafts=[
+            ConversionDraft(
+                draft_id=draft_id,
+                runbook_id=f"rb-{draft_id}",
+                title=f"Runbook {draft_id}",
+                scope="personal",
+                validation=ValidationResult(passed=True),
+                quality_score=_score(80.0),
+                content_preview="x",
+                content="x",
+            )
+            for draft_id in order
+        ],
+        created_at=datetime.now(timezone.utc),
+        sanitizer=regex_only_sanitizer(),
+    )
+
+    read = await _read(world, "conv_order")
+
+    assert [d["draft_id"] for d in read["drafts"]] == order
+
+
+@pytest.mark.parametrize(
+    "column, value",
+    [("analysis_result", {"bogus": True}), ("source_type", "bogus")],
+    ids=["validation-error", "value-error"],
+)
+async def test_a_replay_whose_rows_no_longer_parse_is_a_409(world, column, value):
+    """A stored row the read can no longer parse is the replay's 409, never
+    the convert route's 500."""
+    first = await world.post("convert")
+    model = ConversionJobModel if column == "analysis_result" else ConversionDraftModel
+    async with world.factory() as session:
+        await session.execute(update(model).values({column: value}))
+        await session.commit()
+
+    again = await world.post("convert")
+
+    assert again.status_code == 409, again.text
+    assert again.headers["x-error-code"] == IDEMPOTENCY_REPLAY_UNAVAILABLE
+    assert "bogus" not in again.text
+    assert first.json()["conversion_id"]
 
 
 async def test_a_failed_conversion_replays_as_its_job(world):
