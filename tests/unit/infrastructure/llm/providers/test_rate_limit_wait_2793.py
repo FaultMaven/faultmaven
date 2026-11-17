@@ -321,16 +321,18 @@ def _routed_registry(provider):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure,opens",
+    "failure,opens,unhealthy",
     [
-        (lambda: _throttled({"retry-after": "1"}), False),
-        (lambda: _response(429, _QUOTA_BODY, {"retry-after": "1"}), True),
-        (lambda: _response(500, '{"error":{"message":"internal"}}'), True),
+        (lambda: _throttled({"retry-after": "1"}), False, False),
+        # A status-carrying 4xx is never recorded on health (#2833
+        # consequence (ii)); the breaker still opens and latches quota.
+        (lambda: _response(429, _QUOTA_BODY, {"retry-after": "1"}), True, False),
+        (lambda: _response(500, '{"error":{"message":"internal"}}'), True, True),
     ],
     ids=["throttle", "insufficient-quota", "5xx"],
 )
 async def test_three_failed_routes_open_the_breaker_only_for_an_outage(
-    sleep, failure, opens
+    sleep, failure, opens, unhealthy
 ):
     registry = _routed_registry(_azure())
     # Each of the three routes sends until its waits are spent (three POSTs
@@ -364,7 +366,7 @@ async def test_three_failed_routes_open_the_breaker_only_for_an_outage(
 
     if opens:
         assert breaker_state == "open"
-        assert health is ProviderHealth.UNHEALTHY
+        assert (health is ProviderHealth.UNHEALTHY) is unhealthy
         # The open breaker refuses the fourth route before any request.
         assert session.post.call_count == posts_before_fourth
     else:
@@ -429,10 +431,11 @@ def test_a_wait_is_taken_only_when_twice_it_fits_the_call(retry_after, taken):
 @pytest.mark.parametrize(
     "primary,raised_status,counted",
     [
-        # A counted outage stays the raised error, so the breaker sees it.
+        # A counted outage outranks the throttle (#2833), so the breaker sees it.
         ((503, '{"error":{"message":"overloaded"}}'), 503, 1),
-        # A request-scoped rejection is not counted, so the throttle (the
-        # retryable answer) is raised, uncounted, as on main.
+        # A request-scoped rejection ranks below the throttle, so the throttle
+        # is raised, uncounted; nor is the status-carrying 400 recorded on the
+        # primary's health (#2833 consequence (ii)).
         ((400, '{"error":{"type":"invalid_request_error","message":"bad"}}'), 429, 0),
     ],
     ids=["503-counted", "400-request-scoped"],
@@ -466,7 +469,7 @@ async def test_a_throttled_fallback_raises_the_failure_the_breaker_counts(
 
     assert raised.value.status_code == raised_status
     assert router.circuit_breaker.failure_count == counted
-    assert registry._provider_states["azure"].consecutive_failures == 1
+    assert registry._provider_states["azure"].consecutive_failures == counted
     assert registry._provider_states["openai"].consecutive_failures == 0
 
 

@@ -887,8 +887,7 @@ def counts_against_breaker(exc: BaseException) -> bool:
 
     A non-retryable failure counts only when it is service-scoped (quota,
     rejected credentials); a request-scoped one says nothing about the service.
-    Any other failure counts, except a throttle (#2793). The registry reads the
-    same answer to decide which failure in a fallback chain is raised.
+    Any other failure counts, except a throttle (#2793).
     """
     if getattr(exc, "retryable", True) is False:
         return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
