@@ -19,12 +19,12 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 from typing import List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.kb_pack import PackChunk, PackRunbook
@@ -350,6 +350,53 @@ async def test_the_share_clean_up_runs_after_the_insert(
 
     order = spy.seen
     insert = order.index(("INSERT", "knowledge_items"))
-    delete = order.index(("DELETE", "resource_shares"))
-    read = max(i for i in range(delete) if order[i] == ("SELECT", "resource_shares"))
-    assert insert < read < delete, order
+    dropped = order.index(("DELETE", "resource_shares"))
+    read = max(i for i in range(dropped) if order[i] == ("SELECT", "resource_shares"))
+    assert insert < read < dropped, order
+
+
+async def _share_to(world, team: str) -> None:
+    await world.shares.share(
+        resource_type="knowledge_item",
+        resource_id=DOC,
+        scope_type="team",
+        scope_id=team,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+    )
+
+
+async def test_a_move_is_seen_when_the_old_share_is_gone(
+    factory, tmp_path  # noqa: F811
+):
+    """A team row with no share at all still lacks the pack's team share."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+    async with factory() as session:
+        await session.execute(
+            delete(ResourceShareModel).where(ResourceShareModel.resource_id == DOC)
+        )
+        await session.commit()
+
+    assert await _seed(world, _pack("v1", "team", T2)) == "ingested"
+
+    assert [s[:2] for s in await _shares(world)] == [("team", T2)]
+
+
+async def test_the_skip_repair_spares_a_share_written_after_its_read(
+    factory, tmp_path  # noqa: F811
+):
+    """The repair deletes only the share ids the skip read as stale: a peer's
+    share written between that read and the repair survives."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+    await _share_to(world, T3)
+    real = kb_init._drop_stale_shares
+
+    async def peer_writes_first(*args):
+        await _share_to(world, T2)
+        await real(*args)
+
+    with patch.object(kb_init, "_drop_stale_shares", peer_writes_first):
+        assert await _seed(world, _pack("v1", "team", T1)) == "skipped"
+
+    assert [s[:2] for s in await _shares(world)] == [("team", T1), ("team", T2)]

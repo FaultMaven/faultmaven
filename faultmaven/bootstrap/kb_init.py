@@ -28,8 +28,8 @@ Per runbook
     ``_ingest_pack_runbook`` ingests one runbook:
       1. Take the deterministic ``item_id`` the pack carries.
       2. Check ``knowledge_items`` — if present, ingested from this pack
-         version (the pack hash stamped on the row), at the pack's scope and
-         team (#2386) AND served (a chunk carries the row's
+         version (the pack hash stamped on the row), at the pack's scope and,
+         with a share repository wired, its team share (#2386) AND served (a chunk carries the row's
          ``vector_generation``, #2388), skip, deleting any share that is not
          the row's own.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...,
@@ -420,9 +420,9 @@ async def _ingest_pack_runbook(
     it deletes only that row: a peer that replaced it first wins, and this
     ingest fails.
 
-    A new placement (a scope other than the row's, or a team not among the
-    team row's shares, when it has any) is a change whatever the hash
-    (#2386). A skipped row has its shares other than its own deleted.
+    A new placement (a scope other than the row's or, with a share
+    repository wired, a team share the row lacks) is a change whatever the
+    hash (#2386). A skipped row has the shares its read found stale deleted.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -471,10 +471,10 @@ async def _ingest_pack_runbook(
             )
         )
         existing_row = existing.scalar_one_or_none()
-        shares: Set[Tuple[str, str]] = set()
+        shares: Dict[str, Tuple[str, str]] = {}  # share_id -> its scope
         if existing_row is not None:
             shares = {
-                (share.scope_type, share.scope_id)
+                share.share_id: (share.scope_type, share.scope_id)
                 for share in await PostgreSQLShareRepository(
                     session
                 ).list_scopes_for_resource("knowledge_item", runbook.item_id)
@@ -511,11 +511,12 @@ async def _ingest_pack_runbook(
                     {**metadata, PACK_CONTENT_HASH_KEY: runbook.content_hash},
                     db_session_factory,
                 )
-        # A pack entry that moves the runbook to another scope or team is a
-        # change, whatever its content (#2386): a team row's stored team is
-        # its shares, compared only when it has any.
+        # A move to another scope, or a team row lacking the pack's team share
+        # (when a share repository can write it), is a change (#2386).
         moved = existing_row.scope != runbook.scope or bool(
-            own_share and shares and own_share not in shares
+            own_share
+            and getattr(knowledge_service, "_share_repo", None)
+            and own_share not in shares.values()
         )
         pack_unchanged = pack_unchanged and not moved
         if pack_unchanged and not unserved:
@@ -585,16 +586,20 @@ async def _ingest_pack_runbook(
 async def _drop_stale_shares(
     item_id: str,
     own_share: Optional[Tuple[str, str]],
-    shares: Set[Tuple[str, str]],
+    shares: Dict[str, Tuple[str, str]],
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> None:
-    """Delete a skipped pack row's shares other than its own (#2386), in a
-    transaction of their own, only when the skip's read (``shares``) found one."""
-    if not shares - {own_share}:
+    """Delete exactly the stale shares the skip's read found (#2386), in a
+    transaction of their own: a share a peer wrote since is never touched."""
+    stale = [sid for sid, scope in shares.items() if scope != own_share]
+    if not stale:
         return
     async with db_session_factory() as session:
         await PostgreSQLShareRepository(session).delete_other_scopes(
-            resource_type="knowledge_item", resource_id=item_id, keep=own_share
+            resource_type="knowledge_item",
+            resource_id=item_id,
+            keep=own_share,
+            share_ids=stale,
         )
         await session.commit()
 

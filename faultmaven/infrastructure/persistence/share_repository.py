@@ -127,32 +127,34 @@ class PostgreSQLShareRepository(IShareRepository):
         resource_type: str,
         resource_id: str,
         keep: Optional[Tuple[str, str]],
+        share_ids: Optional[List[str]] = None,
     ) -> int:
         """Delete the resource's shares other than ``keep`` (``(scope_type,
-        scope_id)``; every share when None); never commits, as :meth:`share`
-        (#2386). The DELETE is issued only when the SELECT found one: a
-        SELECT-only role is refused a DELETE even when it matches no row."""
-        stale = select(ResourceShareModel.share_id).where(
-            ResourceShareModel.resource_type == resource_type,
-            ResourceShareModel.resource_id == resource_id,
-        )
-        if keep is not None:
-            stale = stale.where(
-                or_(
-                    ResourceShareModel.scope_type != keep[0],
-                    ResourceShareModel.scope_id != keep[1],
-                )
+        scope_id)``; every share when None), or exactly ``share_ids`` when a
+        caller already read them as stale; never commits, as :meth:`share`
+        (#2386). A DELETE is issued only for a share found: a SELECT-only role
+        is refused a DELETE even when it matches no row."""
+        if share_ids is None:
+            stale = select(ResourceShareModel.share_id).where(
+                ResourceShareModel.resource_type == resource_type,
+                ResourceShareModel.resource_id == resource_id,
             )
-        share_ids = list((await self.db.execute(stale)).scalars())
+            if keep is not None:
+                stale = stale.where(
+                    or_(
+                        ResourceShareModel.scope_type != keep[0],
+                        ResourceShareModel.scope_id != keep[1],
+                    )
+                )
+            share_ids = list((await self.db.execute(stale)).scalars())
         if share_ids:
             await self.db.execute(
                 delete(ResourceShareModel).where(
-                    ResourceShareModel.share_id.in_(share_ids)
+                    ResourceShareModel.resource_id == resource_id,
+                    ResourceShareModel.share_id.in_(share_ids),
                 )
             )
-            logger.info(
-                f"Removed {len(share_ids)} other share(s) of {resource_type}:{resource_id}"
-            )
+            logger.info(f"Removing {len(share_ids)} other share(s) of {resource_id}")
         return len(share_ids)
 
     async def unshare(
