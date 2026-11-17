@@ -30,7 +30,10 @@ import math
 import secrets
 from typing import Any, Awaitable, Callable, Optional
 
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_class_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +159,8 @@ async def take_claim(
     except Exception as exc:  # noqa: BLE001 - the caller's backstop holds
         _report_once(
             f"{purpose}:claim-failed",
-            "In-flight claim unavailable (%r): %s run without it",
-            exc,
+            "In-flight claim unavailable (%s): %s run without it",
+            exception_class_chain(exc),
             purpose,
         )
         return None

@@ -23,6 +23,7 @@ from faultmaven.exceptions import (
     counts_against_breaker,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.utils.exception_name import exception_class_chain
 
 # Type variable for generic return types
 T = TypeVar("T")
@@ -346,7 +347,9 @@ class BaseExternalClient(ABC):
                         ctx[f"retry_attempt_{attempt}"] = {
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
-                                str(last_exception) if last_exception else None
+                                exception_class_chain(last_exception)
+                                if last_exception
+                                else None
                             ),
                         }
 
@@ -410,7 +413,9 @@ class BaseExternalClient(ABC):
                             ctx["validation"] = "passed"
                         except Exception as validation_error:
                             ctx["validation"] = "failed"
-                            ctx["validation_error"] = str(validation_error)
+                            ctx["validation_error"] = exception_class_chain(
+                                validation_error
+                            )
                             self.logger.error(
                                 f"Response validation failed for {self.service_name}.{operation_name}",
                                 error=validation_error,
@@ -418,7 +423,7 @@ class BaseExternalClient(ABC):
                                 service=self.service_name,
                             )
                             raise RuntimeError(
-                                f"Response validation failed: {str(validation_error)}"
+                                f"Response validation failed: {exception_class_chain(validation_error)}"
                             ) from validation_error
 
                     # Transform response if transformer provided
@@ -431,7 +436,9 @@ class BaseExternalClient(ABC):
                             ctx["transformation"] = "applied"
                         except Exception as transform_error:
                             ctx["transformation"] = "failed"
-                            ctx["transform_error"] = str(transform_error)
+                            ctx["transform_error"] = exception_class_chain(
+                                transform_error
+                            )
                             self.logger.error(
                                 f"Response transformation failed for {self.service_name}.{operation_name}",
                                 error=transform_error,
@@ -536,8 +543,10 @@ class BaseExternalClient(ABC):
 
                 except Exception as call_error:
                     last_exception = call_error
+                    # Every line below names the class chain, never the text:
+                    # a client's exception can carry its output (#2844).
                     ctx[f"error_attempt_{attempt}"] = {
-                        "error": str(call_error),
+                        "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
                     }
 
@@ -579,7 +588,7 @@ class BaseExternalClient(ABC):
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
                             f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
-                            f"): {call_error}",
+                            f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
                         )
@@ -590,7 +599,7 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error=call_error,
+                            error_type=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
@@ -617,7 +626,7 @@ class BaseExternalClient(ABC):
                             self.logger.warning(
                                 f"Rate-limited on {self.service_name}.{operation_name}"
                                 f" — a throttle, not counted against the circuit"
-                                f" breaker: {call_error}",
+                                f" breaker: {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
                             )
@@ -644,7 +653,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "operation": operation_name,
-                                "error": str(call_error),
+                                "error": exception_class_chain(call_error),
                                 "attempts": attempt + 1,
                             },
                         )
@@ -731,7 +740,9 @@ class BaseExternalClient(ABC):
                         ctx[f"retry_attempt_{attempt}"] = {
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
-                                str(last_exception) if last_exception else None
+                                exception_class_chain(last_exception)
+                                if last_exception
+                                else None
                             ),
                         }
 
@@ -763,7 +774,9 @@ class BaseExternalClient(ABC):
                             ctx["validation"] = "passed"
                         except Exception as validation_error:
                             ctx["validation"] = "failed"
-                            ctx["validation_error"] = str(validation_error)
+                            ctx["validation_error"] = exception_class_chain(
+                                validation_error
+                            )
                             self.logger.error(
                                 f"Response validation failed for {self.service_name}.{operation_name}",
                                 error=validation_error,
@@ -771,7 +784,7 @@ class BaseExternalClient(ABC):
                                 service=self.service_name,
                             )
                             raise RuntimeError(
-                                f"Response validation failed: {str(validation_error)}"
+                                f"Response validation failed: {exception_class_chain(validation_error)}"
                             ) from validation_error
 
                     # Transform response if transformer provided
@@ -781,7 +794,9 @@ class BaseExternalClient(ABC):
                             ctx["transformation"] = "applied"
                         except Exception as transform_error:
                             ctx["transformation"] = "failed"
-                            ctx["transform_error"] = str(transform_error)
+                            ctx["transform_error"] = exception_class_chain(
+                                transform_error
+                            )
                             self.logger.error(
                                 f"Response transformation failed for {self.service_name}.{operation_name}",
                                 error=transform_error,
@@ -852,7 +867,7 @@ class BaseExternalClient(ABC):
                 except Exception as call_error:
                     last_exception = call_error
                     ctx[f"error_attempt_{attempt}"] = {
-                        "error": str(call_error),
+                        "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
                     }
 
@@ -876,7 +891,7 @@ class BaseExternalClient(ABC):
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
                             f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
-                            f"): {call_error}",
+                            f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
                         )
@@ -887,7 +902,7 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error=call_error,
+                            error_type=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
@@ -929,7 +944,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "operation": operation_name,
-                                "error": str(call_error),
+                                "error": exception_class_chain(call_error),
                                 "attempts": attempt + 1,
                             },
                         )

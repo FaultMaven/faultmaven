@@ -43,6 +43,7 @@ from faultmaven.infrastructure.concurrency.owned_claim import (
     OwnedClaim,
     renew_every,
 )
+from faultmaven.utils.exception_name import exception_class_chain
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +313,7 @@ def _unguarded(reason: str, exc: Optional[BaseException]) -> None:
             "Case in-flight lease unavailable (%s%s): turns run without one, so a "
             "delete may race them (#2096)",
             reason,
-            f": {exc!r}" if exc is not None else "",
+            f": {exception_class_chain(exc)}" if exc is not None else "",
         )
     try:
         from faultmaven.infrastructure.shims.metrics import case_unleased_turns
@@ -366,9 +367,21 @@ class _CaseLease:
                 if not await self._script("XX"):
                     logger.warning("Lease %s lapsed while held: rewriting", self.key)
                     if not await self.write():
-                        logger.warning("Could not rewrite %s: %r", self.key, self.error)
+                        logger.warning(
+                            "Could not rewrite %s: %s",
+                            self.key,
+                            (
+                                exception_class_chain(self.error)
+                                if self.error is not None
+                                else "no error recorded"
+                            ),
+                        )
             except Exception as exc:  # noqa: BLE001 - retried next interval
-                logger.warning("Could not renew the lease %s: %r", self.key, exc)
+                logger.warning(
+                    "Could not renew the lease %s: %s",
+                    self.key,
+                    exception_class_chain(exc),
+                )
 
     async def give_up(self) -> None:
         """Stop renewing, then remove the member once every write has landed."""
@@ -382,7 +395,11 @@ class _CaseLease:
         try:
             await self.redis.zrem(self.key, self.member)
         except Exception as exc:  # noqa: BLE001 - the TTL is the backstop
-            logger.warning("Could not release the lease %s: %r", self.key, exc)
+            logger.warning(
+                "Could not release the lease %s: %s",
+                self.key,
+                exception_class_chain(exc),
+            )
 
 
 def _join(case: CaseKey, redis: Any = None) -> _CaseLease:
@@ -539,7 +556,7 @@ def _tombstone_unread(reason: str, exc: Optional[BaseException]) -> bool:
             "Case delete tombstone unreadable (%s%s): a case read reports no "
             "delete running (#2510)",
             reason,
-            f": {exc!r}" if exc is not None else "",
+            f": {exception_class_chain(exc)}" if exc is not None else "",
         )
     return False
 

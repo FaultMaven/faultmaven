@@ -1,4 +1,5 @@
-"""Strip query strings from URLs in anything FaultMaven logs.
+"""Strip query strings from URLs, and credential header values, in anything
+FaultMaven logs.
 
 A URL's query string is a credential channel here. The SSO callback carries
 the identity provider's authorization code in one; the web-search tool reaches
@@ -30,6 +31,13 @@ sweep would have caught one of the five and would have to reason about every
 value in a product whose logs legitimately carry evidence, where IPs and
 hostnames are the signal. Stripping a query string cannot blank an
 investigation's own data.
+
+Four header names are the exception, as defence in depth under the server-log
+rule (``utils/exception_name.py``, #2844): ``set-cookie``, ``cookie``,
+``authorization`` and ``proxy-authorization``. A client's exception text can
+carry a response's headers (an Opik ``ApiError`` carries ``set-cookie``), and
+these are pattern-matchable: a fixed name, a separator, a value. Their values
+are blanked; prose that merely uses the words is not.
 """
 
 import logging
@@ -106,26 +114,133 @@ def _redact_query_bytes(match: re.Match[bytes]) -> bytes:
 
 
 def redact_urls(text: str) -> str:
-    """Strip the query string from every URL in ``text``.
+    """Strip the query string from every URL in ``text``, and blank the value
+    of every credential header (:func:`redact_credential_headers`).
 
-    Two substring checks run before the pattern. A line with no URL is the
+    Two substring checks run before the URL pattern. A line with no URL is the
     common case, and ``in`` on a str is a C-level scan, so it never pays for
     the regex.
     """
-    if "?" not in text or "://" not in text:
-        return text
-    return _URL_QUERY.sub(_redact_query, text)
+    if "?" in text and "://" in text:
+        text = _URL_QUERY.sub(_redact_query, text)
+    return redact_credential_headers(text)
 
 
 def redact_urls_bytes(data: bytes) -> bytes:
     """``redact_urls`` for renderers that emit bytes."""
-    if b"?" not in data or b"://" not in data:
-        return data
-    return _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
+    if b"?" in data and b"://" in data:
+        data = _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
+    return redact_credential_headers(data)
+
+
+# A credential header's value (#2844). The head is the name, optionally quoted,
+# then ``:`` or ``=`` (ANSI colour codes allowed either side, as the console
+# renderer writes them) or a tuple's ``', '``, then an opening quote,
+# optionally ``b``-prefixed. The body for that opener measures the value:
+# * quoted, to the matching close; a quote of the other kind does not end it;
+# * unquoted after ``:`` (a header line), to the end of the line or a ``\n``
+#   escape, so quoted cookie attributes go too; a folded line is not chased;
+# * unquoted after ``=``, to the next whitespace, plus one more token after an
+#   auth scheme (``Bearer``, ``Basic``, ...), so later fields stay.
+# In a JSON line (the JSON renderer's ``{"...``) a raw ``"`` only delimits a
+# string, so no value runs past one; a quote inside a string is ``\"``, and a
+# raw ``"`` opens a value only as a key's (``"cookie": "..."``). Backslashes
+# are consumed in pairs, so a value never ends inside an escape and the line
+# stays valid JSON (#2309). Every repeat is possessive, as above, and the scan
+# resumes past each value, so the cost is linear in the line.
+#
+# The name is not inside a longer word (``x-cookie``, ``cookies``), though it
+# may follow an escape's letter (``\n``) or a colour code's ``m``. The plain
+# test runs first and rejects most positions on its own.
+_NAME = (
+    r"(?:(?<![\w-])|(?<=[nrtm])(?:(?<=\\[nrt])|(?<=\x1b\[\dm)|(?<=\x1b\[\d\dm)"
+    r"|(?<=;\d\dm)|(?<=;\dm)))(?:set-cookie|proxy-authorization|authorization|cookie)"
+)
+_ANSI = r"(?:\x1b\[[0-9;]*+m)*+"
+_SCHEME = r"(?:(?:bearer|basic|digest|token|negotiate|oauth)[ \t]++)?+"
+_TEXT_HEAD = (
+    rf"{_NAME}(?:\\?[\"'])?{_ANSI}"
+    rf"(?:[ \t]*+(?P<sep>[:=])[ \t]*+|(?<=[\"']),\s*+(?=b?(?:'|\"|\\\"))){_ANSI}"
+    r"(?:b?(?P<open>'|\"|\\\"))?"
+)
+_JSON_HEAD = (
+    rf"{_NAME}(?:\"[ \t]*+:[ \t]*+(?P<key>\")|(?:'|\\\")?"
+    r"(?:[ \t]*+(?P<sep>[:=])[ \t]*+|(?<=[\"']),\s*+(?=b?(?:'|\\\")))"
+    r"(?:b?(?P<open>'|\\\"))?)"
+)
+
+
+def _run(stop: str, unpaired: str = "") -> str:
+    """Characters but ``stop``; a backslash takes the next character with it
+    unless that one is in ``unpaired``."""
+    escape = rf"\\[^{unpaired}]" if unpaired else r"\\."
+    return rf"[^{stop}\\]*+(?:{escape}[^{stop}\\]*+)*+"
+
+
+_BODIES = {
+    False: {  # a text line
+        "'": _run(r"'\r\n", r"\r\n"),
+        '"': _run(r"\"\r\n", r"\r\n"),
+        '\\"': _run(r"\"\r\n", r"\"\r\n"),
+        ":": _run(r"\r\n\x1b", "nr"),
+        "=": rf"{_SCHEME}[^\s\x1b]*+",
+    },
+    True: {  # a JSON line; a raw ``"`` opens only a key's value
+        '"': _run('"'),
+        "'": _run("'\"", "nr"),
+        '\\"': _run('"', '"nr'),
+        ":": _run('"', "nr"),
+        "=": _SCHEME + _run(r"\s\"", "nrt"),
+    },
+}
+
+
+def _compile(pattern: str, as_bytes: bool) -> re.Pattern:
+    return re.compile(pattern.encode() if as_bytes else pattern, re.IGNORECASE)
+
+
+_HEADER_PATTERNS = {
+    (as_bytes, json_line): (
+        _compile(_JSON_HEAD if json_line else _TEXT_HEAD, as_bytes).search,
+        {
+            (key.encode() if as_bytes else key): _compile(body, as_bytes).match
+            for key, body in _BODIES[json_line].items()
+        },
+    )
+    for as_bytes in (False, True)
+    for json_line in (False, True)
+}
+
+
+def redact_credential_headers(text):
+    """Blank the value of every ``set-cookie``, ``cookie``, ``authorization``
+    and ``proxy-authorization`` header in ``text`` (str or bytes).
+
+    A line naming neither ``cookie`` nor ``authorization`` never pays for the
+    pattern.
+    """
+    as_bytes = isinstance(text, bytes)
+    cast = str.encode if as_bytes else str
+    lowered = text.lower()
+    if cast("cookie") not in lowered and cast("authorization") not in lowered:
+        return text
+    json_line = text.startswith(cast('{"'))
+    head, bodies = _HEADER_PATTERNS[(as_bytes, json_line)]
+    pieces, position = [], 0
+    while found := head(text, position):
+        opener = (json_line and found["key"]) or found["open"] or found["sep"]
+        end = bodies[opener](text, found.end()).end()
+        pieces.append(text[position : found.end()])
+        if end > found.end():
+            pieces.append(cast("<redacted>"))
+        position = end
+    pieces.append(text[position:])
+    return cast("").join(pieces)
 
 
 def redacting_renderer(renderer: Callable) -> Callable:
-    """Wrap a structlog renderer so its output carries no query strings.
+    """Wrap a structlog renderer so its output carries no query strings or
+    credential header values.
 
     Applied to whichever renderer ``configure_structlog`` selects, so the rule
     holds for JSON and console output alike, and for foreign stdlib records as

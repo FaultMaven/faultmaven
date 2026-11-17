@@ -4,7 +4,7 @@ Tests the base service class functionality including:
 - Service initialization with name
 - Logger creation with correct name
 - log_operation() logs with context
-- log_error() logs with exception info
+- log_error() logs the class chain and frames, never the text (#2844)
 - Log extra fields included
 """
 
@@ -147,17 +147,18 @@ class TestLogError:
 
             mock_error.assert_called_once()
 
-    def test_log_error_includes_exception_message(self):
-        """Test that log_error includes exception message."""
+    def test_log_error_names_the_class_chain_not_the_message(self):
+        """The class chain, never the text: a backend's can carry its output (#2844)."""
         service = ConcreteService("test_service")
 
         with patch.object(service.logger, "error") as mock_error:
-            exc = ValueError("Invalid input data")
-            service.log_error("validate_input", exc)
+            try:
+                raise ValueError("Invalid input data") from OSError("disk")
+            except ValueError as exc:
+                service.log_error("validate_input", exc)
 
             call_args = mock_error.call_args[0][0]
-            assert "validate_input failed" in call_args
-            assert "Invalid input data" in call_args
+            assert call_args == "validate_input failed: ValueError <- OSError"
 
     def test_log_error_fields_are_top_level_event_keys(self, caplog):
         """The service, the error and every keyword arrive as fields of their own (#2262)."""
@@ -169,23 +170,27 @@ class TestLogError:
             except KeyError as exc:
                 service.log_error("save_case", exc, case_id="case_xyz", user_id="u1")
 
-        record = _the_record(caplog, "save_case failed: 'missing_key'")
+        record = _the_record(caplog, "save_case failed: KeyError")
         assert log_field(record, "service") == "error_test_service"
         assert log_field(record, "error_type") == "KeyError"
         assert log_field(record, "case_id") == "case_xyz"
         assert log_field(record, "user_id") == "u1"
         assert log_field(record, "extra") is None
 
-    def test_log_error_passes_the_exception_as_exc_info(self):
-        """The exception itself, so the traceback renders outside its ``except`` too."""
+    def test_log_error_passes_frames_not_the_exception(self):
+        """No ``exc_info``: a traceback renders every message in the chain (#2844)."""
         service = ConcreteService("test_service")
 
         with patch.object(service.logger, "error") as mock_error:
-            exc = RuntimeError("Runtime failure")
-            service.log_error("run_task", exc)
+            try:
+                raise RuntimeError("Runtime failure")
+            except RuntimeError as exc:
+                service.log_error("run_task", exc)
 
             call_kwargs = mock_error.call_args[1]
-            assert call_kwargs["exc_info"] is exc
+            assert "exc_info" not in call_kwargs
+            assert call_kwargs["stack"].startswith("RuntimeError:\n  File ")
+            assert "RuntimeError: Runtime failure" not in call_kwargs["stack"]
 
 
 class TestLogMetric:
@@ -328,18 +333,24 @@ class TestStdlibExtraOnStructlogLoggers:
         finally:
             coordinator.end_request()
 
-        _the_record(caplog, "write_sidecar failed: write_sidecar")
-        _the_record(caplog, "retrieve_file failed: retrieve_file")
+        _the_record(caplog, "write_sidecar failed: OSError")
+        _the_record(caplog, "retrieve_file failed: OSError")
 
-    def test_an_error_logged_outside_its_except_keeps_its_traceback(self, caplog):
+    def test_an_error_logged_outside_its_except_keeps_its_frames(self, caplog):
+        """The frames survive in ``stack`` outside the ``except``, without the
+        text (#2265 kept the traceback; #2844 keeps its frames only)."""
         service = ConcreteService("deferred_service")
         try:
-            raise RuntimeError("deferred")
+            raise RuntimeError("deferred-SECRET")
         except RuntimeError as caught:
             saved = caught
 
         with caplog.at_level(logging.ERROR):
             service.log_error("deferred_op", saved)
 
-        record = _the_record(caplog, "deferred_op failed: deferred")
-        assert log_field(record, "exc_info") is saved
+        record = _the_record(caplog, "deferred_op failed: RuntimeError")
+        assert log_field(record, "exc_info") is None
+        stack = log_field(record, "stack")
+        assert "test_an_error_logged_outside_its_except_keeps_its_frames" in stack
+        assert 'raise RuntimeError("deferred-SECRET")' in stack  # the source line
+        assert "RuntimeError: deferred-SECRET" not in stack  # no message line

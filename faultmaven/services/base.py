@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
 from faultmaven.exceptions import FaultMavenException, ValidationException
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.utils.exception_name import exception_class_chain, exception_frames
 from faultmaven.utils.serialization import to_json_compatible
 
 # Type variable for generic return types
@@ -142,30 +143,36 @@ class BaseService(ABC):
                         ctx["validation"] = "passed"
                     except ValidationException as validation_error:
                         ctx["validation"] = "failed"
-                        ctx["validation_error"] = str(validation_error)
+                        ctx["validation_error"] = exception_class_chain(
+                            validation_error
+                        )
                         self.logger.error(
                             f"Input validation failed for operation: {operation_name}",
-                            validation_error=str(validation_error),
+                            validation_error=exception_class_chain(validation_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
                         raise  # Re-raise ValidationException as-is
                     except FileNotFoundError as validation_error:
                         ctx["validation"] = "failed"
-                        ctx["validation_error"] = str(validation_error)
+                        ctx["validation_error"] = exception_class_chain(
+                            validation_error
+                        )
                         self.logger.error(
                             f"Input validation failed for operation: {operation_name}",
-                            validation_error=str(validation_error),
+                            validation_error=exception_class_chain(validation_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
                         raise  # Re-raise FileNotFoundError as-is
                     except Exception as validation_error:
                         ctx["validation"] = "failed"
-                        ctx["validation_error"] = str(validation_error)
+                        ctx["validation_error"] = exception_class_chain(
+                            validation_error
+                        )
                         self.logger.error(
                             f"Input validation failed for operation: {operation_name}",
-                            validation_error=str(validation_error),
+                            validation_error=exception_class_chain(validation_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
@@ -197,10 +204,10 @@ class BaseService(ABC):
                         ctx["transformation"] = "applied"
                     except Exception as transform_error:
                         ctx["transformation"] = "failed"
-                        ctx["transform_error"] = str(transform_error)
+                        ctx["transform_error"] = exception_class_chain(transform_error)
                         self.logger.error(
                             f"Result transformation failed for operation: {operation_name}",
-                            transform_error=str(transform_error),
+                            transform_error=exception_class_chain(transform_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
@@ -265,7 +272,7 @@ class BaseService(ABC):
                 # This includes ServiceException, AgentException, etc. for proper error handling
 
                 # Update context with error information
-                ctx["error"] = str(fault_maven_error)
+                ctx["error"] = exception_class_chain(fault_maven_error)
                 ctx["error_type"] = type(fault_maven_error).__name__
 
                 # Log failed operation boundary - outbound
@@ -288,7 +295,7 @@ class BaseService(ABC):
                     data={
                         "operation": operation_name,
                         "service": self.service_name,
-                        "error": str(fault_maven_error),
+                        "error": exception_class_chain(fault_maven_error),
                         "error_type": type(fault_maven_error).__name__,
                     },
                 )
@@ -297,7 +304,7 @@ class BaseService(ABC):
                 raise
             except Exception as operation_error:
                 # Update context with error information
-                ctx["error"] = str(operation_error)
+                ctx["error"] = exception_class_chain(operation_error)
                 ctx["error_type"] = type(operation_error).__name__
 
                 # Log failed operation boundary - outbound
@@ -320,7 +327,7 @@ class BaseService(ABC):
                     data={
                         "operation": operation_name,
                         "service": self.service_name,
-                        "error": str(operation_error),
+                        "error": exception_class_chain(operation_error),
                         "error_type": type(operation_error).__name__,
                     },
                 )
@@ -388,10 +395,12 @@ class BaseService(ABC):
                         ctx["validation"] = "passed"
                     except Exception as validation_error:
                         ctx["validation"] = "failed"
-                        ctx["validation_error"] = str(validation_error)
+                        ctx["validation_error"] = exception_class_chain(
+                            validation_error
+                        )
                         self.logger.error(
                             f"Input validation failed for operation: {operation_name}",
-                            validation_error=str(validation_error),
+                            validation_error=exception_class_chain(validation_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
@@ -415,10 +424,10 @@ class BaseService(ABC):
                         ctx["transformation"] = "applied"
                     except Exception as transform_error:
                         ctx["transformation"] = "failed"
-                        ctx["transform_error"] = str(transform_error)
+                        ctx["transform_error"] = exception_class_chain(transform_error)
                         self.logger.error(
                             f"Result transformation failed for operation: {operation_name}",
-                            transform_error=str(transform_error),
+                            transform_error=exception_class_chain(transform_error),
                             operation=operation_name,
                             service=self.service_name,
                         )
@@ -483,7 +492,7 @@ class BaseService(ABC):
                 # This includes ServiceException, AgentException, etc. for proper error handling
 
                 # Update context with error information
-                ctx["error"] = str(fault_maven_error)
+                ctx["error"] = exception_class_chain(fault_maven_error)
                 ctx["error_type"] = type(fault_maven_error).__name__
 
                 # Log failed operation boundary - outbound
@@ -506,7 +515,7 @@ class BaseService(ABC):
                     data={
                         "operation": operation_name,
                         "service": self.service_name,
-                        "error": str(fault_maven_error),
+                        "error": exception_class_chain(fault_maven_error),
                         "error_type": type(fault_maven_error).__name__,
                     },
                 )
@@ -515,7 +524,7 @@ class BaseService(ABC):
                 raise
             except Exception as operation_error:
                 # Update context with error information
-                ctx["error"] = str(operation_error)
+                ctx["error"] = exception_class_chain(operation_error)
                 ctx["error_type"] = type(operation_error).__name__
 
                 # Log failed operation boundary - outbound
@@ -538,7 +547,7 @@ class BaseService(ABC):
                     data={
                         "operation": operation_name,
                         "service": self.service_name,
-                        "error": str(operation_error),
+                        "error": exception_class_chain(operation_error),
                         "error_type": type(operation_error).__name__,
                     },
                 )
@@ -621,9 +630,12 @@ class BaseService(ABC):
     def log_error(self, operation: str, error: Exception, **kwargs) -> None:
         """Log service error with context.
 
-        Logs an error with exception information, service context,
-        and additional fields. Logs at ERROR level with the exception itself as
-        exc_info, so the traceback renders outside its ``except`` too.
+        Logs at ERROR level the exception's class chain, its frames as
+        ``stack`` and the caller's fields (``storage_key``, ...), which together
+        identify the failure. Never its text, and no ``exc_info``: a traceback
+        renders the message of the exception and of every cause, and a
+        backend's exception can carry its output (#2844). The frames come from
+        the exception itself, so they render outside its ``except`` too.
 
         Args:
             operation: Name of the operation that failed
@@ -638,16 +650,13 @@ class BaseService(ABC):
             ...     raise
         """
         self.logger.error(
-            f"{operation} failed: {error}",
+            f"{operation} failed: {exception_class_chain(error)}",
             extra={
                 "service": self.service_name,
                 "error_type": type(error).__name__,
                 **kwargs,
             },
-            # The exception itself, not True: True renders sys.exc_info() at
-            # format time, which is empty when the error is logged outside the
-            # ``except`` that caught it.
-            exc_info=error,
+            stack=exception_frames(error),
         )
 
     async def health_check(self) -> Dict[str, Any]:
