@@ -189,8 +189,8 @@ class TestLogError:
 
             call_kwargs = mock_error.call_args[1]
             assert "exc_info" not in call_kwargs
-            assert call_kwargs["stack"].startswith("RuntimeError:\n  File ")
-            assert "RuntimeError: Runtime failure" not in call_kwargs["stack"]
+            assert call_kwargs["frames"].startswith("RuntimeError:\n  File ")
+            assert "RuntimeError: Runtime failure" not in call_kwargs["frames"]
 
 
 class TestLogMetric:
@@ -337,7 +337,7 @@ class TestStdlibExtraOnStructlogLoggers:
         _the_record(caplog, "retrieve_file failed: OSError")
 
     def test_an_error_logged_outside_its_except_keeps_its_frames(self, caplog):
-        """The frames survive in ``stack`` outside the ``except``, without the
+        """The frames survive in ``frames`` outside the ``except``, without the
         text (#2265 kept the traceback; #2844 keeps its frames only)."""
         service = ConcreteService("deferred_service")
         try:
@@ -350,7 +350,7 @@ class TestStdlibExtraOnStructlogLoggers:
 
         record = _the_record(caplog, "deferred_op failed: RuntimeError")
         assert log_field(record, "exc_info") is None
-        stack = log_field(record, "stack")
-        assert "test_an_error_logged_outside_its_except_keeps_its_frames" in stack
-        assert 'raise RuntimeError("deferred-SECRET")' in stack  # the source line
-        assert "RuntimeError: deferred-SECRET" not in stack  # no message line
+        frames = log_field(record, "frames")
+        assert "test_an_error_logged_outside_its_except_keeps_its_frames" in frames
+        assert 'raise RuntimeError("deferred-SECRET")' in frames  # the source line
+        assert "RuntimeError: deferred-SECRET" not in frames  # no message line

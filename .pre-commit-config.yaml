@@ -132,13 +132,20 @@ repos:
 
       # The bundled KB pack must be structurally valid AND in sync with the
       # runbook sources under resources/knowledge/runbooks/. Catches a runbook
-      # edited/added without rebuilding the pack. Runs when a source runbook OR
-      # the pack changes; no model, fast.
+      # edited, added or deleted without rebuilding the pack; no model.
+      # pre-commit hands a hook no deleted file (its staged list is
+      # --diff-filter=ACMRTUXB), so the hook always starts, and runs the check
+      # when it is handed a matching file (an edit or add, or --all-files) or a
+      # runbook or pack file is staged for deletion; else it exits 0 without
+      # the ~2s check.
       - id: check-kb-pack
         name: KB pack valid + in sync with runbook sources
-        entry: python scripts/check_kb_pack.py
+        entry: >-
+          bash -c '[ $# -gt 0 ] || git diff --cached --name-only --diff-filter=D
+          -- resources/knowledge/runbooks resources/knowledge/pack | grep -q .
+          || exit 0; exec python scripts/check_kb_pack.py' --
         language: system
-        pass_filenames: false
+        always_run: true
         files: ^resources/knowledge/(runbooks/.*\.md|pack/(pack\.json|vectors\.npz))$
 
       # Brand-messaging terminology lint. Fails on retired terms in brand-facing
