@@ -239,6 +239,7 @@ async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
     existing = MagicMock()
     existing.content = RUNBOOK_MD  # identical to the pack's runbook content
     existing.knowledge_metadata = {}
+    existing.scope = "global"  # the pack entry's: a new scope is a change (#2386)
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
