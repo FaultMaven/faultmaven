@@ -532,6 +532,10 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
     )
 
     case = _case("treatment", **shape)
+    # The record's fold reads its own (#2811 S2b-1a): the block's reads are
+    # counted beside it.
+    outcome = block_module.narration_outcome(case)
+    monkeypatch.setattr(block_module, "narration_outcome", lambda _case: outcome)
     calls = {"subject_index": 0, "fix_windows": 0}
     for name in calls:
         real = getattr(cause_assurance, name)

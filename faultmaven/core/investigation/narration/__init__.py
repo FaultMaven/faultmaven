@@ -8,7 +8,8 @@ its params (``offers``, ``notices``); the renderers of the decision log's
 notice codes (``codes``, ``notices.render_notice``) and of its offer codes
 (``offers.render_offer``) run after the cycle's last decider: B1b's also read
 the cycle's record, B1c's and B1d's render the facts their deciders read
-(#2636). The
+(#2636). ``fix_verification`` renders the prompt's ``<fix_verification>``
+block from the record (#2811 S2b-1a). The
 ``.importlinter`` contract "Narrators render the outcome, never derive it"
 forbids imports of ``cause_assurance``, ``causal_graph.disconfirmation`` and
 ``terminal_transitions`` from this package, direct or through other modules,

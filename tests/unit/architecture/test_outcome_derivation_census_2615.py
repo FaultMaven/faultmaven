@@ -171,6 +171,11 @@ DERIVATIONS: dict[str, str] = {
     # #2811: the two save helpers' write, and the record narration reads.
     "record_before_save": _OUTCOME,
     "narration_outcome": _OUTCOME,
+    # #2811 S2b-1a: the derivations the fix-verification block read, which
+    # it now reads off the record.
+    "off_cause_attempt": _CA,
+    "symptom_elimination_rows": _CA,
+    "interception_relief": _CA,
 }
 
 #: Each outcome field read raw, by the module and class that define it.
@@ -216,6 +221,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # #2811: the typed parameters, rendered by ``narration.rechecks``.
     (_CA, "uncited_recheck_why"): {"uncited_recheck": 1},
+    # #2811 S2b-1a: the three names the fix-verification block switched to
+    # the record, where the deciders still derive them.
+    (_CA, "_no_confirming_window"): {"off_cause_attempt": 1},
+    (_CA, "mitigation_relief"): {"interception_relief": 1},
+    (_CA, "pending_symptom_check"): {"symptom_elimination_rows": 1},
+    (_CA, "resolution_confirmation_rows"): {"symptom_elimination_rows": 1},
     (_CA, "confirming_polarity_rows"): {"fix_windows": 1},
     (_CA, "confirming_window"): {"fix_windows": 1},
     (_CA, "fix_windows"): {"_pool_legs": 1},
@@ -236,6 +247,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TT, "assess_resolution_readiness"): {
         "_resolution_confirmed": 1,
         "latest_fix_window": 1,
+        "off_cause_attempt": 1,
     },
     (_TT, "closure_verdict"): {"assess_closure_readiness": 1},
     # The four closure entries compute the closure on demand (#2636, pin 5).
@@ -287,7 +299,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
-    (_SG, "standing_fix_action"): {"fix_windows": 1},
+    (_SG, "standing_fix_action"): {"fix_windows": 1, "interception_relief": 1},
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
         "assess_resolution_readiness": 1,
         "resolution_record_lines": 1,
@@ -367,10 +379,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "mitigation_observation": 1,
         "mitigation_refusal_reason": 1,
     },
+    (_OUTCOME, "_attempts"): {"interception_relief": 1},
     (_OUTCOME, "_resolution"): {
         "assess_resolution_readiness": 1,
         "confirmation_stamp_rows": 1,
         "resolution_record_lines": 1,
+        "symptom_elimination_rows": 1,
     },
     (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
@@ -389,14 +403,14 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
-    # The prompt.
+    # The prompt. The fix-verification block renders from the record
+    # (#2811 S2b-1a, ``narration.fix_verification``): its fold, and the one
+    # window list its fresh verdicts (ruling Q1 (a)) and the held need read,
+    # until stage S3.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
-    (_CB + "fix_verification_block.py", "_mitigation_lines"): {
-        "mitigation_observation": 1
-    },
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
-        "cause_recheck_status": 1,
         "fix_windows": 1,
+        "narration_outcome": 1,
     },
     # The API, the knowledge harvest and the report.
     (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},
@@ -445,6 +459,9 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
         "solution_verified": 1,
         "verified": 1,
     },
+    # #2811 S2b-1a: the stored verdict ``assembly`` prints, kept fresh in the
+    # block's ``FixVerificationFresh`` by ruling Q1 (a) until stage S3.
+    (_CB + "fix_verification_block.py", "_fresh"): {"verified": 1},
     (_INV + "prompts/templates/fallback.py", "_fallback_body"): {
         "closure_reason": 1,
         "solution_verified": 1,

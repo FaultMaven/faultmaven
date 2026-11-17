@@ -49,11 +49,12 @@ def named_exclusions(case: Case) -> tuple[list, int]:
     return refuted[:MAX_NAMED_EXCLUSIONS], max(0, len(refuted) - MAX_NAMED_EXCLUSIONS)
 
 
-def fix_confirmed(case: Case) -> bool:
+def fix_confirmed(case: Case, windows=None) -> bool:
     """The latest decided fix window SUCCEEDED: the cause and the problem both
     observed gone after the fix. Reads every evidence row; compute it once per
-    prompt build and pass it in."""
-    window = latest_decided_fix_window(case)
+    prompt build and pass it in. ``windows`` is the caller's
+    ``fix_windows(case)``."""
+    window = latest_decided_fix_window(case, windows)
     return window is not None and window.state == FIX_SUCCEEDED
 
 

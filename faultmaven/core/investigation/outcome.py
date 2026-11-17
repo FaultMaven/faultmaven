@@ -377,10 +377,18 @@ def _shape_2(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome
     return prior.model_copy(update={"attempts": attempts})
 
 
+def _shape_3(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
+    """Shape 2 -> 3 (#2811 S2b-1a): the identity. Shape 3 adds
+    ``resolution.off_cause_turn`` and ``resolution.unrechecked_row_ids``,
+    neither a carried verdict, so every fold derives them fresh and nothing
+    stored is rewritten."""
+    return prior
+
+
 #: Each shape's step from the shape below it, in order; a record is moved one
 #: step at a time to ``CURRENT_OUTCOME_SHAPE``, each step run only on a record
 #: of exactly the shape below its own. A shape change adds its step here.
-SHAPE_STEPS = {2: _shape_2}
+SHAPE_STEPS = {2: _shape_2, 3: _shape_3}
 
 
 def _upgraded(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
@@ -602,6 +610,7 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
         elif fold.mint is None:
             confirmed = []  # minted only where finals are (#2811)
     check = readiness.pending_check
+    named = {getattr(e, "rechecks_evidence_id", None) for e in problem_rows}
     return ResolutionOutcome(
         verdict=ResolutionVerdict(readiness.verdict),
         reason=readiness.reason,
@@ -611,6 +620,10 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
         problem_row_ids=[e.evidence_id for e in problem_rows],
         pending_check_need_id=check.need_id if check is not None else None,
         declined_stands=declined_resolve_entry(case) is not None,
+        off_cause_turn=readiness.params.get("off_cause_turn"),
+        unrechecked_row_ids=[
+            i for i in subjects.verifying if i in subjects.rows and i not in named
+        ],
         confirmed_row_ids=confirmed,
         statement=resolution_record_lines(case),
     )
