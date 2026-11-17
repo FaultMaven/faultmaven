@@ -20,9 +20,14 @@ from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
+    FaultMavenException,
     counts_against_breaker,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_class_name,
+)
 
 # Type variable for generic return types
 T = TypeVar("T")
@@ -42,6 +47,29 @@ def remaining_call_time() -> Optional[float]:
     if deadline is None:
         return None
     return deadline - time.monotonic()
+
+
+def _provider_codes(error: BaseException) -> Dict[str, Any]:
+    """The ``status_code`` and ``error_code`` a first-party exception declares,
+    logged beside the class chain where its text no longer carries them (#2844).
+
+    Read only from the two first-party hierarchies, ``FaultMavenException`` and
+    ``models.exceptions.FaultMavenError``: both carry codes the breaker latches
+    (an ``LLMException``'s, an ``LLMProviderError``'s ``LLM_CONFIG_ERROR``). A
+    third party's attributes of the same names are not first-party fields, and
+    their values are its own to word.
+    """
+    # Imported here: ``faultmaven.models`` runs the modules layer on import,
+    # which this client must not pull in.
+    from faultmaven.models.exceptions import FaultMavenError
+
+    if not isinstance(error, (FaultMavenException, FaultMavenError)):
+        return {}
+    return {
+        name: value
+        for name, kind in (("status_code", int), ("error_code", str))
+        if isinstance(value := getattr(error, name, None), kind)
+    }
 
 
 class CircuitBreaker:
@@ -346,7 +374,9 @@ class BaseExternalClient(ABC):
                         ctx[f"retry_attempt_{attempt}"] = {
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
-                                str(last_exception) if last_exception else None
+                                exception_class_chain(last_exception)
+                                if last_exception is not None
+                                else None
                             ),
                         }
 
@@ -410,7 +440,9 @@ class BaseExternalClient(ABC):
                             ctx["validation"] = "passed"
                         except Exception as validation_error:
                             ctx["validation"] = "failed"
-                            ctx["validation_error"] = str(validation_error)
+                            ctx["validation_error"] = exception_class_chain(
+                                validation_error
+                            )
                             self.logger.error(
                                 f"Response validation failed for {self.service_name}.{operation_name}",
                                 error=validation_error,
@@ -418,7 +450,7 @@ class BaseExternalClient(ABC):
                                 service=self.service_name,
                             )
                             raise RuntimeError(
-                                f"Response validation failed: {str(validation_error)}"
+                                f"Response validation failed: {exception_class_chain(validation_error)}"
                             ) from validation_error
 
                     # Transform response if transformer provided
@@ -431,7 +463,9 @@ class BaseExternalClient(ABC):
                             ctx["transformation"] = "applied"
                         except Exception as transform_error:
                             ctx["transformation"] = "failed"
-                            ctx["transform_error"] = str(transform_error)
+                            ctx["transform_error"] = exception_class_chain(
+                                transform_error
+                            )
                             self.logger.error(
                                 f"Response transformation failed for {self.service_name}.{operation_name}",
                                 error=transform_error,
@@ -536,9 +570,12 @@ class BaseExternalClient(ABC):
 
                 except Exception as call_error:
                     last_exception = call_error
+                    # Every line below names the class chain, never the text:
+                    # a client's exception can carry its output (#2844).
                     ctx[f"error_attempt_{attempt}"] = {
-                        "error": str(call_error),
+                        "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
+                        **_provider_codes(call_error),
                     }
 
                     # Non-retryable errors (e.g. HTTP 4xx) — fail fast,
@@ -579,9 +616,10 @@ class BaseExternalClient(ABC):
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
                             f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
-                            f"): {call_error}",
+                            f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
+                            **_provider_codes(call_error),
                         )
 
                         raise
@@ -590,7 +628,8 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error=call_error,
+                            error_type=exception_class_name(call_error),
+                            error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
@@ -617,7 +656,7 @@ class BaseExternalClient(ABC):
                             self.logger.warning(
                                 f"Rate-limited on {self.service_name}.{operation_name}"
                                 f" — a throttle, not counted against the circuit"
-                                f" breaker: {call_error}",
+                                f" breaker: {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
                             )
@@ -644,7 +683,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "operation": operation_name,
-                                "error": str(call_error),
+                                "error": exception_class_chain(call_error),
                                 "attempts": attempt + 1,
                             },
                         )
@@ -731,7 +770,9 @@ class BaseExternalClient(ABC):
                         ctx[f"retry_attempt_{attempt}"] = {
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
-                                str(last_exception) if last_exception else None
+                                exception_class_chain(last_exception)
+                                if last_exception is not None
+                                else None
                             ),
                         }
 
@@ -763,7 +804,9 @@ class BaseExternalClient(ABC):
                             ctx["validation"] = "passed"
                         except Exception as validation_error:
                             ctx["validation"] = "failed"
-                            ctx["validation_error"] = str(validation_error)
+                            ctx["validation_error"] = exception_class_chain(
+                                validation_error
+                            )
                             self.logger.error(
                                 f"Response validation failed for {self.service_name}.{operation_name}",
                                 error=validation_error,
@@ -771,7 +814,7 @@ class BaseExternalClient(ABC):
                                 service=self.service_name,
                             )
                             raise RuntimeError(
-                                f"Response validation failed: {str(validation_error)}"
+                                f"Response validation failed: {exception_class_chain(validation_error)}"
                             ) from validation_error
 
                     # Transform response if transformer provided
@@ -781,7 +824,9 @@ class BaseExternalClient(ABC):
                             ctx["transformation"] = "applied"
                         except Exception as transform_error:
                             ctx["transformation"] = "failed"
-                            ctx["transform_error"] = str(transform_error)
+                            ctx["transform_error"] = exception_class_chain(
+                                transform_error
+                            )
                             self.logger.error(
                                 f"Response transformation failed for {self.service_name}.{operation_name}",
                                 error=transform_error,
@@ -852,8 +897,9 @@ class BaseExternalClient(ABC):
                 except Exception as call_error:
                     last_exception = call_error
                     ctx[f"error_attempt_{attempt}"] = {
-                        "error": str(call_error),
+                        "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
+                        **_provider_codes(call_error),
                     }
 
                     # Non-retryable errors (e.g. HTTP 4xx) — fail fast. Counted
@@ -876,9 +922,10 @@ class BaseExternalClient(ABC):
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
                             f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
-                            f"): {call_error}",
+                            f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
+                            **_provider_codes(call_error),
                         )
 
                         raise
@@ -887,7 +934,8 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error=call_error,
+                            error_type=exception_class_name(call_error),
+                            error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
@@ -929,7 +977,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "operation": operation_name,
-                                "error": str(call_error),
+                                "error": exception_class_chain(call_error),
                                 "attempts": attempt + 1,
                             },
                         )

@@ -289,7 +289,7 @@ class ErrorContext:
             self._attempt_automatic_recovery(layer, error)
 
         # Maintain original compatibility
-        if not self.original_error:
+        if self.original_error is None:
             self.original_error = error
 
     def should_log_error(self, layer: str) -> bool:

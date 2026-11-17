@@ -45,6 +45,8 @@ except Exception as e:
 
 **Exception**: `exc_info=True` may be omitted for expected/handled errors where stack traces add no debugging value (e.g., validation errors, user input errors).
 
+**Exception — a third party's text (#2844)**: where an exception's text can carry a third party's output (a client's, a backend's or a store's), the log line names the exception's class chain (`exception_class_chain`, `faultmaven/utils/exception_name.py`) and, where the frames matter, passes them through `exception_frames` — with no exception text and no `exc_info`. For such an error this overrides the rules above: no stack trace through `exc_info=True` or `logger.exception()`, and no exception message in the line. Whether rendered tracebacks elsewhere keep their messages is the open question of #2862.
+
 ## Component guidance
 - API middleware: DEBUG (request/response trace), WARN (rate limit / dedup / circuit), ERROR (middleware failure)
 - Investigation (MilestoneEngine): DEBUG (milestone evaluation, turn context), INFO (stage transitions), WARN (stagnation/repair), ERROR (execution failure)

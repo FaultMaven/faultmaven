@@ -23,6 +23,7 @@ from faultmaven.infrastructure.logging.coordinator import (
     RequestContext,
     request_context,
 )
+from faultmaven.utils.exception_name import exception_class_chain
 
 
 class UnifiedLogger:
@@ -205,7 +206,7 @@ class UnifiedLogger:
                         f"Operation failed: {operation_name}",
                         event_type="operation_error",
                         operation_key=operation_key,
-                        error_message=str(error),
+                        error_message=exception_class_chain(error),
                         error_type=type(error).__name__,
                         duration_seconds=duration,
                         **filtered_context,
@@ -218,7 +219,7 @@ class UnifiedLogger:
                     f"Operation failed: {operation_name}",
                     event_type="operation_error",
                     operation_key=operation_key,
-                    error_message=str(error),
+                    error_message=exception_class_chain(error),
                     duration_seconds=duration,
                     **operation_context,
                 )
@@ -349,7 +350,7 @@ class UnifiedLogger:
                         f"Operation failed: {operation_name}",
                         event_type="operation_error",
                         operation_key=operation_key,
-                        error_message=str(error),
+                        error_message=exception_class_chain(error),
                         error_type=type(error).__name__,
                         duration_seconds=duration,
                         **filtered_context,
@@ -362,7 +363,7 @@ class UnifiedLogger:
                     f"Operation failed: {operation_name}",
                     event_type="operation_error",
                     operation_key=operation_key,
-                    error_message=str(error),
+                    error_message=exception_class_chain(error),
                     duration_seconds=duration,
                     **operation_context,
                 )
@@ -547,20 +548,24 @@ class UnifiedLogger:
     def error(
         self, message: str, error: Optional[Exception] = None, **extra_fields
     ) -> None:
-        """Log error message with cascade prevention."""
+        """Log error message with cascade prevention.
+
+        ``error`` is named by its class chain, never its text: a client's or a
+        backend's exception can carry its output (#2844). So do ``critical``
+        and the ``operation`` failure lines.
+        """
         error_data = {"layer": self.layer, **extra_fields}
 
-        if error:
-            error_data.update(
-                {"error_message": str(error), "error_type": type(error).__name__}
-            )
+        if error is not None:
+            error_data["error_message"] = exception_class_chain(error)
+            error_data["error_type"] = type(error).__name__
 
         # Check for error cascade prevention
         request_ctx = request_context.get()
         if request_ctx and request_ctx.error_context:
             if request_ctx.error_context.should_log_error(self.layer):
                 self.logger.error(message, **error_data)
-                if error:
+                if error is not None:
                     request_ctx.error_context.add_layer_error(self.layer, error)
         else:
             self.logger.error(message, **error_data)
@@ -571,17 +576,16 @@ class UnifiedLogger:
         """Log critical message with cascade prevention."""
         error_data = {"layer": self.layer, **extra_fields}
 
-        if error:
-            error_data.update(
-                {"error_message": str(error), "error_type": type(error).__name__}
-            )
+        if error is not None:
+            error_data["error_message"] = exception_class_chain(error)
+            error_data["error_type"] = type(error).__name__
 
         # Check for error cascade prevention
         request_ctx = request_context.get()
         if request_ctx and request_ctx.error_context:
             if request_ctx.error_context.should_log_error(self.layer):
                 self.logger.critical(message, **error_data)
-                if error:
+                if error is not None:
                     request_ctx.error_context.add_layer_error(self.layer, error)
         else:
             self.logger.critical(message, **error_data)

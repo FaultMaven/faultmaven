@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.exceptions import ServiceError, ValidationException
 from faultmaven.services.base import BaseService
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_class_name,
+)
 
 # Sidecar metadata suffix for orphan-file tracking
 # (evidence-failure-modes.md).
@@ -182,7 +185,9 @@ class FileStorageService(BaseService):
             raise
         except Exception as e:
             self.log_error("store_file", e, original_filename=original_filename)
-            raise ServiceError(f"Failed to store file: {e}")
+            # Named by class chain: the backend's text can carry its output
+            # (#2844). The chain each raise has is unchanged.
+            raise ServiceError(f"Failed to store file: {exception_class_chain(e)}")
 
     async def _write_sidecar(
         self,
@@ -290,7 +295,7 @@ class FileStorageService(BaseService):
             raw = await self.backend.retrieve_file(f"{storage_key}{SIDECAR_SUFFIX}")
         except Exception as e:
             self.log_error("read_sidecar", e, storage_key=storage_key)
-            raise ServiceError(f"Failed to read sidecar: {e}")
+            raise ServiceError(f"Failed to read sidecar: {exception_class_chain(e)}")
 
         if raw is None:
             return None
@@ -299,7 +304,9 @@ class FileStorageService(BaseService):
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             self.log_error("read_sidecar", e, storage_key=storage_key)
-            raise ServiceError(f"Corrupt sidecar for {storage_key}: {e}")
+            raise ServiceError(
+                f"Corrupt sidecar for {storage_key}: {exception_class_chain(e)}"
+            )
 
         # Valid JSON is not necessarily a sidecar. A bare list or scalar would
         # reach the sweep and blow up on .get(), aborting the entire run over
@@ -396,7 +403,9 @@ class FileStorageService(BaseService):
             self.log_error("retrieve_file", e, storage_key=storage_key)
             # ``from e``: a caller that reacts to the cause's class (a storage
             # timeout, #2332) finds it on the cause chain.
-            raise ServiceError(f"Failed to retrieve file: {e}") from e
+            raise ServiceError(
+                f"Failed to retrieve file: {exception_class_chain(e)}"
+            ) from e
 
     async def delete_file(self, storage_key: str) -> bool:
         """Delete a file and its sidecar from storage.
@@ -432,7 +441,7 @@ class FileStorageService(BaseService):
             await self.backend.delete_file(f"{storage_key}{SIDECAR_SUFFIX}")
         except Exception as e:
             self.log_error("delete_file", e, storage_key=storage_key)
-            raise ServiceError(f"Failed to delete file: {e}")
+            raise ServiceError(f"Failed to delete file: {exception_class_chain(e)}")
 
         if not deleted:
             self.log_operation("delete_file_not_found", storage_key=storage_key)

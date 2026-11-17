@@ -199,7 +199,8 @@ class TestUnifiedLogger:
         error_call = self.mock_logger.error.call_args
         assert "Operation failed: failing_operation" in error_call[0]
         assert error_call[1]["event_type"] == "operation_error"
-        assert error_call[1]["error_message"] == "Test error"
+        # The class chain, never the text (#2844).
+        assert error_call[1]["error_message"] == "ValueError"
         assert error_call[1]["error_type"] == "ValueError"
         assert error_call[1]["step"] == "before_error"
 
@@ -465,7 +466,7 @@ class TestUnifiedLogger:
 
         logged_data = call_args[1]
         assert logged_data["layer"] == "service"
-        assert logged_data["error_message"] == "Test error"
+        assert logged_data["error_message"] == "RuntimeError"  # never the text
         assert logged_data["error_type"] == "RuntimeError"
         assert logged_data["extra"] == "value"
 
@@ -481,7 +482,7 @@ class TestUnifiedLogger:
         call_args = self.mock_logger.critical.call_args
 
         logged_data = call_args[1]
-        assert logged_data["error_message"] == "Critical system error"
+        assert logged_data["error_message"] == "SystemError"  # never the text
         assert logged_data["error_type"] == "SystemError"
 
         coordinator.end_request()
