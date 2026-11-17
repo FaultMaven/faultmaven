@@ -151,6 +151,24 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.4.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/llm/usage` computes `cache_hit_rate` over every prompt "
+            "token sent: `cache_read / (input + cache_read + cache_write)`. "
+            "MINOR: no field is added or removed; the value changes only where "
+            "a provider reported cache writes."
+        ),
+        body=r"""The token buckets are disjoint, and a cache write (Anthropic
+reports one where a request stores its prompt in the provider cache) is prompt
+the call sent and did not read from the cache. The rate left it out of the
+base, so a bucket holding writes read high: 100 input, 100 cache-read and 200
+cache-write tokens read 0.5 where a quarter of the prompt came from the cache.
+Buckets with no cache writes (OpenAI, Gemini, and every stored figure until a
+deployment runs Anthropic with prompt caching) read the same as before. The
+rate is still null when the sum is 0.""",
+    ),
+    ContractChange(
         version="15.3.0",
         level="MINOR",
         title=(

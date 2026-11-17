@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
 from faultmaven.config.tenant_context import get_current_actor_user_id
-from faultmaven.infrastructure.llm.pricing import estimate_cost_usd
+from faultmaven.infrastructure.llm.pricing import estimate_cost_usd, normalize_provider
 from faultmaven.infrastructure.llm.usage_ledger import (
     CallBucket,
     UsageAttribution,
@@ -43,6 +43,7 @@ from faultmaven.infrastructure.llm.usage_ledger import (
 from faultmaven.infrastructure.shims import (
     llm_call_tokens,
     llm_cost_usd,
+    llm_investigation_call_tokens,
     llm_provider_calls,
     llm_unpriced_calls,
 )
@@ -55,6 +56,19 @@ logger = logging.getLogger(__name__)
 active_token_tracker: ContextVar[TurnTokenTracker | None] = ContextVar(
     "active_token_tracker", default=None
 )
+
+
+def _token_buckets(response: Any) -> Dict[str, int]:
+    """A response's four disjoint token buckets, keyed by ``token_type`` label."""
+    return {
+        token_type: int(getattr(response, attr, 0) or 0)
+        for token_type, attr in (
+            ("input", "input_tokens"),
+            ("output", "output_tokens"),
+            ("cache_read", "cache_read_tokens"),
+            ("cache_write", "cache_write_tokens"),
+        )
+    }
 
 
 @dataclass
@@ -110,10 +124,11 @@ class TurnTokenTracker:
     ) -> None:
         if response is None:
             return
-        input_tokens = int(getattr(response, "input_tokens", 0) or 0)
-        output_tokens = int(getattr(response, "output_tokens", 0) or 0)
-        cache_read = int(getattr(response, "cache_read_tokens", 0) or 0)
-        cache_write = int(getattr(response, "cache_write_tokens", 0) or 0)
+        tokens = _token_buckets(response)
+        input_tokens = tokens["input"]
+        output_tokens = tokens["output"]
+        cache_read = tokens["cache_read"]
+        cache_write = tokens["cache_write"]
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cache_read_tokens += cache_read
@@ -185,10 +200,11 @@ def record_provider_call(
         provider = provider or "unknown"
         model = model or getattr(response, "model", None) or "unknown"
 
-        input_tokens = int(getattr(response, "input_tokens", 0) or 0)
-        output_tokens = int(getattr(response, "output_tokens", 0) or 0)
-        cache_read = int(getattr(response, "cache_read_tokens", 0) or 0)
-        cache_write = int(getattr(response, "cache_write_tokens", 0) or 0)
+        tokens = _token_buckets(response)
+        input_tokens = tokens["input"]
+        output_tokens = tokens["output"]
+        cache_read = tokens["cache_read"]
+        cache_write = tokens["cache_write"]
 
         cost_usd, priced = estimate_cost_usd(
             provider,
@@ -201,12 +217,7 @@ def record_provider_call(
 
         # Prometheus — bounded labels only (never case_id/user_id/etc.).
         llm_provider_calls.labels(provider=provider, model=model, outcome=outcome).inc()
-        for token_type, amount in (
-            ("input", input_tokens),
-            ("output", output_tokens),
-            ("cache_read", cache_read),
-            ("cache_write", cache_write),
-        ):
+        for token_type, amount in tokens.items():
             if amount:
                 llm_call_tokens.labels(
                     provider=provider, model=model, token_type=token_type
@@ -279,3 +290,37 @@ def record_provider_call(
         )
     except Exception as exc:  # metering must never break a request
         logger.warning("record_provider_call failed (non-fatal): %s", exc)
+
+
+def record_investigation_call(
+    response: Any, *, path: str, position: str, model: str | None = None
+) -> None:
+    """Count the tokens of one response the investigation engine received.
+
+    Best-effort; never raises. ``path`` is ``tool_loop`` or ``single_shot``;
+    ``position`` is ``first`` (the turn's first tool-loop iteration and its
+    re-issues, and every single-shot call) or ``later``. ``model`` is the model
+    the call asked for, when it named one: the spend counters take the same
+    ``model or response.model`` (:func:`record_provider_call`), so the two
+    series join. A response-cache hit (``cached``) billed nothing and is
+    skipped. Spend and persistence stay with :func:`record_provider_call`,
+    which every billed attempt already reached.
+    """
+    try:
+        if response is None or isinstance(response, str):
+            return
+        if getattr(response, "cached", False):
+            return
+        provider = normalize_provider(getattr(response, "provider", None)) or "unknown"
+        model = model or getattr(response, "model", None) or "unknown"
+        for token_type, amount in _token_buckets(response).items():
+            if amount:
+                llm_investigation_call_tokens.labels(
+                    provider=provider,
+                    model=model,
+                    path=path,
+                    position=position,
+                    token_type=token_type,
+                ).inc(amount)
+    except Exception as exc:  # metering must never break a request
+        logger.warning("record_investigation_call failed (non-fatal): %s", exc)

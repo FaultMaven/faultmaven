@@ -293,15 +293,19 @@ def reload_rates() -> None:
     _RATES = _build_rates()
 
 
-def _normalize_provider(provider: str | None) -> str:
-    # Registry tags low-confidence fallbacks as e.g. "anthropic (low-confidence)".
+def normalize_provider(provider: str | None) -> str:
+    """The bare, lowercase provider name a price row and a metric label use.
+
+    The registry tags a kept low-confidence response's provider as e.g.
+    "anthropic (low-confidence)"; this returns "anthropic".
+    """
     name = (provider or "").lower().strip()
     return name.split(" ", 1)[0]
 
 
 def lookup_rates(provider: str | None, model: str | None) -> TokenRates | None:
     """Return rates for (provider, model), or None if unpriced."""
-    name = _normalize_provider(provider)
+    name = normalize_provider(provider)
     if name in _ZERO_COST_PROVIDERS:
         return _ZERO_RATES
     table = _RATES.get(name)
@@ -343,7 +347,7 @@ def rate_status(provider: str | None, model: str | None) -> str:
     resolves, else ``priced``. A read-time fact: the stored ``unpriced_calls``
     say what was unpriced when each call was made.
     """
-    if _normalize_provider(provider) in _ZERO_COST_PROVIDERS:
+    if normalize_provider(provider) in _ZERO_COST_PROVIDERS:
         return "zero_cost"
     return "unpriced" if lookup_rates(provider, model) is None else "priced"
 

@@ -694,6 +694,29 @@ llm_call_tokens = Counter(
     lazy_labels=_LAZY_MODEL,
 )
 
+# The investigation engine's own calls, by where they sit in the turn (#613's
+# follow-up). A tool-loop iteration re-sends the previous iteration's request
+# and appends to it, so a provider prompt cache can serve it almost whole; the
+# first call of the turn can be served at most its standing prefix. So the turn's
+# uncached case shows up as path="tool_loop" position="first" input plus
+# cache_write (Anthropic writes it for the next iteration; other providers
+# report it as input), which a blended hit rate (rising with the iteration
+# count) cannot show. Recorded
+# where the engine receives each response from its provider: every response it
+# received, including one it then re-issues (a cut body, a refusal, an
+# unparseable single-shot reply), but never a response-cache hit, which bills
+# nothing, and never a discarded fallback attempt (llm_call_tokens_total only).
+llm_investigation_call_tokens = Counter(
+    "llm_investigation_call_tokens_total",
+    "Tokens of the responses the investigation engine received from its "
+    "provider, by path (tool_loop|single_shot) and position (first = a turn's "
+    "first tool-loop iteration, re-issues included, and every single-shot "
+    "call; later = tool-loop iterations after the first), split by token type. "
+    "Excludes response-cache hits and discarded fallback attempts.",
+    labelnames=["provider", "model", "path", "position", "token_type"],
+    lazy_labels=_LAZY_MODEL,
+)
+
 llm_cost_usd = Counter(
     "llm_cost_usd_total",
     "Estimated LLM spend in USD per provider API call (from the operator-"

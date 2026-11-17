@@ -76,6 +76,7 @@ from faultmaven.infrastructure.llm.json_response import (
 )
 from faultmaven.infrastructure.llm.metering import (
     active_token_tracker,
+    record_investigation_call,
     record_provider_call,
 )
 from faultmaven.infrastructure.llm.providers import (
@@ -945,6 +946,12 @@ class StructuredOutputGenerator:
                     result = await send_to_model(provider, **call_kwargs)
                 else:
                     result = await route_model_call(provider, **call_kwargs)
+                record_investigation_call(
+                    result,
+                    path="tool_loop",
+                    position="first" if iteration == 0 else "later",
+                    model=call_kwargs.get("model"),
+                )
                 if self.deps.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
                     # so this call bypassed the registry metering chokepoint.
@@ -2218,6 +2225,12 @@ class StructuredOutputGenerator:
             try:
                 response = await route_model_call(
                     self.deps.llm_provider, **generate_params
+                )
+                record_investigation_call(
+                    response,
+                    path="single_shot",
+                    position="first",
+                    model=generate_params.get("model"),
                 )
             except RawModelContentRefused:
                 # A refusal is a programming error, never a fallback (#1998).

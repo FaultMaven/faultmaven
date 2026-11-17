@@ -89,7 +89,9 @@ def _bucket(row: Any) -> Dict[str, Any]:
     }
     tokens = [n["input_tokens"], n["output_tokens"]]
     tokens += [n["cache_read_tokens"], n["cache_write_tokens"]]
-    hit_base = n["input_tokens"] + n["cache_read_tokens"]
+    # Every prompt token the calls sent: the buckets are disjoint, and a cache
+    # write (Anthropic's) is prompt sent, not read, so it belongs in the base.
+    hit_base = n["input_tokens"] + n["cache_read_tokens"] + n["cache_write_tokens"]
     return {
         "calls": {
             "total": n["calls"],

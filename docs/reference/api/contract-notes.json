@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.3.0",
+  "contractVersion": "15.4.0",
   "entries": [
+    {
+      "body": "The token buckets are disjoint, and a cache write (Anthropic\nreports one where a request stores its prompt in the provider cache) is prompt\nthe call sent and did not read from the cache. The rate left it out of the\nbase, so a bucket holding writes read high: 100 input, 100 cache-read and 200\ncache-write tokens read 0.5 where a quarter of the prompt came from the cache.\nBuckets with no cache writes (OpenAI, Gemini, and every stored figure until a\ndeployment runs Anthropic with prompt caching) read the same as before. The\nrate is still null when the sum is 0.",
+      "level": "MINOR",
+      "title": "`GET /admin/llm/usage` computes `cache_hit_rate` over every prompt token sent: `cache_read / (input + cache_read + cache_write)`. MINOR: no field is added or removed; the value changes only where a provider reported cache writes.",
+      "version": "15.4.0"
+    },
     {
       "body": "The receipt of a keyed conversion stores the job's id and none of\nits drafts, so text edited out of a draft is no longer kept, or served, under\nthe key. A retry with the same file and fields still answers 201 with\n`X-Idempotency-Replayed: true` and publishes nothing; its body is the job as\nit now stands:\n\n* a draft edited since carries its edited `content`, a verified one its\n  `verified` status;\n* a discarded draft is left out, so `drafts` is `[]` once every draft is\n  discarded;\n* the drafts come in the read's order, unsorted: on SQLite the order they\n  were written, which is the first answer's; on PostgreSQL the order can\n  differ, so match them by `draft_id`.\n\n409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` now means the conversion committed and its\njob can no longer be read, because it is gone or its stored rows no longer\nparse (reload your conversions).\n\n`GET /knowledge/conversions/{conversion_id}` and\n`GET /knowledge/conversions/by-case/{case_id}` now return a `quality_warning`\non each draft still in `draft` status whose stored score is below 50, where\nthey returned null. Its text is the one the draft's writer uses (a document\nor case conversion, the template, the scan), chosen by the job's stored\nanalysis; it is null at 50 or above, on a verified draft, and on a\nknowledge-base upload's draft. After an edit, the stored score is the edited\ntext's, so the warning follows the edit while keeping the writer's text,\nnot the edit route's. Both routes answer in JSON mode: `created_at` reads\n`...Z` on every database, where SQLite's read had no offset and PostgreSQL's\nread `+00:00`.",
       "level": "MINOR",
