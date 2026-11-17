@@ -10,6 +10,7 @@ from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
     BLOCK_REASON_RESTATEMENT,
+    deepened_past_root_ids,
     restatement_held_root_ids,
     root_support_block_reasons,
 )
@@ -431,9 +432,13 @@ def _build_causal_graph_block(case: Case) -> str:
         )
 
     on_path: set[str] = set()
-    # A node some hypothesis shown here is rooted at stays a root on every path
-    # through it: a re-root may hand an old root to another hypothesis.
-    shown_roots = {h.root_node_id for h in active_h if h.root_node_id}
+    # A root a chain was deepened past keeps its stored type (the
+    # cluster-origin machinery and a later re-root back onto it read it), but
+    # it has a cause above it now, so it is a rung (#2036). A node some
+    # hypothesis shown here is rooted at stays a root on every path through
+    # it: a re-root may hand an old root to another hypothesis. The engine
+    # holds such a rung to the rung bar by the same predicate (#2060).
+    below_the_root = deepened_past_root_ids(case)
     lines = [
         "<causal_graph>",
         "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
@@ -466,12 +471,8 @@ def _build_causal_graph_block(case: Case) -> str:
             if n is None or n.node_type.value == "problem":
                 continue
             on_path.add(nid)
-            # A root this chain was deepened past keeps its stored type (the
-            # cluster-origin machinery and a later re-root back onto it read
-            # it), but it has a cause above it now, so it is a rung (#2036).
-            below_the_root = n.node_type.value == "root" and nid not in shown_roots
             lines.append(
-                _node_line("    ", n, "intermediate" if below_the_root else None)
+                _node_line("    ", n, "intermediate" if nid in below_the_root else None)
             )
         if h.state.value == "refuted" and h.refutation_reason:
             lines.append(f"    Refuted because: {_one_line(h.refutation_reason)}")

@@ -33,6 +33,7 @@ from .support import (
     _node_evidence_tally,
     _restating_root_ids,
     _support_block_reason,
+    deepened_past_root_ids,
 )
 
 if TYPE_CHECKING:
@@ -82,6 +83,10 @@ def derive_node_states(case: Case) -> bool:
       SUPPORTS, gone⇒gone — the M2 top grade, engine-only producer) satisfies
       the ROOT bar outright: confirmation dominates empirical counting, and a
       confirmed 1-support root recomputed post-RESOLVED must not demote.
+      A ROOT-typed node a chain was deepened past (``deepened_past_root_ids``:
+      on a non-retired hypothesis's path, no non-retired hypothesis's root) is
+      a rung by its position: it takes the rung bar and is outside the
+      restatement guard and the ROOT block metric (#2060).
       EMPIRICAL grade; a validated ROOT is marked ``actionable`` (M1).
       Method/actionable/reason are kept mutually consistent so the node
       satisfies its M1/M4/refutation model-validators on reload
@@ -105,7 +110,10 @@ def derive_node_states(case: Case) -> bool:
     nodes = case.causal_nodes
     edges = case.causal_edges
     evidence_by_id: dict[str, EvidenceCategory | None] = _evidence_category_map(case)
-    restating_roots = _restating_root_ids(case)
+    # A root a chain was deepened past is a rung by its position (#2060): the
+    # rung bar, no restatement guard, no ROOT block metric.
+    deepened_past = deepened_past_root_ids(case)
+    restating_roots = _restating_root_ids(case) - deepened_past
     causal_tokens = _causal_evidence_tokens(case)
 
     changed_any = False
@@ -134,7 +142,7 @@ def derive_node_states(case: Case) -> bool:
             # while a non-ROOT rung keeps ≥1. The len() pre-check short-circuits
             # the pairwise independence work when the raw count can't reach the
             # bar anyway (independent count ≤ deduped link count).
-            if node.node_type == NodeType.ROOT:
+            if node.node_type == NodeType.ROOT and node.node_id not in deepened_past:
                 causally_grounded = (
                     len(causal_support_ev_ids) >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
                     and _independent_causal_support_count(
@@ -232,6 +240,7 @@ def derive_node_states(case: Case) -> bool:
                 and not causally_grounded
                 and raw_causal_links >= 1
                 and node.node_type == NodeType.ROOT
+                and node.node_id not in deepened_past
             ):
                 reason = _support_block_reason(causal_support_ev_ids, causal_tokens)
                 root_validation_blocked_support_count_total.labels(

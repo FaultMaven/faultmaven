@@ -24,6 +24,7 @@ from faultmaven.modules.case.contracts import (
     CausalNode,
     EvidenceCategory,
     EvidenceStance,
+    HypothesisState,
     NodeState,
     NodeType,
 )
@@ -58,6 +59,33 @@ _EVIDENCE_MIRROR_JACCARD = 0.6
 # subsets at n<=15 is ~32k cheap checks; a node with more causal supports than
 # that falls back to the conservative greedy bound.
 _MIS_EXACT_MAX = 15
+
+
+def deepened_past_root_ids(case: Case) -> set[str]:
+    """ROOT-typed nodes a chain was deepened past: on the path of some
+    non-retired hypothesis, and no non-retired hypothesis's root.
+
+    Such a node keeps its stored type (the cluster-origin machinery and a
+    later re-root back onto it read it, #2036), but it has a cause above it
+    now, so its position makes it a rung. It takes the rung bar, is shown as
+    ``intermediate`` and carries no ROOT recovery note (#2060). One predicate
+    decides it for the bar, the label and the note.
+    """
+    live = [
+        h
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h and h.state != HypothesisState.RETIRED
+    ]
+    rooted_at = {h.root_node_id for h in live if h.root_node_id}
+    nodes = case.causal_nodes or {}
+    return {
+        nid
+        for h in live
+        for nid in h.path or ()
+        if nid not in rooted_at
+        and nid in nodes
+        and nodes[nid].node_type == NodeType.ROOT
+    }
 
 
 def _node_evidence_tally(
@@ -241,7 +269,9 @@ def root_support_block_reasons(case: Case) -> dict[str, str]:
     ``count`` / ``mirror_collapse`` / ``hedged_only``. Roots blocked by
     anything else (restatement, refutation, AND-gate, no causal link at all)
     are absent — their recovery is a different story the §7.1 machinery does
-    not own."""
+    not own. So is a root a chain was deepened past
+    (``deepened_past_root_ids``): it is a rung and takes the rung bar
+    (#2060)."""
     reasons: dict[str, str] = {}
     nodes = case.causal_nodes
     if not nodes:
@@ -257,9 +287,10 @@ def root_support_block_reasons(case: Case) -> dict[str, str]:
         return reasons
     evidence_by_id = _evidence_category_map(case)
     tokens = _causal_evidence_tokens(case)
-    restating = _restating_root_ids(case)
+    # A deepened-past root is held to the rung bar, not this one (#2060).
+    skipped = _restating_root_ids(case) | deepened_past_root_ids(case)
     for node in nodes.values():
-        if node.node_type != NodeType.ROOT or node.node_id in restating:
+        if node.node_type != NodeType.ROOT or node.node_id in skipped:
             continue
         if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
             continue
@@ -340,6 +371,9 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     anti-anchoring exemption). A restating root must never reach those — its
     recovery is to state a real mechanism, which no amount of confirmation
     supplies.
+
+    A root a chain was deepened past (``deepened_past_root_ids``) is a rung,
+    outside the guard, and never held here (#2060).
     """
     nodes = case.causal_nodes
     if not nodes:
@@ -354,7 +388,7 @@ def restatement_held_root_ids(case: Case) -> set[str]:
         for n in nodes.values()
     ):
         return set()
-    restating = _restating_root_ids(case)
+    restating = _restating_root_ids(case) - deepened_past_root_ids(case)
     if not restating:
         return set()
     evidence_by_id = _evidence_category_map(case)
