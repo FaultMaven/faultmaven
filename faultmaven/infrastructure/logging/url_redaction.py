@@ -30,11 +30,22 @@ sweep would have caught one of the five and would have to reason about every
 value in a product whose logs legitimately carry evidence, where IPs and
 hostnames are the signal. Stripping a query string cannot blank an
 investigation's own data.
+
+**The one exception: four credential headers** (#2865, rule 2 of #2844's
+ruling). ``set-cookie``, ``cookie``, ``authorization`` and
+``proxy-authorization`` name a credential by their name alone, so their values
+are blanked too, as defence in depth behind rule 1 (no third-party exception
+text on a log line). The rule does not measure where a value ends: from the
+header's separator it blanks to the end of the enclosing unit (the line, plus
+any following lines indented deeper; in a JSON line, the decoded string, or
+the whole value of a key, a header record or a name pair). The text after a
+credential header on the same unit is lost with it, which is the safe side.
 """
 
+import json
 import logging
 import re
-from typing import Callable
+from typing import Any, Callable, Optional, Tuple
 
 # Anchored on the literal "://".
 #
@@ -124,8 +135,198 @@ def redact_urls_bytes(data: bytes) -> bytes:
     return _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
 
 
+# A credential header: the name, any quoting a repr gave it (a closing quote
+# may be followed by "]" or ")": ``headers['Authorization'] = ...``), console
+# colour codes, then ":" or "=", a tuple's "', '", or a tab. Matched only at a
+# candidate the scan found with str.find, never by a scan of the whole line.
+_HEADER_NAMES = ("set-cookie", "proxy-authorization", "authorization", "cookie")
+_HEAD = re.compile(
+    r"(?:set-cookie|proxy-authorization|authorization|cookie)(?![\w-])"
+    r"[\\'\"]*+(?:(?<=['\"])[\])])?(?:\x1b\[[0-9;]*+m)*+"
+    r"(?:[ \t]*+[:=]|(?<=['\"])[ \t]*+,|\t)",
+    re.IGNORECASE,
+)
+_WORD_CHAR = re.compile(r"[\w-]")
+# A name may follow a repr's "\n" escape or a colour code with no space.
+_ESCAPE_BEFORE = re.compile(r"(?:\\[nrt]|\x1b\[[0-9;]{0,12}m)\Z")
+_TO_LINE_END = re.compile(r"[^\r\n]*+")
+_INDENT = re.compile(r"[ \t]*+")
+_KEY_SEGMENT = re.compile(r"[._]")
+_REDACTED = "<redacted>"
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _starts_name(text: str, start: int) -> bool:
+    """``start`` is not inside a longer word (``x-cookie``, ``Unauthorization``)."""
+    if start == 0 or not _WORD_CHAR.match(text, start - 1):
+        return True
+    return _ESCAPE_BEFORE.search(text, max(0, start - 16), start) is not None
+
+
+def _head_at(text: str, low: str, hit: int, prefix: str) -> Optional[re.Match[str]]:
+    """The header whose name ends in the word found at ``hit``, if any."""
+    for start in (hit - len(prefix), hit):
+        if start >= 0 and low.startswith(prefix, start) and _starts_name(text, start):
+            head = _HEAD.match(text, start)
+            if head:
+                return head
+        prefix = ""
+    return None
+
+
+def _unit_end(text: str, head: re.Match[str], pos: int) -> int:
+    """The end of the header's line, extended over the lines after it that are
+    indented deeper than it (``indent=2`` JSON, pprint, folded headers).
+
+    ``pos`` is 0 or the line end the last unit stopped at, so the search back
+    for this line's start never rescans text already passed.
+    """
+    start = head.start()
+    line_start = max(text.rfind("\n", pos, start), text.rfind("\r", pos, start)) + 1
+    indent = _INDENT.match(text, line_start).end() - line_start
+    end = _TO_LINE_END.match(text, head.end()).end()
+    while end < len(text):
+        nxt = end + (2 if text.startswith("\r\n", end) else 1)
+        body = _INDENT.match(text, nxt).end()
+        if body - nxt <= indent or body == len(text) or text[body] in "\r\n":
+            break
+        end = _TO_LINE_END.match(text, body).end()
+    return end
+
+
+def _redact_header_text(text: str, low: str) -> str:
+    """Blank from each credential header's separator to the end of its unit.
+
+    Candidates come from two ``str.find`` scans, each resumed past the last
+    blanked unit, so the cost is linear in the line.
+    """
+    out = []
+    pos = 0
+    hits = {"cookie": low.find("cookie"), "authorization": low.find("authorization")}
+    while True:
+        word = min((w for w in hits if hits[w] >= 0), key=hits.get, default=None)
+        if word is None:
+            break
+        hit = hits[word]
+        head = _head_at(text, low, hit, "set-" if word == "cookie" else "proxy-")
+        if head is None:
+            hits[word] = low.find(word, hit + 1)
+            continue
+        end = _unit_end(text, head, pos)
+        removed = text[head.end() : end]
+        out.append(text[pos : head.end()])
+        if removed.strip():
+            out.append(removed[: len(removed) - len(removed.lstrip(" \t"))] + _REDACTED)
+            if "\x1b[" in removed:
+                out.append("\x1b[0m")
+        else:
+            out.append(removed)
+        pos = end
+        for w in hits:
+            if 0 <= hits[w] < pos:
+                hits[w] = low.find(w, pos)
+    if not out:
+        return text
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _lowered(text: str) -> str:
+    """A lowercase copy whose indexes are ``text``'s: ``str.lower`` lengthens a
+    few characters (``İ``), and then only ASCII is folded."""
+    low = text.lower()
+    return low if len(low) == len(text) else text.translate(_ASCII_LOWER)
+
+
+def _redact_text_value(text: str) -> str:
+    low = _lowered(text)
+    if "cookie" not in low and "authorization" not in low:
+        return text
+    return _redact_header_text(text, low)
+
+
+def _is_name(value: Any) -> bool:
+    return isinstance(value, str) and value.strip().lower() in _HEADER_NAMES
+
+
+def _key_is_name(key: str) -> bool:
+    """``cookie``, ``headers.cookie``, ``http.request.header.authorization``."""
+    return _KEY_SEGMENT.split(key.strip().lower())[-1].strip() in _HEADER_NAMES
+
+
+def _redact_json_value(value: Any) -> Tuple[Any, bool]:
+    """``value`` with every credential blanked, and whether anything changed.
+
+    Strings get the text rule; a key naming a header, a HAR header record's
+    ``value`` and a ``[name, value]`` pair's value are replaced whole.
+    """
+    if isinstance(value, str):
+        redacted = _redact_text_value(value)
+        return redacted, redacted != value
+    if isinstance(value, list):
+        items, changed = [], False
+        for item in value:
+            if isinstance(item, list) and len(item) == 2 and _is_name(item[0]):
+                item_changed = item[1] != _REDACTED
+                item = [item[0], _REDACTED]
+            else:
+                item, item_changed = _redact_json_value(item)
+            items.append(item)
+            changed = changed or item_changed
+        return items, changed
+    if isinstance(value, dict):
+        record = _is_name(value.get("name")) and "value" in value
+        fields, changed = {}, False
+        for key, item in value.items():
+            if _key_is_name(key) or (record and key == "value"):
+                item_changed = item != _REDACTED
+                item = _REDACTED
+            else:
+                item, item_changed = _redact_json_value(item)
+            fields[key] = item
+            changed = changed or item_changed
+        return fields, changed
+    return value, False
+
+
+def redact_credential_headers(text: str) -> str:
+    """Blank the values of the credential headers named in the module docstring.
+
+    A line naming neither ``cookie`` nor ``authorization`` is returned as is,
+    after one lowercase copy and two finds. A JSON object line is redacted on
+    its decoded value and re-serialized only when something changed, so it
+    stays valid JSON; one the decoder refuses (not JSON, or nested too deep)
+    is redacted as text.
+    """
+    low = _lowered(text)
+    if "cookie" not in low and "authorization" not in low:
+        return text
+    if text.startswith('{"'):
+        try:
+            redacted, changed = _redact_json_value(json.loads(text))
+            return json.dumps(redacted) if changed else text
+        except (ValueError, RecursionError):
+            pass
+    return _redact_header_text(text, low)
+
+
+def redact_log_line(text: str) -> str:
+    """Every redaction rule for a rendered log line: URL queries, then headers."""
+    return redact_credential_headers(redact_urls(text))
+
+
+def redact_log_line_bytes(data: bytes) -> bytes:
+    """``redact_log_line`` for renderers that emit bytes."""
+    data = redact_urls_bytes(data)
+    low = data.lower()
+    if b"cookie" not in low and b"authorization" not in low:
+        return data
+    text = data.decode("utf-8", "surrogateescape")
+    return redact_credential_headers(text).encode("utf-8", "surrogateescape")
+
+
 def redacting_renderer(renderer: Callable) -> Callable:
-    """Wrap a structlog renderer so its output carries no query strings.
+    """Wrap a structlog renderer so its output passes `redact_log_line`.
 
     Applied to whichever renderer ``configure_structlog`` selects, so the rule
     holds for JSON and console output alike, and for foreign stdlib records as
@@ -135,9 +336,9 @@ def redacting_renderer(renderer: Callable) -> Callable:
     def render(logger, method_name, event_dict):
         rendered = renderer(logger, method_name, event_dict)
         if isinstance(rendered, str):
-            return redact_urls(rendered)
+            return redact_log_line(rendered)
         if isinstance(rendered, bytes):
-            return redact_urls_bytes(rendered)
+            return redact_log_line_bytes(rendered)
         return rendered
 
     # The standard unwrap convention, so anything inspecting the chain can
@@ -158,4 +359,4 @@ class RedactingFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_urls(super().format(record))
+        return redact_log_line(super().format(record))
