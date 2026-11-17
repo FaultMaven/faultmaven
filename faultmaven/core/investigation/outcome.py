@@ -72,6 +72,7 @@ from faultmaven.core.investigation.cause_assurance import (
     mitigation_observation,
     mitigation_refusal_reason,
     mitigation_settled,
+    off_cause_attempt,
     subject_index,
     symptom_elimination_rows,
     unbound_post_fix_rows,
@@ -221,8 +222,11 @@ def record_before_save(case: "Case", *, at: WritePoint) -> Callable[[], None]:
 
 def narration_outcome(case: "Case") -> CaseOutcome:
     """The record for the moment narrated, folded in memory over the stored
-    one and stored nowhere; it mints no final verdict (#2811). Computed once
-    per narration pass, at its entry."""
+    one and stored nowhere; it mints no final verdict (#2811). The turn's
+    narration computes it once, at its entry, only when the cycle's write
+    failed and a logged code reads the record; the prompt's fix-verification
+    block folds it lazily, at most once per prompt assembly
+    (``NarrationFold``)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 
@@ -377,10 +381,18 @@ def _shape_2(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome
     return prior.model_copy(update={"attempts": attempts})
 
 
+def _shape_3(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
+    """Shape 2 -> 3 (#2811 S2b-1a): the identity. Shape 3 adds
+    ``resolution.off_cause_turn`` and ``resolution.unrechecked_row_ids``,
+    neither a carried verdict, so every fold derives them fresh and nothing
+    stored is rewritten."""
+    return prior
+
+
 #: Each shape's step from the shape below it, in order; a record is moved one
 #: step at a time to ``CURRENT_OUTCOME_SHAPE``, each step run only on a record
 #: of exactly the shape below its own. A shape change adds its step here.
-SHAPE_STEPS = {2: _shape_2}
+SHAPE_STEPS = {2: _shape_2, 3: _shape_3}
 
 
 def _upgraded(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
@@ -602,6 +614,12 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
         elif fold.mint is None:
             confirmed = []  # minted only where finals are (#2811)
     check = readiness.pending_check
+    # The verifying rows no problem-leg row re-checks: read only once the
+    # cause leg stands, as the fix-verification block prints them.
+    named = {getattr(e, "rechecks_evidence_id", None) for e in problem_rows}
+    unrechecked = [
+        i for i in subjects.verifying if i in subjects.rows and i not in named
+    ]
     return ResolutionOutcome(
         verdict=ResolutionVerdict(readiness.verdict),
         reason=readiness.reason,
@@ -611,6 +629,8 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
         problem_row_ids=[e.evidence_id for e in problem_rows],
         pending_check_need_id=check.need_id if check is not None else None,
         declined_stands=declined_resolve_entry(case) is not None,
+        off_cause_turn=off_cause_attempt(case, windows),
+        unrechecked_row_ids=unrechecked if cause_rows else [],
         confirmed_row_ids=confirmed,
         statement=resolution_record_lines(case),
     )

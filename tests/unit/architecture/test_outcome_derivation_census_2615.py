@@ -36,9 +36,10 @@ Module level is ``<module>``. Three tables:
 * ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
   offer record's three writers (``open_offer``, ``answer_offer``,
   ``lapse_offers``), the transitions' two executors, and the entries that
-  open, answer or close through them. Each row's note says what that caller
-  opens, answers or closes. An entry referenced other than by a call fails, so
-  every way in stays visible here.
+  open, answer or close through them; and the narrators' one accessor of a
+  case's text, ``content_by_id`` (#2811). Each row's note says what that
+  caller opens, answers, closes or reads. An entry referenced other than by a
+  call fails, so every way in stays visible here.
 
 Also counted: a call of the builtin ``getattr(x, "name")`` whose name is a
 constant string, as a reference to that name (for an entry, one that is not a
@@ -171,6 +172,11 @@ DERIVATIONS: dict[str, str] = {
     # #2811: the two save helpers' write, and the record narration reads.
     "record_before_save": _OUTCOME,
     "narration_outcome": _OUTCOME,
+    # #2811 S2b-1a: the derivations the fix-verification block read, which
+    # it now reads off the record.
+    "off_cause_attempt": _CA,
+    "symptom_elimination_rows": _CA,
+    "interception_relief": _CA,
 }
 
 #: Each outcome field read raw, by the module and class that define it.
@@ -182,9 +188,9 @@ FIELDS: dict[str, tuple[str, str]] = {
     "closure_reason": (_CASE + "domain/models/case.py", "Case"),
 }
 
-#: The offer record's writers, the transitions' executors, and the entries that
-#: open, answer or close through them (#2615, *Closure on demand*), by the
-#: module that defines each.
+#: The offer record's writers, the transitions' executors, the entries that
+#: open, answer or close through them (#2615, *Closure on demand*), and the
+#: narrators' text accessor (#2811), by the module that defines each.
 ENTRIES: dict[str, str] = {
     "_execute_closed_transition": _TT,
     "_execute_resolved_transition": _TT,
@@ -195,6 +201,10 @@ ENTRIES: dict[str, str] = {
     "open_offer": _OFFERS,
     "answer_offer": _OFFERS,
     "lapse_offers": _OFFERS,
+    # #2811 S2b-1a: not a closure entry. The narrators' one accessor of a
+    # case's immutable text, by id (ruling 5 of 2026-11-15): every caller is
+    # enumerated, so a narrator reading the case through it is seen here.
+    "content_by_id": _INV + "narration/fix_verification.py",
 }
 
 #: (path, qualname) -> {derivation: references}.
@@ -216,6 +226,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # #2811: the typed parameters, rendered by ``narration.rechecks``.
     (_CA, "uncited_recheck_why"): {"uncited_recheck": 1},
+    # #2811 S2b-1a: the three names the fix-verification block switched to
+    # the record, where the deciders still derive them.
+    (_CA, "_no_confirming_window"): {"off_cause_attempt": 1},
+    (_CA, "mitigation_relief"): {"interception_relief": 1},
+    (_CA, "pending_symptom_check"): {"symptom_elimination_rows": 1},
+    (_CA, "resolution_confirmation_rows"): {"symptom_elimination_rows": 1},
     (_CA, "confirming_polarity_rows"): {"fix_windows": 1},
     (_CA, "confirming_window"): {"fix_windows": 1},
     (_CA, "fix_windows"): {"_pool_legs": 1},
@@ -236,6 +252,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TT, "assess_resolution_readiness"): {
         "_resolution_confirmed": 1,
         "latest_fix_window": 1,
+        "off_cause_attempt": 1,
     },
     (_TT, "closure_verdict"): {"assess_closure_readiness": 1},
     # The four closure entries compute the closure on demand (#2636, pin 5).
@@ -287,7 +304,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
-    (_SG, "standing_fix_action"): {"fix_windows": 1},
+    (_SG, "standing_fix_action"): {"fix_windows": 1, "interception_relief": 1},
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
         "assess_resolution_readiness": 1,
         "resolution_record_lines": 1,
@@ -367,10 +384,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "mitigation_observation": 1,
         "mitigation_refusal_reason": 1,
     },
+    (_OUTCOME, "_attempts"): {"interception_relief": 1},
     (_OUTCOME, "_resolution"): {
         "assess_resolution_readiness": 1,
         "confirmation_stamp_rows": 1,
+        "off_cause_attempt": 1,
         "resolution_record_lines": 1,
+        "symptom_elimination_rows": 1,
     },
     (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
@@ -389,14 +409,16 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
-    # The prompt.
+    # The prompt. The fix-verification block renders from the record
+    # (#2811 S2b-1a, ``narration.fix_verification``): the assembly's one fold,
+    # and the one window list its fresh verdicts (ruling Q1 (a)) and the held
+    # need read, until stage S3.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
-    (_CB + "fix_verification_block.py", "_mitigation_lines"): {
-        "mitigation_observation": 1
+    (_CB + "fix_verification_block.py", "NarrationFold.outcome"): {
+        "narration_outcome": 1
     },
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
-        "cause_recheck_status": 1,
-        "fix_windows": 1,
+        "fix_windows": 1
     },
     # The API, the knowledge harvest and the report.
     (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},
@@ -506,6 +528,12 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
 
 #: (path, qualname) -> ({entry: calls}, what the caller answers or closes).
 ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
+    (_CB + "fix_verification_block.py", "build_fix_verification_block"): (
+        {"content_by_id": 1},
+        "binds the narration's text accessor to the case for the "
+        "fix-verification renderer, which reads an action's description by "
+        "id (#2811 S2b-1a)",
+    ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl._answer"): (
         {"answer_offer": 1},
         "answers the open resolve or close offer declined or withdrawn, on a "

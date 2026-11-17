@@ -16,6 +16,9 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 from faultmaven.core.investigation.prompts.context_builder.entity_highlights import (
     EntityHighlightGroup,
 )
+from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
+    NarrationFold,
+)
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -482,6 +485,10 @@ def get_prompt_for_case(
     prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
+    # One narration fold per assembly (#2811 S2b-1a): the ctx below is built
+    # up to three times, and the <fix_verification> block folds once.
+    narration_fold = NarrationFold(case)
+
     def _build_ctx(section_budget: Optional[int]) -> dict:
         """Build the section ctx dict sized to *section_budget*."""
         return build_investigation_context(
@@ -497,6 +504,7 @@ def get_prompt_for_case(
             given_tools=given_tools,
             kb_rendered=kb_rendered,
             kb_lookup=kb_lookup,
+            narration_fold=narration_fold,
         )
 
     rendered: Dict[str, str] = {}

@@ -6,6 +6,7 @@ code and typed parameters, the ones the record holds (``RecheckWhy``,
 from typing import Optional
 
 from faultmaven.modules.case.contracts import (
+    CauseOutcome,
     NoConfirmingWindow,
     NoWindowKind,
     RecheckReason,
@@ -41,6 +42,23 @@ def recheck_text(why: Optional[RecheckWhy]) -> Optional[str]:
     if why.reason == RecheckReason.UNCITED:
         return uncited_text(why.uncited)
     return _TEXTS[why.reason].format(turn=why.turn)
+
+
+def recorded_why(cause: CauseOutcome, code: RecheckReason) -> Optional[RecheckWhy]:
+    """A row's ``RecheckWhy`` as the record holds it: its code, with the
+    parameters ``CauseOutcome`` holds once for every row of that code."""
+    if code == RecheckReason.COUNTS:
+        return None
+    if code == RecheckReason.NO_CONFIRMING_WINDOW:
+        return RecheckWhy(code, window=cause.no_confirming_window)
+    if code == RecheckReason.UNCITED:
+        return RecheckWhy(code, uncited=cause.uncited)
+    turn = {
+        RecheckReason.PREDATES_POSITING: cause.posited_turn,
+        RecheckReason.PREDATES_FAILED_FIX: cause.latest_disconfirmation_turn,
+        RecheckReason.OTHER_CAUSE: cause.other_cause_fix_turn,
+    }.get(code)
+    return RecheckWhy(code, turn=turn)
 
 
 def no_window_text(window: NoConfirmingWindow) -> str:

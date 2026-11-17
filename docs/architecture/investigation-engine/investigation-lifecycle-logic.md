@@ -1116,19 +1116,32 @@ written*, as amended by #2811, ruled 2026-11-15):
   (so a terminal write that raised is still repaired), and on a terminal case
   the closure a terminal write folded. The write point is a `WritePoint`.
 - **Computed on demand for narration** (`narration_outcome`): folded in memory
-  over the stored record, stored nowhere, minting nothing, once per narration
-  pass.
+  over the stored record, stored nowhere, minting nothing. The turn's
+  narration folds it once, at its entry, when the cycle's write failed and a
+  logged code reads the record; the `<fix_verification>` block folds it
+  lazily, at most once per prompt assembly (`NarrationFold`), and only where
+  the block is shown.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
-  the 1 -> 2 step marks the finals shape 1 held), and
+  the 1 -> 2 step marks the finals shape 1 held; 2 -> 3, which adds
+  `resolution.off_cause_turn` and `resolution.unrechecked_row_ids`, is the
+  identity), and
   `fm-backfill-case-outcome` rewrites it, so the backfill runs after each
   shape change, not once (amending #2615 Q6). A re-shape mints nothing.
 - **The narrators read by id.** The record holds codes and ids, never display
   text (`cause.recheck`'s `RecheckReason`, with each reason's parameters as
-  typed fields, rendered by `narration.rechecks`). A narrator will fetch the
+  typed fields, rendered by `narration.rechecks`). A narrator fetches the
   text an id names through one accessor with no predicate, `content(id)`, with
-  the selected ids the record holds for it (stage S2b).
+  the selected ids the record holds for it (stage S2b). The first is the
+  `<fix_verification>` block (S2b-1a, `narration.fix_verification`): all but
+  its needs lines rendered from the record, the identity fields, `content(id)`
+  (`content_by_id`, proposed actions) and the window verdicts ruling Q1 (a)
+  keeps fresh until S3 (`FixVerificationFresh`). The record is folded at most
+  once per prompt assembly (`NarrationFold`), and only where the block is
+  shown. A fold, fresh read or render that raises replaces the block with one
+  declared line, counted once per assembly on
+  `case_outcome_write_failures_total{at="narration"}`.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is

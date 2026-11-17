@@ -1259,20 +1259,22 @@ def test_both_counters_expose_every_series_at_zero_from_import():
     }
 
 
-#: The write points that never reach ``record_case_outcome``, so never label
-#: the write-failure counter: the backfill's first record and repair fold
-#: through ``compute_case_outcome``, narration folds in memory and stores
-#: nothing, and ``shape`` marks an upgrade rather than naming a fold.
+#: The write points that never label the write-failure counter: the
+#: backfill's first record and repair fold through ``compute_case_outcome``,
+#: and ``shape`` marks an upgrade rather than naming a fold. Narration folds
+#: in memory and stores nothing, but labels it, once per prompt assembly, when
+#: the fix-verification block is omitted because its fold, fresh read,
+#: identity or render raised (#2811 S2b-1a).
 _UNRECORDED = {
     WritePoint.REPAIR,
     WritePoint.BACKFILL,
-    WritePoint.NARRATION,
     WritePoint.SHAPE,
 }
 
 
 def _recorded_write_points() -> set[str]:
-    """Every write point ``record_case_outcome`` is called with (#2811)."""
+    """Every write point ``record_case_outcome`` is called with (#2811), and
+    the prompt's narration fold."""
     return {p.value for p in WritePoint} - {p.value for p in _UNRECORDED}
 
 

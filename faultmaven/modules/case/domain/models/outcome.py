@@ -183,7 +183,7 @@ class ClosureEligibility(StrEnum):
 
 #: Raised by every change that adds or changes a ``CaseOutcome`` field: a
 #: stored record of an older shape is rewritten by the backfill (#2811).
-CURRENT_OUTCOME_SHAPE = 2
+CURRENT_OUTCOME_SHAPE = 3
 
 
 class WritePoint(StrEnum):
@@ -376,6 +376,21 @@ class ResolutionOutcome(BaseModel):
     problem_row_ids: List[str] = Field(default_factory=list)
     pending_check_need_id: Optional[str] = None
     declined_stands: bool = False
+    off_cause_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "The latest attempt's turn when no fix of the cause now "
+            "identified can confirm it (``off_cause_attempt``), whatever "
+            "readiness answered, or None (shape 3)"
+        ),
+    )
+    unrechecked_row_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "With the cause leg standing, the rows that showed the problem "
+            "which no problem-leg row re-checks; empty without it (shape 3)"
+        ),
+    )
     confirmed_row_ids: List[str] = Field(
         default_factory=list,
         description="At RESOLVED, the confirmation and the stamp's rows (final)",

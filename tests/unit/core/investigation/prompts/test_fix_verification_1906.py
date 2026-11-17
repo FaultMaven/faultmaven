@@ -16,6 +16,10 @@ import inspect
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.narration.fix_verification import (
+    CLOSE_TAG,
+    OPEN_TAG,
+)
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     _allocate_sections,
 )
@@ -24,9 +28,8 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
     TokenBudget,
 )
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
-    CLOSE_TAG,
     FIX_VERIFICATION_MAX_TOKENS,
-    OPEN_TAG,
+    NarrationFold,
     build_fix_verification_block,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
@@ -52,6 +55,7 @@ from tests.unit.core.investigation.bound_rows import (
     SUPPORT_ID,
     bound_row,
     ensure_subjects,
+    mitigated,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -524,14 +528,34 @@ def test_older_attempts_are_counted_not_dropped():
     assert "executed turn 6" in block
 
 
-@pytest.mark.parametrize("shape", [dict(problem=True), dict(cause=False, problem=True)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        dict(problem=True),
+        dict(cause=False, problem=True),
+        # MITIGATION, its attempt dated after the only relief: no ask prints,
+        # so the gate's refusal is not read (#2811 S2b-1a).
+        dict(stage="mitigation", problem=True, mitigated=dict(attempt=6)),
+        # TREATMENT, a verified mitigation's relief holding: no ask prints.
+        dict(problem=True, mitigated=dict(attempt=4, relief=5), verified=True),
+    ],
+)
 def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
     from faultmaven.core.investigation import cause_assurance, terminal_transitions
     from faultmaven.core.investigation.prompts.context_builder import (
         fix_verification_block as block_module,
     )
 
-    case = _case("treatment", **shape)
+    shape = {"stage": "treatment", **shape}
+    dated, verified = shape.pop("mitigated", None), shape.pop("verified", False)
+    case = _case(**shape)
+    if dated:
+        mitigated(case, **dated)
+        case.progress.mitigation.verified = verified
+        assert block_module._shown(case), "premise: the block is shown"
+    # The prompt assembly's record, folded before the count (#2811 S2b-1a).
+    fold = NarrationFold(case)
+    assert fold.outcome() is not None
     calls = {"subject_index": 0, "fix_windows": 0}
     for name in calls:
         real = getattr(cause_assurance, name)
@@ -543,7 +567,7 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
         for module in (cause_assurance, block_module, terminal_transitions):
             if hasattr(module, name):
                 monkeypatch.setattr(module, name, counted)
-    build_fix_verification_block(case)
+    build_fix_verification_block(case, fold)
     assert calls == {"subject_index": 1, "fix_windows": 1}
 
 
