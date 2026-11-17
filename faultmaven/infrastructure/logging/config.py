@@ -64,6 +64,28 @@ _FORMATTER_KEYS = frozenset(
 _UNREPLACEABLE_KEYS = frozenset({"level", "logger", "timestamp", "user_id"})
 
 
+def frames_as_console_stack(
+    _logger: Any, _name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Show a line's ``frames`` (``exception_frames``) as the console renderer's
+    multi-line ``stack`` block, for the console renderer only.
+
+    ``frames`` is the field the logging policy records frames under
+    (``docs/operations/monitoring/logging-policy.md``). The console renderer
+    writes any other field inline with its newlines escaped, so the line
+    redactor, which runs on each rendered line, would drop every frame after
+    the first one it redacts. A line that already has a ``stack`` (from
+    ``stack_info``) gets the frames after it. A non-string ``frames`` or
+    ``stack`` leaves both as they are: the renderer concatenates ``stack`` as
+    text. JSON lines keep ``frames``.
+    """
+    frames, stack = event_dict.get("frames"), event_dict.get("stack")
+    if isinstance(frames, str) and (stack is None or isinstance(stack, str)):
+        del event_dict["frames"]
+        event_dict["stack"] = frames if stack is None else f"{stack}\n{frames}"
+    return event_dict
+
+
 def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
     """Write a caller's ``extra`` fields onto the event, by the one rule both
     paths share.
@@ -294,7 +316,8 @@ class FaultMavenLogger:
         # ``structlog.dev._has_colors`` has no isatty() check — so the console
         # renderer would write ANSI escapes into a pod's log stream, where they
         # reach kubectl and the log collector verbatim. Decide from the stream.
-        if self.config.LOG_FORMAT == "console" or self.config.LOG_HUMAN_READABLE:
+        console = self.config.LOG_FORMAT == "console" or self.config.LOG_HUMAN_READABLE
+        if console:
             renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
         else:
             renderer = structlog.processors.JSONRenderer()
@@ -339,6 +362,7 @@ class FaultMavenLogger:
                 structlog.processors.StackInfoRenderer(),
                 structlog.processors.format_exc_info,
                 structlog.processors.UnicodeDecoder(),
+                *([frames_as_console_stack] if console else []),
                 renderer,
             ],
         )

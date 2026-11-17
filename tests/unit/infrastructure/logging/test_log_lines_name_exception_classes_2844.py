@@ -44,6 +44,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
 from faultmaven.services.base import BaseService
+from faultmaven.utils.exception_name import exception_class_chain, exception_frames
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -597,3 +598,45 @@ class TestClaimsAndLeases:
             assert "no error recorded" in rendered.getvalue()
             return
         _named(rendered, "BackendError <- ConnectionError", _old_stdlib(error))
+
+
+class TestPolicyFrames:
+    """The logging policy's example, ``extra={"frames": exception_frames(e)}``
+    on a stdlib logger: every link's frames render, under ``frames`` in JSON
+    and as the console's multi-line block (#2899)."""
+
+    def test_every_link_renders(self, rendered):
+        error = _backend_error()
+        logging.getLogger("faultmaven.test.policy").error(
+            "op failed: %s",
+            exception_class_chain(error),
+            extra={"frames": exception_frames(error)},
+        )
+        output = rendered.getvalue()
+        assert SENTINEL not in output
+        if output.lstrip().startswith("{"):
+            (line,) = _json_lines(rendered)
+            frames = line["frames"]
+        else:
+            frames = output
+        for link in ("BackendError:", "ConnectionError:"):
+            assert link in frames
+
+    def test_frames_follow_a_stack_info_block(self, rendered):
+        error = _backend_error()
+        logging.getLogger("faultmaven.test.policy").error(
+            "op failed",
+            extra={"frames": exception_frames(error)},
+            stack_info=True,
+        )
+        output = rendered.getvalue()
+        assert SENTINEL not in output
+        assert "Stack (most recent call last)" in output
+        for link in ("BackendError:", "ConnectionError:"):
+            assert link in output
+
+    def test_a_non_string_frames_still_renders_its_line(self, rendered):
+        logging.getLogger("faultmaven.test.policy").error(
+            "op failed", extra={"frames": ["a", "b"]}
+        )
+        assert "op failed" in rendered.getvalue()

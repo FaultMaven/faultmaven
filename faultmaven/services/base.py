@@ -633,7 +633,7 @@ class BaseService(ABC):
         """Log service error with context.
 
         Logs at ERROR level the exception's class chain, its frames as
-        ``stack`` and the caller's fields (``storage_key``, ...), which together
+        ``frames`` and the caller's fields (``storage_key``, ...), which together
         identify the failure. Never its text, and no ``exc_info``: a traceback
         renders the message of the exception and of every cause, and a
         backend's exception can carry its output (#2844). The frames come from
@@ -658,7 +658,7 @@ class BaseService(ABC):
                 "error_type": type(error).__name__,
                 **kwargs,
             },
-            stack=exception_frames(error),
+            frames=exception_frames(error),
         )
 
     async def health_check(self) -> Dict[str, Any]:
