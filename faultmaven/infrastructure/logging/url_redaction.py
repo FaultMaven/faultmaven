@@ -37,15 +37,18 @@ ruling). ``set-cookie``, ``cookie``, ``authorization`` and
 are blanked too, as defence in depth behind rule 1 (no third-party exception
 text on a log line). The rule does not measure where a value ends: from the
 header's separator it blanks to the end of the enclosing unit (the line, plus
-any following lines indented deeper; in a JSON line, the decoded string, or
-the whole value of a key, a header record or a name pair). The text after a
-credential header on the same unit is lost with it, which is the safe side.
+any following lines indented deeper, and YAML's ``- `` items under a header
+with nothing after its separator; in a JSON line, the decoded string or key,
+or the whole value of a key, a header record or a name pair). The text after
+a credential header on the same unit is lost with it, which is the safe side.
 """
 
 import json
 import logging
 import re
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from faultmaven.infrastructure.security.secret_patterns import ESCAPE_BOUNDARY
 
 # Anchored on the literal "://".
 #
@@ -135,20 +138,28 @@ def redact_urls_bytes(data: bytes) -> bytes:
     return _URL_QUERY_BYTES.sub(_redact_query_bytes, data)
 
 
-# A credential header: the name, any quoting a repr gave it (a closing quote
-# may be followed by "]" or ")": ``headers['Authorization'] = ...``), console
+# A colour code, raw or as a repr or a JSON string spells it.
+_SGR = r"(?:\x1b|\\x1b|\\u001b|\\033)\[[0-9;]*+m"
+# A credential header: the name, colour codes, any quoting a repr gave it (a
+# closing quote may be followed by "]" or ")": ``headers['Authorization'] =``),
 # colour codes, then ":" or "=", a tuple's "', '", or a tab. Matched only at a
 # candidate the scan found with str.find, never by a scan of the whole line.
 _HEADER_NAMES = ("set-cookie", "proxy-authorization", "authorization", "cookie")
 _HEAD = re.compile(
     r"(?:set-cookie|proxy-authorization|authorization|cookie)(?![\w-])"
-    r"[\\'\"]*+(?:(?<=['\"])[\])])?(?:\x1b\[[0-9;]*+m)*+"
+    rf"(?:{_SGR})*+[\\'\"]*+(?:(?<=['\"])[\])])?(?:{_SGR})*+"
     r"(?:[ \t]*+[:=]|(?<=['\"])[ \t]*+,|\t)",
     re.IGNORECASE,
 )
-_WORD_CHAR = re.compile(r"[\w-]")
-# A name may follow a repr's "\n" escape or a colour code with no space.
-_ESCAPE_BEFORE = re.compile(r"(?:\\[nrt]|\x1b\[[0-9;]{0,12}m)\Z")
+# Before a name: no longer word (``x-cookie``), a "_" or "." segment boundary
+# (``session_cookie``, ``headers.cookie``: the JSON key rule's segments), the
+# shared escape grammar (``\n``, ``%0A``), or a ``\uXXXX`` escape.
+_BOUNDARY = re.compile(
+    rf"(?<![\w-])|(?<=[_.])|{ESCAPE_BOUNDARY}|(?<=\\u[0-9A-Fa-f]{{4}})"
+)
+# Or a colour code of any length up to 64 parameter characters, so the search
+# back is bounded.
+_SGR_BEFORE = re.compile(rf"(?:\x1b|\\x1b|\\u001b|\\033)\[[0-9;]{{0,64}}m\Z")
 _TO_LINE_END = re.compile(r"[^\r\n]*+")
 _INDENT = re.compile(r"[ \t]*+")
 _KEY_SEGMENT = re.compile(r"[._]")
@@ -157,10 +168,12 @@ _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrst
 
 
 def _starts_name(text: str, start: int) -> bool:
-    """``start`` is not inside a longer word (``x-cookie``, ``Unauthorization``)."""
-    if start == 0 or not _WORD_CHAR.match(text, start - 1):
+    """``start`` begins a name, not the inside of a longer word."""
+    if _BOUNDARY.match(text, start):
         return True
-    return _ESCAPE_BEFORE.search(text, max(0, start - 16), start) is not None
+    return text[start - 1] == "m" and bool(
+        _SGR_BEFORE.search(text, max(0, start - 72), start)
+    )
 
 
 def _head_at(text: str, low: str, hit: int, prefix: str) -> Optional[re.Match[str]]:
@@ -176,7 +189,9 @@ def _head_at(text: str, low: str, hit: int, prefix: str) -> Optional[re.Match[st
 
 def _unit_end(text: str, head: re.Match[str], pos: int) -> int:
     """The end of the header's line, extended over the lines after it that are
-    indented deeper than it (``indent=2`` JSON, pprint, folded headers).
+    indented deeper than it (``indent=2`` JSON, pprint, folded headers) and,
+    when nothing follows the separator, over YAML's ``- `` items at its own
+    indent.
 
     ``pos`` is 0 or the line end the last unit stopped at, so the search back
     for this line's start never rescans text already passed.
@@ -185,10 +200,15 @@ def _unit_end(text: str, head: re.Match[str], pos: int) -> int:
     line_start = max(text.rfind("\n", pos, start), text.rfind("\r", pos, start)) + 1
     indent = _INDENT.match(text, line_start).end() - line_start
     end = _TO_LINE_END.match(text, head.end()).end()
+    bare = not text[head.end() : end].strip()
     while end < len(text):
         nxt = end + (2 if text.startswith("\r\n", end) else 1)
         body = _INDENT.match(text, nxt).end()
-        if body - nxt <= indent or body == len(text) or text[body] in "\r\n":
+        if body == len(text) or text[body] in "\r\n":
+            break
+        depth = body - nxt
+        item = bare and depth == indent and text.startswith("- ", body)
+        if depth <= indent and not item:
             break
         end = _TO_LINE_END.match(text, body).end()
     return end
@@ -246,7 +266,14 @@ def _redact_text_value(text: str) -> str:
 
 
 def _is_name(value: Any) -> bool:
-    return isinstance(value, str) and value.strip().lower() in _HEADER_NAMES
+    """A header name, or a bytes repr of one (``b'authorization'``: how the
+    JSON renderer's fallback writes a raw header pair)."""
+    if not isinstance(value, str):
+        return False
+    name = value.strip()
+    if len(name) > 2 and name[0] == "b" and name[1] in "'\"" and name[-1] == name[1]:
+        name = name[2:-1]
+    return name.lower() in _HEADER_NAMES
 
 
 def _key_is_name(key: str) -> bool:
@@ -254,11 +281,21 @@ def _key_is_name(key: str) -> bool:
     return _KEY_SEGMENT.split(key.strip().lower())[-1].strip() in _HEADER_NAMES
 
 
+def _unique_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """A JSON object, refused when a key repeats: the decoder keeps the last,
+    and a value the walk never sees would go out unredacted."""
+    fields = dict(pairs)
+    if len(fields) != len(pairs):
+        raise ValueError("duplicate key")
+    return fields
+
+
 def _redact_json_value(value: Any) -> Tuple[Any, bool]:
     """``value`` with every credential blanked, and whether anything changed.
 
-    Strings get the text rule; a key naming a header, a HAR header record's
-    ``value`` and a ``[name, value]`` pair's value are replaced whole.
+    Strings and keys get the text rule; a key naming a header, a header
+    record's value (``name`` or ``key``, with ``value``, in any case) and a
+    ``[name, value]`` pair's value are replaced whole.
     """
     if isinstance(value, str):
         redacted = _redact_text_value(value)
@@ -275,18 +312,36 @@ def _redact_json_value(value: Any) -> Tuple[Any, bool]:
             changed = changed or item_changed
         return items, changed
     if isinstance(value, dict):
-        record = _is_name(value.get("name")) and "value" in value
+        record = any(
+            key.lower() in ("name", "key") and _is_name(item)
+            for key, item in value.items()
+        )
         fields, changed = {}, False
         for key, item in value.items():
-            if _key_is_name(key) or (record and key == "value"):
+            if _key_is_name(key) or (record and key.lower() == "value"):
                 item_changed = item != _REDACTED
                 item = _REDACTED
             else:
                 item, item_changed = _redact_json_value(item)
-            fields[key] = item
-            changed = changed or item_changed
+            redacted_key = _redact_text_value(key)
+            fields[redacted_key] = item
+            changed = changed or item_changed or redacted_key != key
         return fields, changed
     return value, False
+
+
+def _redact_headers(text: str, ensure_ascii: bool) -> str:
+    low = _lowered(text)
+    if "cookie" not in low and "authorization" not in low:
+        return text
+    if text.startswith('{"'):
+        try:
+            parsed = json.loads(text, object_pairs_hook=_unique_keys)
+            redacted, changed = _redact_json_value(parsed)
+            return json.dumps(redacted, ensure_ascii=ensure_ascii) if changed else text
+        except (ValueError, RecursionError):
+            pass
+    return _redact_header_text(text, low)
 
 
 def redact_credential_headers(text: str) -> str:
@@ -295,19 +350,10 @@ def redact_credential_headers(text: str) -> str:
     A line naming neither ``cookie`` nor ``authorization`` is returned as is,
     after one lowercase copy and two finds. A JSON object line is redacted on
     its decoded value and re-serialized only when something changed, so it
-    stays valid JSON; one the decoder refuses (not JSON, or nested too deep)
-    is redacted as text.
+    stays valid JSON; one the decoder refuses (not JSON, nested too deep, or a
+    key repeated) is redacted as text.
     """
-    low = _lowered(text)
-    if "cookie" not in low and "authorization" not in low:
-        return text
-    if text.startswith('{"'):
-        try:
-            redacted, changed = _redact_json_value(json.loads(text))
-            return json.dumps(redacted) if changed else text
-        except (ValueError, RecursionError):
-            pass
-    return _redact_header_text(text, low)
+    return _redact_headers(text, ensure_ascii=True)
 
 
 def redact_log_line(text: str) -> str:
@@ -316,13 +362,15 @@ def redact_log_line(text: str) -> str:
 
 
 def redact_log_line_bytes(data: bytes) -> bytes:
-    """``redact_log_line`` for renderers that emit bytes."""
+    """``redact_log_line`` for renderers that emit bytes. A changed JSON line
+    keeps the input's encoding: unchanged characters keep their bytes."""
     data = redact_urls_bytes(data)
     low = data.lower()
     if b"cookie" not in low and b"authorization" not in low:
         return data
     text = data.decode("utf-8", "surrogateescape")
-    return redact_credential_headers(text).encode("utf-8", "surrogateescape")
+    redacted = _redact_headers(text, ensure_ascii=False)
+    return redacted.encode("utf-8", "surrogateescape")
 
 
 def redacting_renderer(renderer: Callable) -> Callable:

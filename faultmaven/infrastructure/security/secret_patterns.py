@@ -238,9 +238,10 @@ _KEY_QUOTE = r"""["']?+"""
 #: An escaped newline, tab or return (`"line one\npassword: …"` in a JSON log
 #: field), or a percent-encoded byte (`%3Dsk-…`), before a token: a boundary,
 #: as the character it encodes would be. Case-sensitive: `\N` escapes
-#: nothing.
-_ESCAPED_CONTROL = r"(?-i:\\[ntr])"
-_ESCAPE = rf"(?<={_ESCAPED_CONTROL})|(?<=%[0-9A-Fa-f]{{2}})"
+#: nothing. Public: the log-line redactor's header names share it
+#: (`infrastructure/logging/url_redaction.py`, #2865).
+ESCAPED_CONTROL = r"(?-i:\\[ntr])"
+ESCAPE_BOUNDARY = rf"(?<={ESCAPED_CONTROL})|(?<=%[0-9A-Fa-f]{{2}})"
 #: A YAML block-scalar indicator (`|`, `>`, a chomping `-`/`+` and an
 #: indentation digit, in either order), and what may end its line: a comment
 #: (YAML's ` #`, whatever follows it) or the line's end. Read only after
@@ -263,10 +264,9 @@ def _keys(keywords: str) -> Tuple[str, str, str]:
     """A family's keyword, as a bare key and as a compound key (see
     ``_keyed_secret``)."""
     key = rf"(?:{keywords})"
-    bare = rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE}){key}[_-]?"
+    bare = rf"(?:(?<![A-Za-z0-9_])|{ESCAPE_BOUNDARY}){key}[_-]?"
     compound = (
-        rf"(?<=[A-Za-z0-9_])(?<!{_ESCAPED_CONTROL})(?<!%[0-9A-Fa-f]{{2}})"
-        rf"{key}[_-]?"
+        rf"(?<=[A-Za-z0-9_])(?<!{ESCAPED_CONTROL})(?<!%[0-9A-Fa-f]{{2}})" rf"{key}[_-]?"
     )
     return key, bare, compound
 
@@ -518,7 +518,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # one needs the `scheme://` and the `:password`.)
     _pattern(
         "CREDENTIAL_URL",
-        rf"(?:(?<![A-Za-z0-9+.-])|{_ESCAPE})[A-Za-z][A-Za-z0-9+.-]*://"
+        rf"(?:(?<![A-Za-z0-9+.-])|{ESCAPE_BOUNDARY})[A-Za-z][A-Za-z0-9+.-]*://"
         r"[^\s:/?#@]+:[^\s/?#@]+@[^\s/?#]+",
         _I,
         ("://",),
@@ -526,14 +526,14 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # Provider tokens with a fixed prefix.
     _pattern(
         "GITHUB_TOKEN",
-        rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE})"
+        rf"(?:(?<![A-Za-z0-9_])|{ESCAPE_BOUNDARY})"
         r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})",
         0,
         ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"),
     ),
     _pattern(
         "SLACK_TOKEN",
-        rf"(?:(?<![A-Za-z0-9_-])|{_ESCAPE})"
+        rf"(?:(?<![A-Za-z0-9_-])|{ESCAPE_BOUNDARY})"
         r"(?:xox[a-z]-[A-Za-z0-9-]{10,}|xapp-[0-9]-[A-Za-z0-9-]{10,})",
         0,
         ("xox", "xapp-"),
@@ -544,7 +544,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # longer when routable. GitLab's other prefixes document no shape.
     _pattern(
         "GITLAB_TOKEN",
-        rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE})glpat-[0-9A-Za-z_-]{{20,}}+",
+        rf"(?:(?<![A-Za-z0-9_])|{ESCAPE_BOUNDARY})glpat-[0-9A-Za-z_-]{{20,}}+",
         0,
         ("glpat-",),
     ),
@@ -554,13 +554,16 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # looked for in its first 64 characters, so `sk-sk-sk-…` costs no rescan.
     _pattern(
         "API_KEY",
-        rf"(?:(?<![A-Za-z])|{_ESCAPE})sk-(?:[A-Za-z0-9]{{32,}}"
+        rf"(?:(?<![A-Za-z])|{ESCAPE_BOUNDARY})sk-(?:[A-Za-z0-9]{{32,}}"
         r"|(?=[A-Za-z_-]{0,64}+[0-9])[A-Za-z0-9_-]{20,})",
         _I,
         ("sk-",),
     ),
     _pattern(
-        "API_KEY", rf"(?:(?<![A-Za-z])|{_ESCAPE})pk-[A-Za-z0-9]{{32,}}", _I, ("pk-",)
+        "API_KEY",
+        rf"(?:(?<![A-Za-z])|{ESCAPE_BOUNDARY})pk-[A-Za-z0-9]{{32,}}",
+        _I,
+        ("pk-",),
     ),
     # AWS access key ids (long-term AKIA, temporary ASIA). Case-sensitive: a
     # real id is upper case, and "asia" + 16 letters is prose (a listed
@@ -605,7 +608,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # `$TOKEN` variable or a `<token>` placeholder.
     _pattern(
         "BEARER_TOKEN",
-        rf"(?:(?<![A-Za-z0-9_])|{_ESCAPE})bearer[ \t]++(?P<secret>"
+        rf"(?:(?<![A-Za-z0-9_])|{ESCAPE_BOUNDARY})bearer[ \t]++(?P<secret>"
         r"(?=[A-Za-z0-9._~+/-]*"
         r"(?:[0-9]|[._~+/](?=[A-Za-z0-9])|(?-i:[a-z][A-Z])))"
         r"[A-Za-z0-9._~+/-]{8,}=*)",
@@ -617,7 +620,7 @@ SECRET_PATTERNS: Tuple[RedactionPattern, ...] = (
     # span.
     _pattern(
         "BASIC_AUTH",
-        rf"(?:(?<![A-Za-z0-9_-])|{_ESCAPE})(?:proxy-)?authorization[\"']?[ \t]*+[:=]"
+        rf"(?:(?<![A-Za-z0-9_-])|{ESCAPE_BOUNDARY})(?:proxy-)?authorization[\"']?[ \t]*+[:=]"
         r"[ \t]*+[\"']?basic[ \t]++(?P<secret>"
         r"(?=[A-Za-z0-9+/]*(?:[0-9+/]|(?-i:[a-z][A-Z])))"
         r"[A-Za-z0-9+/]{8,}={0,2})",

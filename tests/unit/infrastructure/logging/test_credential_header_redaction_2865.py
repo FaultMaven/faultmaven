@@ -61,6 +61,20 @@ TEXT_POSITIVES = [
     "Cookie\tsid=VALUE",
     "raw 'HTTP/1.1 401\\r\\nSet-Cookie: VALUE'",
     "\x1b[36mauthorization\x1b[0m=\x1b[35mBearer VALUE\x1b[0m",
+    # Escape spellings before the name: a truecolor code, a repr-escaped
+    # colour code, a \uXXXX escape in embedded JSON, a percent-encoded CRLF.
+    "\x1b[38;2;255;100;0mCookie\x1b[0m: VALUE",
+    "{'m': '\\x1b[36mcookie\\x1b[0m: VALUE'}",
+    'body={"m": "\\u2014cookie: VALUE"}',
+    "GET /r?u=x%0D%0ACookie: sid=VALUE",
+    # A "_" or "." segment before the name, as the JSON key rule reads it.
+    "session_cookie=VALUE",
+    "http_authorization=Bearer VALUE",
+    "HTTP_COOKIE=VALUE",
+    # YAML's indentless sequence, as yaml.dump writes a header list.
+    "headers:\n  Accept: x\n  Cookie:\n  - sid=VALUE\n",
+    # str.lower lengthens "İ": the scan's indexes must still be the line's.
+    "İ Cookie: VALUE",
 ]
 
 # Lines naming the words that carry no header value: the first-party log
@@ -112,6 +126,8 @@ def rendered(request, monkeypatch):
     next(h for h in root.handlers if getattr(h, marker, False)).setStream(buffer)
     try:
         yield types.SimpleNamespace(buffer=buffer, mode=request.param)
+        if request.param == "console" and buffer.getvalue():
+            assert "\x1b[" in buffer.getvalue(), "the console case was not coloured"
     finally:
         structlog.configure(**saved[0])
         root.setLevel(saved[1])
@@ -142,8 +158,23 @@ class TestEveryRenderedLine:
             {"headers": {"set-cookie": ["a=VALUE", "b=x"]}},
             {"cookie": {"sid": "VALUE"}},
             {"error": ValueError("status 401, headers {'set-cookie': 'VALUE'}")},
+            # Raw header pairs (httpx Headers.raw, an ASGI scope): the JSON
+            # renderer's fallback writes each item as a bytes repr.
+            {"headers": [(b"host", b"h"), (b"authorization", b"Bearer VALUE")]},
+            {"scope": {"headers": [(b"cookie", b"sid=VALUE")]}},
+            {"lines": {"Cookie: sid=VALUE": True}},
         ],
-        ids=["dict", "pairs", "har", "list-value", "structured", "exception"],
+        ids=[
+            "dict",
+            "pairs",
+            "har",
+            "list-value",
+            "structured",
+            "exception",
+            "bytes-pairs",
+            "asgi-scope",
+            "key",
+        ],
     )
     def test_a_structured_value_is_blanked(self, rendered, fields):
         get_logger("faultmaven.p").error("call failed", **fields, later="kept")
@@ -154,12 +185,19 @@ class TestEveryRenderedLine:
             (line,) = _json_lines(output)
             assert line["later"] == "kept"
 
+    # The console renderer warns that format_exc_info pre-renders the
+    # exception; under the suite's error filter that warning dropped the
+    # record, so this case used to pass on an empty capture.
+    @pytest.mark.filterwarnings("ignore:Remove `format_exc_info`:UserWarning")
     def test_a_traceback_carrying_a_header_is_blanked(self, rendered):
         try:
             raise RuntimeError("401 with {'set-cookie': 'sid=VALUE'}")
         except RuntimeError:
             get_logger("faultmaven.p").exception("failed")
-        assert SECRET not in rendered.buffer.getvalue()
+        output = rendered.buffer.getvalue()
+        assert "failed" in output and "Traceback" in output
+        assert "RuntimeError" in output
+        assert SECRET not in output
 
     @pytest.mark.parametrize("message", TEXT_NEGATIVES)
     def test_prose_naming_the_words_is_written_unchanged(self, rendered, message):
@@ -206,6 +244,9 @@ class TestTheJobsFormatter:
         "message, still_json",
         [
             ("headers {'cookie': 'sid=VALUE'} retry", True),
+            # Valid JSON with "event" twice: the decoder keeps the last, so
+            # the line is read as text (#2883 is the template's own root).
+            ('Cookie: VALUE", "event": "ok', False),
             ('authorization="Bearer VALUE"', False),  # a raw quote: not JSON
         ],
     )
@@ -241,6 +282,11 @@ class TestJsonLines:
                 "after": "kept",
             },
             {"headers": {"set-cookie": ["VALUE", "VALUE"]}, "after": "kept"},
+            {"h": [{"key": "Authorization", "value": "Bearer VALUE"}], "after": "kept"},
+            {"Name": "Cookie", "Value": "VALUE", "after": "kept"},
+            {"headers": [["b'authorization'", "b'Bearer VALUE'"]], "after": "kept"},
+            {"lines": {"Cookie: sid=VALUE": True}, "after": "kept"},
+            {"e": "İ Cookie: VALUE", "after": "kept"},
         ],
     )
     def test_the_value_goes_and_the_line_stays_json(self, record):
@@ -280,6 +326,16 @@ class TestJsonLines:
         monkeypatch.setattr(module, "_redact_json_value", too_deep)
         line = json.dumps({"x": 1, "cookie": "VALUE"})
         assert redact_credential_headers(line) == '{"x": 1, "cookie": <redacted>'
+
+
+class TestTheBytesForm:
+    def test_a_changed_json_line_keeps_its_encoding(self):
+        """Unchanged characters keep their bytes: UTF-8 stays UTF-8 and an
+        invalid byte comes back as itself, not as an escape."""
+        data = b'{"e": "\xc3\xa9 cookie: VALUE", "x": "\xff"}'
+        assert redact_log_line_bytes(data) == (
+            b'{"e": "\xc3\xa9 cookie: <redacted>", "x": "\xff"}'
+        )
 
 
 class TestTheUnitBlanked:
@@ -336,6 +392,10 @@ class TestTheCostIsLinear:
             ),
             ("key-dense", lambda n: json.dumps({"e": [{"cookie": 1}] * n})),
             ("pair-dense", lambda n: json.dumps({"e": [["cookie", "x"]] * n})),
+            ("alternating names", lambda n: "cookie authorization " * n),
+            ("CR-only endings", lambda n: "cookie: x\r" * n),
+            ("yaml items", lambda n: "Cookie:\n- x\n" * n),
+            ("colour-code lookback", lambda n: ("\x1b[" + "1;" * 30 + "mcookie ") * n),
             (
                 "nested key",
                 lambda n: json.dumps({"e": [{"r": {"h": {"authorization": 1}}}] * n}),
