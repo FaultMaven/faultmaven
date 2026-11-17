@@ -16,6 +16,7 @@ ChromaDB and the production ``KnowledgeService``; only the embedder is fixed.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from types import SimpleNamespace
 from typing import List, Optional
@@ -24,7 +25,8 @@ from unittest.mock import MagicMock, patch
 import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, select, text
+from sqlalchemy.dialects import postgresql
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.kb_pack import PackChunk, PackRunbook
@@ -53,6 +55,10 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 from faultmaven.utils.runbook_id import item_id_from_runbook_id
 from tests.chroma_clients import closed_at_teardown
+from tests.integration.modules.knowledge.test_delete_discards_its_draft_2369 import (
+    _needs_postgres,
+    own_pg,  # noqa: F401 - a PostgreSQL database of the test's own
+)
 from tests.integration.modules.knowledge.test_row_checked_retrieval_2397 import (
     OWNER,
     QUERY,
@@ -63,7 +69,7 @@ from tests.integration.modules.knowledge.test_row_checked_retrieval_2397 import 
 from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_2365 import (  # noqa: E501
     _Shares,
 )
-from tests.utils import regex_only_sanitizer
+from tests.utils import regex_only_sanitizer, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -438,3 +444,87 @@ async def test_the_skip_repair_deletes_nothing_once_the_row_moved(
         assert await _seed(world, _pack("v1", "team", T1)) == "skipped"
 
     assert stale_t3 and set(stale_t3) <= set(await _shares(world))
+
+
+async def test_the_skip_repair_share_locks_the_row_it_guards_on():
+    """Pinned in every run: compiled for PostgreSQL, the repair's DELETE
+    share-locks the row the skip read, the lock the next test needs."""
+    executed = []
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def execute(self, statement):
+            executed.append(statement)
+
+        async def commit(self):
+            return None
+
+    row = SimpleNamespace(item_id=DOC, vector_generation="g1", scope="team")
+    await kb_init._drop_stale_shares(row, ("team", T1), {"s3": ("team", T3)}, _Session)
+
+    (statement,) = executed
+    assert "FOR SHARE" in str(statement.compile(dialect=postgresql.dialect()))
+
+
+@pytest.mark.postgres
+@_needs_postgres
+async def test_the_skip_repair_waits_for_a_peer_reingest_on_postgresql(
+    own_pg, tmp_path  # noqa: F811
+):
+    """A peer re-ingests the row at T3, keeping the stale T3 share as its own,
+    and has not committed when the repair runs. The repair's guard share-locks
+    the row the skip read, so it waits for the peer's commit, re-checks the
+    guard against the replaced row and deletes nothing. Unlocked, it read the
+    committed old row and deleted the share the peer kept."""
+    async with own_pg() as session:
+        await seed_users(session, [OWNER], enterprise_id=STANDALONE_ENTERPRISE_ID)
+    world = _world(own_pg, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+    await _share_to(world, T3)
+    kept_t3 = [s for s in await _shares(world) if s[1] == T3]
+    holding, release, peer_pid = asyncio.Event(), asyncio.Event(), []
+    commit = DatabaseKnowledgeItemRepository.commit
+    real = kb_init._drop_stale_shares
+
+    async def held_commit(repo):
+        pid = await repo.db.execute(text("SELECT pg_backend_pid()"))
+        peer_pid.append(pid.scalar())
+        holding.set()
+        await release.wait()
+        await commit(repo)
+
+    async def peer_reingests_meanwhile(*args):
+        with patch.object(DatabaseKnowledgeItemRepository, "commit", held_commit):
+            peer = asyncio.create_task(_seed(world, _pack("v2", "team", T3)))
+            await holding.wait()
+        repair = asyncio.create_task(real(*args))
+        waiting = text(
+            "SELECT count(*) FROM pg_locks "
+            "WHERE NOT granted AND :pid = ANY(pg_blocking_pids(pid))"
+        )
+        async with own_pg() as probe:
+            # A bounded number of polls, not a clock: the repair is waiting,
+            # or done, long before they run out.
+            for _ in range(600):
+                if repair.done():
+                    break
+                blocked = await probe.execute(waiting, {"pid": peer_pid[0]})
+                await probe.rollback()
+                if blocked.scalar():
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("the repair neither waited nor finished")
+        release.set()
+        assert await peer == "ingested"
+        await repair
+
+    with patch.object(kb_init, "_drop_stale_shares", peer_reingests_meanwhile):
+        assert await _seed(world, _pack("v1", "team", T1)) == "skipped"
+
+    assert kept_t3 and [s for s in await _shares(world) if s[1] == T3] == kept_t3
