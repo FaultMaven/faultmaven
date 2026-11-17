@@ -1513,7 +1513,7 @@ async def _convert_failure_mode(
 
 ### 11.3 Idempotency
 
-The conversion endpoint is NOT idempotent -- each upload creates a new conversion job. To prevent accidental duplicate conversions, the Dashboard disables the "Convert" button after submission and shows the processing state.
+Without an `Idempotency-Key`, each upload creates a new conversion job; the Dashboard disables the "Convert" button after submission and shows the processing state. With one (#2433), the job commits a `kb_request_receipts` row in the same transaction, and a retry with the same file and fields publishes nothing: it is answered 201 with `X-Idempotency-Replayed: true` and the job as `GET /knowledge/conversions/{conversion_id}` reads it now, edits, verifies and discards included (`_replayed_conversion`, `modules/knowledge/api/conversion_routes.py`). The receipt stores only the job's id, never a copy of its drafts, so text edited out of a draft is not kept under the key (#2452). A job that is gone, or whose rows no longer parse, is 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE`. The rest of the key's rules (reuse, in progress, a duplicate that ran without a claim): `.claude/rules/api-contract.md`.
 
 ---
 
@@ -1523,7 +1523,7 @@ The conversion endpoint is NOT idempotent -- each upload creates a new conversio
 
 The `ConversionService` invokes an **in-repo replica** of the KB Toolkit's `RunbookValidator` — `faultmaven.modules.knowledge.domain.services.runbook_validator` — so the backend takes no cross-repo dependency on `faultmaven-kb-toolkit` at runtime. The replica's cause validation is anchored on the **shared parse grammar** (`runbook_grammar`, the same regexes + sub-field parser the upstream pack builder uses), so a draft the gate PASSES is exactly one the toolkit parses identically — the gate can no longer be looser than the parser it fronts. Its cause-level ERRORS mirror the upstream validator (strict `### Cause X:` heading; unique letters; Cause Z reserved for the `[Default]` fallback; exactly one fallback; parseable Chain; quadrant-tagged Interventions; token-anchored Indicators whose `[Step N]` refs resolve). Behavioral parity is guarded by the identical test cases in each repo's suite.
 
-The service holds no validator or scorer. It awaits a module-level gate over the draft's markdown content, which validates once and scores the validated content in a worker process (`avalidate_and_score`, `modules/knowledge/domain/services/runbook_gate.py:214`; §12.5). Verification (`verify_draft`) does not run it again: it refuses a draft whose stored `validation_passed` is false (`conversion_service/service.py:2164`), then awaits a second gate on the draft text, `aenforce_runbook_security` (`service.py:2216`, `runbook_gate.py:242`), which refuses a body holding a credential. The text it publishes, its frontmatter rewritten, is checked in the same worker call, and `ingest_runbook` enforces that answer instead of checking it again:
+The service holds no validator or scorer. It awaits a module-level gate over the draft's markdown content, which validates once and scores the validated content in a worker process (`avalidate_and_score`, `modules/knowledge/domain/services/runbook_gate.py:249`; §12.5). Verification (`verify_draft`) does not run it again: it refuses a draft whose stored `validation_passed` is false (`conversion_service/service.py:2192`), then awaits a second gate on the draft text, `aenforce_runbook_security` (`service.py:2244`, `runbook_gate.py:277`), which refuses a body holding a credential. The text it publishes, its frontmatter rewritten, is checked in the same worker call, and `ingest_runbook` enforces that answer instead of checking it again:
 
 ```python
 from faultmaven.modules.knowledge.domain.services.runbook_gate import (
@@ -1540,11 +1540,11 @@ The conversion pipeline calls it in five places, each over content, never a file
 
 | Where | Call |
 |-------|------|
-| Each failure mode's draft, at conversion (`_convert_single_failure_mode`) | `service.py:1233` |
-| A draft row stored without a score, a knowledge-base upload's written before #2661, on its first read (`get_conversion` via `_score_stored_draft`, which then stores the score, or the check's refusal, which later reads answer again) | `service.py:1457` |
-| An edit of a draft (`update_draft`, §12.4) | `service.py:1757` |
-| A runbook authored from a template (`create_runbook_from_template`) | `service.py:2500` |
-| The disk scan for runbooks (`_scan_for_runbooks_impl`) | `runbook_scan.py:316` |
+| Each failure mode's draft, at conversion (`_convert_single_failure_mode`) | `service.py:1250` |
+| A draft row stored without a score, a knowledge-base upload's written before #2661, on its first read (`get_conversion` via `_score_stored_draft`, which then stores the score, or the check's refusal, which later reads answer again) | `service.py:1485` |
+| An edit of a draft (`update_draft`, §12.4) | `service.py:1785` |
+| A runbook authored from a template (`create_runbook_from_template`) | `service.py:2528` |
+| The disk scan for runbooks (`_scan_for_runbooks_impl`) | `runbook_scan.py:334` |
 
 **Retrieval-chunk boundary gate (a Cause is never cut, never fused whole into another Cause).** The validator also ERRORs, per Cause, on any `### Cause X:` block that would not survive chunking as its own clean retrieval unit — one `ContentChunker` would CUT, or one so small the chunker whole-MERGES it into a neighboring Cause. Two hard properties of a passing Cause: it is never cut (search never returns it split mid-chain or mid-interventions), and it is never so small the chunker fuses it whole into a neighbor (two Causes in one chunk). The chunker splits on markdown heading boundaries, then merges any section below its minimum size into a neighbor and line-splits any section above its maximum. The gate measures each Cause block exactly as the chunker sees it (heading line through the block terminus, stripped) and rejects three authoring shapes:
 
@@ -1560,24 +1560,26 @@ The score comes back from the same gate call as the validation (§12.1): `valida
 
 ### 12.3 Quality Warning Threshold
 
-If `quality_score.overall < 50`, the draft includes:
+If `quality_score.overall < 50` (`QUALITY_WARNING_THRESHOLD`), the draft carries a `quality_warning`, one text per writer, each a constant beside the threshold (`conversion_service/runbook_scan.py`):
 
-```python
-quality_warning = (
-    "Quality score is below 50. The source material may lack sufficient "
-    "diagnostic commands, resolution steps, or verification procedures. "
-    "Manual editing is recommended before verification."
-)
-```
+| Writer | Constant | Text |
+|--------|----------|------|
+| A document or case conversion | `CONVERSION_QUALITY_WARNING` | "Quality score is below 50. The source material may lack sufficient diagnostic commands, resolution steps, or verification procedures. Manual editing is recommended before verification." |
+| The template (`create_runbook_from_template`) | `TEMPLATE_QUALITY_WARNING` | "Quality score is below 50. Consider adding more detailed diagnostic commands, resolution steps, or verification procedures." |
+| The disk scan | `SCAN_QUALITY_WARNING` | "Quality score is below 50. Review and edit before verifying." |
+
+The edit (§12.4) answers with its own text, "Quality score is below 50. Manual editing recommended.", in its response only.
+
+**On read** (`get_conversion`, behind `GET /knowledge/conversions/{conversion_id}`, the by-case read and a keyed convert's replay), the warning is derived, not stored (#2451): a draft still in `draft` status whose stored score is below the threshold gets its writer's text, chosen by the job's stored analysis (failure modes present: the conversion text; `source_assessment.content_type` `manual`: the template text; `file_scan`: the scan text). A verified draft gets none, and so does a knowledge-base upload's draft, whose job stores no analysis. After an edit the stored score is the edited text's, paired with the writer's text.
 
 ### 12.4 Re-Validation on Edit
 
-When a user edits a draft via `PUT .../drafts/{draft_id}` (`modules/knowledge/api/conversion_routes.py:570`), `ConversionService.update_draft` (`conversion_service/service.py:1665`):
+When a user edits a draft via `PUT .../drafts/{draft_id}` (`modules/knowledge/api/conversion_routes.py:600`), `ConversionService.update_draft` (`conversion_service/service.py:1693`):
 1. Loads the job and the draft. A global-scope draft needs a platform administrator (403); a missing or discarded draft is 404; a draft that is no longer a draft (verified) is 409.
 2. Normalizes the content's line endings, and refuses content longer than `DRAFT_CONTENT_MAX_CHARS` (422, `modules/knowledge/draft_content.py:35`).
-3. Runs the gate over the content, outside any transaction (`avalidate_and_score`, `service.py:1757`).
-4. Writes the content and its verdict (`validation_passed`, `validation_errors`, `validation_warnings`, `quality_score`, `quality_details`) to the `conversion_drafts` row in one conditional `UPDATE` that applies only while the row is still a draft (`service.py:1775`); a verify that committed first leaves nothing to update, and the edit is 409. No file is written: the row's `content` column is the draft's text.
-5. Returns the updated draft with the new validation and quality results, and a quality warning when the overall score is below 50 (`service.py:1811`).
+3. Runs the gate over the content, outside any transaction (`avalidate_and_score`, `service.py:1785`).
+4. Writes the content and its verdict (`validation_passed`, `validation_errors`, `validation_warnings`, `quality_score`, `quality_details`) to the `conversion_drafts` row in one conditional `UPDATE` that applies only while the row is still a draft (`service.py:1803`); a verify that committed first leaves nothing to update, and the edit is 409. No file is written: the row's `content` column is the draft's text.
+5. Returns the updated draft with the new validation and quality results, and a quality warning when the overall score is below 50 (`service.py:1839`).
 
 This provides a tight feedback loop: the user edits, saves, and immediately sees whether their changes fixed validation errors or improved the quality score.
 

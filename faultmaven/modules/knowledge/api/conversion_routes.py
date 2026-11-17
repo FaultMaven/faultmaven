@@ -71,7 +71,6 @@ from faultmaven.modules.knowledge.api.routes import (
 )
 from faultmaven.modules.knowledge.domain.models.conversion import (
     ConversionErrorCode,
-    ConversionResponse,
     DraftUpdateRequest,
 )
 from faultmaven.modules.knowledge.domain.request_receipts import (
@@ -156,19 +155,40 @@ from faultmaven.modules.knowledge.api.platform_tier import (
 # =============================================================================
 
 
-def _replayed_conversion(receipt: KbRequestReceipt) -> JSONResponse:
-    """The stored answer if it validates as a ``ConversionResponse``, else 409
-    ``IDEMPOTENCY_REPLAY_UNAVAILABLE``, as the turn's replay answers (#2433)."""
+async def _replayed_conversion(
+    receipt: KbRequestReceipt, service: ConversionService, user_id: str
+) -> JSONResponse:
+    """The receipt's job as ``GET /knowledge/conversions/{id}`` reads it now,
+    marked a replay (#2452): the receipt holds no copy of its drafts. A job
+    that is gone, or whose stored rows no longer parse, is 409
+    ``IDEMPOTENCY_REPLAY_UNAVAILABLE``."""
+    unavailable = HTTPException(
+        status_code=409,
+        detail="This conversion committed; reload your conversions.",
+        headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
+    )
     try:
-        ConversionResponse.model_validate(receipt.response)
-    except ValidationError:
-        logger.error("A conversion receipt no longer validates as its response")
-        raise HTTPException(
-            status_code=409,
-            detail="This conversion committed; reload your conversions.",
-            headers={"x-error-code": IDEMPOTENCY_REPLAY_UNAVAILABLE},
-        ) from None
-    return replayed(receipt)
+        conversion = (
+            await service.get_conversion(receipt.conversion_id, user_id)
+            if receipt.conversion_id
+            else None
+        )
+    # A stored JSON list where an object belongs raises TypeError.
+    except (ValidationError, ValueError, TypeError) as unreadable:
+        # The class only: the message would carry the stored row's values.
+        logger.error(
+            "Conversion %s cannot be replayed: its rows no longer parse (%s)",
+            receipt.conversion_id,
+            type(unreadable).__name__,
+        )
+        raise unavailable from None
+    if conversion is None:
+        logger.warning(
+            "Conversion %s cannot be replayed: its job is gone",
+            receipt.conversion_id,
+        )
+        raise unavailable
+    return replayed(receipt, content=conversion.model_dump(mode="json"))
 
 
 @router.post(
@@ -178,9 +198,14 @@ def _replayed_conversion(receipt: KbRequestReceipt) -> JSONResponse:
     responses=keyed_responses(
         created="The conversion job and its drafts.",
         location=False,
+        replay_body=(
+            "the job as `GET /knowledge/conversions/{conversion_id}` returns it "
+            "now: drafts as edited or verified since, discarded drafts left "
+            "out, in that read's order (unsorted)"
+        ),
         conflicts=(
-            f" `{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the conversion committed, and "
-            "its stored response no longer validates: reload your conversions)."
+            f" `{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the conversion committed and "
+            "can no longer be read: reload your conversions)."
             " Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: "
             "a live draft already holds a runbook id this conversion minted."
         ),
@@ -206,10 +231,12 @@ async def convert_document(
     **Retries (`Idempotency-Key`).** A keyed conversion commits a receipt with
     its job, in the same transaction. A request with a key this caller already
     used for a conversion: the same file and fields, once the job committed →
-    **201** with that job's body and `X-Idempotency-Replayed: true`, and no new
-    job or drafts; a different file or fields → **409** `IDEMPOTENCY_KEY_REUSE`;
-    the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
-    `Retry-After`. Without a key, every request converts again.
+    **201** with that job as `GET /knowledge/conversions/{conversion_id}`
+    returns it now (its drafts as edited, verified or discarded since) and
+    `X-Idempotency-Replayed: true`, and no new job or drafts; a different file
+    or fields → **409** `IDEMPOTENCY_KEY_REUSE`; the first still running →
+    **409** `KB_REQUEST_IN_PROGRESS` with `Retry-After`. Without a key, every
+    request converts again.
     """
     # Validate scope. A 400, not the 422 a typed Form field would answer:
     # this form field predates the taxonomy enums and its status is part of
@@ -310,7 +337,9 @@ async def convert_document(
                 lookup=service.get_request_receipt,
             )
             if keyed.replay is not None:
-                return _replayed_conversion(keyed.replay)
+                return await _replayed_conversion(
+                    keyed.replay, service, current_user.user_id
+                )
 
         result = await service.convert_document(
             file_path=tmp_path,
@@ -323,8 +352,7 @@ async def convert_document(
             receipt_key=keyed.receipt_key if keyed is not None else None,
         )
 
-        # JSON mode: the body a keyed conversion's receipt stores, so a first
-        # answer and its replay are the same bytes.
+        # JSON mode, as the replay and ``GET /conversions/{id}`` answer.
         return result.model_dump(mode="json")
 
     except HTTPException:
@@ -336,10 +364,12 @@ async def convert_document(
     except KbReceiptExistsError:
         # Another conversion under this key published while this one ran
         # without a claim; nothing of this one did. Answered as its retry.
-        return _replayed_conversion(
+        return await _replayed_conversion(
             await replay_committed_request(
                 keyed=keyed, lookup=service.get_request_receipt
-            )
+            ),
+            service,
+            current_user.user_id,
         )
 
     except FaultMavenException as e:
@@ -559,7 +589,8 @@ async def get_conversion(
     )
     if not result:
         raise HTTPException(status_code=404, detail="Conversion not found")
-    return result.model_dump()
+    # JSON mode, as ``POST /knowledge/convert`` answers: ``created_at`` in Z.
+    return result.model_dump(mode="json")
 
 
 # =============================================================================
@@ -845,11 +876,13 @@ async def get_conversion_by_case(
     service: ConversionService = Depends(_get_conversion_service),
     current_user: DevUser = Depends(_require_auth),
 ):
-    """Get the conversion job and drafts for a specific case."""
+    """Get the conversion job and drafts for a specific case: its latest job,
+    as `GET /knowledge/conversions/{conversion_id}` returns it."""
     result = await service.get_conversion_by_case(
         case_id=case_id,
         user_id=current_user.user_id,
     )
     if not result:
         raise HTTPException(status_code=404, detail="No conversion found for this case")
-    return result.model_dump()
+    # JSON mode, as ``GET /conversions/{id}`` answers: ``created_at`` in Z.
+    return result.model_dump(mode="json")

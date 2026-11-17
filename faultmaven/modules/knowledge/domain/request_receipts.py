@@ -7,11 +7,16 @@ that completes its knowledge item (#2396), a conversion's in
 request published, and lives exactly as long as its subject (``ON DELETE
 CASCADE`` from the item or the job). The route's half, which answers a retry
 from it, is ``modules/knowledge/api/request_idempotency.py``.
+
+An upload's receipt stores its 201 body, which holds no document text. A
+conversion's stores only its job's id (``conversion_receipt_response``): its
+drafts' text lives in their rows, which an edit changes, so a retry is
+answered from the job as it stands, never from a copy (#2452).
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 #: The two routes a receipt names, its ``route`` column.
 ROUTE_UPLOAD = "upload"
@@ -40,16 +45,13 @@ class KbRequestReceipt:
     request_fingerprint: str
     status_code: int
     response: Dict[str, Any]
+    conversion_id: Optional[str] = None
+    """The job a conversion's receipt names, which its retry is answered from."""
 
 
-@dataclass(frozen=True)
-class KbReceiptWrite:
-    """A conversion's receipt, written by ``_persist_job_rows``:
-    ``build_response`` runs there, once the drafts' titles are scrubbed, so
-    the stored body is the body the request returns."""
-
-    key: KbReceiptKey
-    build_response: Callable[[], Dict[str, Any]]
+def conversion_receipt_response(conversion_id: str) -> Dict[str, Any]:
+    """A conversion receipt's ``response``: the job's id, and no draft text."""
+    return {"conversion_id": conversion_id}
 
 
 def add_receipt(
@@ -101,4 +103,5 @@ async def read_receipt(
             request_fingerprint=row.request_fingerprint,
             status_code=row.status_code,
             response=row.response,
+            conversion_id=row.conversion_id,
         )

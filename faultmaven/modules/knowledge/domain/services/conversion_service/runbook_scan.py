@@ -64,6 +64,23 @@ logger = logging.getLogger(__name__)
 
 QUALITY_WARNING_THRESHOLD = 50.0
 
+# A draft's ``quality_warning`` below the threshold, one text per writer. The
+# read (``get_conversion``) gives the same text, chosen by the job's stored
+# analysis, so a reopened conversion warns as its first answer did (#2451).
+#: A model conversion's draft, from a document or a case.
+CONVERSION_QUALITY_WARNING = (
+    "Quality score is below 50. The source material may lack sufficient "
+    "diagnostic commands, resolution steps, or verification procedures. "
+    "Manual editing is recommended before verification."
+)
+#: The manual template's draft (``create_runbook_from_template``).
+TEMPLATE_QUALITY_WARNING = (
+    "Quality score is below 50. Consider adding more detailed "
+    "diagnostic commands, resolution steps, or verification procedures."
+)
+#: A scanned file's draft (this module).
+SCAN_QUALITY_WARNING = "Quality score is below 50. Review and edit before verifying."
+
 
 async def _scan_for_runbooks_impl(
     data_dir,
@@ -322,9 +339,7 @@ async def _scan_for_runbooks_impl(
         draft_id = generate_draft_id()
         quality_warning = None
         if quality.overall < QUALITY_WARNING_THRESHOLD:
-            quality_warning = (
-                "Quality score is below 50. Review and edit before verifying."
-            )
+            quality_warning = SCAN_QUALITY_WARNING
 
         # No scrub here, on purpose (#1981): nothing is derived from the title
         # before `_persist_job` (the draft's id is the file's own `id`), so the

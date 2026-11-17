@@ -7,8 +7,11 @@ it (``modules/knowledge/domain/request_receipts.py``). This is the routes'
 half, the counterpart of the turn's (``modules/case/api/turn_idempotency.py``).
 Before anything of a keyed request runs, it decides whether the request is
 
-- a **retry of a published request**: answered from the receipt with its
-  status, its body and ``X-Idempotency-Replayed: true``; nothing publishes;
+- a **retry of a published request**: answered 201 with
+  ``X-Idempotency-Replayed: true``, and nothing publishes. An upload's retry
+  gets the receipt's stored body. A conversion's gets its job as it now
+  stands, read as ``GET /knowledge/conversions/{id}`` reads it: its receipt
+  stores only the job's id, never a copy of drafts an edit changes (#2452);
 - a **key reused for a different request** (another file, or any other form
   field): 409 ``IDEMPOTENCY_KEY_REUSE``;
 - a **duplicate of a request still running**: 409 ``KB_REQUEST_IN_PROGRESS``
@@ -33,7 +36,7 @@ The claim saves the second run; the receipt's key is what lets one publish.
 Without a claim (no Redis, a failed claim store, a lapsed lease) a duplicate
 whose lookup missed runs, and its receipt INSERT is refused in its own
 transaction, so nothing of it publishes (``KbReceiptExistsError``). The route
-answers it as a retry: the published request's receipt, read back.
+answers it as a retry, from the published request's receipt, read back.
 """
 
 from dataclasses import dataclass
@@ -91,9 +94,15 @@ IdempotencyKey = Annotated[
 
 
 def keyed_responses(
-    *, created: str, location: bool, conflicts: str = "", codes: Sequence[str] = ()
+    *,
+    created: str,
+    location: bool,
+    replay_body: str = "the same body",
+    conflicts: str = "",
+    codes: Sequence[str] = (),
 ) -> Dict:
-    """The route's documented 201 and 409 (``responses=``)."""
+    """The route's documented 201 and 409 (``responses=``). ``replay_body``
+    names what a retry is answered with."""
     headers: Dict[str, Any] = {
         IDEMPOTENCY_REPLAYED_HEADER: {
             "description": (
@@ -112,7 +121,7 @@ def keyed_responses(
         201: {
             "description": (
                 f"{created} A retry under the same `Idempotency-Key` is "
-                "answered with the same body, and carries "
+                f"answered with {replay_body}, and carries "
                 f"`{IDEMPOTENCY_REPLAYED_HEADER}: true`."
             ),
             "headers": headers,
@@ -230,12 +239,17 @@ async def replay_committed_request(
 
 
 def replayed(
-    receipt: KbRequestReceipt, *, headers: Optional[Dict[str, str]] = None
+    receipt: KbRequestReceipt,
+    *,
+    content: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> JSONResponse:
-    """The published request's answer, as it was sent, marked a replay."""
+    """The published request's answer, marked a replay: ``content`` when the
+    route reads it from the subject now (a conversion's job), else the
+    receipt's stored body (an upload's)."""
     return JSONResponse(
         status_code=receipt.status_code,
-        content=receipt.response,
+        content=receipt.response if content is None else content,
         headers={IDEMPOTENCY_REPLAYED_HEADER: "true", **(headers or {})},
     )
 

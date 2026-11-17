@@ -37,9 +37,10 @@ _KEY_RE = re.compile(IDEMPOTENCY_KEY_PATTERN)
 #: code whichever layer detects it (the middleware's cache, or a turn receipt).
 IDEMPOTENCY_KEY_REUSE = "IDEMPOTENCY_KEY_REUSE"
 
-#: ``x-error-code`` of the 409 for a committed turn or conversion whose stored
-#: response no longer validates as ``TurnResponse`` (``turn_idempotency``) or
-#: ``ConversionResponse`` (``conversion_routes``); the request is not run again.
+#: ``x-error-code`` of the 409 for a committed turn whose stored response no
+#: longer validates as ``TurnResponse`` (``turn_idempotency``), or a committed
+#: conversion whose job can no longer be read (``conversion_routes``); the
+#: request is not run again.
 IDEMPOTENCY_REPLAY_UNAVAILABLE = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 
 #: Set ``true`` on a response that is a replay of an earlier one rather than a

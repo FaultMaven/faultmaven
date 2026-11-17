@@ -30,8 +30,9 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     SourceFileInfo,
 )
 from faultmaven.modules.knowledge.domain.request_receipts import (
-    KbReceiptWrite,
+    KbReceiptKey,
     add_receipt,
+    conversion_receipt_response,
     read_receipt,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.draft_slots import (
@@ -58,7 +59,7 @@ async def _persist_job(
     warnings: Optional[List[str]] = None,
     *,
     sanitizer,
-    receipt: Optional[KbReceiptWrite] = None,
+    receipt_key: Optional[KbReceiptKey] = None,
 ) -> None:
     """Persist conversion job and drafts to database.
 
@@ -67,9 +68,10 @@ async def _persist_job(
     a caller that could leave it out would be a path that stores the title raw
     (#1981). See :func:`_persist_job_rows`.
 
-    ``receipt`` is a keyed ``POST /knowledge/convert``'s (#2433), written with
-    the job. Raises :class:`KbReceiptExistsError` when another conversion under
-    its key published first: nothing of this one was.
+    ``receipt_key`` is a keyed ``POST /knowledge/convert``'s (#2433): its
+    receipt, naming the job, is written with it. Raises
+    :class:`KbReceiptExistsError` when another conversion under its key
+    published first: nothing of this one was.
     """
     if not db_session_factory:
         return
@@ -96,15 +98,17 @@ async def _persist_job(
             case_id=case_id,
             warnings=warnings,
             sanitizer=sanitizer,
-            receipt=receipt,
+            receipt_key=receipt_key,
         )
     except IntegrityError as refused:
         # Classified AFTER the session block has exited, never inside it:
         # the classifier opens a SECOND session, and holding both at once
         # deadlocks a deployment pooled at one connection.
-        if receipt is not None and await read_receipt(db_session_factory, receipt.key):
+        if receipt_key is not None and await read_receipt(
+            db_session_factory, receipt_key
+        ):
             raise KbReceiptExistsError(
-                receipt.key.route_name, receipt.key.idempotency_key
+                receipt_key.route_name, receipt_key.idempotency_key
             ) from refused
         await _raise_if_runbook_id_taken(
             db_session_factory, enterprise_id, [d.runbook_id for d in drafts]
@@ -129,7 +133,7 @@ async def _persist_job_rows(
     case_id: Optional[str],
     warnings: Optional[List[str]] = None,
     sanitizer,
-    receipt: Optional[KbReceiptWrite] = None,
+    receipt_key: Optional[KbReceiptKey] = None,
 ) -> None:
     """The upload + job + drafts write, as ONE transaction and one session,
     with the job's team share (``share_team``) and a keyed conversion's
@@ -255,13 +259,13 @@ async def _persist_job_rows(
             )
             session.add(draft_model)
 
-        if receipt is not None:
-            # Built here, once the titles are scrubbed and assigned back: the
-            # stored body is the body the request returns.
+        if receipt_key is not None:
+            # The job's id, never its drafts: their text is theirs to change,
+            # and a retry is answered from the job (#2452).
             add_receipt(
                 session,
-                receipt.key,
-                response=receipt.build_response(),
+                receipt_key,
+                response=conversion_receipt_response(conversion_id),
                 conversion_id=conversion_id,
             )
         if share_team:
