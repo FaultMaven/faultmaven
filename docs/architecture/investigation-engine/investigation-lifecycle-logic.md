@@ -2035,13 +2035,16 @@ def validate_milestone_claims(
         expectations = MILESTONE_EVIDENCE_EXPECTATIONS[milestone]
 
         # The current turn's evidence first; cited turns only when it falls short
-        relevant = count_current_turn_evidence(case, expectations)
-        if relevant < expectations["min_evidence"]:
-            relevant += count_cited_turn_evidence(case, cited_turns, expectations)
+        relevant = current_turn_evidence_ids(case, expectations)
+        if len(relevant) < expectations["min_evidence"]:
+            # Adds only evidence not already counted (a cited turn may be this one)
+            relevant += cited_turn_evidence_ids(
+                case, cited_turns, expectations, exclude=relevant
+            )
 
-        if relevant < expectations["min_evidence"]:
+        if len(relevant) < expectations["min_evidence"]:
             log_warning(
-                f"Milestone '{milestone}' claimed with {relevant} relevant evidence "
+                f"Milestone '{milestone}' claimed with {len(relevant)} relevant evidence "
                 f"(expected >= {expectations['min_evidence']})"
             )  # the result is invalid; the caller reverts the milestone
 

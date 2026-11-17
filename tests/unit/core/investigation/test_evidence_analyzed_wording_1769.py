@@ -116,7 +116,9 @@ def _inquiry_case() -> Case:
 
 class TestSchemaAgreesWithParser:
     @pytest.mark.parametrize("converter", CONVERTERS, ids=lambda c: c.__name__)
-    @pytest.mark.parametrize("stage", list(InvestigationStage), ids=lambda s: s.value)
+    @pytest.mark.parametrize(
+        "stage", [*InvestigationStage, None], ids=lambda s: s.value if s else "general"
+    )
     def test_provider_tool_describes_turn_references(self, converter, stage):
         descriptions = list(_tool_descriptions(converter(get_schema_for_stage(stage))))
         assert descriptions, "the schema tool carries no evidence_analyzed"
