@@ -21,7 +21,7 @@ at a premium). A model that doesn't do prompt caching simply has ``0`` for the
 cache buckets.
 
 This module has no third-party dependencies on purpose (no prometheus, no
-settings import) so it stays trivially unit-testable and safe to import from the
+settings import; its one project import, ``claude_model_id``, is stdlib-only) so it stays trivially unit-testable and safe to import from the
 hot path.
 """
 
@@ -32,6 +32,8 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import date
+
+from faultmaven.infrastructure.llm.claude_model_id import parse_claude_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +54,50 @@ class TokenRates:
     cache_write: float = 0.0
 
 
-# Best-effort published rates as of mid-2026 for the models FaultMaven ships
-# with (see .claude/rules/llm-providers.md "Supported LLM Providers"). Keys are
-# lowercased and matched by substring, so an entry like "claude-sonnet-4-6"
-# also matches "anthropic/claude-sonnet-4-6" (OpenRouter) or a dated snapshot
-# suffix.
-# Anthropic prompt-cache: write ~1.25x input (5-min TTL), read ~0.1x input.
+# Claude rates per 1M tokens, from Anthropic's pricing page (read 2026-11-17):
+# (input, output, cache read, 5-minute cache write). Cache write is 1.25x
+# input; cache read is 0.1x input up to the 5.0 generation and lower after it
+# (0.05x on Opus 5.5 / Sonnet 5.5, 0.025x on Fable / Mythos 5.1 and 5.2).
+#
+# Keyed by VERSION, not by substring: lookup_rates parses a Claude id with the
+# grammar the Anthropic adapter uses (claude_model_id) and reads exactly the
+# key "claude-<family>-<major>[-<minor>]". A dated snapshot, a provider prefix
+# ("anthropic/") and OpenRouter's dotted minor ("claude-opus-5.5") resolve to
+# their own version, and a version with no row reads as UNPRICED. Substring
+# matching priced claude-opus-5-5 at claude-opus-5's rate and every dated
+# claude-fable-5 id at claude-fable-5-2's, both with priced=True (#1359, #2881).
+_CLAUDE_RATES: dict[str, TokenRates] = {
+    # Opus 4 and 4.1 were $15 / $75; Opus repriced to $5 / $25 at 4.5.
+    "claude-opus-4": TokenRates(15.0, 75.0, 1.50, 18.75),
+    "claude-opus-4-1": TokenRates(15.0, 75.0, 1.50, 18.75),
+    "claude-opus-4-5": TokenRates(5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-7": TokenRates(5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-8": TokenRates(5.0, 25.0, 0.50, 6.25),
+    "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
+    "claude-opus-5-5": TokenRates(4.0, 20.0, 0.20, 5.0),
+    "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
+    "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
+    "claude-sonnet-5": TokenRates(2.0, 10.0, 0.20, 2.50),
+    "claude-sonnet-5-5": TokenRates(2.0, 10.0, 0.10, 2.50),
+    "claude-haiku-4-5": TokenRates(1.0, 5.0, 0.10, 1.25),
+    # Haiku 5.5 bills by prompt size. This is the tier for prompts of 100K
+    # tokens or fewer; above 100K every bucket is 5x. Investigation prompts
+    # target 32K (PROMPT_TARGET_TOKENS), but a deployment that sends longer
+    # prompts on Haiku 5.5 should override via LLM_PRICING_OVERRIDES.
+    "claude-haiku-5-5": TokenRates(0.10, 0.50, 0.01, 0.125),
+    "claude-fable-5": TokenRates(10.0, 50.0, 1.0, 12.50),
+    "claude-fable-5-1": TokenRates(10.0, 50.0, 0.25, 12.50),
+    "claude-fable-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
+    "claude-mythos-5": TokenRates(10.0, 50.0, 1.0, 12.50),
+    "claude-mythos-5-1": TokenRates(10.0, 50.0, 0.25, 12.50),
+    "claude-mythos-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
+}
+
+# Best-effort published rates for the models FaultMaven ships with (see
+# .claude/rules/llm-providers.md "Supported LLM Providers"). Keys other than
+# Claude's are lowercased and matched by substring, so a key also matches a
+# provider-prefixed or dated model id.
 # OpenAI-family cached input is 0.1x input on the gpt-5/gpt-6 rows (0.25-0.5x
 # on gpt-4.x); a cache-write rate is set only where one is published.
 #
@@ -72,53 +112,7 @@ class TokenRates:
 # would capture a future dated or re-priced Command R). Price them
 # specifically the moment either provider ships a generation at a new rate.
 DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
-    "anthropic": {
-        # Sonnet tier: $3 input / $15 output per 1M, cache write ~1.25x, read ~0.1x.
-        "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
-        "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
-        # Opus tier. A version-blind key here fails in TWO directions, and only
-        # one of them is visible: it can stop matching (unpriced, cost 0.0,
-        # counted on the unpriced counter — the module's designed failure), or
-        # it can KEEP matching at a stale rate, which stays priced=True and so
-        # reaches no counter at all. The second is strictly worse, and it is
-        # what "claude-opus-4" alone was doing.
-        #
-        # Opus 4 and 4.1 were $15 in / $75 out. Opus repriced to $5 / $25 at
-        # 4.5 and has held there through 4.6, 4.7, 4.8 and Opus 5. So the
-        # generic key stays — it is still correct for the ids it was written
-        # for — and EVERY repriced generation gets its own longer key, which
-        # wins by longest-match. Keying only some of them is what the first
-        # cut of #1359 did: 4-6 was fixed while 4-5/4-7/4-8 kept billing at
-        # $90 per 1M in+out against a real $30, with the new
-        # selected_model_priced observable reporting True over it.
-        "claude-opus-4": TokenRates(15.0, 75.0, 1.50, 18.75),
-        "claude-opus-4-5": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-4-7": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-4-8": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
-        # Claude 5.x generations, from Anthropic's pricing page (read
-        # 2026-11-17). Cache reads are cheaper than the 0.1x convention above:
-        # 0.05x on Opus 5.5 and Sonnet 5.5, 0.025x on Fable 5.2. Opus 5.5 MUST
-        # have its own key: without it "claude-opus-5" is a substring of
-        # "claude-opus-5-5" and bills it at Opus 5's $5 / $25 (#2881).
-        "claude-opus-5-5": TokenRates(4.0, 20.0, 0.20, 5.0),
-        "claude-sonnet-5-5": TokenRates(2.0, 10.0, 0.10, 2.50),
-        "claude-fable-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
-        # Haiku 5.5 bills by prompt size: these are the rates for prompts of
-        # 100K tokens or fewer; above that every bucket is 5x. Short tier for
-        # the reason the gpt-5.6-luna row gives (PROMPT_TARGET_TOKENS is 32K).
-        "claude-haiku-5-5": TokenRates(0.10, 0.50, 0.01, 0.125),
-        # Haiku 4.5 is $1 in / $5 out. The key is VERSIONED for the same
-        # reason the Opus keys are: the bare "claude-haiku" it replaces was
-        # fully version-blind, so it silently under-reported the shipped
-        # picker model (claude-haiku-4-5-20251001) at $0.80/$4.00 and would
-        # have handed the same stale rate to every future Haiku generation.
-        # Dropping the bare key means a future claude-haiku-5 reads as
-        # UNPRICED until someone adds it — visibly wrong instead of quietly
-        # wrong, which is the trade this module exists to make.
-        "claude-haiku-4-5": TokenRates(1.0, 5.0, 0.10, 1.25),
-    },
+    "anthropic": dict(_CLAUDE_RATES),
     "openai": {
         # gpt-5.6-luna is FaultMaven's default OpenAI model. SHORT-CONTEXT
         # rates ($0.20 in / $1.20 out / $0.02 cache read / $0.25 cache write
@@ -207,22 +201,9 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # that never under-reports (#2111).
         "llama-3.3-70b-instruct": TokenRates(0.74, 0.74),
     },
-    "openrouter": {
-        # OpenRouter passes provider rates through; keep the common routed
-        # models. The Opus rows mirror the anthropic table above: routing
-        # "anthropic/claude-opus-5" through OpenRouter is the same model at
-        # the same published rate, and pricing it only on the direct path
-        # would have left goal (b) of #1359 half-met — an Opus 5 deployment
-        # reporting $0 purely because it reaches Anthropic via the gateway.
-        "claude-sonnet-4-5": TokenRates(3.0, 15.0, 0.30, 3.75),
-        "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
-        "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
-        "claude-opus-5-5": TokenRates(4.0, 20.0, 0.20, 5.0),
-        "claude-sonnet-5-5": TokenRates(2.0, 10.0, 0.10, 2.50),
-        "claude-fable-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
-        "claude-haiku-5-5": TokenRates(0.10, 0.50, 0.01, 0.125),
-    },
+    # OpenRouter passes Anthropic's rates through: a Claude model routed
+    # through the gateway is the same model at the same published rate.
+    "openrouter": dict(_CLAUDE_RATES),
     "azure": {
         # Keyed by the model a deployment is named after (the default
         # AZURE_MODEL). Mirrors the openai row: Azure's Global Standard
@@ -329,6 +310,17 @@ def lookup_rates(provider: str | None, model: str | None) -> TokenRates | None:
     model_l = (model or "").lower()
     if model_l in table:
         return table[model_l]
+    # A Claude id is priced by its parsed version, never by substring (see
+    # _CLAUDE_RATES): an id that does not parse, or a version with no row,
+    # reads as unpriced.
+    claude_at = model_l.find("claude-")
+    if claude_at != -1:
+        parsed = parse_claude_model_id(model_l[claude_at:])
+        if parsed is None:
+            return None
+        family, major, minor = parsed
+        suffix = "" if minor is None else f"-{minor}"
+        return table.get(f"claude-{family}-{major}{suffix}")
     # Substring match handles provider-prefixed or dated model ids. LONGEST
     # matching key wins, so a specific key ("gemini-3.5-flash-lite",
     # "deepseek-v4-flash") beats the shorter key it contains

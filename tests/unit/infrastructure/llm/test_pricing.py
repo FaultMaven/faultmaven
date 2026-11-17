@@ -383,23 +383,20 @@ class TestPricingOverrides:
 
 @pytest.mark.unit
 class TestVersionedModelKeys:
-    """Substring keys must not silently bill a NEWER model at an OLDER rate.
+    """A Claude id must never bill at another version's rate.
 
-    The lookup is longest-substring-match, which is version-BLIND: a key
-    written for one generation keeps matching (or stops matching) later ones
-    by accident of spelling. Two distinct failures follow, and only one of
-    them is visible:
+    Two failures are possible, and only one is visible:
 
-    * the key stops matching  -> the model is unpriced, cost 0.0 with
-      priced=False, which the metering layer counts on the unpriced counter.
-      Honest under-reporting; this is the module's designed failure.
-    * the key still matches at a stale rate -> the model is priced WRONGLY,
-      and nothing anywhere says so. Strictly worse.
+    * no rate resolves -> the model is unpriced, cost 0.0 with priced=False,
+      which the metering layer counts on the unpriced counter. Honest
+      under-reporting; this is the module's designed failure.
+    * another version's rate resolves -> the model is priced WRONGLY, and
+      nothing anywhere says so. Strictly worse.
 
-    #1359 hit the first (claude-opus-5) and, next to it, the second
-    (claude-opus-4-6 billed at the original Opus 4 rate). Its first cut then
-    reproduced the second failure on the generations it did not key: 4-5,
-    4-7 and 4-8 kept billing at $90 per 1M in+out against a real $30.
+    Substring keys produced the second one repeatedly: claude-opus-4 priced
+    4-5..4-8 at $15/$75 (#1359), claude-opus-5 priced claude-opus-5-5, and
+    claude-fable-5-2 priced every dated claude-fable-5 id (#2881). Claude ids
+    are now priced by parsed version, so these pin both directions.
     """
 
     # Every Opus generation that repriced to $5 in / $25 out (4.5 onward).
@@ -438,16 +435,12 @@ class TestVersionedModelKeys:
         assert rates.output == pytest.approx(75.0), model
 
     @pytest.mark.parametrize("model", REPRICED_OPUS)
-    def test_dated_snapshots_resolve_through_the_substring_loop(self, model):
-        """A dated id is the case that actually exercises longest-match.
+    def test_dated_snapshots_resolve_to_their_own_version(self, model):
+        """A dated id is the case that exercises version parsing.
 
-        An exact key short-circuits before the substring scan, so asserting on
-        the bare id proves nothing about matching. A dated snapshot has no
-        exact key, so it must be resolved by the loop -- and for the 4-x ids
-        the loop has a genuine contest to settle, since BOTH "claude-opus-4"
-        ($15/$75) and "claude-opus-4-N" ($5/$25) are substrings of it. Under
-        first-match-wins with the built-in dict order the generic key is
-        reached first and these come back at $15/$75.
+        An exact key short-circuits before parsing, so asserting on the bare
+        id proves nothing. A dated snapshot has no exact key, and for the 4-x
+        ids "claude-opus-4" ($15/$75) is also a prefix of it.
         """
         dated = f"{model}-20260401"
         rates = lookup_rates("anthropic", dated)
@@ -471,30 +464,75 @@ class TestVersionedModelKeys:
         """
         assert lookup_rates("anthropic", "claude-haiku-5") is None
 
-    # Claude 5.x rows: (input, output, cache_read, cache_write) per 1M, from
-    # Anthropic's pricing page (Haiku 5.5: the prompts-up-to-100K tier).
+    # (input, output, cache_read, cache_write) per 1M, from Anthropic's
+    # pricing page (Haiku 5.5: the prompts-up-to-100K tier).
     CLAUDE_5X = {
+        "claude-opus-5": (5.0, 25.0, 0.50, 6.25),
         "claude-opus-5-5": (4.0, 20.0, 0.20, 5.0),
+        "claude-sonnet-5": (2.0, 10.0, 0.20, 2.50),
         "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.50),
-        "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0),
         "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+        "claude-fable-5": (10.0, 50.0, 1.0, 12.50),
+        "claude-fable-5-1": (10.0, 50.0, 0.25, 12.50),
+        "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0),
+        "claude-mythos-5": (10.0, 50.0, 1.0, 12.50),
+        "claude-mythos-5-1": (10.0, 50.0, 0.25, 12.50),
+        "claude-mythos-5-2": (8.0, 40.0, 0.20, 10.0),
     }
 
-    @pytest.mark.parametrize("provider", ["anthropic", "openrouter"])
+    @staticmethod
+    def _spellings(model):
+        """Every spelling a deployment may configure for one version: bare,
+        dated (Anthropic, Vertex), and OpenRouter's catalog id, which writes
+        the minor with a dot (anthropic/claude-opus-5.5)."""
+        dotted = model[: model.rfind("-")] + "." + model[model.rfind("-") + 1 :]
+        minor_named = model.count("-") == 3
+        return [
+            ("anthropic", model),
+            ("anthropic", f"{model}-20260901"),
+            ("anthropic", f"{model}@20260901"),
+            ("openrouter", f"anthropic/{model}"),
+            ("openrouter", f"anthropic/{dotted if minor_named else model}"),
+        ]
+
     @pytest.mark.parametrize("model", sorted(CLAUDE_5X))
-    def test_claude_5x_priced_at_their_own_rates(self, provider, model):
-        # A dated id goes through the substring loop, where "claude-opus-5"
-        # is a substring of "claude-opus-5-5": without its own key Opus 5.5
-        # billed at Opus 5's $5 / $25 with priced=True (#2881).
-        for model_id in (model, f"{model}-20260901"):
+    def test_claude_5x_priced_at_their_own_rates(self, model):
+        for provider, model_id in self._spellings(model):
             rates = lookup_rates(provider, model_id)
-            assert rates is not None, model_id
+            assert rates is not None, (provider, model_id)
             assert (
                 rates.input,
                 rates.output,
                 rates.cache_read,
                 rates.cache_write,
-            ) == pytest.approx(self.CLAUDE_5X[model]), model_id
+            ) == pytest.approx(self.CLAUDE_5X[model]), (provider, model_id)
+
+    @pytest.mark.parametrize("provider", ["anthropic", "openrouter"])
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # A version with no row: not the shorter version it starts with.
+            "claude-opus-5-6",
+            "claude-opus-5.6",
+            "anthropic/claude-opus-5.6",
+            "claude-haiku-5",
+            "claude-haiku-5-20261001",
+            # A suffix the grammar does not know (OpenRouter's half-price
+            # batch variant) is not the full-price model.
+            "anthropic/claude-opus-5.5:batch",
+        ],
+    )
+    def test_an_unpriced_version_never_takes_a_neighbours_rate(
+        self, provider, model_id
+    ):
+        assert lookup_rates(provider, model_id) is None
+
+    def test_dated_fable_5_is_fable_5_not_fable_5_2(self):
+        # "claude-fable-5-2" is a substring of claude-fable-5-2026MMDD, which
+        # billed every dated Fable 5 id at Fable 5.2's rate.
+        rates = lookup_rates("anthropic", "claude-fable-5-20260301")
+        assert rates is not None
+        assert (rates.input, rates.cache_read) == pytest.approx((10.0, 1.0))
 
     def test_openrouter_routes_opus_at_the_same_published_rate(self):
         # Same model, same rate, different path to it -- pricing only the
