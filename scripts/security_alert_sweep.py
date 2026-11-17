@@ -3,22 +3,27 @@
 
 ``/process-top-issues`` runs this in step 2 (*Sort*) each round (#2120). It is
 read-only: it files, comments on and dismisses nothing. Each open Dependabot,
-code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
+code-scanning and secret-scanning alert in ``REPOS`` takes the first class
+below that matches, read in order; a step reads only the sources it names:
 
-- ``fixable`` (Dependabot): an exception (below) whose advisory lists a
-  patched version: ``tracked`` when a tracker (below) carries its URL,
-  ``unknown`` when a tracker cannot be read, else ``fixable``, shown with
-  ``fix available <version>``: an exception holds only while no fix exists
-  (#2160);
-- ``exception`` (Dependabot): its advisory lists no patched version, and its
-  GHSA is in the repo's ``package.json`` ``pnpm.auditConfig.ignoreGhsas`` or,
-  for core, in ``EXCEPTIONS_DOC`` above its ``## Closed exceptions`` heading;
-- ``lag`` (Dependabot): the advisory lists a patched version, every version
-  the manifest resolves lies outside every vulnerable range the advisory lists
-  for the package, and the manifest's last commit is at most ``LAG_DAYS`` old;
-- ``tracked``: a line starting ``**Alerts:**`` in an open core issue, or an
-  open PR in the alert's own repo, carries the alert's URL;
-- ``unknown``: a source one of those answers needs could not be read;
+- ``unknown``: a source the alert's class needs at the step it reached cannot
+  be read: ``package.json`` or, for core, ``EXCEPTIONS_DOC`` (``exception``),
+  the manifest or its last commit (``lag``), or the trackers (``tracked``);
+- ``exception`` (Dependabot): its GHSA is in the repo's ``package.json``
+  ``pnpm.auditConfig.ignoreGhsas`` or, for core, in ``EXCEPTIONS_DOC`` above
+  its ``## Closed exceptions`` heading, and its advisory lists no patched
+  version; the trackers are not read;
+- ``fixable`` (Dependabot): such an exception whose advisory lists a patched
+  version, when no tracker carries its URL (one that does makes it
+  ``tracked``, below), shown with ``fix available <version>``: an exception
+  holds only while no fix exists (#2160);
+- ``lag`` (Dependabot, not an exception): the advisory lists a patched
+  version, every version the manifest resolves lies outside every vulnerable
+  range the advisory lists for the package, and the manifest's last commit is
+  at most ``LAG_DAYS`` old; the trackers are not read;
+- ``tracked``: the trackers are readable, and a line starting ``**Alerts:**``
+  in an open core issue, or an open PR in the alert's own repo, carries the
+  alert's URL;
 - ``untracked``: everything else.
 
 Files and commits are read from each repo's default branch. A fetch refused
@@ -485,7 +490,8 @@ class Sweep:
             details = ", ".join(dict.fromkeys(tracked)) or PRIVATE
         if first.kind == "secret-scanning":
             details = SECRET_NOTE
-        # The alerts that need a tracker: one carrying the URL is the way out.
+        # Fixable and untracked alerts leave their class when a tracker carries the
+        # URL; unknown ones when their source can be read.
         needs = ("fixable", "untracked", "unknown")
         urls = " ".join(a.url for a in shown if a.cls in needs)
         return -CLASSES.index(cls), (*cells, cls, details or "—", urls or "—")
