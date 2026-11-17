@@ -55,17 +55,19 @@ primary CHAT/investigation role.
 ```bash
 # Environment Configuration
 OPENAI_API_KEY="sk-your_openai_key"
-OPENAI_MODEL="gpt-5.6-luna"
+OPENAI_MODEL="gpt-6-luna"
 CHAT_PROVIDER="openai"
 ```
 
 **Available Models**:
-- `gpt-5.6-luna` (Default — `settings.openai_model`; reasons by default, see below)
-- `gpt-5.4-mini`, and the rest of the `gpt-5.x` family (reasoning models; see below)
+- `gpt-6-luna` (Default — `settings.openai_model`; reasons by default, see below)
+- `gpt-5.4-mini`, `gpt-5.6-luna`, and the rest of the `gpt-5.x` family (reasoning models; see below)
 - `o1` / `o3` / `o4` series (reasoning models; see below)
 - `gpt-4o`, `gpt-4o-mini`, `gpt-4.1-mini` remain PRICED and usable if
   pinned explicitly, but were removed from the dashboard picker as
-  superseded — the picker offers `gpt-5.6-luna` and `gpt-5.4-mini`.
+  superseded — the picker offers `gpt-6-luna` and `gpt-5.4-mini`.
+  `gpt-5.6-luna` left the picker the same way: it costs twice `gpt-6-luna`
+  per token.
 
 **Features**: Best response quality, extensive capabilities, higher cost.
 
@@ -394,7 +396,7 @@ for name, info in status.items():
 ```
 Provider Health Status:
 ✅ fireworks    | Models: deepseek-v4-flash, deepseek-v3        | Confidence: 0.9  | ⚡
-✅ openai       | Models: gpt-5.6-luna, gpt-5.4-mini             | Confidence: 0.85 | ⚡
+✅ openai       | Models: gpt-6-luna, gpt-5.4-mini               | Confidence: 0.85 | ⚡
 ✅ anthropic    | Models: claude-sonnet-4-6, claude-opus-4-6     | Confidence: 0.85 | ⚡
 ✅ gemini       | Models: gemini-3.8-flash, gemini-3.7-flash     | Confidence: 0.8  | ⚡
 ✅ local        | Models: Phi-3-mini-128k-instruct-onnx           | Confidence: 0.6  | ⚡
@@ -1057,7 +1059,7 @@ Each provider has specific model naming conventions:
 ```bash
 # Provider-Specific Model Formats
 FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"      # Full path required
-OPENAI_MODEL="gpt-5.6-luna"                                        # Simple name
+OPENAI_MODEL="gpt-6-luna"                                          # Simple name
 ANTHROPIC_MODEL="claude-sonnet-4-6"                                # Version-specific
 GEMINI_MODEL="gemini-3.8-flash"                                    # Product-version
 HUGGINGFACE_MODEL="meta-llama/Llama-3.3-70B-Instruct"            # org/model format

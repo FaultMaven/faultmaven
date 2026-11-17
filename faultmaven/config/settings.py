@@ -468,7 +468,7 @@ class LLMSettings(BaseSettings):
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
     # all tool-calling + large-context capable. HuggingFace is the exception: tool
     # calling is not claimed for its routed models, so it is kept but not recommended.
-    openai_model: str = Field(default="gpt-5.6-luna")
+    openai_model: str = Field(default="gpt-6-luna")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
         default="accounts/fireworks/models/deepseek-v4-flash",
@@ -489,7 +489,7 @@ class LLMSettings(BaseSettings):
     # The DEPLOYMENT name on the Azure resource. The default assumes the
     # deployment is named after its model; the inherited OpenAI capability
     # rules key on that name (AzureProvider).
-    azure_model: str = Field(default="gpt-5.6-luna")
+    azure_model: str = Field(default="gpt-6-luna")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")

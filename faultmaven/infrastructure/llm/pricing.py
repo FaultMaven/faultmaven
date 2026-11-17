@@ -114,7 +114,7 @@ _CLAUDE_RATES: dict[str, TokenRates] = {
 DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
     "anthropic": dict(_CLAUDE_RATES),
     "openai": {
-        # gpt-5.6-luna is FaultMaven's default OpenAI model. SHORT-CONTEXT
+        # gpt-5.6-luna, the previous luna generation. SHORT-CONTEXT
         # rates ($0.20 in / $1.20 out / $0.02 cache read / $0.25 cache write
         # per 1M). OpenAI bills a LONG-CONTEXT tier (2x in / 1.5x out) on
         # requests whose input exceeds 272K tokens; the flat rate here is the
@@ -123,7 +123,7 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # A deployment that raises the budget near 272K should override via
         # LLM_PRICING_OVERRIDES rather than trust this row.
         "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
-        # gpt-6-luna, the next luna generation: $0.10 in / $0.50 out / $0.01
+        # gpt-6-luna, FaultMaven's default OpenAI and Azure model: $0.10 in / $0.50 out / $0.01
         # cache read / $0.125 cache write (1.25x input, as gpt-5.6-luna's
         # write is) per 1M, short tier. Long tier (input over 272K): $0.20 in
         # / $0.75 out. Rates as of 2026-11-15 from price trackers that agree

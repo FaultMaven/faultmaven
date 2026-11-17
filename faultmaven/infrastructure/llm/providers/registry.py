@@ -235,9 +235,11 @@ PROVIDER_SCHEMA = {
         "api_key_var": "OPENAI_API_KEY",
         "model_var": "OPENAI_MODEL",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-5.6-luna",
+        "default_model": "gpt-6-luna",
+        # gpt-5.6-luna is priced and usable when pinned, but not offered: it
+        # costs twice gpt-6-luna per token (pricing.py).
         "available_models": [
-            "gpt-5.6-luna",
+            "gpt-6-luna",
             "gpt-5.4-mini",
         ],
         "provider_class": OpenAIProvider,
@@ -348,7 +350,7 @@ PROVIDER_SCHEMA = {
         "required_vars": ("AZURE_API_KEY", "AZURE_API_BASE"),
         # No usable default: every Azure resource has its own host.
         "default_base_url": None,
-        "default_model": "gpt-5.6-luna",
+        "default_model": "gpt-6-luna",
         # Deployments are named by the operator on their own resource, so
         # there is no catalogue to enumerate (same as openrouter / local).
         "available_models": [],
