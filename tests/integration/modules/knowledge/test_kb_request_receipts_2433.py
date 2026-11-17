@@ -29,7 +29,7 @@ import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.api.exception_handlers import get_exception_handlers
@@ -242,6 +242,11 @@ async def test_a_retry_after_a_lost_response_replays_it(world, route):
     assert again.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
     assert again.content == first.content
     assert again.headers.get("location") == first.headers.get("location")
+    if route == "convert":  # the job as it reads now (#2452)
+        read = await world.client.get(
+            f"/api/v1/knowledge/conversions/{first.json()['conversion_id']}"
+        )
+        assert again.content == read.content
     assert await world.published(route) == 1
     assert await world.receipts() == [route]
 
@@ -331,34 +336,32 @@ async def test_a_duplicate_that_ran_without_a_claim_is_answered_with_the_first(
 
 
 @pytest.mark.parametrize("claimless", [False, True], ids=["retry", "claimless"])
-async def test_a_stored_conversion_that_no_longer_validates_is_not_replayed(
-    world, claimless
-):
-    """A receipt lives as long as its job, across deploys: a stored body that
-    no longer validates as a ``ConversionResponse`` is a 409, on a retry and on
-    a claimless duplicate's read-back alike, as the turn's replay is."""
+async def test_a_conversion_whose_job_is_gone_is_not_replayed(world, claimless):
+    """A retry is answered from the job the receipt names (#2452). A job
+    deleted between the receipt read and the job read is a 409, on a retry and
+    on a claimless duplicate's read-back alike, as the turn's replay is."""
     if claimless:
         world.app.state.redis_client = None
     assert (await world.post("convert")).status_code == 201
-    async with world.factory() as session:
-        await session.execute(
-            update(KbRequestReceiptModel).values(response={"status": "completed"})
-        )
-        await session.commit()
-    if claimless:
-        real, calls = world.conversion.get_request_receipt, []
+    real, calls = world.conversion.get_request_receipt, []
 
-        async def lookup(key):
-            calls.append(key)
-            return None if len(calls) == 1 else await real(key)
+    async def lookup(key):
+        calls.append(key)
+        if claimless and len(calls) == 1:
+            return None
+        receipt = await real(key)
+        async with world.factory() as session:
+            await session.execute(delete(ConversionJobModel))
+            await session.commit()
+        return receipt
 
-        world.conversion.get_request_receipt = lookup
+    world.conversion.get_request_receipt = lookup
 
     again = await world.post("convert")
 
     assert again.status_code == 409, again.text
     assert again.headers["x-error-code"] == IDEMPOTENCY_REPLAY_UNAVAILABLE
-    assert await world.published("convert") == 1
+    assert await world.published("convert") == 0
 
 
 @pytest.mark.parametrize("landed", [True, False], ids=["landed", "refused"])

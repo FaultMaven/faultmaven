@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.2.0
+**Version:** 15.3.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2970,10 +2970,12 @@ detail, and nothing is saved.
 **Retries (`Idempotency-Key`).** A keyed conversion commits a receipt with
 its job, in the same transaction. A request with a key this caller already
 used for a conversion: the same file and fields, once the job committed →
-**201** with that job's body and `X-Idempotency-Replayed: true`, and no new
-job or drafts; a different file or fields → **409** `IDEMPOTENCY_KEY_REUSE`;
-the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
-`Retry-After`. Without a key, every request converts again.
+**201** with that job as `GET /knowledge/conversions/{conversion_id}`
+returns it now (its drafts as edited, verified or discarded since) and
+`X-Idempotency-Replayed: true`, and no new job or drafts; a different file
+or fields → **409** `IDEMPOTENCY_KEY_REUSE`; the first still running →
+**409** `KB_REQUEST_IN_PROGRESS` with `Retry-After`. Without a key, every
+request converts again.
 
 **Tags:** `knowledge-conversion`
 
@@ -2989,8 +2991,8 @@ the first still running → **409** `KB_REQUEST_IN_PROGRESS` with
 
 **Responses:**
 
-- `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the same body, and carries `X-Idempotency-Replayed: true`.
-- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the conversion committed, and its stored response no longer validates: reload your conversions). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
+- `201` — The conversion job and its drafts. A retry under the same `Idempotency-Key` is answered with the job as `GET /knowledge/conversions/{conversion_id}` returns it now: drafts as edited or verified since, discarded drafts left out, in that read's order, and carries `X-Idempotency-Replayed: true`.
+- `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields). `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the conversion committed and can no longer be read: reload your conversions). Without `x-error-code`, `conflict_reason: duplicate_runbook_id`: a live draft already holds a runbook id this conversion minted.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

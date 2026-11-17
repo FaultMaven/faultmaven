@@ -3162,14 +3162,18 @@ class KbRequestReceiptModel(Base):
     Written in the transaction that publishes: an upload's in the ``record``
     that completes its item (#2396), a conversion's in ``_persist_job_rows``
     with the job. So a receipt exists exactly when its request published, and
-    a retry under the same ``Idempotency-Key`` is answered from ``response``
-    instead of publishing again (``modules/knowledge/api/request_idempotency``).
+    a retry under the same ``Idempotency-Key`` is answered from it instead of
+    publishing again (``modules/knowledge/api/request_idempotency``): an
+    upload's from ``response``, its 201 body; a conversion's from its job
+    (``conversion_id``), read as it now stands. A conversion's ``response``
+    holds only that id, never its drafts, whose text an edit changes (#2452).
 
     The key is ``(enterprise_id, author_id, route, idempotency_key)``, the
     enterprise first because RLS scopes the table on it, as on
     ``turn_receipts``. ``author_id`` has no foreign key: the receipt goes with
     its subject, not with the account. ``response`` is ``JSON``, not
-    ``JsonBlob``, so a replay keeps the key order the client was sent.
+    ``JsonBlob``, so an upload's replay keeps the key order the client was
+    sent.
 
     The subject is the item (``upload``) or the job (``convert``), exactly the
     one its ``route`` names, and the receipt is deleted with it (``ON DELETE

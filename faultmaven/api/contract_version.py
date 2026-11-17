@@ -151,6 +151,39 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.3.0",
+        level="MINOR",
+        title=(
+            "A keyed `POST /knowledge/convert` retry is answered with the "
+            "conversion as `GET /knowledge/conversions/{conversion_id}` returns "
+            "it now, not a stored copy of the first answer (#2452), and that "
+            "read returns each draft's `quality_warning` and a `created_at` "
+            "with a UTC offset (#2451). MINOR: no field or status is added or "
+            "removed."
+        ),
+        body=r"""The receipt of a keyed conversion stores the job's id and none of
+its drafts, so text edited out of a draft is no longer kept, or served, under
+the key. A retry with the same file and fields still answers 201 with
+`X-Idempotency-Replayed: true` and publishes nothing; its body is the job as
+it now stands:
+
+* a draft edited since carries its edited `content`, a verified one its
+  `verified` status;
+* a discarded draft is left out, so `drafts` is `[]` once every draft is
+  discarded;
+* the drafts come in the read's order, which for a job of more than one
+  draft can differ from the first answer's: match them by `draft_id`.
+
+409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` now means the conversion committed and its
+job can no longer be read (reload your conversions).
+
+`GET /knowledge/conversions/{conversion_id}` now returns each draft's
+`quality_warning` as the conversion's first answer gave it (null at a score of
+50 or above, and for a knowledge-base upload's draft), where it returned null,
+and answers in JSON mode: `created_at` carries a UTC offset (`Z`) on every
+database, where SQLite's read had none.""",
+    ),
+    ContractChange(
         version="15.2.0",
         level="MINOR",
         title=(
