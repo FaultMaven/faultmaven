@@ -451,7 +451,10 @@ def _loop_messages(user_content: str) -> list[dict]:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestAnthropicCacheBoundaryBreakpoint:
-    """``cache_prompt`` places a second breakpoint at the end of the boundary line."""
+    """``cache_prompt`` places a second breakpoint at the end of the boundary line.
+
+    These requests offer no tool, so nothing can extend them and they carry
+    no rolling breakpoint (``TestAnthropicRollingBreakpoint``)."""
 
     async def test_boundary_once_splits_the_first_user_message(self, provider):
         body = await _sent_body(
@@ -466,8 +469,7 @@ class TestAnthropicCacheBoundaryBreakpoint:
                 "text": _PREFIX,
                 "cache_control": {"type": "ephemeral"},
             },
-            # The request's last block: the rolling breakpoint.
-            {"type": "text", "text": _TAIL, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": _TAIL},
         ]
         assert content[0]["text"].endswith(CACHE_BOUNDARY + "\n")
         # The model reads the same prompt: the blocks concatenate to it.
@@ -486,13 +488,10 @@ class TestAnthropicCacheBoundaryBreakpoint:
         ]
 
     async def test_no_boundary_is_not_split(self, provider):
-        """No boundary, no split: the message is one block, and as the request's
-        last block it carries only the rolling breakpoint."""
+        """No boundary, no split and no breakpoint in the message."""
         prompt = "You are FaultMaven.\nSTATE: INVESTIGATING\n"
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
-        assert body["messages"][0]["content"] == [
-            {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
-        ]
+        assert body["messages"][0]["content"] == prompt
 
     async def test_case_content_quoting_the_boundary_splits_at_the_first(
         self, provider
@@ -509,20 +508,14 @@ class TestAnthropicCacheBoundaryBreakpoint:
                 "text": _PREFIX,
                 "cache_control": {"type": "ephemeral"},
             },
-            {
-                "type": "text",
-                "text": _TAIL + quoted,
-                "cache_control": {"type": "ephemeral"},
-            },
+            {"type": "text", "text": _TAIL + quoted},
         ]
 
     async def test_boundary_with_nothing_after_it_is_not_split(self, provider):
         """Anthropic rejects a blank text block, so a blank tail is not split off."""
         prompt = _PREFIX + "  \n"
         body = await _sent_body(provider, _loop_messages(prompt), cache_prompt=True)
-        assert body["messages"][0]["content"] == [
-            {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
-        ]
+        assert body["messages"][0]["content"] == prompt
 
     async def test_cache_prompt_off_leaves_the_content_untouched(self, provider):
         body = await _sent_body(provider, _loop_messages(_PREFIX + _TAIL))
@@ -557,12 +550,9 @@ class TestAnthropicCacheBoundaryBreakpoint:
                     "type": "tool_result",
                     "tool_use_id": "call_1",
                     "content": CACHE_BOUNDARY,
-                    # The request's last block: the rolling breakpoint.
-                    "cache_control": {"type": "ephemeral"},
                 }
             ],
         }
-        # The tail is no longer the last block, so it carries no mark of its own.
         assert "cache_control" not in body["messages"][0]["content"][1]
 
 
@@ -617,20 +607,22 @@ _TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_file",
-            "description": "Search a file.",
+            "name": name,
+            "description": f"The {name} tool.",
             "parameters": {"type": "object", "properties": {}},
         },
     }
+    # An iteration offers the investigation tools and the schema tool.
+    for name in ("search_file", "submit_response")
 ]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestAnthropicRollingBreakpoint:
-    """``cache_prompt`` also marks the request's END, so the next tool-loop
-    iteration reads this one's whole request back from the cache, not only the
-    standing prefix."""
+    """``cache_prompt`` also marks the END of a request offering more than one
+    tool, so the next tool-loop iteration reads this one's whole request back
+    from the cache, not only the standing prefix."""
 
     async def _iterations(self, provider) -> list[dict]:
         """Bodies of four consecutive tool-loop iterations of one turn, the
@@ -691,12 +683,62 @@ class TestAnthropicRollingBreakpoint:
                 "provider_metadata": {"assistant_content": echoed},
             }
         ]
-        body = await _sent_body(provider, messages, cache_prompt=True)
+        body = await _sent_body(
+            provider, messages, cache_prompt=True, tools=_TOOLS, tool_choice="auto"
+        )
         last = body["messages"][-1]["content"]
         assert last[0]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in last[1]
         assert "cache_control" not in last[2]
         assert "cache_control" not in last[3]
+
+    async def test_a_single_tool_request_marks_only_its_prefix(self, provider):
+        """The schema-only call offers one tool, and its reply ends the loop:
+        nothing extends it, so its end is not written to the cache. The system
+        and boundary marks stay, for the next turn's schema-only call."""
+        messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)
+        body = await _sent_body(
+            provider,
+            messages,
+            cache_prompt=True,
+            tools=_TOOLS[1:],
+            tool_choice="required",
+        )
+        assert len(_breakpoints(body)) == 2
+        assert "cache_control" in body["system"][0]
+        assert "cache_control" in body["messages"][0]["content"][0]
+
+    async def test_a_cached_prompt_only_call_marks_its_boundary(self, provider):
+        """The single shot sends ``prompt`` alone. It takes the boundary mark,
+        so the next turn reads the standing prefix back, and no mark at its
+        end, which only this call's own retry could read."""
+        response_data = {
+            "content": [{"type": "text", "text": "ok"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        mock_session = _mock_aiohttp_session(response_data)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await send_to_model(
+                provider,
+                prompt=vetted(_PREFIX + _TAIL),
+                cache_prompt=True,
+                tools=_TOOLS[1:],
+                tool_choice="required",
+            )
+        body = mock_session.post.call_args.kwargs["json"]
+        assert body["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _PREFIX,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": _TAIL},
+                ],
+            }
+        ]
 
     async def test_cache_prompt_off_marks_nothing(self, provider):
         messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)

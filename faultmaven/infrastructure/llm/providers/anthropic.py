@@ -565,12 +565,23 @@ class AnthropicProvider(BaseLLMProvider):
         # with a real mapping (intent → `thinking` config, floor → the
         # budget_tokens/max_tokens partition).
         self._discard_reasoning_kwargs(kwargs, model=selected_model)
+        if cache_prompt and not messages and isinstance(prompt, str) and prompt:
+            # A cached prompt-only call (the single shot) is one user message,
+            # so it takes the same marks as the tool loop's first message: the
+            # boundary splits its durable prefix from this turn's case.
+            messages = [{"role": "user", "content": prompt}]
         if messages:
             converted = self._convert_messages_to_anthropic(messages)
             anthropic_messages = converted["messages"]
             if cache_prompt:
                 _mark_cache_boundary(anthropic_messages)
-                _mark_rolling_breakpoint(anthropic_messages)
+                # Only a request offering more than one tool can be extended
+                # by a tool round. One offering a single tool (the schema-only
+                # call, the single shot) is answered by that tool's call and
+                # ends the turn, so a mark at its end would buy a 1.25x write
+                # that nothing reads.
+                if len(kwargs.get("tools") or ()) > 1:
+                    _mark_rolling_breakpoint(anthropic_messages)
             request_body["messages"] = anthropic_messages
             if converted.get("system"):
                 request_body["system"] = converted["system"]
@@ -583,7 +594,7 @@ class AnthropicProvider(BaseLLMProvider):
 
         # Apply the cache breakpoint once, after `system` is finalized. Caching
         # the system block also caches the tool definitions (the large, stable
-        # prefix). When there is no system prompt, cache the sole user turn.
+        # prefix).
         if cache_prompt:
             system_text = request_body.get("system")
             if isinstance(system_text, str) and system_text:
@@ -592,19 +603,6 @@ class AnthropicProvider(BaseLLMProvider):
                         "type": "text",
                         "text": system_text,
                         "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-            elif not messages and isinstance(prompt, str) and prompt:
-                request_body["messages"] = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": prompt,
-                                "cache_control": {"type": "ephemeral"},
-                            }
-                        ],
                     }
                 ]
 
@@ -1171,15 +1169,22 @@ _UNMARKABLE_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
 
 
 def _mark_rolling_breakpoint(messages: list) -> None:
-    """Put a breakpoint at the END of a ``cache_prompt`` request (the tool loop).
+    """Put a breakpoint at the END of a tool-loop request that can be extended.
 
     The system and boundary breakpoints cache only the standing prefix. Each
     tool-loop iteration re-sends everything after it, too: this turn's case,
     and every earlier tool call and result. Without a mark at the end, those
     bytes are paid in full on every iteration. A breakpoint on the request's
     last block writes them once, and the next iteration, whose request extends
-    this one, reads them back: the breakpoint lookback finds the earlier entry,
-    which sits two positions back (one tool_use run, one tool_result run).
+    this one, reads them back: the breakpoint lookback (20 positions) finds the
+    earlier entry a few positions back. On the Claude API a run of parallel
+    tool_use blocks is one position and so is a run of tool_result blocks, so
+    one iteration adds those two plus any thinking and text blocks.
+
+    The write costs 1.25x input and pays back on the first read (0.1x). An
+    iteration whose reply calls no tool is not extended, and its write is the
+    price of the bet; the caller marks only requests offering more than one
+    tool, so the schema-only call and the single shot never pay it.
 
     Every string-content user message becomes one text block first, wherever
     it sits. A nudge or an elision marker is the last message on one iteration

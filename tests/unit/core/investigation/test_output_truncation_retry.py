@@ -281,6 +281,24 @@ async def test_parse_truncation_raises_the_cap_and_bypasses_the_cache():
 
 
 @pytest.mark.asyncio
+async def test_single_shot_asks_for_the_provider_prompt_cache():
+    """Every single-shot attempt sends ``cache_prompt``, so the provider's
+    prompt cache (not the response cache, which ``bypass_cache`` governs) can
+    serve the standing prefix to the next single-shot turn (#613)."""
+    engine = _make_engine()
+    generate = AsyncMock(side_effect=[TRUNCATED, COMPLETE])
+    engine.deps.llm_provider.route = generate
+
+    await engine.generator._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?",
+        schema_model=_Schema,
+        redaction_ctx=disabled_redaction(),
+    )
+
+    assert [a["cache_prompt"] for a in _attempts(generate)] == [True, True]
+
+
+@pytest.mark.asyncio
 async def test_provider_reported_truncation_raises_the_cap_too():
     """The site the fix was missing entirely. Gemini raises from inside
     ``_generate()``, so the failure never reaches the parse block where the cap
