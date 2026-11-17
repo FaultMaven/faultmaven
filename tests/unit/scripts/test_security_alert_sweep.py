@@ -383,6 +383,7 @@ def test_lag_counts_seven_days_from_the_manifests_last_commit(mod, age, cls, sho
 def test_an_ignore_ghsas_entry_is_an_exception_in_its_own_repo_only(mod, repo, cls):
     config = json.dumps({"pnpm": {"auditConfig": {"ignoreGhsas": [GHSA]}}})
     alert = dependabot(repo, 1, "braces", manifest=LOCK)
+    alert["security_vulnerability"]["first_patched_version"] = None  # no fix yet
     assert cls_of(mod, repo, alert, files={(COPILOT, "package.json"): config}) == cls
 
 
@@ -409,7 +410,41 @@ def test_the_exceptions_doc_counts_above_closed_exceptions_for_core_only(
     mod, repo, ghsa, cls
 ):
     files = {(CORE, mod.EXCEPTIONS_DOC): EXCEPTIONS}
-    assert cls_of(mod, repo, dependabot(repo, 1, ghsa=ghsa), files=files) == cls
+    alert = dependabot(repo, 1, ghsa=ghsa)
+    alert["security_vulnerability"]["first_patched_version"] = None  # no fix yet
+    assert cls_of(mod, repo, alert, files=files) == cls
+
+
+IGNORED = json.dumps({"pnpm": {"auditConfig": {"ignoreGhsas": [GHSA]}}})
+
+
+@pytest.mark.parametrize("source", ["ignoreGhsas", "doc", "private"])
+@pytest.mark.parametrize("fix", [{"identifier": "11.0.1"}, None])
+def test_an_exception_whose_advisory_lists_a_fix_is_fixable(mod, source, fix):
+    """An exception holds only while no fix exists (#2160): one whose advisory now
+    lists a patched version is its own class, counted on both summary lines."""
+    repo, where = COPILOT, "pnpm.auditConfig.ignoreGhsas"
+    alert = dependabot(COPILOT, 1, "minimatch", manifest=LOCK)
+    files = {(COPILOT, "package.json"): IGNORED}
+    if source == "doc":
+        repo, where = CORE, "vulnerability-exceptions.md"
+        alert = dependabot(CORE, 1, ghsa="GHSA-1111-2222-3333")
+        files = {(CORE, mod.EXCEPTIONS_DOC): EXCEPTIONS}
+    alert["security_vulnerability"]["first_patched_version"] = fix
+    gh = fake(mod, repo, alert, files=files)
+    if source == "private":
+        gh.visibility[repo], where = "PRIVATE", "(private)"
+    elif fix:
+        where += ", fix available 11.0.1"
+    report = mod.sweep(gh, NOW)
+    (got,), fixable = table(report), int(bool(fix))
+    assert (got["cls"], got["detail"]) == (["exception", "fixable"][fixable], where)
+    assert ("11.0.1" in report) == (source != "private" and bool(fix))
+    counts = f" · exception {1 - fixable} · fixable {fixable} · lag 0 · "
+    assert counts in summary(report)
+    assert summary(report, "queue: ").endswith(
+        f", exceptions with a fix {fixable}, scheduled audits failing 0"
+    )
 
 
 # --- Redaction ----------------------------------------------------------------
@@ -488,7 +523,7 @@ def test_failed_fetches_are_counted_and_the_other_repos_still_classify(mod):
     ]
     assert [r["cls"] for r in table(report)] == ["untracked"]
     assert summary(report) == (
-        "alerts 1: tracked 0 · exception 0 · lag 0 · untracked 1 (1 groups)"
+        "alerts 1: tracked 0 · exception 0 · fixable 0 · lag 0 · untracked 1 (1 groups)"
         " · unknown 0 · disabled 2 · unavailable 1"
     )
 
@@ -509,7 +544,7 @@ def test_a_group_takes_its_worst_class_and_lists_only_what_needs_action(mod):
     gh.errors[f"{CORE}/contents/{manifests[3]}"] = "HTTP 502: Bad Gateway"
     assert row(mod, gh)["cls"] == "unknown"  # worse than untracked
     assert summary(report).startswith(
-        "alerts 4: tracked 0 · exception 0 · lag 2 · untracked 2 (1 groups)"
+        "alerts 4: tracked 0 · exception 0 · fixable 0 · lag 2 · untracked 2 (1 groups)"
     )
 
 
@@ -578,7 +613,7 @@ def test_the_queue_line_leaves_secret_scanning_out_of_every_count(
             gh.pages[f"{SLACK}/secret-scanning/alerts"] = [[secret(SLACK, 3)]]
             gh.errors[f"{COPILOT}/secret-scanning/alerts"] = "HTTP 502: Bad Gateway"
         reports.append(mod.sweep(gh, NOW))
-    last = QUEUE + expected + ", scheduled audits failing 0"
+    last = QUEUE + expected + ", exceptions with a fix 0, scheduled audits failing 0"
     assert [report.split("\n")[-1] for report in reports] == [last] * 2
     pulls = f"unavailable: {SLACK} pulls: gh: HTTP 502"
     assert [pulls in report.split("\n") for report in reports] == [True, True]
@@ -734,28 +769,41 @@ def test_failing_audits_move_only_the_queue_lines_new_count(mod):
     assert len(scheduled(report)) == 4
     assert summary(report).endswith(" · unknown 0 · disabled 0 · unavailable 0")
     assert summary(report, "queue: ").endswith(
-        "unknown 0, unavailable 0, scheduled audits failing 4"
+        "unknown 0, unavailable 0, exceptions with a fix 0, scheduled audits failing 4"
     )
 
 
-def test_a_repo_not_known_public_is_counted_and_neither_read_nor_named(mod):
+@pytest.mark.parametrize(
+    "conclusion, error, failing",
+    [
+        ("success", None, 0),
+        ("failure", None, 1),
+        ("success", "HTTP 502: Bad Gateway (https://x/hidden)", 1),  # unreadable
+    ],
+)
+def test_a_repo_not_known_public_is_read_and_counted_but_not_named(
+    mod, conclusion, error, failing
+):
+    """#2831: being private is not failing; only its own audit's result is."""
     gh = fake(mod, CORE, dependabot(CORE, 1))
     gh.visibility[DASHBOARD] = "PRIVATE"
-    gh.runs[DASHBOARD] = [wf_run("failure")]
+    gh.runs[DASHBOARD] = [wf_run(conclusion)]
+    gh.errors.update({f"{DASHBOARD}/{RUNS}": error} if error else {})
     report = mod.sweep(gh, NOW)
     assert scheduled(report) == [
         f"scheduled audit: {COPILOT} success 1.00d ago",
         f"scheduled audit: {WEBSITE} success 1.00d ago",
         f"scheduled audit: {CORE} success 1.00d ago",
-        "scheduled audit: 1 repo not known public",
+        f"scheduled audit: 1 repo not known public, failing {failing}",
     ]
-    assert DASHBOARD not in report and "failure" not in report
-    assert summary(report, "queue: ").endswith(", scheduled audits failing 1")
+    assert [w for w in (DASHBOARD, "failure", "Bad Gateway") if w in report] == []
+    assert summary(report, "queue: ").endswith(f", scheduled audits failing {failing}")
+    gh.calls.clear()
     gh.errors["repo list"] = "HTTP 502: Bad Gateway"  # no repo is known public
-    hidden = ["scheduled audit: 4 repos not known public"]
+    hidden = [f"scheduled audit: 4 repos not known public, failing {failing}"]
     assert scheduled(mod.sweep(gh, NOW)) == hidden
-    reads = [call[-1] for call in gh.calls if "scheduled-audit" in call[-1]]
-    assert reads and not [read for read in reads if DASHBOARD in read]
+    reads = [call[-1] for call in gh.calls if call[-1].endswith(WORKFLOW)]
+    assert reads == [f"repos/FaultMaven/{repo}/{WORKFLOW}" for repo in mod.AUDITED]
 
 
 def test_the_sweep_only_reads(mod):

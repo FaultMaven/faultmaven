@@ -5,6 +5,9 @@
 read-only: it files, comments on and dismisses nothing. Each open Dependabot,
 code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
 
+- ``fixable`` (Dependabot): an exception (below) whose advisory lists a
+  patched version, shown with ``fix available <version>``: an exception holds
+  only while no fix exists (#2160);
 - ``exception`` (Dependabot): its GHSA is in the repo's ``package.json``
   ``pnpm.auditConfig.ignoreGhsas`` or, for core, in ``EXCEPTIONS_DOC`` above
   its ``## Closed exceptions`` heading;
@@ -30,8 +33,8 @@ lockfile audit; without one, ``none yet``, aged from the workflow file's last
 commit on the default branch, or ``not on main``. Past ``AUDIT_STALE`` either
 age adds ``stale``, and a workflow GitHub does not report ``active`` adds its
 ``state``. ``queue:`` counts every line but a fresh ``success`` or ``none yet``,
-a failed read (``unavailable``) included. A repo not known to be public is not
-read and only counted.
+a failed read (``unavailable``) included. A repo not known to be public is
+read, but folds into one unnamed line that shows only how many failed (#2831).
 
 Usage: ``.venv/bin/python scripts/security_alert_sweep.py``
 """
@@ -68,7 +71,8 @@ DISABLED = ("Code Security must be enabled", "Secret scanning is disabled")
 LAG_DAYS = timedelta(days=7)
 OPEN = "state=open&per_page=100"
 EXCEPTIONS_DOC = "docs/operations/security/vulnerability-exceptions.md"
-CLASSES = ("lag", "exception", "tracked", "untracked", "unknown")  # worst last
+# Worst last.
+CLASSES = ("lag", "exception", "tracked", "fixable", "untracked", "unknown")
 REPO_LIST = f"repo list {ORG} --no-archived --limit 1000 --json name,visibility"
 RAW = ["api", "-H", "Accept: application/vnd.github.raw"]
 PRIVATE, SECRET_NOTE = "(private)", "raise with the owner in session"
@@ -352,6 +356,9 @@ class Sweep:
         stale = ""
         if alert.kind == "dependabot":
             if detail := self.exception_detail(alert):
+                fix = alert.item["security_vulnerability"].get("first_patched_version")
+                if fix:  # its premise, that no fix exists, no longer holds
+                    return "fixable", f"{detail}, fix available {fix['identifier']}"
                 return "exception", detail
             if lag := self.lag_detail(alert):
                 resolved, age = lag
@@ -441,14 +448,19 @@ class Sweep:
         return failing, ", ".join([f"{head} {shown}", *flags])
 
     def audit_lines(self) -> tuple[int, list[str]]:
-        """``(failing, lines)``. A repo not known to be public is not read: it folds
-        into one unnamed line and counts as failing, so no paste shows its runs."""
-        read = [self.audit_line(repo) for repo in AUDITED if repo in self.public]
-        lines = [line for _, line in read]
-        if hidden := len(AUDITED) - len(read):
-            plural = "s" if hidden != 1 else ""
-            lines.append(f"scheduled audit: {hidden} repo{plural} not known public")
-        return sum(failing for failing, _ in read) + hidden, lines
+        """``(failing, lines)``. Every repo is read. One not known to be public folds
+        into one unnamed line giving only how many failed, so no paste names it or
+        shows its runs; it counts failing only when its own read says so."""
+        read = {repo: self.audit_line(repo) for repo in AUDITED}
+        lines = [line for repo, (_, line) in read.items() if repo in self.public]
+        hidden = [bad for repo, (bad, _) in read.items() if repo not in self.public]
+        if hidden:
+            plural = "s" if len(hidden) != 1 else ""
+            lines.append(
+                f"scheduled audit: {len(hidden)} repo{plural} not known public,"
+                f" failing {sum(hidden)}"
+            )
+        return sum(failing for failing, _ in read.values()), lines
 
     def disabled_line(self, kind: str, repos: list[str]) -> str:
         listed = (
@@ -526,6 +538,7 @@ class Sweep:
         ]
         lines.append(
             f"alerts {len(alerts)}: tracked {count['tracked']} · exception {count['exception']}"
+            f" · fixable {count['fixable']}"
             f" · lag {count['lag']} · untracked {count['untracked']} ({untracked_groups} groups)"
             f" · unknown {count['unknown']} · disabled {sum(map(len, self.disabled.values()))}"
             f" · unavailable {len(self.unavailable)}"
@@ -537,10 +550,11 @@ class Sweep:
         )
         unknown = sum(a.cls == "unknown" for a in shared)
         failed = sum(1 for secret, _ in self.unavailable if not secret)
+        fixable = sum(a.cls == "fixable" for a in shared)
         lines.append(
             f"queue: alerts {len(shared)} (secret scanning excluded): untracked groups"
             f" {groups_u}, unknown {unknown}, unavailable {failed},"
-            f" scheduled audits failing {audits_failing}"
+            f" exceptions with a fix {fixable}, scheduled audits failing {audits_failing}"
         )
         return "\n".join(lines)
 
