@@ -28,7 +28,7 @@ code, and the quoted `TOOLLESS_INFERENCE_OUTPUT_FLOOR` value matches
 | Provider | Environment Variable | Models | Structured output | Notes |
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema tool forced where the model accepts forcing, otherwise `auto` plus an instruction naming it (per-model rule: `docs/reference/llm-model-capabilities.md` §"Anthropic request shape"); recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-6-luna | **STRICT** (gpt-4o+) | Reasons by default: plain calls send `reasoning_effort: "none"` and tool calls force it (hard model constraint), while structured calls keep the `low` starvation floor — so `OPENAI_REASONING_EFFORT=none` is a no-op here (and warns per structured call) — leave it unset. A HIGHER value is NOT inert: it replaces the `"none"` shape default on plain calls. `gpt-5.4-mini` remains supported; `gpt-5.6-luna` is priced and usable when pinned but not offered (twice `gpt-6-luna`'s rate) |
+| OpenAI | `OPENAI_API_KEY` | gpt-6-luna | **STRICT** (gpt-4o+) | Reasons by default: plain calls send `reasoning_effort: "none"` and tool calls force it (hard model constraint), while structured calls keep the `low` starvation floor — so `OPENAI_REASONING_EFFORT=none` is a no-op here (and warns per structured call) — leave it unset. A HIGHER value is NOT inert: it replaces the `"none"` shape default on plain calls. `gpt-5.6-luna` and `gpt-5.4-mini` remain supported |
 | Google Gemini | `GEMINI_API_KEY` | gemini-3.8-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (3.8 runs the 3.7 surface) (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | openai/gpt-oss-20b | **STRICT** (gpt-oss only; BEST_EFFORT otherwise) | Ultra-fast inference. Groq serves no Llama chat model any more — `llama-3.3-70b-versatile` 404s. Per-org TPM limits are low on the free tier (8k on `on_demand`), so a full-document call can 413 where a classifier-sized one succeeds |
@@ -428,7 +428,7 @@ The knobs themselves:
   over candidates: ask for its default). Semantic on purpose — `reasoning_effort`
   is OpenAI's word, `thinkingLevel` is Gemini's, and a call site has no business
   knowing which provider answered. Each provider translates it; **hard model
-  constraints override it** (gpt-5.6 keeps its forced `reasoning_effort: "none"`
+  constraints override it** (gpt-5.6 and gpt-6-luna keep their forced `reasoning_effort: "none"`
   alongside tools); an intent that cannot be applied is **logged, never silently
   dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. (An intent that
   *was* delivered is not reported as a failure: on gpt-5.6 with tools the

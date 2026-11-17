@@ -65,9 +65,7 @@ CHAT_PROVIDER="openai"
 - `o1` / `o3` / `o4` series (reasoning models; see below)
 - `gpt-4o`, `gpt-4o-mini`, `gpt-4.1-mini` remain PRICED and usable if
   pinned explicitly, but were removed from the dashboard picker as
-  superseded — the picker offers `gpt-6-luna` and `gpt-5.4-mini`.
-  `gpt-5.6-luna` left the picker the same way: it costs twice `gpt-6-luna`
-  per token.
+  superseded — the picker offers `gpt-6-luna`, `gpt-5.6-luna` and `gpt-5.4-mini`.
 
 **Features**: Best response quality, extensive capabilities, higher cost.
 
@@ -77,11 +75,11 @@ The `gpt-5.x` and o-series models bill **hidden reasoning tokens against the sam
 
 | Call shape | Effort | Why |
 |------------|--------|-----|
-| Carries `tools` | `"none"` | The gpt-5.6 family rejects function tools on `/v1/chat/completions` unless reasoning is explicitly disabled |
+| Carries `tools` | `"none"` | The gpt-5.6 family and gpt-6-luna reject function tools on `/v1/chat/completions` unless reasoning is explicitly disabled |
 | Carries `response_format`, no tools | `"low"` | Hidden reasoning must not starve the schema JSON and truncate it |
 | Plain chat — neither of the above | `"none"`, and only for families that reason by **default** | Nothing else caps these; server-side default reasoning otherwise competes with the answer for one budget |
 
-The two **no-tools** rows are the shape defaults, resolved through one helper (`_shape_default_effort`) so that policy has a single home. The tools row is not: `"none"` is a hard API constraint for the `gpt-5.6` family and is set inside the `if tools:` block, before the helper is reached — extending `_shape_default_effort` will not change what tool calls send. A caller can refine the no-tools defaults per call with a **reasoning intent** — see below.
+The two **no-tools** rows are the shape defaults, resolved through one helper (`_shape_default_effort`) so that policy has a single home. The tools row is not: `"none"` is a hard API constraint for the `gpt-5.6` family and `gpt-6-luna` and is set inside the `if tools:` block, before the helper is reached — extending `_shape_default_effort` will not change what tool calls send. A caller can refine the no-tools defaults per call with a **reasoning intent** — see below.
 
 The plain-chat cap is scoped to `_DEFAULT_REASONING_MODEL_FAMILIES` (currently `gpt-5.6` and `gpt-6-luna`), the families that reason without being asked. Models that accept the parameter but stay silent unless asked — `gpt-5`, `gpt-5.4-mini`, `o1`, `o3-mini` — are deliberately left alone, since forcing the parameter there would change behaviour on models that never had the problem. In all three cases an explicit `reasoning_effort` from the caller still wins: the provider sets its value before merging caller kwargs.
 
@@ -95,7 +93,7 @@ A call site can state *what it needs from reasoning* rather than leaving the pro
 
 | Intent | Meaning | OpenAI | Gemini |
 |--------|---------|--------|--------|
-| `EXTRACTION` | Grounded transformation of supplied context | the shape's own minimum (`"none"` on plain gpt-5.6, else `"low"`) | `thinkingLevel: "low"` on 3.x, **every** shape |
+| `EXTRACTION` | Grounded transformation of supplied context | the shape's own minimum (`"none"` on plain gpt-5.6 and gpt-6-luna, else `"low"`) | `thinkingLevel: "low"` on 3.x, **every** shape |
 | `INFERENCE` | Reasoning over candidates | `"medium"` | no `thinkingConfig` — native dynamic thinking **is** the honoured translation |
 | *(absent — most calls)* | — | the shape defaults above, unchanged | the shape default, unchanged |
 
@@ -106,7 +104,7 @@ Every other call leaves the shape default in place.
 
 Three rules govern it, and a new provider must honour all three:
 
-1. **Hard model constraints override caller intent.** The forced `"none"` for tools on gpt-5.6 stays exactly as it is; intent never produces a request the API would reject.
+1. **Hard model constraints override caller intent.** The forced `"none"` for tools on gpt-5.6 and gpt-6-luna stays exactly as it is; intent never produces a request the API would reject.
 2. **An intent that cannot be applied is logged, never silently dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. Say what actually happened: `_caps_reasoning_effort` returning False means *this provider/model does not take the parameter*, **not** *this model does not reason* (OpenRouter returns False for models that all reason). An intent that *was* delivered is not reported as a failure.
 3. **`INFERENCE` requires `min_output_tokens`** (#1117). It lifts starvation guards, and the output floor is what makes that safe. `route()` raises `ValueError` without it — and a provider whose guard is being lifted must **refuse on its own** too, because `milestone_engine` binds a concrete provider and sends to it directly (`dispatch.send_to_model`), bypassing the router. Refusal restores the *shape default*; it must never impose a restriction the default did not apply.
 
@@ -396,7 +394,7 @@ for name, info in status.items():
 ```
 Provider Health Status:
 ✅ fireworks    | Models: deepseek-v4-flash, deepseek-v3        | Confidence: 0.9  | ⚡
-✅ openai       | Models: gpt-6-luna, gpt-5.4-mini               | Confidence: 0.85 | ⚡
+✅ openai       | Models: gpt-6-luna, gpt-5.6-luna, gpt-5.4-mini | Confidence: 0.85 | ⚡
 ✅ anthropic    | Models: claude-sonnet-4-6, claude-opus-4-6     | Confidence: 0.85 | ⚡
 ✅ gemini       | Models: gemini-3.8-flash, gemini-3.7-flash     | Confidence: 0.8  | ⚡
 ✅ local        | Models: Phi-3-mini-128k-instruct-onnx           | Confidence: 0.6  | ⚡

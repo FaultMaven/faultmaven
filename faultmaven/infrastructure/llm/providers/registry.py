@@ -236,10 +236,9 @@ PROVIDER_SCHEMA = {
         "model_var": "OPENAI_MODEL",
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-6-luna",
-        # gpt-5.6-luna is priced and usable when pinned, but not offered: it
-        # costs twice gpt-6-luna per token (pricing.py).
         "available_models": [
             "gpt-6-luna",
+            "gpt-5.6-luna",
             "gpt-5.4-mini",
         ],
         "provider_class": OpenAIProvider,

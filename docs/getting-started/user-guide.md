@@ -274,7 +274,7 @@ Models below are each provider's default first; the full picker list lives in
 [adding-llm-providers.md](../guides/adding-llm-providers.md).
 
 - **Google Gemini** (default): `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`
-- **OpenAI**: `gpt-6-luna`, `gpt-5.4-mini`
+- **OpenAI**: `gpt-6-luna`, `gpt-5.6-luna`, `gpt-5.4-mini`
 - **Anthropic**: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`
 - **Fireworks AI**: `deepseek-v4-flash`, `deepseek-v3`
 - **Groq**: `openai/gpt-oss-20b`, `openai/gpt-oss-120b` — Groq's only models that enforce a schema natively, and the only chat models it still serves. The Llama ids this list used to carry are decommissioned and 404 with `model_not_found` (#1381)
