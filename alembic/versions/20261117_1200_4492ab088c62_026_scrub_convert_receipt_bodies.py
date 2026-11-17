@@ -19,8 +19,8 @@ What "at rest" covers: afterwards no live row holds the text. The old bytes
 can outlive the row. On PostgreSQL a plain VACUUM marks a dead tuple's space
 reusable without overwriting it, so they stay in the heap and TOAST files
 until that space is reused or the table is rewritten (VACUUM FULL). On SQLite
-a freed page keeps them unless ``secure_delete`` is on. WAL and backups
-already taken keep theirs.
+the freed space keeps them, inside a live page or on the freelist, unless
+``secure_delete`` is on. WAL and backups already taken keep theirs.
 
 Rolling deploys
 ---------------
