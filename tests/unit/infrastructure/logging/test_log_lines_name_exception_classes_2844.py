@@ -19,7 +19,12 @@ import pytest
 import structlog
 
 import faultmaven.infrastructure.logging.config as logging_config
-from faultmaven.exceptions import LLMException, ServiceError, ValidationException
+from faultmaven.exceptions import (
+    LLM_CONFIG_ERROR,
+    LLMException,
+    ServiceError,
+    ValidationException,
+)
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.concurrency import inflight, owned_claim
 from faultmaven.infrastructure.logging.config import (
@@ -32,6 +37,7 @@ from faultmaven.infrastructure.logging.unified import (
     clear_logger_cache,
     get_unified_logger,
 )
+from faultmaven.models.exceptions import LLMProviderError
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
@@ -119,6 +125,19 @@ class _Client(BaseExternalClient):
         super().__init__("test_client", "TestService", enable_circuit_breaker=False)
 
 
+async def _call(sync, error):
+    if sync:
+        return _Client().call_external_sync("op", MagicMock(side_effect=error))
+    return await _Client().call_external("op", AsyncMock(side_effect=error))
+
+
+def _fail_fast_and_attempt(rendered):
+    lines = _json_lines(rendered)
+    (fail_fast,) = [e for e in lines if e["event"].startswith("Non-retryable")]
+    (failed,) = [e for e in lines if e.get("event_type") == "operation_error"]
+    return fail_fast, failed["error_attempt_0"]
+
+
 @pytest.fixture(params=[False, True], ids=["no-context", "request"])
 def request_context(request):
     coordinator = LoggingCoordinator()
@@ -154,6 +173,33 @@ class TestCallExternal:
             (failed,) = [e for e in lines if e.get("event_type") == "operation_error"]
             assert codes.items() <= failed["error_attempt_0"].items()
         _named(rendered, "LLMException <- ConnectionError", _old_structlog(error))
+
+    @pytest.mark.parametrize("sync", [False, True], ids=["async", "sync"])
+    async def test_a_models_error_keeps_its_code(self, rendered, sync):
+        """The other first-party hierarchy: an ``LLMProviderError``'s code is one
+        the breaker latches."""
+        error = _backend_error(
+            LLMProviderError, retryable=False, error_code=LLM_CONFIG_ERROR
+        )
+        with pytest.raises(LLMProviderError):
+            await _call(sync, error)
+        if rendered.getvalue().startswith("{"):
+            fail_fast, attempt = _fail_fast_and_attempt(rendered)
+            assert fail_fast["error_code"] == attempt["error_code"] == LLM_CONFIG_ERROR
+        _named(rendered, "LLMProviderError <- ConnectionError", _old_structlog(error))
+
+    @pytest.mark.parametrize("sync", [False, True], ids=["async", "sync"])
+    async def test_a_third_partys_codes_are_not_read(self, rendered, sync):
+        """Attributes of the same names on a third party's exception are its
+        own wording, not first-party fields."""
+        error = _backend_error(retryable=False)
+        error.status_code, error.error_code = 418, SENTINEL
+        with pytest.raises(BackendError):
+            await _call(sync, error)
+        if rendered.getvalue().startswith("{"):
+            for line in _fail_fast_and_attempt(rendered):
+                assert "status_code" not in line and "error_code" not in line
+        _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
     @pytest.mark.parametrize(
         "error",

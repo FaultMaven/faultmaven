@@ -20,9 +20,11 @@ from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
+    FaultMavenException,
     counts_against_breaker,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
+from faultmaven.models.exceptions import FaultMavenError
 from faultmaven.utils.exception_name import exception_class_chain
 
 # Type variable for generic return types
@@ -46,9 +48,17 @@ def remaining_call_time() -> Optional[float]:
 
 
 def _provider_codes(error: BaseException) -> Dict[str, Any]:
-    """The ``status_code`` and ``error_code`` a provider's exception declares:
-    first-party fields the breaker decision reads, logged beside the class
-    chain where its text no longer carries them (#2844)."""
+    """The ``status_code`` and ``error_code`` a first-party exception declares,
+    logged beside the class chain where its text no longer carries them (#2844).
+
+    Read only from the two first-party hierarchies, ``FaultMavenException`` and
+    ``models.exceptions.FaultMavenError``: both carry codes the breaker latches
+    (an ``LLMException``'s, an ``LLMProviderError``'s ``LLM_CONFIG_ERROR``). A
+    third party's attributes of the same names are not first-party fields, and
+    their values are its own to word.
+    """
+    if not isinstance(error, (FaultMavenException, FaultMavenError)):
+        return {}
     return {
         name: value
         for name, kind in (("status_code", int), ("error_code", str))
