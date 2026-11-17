@@ -9,11 +9,14 @@ Two rules hold (#2324):
 
 - A live secret is never given a name it does not keep. Wherever the
   filesystem accepts ``O_TMPFILE`` (Linux), it is written to an unnamed inode
-  and linked into place once, so no other directory entry ever names it; a
+  and linked into place once, so no other directory entry names it, unless a
+  WARNING says the publish fell back to a named temp file: the secret's
+  directory could not be opened for reading, or the ``O_TMPFILE`` open or the
+  ``/proc`` link failed for a reason other than "no unnamed files here". A
   file that holds no secret is replaced by renaming a temp file, which moves
-  its name. Elsewhere (other platforms, NFS, 9p, FUSE without tmpfiles) a
-  named temp file is linked and then unlinked, and a kill between the two can
-  still leave a second name for the secret.
+  its name. Elsewhere (other platforms, NFS, 9p, FUSE without tmpfiles), and
+  after such a WARNING, a named temp file is linked and then unlinked, and a
+  kill between the two can still leave a second name for the secret.
 - No process uses a secret before the directories that name it are durable:
   the publish, and every reader (the losers of a race included), fsyncs the
   secret's directory and each one above it on the same device, so those

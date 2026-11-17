@@ -2,7 +2,8 @@
 
 Wherever the filesystem accepts ``O_TMPFILE``, ``publish_secret_once`` links
 an unnamed inode, so a kill mid-publish cannot leave a second name for the
-live secret; elsewhere it falls back to a named temp file. The secret's
+live secret; elsewhere, or after a WARNING that the unnamed publish failed, it
+falls back to a named temp file. The secret's
 directory and those above it on its device are fsynced after a publish and
 before every read, a lost race's included.
 """
