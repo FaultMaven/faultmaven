@@ -4,6 +4,21 @@ Two secrets can live in local files: the standalone HS256 JWT secret
 (``settings.resolve_local_jwt_secret``) and the redaction pseudonym key
 (``infrastructure.security.pseudonym_key``). This module is the one way such a
 file is published, and the one rule applied before one is read (#1788).
+
+Two rules hold (#2324):
+
+- A live secret is never given a name it does not keep. Wherever the
+  filesystem accepts ``O_TMPFILE`` (Linux), it is written to an unnamed inode
+  and linked into place once, so no other directory entry ever names it; a
+  file that holds no secret is replaced by renaming a temp file, which moves
+  its name. Elsewhere (other platforms, NFS, 9p, FUSE without tmpfiles) a
+  named temp file is linked and then unlinked, and a kill between the two can
+  still leave a second name for the secret.
+- No process uses a secret before the directories that name it are durable:
+  the publish, and every reader (the losers of a race included), fsyncs the
+  secret's directory and each one above it on the same device, so those
+  ``mkdir(parents=True)`` made too. That holds only where directories can be
+  fsynced (not Windows).
 """
 
 import errno
@@ -11,13 +26,27 @@ import logging
 import os
 import secrets
 import stat
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
+
+logger = logging.getLogger(__name__)
 
 #: ``os.link`` failing with one of these means the filesystem has no hard
 #: links. Only then is the secret published by ``os.replace`` under the lock;
 #: any other failure (EIO, ENOSPC, EDQUOT, ...) propagates.
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
+
+#: An ``O_TMPFILE`` open failing with one of these means this filesystem or
+#: kernel has no unnamed files: the named temp file is used, silently.
+_NO_TMPFILE = frozenset({errno.EOPNOTSUPP, errno.EISDIR, errno.EINVAL})
+
+#: Where an open unnamed inode has a name to link from.
+_PROC_FD = "/proc/self/fd"
+
+#: A directory fsync failing with one of these means the filesystem does not
+#: fsync directories, which is no news to an operator.
+_NO_DIRECTORY_FSYNC = frozenset({errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP})
 
 
 def publish_secret_once(
@@ -28,9 +57,10 @@ def publish_secret_once(
 ) -> bool:
     """Publish ``data`` at ``path`` iff nothing is there. True if we won.
 
-    Written to a private temp file, flushed and fsynced, and only then linked
-    into place — ``os.link`` fails if the destination exists, so the name
-    appears only once and only with complete content.
+    Written in full and fsynced before it has the name, which it gets by
+    ``os.link`` (that fails if the destination exists) or, under the lock, by
+    ``os.replace``: the name appears only once and only with complete content.
+    The directories that name it are fsynced before this returns True.
 
     ``O_CREAT|O_EXCL`` on the real path is NOT sufficient on its own: it
     serializes the *create*, not the create-and-write. A second process that
@@ -53,21 +83,21 @@ def publish_secret_once(
     if not path.name or not resolved.name:
         raise IsADirectoryError(errno.EISDIR, "no file name", str(path))
     path = resolved
-    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
+        parent_fd: Optional[int] = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except (AttributeError, OSError):
+        parent_fd = None  # no unnamed publish; the chain reports what it finds
+    try:
         try:
-            os.link(tmp, path)
-            return True
+            if not _link_unnamed(path, data, parent_fd):
+                with _named_temp(path, data) as tmp:
+                    os.link(tmp, path)
+            published = True
         except FileExistsError:
             # Another process published first; its secret is the deployment's.
             if replace_if is None or not replace_if(path.read_bytes()):
                 return False
-            return _publish_under_lock(path, tmp, replace_if)
+            published = _publish_under_lock(path, data, replace_if, parent_fd)
         except OSError as exc:
             if exc.errno not in _NO_HARD_LINKS:
                 raise
@@ -82,7 +112,81 @@ def publish_secret_once(
             # window described above: a crash or ENOSPC between the two left a
             # permanent zero-byte file, and a concurrent reader could observe
             # it and refuse to boot.
-            return _publish_under_lock(path, tmp, replace_if)
+            published = _publish_under_lock(path, data, replace_if, parent_fd)
+        if published:
+            _fsync_directory_chain(path, parent_fd)
+        return published
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def _link_unnamed(path: Path, data: bytes, parent_fd: Optional[int]) -> bool:
+    """Link a new unnamed inode holding ``data`` at ``path``. True if linked.
+
+    False where there is no unnamed publish, so the caller uses a named temp
+    file: silently where this platform or filesystem has none, with a WARNING
+    on any other failure, so a startup that worked before still does.
+    Raises ``FileExistsError`` when a secret is already there, and an
+    ``OSError`` in ``_NO_HARD_LINKS`` when the filesystem has no hard links.
+    The inode is linked exactly once: a second link would be a second name.
+    """
+    if parent_fd is None or not hasattr(os, "O_TMPFILE"):
+        return False
+    try:
+        fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno in _NO_TMPFILE:
+            return False
+        return _unnamed_failed(path, exc)
+    try:
+        _write_synced(fd, data)
+        # dst_dir_fd makes CPython call linkat(AT_SYMLINK_FOLLOW), which links
+        # the inode; a bare os.link() links the /proc entry and gets EXDEV.
+        os.link(
+            f"{_PROC_FD}/{fd}", path.name, dst_dir_fd=parent_fd, follow_symlinks=True
+        )
+        return True
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno in _NO_HARD_LINKS:
+            raise
+        if exc.errno == errno.ENOENT and not os.path.isdir(_PROC_FD):
+            return False
+        return _unnamed_failed(path, exc)
+    finally:
+        os.close(fd)
+
+
+def _unnamed_failed(path: Path, exc: OSError) -> bool:
+    logger.warning(
+        "Could not publish the secret file %s as an unnamed file (%s); using a "
+        "named temp file, which a kill mid-publish can leave beside it.",
+        path,
+        errno.errorcode.get(exc.errno or 0, exc),
+    )
+    return False
+
+
+def _write_synced(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view) :]
+    os.fsync(fd)
+
+
+@contextmanager
+def _named_temp(path: Path, data: bytes) -> Iterator[Path]:
+    """A private temp file beside ``path`` holding ``data``, fsynced; removed after."""
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{secrets.token_hex(4)}")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        try:
+            _write_synced(fd, data)
+        finally:
+            os.close(fd)
+        yield tmp
     finally:
         try:
             os.unlink(tmp)
@@ -91,14 +195,19 @@ def publish_secret_once(
 
 
 def _publish_under_lock(
-    path: Path, tmp: Path, replace_if: Optional[Callable[[bytes], bool]]
+    path: Path,
+    data: bytes,
+    replace_if: Optional[Callable[[bytes], bool]],
+    parent_fd: Optional[int],
 ) -> bool:
-    """Publish ``tmp`` at ``path`` iff nothing is published yet. True if we won.
+    """Publish ``data`` at ``path`` iff nothing is published yet. True if we won.
 
-    An absent target is published with ``os.link`` where it works, so a racer
-    linking without the lock is never overwritten; ``os.replace`` lands only on
-    a filesystem without hard links, or over a file ``replace_if`` says holds
-    no secret.
+    An absent target is linked as a new unnamed inode, or a named temp file
+    where there is none, so a racer linking without the lock is never
+    overwritten; ``os.replace`` of a named temp file lands only on a
+    filesystem without hard links, or over a file ``replace_if`` says holds no
+    secret. A kill before that rename leaves a temp file that was never
+    published, not a second name of a live secret.
 
     The lock file is never unlinked: removing it would let a later opener lock
     a fresh inode while a current holder still holds the old one, so the two
@@ -127,7 +236,9 @@ def _publish_under_lock(
             existing = path.read_bytes()
         except FileNotFoundError:
             try:
-                os.link(tmp, path)
+                if not _link_unnamed(path, data, parent_fd):
+                    with _named_temp(path, data) as tmp:
+                        os.link(tmp, path)
                 return True
             except FileExistsError:
                 return False
@@ -137,24 +248,68 @@ def _publish_under_lock(
         else:
             if replace_if is None or not replace_if(existing):
                 return False
-        os.replace(tmp, path)
+        with _named_temp(path, data) as tmp:
+            os.replace(tmp, path)
         return True
 
 
-def tighten_secret_file_mode(
+def _fsync_directory_chain(path: Path, parent_fd: Optional[int] = None) -> None:
+    """Fsync the directory holding ``path``, then each above it on its device.
+
+    ``path`` is resolved. Stops at the device's root, or at the first
+    failure. Nothing at ``path``, or no parent directory, has nothing to make
+    durable. A failure on an ancestor, or a filesystem that does not fsync
+    directories, is logged at DEBUG; any other failure on the parent itself
+    logs one WARNING. Never raises.
+    """
+    if not hasattr(os, "O_DIRECTORY") or not os.path.exists(path):
+        return
+    device = None
+    for directory in path.parents:
+        fd = parent_fd if device is None else None
+        try:
+            st = os.stat(directory)
+            if device is not None and st.st_dev != device:
+                return
+            if fd is None:
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                if fd != parent_fd:
+                    os.close(fd)
+        except OSError as exc:
+            if device is not None or exc.errno in _NO_DIRECTORY_FSYNC:
+                logger.debug("Did not fsync directory %s: %s", directory, exc)
+            elif exc.errno != errno.ENOENT:
+                logger.warning(
+                    "Could not fsync directory %s (%s), so the name of the "
+                    "secret file %s may not survive a power loss.",
+                    directory,
+                    errno.errorcode.get(exc.errno or 0, exc),
+                    path.name,
+                )
+            return
+        device = st.st_dev
+
+
+def prepare_secret_file_for_read(
     path: Path, *, advice: str, logger: logging.Logger
 ) -> None:
-    """Make an existing secret file private to its owner before it is read.
+    """Make an existing secret file durable and private before it is read.
 
-    A regular file that group or others can read or write may already have
-    been read or replaced, so it is chmodded to 0600 and a WARNING names the
-    file, the mode it had, the mode it has now, and ``advice``: the secret it
-    holds and how to rotate it. Anything else at the path (nothing, a
-    directory, a FIFO) is left alone for the read that follows to report, and
-    so is every file where POSIX modes do not apply (Windows). Never raises: a
-    secret that may have leaked is still this deployment's secret until the
-    operator rotates it.
+    First the directories that name it are fsynced (``_fsync_directory_chain``
+    on its resolved path), so no process uses a secret whose name a power loss
+    could still take away. Then a regular file that group or others can read
+    or write, which may already have been read or replaced, is chmodded to
+    0600 and a WARNING names the file, the mode it had, the mode it has now,
+    and ``advice``: the secret it holds and how to rotate it. Anything else at
+    the path (nothing, a directory, a FIFO) is left alone for the read that
+    follows to report, and so is every file where POSIX modes do not apply
+    (Windows). Never raises: a secret that may have leaked is still this
+    deployment's secret until the operator rotates it.
     """
+    _fsync_directory_chain(Path(os.path.realpath(path)))
     if os.name == "nt":
         return
     try:

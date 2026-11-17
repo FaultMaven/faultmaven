@@ -57,7 +57,10 @@ import secrets
 from pathlib import Path
 from typing import Dict, Optional
 
-from faultmaven.config.secret_file import publish_secret_once, tighten_secret_file_mode
+from faultmaven.config.secret_file import (
+    prepare_secret_file_for_read,
+    publish_secret_once,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,7 @@ MIN_KEY_LENGTH = 16
 _CACHE: Dict[str, bytes] = {}
 
 #: What a key file that group or others could read or write exposes, and how
-#: to rotate it; the tail of the WARNING ``tighten_secret_file_mode`` logs.
+#: to rotate it; the tail of the WARNING ``prepare_secret_file_for_read`` logs.
 _PSEUDONYM_FILE_EXPOSURE_ADVICE = (
     "the redaction pseudonym key, and anyone who could write it may have "
     "replaced it. To rotate it, set REDACTION_PSEUDONYM_KEY to a new key, or "
@@ -124,7 +127,7 @@ def _load_or_create(path: Path) -> bytes:
     So the failure is loud and the operator decides. The cost is real: this
     refusal stops the boot even for a deployment with redaction switched off.
     """
-    tighten_secret_file_mode(
+    prepare_secret_file_for_read(
         path, advice=_PSEUDONYM_FILE_EXPOSURE_ADVICE, logger=logger
     )
     try:
@@ -159,8 +162,11 @@ def _load_or_create(path: Path) -> bytes:
     if publish_secret_once(path, candidate):
         return candidate
 
-    # Lost the race. The winner linked complete content into place, so this
-    # read cannot see a partial file.
+    # Lost the race. The winner published complete content, so this read
+    # cannot see a partial file; its name is made durable before it is used.
+    prepare_secret_file_for_read(
+        path, advice=_PSEUDONYM_FILE_EXPOSURE_ADVICE, logger=logger
+    )
     published = _clean(path.read_bytes())
     if len(published) < MIN_KEY_LENGTH:
         raise PseudonymKeyUnavailableError(
