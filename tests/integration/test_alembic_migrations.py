@@ -47,8 +47,8 @@ TEST_DB = os.path.join(os.environ[TEST_DATA_ROOT_ENV], "test_migration.db")
 # the 001-053 chain) plus additive revisions on top of it, so the seed
 # assertions below reverse the whole schema with "downgrade base" and each
 # additive revision is stepped over on its own.
-#: 025_admin_case_metadata_mitigation_disposed
-HEAD_REVISION = "45970adab01d"  # pragma: allowlist secret
+#: 026_scrub_convert_receipt_bodies
+HEAD_REVISION = "4492ab088c62"  # pragma: allowlist secret
 #: The baseline, which every additive revision parents onto.
 BASELINE_REVISION = "a1e0c17bd001"  # 001_enterprise_baseline
 #: The first additive revision.
@@ -119,6 +119,9 @@ KB_REQUEST_RECEIPTS_REVISION = "d6cfb801d9f5"  # pragma: allowlist secret
 #: ``025_admin_case_metadata_mitigation_disposed``: the operator case-metadata
 #: page function returns ``mitigation_disposed``, the stage's fifth input (#2100).
 ADMIN_CASE_METADATA_DISPOSED_REVISION = "45970adab01d"  # pragma: allowlist secret
+#: ``026_scrub_convert_receipt_bodies``: every convert receipt's body becomes its
+#: job id only, dropping the drafts' text stored before contract 15.3.0 (#2452).
+SCRUB_CONVERT_RECEIPT_BODIES_REVISION = "4492ab088c62"  # pragma: allowlist secret
 #: The tables 002_llm_usage_ledger adds (#640).
 LLM_USAGE_TABLES = ["llm_turn_spend", "llm_usage_daily"]
 
@@ -4293,6 +4296,157 @@ class TestKbRequestReceiptsRevision:
             '"kb_request_receipts" USING (enterprise_id = '
             "current_setting('app.current_enterprise_id', true))"
         ) in sql
+
+
+class TestScrubConvertReceiptBodiesRevision:
+    """026 scrubs the drafts' text a convert receipt stored before contract
+    15.3.0 (#2452, ruling 2026-11-17): every ``route = 'convert'`` row's
+    ``response`` becomes ``{"conversion_id": <its conversion_id>}``, whatever
+    it held, and no other column or upload receipt moves. The downgrade
+    changes nothing.
+
+    Its PostgreSQL half, under ``row_security = off``:
+    ``tests/integration/security/test_scrub_convert_receipt_bodies_postgres.py``.
+    """
+
+    MARKER = "draft-secret-2452"
+    #: A pre-15.3.0 convert answer: every draft's text and the analysis. Its
+    #: id is not the row's, so only the column can supply the new body's.
+    OLD_BODY = {
+        "conversion_id": "job_elsewhere",
+        "drafts": [
+            {"draft_id": "d1", "title": "One", "content": f"step {MARKER} one"},
+            {"draft_id": "d2", "title": "Two", "content": f"step {MARKER} two"},
+        ],
+        "analysis": {"summary": "two failure modes", "failure_modes": ["a", "b"]},
+    }
+    UPLOAD_BODY = '{"document_id": "kb_1", "title": "t", "status": "published"}'
+
+    def _seed(self) -> None:
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            (enterprise,) = conn.execute(
+                "SELECT enterprise_id FROM enterprises LIMIT 1"
+            ).fetchone()
+            conn.execute(
+                "INSERT INTO knowledge_items (item_id, enterprise_id, title, "
+                "content, item_type, vector_generation) "
+                "VALUES ('kb_1', ?, 't', 'c', 'runbook', 'g1')",
+                (enterprise,),
+            )
+            conn.execute(
+                "INSERT INTO uploaded_files (file_id, enterprise_id, filename, "
+                "size_bytes) VALUES ('file_1', ?, 'src', 1)",
+                (enterprise,),
+            )
+            insert = (
+                "INSERT INTO kb_request_receipts (enterprise_id, author_id, route, "
+                "idempotency_key, request_fingerprint, status_code, response, "
+                "knowledge_item_id, conversion_id, created_at) "
+                "VALUES (?, 'u1', ?, ?, 'f', 201, ?, ?, ?, datetime('now'))"
+            )
+            for job, body in (
+                ("job_old", json.dumps(self.OLD_BODY)),
+                ("job_new", '{"conversion_id": "job_new"}'),
+                ("job_list", "[1, 2]"),  # not an object: never parsed
+            ):
+                conn.execute(
+                    "INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                    "scope, source_type) VALUES (?, ?, 'file_1', 'personal', "
+                    "'document')",
+                    (job, enterprise),
+                )
+                conn.execute(
+                    insert, (enterprise, "convert", f"key-{job}", body, None, job)
+                )
+            conn.execute(
+                insert,
+                (enterprise, "upload", "key-upload", self.UPLOAD_BODY, "kb_1", None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    #: Every column but ``response``, which must not move.
+    COLUMNS = (
+        "idempotency_key, enterprise_id, author_id, route, request_fingerprint, "
+        "status_code, knowledge_item_id, conversion_id, created_at"
+    )
+
+    @classmethod
+    def _rows(cls) -> dict:
+        """Each receipt's other columns and raw ``response``, by key."""
+        return {
+            row[0]: (row[:-1], row[-1])
+            for row in query_rows(
+                TEST_DB, f"SELECT {cls.COLUMNS}, response FROM kb_request_receipts"
+            )
+        }
+
+    def test_upgrade_leaves_every_convert_receipt_its_job_id_only(
+        self, clean_database, database_url
+    ):
+        prepare_database(ADMIN_CASE_METADATA_DISPOSED_REVISION, database_url)
+        self._seed()
+        before = self._rows()
+        assert self.MARKER in before["key-job_old"][1], "positive control"
+
+        result = run_alembic(
+            f"upgrade {SCRUB_CONVERT_RECEIPT_BODIES_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert "026: rewrote 3 convert receipt(s)" in result.stderr
+
+        rows = self._rows()
+        assert {key: rest for key, (rest, _) in rows.items()} == {
+            key: rest for key, (rest, _) in before.items()
+        }
+        converts = {key: row for key, row in rows.items() if row[0][3] == "convert"}
+        assert sorted(converts) == ["key-job_list", "key-job_new", "key-job_old"]
+        for rest, response in converts.values():
+            assert json.loads(response) == {"conversion_id": rest[7]}
+        assert all(self.MARKER not in response for _, response in rows.values())
+        assert rows["key-upload"] == before["key-upload"]
+
+        result = run_alembic(
+            f"downgrade {ADMIN_CASE_METADATA_DISPOSED_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == (
+            ADMIN_CASE_METADATA_DISPOSED_REVISION
+        )
+        assert self._rows() == rows
+
+        result = run_alembic(
+            f"upgrade {SCRUB_CONVERT_RECEIPT_BODIES_REVISION}", database_url
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._rows() == rows
+
+    def test_the_postgresql_script_runs_under_row_security_off(self):
+        pg = "postgresql://offline@localhost/offline"
+        up = run_alembic(
+            f"upgrade {ADMIN_CASE_METADATA_DISPOSED_REVISION}:"
+            f"{SCRUB_CONVERT_RECEIPT_BODIES_REVISION} --sql",
+            pg,
+        )
+        assert up.returncode == 0, up.stderr
+        sql = up.stdout
+        off = sql.index("SET LOCAL row_security = off;")
+        update = sql.index(
+            "UPDATE kb_request_receipts SET response = json_build_object("
+            "'conversion_id', conversion_id) WHERE route = 'convert';"
+        )
+        restored = sql.index("SET LOCAL row_security TO DEFAULT;")
+        assert off < update < restored, sql
+
+        down = run_alembic(
+            f"downgrade {SCRUB_CONVERT_RECEIPT_BODIES_REVISION}:"
+            f"{ADMIN_CASE_METADATA_DISPOSED_REVISION} --sql",
+            pg,
+        )
+        assert down.returncode == 0, down.stderr
+        assert "kb_request_receipts" not in down.stdout, down.stdout
 
 
 class TestRbacSeed:

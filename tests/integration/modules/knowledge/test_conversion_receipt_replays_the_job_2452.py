@@ -465,8 +465,9 @@ async def test_a_failed_conversion_replays_as_its_job(world):
 
 
 async def test_a_receipt_holding_a_pre_change_body_replays_the_job(world):
-    """A receipt written before #2452 holds the first answer's full body: no
-    code reads it, and the retry is the job as it now stands."""
+    """A pod older than contract 15.3.0 still serving after revision 026 (a
+    rolling deploy) writes the first answer's full body: no code reads it, and
+    the retry is the job as it now stands."""
     _with_marker(world)
     first = await world.post("convert")
     async with world.factory() as session:
