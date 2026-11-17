@@ -173,7 +173,8 @@ async def _replayed_conversion(
             if receipt.conversion_id
             else None
         )
-    except (ValidationError, ValueError) as unreadable:
+    # A stored JSON list where an object belongs raises TypeError.
+    except (ValidationError, ValueError, TypeError) as unreadable:
         # The class only: the message would carry the stored row's values.
         logger.error(
             "Conversion %s cannot be replayed: its rows no longer parse (%s)",

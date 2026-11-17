@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.idempotency_key import (
@@ -240,8 +240,8 @@ async def test_the_read_back_warns_and_dates_as_the_first_answer(two_drafts):
 
 
 async def test_get_answers_the_convert_body(two_drafts):
-    """The two HTTP bodies, compared draft by draft: the warning, and
-    ``created_at`` in JSON mode (``Z``), are the convert answer's."""
+    """The two HTTP bodies, compared exactly: the warning, the draft order,
+    and ``created_at`` in JSON mode (``Z``), are the convert answer's."""
     answer = await two_drafts.post("convert", key=None)
     assert answer.status_code == 201, answer.text
 
@@ -249,6 +249,23 @@ async def test_get_answers_the_convert_body(two_drafts):
 
     assert read["created_at"].endswith("Z")
     assert read == answer.json()
+
+
+async def test_the_by_case_read_answers_as_the_jobs_read(world):
+    """``GET .../by-case/{case_id}`` answers in JSON mode, as the job's GET.
+    The case is set on the job row directly: building one from a case needs
+    the investigation engine, and no case row is needed to read it back."""
+    conversion_id = (await world.post("convert", key=None)).json()["conversion_id"]
+    async with world.factory() as session:
+        await session.execute(text("PRAGMA foreign_keys=OFF"))
+        await session.execute(update(ConversionJobModel).values(case_id="case-2451"))
+        await session.commit()
+
+    by_case = await world.client.get("/api/v1/knowledge/conversions/by-case/case-2451")
+
+    assert by_case.status_code == 200, by_case.text
+    assert by_case.json()["created_at"].endswith("Z")
+    assert by_case.json() == await _read(world, conversion_id)
 
 
 async def test_a_two_draft_replay_answers_each_draft(two_drafts):
@@ -409,8 +426,12 @@ async def test_the_read_keeps_the_written_draft_order(world):
 
 @pytest.mark.parametrize(
     "column, value",
-    [("analysis_result", {"bogus": True}), ("source_type", "bogus")],
-    ids=["validation-error", "value-error"],
+    [
+        ("analysis_result", {"bogus": True}),
+        ("source_type", "bogus"),
+        ("analysis_result", ["bogus"]),
+    ],
+    ids=["validation-error", "value-error", "type-error"],
 )
 async def test_a_replay_whose_rows_no_longer_parse_is_a_409(world, column, value):
     """A stored row the read can no longer parse is the replay's 409, never
