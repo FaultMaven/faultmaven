@@ -157,7 +157,8 @@ async def test_a_503_then_an_output_truncation_raises_the_truncation():
 @pytest.mark.parametrize("pair", [("503", "quota"), ("quota", "503"), ("quota", "400")])
 async def test_quota_is_raised_and_latched_on_the_breaker(pair):
     """Three such calls open the router's breaker with ``QUOTA_EXHAUSTED``
-    latched, so the next call is refused with it (asserted on state)."""
+    latched, so the next call is refused with it (asserted on state), while
+    the quota 429 never marks its provider UNHEALTHY (consequence (ii))."""
     registry = _registry(*(_Stub(_FAILURES[k]) for k in pair))
     with patch(
         "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
@@ -172,6 +173,10 @@ async def test_quota_is_raised_and_latched_on_the_breaker(pair):
 
     assert router.circuit_breaker.state == "open"
     assert refused.value.error_code == QUOTA_EXHAUSTED
+    quota_side = ("primary", "fallback")[pair.index("quota")]
+    quota_state = registry._provider_states[quota_side]
+    assert quota_state.consecutive_failures == 0
+    assert quota_state.health is not ProviderHealth.UNHEALTHY
 
 
 # Pin 4 and consequence (ii) --------------------------------------------------
