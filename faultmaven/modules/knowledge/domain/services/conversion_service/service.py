@@ -80,7 +80,6 @@ from faultmaven.modules.knowledge.domain.models.validation import (
 )
 from faultmaven.modules.knowledge.domain.request_receipts import (
     KbReceiptKey,
-    KbReceiptWrite,
     KbRequestReceipt,
     read_receipt,
 )
@@ -114,7 +113,10 @@ from faultmaven.modules.knowledge.domain.services.conversion_service.prompts imp
     RUNBOOK_MAX_TOKENS_CEILING,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.runbook_scan import (
+    CONVERSION_QUALITY_WARNING,
     QUALITY_WARNING_THRESHOLD,
+    SCAN_QUALITY_WARNING,
+    TEMPLATE_QUALITY_WARNING,
     _scan_for_runbooks_impl,
 )
 from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
@@ -167,6 +169,30 @@ SCAN_UNAVAILABLE_MULTI_MSG = (
 #: a score (#2661): the runbook check's ``reason`` for a row stored without a
 #: score whose read-time check was refused for the text alone.
 _STORED_REFUSAL = "refused"
+
+#: A stored draft's warning text, by its job's ``source_assessment``: the
+#: template's and the scan's writers say which they are (#2451).
+_WARNING_BY_ASSESSMENT = {
+    "manual": TEMPLATE_QUALITY_WARNING,
+    "file_scan": SCAN_QUALITY_WARNING,
+}
+
+
+def _stored_quality_warning(analysis: AnalysisResult) -> Optional[str]:
+    """The text a draft of this job was warned with below the threshold. A
+    model conversion's analysis holds its failure modes; a KB upload's job
+    stores none, and its draft was never warned."""
+    if analysis.failure_modes:
+        return CONVERSION_QUALITY_WARNING
+    return _WARNING_BY_ASSESSMENT.get(analysis.source_assessment.content_type)
+
+
+def _stored_utc(value: datetime) -> datetime:
+    """A stored ``DateTime(timezone=True)`` as UTC: SQLite returns the UTC
+    wall clock it was written as, naive (#2451)."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _already_verified(draft_id: str) -> ConflictError:
@@ -347,7 +373,8 @@ class ConversionService:
         """Full conversion pipeline: preprocess → analyze → convert → validate → persist.
 
         A keyed request's receipt (``receipt_key``, #2433) is written with the
-        job, holding this response's JSON body. Raises
+        job, naming it and holding none of its drafts: a retry is answered from
+        the job as ``get_conversion`` reads it (#2452). Raises
         :class:`KbReceiptExistsError` when another conversion under the key
         published first.
         """
@@ -452,17 +479,6 @@ class ConversionService:
         else:
             status = ConversionStatus.COMPLETED
 
-        def response() -> ConversionResponse:
-            return ConversionResponse(
-                conversion_id=conversion_id,
-                status=status,
-                source_file=source_file,
-                analysis=analysis,
-                drafts=drafts,
-                warnings=warnings,
-                created_at=created_at,
-            )
-
         # Step 5: Persist to database
         await _persist_job(
             self._db_session_factory,
@@ -479,14 +495,7 @@ class ConversionService:
             created_at=created_at,
             warnings=warnings,
             sanitizer=self._sanitizer,
-            receipt=(
-                KbReceiptWrite(
-                    key=receipt_key,
-                    build_response=lambda: response().model_dump(mode="json"),
-                )
-                if receipt_key is not None
-                else None
-            ),
+            receipt_key=receipt_key,
         )
 
         logger.info(
@@ -501,7 +510,15 @@ class ConversionService:
             },
         )
 
-        return response()
+        return ConversionResponse(
+            conversion_id=conversion_id,
+            status=status,
+            source_file=source_file,
+            analysis=analysis,
+            drafts=drafts,
+            warnings=warnings,
+            created_at=created_at,
+        )
 
     async def get_request_receipt(
         self, key: KbReceiptKey
@@ -1238,11 +1255,7 @@ class ConversionService:
 
             quality_warning = None
             if quality.overall < QUALITY_WARNING_THRESHOLD:
-                quality_warning = (
-                    "Quality score is below 50. The source material may lack sufficient "
-                    "diagnostic commands, resolution steps, or verification procedures. "
-                    "Manual editing is recommended before verification."
-                )
+                quality_warning = CONVERSION_QUALITY_WARNING
 
             return ConversionDraft(
                 draft_id=draft_id,
@@ -1335,7 +1348,13 @@ class ConversionService:
     async def get_conversion(
         self, conversion_id: str, user_id: str
     ) -> Optional[ConversionResponse]:
-        """Get conversion job with all drafts."""
+        """Get conversion job with all drafts.
+
+        Each draft that is still a draft carries a ``quality_warning`` below
+        the threshold, its writer's text paired with the stored score (#2451),
+        and ``created_at`` is UTC. A keyed conversion's retry is answered with
+        this read (#2452). The drafts are not sorted: they come in the order
+        the database returns them, on SQLite the order they were written."""
         if not self._db_session_factory:
             return None
 
@@ -1381,6 +1400,22 @@ class ConversionService:
                 )
             )
 
+        analysis = AnalysisResult(
+            **(
+                job.analysis_result
+                or {
+                    "is_actionable": True,
+                    "failure_modes": [],
+                    "source_assessment": {
+                        "content_type": "unknown",
+                        "actionability_rating": "low",
+                        "missing_information": [],
+                    },
+                }
+            )
+        )
+        warning_text = _stored_quality_warning(analysis)
+
         # The session is closed before any scoring below, which waits for a
         # slot and a worker: no pooled connection idles through it (#2661).
         drafts = []
@@ -1414,23 +1449,16 @@ class ConversionService:
                     quality_score=quality,
                     content_preview=dm.content[:500],
                     content=dm.content,
+                    # A draft's warning is advice before verification: a
+                    # verified draft carries none.
+                    quality_warning=(
+                        warning_text
+                        if dm.status == DraftStatus.DRAFT.value
+                        and quality.overall < QUALITY_WARNING_THRESHOLD
+                        else None
+                    ),
                 )
             )
-
-        analysis = AnalysisResult(
-            **(
-                job.analysis_result
-                or {
-                    "is_actionable": True,
-                    "failure_modes": [],
-                    "source_assessment": {
-                        "content_type": "unknown",
-                        "actionability_rating": "low",
-                        "missing_information": [],
-                    },
-                }
-            )
-        )
 
         return ConversionResponse(
             conversion_id=job.id,
@@ -1444,7 +1472,7 @@ class ConversionService:
             # 048. Without this the field was ALWAYS ``[]`` on read-back, so
             # the reason a job was PARTIAL survived exactly one response.
             warnings=job.warnings or [],
-            created_at=job.created_at,
+            created_at=_stored_utc(job.created_at),
         )
 
     async def _score_stored_draft(
@@ -2505,10 +2533,7 @@ status: draft
 
         quality_warning = None
         if quality.overall < QUALITY_WARNING_THRESHOLD:
-            quality_warning = (
-                "Quality score is below 50. Consider adding more detailed "
-                "diagnostic commands, resolution steps, or verification procedures."
-            )
+            quality_warning = TEMPLATE_QUALITY_WARNING
 
         draft = ConversionDraft(
             draft_id=draft_id,

@@ -34,7 +34,10 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
-from faultmaven.config.secret_file import publish_secret_once, tighten_secret_file_mode
+from faultmaven.config.secret_file import (
+    prepare_secret_file_for_read,
+    publish_secret_once,
+)
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -1520,8 +1523,8 @@ class CaseSettings(BaseSettings):
 DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
 
 #: What a JWT secret file that group or others could read or write exposes,
-#: and how to rotate it; the tail of the WARNING ``tighten_secret_file_mode``
-#: logs.
+#: and how to rotate it; the tail of the WARNING
+#: ``prepare_secret_file_for_read`` logs.
 _JWT_FILE_EXPOSURE_ADVICE = (
     "the local JWT signing secret, and anyone who could write it may have "
     "replaced it, so tokens it signed may be forged. To rotate it, delete the "
@@ -1630,14 +1633,15 @@ def _holds_no_jwt_secret(raw: bytes, path: Path) -> bool:
 def _read_local_jwt_secret_file(path: Path, logger: logging.Logger) -> str:
     """The secret in the existing file at ``path``, stripped ("" if none).
 
-    A file that holds something is made private before its value is used; a
-    blank one is about to be replaced at 0600, so it is not. One that is not
+    A file that holds something has its directories fsynced and is made
+    private before its value is used; a blank one is about to be replaced, by
+    a publish that fsyncs them, at 0600, so it is not. One that is not
     UTF-8 text raises :class:`LocalJwtSecretFileError`.
     """
     raw = path.read_bytes()
     if _holds_no_jwt_secret(raw, path):
         return ""
-    tighten_secret_file_mode(path, advice=_JWT_FILE_EXPOSURE_ADVICE, logger=logger)
+    prepare_secret_file_for_read(path, advice=_JWT_FILE_EXPOSURE_ADVICE, logger=logger)
     return _jwt_secret_from_bytes(raw, path)
 
 

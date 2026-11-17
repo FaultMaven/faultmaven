@@ -151,6 +151,47 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.3.0",
+        level="MINOR",
+        title=(
+            "A keyed `POST /knowledge/convert` retry is answered with the "
+            "conversion as `GET /knowledge/conversions/{conversion_id}` returns "
+            "it now, not a stored copy of the first answer (#2452). That read, "
+            "and `GET /knowledge/conversions/by-case/{case_id}`, return each "
+            "draft's `quality_warning` and a `created_at` in `Z` (#2451). "
+            "MINOR: no field or status is added or removed."
+        ),
+        body=r"""The receipt of a keyed conversion stores the job's id and none of
+its drafts, so text edited out of a draft is no longer kept, or served, under
+the key. A retry with the same file and fields still answers 201 with
+`X-Idempotency-Replayed: true` and publishes nothing; its body is the job as
+it now stands:
+
+* a draft edited since carries its edited `content`, a verified one its
+  `verified` status;
+* a discarded draft is left out, so `drafts` is `[]` once every draft is
+  discarded;
+* the drafts come in the read's order, unsorted: on SQLite the order they
+  were written, which is the first answer's; on PostgreSQL the order can
+  differ, so match them by `draft_id`.
+
+409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` now means the conversion committed and its
+job can no longer be read, because it is gone or its stored rows no longer
+parse (reload your conversions).
+
+`GET /knowledge/conversions/{conversion_id}` and
+`GET /knowledge/conversions/by-case/{case_id}` now return a `quality_warning`
+on each draft still in `draft` status whose stored score is below 50, where
+they returned null. Its text is the one the draft's writer uses (a document
+or case conversion, the template, the scan), chosen by the job's stored
+analysis; it is null at 50 or above, on a verified draft, and on a
+knowledge-base upload's draft. After an edit, the stored score is the edited
+text's, so the warning follows the edit while keeping the writer's text,
+not the edit route's. Both routes answer in JSON mode: `created_at` reads
+`...Z` on every database, where SQLite's read had no offset and PostgreSQL's
+read `+00:00`.""",
+    ),
+    ContractChange(
         version="15.2.0",
         level="MINOR",
         title=(

@@ -1,7 +1,7 @@
 """The one publisher and the one read rule for a local secret file (#1788).
 
 ``publish_secret_once`` publishes the standalone JWT secret and the redaction
-pseudonym key; ``tighten_secret_file_mode`` runs before either is used.
+pseudonym key; ``prepare_secret_file_for_read`` runs before either is used.
 """
 
 import errno
@@ -15,6 +15,14 @@ from faultmaven.config.secret_file import publish_secret_once
 from faultmaven.infrastructure.security.pseudonym_key import _load_or_create
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True, params=["unnamed", "named-temp"])
+def publish_path(request, monkeypatch):
+    """Each race runs twice: unnamed where the filesystem allows it, and
+    through the named temp file every filesystem without ``O_TMPFILE`` uses."""
+    if request.param == "named-temp":
+        monkeypatch.delattr(os, "O_TMPFILE", raising=False)
 
 
 def test_a_published_secret_is_kept_and_the_loser_is_told(tmp_path):
@@ -51,7 +59,7 @@ def test_a_link_that_fails_for_another_reason_is_never_a_win(tmp_path, monkeypat
     path = tmp_path / "secret"
     real_link, real_replace = os.link, os.replace
 
-    def failing_link(src, dst):
+    def failing_link(src, dst, **kwargs):
         raise OSError(errno.EIO, "Input/output error")
 
     def peer_links_first(src, dst):
@@ -90,11 +98,11 @@ def test_a_peer_that_links_while_we_hold_the_lock_keeps_its_secret(
         return not raw
 
     def peer_links_first(publish):
-        def wrapped(src, dst):
+        def wrapped(src, dst, **kwargs):
             if not path.exists() and peer.exists():  # the peer, mid-publish
-                real_link(peer, dst)
+                real_link(peer, path)
                 peer.unlink()
-            return publish(src, dst)
+            return publish(src, dst, **kwargs)
 
         return wrapped
 
