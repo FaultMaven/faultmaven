@@ -337,6 +337,10 @@ def _vectors_as(pack: Path, vectors: np.ndarray) -> Path:
             "vectors dtype is bool, not float32",
         ),
         (
+            lambda p: _vectors_as(p, _vectors().astype(np.float16)),
+            "vectors dtype is float16, not float32",
+        ),
+        (
             lambda p: _edit(p, lambda m: m["runbooks"][1].update(content_hash=[])),
             "runbook 'kb_beta' has a content_hash of type list",
         ),
@@ -350,6 +354,7 @@ def _vectors_as(pack: Path, vectors: np.ndarray) -> Path:
         "float64-vectors",
         "int-vectors",
         "bool-vectors",
+        "float16-vectors",
         "list-hash",
         "dict-hash",
     ],
