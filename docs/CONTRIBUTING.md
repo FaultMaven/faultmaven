@@ -136,7 +136,7 @@ install`.
 
 2.  **Make Your Changes:** Write your code and any accompanying tests.
     * **Coding Style:** Please follow the **Black** code style (pinned `black==26.10.1`; CI runs `black --check`). To auto-format staged Python on commit, install the git hook once: `./scripts/install-git-hooks.sh` (or use the full pre-commit framework — see [Pre-commit hooks](#pre-commit-hooks) below).
-    * **Error Logging:** All error logging MUST include `exc_info=True` or use `logger.exception()`. See [Logging Policy](operations/monitoring/logging-policy.md#error-logging-standards) for details.
+    * **Error Logging:** Name an exception by its class chain and pass its frames, never its text. See [Logging Policy](operations/monitoring/logging-policy.md#error-logging-standards) for details.
     * **Commit Messages:** Please follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. For example: `feat: Add new data classifier for TOML files`.
 
 3.  **Run Tests:** Ensure all tests still pass after your changes.

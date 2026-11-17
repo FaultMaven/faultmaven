@@ -6,54 +6,50 @@
 
 ## Error Logging Standards
 
-**REQUIRED**: All error logging must include stack traces for debugging.
+What an error line may hold is [principles §7's rule, "What a log line may hold"](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default). This section says how to write one.
 
 ### Mandatory Practices
 
-- **Use `exc_info=True`** for all `logger.error()`, `logger.critical()` calls within exception handlers
-- **Use `logger.exception()`** inside `except` blocks (automatically adds `exc_info=True`)
-- **Include exception type and message** in the log message for searchability
+- **Name the exception by its class chain,** `exception_class_chain(e)` (`faultmaven/utils/exception_name.py`), never `{e}`, `str(e)` or `%r`. A first-party exception adds its `error_code`.
+- **Pass the frames as a field,** `exception_frames(e)` from the same module, where the stack matters. It holds each link's class and frames, never a message.
+- **Do not use `exc_info=True` or `logger.exception()`** for an exception whose text can carry a third party's output: the rendered traceback keeps each exception's message until S2 (#2888) renders it as frames (#2862, ruled by #2886).
+- **Name content by its identifier and length,** at every level, DEBUG included.
 
 ### Examples
 
-**✅ GOOD - Using logger.exception():**
+**✅ GOOD - class chain and frames:**
 
 ```python
+from faultmaven.utils.exception_name import exception_class_chain, exception_frames
+
 try:
     result = await dangerous_operation()
 except Exception as e:
-    logger.exception(f"Operation failed for {entity_id}: {e}")
+    logger.error(
+        "Operation failed for %s: %s",
+        entity_id,
+        exception_class_chain(e),
+        extra={"frames": exception_frames(e)},
+    )
     raise
 ```
 
-**✅ GOOD - Using exc_info=True:**
+`faultmaven/services/base.py`'s `log_error` does the same for a service, through the unified logger.
 
-```python
-try:
-    result = await dangerous_operation()
-except SpecificError as e:
-    logger.error(f"Specific error occurred: {type(e).__name__}: {e}", exc_info=True)
-    # Handle gracefully
-```
-
-**❌ BAD - Missing stack trace:**
+**❌ BAD - the exception's text:**
 
 ```python
 except Exception as e:
-    logger.error(f"Operation failed: {e}")  # Missing exc_info=True!
+    logger.error(f"Operation failed: {e}")  # e's text can carry a URI, SQL or a payload
 ```
-
-**Exception**: `exc_info=True` may be omitted for expected/handled errors where stack traces add no debugging value (e.g., validation errors, user input errors).
-
-**Exception — a third party's text (#2844)**: where an exception's text can carry a third party's output (a client's, a backend's or a store's), the log line names the exception's class chain (`exception_class_chain`, `faultmaven/utils/exception_name.py`) and, where the frames matter, passes them through `exception_frames` — with no exception text and no `exc_info`. For such an error this overrides the rules above: no stack trace through `exc_info=True` or `logger.exception()`, and no exception message in the line. Whether rendered tracebacks elsewhere keep their messages is the open question of #2862.
 
 ## Component guidance
 - API middleware: DEBUG (request/response trace), WARN (rate limit / dedup / circuit), ERROR (middleware failure)
 - Investigation (MilestoneEngine): DEBUG (milestone evaluation, turn context), INFO (stage transitions), WARN (stagnation/repair), ERROR (execution failure)
 - LLM Router: DEBUG (provider selection), WARN (fallback triggered, retry), ERROR (all providers exhausted)
 - LLM Providers: DEBUG (request/response sizes), WARN (rate limit, timeout), ERROR (API error)
-- Agent tools: DEBUG (tool start/finish, inputs), WARN (partial results, coverage gap), ERROR (tool failure)
-- Repositories: DEBUG (query), WARN (slow query), ERROR (persistence failure)
+- Agent tools: DEBUG (tool start/finish, input identifiers and sizes), WARN (partial results, coverage gap), ERROR (tool failure)
+- Repositories: DEBUG (operation and row count), WARN (slow query), ERROR (persistence failure)
 - Knowledge retrieval (kb_qa, case_evidence_search): DEBUG (search latency, chunk count), WARN (empty results on 2nd attempt), ERROR (vector store failure)
 - Auth / JWT: DEBUG (token issued), WARN (refresh/revoke), ERROR (verification failure)
 - Container/DI: INFO (wiring), WARN (degraded init), ERROR (init failure)
@@ -187,4 +183,4 @@ Two fallbacks are worth knowing when reading a line:
 - What a log line may hold is [principles §7's rule](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default),
   with the outputs it covers and the redactor's table; it is the authority, and this
   section does not restate it.
-- Strip or hash PII/session identifiers; avoid storing raw user content in logs
+- Strip or hash PII and session identifiers.
