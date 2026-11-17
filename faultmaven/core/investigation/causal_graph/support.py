@@ -435,7 +435,9 @@ class RestatementHold(NamedTuple):
       and refusing the carve-out there would re-report it as an evidence
       deficiency.
 
-      Only ``REFUTED`` puts a root to rest for this purpose. A ``VALIDATED``
+      Only ``REFUTED`` puts a root to rest for this purpose; a root a chain
+      was deepened past (``deepened_past_root_ids``) is a rung and is not
+      counted at all (#2060). A ``VALIDATED``
       root is emphatically NOT settled-and-irrelevant: it means the case HAS a
       promoted cause, so the hold on some sibling is not what governs the case
       at all, and any consumer claiming "a cause was supported but never stated
@@ -474,11 +476,15 @@ def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
     # exactly what must make ``is_sole_root_block`` False (see the docstring).
     # ``restatement_held_root_ids`` excludes both VALIDATED and REFUTED, so
     # ``held`` is a subset of this and the comparison reads "is anything else
-    # unresolved, or promoted".
+    # unresolved, or promoted". A root a chain was deepened past is a rung,
+    # not a root the case has left unresolved (#2060).
+    deepened_past = deepened_past_root_ids(case)
     unresolved = {
         n.node_id
         for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state != NodeState.REFUTED
+        if n.node_type == NodeType.ROOT
+        and n.node_state != NodeState.REFUTED
+        and n.node_id not in deepened_past
     }
     anchors, _hyp_token_sets = _frame_components(case)
     involves_siblings = False

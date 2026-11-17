@@ -21,6 +21,7 @@ from faultmaven.core.investigation.causal_graph.support import (
     deepened_past_root_ids,
     restatement_held_root_ids,
     root_support_block_reasons,
+    summarize_restatement_hold,
 )
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
@@ -111,6 +112,7 @@ def _hyp(hyp_id, root, path, state=HypothesisState.ACTIVE) -> Hypothesis:
 
 def _case(
     *,
+    r_statement="a deploy halved the database max_connections setting",
     x_statement="pool connections leak until the pool is exhausted",
     x_links=(("x1", 1.0),),
     deepened=True,
@@ -124,7 +126,7 @@ def _case(
     d = _node(_D, _PROBLEM, NodeType.PROBLEM)
     r = _node(
         _R,
-        "a deploy halved the database max_connections setting",
+        r_statement,
         NodeType.ROOT,
         [_link("r1"), _link("r2")],
     )
@@ -249,3 +251,22 @@ def test_a_deepened_past_root_is_not_counted_by_the_root_block_metric():
     assert x.node_state == NodeState.INCONCLUSIVE
     counter.labels.assert_not_called()
     assert _X not in root_support_block_reasons(case)
+
+
+def test_a_deepened_past_root_is_no_unresolved_root_beside_a_restatement_hold():
+    """R, the hypothesis's root, restates the problem and is the case's one
+    held root. X below it is a rung, so the hold is the sole root block; on
+    no path X is an unresolved root of its own and it is not (the control)."""
+    control, cx = _case(r_statement=_PROBLEM, deepened=False)
+    derive_node_states(control)
+    assert cx.node_state == NodeState.INCONCLUSIVE
+    hold = summarize_restatement_hold(control)
+    assert hold.root_ids == {_R}
+    assert hold.is_sole_root_block is False
+
+    case, x = _case(r_statement=_PROBLEM)
+    derive_node_states(case)
+    assert x.node_state != NodeState.REFUTED
+    hold = summarize_restatement_hold(case)
+    assert hold.root_ids == {_R}
+    assert hold.is_sole_root_block is True
