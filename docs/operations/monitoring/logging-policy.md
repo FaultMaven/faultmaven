@@ -12,7 +12,7 @@ What an error line may hold is [principles §7's rule, "What a log line may hold
 
 - **Name the exception by its class chain,** `exception_class_chain(e)` (`faultmaven/utils/exception_name.py`), never `{e}`, `str(e)` or `%r`. A first-party exception adds its `error_code`.
 - **Pass the frames as a field,** `exception_frames(e)` from the same module, where the stack matters. It holds each link's class and frames, never a message.
-- **Do not use `exc_info=True` or `logger.exception()`** for an exception whose text can carry a third party's output: the rendered traceback keeps each exception's message until S2 (#2888) renders it as frames (#2862, ruled by #2886).
+- **Do not use `exc_info=True` or `logger.exception()`** for any exception until S2 (#2888): today the rendered traceback carries every exception's message, case content included. S2 renders it as frames (#2862, ruled by #2886).
 - **Name content by its identifier and length,** at every level, DEBUG included.
 
 ### Examples
@@ -59,6 +59,7 @@ except Exception as e:
 
 ## Structure
 - JSON logs with fields: timestamp, level, component, claimed_session_id, claimed_case_id, event, payload
+  (`payload` is pending S4, #2890: today it can carry case content)
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
@@ -130,7 +131,7 @@ and a `__main__` run followed by uvicorn importing the string mounts them twice.
 | `method`, `path` | all | The request line. `path` is the raw path; the *route template* is what the Prometheus `endpoint` label carries |
 | `status_code` | completed | |
 | `duration_seconds` | completed, failed | |
-| `error`, `error_type` | failed | |
+| `error`, `error_type` | failed | `error` is `str(e)` today (`api/middleware/logging.py:459`), pending S3 (#2889), which names the class chain instead |
 | `correlation_id` | all | Ties the pair together, and to every line logged while handling the request |
 | `client_ip` | started | The **resolved** client — the same address the rate limiters enforce on, not the socket peer |
 | `query_param_names` | started | Parameter **names** only. Values never reach a record: the SSO callback carries the IdP authorization code as a query parameter |
@@ -183,4 +184,5 @@ Two fallbacks are worth knowing when reading a line:
 - What a log line may hold is [principles §7's rule](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default),
   with the outputs it covers and the redactor's table; it is the authority, and this
   section does not restate it.
-- Strip or hash PII and session identifiers.
+- Strip or hash PII. The caller's session id is the exception: it is recorded verbatim as
+  `claimed_session_id`, for correlation (see [Fields](#fields)).

@@ -653,23 +653,24 @@ faultmaven_knowledge_search_results_count
 1. **What a line holds.** A log line holds operational metadata: identifiers, counts, lengths, durations, states, class names, and literals our code wrote. A message that interpolates an exception's text, a payload, or a user-supplied value is not metadata. A first-party exception contributes its class and its `error_code` ([exception contract](../specifications/exception-contract.md)), not its message, because its message may embed a third party's value (the pattern #2868 fixed).
 2. **No credential value, at any level.**
 3. **No case content, at any level, DEBUG included.** Case content is evidence text, a question or search query, a case or runbook title, a prompt, or a model's reply. A line names the content's identifier and length instead.
-4. **An exception renders as frames and class names only.** It is rendered as `exception_frames` (`utils/exception_name.py`) renders it: each link's class, then its frames, never a message. It follows `__cause__` and unsuppressed `__context__`, descends into `ExceptionGroup` members (`api/protection.py:403` raises one), and drops `__notes__`. This applies on the traceback channel and to any exception value in a log call's fields. Chains stay intact: `from None` is not how a site satisfies this rule, because `modules/agent/tools/base.py` reads the cause chain.
-5. **One chain for every output.** Every output in the outputs table renders by serializing the record through one chain, never by pasting text into a template. The redactor runs last on every output. The worker child forwards its exception as frames, not text. Any output left out of the table is listed with its reason.
+4. **An exception renders as frames and class names only.** It is rendered as `exception_frames` (`utils/exception_name.py`) renders it once S2 (#2888) extends it: each link's class, then its frames, never a message. It follows `__cause__` and unsuppressed `__context__`, descends into `ExceptionGroup` members (`api/protection.py:403` raises one), and drops `__notes__`. This applies on the traceback channel and to any exception value in a log call's fields. Chains stay intact: `from None` is not how a site satisfies this rule, because `modules/agent/tools/base.py` reads the cause chain.
+5. **One chain for every output.** Every output in the outputs table renders by serializing the record through one chain, never by pasting text into a template. The redactor runs last on every output. The worker child must forward its exception as frames, not text. Any output left out of the table is listed with its reason.
 6. **The redactor is defence in depth, not the control.** The credential names and forms it blanks are the redactor table below, and extending that table is a design edit, not a per-issue ruling.
 
-**The outputs.** Every output a log line leaves by, and whether it keeps the rules today; an output that does not keeps them once its stage merges. Paths are `faultmaven/` relative unless they start with `alembic`.
+**The outputs.** Every output a log line leaves by, and whether it keeps the rules today; an output that does not names the stage that brings it in, or #2898 where no stage does yet. Paths are `faultmaven/` relative unless they start with `alembic`.
 
 | Output | Configured at | In the chain today | Stage |
 |---|---|---|---|
-| The API process, uvicorn included | `infrastructure/logging/config.py` (`ProcessorFormatter`); uvicorn through `server.py`'s `log_config=None` | Yes, but a traceback keeps each exception's message; and some calls paste traceback or subprocess text into the message: `_container_impl.py:267` (`traceback.format_exc()`), `bootstrap/data_init.py:729-740` (alembic's stdout and stderr) | Tracebacks: S2, #2888. Pasted text: S3, #2889 |
+| The API process, uvicorn included | `infrastructure/logging/config.py` (`ProcessorFormatter`); uvicorn through `server.py`'s `log_config=None` | Yes, but a traceback keeps each exception's message | S2, #2888 |
+| Traceback and subprocess text pasted into an API message | `_container_impl.py:267` (`traceback.format_exc()`); `bootstrap/data_init.py:729-740` (alembic's stdout and stderr) | Redacted, but the message carries the text | No stage yet: #2898 |
 | The maintenance jobs | `jobs/run.py:168`: `RedactingFormatter` over a `%`-template | Redacted, but the line is not serialized | S2, #2888 |
-| A job's error `print` | `jobs/run.py:766`: `print(f"Error: {e}")` to stderr | No | S3, #2889 |
+| A job's error `print` | `jobs/run.py:766`: `print(f"Error: {e}")` to stderr | No | No stage yet: #2898 |
 | The alembic migration Job | `alembic/env.py` (`fileConfig`) and `alembic.ini` | No | S2, #2888 |
 | The worker child's forwarded records | `infrastructure/worker_process.py:391-392`, `:490` paste formatted traceback text into the message; the parent re-logs each record through the API chain (`:183-185`) | Redacted, but the message carries exception text | S2, #2888 |
-| The worker child's stderr | inherited: the child is started with no `stderr=` (`infrastructure/worker_process.py:313`), and points its fd 1 at it (`:443`) | No | S2, #2888 |
+| The worker child's stderr | inherited: the child is started with no `stderr=` (`infrastructure/worker_process.py:313`), and points its fd 1 at it (`:443`) | No | No stage yet: #2898 |
 | `traceback.print_exc()` | `container/providers/services.py`: five calls, to stderr | No | S2, #2888 |
-| An image launched through the `uvicorn` CLI rather than `run_server` | the CLI cannot set `log_config=None` (`server.py:53-60`), so uvicorn installs its own handlers | No | S2, #2888 |
-| Records emitted before logging is configured | `logging.lastResort`, plain text to stderr | No | S2, #2888 |
+| An image launched through the `uvicorn` CLI rather than `run_server` | the CLI cannot set `log_config=None` (`server.py:53-60`), so uvicorn installs its own handlers | No | No stage yet: #2898 |
+| Records emitted before logging is configured | `logging.lastResort`, plain text to stderr | No | No stage yet: #2898 |
 | `fm-*` commands run in a pod | `print` calls in `cli/` | No | S3, #2889 |
 
 **The redactor table.** What the redactor (`redact_log_line`, `infrastructure/logging/url_redaction.py`) blanks on a rendered line.
@@ -689,7 +690,7 @@ faultmaven_knowledge_search_results_count
 |---|---|---|
 | One switch, one path | Importing each collector-defining module with the switch off registers nothing. Outside the shim, no module imports from `prometheus_client` beyond a listed set of exposition, registry and parser names, and none takes a `Prometheus*` class from the shim, by import or attribute (#2745, S1's pin 2). | Enforced by `tests/unit/infrastructure/shims/test_metrics_one_path_2748.py` |
 | Bounded labels | S2's pins 4-6: each label's vocabulary tied to its producer, an out-of-set value raising under tests, and no collector without a writer. | Pending: #2749 |
-| The redactor table's enforced rows (rule 6) | A URL query string and a credential header value are blanked on the API process's rendered lines (in a message, a field or a traceback) and in the jobs' rendered message, at a cost linear in the line. Not covered: a job's traceback, and `jobs/run.py:766`'s print. | Enforced by `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` and `tests/unit/infrastructure/logging/test_url_query_redaction.py` |
+| The redactor table's enforced rows (rule 6) | A URL query string and a credential header value are blanked on the API process's rendered lines (in a message, a field or a traceback) and in the jobs' rendered message, at a cost linear in the line. Not tested: a job's traceback. Not covered: `jobs/run.py:766`'s print. | Enforced by `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` and `tests/unit/infrastructure/logging/test_url_query_redaction.py` |
 | Frames and class names; one chain (rules 4 and 5) | #2888's pins | Pending: S2, #2888 |
 | What a line holds: the message channel (rule 1) | #2889's pins | Pending: S3, #2889 |
 | No case content (rule 3) | #2890's pins | Pending: S4, #2890 |
