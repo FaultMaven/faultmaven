@@ -146,6 +146,7 @@ repos:
           || exit 0; exec python scripts/check_kb_pack.py' --
         language: system
         always_run: true
+        require_serial: true
         files: ^resources/knowledge/(runbooks/.*\.md|pack/(pack\.json|vectors\.npz))$
 
       # Brand-messaging terminology lint. Fails on retired terms in brand-facing
