@@ -272,8 +272,7 @@ dollar figures as directional. Two honesty guarantees:
 ## Prompt caching
 
 The tool-augmented investigation loop marks its calls cacheable
-(`cache_prompt=True`), except the schema-only final call, whose different tool
-set invalidates every cached entry. The **Anthropic** provider acts on it with
+(`cache_prompt=True`). The **Anthropic** provider acts on it with
 three ephemeral (5-minute) `cache_control` breakpoints: on the stable system +
 tools prefix, at the end of the investigation prompt's durable prefix (the
 `CACHE_BOUNDARY` line, #613), and on the request's last block. The standing

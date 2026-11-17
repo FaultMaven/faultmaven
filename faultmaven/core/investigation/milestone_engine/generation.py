@@ -872,15 +872,14 @@ class StructuredOutputGenerator:
                 tool_choice=choice,
                 max_tokens=max_tokens,
                 temperature=0.2,
-                # Ask for the request to be cached, so the next iteration reads
-                # back what this one sent. Anthropic (explicit breakpoints) and
-                # llama.cpp act on it; every other provider pops it. Not on a
-                # schema-only call (final, force_schema, ceiling): it offers a
-                # different tool set, which invalidates every cached entry, so
-                # its writes could never be read back.
-                cache_prompt=not (
-                    tools_for_call is schema_tools and investigation_tools
-                ),
+                # Ask for the request to be cached, so the next call that
+                # re-sends it reads it back: the next iteration, a truncation
+                # retry, the next turn's prefix. Only Anthropic acts on this
+                # (explicit breakpoints); every other provider pops it. A
+                # schema-only call (final, force_schema, ceiling) offers a
+                # different tool set and so reads none of the loop's entries,
+                # but its own retry and the next schema-only call read its own.
+                cache_prompt=True,
             )
             if direct_provider:
                 if self.deps.da_model:

@@ -676,12 +676,13 @@ class TestAnthropicRollingBreakpoint:
             assert len(_breakpoints(body)) == 3
 
     async def test_a_thinking_block_is_never_marked(self, provider):
-        """A thinking block cannot carry a breakpoint, nor can an empty text
-        block: the mark goes on the last block that can."""
+        """A thinking or redacted_thinking block cannot carry a breakpoint, nor
+        can an empty text block: the mark goes on the last block that can."""
         echoed = [
             {"type": "text", "text": "Looking."},
             {"type": "text", "text": ""},
             {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+            {"type": "redacted_thinking", "data": "opaque"},
         ]
         messages = _loop_messages(_PREFIX + _TAIL) + [
             {
@@ -695,6 +696,7 @@ class TestAnthropicRollingBreakpoint:
         assert last[0]["cache_control"] == {"type": "ephemeral"}
         assert "cache_control" not in last[1]
         assert "cache_control" not in last[2]
+        assert "cache_control" not in last[3]
 
     async def test_cache_prompt_off_marks_nothing(self, provider):
         messages = _loop_messages(_PREFIX + _TAIL) + _tool_round(1)

@@ -288,12 +288,11 @@ class TestToolAugmentedGenerate:
         # keyword args
         assert last_call_kwargs.kwargs.get("tool_choice") == "required"
 
-        # Every call offering the full tool set asks to be cached; the
-        # schema-only final call does not: its tool set differs, so nothing it
-        # wrote could be read back.
+        # Every call asks to be cached, the schema-only final call included:
+        # its own truncation retry and the next schema-only call read it back.
         sent = [call.kwargs for call in mock_provider.route.call_args_list]
         assert [len(kw["tools"]) for kw in sent] == [2, 2, 2, 2, 1]
-        assert [kw["cache_prompt"] for kw in sent] == [True, True, True, True, False]
+        assert all(kw["cache_prompt"] is True for kw in sent)
 
     async def test_tool_loop_deep_analysis_limited_to_one(self):
         """Second deep_analysis call gets limit message instead of executing."""
