@@ -19,6 +19,7 @@ which are the most common cause of a runaway bill.
 |---|---|---|
 | `llm_cost_usd_total` | `provider`, `model` | Estimated USD spend per **provider API call** (from the price table). The dollar figure to alert on. |
 | `llm_call_tokens_total` | `provider`, `model`, `token_type` | Tokens per API call, split into `input` / `output` / `cache_read` / `cache_write`. Buckets are disjoint. |
+| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | The investigation engine's kept responses, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, its retries included, and every single-shot call; `later` = later tool-loop iterations). One count per engine call: no response-cache hits, no discarded fallback attempts. `position="first"` `input` is the uncached part of each turn's case, which a blended hit rate hides because later iterations read almost everything back. |
 | `llm_provider_calls_total` | `provider`, `model`, `outcome` | API calls by disposition. `outcome=kept` = returned to caller; `outcome=low_confidence` = **billed then discarded** by the fallback chain (pure waste). |
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
 | `llm_usage_unpersisted_calls_total` | `reason` | Billed calls the [usage ledger](#the-usage-ledger) did not persist. **Non-zero ⇒ the ledger under-reports** by exactly this many calls. |
@@ -172,7 +173,7 @@ and keeps `organization` groups as they are.
 | `scope` | `enterprise_id`, `deployment` (`standalone`/`cloud`) and `tenancy`. Under `multi` the figures are **your enterprise's only**, never the deployment's |
 | `coverage` | `metering_since` is the earliest day with recorded spend for the enterprise (`null` when none) — not when metering began: an earlier day may predate the ledger, have been metered with nothing spent, or have been pruned past `LLM_USAGE_DAILY_RETENTION_DAYS`. `window_fully_covered` is false when the window starts before it. `turns_since` is the first day `turns` reads: the later of the window's first day and the turn-retention horizon (today minus `LLM_USAGE_TURN_RETENTION_DAYS`, plus one). `turns_fully_covered` is false when the horizon is later than the window's first day, as for a 90-day window under a shorter turn retention |
 | `as_of` | When the report was read |
-| `totals`, each `by_day` entry, each `groups` entry | A bucket: `calls` (`total`, `kept`, `low_confidence`), `tokens` (`input`, `output`, `cache_read`, `cache_write`, `total`), `cache_hit_rate` = `cache_read / (input + cache_read)` (`null` when that is 0), `estimated_cost_usd`, `unpriced_calls` and `cost_complete` (false whenever `unpriced_calls` > 0) |
+| `totals`, each `by_day` entry, each `groups` entry | A bucket: `calls` (`total`, `kept`, `low_confidence`), `tokens` (`input`, `output`, `cache_read`, `cache_write`, `total`), `cache_hit_rate` = `cache_read / (input + cache_read + cache_write)`, the share of prompt tokens read from a provider prompt cache (`null` when the sum is 0), `estimated_cost_usd`, `unpriced_calls` and `cost_complete` (false whenever `unpriced_calls` > 0) |
 | `by_day` | Every day in the window, zeros included |
 | `groups` | Keyed `{provider, model}`, `{user_id}` (`""` is no actor) or `{kind, id}` (`id` `""` for `none`). Model groups carry `rate_status`: `priced`, `zero_cost` (a self-hosted provider, priced at $0) or `unpriced`; the others carry `null` |
 | `unpriced` | Models the **running** price table cannot price that have unpriced calls in the window, with those calls. Non-empty: the cost is under-reported; add the model to `LLM_PRICING_OVERRIDES` |
@@ -306,7 +307,10 @@ landing.
 4. **Is caching working?** Check `prompt_cache_hit` in `llm_call` logs (DEBUG) and the
    `cache_read` series. Zero cache reads on Anthropic tool-loop turns means the
    prefix isn't being reused (e.g. turns > 5 min apart, so the ephemeral cache
-   expired).
+   expired). Split it by position with `llm_investigation_call_tokens_total`:
+   `position="later"` should be nearly all `cache_read` (each iteration re-sends
+   the previous one), and `position="first"` `input` per turn is what the
+   standing prefix leaves uncached — the case itself, re-sent every turn.
 
 ## Coverage note
 

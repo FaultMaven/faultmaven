@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.3.0
+**Version:** 15.4.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -6038,7 +6038,7 @@ Summed figures over a set of billed calls.
 
 **Properties:**
 
-- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read + cache_write): the share of prompt tokens read from a provider prompt cache; null when the sum is 0
 - `calls` (object, required)
 - `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
 - `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.
@@ -6074,7 +6074,7 @@ How much of the window the ledger can speak for. There is no backfill.
 
 **Properties:**
 
-- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read + cache_write): the share of prompt tokens read from a provider prompt cache; null when the sum is 0
 - `calls` (object, required)
 - `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
 - `date` (string, required)
@@ -6090,7 +6090,7 @@ One row of `groups`, keyed by the request's `group_by`.
 
 **Properties:**
 
-- `cache_hit_rate` (object, required) — cache_read / (input + cache_read); null when that is 0
+- `cache_hit_rate` (object, required) — cache_read / (input + cache_read + cache_write): the share of prompt tokens read from a provider prompt cache; null when the sum is 0
 - `calls` (object, required)
 - `cost_complete` (boolean, required) — False whenever `unpriced_calls` > 0: the cost is a lower bound
 - `estimated_cost_usd` (number, required) — Priced calls only, estimated at call time from the price table then in force. Not a bill.

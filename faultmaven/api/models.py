@@ -434,7 +434,11 @@ class LLMUsageBucket(BaseModel):
     calls: LLMUsageCalls
     tokens: LLMUsageTokens
     cache_hit_rate: Optional[float] = Field(
-        description="cache_read / (input + cache_read); null when that is 0"
+        description=(
+            "cache_read / (input + cache_read + cache_write): the share of "
+            "prompt tokens read from a provider prompt cache; null when the "
+            "sum is 0"
+        )
     )
     estimated_cost_usd: float = Field(
         description=(

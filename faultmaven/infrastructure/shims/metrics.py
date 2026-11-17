@@ -694,6 +694,26 @@ llm_call_tokens = Counter(
     lazy_labels=_LAZY_MODEL,
 )
 
+# The investigation engine's own calls, by where they sit in the turn (#613's
+# follow-up). A provider prompt cache can serve a tool-loop iteration after the
+# first almost whole, because it re-sends the previous iteration's request; the
+# first call of the turn can be served only its standing prefix. So the turn's
+# uncached tail shows up as position="first" input, and a blended hit rate,
+# which rises with the iteration count, cannot show it. Recorded where the
+# engine holds the response it kept: one count per engine call, not per billed
+# attempt (discarded fallback attempts are on llm_call_tokens_total only), and
+# never a response-cache hit, which bills nothing.
+llm_investigation_call_tokens = Counter(
+    "llm_investigation_call_tokens_total",
+    "Tokens of the investigation engine's kept LLM responses, by path "
+    "(tool_loop|single_shot) and position (first = a turn's first tool-loop "
+    "iteration, its retries included, and every single-shot call; later = "
+    "tool-loop iterations after the first), split by token type. Excludes "
+    "response-cache hits and discarded fallback attempts.",
+    labelnames=["provider", "model", "path", "position", "token_type"],
+    lazy_labels=_LAZY_MODEL,
+)
+
 llm_cost_usd = Counter(
     "llm_cost_usd_total",
     "Estimated LLM spend in USD per provider API call (from the operator-"

@@ -530,6 +530,17 @@ async def test_cache_hit_rate(usage_db, as_user):
     assert sonnet["cache_hit_rate"] is None
 
 
+async def test_cache_hit_rate_counts_cache_writes_as_prompt_sent(usage_db, as_user):
+    """Anthropic reports the prompt in three disjoint buckets: a cache write is
+    prompt sent and not read, so it is in the base. Without it this call would
+    read 0.5, not the quarter of its prompt it read from the cache."""
+    await _call(TODAY, input_tokens=100, cache_read=100, cache_write=200)
+
+    report = await _admin_get(as_user)
+
+    assert report["totals"]["cache_hit_rate"] == pytest.approx(0.25)
+
+
 async def test_turns_coverage_follows_turn_retention_through_the_prune(
     usage_db, as_user, monkeypatch
 ):

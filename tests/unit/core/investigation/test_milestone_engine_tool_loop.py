@@ -271,17 +271,29 @@ class TestToolAugmentedGenerate:
         ]
 
         # Act
-        result = await engine.generator._tool_augmented_generate(
-            prompt=vetted("Investigate"),
-            schema_model=SampleResponse,
-            investigation_tools=investigation_tools,
-            tool_context=tool_context,
-            redaction_ctx=disabled_redaction(),
-        )
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.generation"
+            ".record_investigation_call"
+        ) as record:
+            result = await engine.generator._tool_augmented_generate(
+                prompt=vetted("Investigate"),
+                schema_model=SampleResponse,
+                investigation_tools=investigation_tools,
+                tool_context=tool_context,
+                redaction_ctx=disabled_redaction(),
+            )
 
         # Assert: 4 search iterations + 1 forced final = 5 LLM calls
         assert mock_provider.route.call_count == 5
         assert result.agent_response == "Forced output"
+        # Each kept response is counted on the tool-loop path: iteration 0 as
+        # the turn's first call, every later iteration as later.
+        assert [c.args[0] for c in record.call_args_list] == (
+            search_responses + [forced_schema]
+        )
+        assert [c.kwargs for c in record.call_args_list] == [
+            {"path": "tool_loop", "position": "first"}
+        ] + [{"path": "tool_loop", "position": "later"}] * 4
 
         # Verify the last call used tool_choice="required"
         last_call_kwargs = mock_provider.route.call_args_list[-1]
@@ -732,10 +744,19 @@ class TestGenerateStructuredOutputRouting:
         engine.deps.llm_provider.route = AsyncMock(return_value=schema_response)
 
         # Act - no investigation_tools or tool_context
-        result = await engine.generator.generate_structured_output(
-            prompt="Test prompt",
-            schema_model=SampleResponse,
-            redaction_ctx=disabled_redaction(),
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.generation"
+            ".record_investigation_call"
+        ) as record:
+            result = await engine.generator.generate_structured_output(
+                prompt="Test prompt",
+                schema_model=SampleResponse,
+                redaction_ctx=disabled_redaction(),
+            )
+
+        # The single-shot call is counted on its own path (#613's follow-up).
+        record.assert_called_once_with(
+            schema_response, path="single_shot", position="first"
         )
 
         # Assert

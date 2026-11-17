@@ -16,6 +16,7 @@ from faultmaven.infrastructure.llm import metering
 from faultmaven.infrastructure.llm.metering import (
     TurnTokenTracker,
     active_token_tracker,
+    record_investigation_call,
     record_provider_call,
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
@@ -224,3 +225,86 @@ class TestLlmCallRecordThinkingTokens:
         records = _llm_call_records(caplog)
         assert len(records) == 1
         assert records[0].thinking_tokens is None
+
+
+@pytest.fixture
+def investigation_counter(monkeypatch):
+    """The counter, replaced: {(provider, model, path, position, token_type): n}."""
+    counted: dict = {}
+
+    class _Counter:
+        def labels(self, **labels):
+            key = tuple(
+                labels[k]
+                for k in ("provider", "model", "path", "position", "token_type")
+            )
+
+            class _Child:
+                def inc(self, amount=1):
+                    counted[key] = counted.get(key, 0) + amount
+
+            return _Child()
+
+    monkeypatch.setattr(metering, "llm_investigation_call_tokens", _Counter())
+    return counted
+
+
+@pytest.mark.unit
+class TestRecordInvestigationCall:
+    """The engine's calls by path and position: the first tool-loop call's
+    uncached input is the turn's uncached tail, which a blended hit rate hides."""
+
+    def test_each_bucket_counts_under_its_path_and_position(
+        self, investigation_counter
+    ):
+        record_investigation_call(
+            _FakeResponse(
+                input_tokens=7,
+                output_tokens=3,
+                cache_read_tokens=40,
+                cache_write_tokens=5,
+            ),
+            path="tool_loop",
+            position="later",
+        )
+        labels = ("anthropic", "claude-sonnet-4-6", "tool_loop", "later")
+        assert investigation_counter == {
+            (*labels, "input"): 7,
+            (*labels, "output"): 3,
+            (*labels, "cache_read"): 40,
+            (*labels, "cache_write"): 5,
+        }
+
+    def test_a_response_cache_hit_bills_nothing_and_is_not_counted(
+        self, investigation_counter
+    ):
+        hit = LLMResponse(
+            content="cached",
+            confidence=0.9,
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            tokens_used=10,
+            response_time_ms=0,
+            cached=True,
+            input_tokens=10,
+        )
+        record_investigation_call(hit, path="single_shot", position="first")
+        assert investigation_counter == {}
+
+    def test_a_low_confidence_label_is_counted_under_the_bare_provider(
+        self, investigation_counter
+    ):
+        record_investigation_call(
+            _FakeResponse(provider="groq (low-confidence)", input_tokens=9),
+            path="tool_loop",
+            position="first",
+        )
+        assert investigation_counter == {
+            ("groq", "claude-sonnet-4-6", "tool_loop", "first", "input"): 9
+        }
+
+    def test_junk_never_raises(self, investigation_counter):
+        record_investigation_call(None, path="tool_loop", position="first")
+        record_investigation_call("text", path="tool_loop", position="first")
+        record_investigation_call(object(), path="tool_loop", position="first")
+        assert investigation_counter == {}

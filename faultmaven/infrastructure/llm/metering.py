@@ -43,6 +43,7 @@ from faultmaven.infrastructure.llm.usage_ledger import (
 from faultmaven.infrastructure.shims import (
     llm_call_tokens,
     llm_cost_usd,
+    llm_investigation_call_tokens,
     llm_provider_calls,
     llm_unpriced_calls,
 )
@@ -279,3 +280,40 @@ def record_provider_call(
         )
     except Exception as exc:  # metering must never break a request
         logger.warning("record_provider_call failed (non-fatal): %s", exc)
+
+
+def record_investigation_call(response: Any, *, path: str, position: str) -> None:
+    """Count one investigation-engine call's tokens by path and position.
+
+    Best-effort; never raises. ``path`` is ``tool_loop`` or ``single_shot``;
+    ``position`` is ``first`` (the turn's first tool-loop iteration and its
+    retries, and every single-shot call) or ``later``. A response-cache hit
+    (``cached``) billed nothing and is skipped. Spend and persistence stay with
+    :func:`record_provider_call`, which every billed attempt already reached.
+    """
+    try:
+        if response is None or isinstance(response, str):
+            return
+        if getattr(response, "cached", False):
+            return
+        # A kept low-confidence response is labelled "<name> (low-confidence)"
+        # by the registry: the provider label is the bare name.
+        provider = (getattr(response, "provider", None) or "unknown").split(" ", 1)[0]
+        model = getattr(response, "model", None) or "unknown"
+        for token_type, attr in (
+            ("input", "input_tokens"),
+            ("output", "output_tokens"),
+            ("cache_read", "cache_read_tokens"),
+            ("cache_write", "cache_write_tokens"),
+        ):
+            amount = int(getattr(response, attr, 0) or 0)
+            if amount:
+                llm_investigation_call_tokens.labels(
+                    provider=provider,
+                    model=model,
+                    path=path,
+                    position=position,
+                    token_type=token_type,
+                ).inc(amount)
+    except Exception as exc:  # metering must never break a request
+        logger.warning("record_investigation_call failed (non-fatal): %s", exc)
