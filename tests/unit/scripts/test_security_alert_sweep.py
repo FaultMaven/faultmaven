@@ -439,6 +439,10 @@ def test_an_exception_whose_advisory_lists_a_fix_is_fixable(mod, source, fix):
     report = mod.sweep(gh, NOW)
     (got,), fixable = table(report), int(bool(fix))
     assert (got["cls"], got["detail"]) == (["exception", "fixable"][fixable], where)
+    assert got["urls"] == (alert["html_url"] if fix else "—")  # a tracker quiets it
+    if source == "private" and fix:  # shows what the same alert, untracked, shows
+        del gh.files[(COPILOT, "package.json")]
+        assert {**table(mod.sweep(gh, NOW))[0], "cls": got["cls"]} == got
     assert ("11.0.1" in report) == (source != "private" and bool(fix))
     counts = f" · exception {1 - fixable} · fixable {fixable} · lag 0 · "
     assert counts in summary(report)

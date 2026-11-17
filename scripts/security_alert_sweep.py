@@ -6,14 +6,16 @@ read-only: it files, comments on and dismisses nothing. Each open Dependabot,
 code-scanning and secret-scanning alert in ``REPOS`` is, first match wins:
 
 - ``fixable`` (Dependabot): an exception (below) whose advisory lists a
-  patched version and that is not ``tracked`` (below), shown with ``fix
-  available <version>``: an exception holds only while no fix exists (#2160);
-- ``exception`` (Dependabot): its GHSA is in the repo's ``package.json``
-  ``pnpm.auditConfig.ignoreGhsas`` or, for core, in ``EXCEPTIONS_DOC`` above
-  its ``## Closed exceptions`` heading;
-- ``lag`` (Dependabot): every version the manifest resolves lies outside every
-  vulnerable range the advisory lists for the package, and the manifest's last
-  commit is at most ``LAG_DAYS`` old;
+  patched version: ``tracked`` when a tracker (below) carries its URL,
+  ``unknown`` when a tracker cannot be read, else ``fixable``, shown with
+  ``fix available <version>``: an exception holds only while no fix exists
+  (#2160);
+- ``exception`` (Dependabot): its advisory lists no patched version, and its
+  GHSA is in the repo's ``package.json`` ``pnpm.auditConfig.ignoreGhsas`` or,
+  for core, in ``EXCEPTIONS_DOC`` above its ``## Closed exceptions`` heading;
+- ``lag`` (Dependabot): the advisory lists a patched version, every version
+  the manifest resolves lies outside every vulnerable range the advisory lists
+  for the package, and the manifest's last commit is at most ``LAG_DAYS`` old;
 - ``tracked``: a line starting ``**Alerts:**`` in an open core issue, or an
   open PR in the alert's own repo, carries the alert's URL;
 - ``unknown``: a source one of those answers needs could not be read;
@@ -483,7 +485,9 @@ class Sweep:
             details = ", ".join(dict.fromkeys(tracked)) or PRIVATE
         if first.kind == "secret-scanning":
             details = SECRET_NOTE
-        urls = " ".join(a.url for a in shown if a.cls in ("untracked", "unknown"))
+        # The alerts that need a tracker: one carrying the URL is the way out.
+        needs = ("fixable", "untracked", "unknown")
+        urls = " ".join(a.url for a in shown if a.cls in needs)
         return -CLASSES.index(cls), (*cells, cls, details or "—", urls or "—")
 
     def report(self) -> str:
@@ -532,7 +536,7 @@ class Sweep:
         ]
         lines += [
             "",
-            "| repo | kind | package or rule | advisory | severity | class | tracked by / detail | untracked or unknown alerts |",
+            "| repo | kind | package or rule | advisory | severity | class | tracked by / detail | fixable, untracked or unknown alerts |",
             "|---|---|---|---|---|---|---|---|",
             *("| " + " | ".join(cells) + " |" for _, cells in rows),
             "",
