@@ -431,11 +431,11 @@ def test_a_wait_is_taken_only_when_twice_it_fits_the_call(retry_after, taken):
 @pytest.mark.parametrize(
     "primary,raised_status,counted",
     [
-        # A counted outage stays the raised error, so the breaker sees it.
+        # A counted outage outranks the throttle (#2833), so the breaker sees it.
         ((503, '{"error":{"message":"overloaded"}}'), 503, 1),
-        # A request-scoped rejection is not counted, so the throttle (the
-        # retryable answer) is raised, uncounted; nor is the status-carrying
-        # 400 recorded on the primary's health (#2833 consequence (ii)).
+        # A request-scoped rejection ranks below the throttle, so the throttle
+        # is raised, uncounted; nor is the status-carrying 400 recorded on the
+        # primary's health (#2833 consequence (ii)).
         ((400, '{"error":{"type":"invalid_request_error","message":"bad"}}'), 429, 0),
     ],
     ids=["503-counted", "400-request-scoped"],

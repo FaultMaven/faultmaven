@@ -4,7 +4,8 @@ health records (#2833, stage C1 of #2832; the amended rule and pins ruled
 
 Before: the chain raised a 503 over a quota failure or a context overflow
 seen earlier, and the registry's health counted every status-carrying 4xx as
-an outage.
+an outage. Both rules read the failure itself, the first ``LLMException`` on
+the ``__cause__`` chain.
 
 Every test drives ``route_request`` on a two-provider registry whose providers
 are stubs that raise or answer; nothing reaches a network.
@@ -36,32 +37,58 @@ from tests.model_content import vetted
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
 
-def _wrapped_404():
-    wrapper = RuntimeError("model lookup failed")
-    wrapper.__cause__ = LLMException("model not found", status_code=404)
-    return wrapper
+def _caused_by(failure, cause):
+    failure.__cause__ = cause
+    return failure
 
 
-# The ruled ranks, highest first.
-_FAILURES = {
-    "overflow": lambda: LLMException(
-        "context_length_exceeded",
-        status_code=400,
-        provider_error_code="context_length_exceeded",
-    ),
-    "quota": lambda: LLMException(
+def _quota():
+    return LLMException(
         "insufficient_quota", status_code=429, provider_error_code="insufficient_quota"
+    )
+
+
+def _404():
+    return LLMException("model not found", status_code=404)
+
+
+def _malfunction():
+    return LLMException("Groq API returned no choices")
+
+
+# Each failure with its ruled rank (higher wins). The wrapped shapes and the
+# chained re-send (openai_provider.py's re-send raises ``from`` the 400) are
+# ranked by the failure itself, the first ``LLMException`` on the chain.
+_FAILURES = {
+    "overflow": (
+        6,
+        lambda: LLMException(
+            "context_length_exceeded",
+            status_code=400,
+            provider_error_code="context_length_exceeded",
+        ),
     ),
-    "503": lambda: LLMException("upstream 503", status_code=503),
-    "throttle": lambda: LLMException("rate limited", status_code=429),
-    "400": lambda: LLMException("bad request shape", status_code=400),
-    "call-shape": lambda: CallShapeUnsupported("cannot carry a conversation"),
+    "quota": (5, _quota),
+    "wrapped-quota": (5, lambda: _caused_by(RuntimeError("wrapped"), _quota())),
+    "503": (4, lambda: LLMException("upstream 503", status_code=503)),
+    "malfunction": (4, _malfunction),
+    "re-send": (
+        4,
+        lambda: _caused_by(_malfunction(), LLMException("bad", status_code=400)),
+    ),
+    "throttle": (3, lambda: LLMException("rate limited", status_code=429)),
+    "400": (2, lambda: LLMException("bad request shape", status_code=400)),
+    "wrapped-404": (2, lambda: _caused_by(RuntimeError("model lookup"), _404())),
+    "call-shape": (1, lambda: CallShapeUnsupported("cannot carry a conversation")),
 }
 _ORDER = list(_FAILURES)
 _TRUNCATION = lambda: LLMException(  # noqa: E731
     "answer cut at the cap", category=LLMErrorCategory.OUTPUT_TRUNCATION
 )
-_MALFUNCTION = lambda: LLMException("Groq API returned no choices")  # noqa: E731
+
+
+def _make(key):
+    return _TRUNCATION if key == "truncation" else _FAILURES[key][1]
 
 
 class _Stub:
@@ -114,10 +141,10 @@ async def _raised(registry):
 @pytest.mark.parametrize("first", _ORDER)
 async def test_the_chain_raises_its_highest_ranked_failure(first, second):
     """Every ordered pair: the higher rank wins, the later one on a tie."""
-    primary, fallback = _Stub(_FAILURES[first]), _Stub(_FAILURES[second])
+    primary, fallback = _Stub(_make(first)), _Stub(_make(second))
     raised = await _raised(_registry(primary, fallback))
 
-    earlier_wins = _ORDER.index(first) < _ORDER.index(second)
+    earlier_wins = _FAILURES[first][0] > _FAILURES[second][0]
     assert raised is (primary if earlier_wins else fallback).raised[0]
 
 
@@ -128,8 +155,7 @@ async def test_the_chain_raises_its_highest_ranked_failure(first, second):
 async def test_output_truncation_ranks_with_the_overflow(first, second):
     """Truncation ties the overflow, so the later one wins, and it outranks a
     quota failure."""
-    make = {**_FAILURES, "truncation": _TRUNCATION}
-    primary, fallback = _Stub(make[first]), _Stub(make[second])
+    primary, fallback = _Stub(_make(first)), _Stub(_make(second))
     raised = await _raised(_registry(primary, fallback))
 
     assert raised is (fallback if second != "quota" else primary).raised[0]
@@ -138,16 +164,14 @@ async def test_output_truncation_ranks_with_the_overflow(first, second):
 # Pin 2 -----------------------------------------------------------------------
 
 
-async def test_a_503_then_a_context_overflow_raises_the_overflow():
-    raised = await _raised(
-        _registry(_Stub(_FAILURES["503"]), _Stub(_FAILURES["overflow"]))
-    )
+async def test_an_overflow_then_a_503_raises_the_overflow():
+    raised = await _raised(_registry(_Stub(_make("overflow")), _Stub(_make("503"))))
     assert raised.status_code == 400
     assert LLMErrorHandler().is_token_limit_error(raised)
 
 
-async def test_a_503_then_an_output_truncation_raises_the_truncation():
-    raised = await _raised(_registry(_Stub(_FAILURES["503"]), _Stub(_TRUNCATION)))
+async def test_an_output_truncation_then_a_503_raises_the_truncation():
+    raised = await _raised(_registry(_Stub(_TRUNCATION), _Stub(_make("503"))))
     assert declared_llm_category(raised) is LLMErrorCategory.OUTPUT_TRUNCATION
 
 
@@ -159,7 +183,7 @@ async def test_quota_is_raised_and_latched_on_the_breaker(pair):
     """Three such calls open the router's breaker with ``QUOTA_EXHAUSTED``
     latched, so the next call is refused with it (asserted on state), while
     the quota 429 never marks its provider UNHEALTHY (consequence (ii))."""
-    registry = _registry(*(_Stub(_FAILURES[k]) for k in pair))
+    registry = _registry(*(_Stub(_make(k)) for k in pair))
     with patch(
         "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
     ):
@@ -182,9 +206,9 @@ async def test_quota_is_raised_and_latched_on_the_breaker(pair):
 # Pin 4 and consequence (ii) --------------------------------------------------
 
 
-@pytest.mark.parametrize("failure", ["malfunction", "503"])
+@pytest.mark.parametrize("failure", ["malfunction", "re-send", "503"])
 async def test_health_records_a_malfunction_and_a_503(failure):
-    make = _MALFUNCTION if failure == "malfunction" else _FAILURES["503"]
+    make = _make(failure)
     registry = _registry(_Stub(make), _Stub(make), ProviderHealth.HEALTHY)
     for _ in range(3):
         await _raised(registry)
@@ -195,17 +219,10 @@ async def test_health_records_a_malfunction_and_a_503(failure):
 
 
 @pytest.mark.parametrize(
-    "make",
-    [
-        _FAILURES["400"],
-        _FAILURES["throttle"],
-        _FAILURES["call-shape"],
-        lambda: LLMException("model not found", status_code=404),
-        _wrapped_404,
-    ],
-    ids=["400", "throttle", "call-shape", "404", "404-on-the-cause"],
+    "failure", ["400", "throttle", "call-shape", "404", "wrapped-404", "wrapped-quota"]
 )
-async def test_health_never_records_a_throttle_a_refusal_or_a_4xx(make):
+async def test_health_never_records_a_throttle_a_refusal_or_a_4xx(failure):
+    make = _404 if failure == "404" else _make(failure)
     registry = _registry(_Stub(make), _Stub(make), ProviderHealth.HEALTHY)
     for _ in range(3):
         await _raised(registry)
@@ -231,8 +248,8 @@ async def test_a_low_confidence_response_beats_any_failure(failure, answering):
         response_time_ms=1,
     )
     stubs = {
-        "primary": _Stub(_FAILURES[failure]),
-        "fallback": _Stub(_FAILURES[failure]),
+        "primary": _Stub(_make(failure)),
+        "fallback": _Stub(_make(failure)),
     }
     stubs[answering] = _Stub(response=low)
     registry = _registry(stubs["primary"], stubs["fallback"])
@@ -243,7 +260,7 @@ async def test_a_low_confidence_response_beats_any_failure(failure, answering):
 
 
 async def test_a_content_refusal_still_aborts_the_chain():
-    fallback = _Stub(_FAILURES["503"])
+    fallback = _Stub(_make("503"))
     registry = _registry(_Stub(lambda: RawModelContentRefused("prompt raw")), fallback)
 
     assert isinstance(await _raised(registry), RawModelContentRefused)

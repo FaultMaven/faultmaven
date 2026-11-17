@@ -20,6 +20,7 @@ from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
     CallShapeUnsupported,
     LLMErrorCategory,
+    LLMException,
     RawModelContentRefused,
     declared_llm_category,
     is_rate_limit_throttle,
@@ -123,42 +124,61 @@ _CALLER_REMEDY_CATEGORIES = frozenset(
 )
 
 
+def _failure_read(exc: BaseException) -> BaseException:
+    """The failure both predicates read: the first ``LLMException`` on the
+    ``__cause__`` chain, past any wrapper that is not one, else ``exc``."""
+    for cursor in walk_cause_chain(exc):
+        if isinstance(cursor, LLMException):
+            return cursor
+    return exc
+
+
+def _is_4xx(failure: BaseException) -> bool:
+    status = getattr(failure, "status_code", None)
+    return isinstance(status, int) and 400 <= status <= 499
+
+
 def chain_failure_rank(exc: BaseException) -> int:
     """How a fallback chain ranks ``exc`` against its other failures (#2833).
 
     ``route_request`` raises the highest-ranked failure, the later one on a
     tie: 6 a caller remedy (context overflow, output truncation); 5
-    service-scoped (quota, rejected credentials); 4 counted and retryable (a
-    5xx, a timeout, an unclassified exception); 3 a throttle; 2 any other
-    request-scoped rejection; 1 ``CallShapeUnsupported``.
+    service-scoped (quota, rejected credentials); 4 counted and retryable or
+    unclassified (a 5xx, a timeout, a failure with no status); 3 a throttle;
+    2 any other request-scoped rejection (a 4xx status); 1
+    ``CallShapeUnsupported``. Fields are read from ``_failure_read(exc)``.
     """
-    if isinstance(exc, CallShapeUnsupported):
+    failure = _failure_read(exc)
+    if isinstance(failure, CallShapeUnsupported):
         return 1
     if declared_llm_category(exc) in _CALLER_REMEDY_CATEGORIES:
         return 6
-    if getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
+    if getattr(failure, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
         return 5
-    if is_rate_limit_throttle(exc):
+    if is_rate_limit_throttle(failure):
         return 3
-    if getattr(exc, "retryable", True) is not False:
-        return 4
-    return 2
+    return 2 if _is_4xx(failure) else 4
+
+
+def _higher_ranked(kept: Optional[BaseException], new: BaseException) -> BaseException:
+    """``new`` unless ``kept`` outranks it: the later one wins a tie."""
+    if kept is None or chain_failure_rank(new) >= chain_failure_rank(kept):
+        return new
+    return kept
 
 
 def records_on_provider_health(exc: BaseException) -> bool:
     """Whether a provider's health records ``exc`` as a failure (#2833).
 
-    Not a throttle, not a call-shape refusal, and not a 4xx rejection: one
-    whose first ``status_code`` on the ``__cause__`` chain is 400-499. A
-    malfunction raised with no status is recorded.
+    Not a throttle, not a call-shape refusal, and not a 4xx rejection, each
+    read from ``_failure_read(exc)``: a status on an earlier failure the
+    ``__cause__`` chain carries is not this failure's. A failure with no
+    status, such as "returned no choices", is recorded.
     """
-    if is_rate_limit_throttle(exc) or isinstance(exc, CallShapeUnsupported):
+    failure = _failure_read(exc)
+    if is_rate_limit_throttle(failure) or isinstance(failure, CallShapeUnsupported):
         return False
-    for cursor in walk_cause_chain(exc):
-        status = getattr(cursor, "status_code", None)
-        if isinstance(status, int):
-            return not 400 <= status <= 499
-    return True
+    return not _is_4xx(failure)
 
 
 # Data-driven provider schema - single source of truth.
@@ -1100,10 +1120,7 @@ class ProviderRegistry:
                     f"{provider_name} cannot carry this call shape and was "
                     f"skipped without a health penalty: {e}"
                 )
-                if last_error is None or (
-                    chain_failure_rank(e) >= chain_failure_rank(last_error)
-                ):
-                    last_error = e
+                last_error = _higher_ranked(last_error, e)
                 continue
             except Exception as e:
                 if is_rate_limit_throttle(e):
@@ -1114,10 +1131,7 @@ class ProviderRegistry:
                         f"{provider_name} rate-limited this call and was skipped "
                         f"without a health penalty: {e}"
                     )
-                    if last_error is None or (
-                        chain_failure_rank(e) >= chain_failure_rank(last_error)
-                    ):
-                        last_error = e
+                    last_error = _higher_ranked(last_error, e)
                     continue
                 # Health records what ``records_on_provider_health`` names.
                 if records_on_provider_health(e):
@@ -1127,10 +1141,7 @@ class ProviderRegistry:
                     f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
                     f"health: {state.health.value}): {e}"
                 )
-                if last_error is None or (
-                    chain_failure_rank(e) >= chain_failure_rank(last_error)
-                ):
-                    last_error = e
+                last_error = _higher_ranked(last_error, e)
                 continue
 
         # If we have a low-confidence response, return it with appropriate metadata
