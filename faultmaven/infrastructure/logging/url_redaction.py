@@ -379,15 +379,20 @@ def redact_log_line_bytes(data: bytes) -> bytes:
     """``redact_log_line`` for renderers that emit bytes.
 
     A changed JSON line is re-serialized in the input's form: ``\\uXXXX``
-    escapes for an ASCII line, raw UTF-8 otherwise, and escapes again where a
-    decoded character has no UTF-8 encoding (a lone surrogate).
+    escapes for an ASCII line, raw UTF-8 otherwise. When a decoded character
+    has no UTF-8 encoding (a lone surrogate), the whole line is re-serialized
+    with escapes, so every non-ASCII character on it comes back escaped.
     """
     data = redact_urls_bytes(data)
     low = data.lower()
     if b"cookie" not in low and b"authorization" not in low:
         return data
     # A valid line is encoded back strictly, so a decoded "\\udcff" escape
-    # cannot come back as a raw invalid byte; an invalid one keeps its bytes.
+    # cannot come back as a raw invalid byte. A line that is not valid UTF-8
+    # keeps its raw bytes only when the surrogateescape encode succeeds, and
+    # then a "\\udc80"-"\\udcff" escape on it can come back as a raw byte;
+    # on the fallback its raw bytes come back as "\\udcXX" escapes. Nothing
+    # leaks; the input was already invalid.
     try:
         text, errors = data.decode("utf-8"), "strict"
     except UnicodeDecodeError:
