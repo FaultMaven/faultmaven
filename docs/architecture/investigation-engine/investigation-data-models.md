@@ -334,10 +334,10 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 
 1. LLM sets progress milestone = True in structured output
 2. System reads turn references (`turn_N`) from `evidence_trail.evidence_analyzed`; evidence collected on a cited turn counts alongside the current turn's
-3. System counts cited evidence matching expected categories
-4. If count < minimum: warning logged (milestone still set, but flagged)
+3. System counts the current turn's evidence in the expected categories and, when that falls short of the minimum, the cited turns' evidence in them
+4. If count < minimum: the claim is reverted — the milestone leaves the turn's completed milestones, and the symptom claim is withdrawn through `unverify_problem` — and a warning is logged and recorded in `milestone_validation_warnings`
 
-Validation is **advisory, not blocking**. The LLM's progress milestone assertions are trusted, with validation providing quality feedback for monitoring.
+Validation is **blocking**: an unsupported progress milestone claim is reverted (`ResponseApplier`, `milestone_engine/response_application.py`), never set and flagged.
 
 ```python
 class InvestigationStage(str, Enum):

@@ -492,7 +492,11 @@ class EvidenceTrail(NullTolerantModel):
 
     evidence_analyzed: Optional[List[str]] = Field(
         default_factory=list,
-        description="Evidence IDs that were considered in this turn",
+        description=(
+            "Turn references (for example 'turn_2') to evidence collected on an "
+            "earlier turn that supports a milestone you change. Leave empty for "
+            "this turn's evidence. Never ev_ IDs."
+        ),
     )
     conclusions: Optional[List[EvidenceConclusion]] = Field(
         default_factory=list,

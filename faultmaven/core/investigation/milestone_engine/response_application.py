@@ -670,17 +670,6 @@ class ResponseApplier:
                     if hasattr(milestones, field_name):
                         setattr(milestones, field_name, None)
                         stripped.append(field_name)
-                # Drop only the stripped milestones' justifications; keep the rest.
-                # ``milestone_justifications`` is a model now, so clearing a
-                # justification is setting its field to None rather than popping
-                # a key — ``as_dict()`` then omits it, which is what "dropped"
-                # meant when this was a dict (fm#1057).
-                ir = getattr(response_obj, "evidence_trail", None)
-                justifications = getattr(ir, "milestone_justifications", None)
-                if justifications is not None:
-                    for field_name in stripped:
-                        if field_name in type(justifications).model_fields:
-                            setattr(justifications, field_name, None)
             logger.info(
                 f"Surgically stripped {stripped or 'no'} milestone(s) for case "
                 f"{case.case_id}; preserved the rest. Continuing with response."
