@@ -404,7 +404,7 @@ class TestTheNoHardlinkFallback:
     def _no_hardlinks(monkeypatch):
         import faultmaven.config.secret_file as publisher
 
-        def unsupported(_src, _dst):
+        def unsupported(_src, _dst, **_kwargs):
             raise OSError(1, "Operation not permitted")
 
         monkeypatch.setattr(publisher.os, "link", unsupported)
