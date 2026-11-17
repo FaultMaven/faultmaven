@@ -697,7 +697,7 @@ llm_call_tokens = Counter(
 # The investigation engine's own calls, by where they sit in the turn (#613's
 # follow-up). A tool-loop iteration re-sends the previous iteration's request
 # and appends to it, so a provider prompt cache can serve it almost whole; the
-# first call of the turn can be served only its standing prefix. So the turn's
+# first call of the turn can be served at most its standing prefix. So the turn's
 # uncached case shows up as path="tool_loop" position="first" input, which a
 # blended hit rate (rising with the iteration count) cannot show. Recorded
 # where the engine receives each response from its provider: every response it
