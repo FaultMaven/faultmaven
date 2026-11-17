@@ -26,15 +26,16 @@ import logging
 import os
 import secrets
 import stat
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 #: ``os.link`` failing with one of these means the filesystem has no hard
 #: links. Only then is the secret published by ``os.replace`` under the lock;
-#: any other failure (EIO, ENOSPC, EDQUOT, ...) propagates.
+#: any other failure of a named temp's link (EIO, ENOSPC, EDQUOT, ...)
+#: propagates, and of the unnamed link falls back to a named temp.
 _NO_HARD_LINKS = frozenset({errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP, errno.ENOSYS})
 
 #: An ``O_TMPFILE`` open failing with one of these means this filesystem or
@@ -83,24 +84,20 @@ def publish_secret_once(
     if not path.name or not resolved.name:
         raise IsADirectoryError(errno.EISDIR, "no file name", str(path))
     path = resolved
-    try:
-        parent_fd: Optional[int] = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-    except (AttributeError, OSError):
-        parent_fd = None  # no unnamed publish; the chain reports what it finds
-    try:
+    parent_fd: Optional[int] = None
+    if hasattr(os, "O_TMPFILE"):
         try:
-            if not _link_unnamed(path, data, parent_fd):
-                with _named_temp(path, data) as tmp:
-                    os.link(tmp, path)
-            published = True
-        except FileExistsError:
-            # Another process published first; its secret is the deployment's.
-            if replace_if is None or not replace_if(path.read_bytes()):
-                return False
-            published = _publish_under_lock(path, data, replace_if, parent_fd)
+            parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         except OSError as exc:
-            if exc.errno not in _NO_HARD_LINKS:
-                raise
+            if exc.errno != errno.ENOENT:  # a missing one fails the publish below
+                _unnamed_failed(path, exc)
+    try:
+        linked, unnamed = _link_new(path, data, parent_fd)
+        # A lost race's lock path skips an unnamed publish that already failed.
+        lock_fd = parent_fd if unnamed else None
+        if linked:
+            published = True
+        elif linked is None:
             # Filesystem without hardlink support (some network mounts, some
             # Docker bind mounts). ``os.replace`` is atomic but unconditional,
             # so it would clobber a secret another process just published. It
@@ -112,7 +109,12 @@ def publish_secret_once(
             # window described above: a crash or ENOSPC between the two left a
             # permanent zero-byte file, and a concurrent reader could observe
             # it and refuse to boot.
-            published = _publish_under_lock(path, data, replace_if, parent_fd)
+            published = _publish_under_lock(path, data, replace_if, lock_fd)
+        elif replace_if is None or not replace_if(path.read_bytes()):
+            # Another process published first; its secret is the deployment's.
+            return False
+        else:
+            published = _publish_under_lock(path, data, replace_if, lock_fd)
         if published:
             _fsync_directory_chain(path, parent_fd)
         return published
@@ -121,52 +123,74 @@ def publish_secret_once(
             os.close(parent_fd)
 
 
-def _link_unnamed(path: Path, data: bytes, parent_fd: Optional[int]) -> bool:
-    """Link a new unnamed inode holding ``data`` at ``path``. True if linked.
+def _link_new(
+    path: Path, data: bytes, parent_fd: Optional[int]
+) -> Tuple[Optional[bool], bool]:
+    """Link a new file holding ``data`` at ``path``: ``(linked, unnamed)``.
 
-    False where there is no unnamed publish, so the caller uses a named temp
-    file: silently where this platform or filesystem has none, with a WARNING
-    on any other failure, so a startup that worked before still does.
-    Raises ``FileExistsError`` when a secret is already there, and an
-    ``OSError`` in ``_NO_HARD_LINKS`` when the filesystem has no hard links.
-    The inode is linked exactly once: a second link would be a second name.
+    ``linked`` is True if it landed, False if a file is already there, and None
+    if the filesystem has no hard links. It is an unnamed inode, linked exactly
+    once (a second link would be a second name), when ``parent_fd`` is given
+    and the ``O_TMPFILE`` open and the ``/proc`` link work. Otherwise it is a
+    named temp file, and ``unnamed`` is False: silently where this platform or
+    filesystem has no unnamed files, after a WARNING on any other failure of
+    that open or link, so a startup that worked before still does. A failure
+    to write or fsync the content propagates.
     """
-    if parent_fd is None or not hasattr(os, "O_TMPFILE"):
+    fd = _unnamed_inode(path, data, parent_fd) if parent_fd is not None else None
+    if fd is not None:
+        try:
+            # dst_dir_fd makes CPython call linkat(AT_SYMLINK_FOLLOW), which
+            # links the inode; a bare os.link() links the /proc entry: EXDEV.
+            source = f"{_PROC_FD}/{fd}"
+            follow = {"dst_dir_fd": parent_fd, "follow_symlinks": True}
+            return _link(source, path.name, **follow), True
+        except OSError as exc:
+            if exc.errno != errno.ENOENT or os.path.isdir(_PROC_FD):
+                _unnamed_failed(path, exc)
+        finally:
+            with suppress(OSError):  # its content is fsynced; a link stands
+                os.close(fd)
+    with _named_temp(path, data) as tmp:
+        return _link(tmp, path), False
+
+
+def _link(src: str | Path, dst: str | Path, **kwargs) -> Optional[bool]:
+    """``os.link``: True if linked, False if ``dst`` exists, None if no hard links."""
+    try:
+        os.link(src, dst, **kwargs)
+        return True
+    except FileExistsError:
         return False
+    except OSError as exc:
+        if exc.errno in _NO_HARD_LINKS:
+            return None
+        raise
+
+
+def _unnamed_inode(path: Path, data: bytes, parent_fd: int) -> Optional[int]:
+    """An fd of a new unnamed inode holding ``data``, fsynced; None if none."""
     try:
         fd = os.open(".", os.O_TMPFILE | os.O_WRONLY, 0o600, dir_fd=parent_fd)
     except OSError as exc:
-        if exc.errno in _NO_TMPFILE:
-            return False
-        return _unnamed_failed(path, exc)
+        if exc.errno not in _NO_TMPFILE:
+            _unnamed_failed(path, exc)
+        return None
     try:
         _write_synced(fd, data)
-        # dst_dir_fd makes CPython call linkat(AT_SYMLINK_FOLLOW), which links
-        # the inode; a bare os.link() links the /proc entry and gets EXDEV.
-        os.link(
-            f"{_PROC_FD}/{fd}", path.name, dst_dir_fd=parent_fd, follow_symlinks=True
-        )
-        return True
-    except FileExistsError:
-        raise
-    except OSError as exc:
-        if exc.errno in _NO_HARD_LINKS:
-            raise
-        if exc.errno == errno.ENOENT and not os.path.isdir(_PROC_FD):
-            return False
-        return _unnamed_failed(path, exc)
-    finally:
+    except BaseException:
         os.close(fd)
+        raise
+    return fd
 
 
-def _unnamed_failed(path: Path, exc: OSError) -> bool:
+def _unnamed_failed(path: Path, exc: OSError) -> None:
     logger.warning(
         "Could not publish the secret file %s as an unnamed file (%s); using a "
         "named temp file, which a kill mid-publish can leave beside it.",
         path,
         errno.errorcode.get(exc.errno or 0, exc),
     )
-    return False
 
 
 def _write_synced(fd: int, data: bytes) -> None:
@@ -202,8 +226,8 @@ def _publish_under_lock(
 ) -> bool:
     """Publish ``data`` at ``path`` iff nothing is published yet. True if we won.
 
-    An absent target is linked as a new unnamed inode, or a named temp file
-    where there is none, so a racer linking without the lock is never
+    An absent target is linked (``_link_new``: an unnamed inode unless
+    ``parent_fd`` is None), so a racer linking without the lock is never
     overwritten; ``os.replace`` of a named temp file lands only on a
     filesystem without hard links, or over a file ``replace_if`` says holds no
     secret. A kill before that rename leaves a temp file that was never
@@ -235,16 +259,9 @@ def _publish_under_lock(
         try:
             existing = path.read_bytes()
         except FileNotFoundError:
-            try:
-                if not _link_unnamed(path, data, parent_fd):
-                    with _named_temp(path, data) as tmp:
-                        os.link(tmp, path)
-                return True
-            except FileExistsError:
-                return False
-            except OSError as exc:
-                if exc.errno not in _NO_HARD_LINKS:
-                    raise
+            linked, _ = _link_new(path, data, parent_fd)
+            if linked is not None:
+                return linked
         else:
             if replace_if is None or not replace_if(existing):
                 return False

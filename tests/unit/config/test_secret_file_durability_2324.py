@@ -57,9 +57,10 @@ def _require_unnamed_files(directory: Path) -> None:
 
 
 def _record(monkeypatch) -> list:
-    """Log every file fsync, directory fsync, link and unlink, in order."""
+    """Log every file fsync, directory fsync, link, unlink and replace, in order."""
     events: list = []
     real_fsync, real_link, real_unlink = os.fsync, os.link, os.unlink
+    real_replace = os.replace
 
     def fsync(fd):
         st = os.fstat(fd)
@@ -75,10 +76,22 @@ def _record(monkeypatch) -> list:
         real_unlink(*args, **kwargs)
         events.append(("unlink", None))
 
+    def replace(*args, **kwargs):
+        real_replace(*args, **kwargs)
+        events.append(("replace", None))
+
     monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(os, "link", link)
     monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "replace", replace)
     return events
+
+
+def _raising(code: int):
+    def raises(*args, **kwargs):
+        raise OSError(code, os.strerror(code))
+
+    return raises
 
 
 def _dirs_fsynced(events) -> list:
@@ -168,6 +181,25 @@ def test_the_publish_fsyncs_its_directories_after_the_name_lands(
         assert _ident(directory) in fsynced, directory
 
 
+@pytest.mark.parametrize("lock_path", ["blank-file", "no-hard-links"])
+def test_a_publish_under_the_lock_fsyncs_its_directories_after_the_rename(
+    tmp_path, monkeypatch, lock_path
+):
+    path = tmp_path / "d" / "secret"
+    path.parent.mkdir()
+    if lock_path == "blank-file":
+        path.write_bytes(b"")
+    events = _record(monkeypatch)
+    if lock_path == "no-hard-links":
+        monkeypatch.setattr(os, "link", _raising(errno.EPERM))
+
+    assert publish_secret_once(path, b"the-secret", replace_if=lambda raw: not raw)
+
+    assert path.read_bytes() == b"the-secret"
+    after = _dirs_fsynced(events[events.index(("replace", None)) :])
+    assert _ident(path.parent) in after and _ident(tmp_path) in after, events
+
+
 def test_the_walk_stops_at_the_device_boundary(tmp_path, monkeypatch):
     path = tmp_path / "a" / "b" / "secret"
     path.parent.mkdir(parents=True)
@@ -205,7 +237,7 @@ def test_a_symlinked_secret_fsyncs_its_targets_directory(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("caller", CALLERS)
-@pytest.mark.parametrize("found", ["lost-race", "existing"])
+@pytest.mark.parametrize("found", ["lost-race", "existing", "symlinked"])
 def test_every_read_fsyncs_the_secrets_directory_first(
     tmp_path, monkeypatch, caller, found
 ):
@@ -213,7 +245,8 @@ def test_every_read_fsyncs_the_secrets_directory_first(
     name a power loss could still take; its read fsyncs the directory first.
     The winner's own fsync is taken out: the publish only writes the file."""
     module, resolve = CALLERS[caller]
-    path = tmp_path / "data" / "secret"
+    target = tmp_path / "data" / "secret"
+    path = tmp_path / "elsewhere" / "secret" if found == "symlinked" else target
     monkeypatch.setenv("JWT_SECRET_FILE", str(path))
     winners = secrets.token_hex(32).encode()
     events = _record(monkeypatch)
@@ -223,15 +256,20 @@ def test_every_read_fsyncs_the_secrets_directory_first(
         events.append(("published", None))
         return False
 
-    if found == "existing":
-        path.parent.mkdir()
-        path.write_bytes(winners)
+    if found != "lost-race":
+        target.parent.mkdir()
+        target.write_bytes(winners)
         events.append(("published", None))
+    if found == "symlinked":
+        path.parent.mkdir()
+        path.symlink_to(target)
     monkeypatch.setattr(module, "publish_secret_once", another_process_won)
 
     assert resolve(path) == winners
     after = _dirs_fsynced(events[events.index(("published", None)) :])
-    assert _ident(path.parent) in after, events
+    assert _ident(target.parent) in after and _ident(tmp_path) in after, events
+    if found == "symlinked":
+        assert _ident(path.parent) not in after, events
 
 
 @pytest.mark.parametrize(
@@ -247,6 +285,8 @@ def test_a_filesystem_without_unnamed_files_publishes_silently(
         _require_unnamed_files(tmp_path)
         monkeypatch.setattr(publisher, "_PROC_FD", str(tmp_path / "no-proc"))
     else:
+        if not hasattr(os, "O_TMPFILE"):
+            pytest.skip("this platform has no O_TMPFILE")
         refused, real_open = getattr(errno, fallback), os.open
 
         def no_tmpfile(file, flags, *args, **kwargs):
@@ -263,19 +303,22 @@ def test_a_filesystem_without_unnamed_files_publishes_silently(
     assert not _warnings(caplog)
 
 
-@pytest.mark.parametrize("wrong", ["closed-fd", "O_EXCL", "bare-link"])
+@pytest.mark.parametrize("wrong", ["closed-fd", "O_EXCL", "bare-link", "EACCES"])
 def test_a_broken_unnamed_publish_warns_and_still_publishes(
     tmp_path, monkeypatch, caplog, wrong
 ):
     """Each is a wrong way to link the inode: linking an fd already closed, an
     inode opened ``O_EXCL`` (never linkable), or a bare ``os.link`` of the
-    /proc entry (EXDEV). None may pass silently, and none may stop a startup."""
+    /proc entry (EXDEV); or an open refused for a reason that is not "no
+    unnamed files here". None may pass silently, nor stop a startup."""
     _require_unnamed_files(tmp_path)
     path = tmp_path / "secret"
     real_open, real_link = os.open, os.link
 
     def open_excl(file, flags, *args, **kwargs):
         if flags & os.O_TMPFILE == os.O_TMPFILE:
+            if wrong == "EACCES":
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
             flags |= os.O_EXCL
         return real_open(file, flags, *args, **kwargs)
 
@@ -286,7 +329,7 @@ def test_a_broken_unnamed_publish_warns_and_still_publishes(
             return real_link("/proc/self/fd/999999", dst, **kwargs)
         return real_link(src, path)
 
-    if wrong == "O_EXCL":
+    if wrong in ("O_EXCL", "EACCES"):
         monkeypatch.setattr(os, "open", open_excl)
     else:
         monkeypatch.setattr(os, "link", link)
@@ -295,22 +338,22 @@ def test_a_broken_unnamed_publish_warns_and_still_publishes(
 
     assert path.read_bytes() == b"the-secret"
     warned = _warnings(caplog)
-    expected = "EXDEV" if wrong == "bare-link" else "ENOENT"
+    expected = {"bare-link": "EXDEV", "EACCES": "EACCES"}.get(wrong, "ENOENT")
     assert len(warned) == 1 and expected in warned[0], warned
 
 
-def test_without_hard_links_the_lock_path_renames_a_temp_file(tmp_path, monkeypatch):
+def test_without_hard_links_the_lock_path_renames_a_temp_file(
+    tmp_path, monkeypatch, caplog
+):
+    """EPERM on the unnamed link is "no hard links", not a broken publish."""
     path = tmp_path / "secret"
     renamed, real_replace = [], os.replace
-
-    def no_hard_links(*args, **kwargs):
-        raise OSError(errno.EPERM, "Operation not permitted")
 
     def replace(src, dst):
         renamed.append(Path(src).name)
         return real_replace(src, dst)
 
-    monkeypatch.setattr(os, "link", no_hard_links)
+    monkeypatch.setattr(os, "link", _raising(errno.EPERM))
     monkeypatch.setattr(os, "replace", replace)
 
     assert publish_secret_once(path, b"the-secret")
@@ -318,6 +361,119 @@ def test_without_hard_links_the_lock_path_renames_a_temp_file(tmp_path, monkeypa
     assert path.read_bytes() == b"the-secret"
     assert sorted(os.listdir(tmp_path)) == ["secret", "secret.lock"]
     assert len(renamed) == 1 and renamed[0].startswith("secret.tmp."), renamed
+    assert not _warnings(caplog)
+
+
+def test_a_lost_race_does_not_retry_an_unnamed_publish_that_failed(
+    tmp_path, monkeypatch, caplog
+):
+    """The blank file is gone once the lock is held. The first attempt's
+    unnamed open failed, so the lock path goes straight to a named temp: one
+    WARNING and one ``O_TMPFILE`` open, not two."""
+    _require_unnamed_files(tmp_path)
+    path = tmp_path / "secret"
+    path.write_bytes(b"")
+    tmpfile_opens, real_open = [], os.open
+
+    def eio_on_tmpfile(file, flags, *args, **kwargs):
+        if flags & os.O_TMPFILE == os.O_TMPFILE:
+            tmpfile_opens.append(file)
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_open(file, flags, *args, **kwargs)
+
+    def blank_until_deleted(raw):
+        path.unlink()
+        return not raw
+
+    monkeypatch.setattr(os, "open", eio_on_tmpfile)
+
+    assert publish_secret_once(path, b"the-secret", replace_if=blank_until_deleted)
+
+    assert path.read_bytes() == b"the-secret"
+    assert len(tmpfile_opens) == 1 and len(_warnings(caplog)) == 1, caplog.text
+
+
+def test_a_close_error_after_the_link_still_publishes(tmp_path, monkeypatch):
+    _require_unnamed_files(tmp_path)
+    path = tmp_path / "secret"
+    events = _record(monkeypatch)
+    linked_fds, raised, real_link, real_close = [], [], os.link, os.close
+
+    def link(src, dst, **kwargs):
+        real_link(src, dst, **kwargs)
+        if str(src).startswith("/proc/"):
+            linked_fds.append(int(str(src).rsplit("/", 1)[1]))
+
+    def close(fd):
+        real_close(fd)
+        if fd in linked_fds and not raised:
+            raised.append(fd)
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(os, "close", close)
+
+    assert publish_secret_once(path, b"the-secret")
+
+    assert raised and _ident(tmp_path) in _dirs_fsynced(events)
+
+
+@pytest.mark.parametrize("unnamed", [True, False], ids=["unnamed", "named-temp"])
+def test_a_content_fsync_error_propagates_and_publishes_nothing(
+    tmp_path, monkeypatch, caplog, unnamed
+):
+    if not unnamed:
+        monkeypatch.delattr(os, "O_TMPFILE", raising=False)
+    path = tmp_path / "secret"
+    real_fsync = os.fsync
+
+    def eio_on_files(fd):
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", eio_on_files)
+
+    with pytest.raises(OSError) as failed:
+        publish_secret_once(path, b"the-secret")
+
+    assert failed.value.errno == errno.EIO
+    assert os.listdir(tmp_path) == []
+    assert not _warnings(caplog)
+
+
+def test_a_temp_name_taken_is_an_error_not_a_lost_race(tmp_path, monkeypatch):
+    """Only the link's EEXIST means another process published first."""
+    monkeypatch.delattr(os, "O_TMPFILE", raising=False)
+    path = tmp_path / "secret"
+    real_open = os.open
+
+    def temp_name_taken(file, flags, *args, **kwargs):
+        if ".tmp." in os.fspath(file):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST))
+        return real_open(file, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", temp_name_taken)
+
+    with pytest.raises(FileExistsError):
+        publish_secret_once(path, b"the-secret")
+    assert not path.exists()
+
+
+def test_an_unreadable_parent_warns_before_the_named_temp(tmp_path, caplog):
+    """A directory that can be written and searched but not read refuses the
+    fd the unnamed publish links through. That is no silent fallback."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads every directory")
+    path = tmp_path / "d" / "secret"
+    path.parent.mkdir(mode=0o300)
+    try:
+        assert publish_secret_once(path, b"the-secret")
+    finally:
+        path.parent.chmod(0o700)
+
+    assert path.read_bytes() == b"the-secret"
+    assert any("unnamed file (EACCES)" in w for w in _warnings(caplog)), caplog.text
 
 
 def test_the_lock_paths_absent_target_opens_no_named_temp(tmp_path, monkeypatch):
@@ -372,17 +528,19 @@ def test_a_first_boot_with_no_data_directory_logs_no_warning(tmp_path, caplog):
 
 
 @pytest.mark.parametrize(
-    "where, call, code, level",
+    "where, call, code, levels",
     [
-        ("parent", "open", errno.EACCES, logging.WARNING),
-        ("parent", "fsync", errno.EIO, logging.WARNING),
-        ("parent", "fsync", errno.EINVAL, logging.DEBUG),
-        ("ancestor", "open", errno.EACCES, logging.DEBUG),
-        ("ancestor", "fsync", errno.EIO, logging.DEBUG),
+        # the unnamed publish's fallback, then the chain: two facts
+        ("parent", "open", errno.EACCES, [logging.WARNING, logging.WARNING]),
+        ("parent", "open", errno.ENOENT, []),
+        ("parent", "fsync", errno.EIO, [logging.WARNING]),
+        ("parent", "fsync", errno.EINVAL, [logging.DEBUG]),
+        ("ancestor", "open", errno.EACCES, [logging.DEBUG]),
+        ("ancestor", "fsync", errno.EIO, [logging.DEBUG]),
     ],
 )
 def test_a_directory_that_cannot_be_fsynced_is_logged_never_raised(
-    tmp_path, monkeypatch, caplog, where, call, code, level
+    tmp_path, monkeypatch, caplog, where, call, code, levels
 ):
     """Only a real failure on the secret's own directory warns: an ancestor
     the process cannot read, or a filesystem that does not fsync directories,
@@ -412,7 +570,7 @@ def test_a_directory_that_cannot_be_fsynced_is_logged_never_raised(
     named = [
         r for r in caplog.records if r.name == LOGGER and str(failing) in r.getMessage()
     ]
-    assert [r.levelno for r in named] == [level], caplog.text
+    assert [r.levelno for r in named] == levels, caplog.text
     assert not [
         r for r in caplog.records if r.levelno >= logging.WARNING and r not in named
     ]

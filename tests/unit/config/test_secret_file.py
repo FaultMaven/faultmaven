@@ -17,6 +17,14 @@ from faultmaven.infrastructure.security.pseudonym_key import _load_or_create
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True, params=["unnamed", "named-temp"])
+def publish_path(request, monkeypatch):
+    """Each race runs twice: unnamed where the filesystem allows it, and
+    through the named temp file every filesystem without ``O_TMPFILE`` uses."""
+    if request.param == "named-temp":
+        monkeypatch.delattr(os, "O_TMPFILE", raising=False)
+
+
 def test_a_published_secret_is_kept_and_the_loser_is_told(tmp_path):
     path = tmp_path / "secret"
     path.write_bytes(b"the-winners-secret\n")
