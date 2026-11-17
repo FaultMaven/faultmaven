@@ -53,11 +53,26 @@ _MARKER = "draft-secret-2452"
 _UPLOAD_BODY = '{"document_id": "kb_x", "title": "t", "status": "published"}'
 
 
-def _old_body(job: str) -> str:
+#: Each enterprise's convert receipts: ``(key, job prefix, body)``. The old
+#: body names another job, so only the column can supply the new body's id;
+#: ``[1, 2]`` is not an object, so the old body is never parsed.
+_CONVERTS = (
+    ("key-old", "job_old", None),
+    ("key-new", "job_new", "in-shape"),
+    ("key-list", "job_list", "[1, 2]"),
+)
+#: Every column but ``response``, which must not move.
+_COLUMNS = (
+    "enterprise_id, idempotency_key, author_id, route, request_fingerprint, "
+    "status_code, knowledge_item_id, conversion_id, created_at"
+)
+
+
+def _old_body() -> str:
     """A pre-15.3.0 convert answer: every draft's text and the analysis."""
     return json.dumps(
         {
-            "conversion_id": job,
+            "conversion_id": "job_elsewhere",
             "drafts": [{"draft_id": "d1", "content": f"step {_MARKER} one"}],
             "analysis": {"summary": "s", "failure_modes": ["a"]},
         }
@@ -79,8 +94,8 @@ async def _execute(url: str, *statements: str) -> list:
 
 
 async def _seed(url: str) -> tuple:
-    """Two enterprises, each with a conversion job and its convert receipt
-    holding an old body, and a knowledge item with its upload receipt.
+    """Two enterprises, each with three conversion jobs and their convert
+    receipts (``_CONVERTS``), and a knowledge item with its upload receipt.
     Returns the enterprises."""
     tag = uuid.uuid4().hex[:8]
     enterprises = (f"ent_a_{tag}", f"ent_b_{tag}")
@@ -99,30 +114,33 @@ async def _seed(url: str) -> tuple:
             f"'{enterprise}', 't', 'c', 'runbook', 'g1')",
             f"INSERT INTO uploaded_files (file_id, enterprise_id, filename, "
             f"size_bytes) VALUES ('file_{enterprise}', '{enterprise}', 'src', 1)",
-            f"INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, scope, "
-            f"source_type) VALUES ('job_{enterprise}', '{enterprise}', "
-            f"'file_{enterprise}', 'personal', 'document')",
-            f"{insert}('{enterprise}', 'u1', 'convert', 'key-convert', 'f', 201, "
-            f"'{_old_body(f'job_{enterprise}')}', NULL, 'job_{enterprise}', now())",
             f"{insert}('{enterprise}', 'u1', 'upload', 'key-upload', 'f', 201, "
             f"'{_UPLOAD_BODY}', 'kb_{enterprise}', NULL, now())",
         ]
+        for key, prefix, body in _CONVERTS:
+            job = f"{prefix}_{enterprise}"
+            if body is None:
+                body = _old_body()
+            elif body == "in-shape":
+                body = json.dumps({"conversion_id": job})
+            statements += [
+                f"INSERT INTO conversion_jobs (id, enterprise_id, source_file_id, "
+                f"scope, source_type) VALUES ('{job}', '{enterprise}', "
+                f"'file_{enterprise}', 'personal', 'document')",
+                f"{insert}('{enterprise}', 'u1', 'convert', '{key}', 'f', 201, "
+                f"'{body}', NULL, '{job}', now())",
+            ]
     await _execute(url, *statements)
     return enterprises
 
 
 async def _rows(url: str) -> dict:
-    """Each receipt's ``(conversion_id, response as stored)`` by enterprise
-    and route."""
+    """Each receipt's other columns and ``response`` as stored, by enterprise
+    and key."""
     rows = await _execute(
-        url,
-        "SELECT enterprise_id, route, conversion_id, response::text "
-        "FROM kb_request_receipts",
+        url, f"SELECT {_COLUMNS}, response::text FROM kb_request_receipts"
     )
-    return {
-        (enterprise, route): (job, response)
-        for enterprise, route, job, response in rows
-    }
+    return {(row[0], row[1]): (tuple(row[:-1]), row[-1]) for row in rows}
 
 
 async def _revision(url: str) -> str:
@@ -131,9 +149,10 @@ async def _revision(url: str) -> str:
 
 
 async def test_the_owner_scrubs_every_enterprises_convert_receipts():
-    """Migrated by a role that owns the tables and is not a superuser. Both
-    enterprises' convert receipts hold their job id only; the upload receipts
-    are unchanged; the downgrade moves nothing."""
+    """Migrated by a role that owns the tables and is not a superuser. Every
+    convert receipt in both enterprises holds its own job id only, whatever it
+    held; no other column and no upload receipt moves; the downgrade moves
+    nothing."""
     superuser_url = os.environ["DATABASE_URL"]
     role = f"fm_026_owner_{uuid.uuid4().hex[:8]}"
     await _execute(superuser_url, drop_role_sql(role))
@@ -151,19 +170,25 @@ async def test_the_owner_scrubs_every_enterprises_convert_receipts():
             enterprises = await _seed(owner_url)
             before = await _rows(su_url)
             assert all(
-                _MARKER in before[(enterprise, "convert")][1]
+                _MARKER in before[(enterprise, "key-old")][1]
                 for enterprise in enterprises
             ), "positive control"
 
             result = alembic_on(owner_url, f"upgrade {_REVISION}")
             assert result.returncode == 0, result.stderr[-2000:]
-            assert "026: rewrote 2 convert receipt(s)" in result.stderr
+            assert "026: rewrote 6 convert receipt(s)" in result.stderr
 
             rows = await _rows(su_url)
+            assert {key: rest for key, (rest, _) in rows.items()} == {
+                key: rest for key, (rest, _) in before.items()
+            }
             for enterprise in enterprises:
-                job, response = rows[(enterprise, "convert")]
-                assert json.loads(response) == {"conversion_id": job}
-                assert rows[(enterprise, "upload")] == before[(enterprise, "upload")]
+                for key, prefix, _ in _CONVERTS:
+                    _, response = rows[(enterprise, key)]
+                    job = f"{prefix}_{enterprise}"
+                    assert json.loads(response) == {"conversion_id": job}
+                upload = (enterprise, "key-upload")
+                assert rows[upload] == before[upload]
             assert all(_MARKER not in response for _, response in rows.values())
 
             result = alembic_on(owner_url, f"downgrade {_PARENT_REVISION}")
@@ -195,7 +220,7 @@ async def test_a_role_the_policy_filters_raises_instead_of_scrubbing_nothing():
                 su_url,
                 "SELECT count(*) FROM kb_request_receipts WHERE route = 'convert'",
             )
-            assert converts[0][0] >= 2
+            assert converts == [(6,)]
             visible = await _execute(
                 role_url, "SELECT count(*) FROM kb_request_receipts"
             )

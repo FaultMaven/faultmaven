@@ -4302,16 +4302,18 @@ class TestScrubConvertReceiptBodiesRevision:
     """026 scrubs the drafts' text a convert receipt stored before contract
     15.3.0 (#2452, ruling 2026-11-17): every ``route = 'convert'`` row's
     ``response`` becomes ``{"conversion_id": <its conversion_id>}``, whatever
-    it held, and no upload receipt moves. The downgrade changes nothing.
+    it held, and no other column or upload receipt moves. The downgrade
+    changes nothing.
 
     Its PostgreSQL half, under ``row_security = off``:
     ``tests/integration/security/test_scrub_convert_receipt_bodies_postgres.py``.
     """
 
     MARKER = "draft-secret-2452"
-    #: A pre-15.3.0 convert answer: every draft's text and the analysis.
+    #: A pre-15.3.0 convert answer: every draft's text and the analysis. Its
+    #: id is not the row's, so only the column can supply the new body's.
     OLD_BODY = {
-        "conversion_id": "job_old",
+        "conversion_id": "job_elsewhere",
         "drafts": [
             {"draft_id": "d1", "title": "One", "content": f"step {MARKER} one"},
             {"draft_id": "d2", "title": "Two", "content": f"step {MARKER} two"},
@@ -4365,15 +4367,19 @@ class TestScrubConvertReceiptBodiesRevision:
         finally:
             conn.close()
 
-    @staticmethod
-    def _rows() -> dict:
-        """Each receipt's ``(route, conversion_id, raw response)`` by key."""
+    #: Every column but ``response``, which must not move.
+    COLUMNS = (
+        "idempotency_key, enterprise_id, author_id, route, request_fingerprint, "
+        "status_code, knowledge_item_id, conversion_id, created_at"
+    )
+
+    @classmethod
+    def _rows(cls) -> dict:
+        """Each receipt's other columns and raw ``response``, by key."""
         return {
-            key: (route, job, response)
-            for key, route, job, response in query_rows(
-                TEST_DB,
-                "SELECT idempotency_key, route, conversion_id, response "
-                "FROM kb_request_receipts",
+            row[0]: (row[:-1], row[-1])
+            for row in query_rows(
+                TEST_DB, f"SELECT {cls.COLUMNS}, response FROM kb_request_receipts"
             )
         }
 
@@ -4383,7 +4389,7 @@ class TestScrubConvertReceiptBodiesRevision:
         prepare_database(ADMIN_CASE_METADATA_DISPOSED_REVISION, database_url)
         self._seed()
         before = self._rows()
-        assert self.MARKER in before["key-job_old"][2], "positive control"
+        assert self.MARKER in before["key-job_old"][1], "positive control"
 
         result = run_alembic(
             f"upgrade {SCRUB_CONVERT_RECEIPT_BODIES_REVISION}", database_url
@@ -4392,11 +4398,14 @@ class TestScrubConvertReceiptBodiesRevision:
         assert "026: rewrote 3 convert receipt(s)" in result.stderr
 
         rows = self._rows()
-        converts = {key: row for key, row in rows.items() if row[0] == "convert"}
+        assert {key: rest for key, (rest, _) in rows.items()} == {
+            key: rest for key, (rest, _) in before.items()
+        }
+        converts = {key: row for key, row in rows.items() if row[0][3] == "convert"}
         assert sorted(converts) == ["key-job_list", "key-job_new", "key-job_old"]
-        for _, job, response in converts.values():
-            assert json.loads(response) == {"conversion_id": job}
-        assert all(self.MARKER not in response for _, _, response in rows.values())
+        for rest, response in converts.values():
+            assert json.loads(response) == {"conversion_id": rest[7]}
+        assert all(self.MARKER not in response for _, response in rows.values())
         assert rows["key-upload"] == before["key-upload"]
 
         result = run_alembic(
@@ -4426,10 +4435,10 @@ class TestScrubConvertReceiptBodiesRevision:
         off = sql.index("SET LOCAL row_security = off;")
         update = sql.index(
             "UPDATE kb_request_receipts SET response = json_build_object("
+            "'conversion_id', conversion_id) WHERE route = 'convert';"
         )
         restored = sql.index("SET LOCAL row_security TO DEFAULT;")
         assert off < update < restored, sql
-        assert "WHERE route = 'convert'" in sql
 
         down = run_alembic(
             f"downgrade {SCRUB_CONVERT_RECEIPT_BODIES_REVISION}:"

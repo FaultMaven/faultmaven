@@ -15,12 +15,21 @@ The ``route = 'convert'`` CHECK holds ``conversion_id`` non-NULL, so no row
 gets ``{}``. Upload receipts are not touched: their body holds no document
 text.
 
-What "at rest" covers: afterwards no live row holds the text. On PostgreSQL
-the old tuple stays on disk until VACUUM, and WAL and backups already taken
-keep theirs; this revision runs no VACUUM (``env.py`` runs one transaction).
-Its precondition: the scrub is complete once no image older than 15.3.0
-writes after it. A pre-15.3.0 pod still serving during a rollout can write a
-full body again.
+What "at rest" covers: afterwards no live row holds the text. The old bytes
+can outlive the row. On PostgreSQL a plain VACUUM marks a dead tuple's space
+reusable without overwriting it, so they stay in the heap and TOAST files
+until that space is reused or the table is rewritten (VACUUM FULL). On SQLite
+a freed page keeps them unless ``secure_delete`` is on. WAL and backups
+already taken keep theirs.
+
+Rolling deploys
+---------------
+
+Run this release with no pod on an image older than 15.3.0 serving keyed
+``POST /knowledge/convert`` after the revision has run (a Recreate rollout, or
+scale the old replicas down first). Such a pod still stores the full body, and
+a body it writes afterwards keeps its drafts' text until its job is deleted:
+Alembic never runs 026 again.
 
 Row-level security
 ------------------
