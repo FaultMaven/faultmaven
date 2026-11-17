@@ -621,3 +621,22 @@ class TestPolicyFrames:
             frames = output
         for link in ("BackendError:", "ConnectionError:"):
             assert link in frames
+
+    def test_frames_follow_a_stack_info_block(self, rendered):
+        error = _backend_error()
+        logging.getLogger("faultmaven.test.policy").error(
+            "op failed",
+            extra={"frames": exception_frames(error)},
+            stack_info=True,
+        )
+        output = rendered.getvalue()
+        assert SENTINEL not in output
+        assert "Stack (most recent call last)" in output
+        for link in ("BackendError:", "ConnectionError:"):
+            assert link in output
+
+    def test_a_non_string_frames_still_renders_its_line(self, rendered):
+        logging.getLogger("faultmaven.test.policy").error(
+            "op failed", extra={"frames": ["a", "b"]}
+        )
+        assert "op failed" in rendered.getvalue()

@@ -70,13 +70,19 @@ def frames_as_console_stack(
     """Show a line's ``frames`` (``exception_frames``) as the console renderer's
     multi-line ``stack`` block, for the console renderer only.
 
-    ``frames`` is the one field name for frames (principles §7). The console
-    renderer writes any other field inline with its newlines escaped, so the
-    line redactor, which runs on each rendered line, would drop every frame
-    after the first one it redacts. JSON lines keep ``frames``.
+    ``frames`` is the field the logging policy records frames under
+    (``docs/operations/monitoring/logging-policy.md``). The console renderer
+    writes any other field inline with its newlines escaped, so the line
+    redactor, which runs on each rendered line, would drop every frame after
+    the first one it redacts. A line that already has a ``stack`` (from
+    ``stack_info``) gets the frames after it. A non-string ``frames`` or
+    ``stack`` leaves both as they are: the renderer concatenates ``stack`` as
+    text. JSON lines keep ``frames``.
     """
-    if "frames" in event_dict and "stack" not in event_dict:
-        event_dict["stack"] = event_dict.pop("frames")
+    frames, stack = event_dict.get("frames"), event_dict.get("stack")
+    if isinstance(frames, str) and (stack is None or isinstance(stack, str)):
+        del event_dict["frames"]
+        event_dict["stack"] = frames if stack is None else f"{stack}\n{frames}"
     return event_dict
 
 

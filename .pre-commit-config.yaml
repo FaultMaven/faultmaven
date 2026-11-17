@@ -132,7 +132,8 @@ repos:
 
       # The bundled KB pack must be structurally valid AND in sync with the
       # runbook sources under resources/knowledge/runbooks/. Catches a runbook
-      # edited, added or deleted without rebuilding the pack; no model.
+      # edited, added or deleted without rebuilding the pack, and a pack file
+      # edited by hand; no model.
       # pre-commit hands a hook no deleted file (its staged list is
       # --diff-filter=ACMRTUXB), so the hook always starts, and runs the check
       # when it is handed a matching file (an edit or add, or --all-files) or a
@@ -147,7 +148,8 @@ repos:
         language: system
         always_run: true
         require_serial: true
-        files: ^resources/knowledge/(runbooks/.*\.md|pack/(pack\.json|vectors\.npz))$
+        stages: [pre-commit]
+        files: ^resources/knowledge/(runbooks/.*\.md|pack/(pack\.json|vectors\.npz|runbooks/.*\.md))$
 
       # Brand-messaging terminology lint. Fails on retired terms in brand-facing
       # files (README, CLAUDE.md, pyproject, docs/README). Canonical source is
