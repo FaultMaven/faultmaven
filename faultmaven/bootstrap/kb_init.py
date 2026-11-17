@@ -29,9 +29,9 @@ Per runbook
       1. Take the deterministic ``item_id`` the pack carries.
       2. Check ``knowledge_items`` — if present, ingested from this pack
          version (the pack hash stamped on the row), at the pack's scope and,
-         with a share repository wired, its team share (#2386) AND served (a chunk carries the row's
-         ``vector_generation``, #2388), skip, deleting any share that is not
-         the row's own.
+         with a share repository wired, its team share (#2386), AND served (a
+         chunk carries the row's ``vector_generation``, #2388), skip, deleting
+         any share that is not the row's own.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...,
          replaces_generation=...)`` — the pack vectors first, under a new
          generation, then one transaction that deletes the row it observed
