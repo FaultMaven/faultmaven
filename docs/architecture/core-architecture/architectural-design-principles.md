@@ -30,7 +30,7 @@ These principles optimize for a small team (<15) building an AI-powered SRE tool
 | 4 | Interface-Based Design | Protocols for swappable boundaries; concrete classes internally |
 | 5 | Composition Root | All DI wiring in `bootstrap/composition.py`; services never touch container |
 | 6 | Errors as Domain Concepts | Every module defines its exception hierarchy |
-| 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls |
+| 7 | Observability by Default | Correlation IDs, structured logs, traces on external calls; what a log line may hold |
 | 8 | Boundary Enforcement | Import-linter enforces rules at build time; dead code is removed, not left behind |
 | 9 | Test Safety Net | 70% code coverage floor, enforced by CI; AI evaluation benchmarks designed, not built (#2520) |
 | 10 | Bounded AI Complexity | The milestone engine owns orchestration state; LLM adapters are stateless |
@@ -648,12 +648,53 @@ faultmaven_knowledge_search_results_count
 
 **Every label is bounded by code or by operator configuration.** A label's values are declared with the collector, and tied by a test to the code that produces them, or bounded by configuration. A request-supplied identifier is mapped onto the bounded set first: a client id onto the configured clients plus `unknown`. A value outside the set raises under tests. In production it is recorded as `other` and logged once per collector and value. A label left "open, with a reason" (`declare_lazy`) is not allowed. A collector with no writer is removed.
 
+**What a log line may hold.** The server log goes to the operator's log pipeline, outside the tenant boundary (the Logs row of the [store registry](../data-and-storage/store-registry.md)). Six rules govern every output in the outputs table below ([ruling on #2886](https://github.com/FaultMaven/faultmaven/issues/2886#issuecomment-6947540305)); that table and the Enforcement rows say which are kept today:
+
+1. **What a line holds.** A log line holds operational metadata: identifiers, counts, lengths, durations, states, class names, and literals our code wrote. A message that interpolates an exception's text, a payload, or a user-supplied value is not metadata. A first-party exception contributes its class and its `error_code` ([exception contract](../specifications/exception-contract.md)), not its message, because its message may embed a third party's value (the pattern #2868 fixed).
+2. **No credential value, at any level.**
+3. **No case content, at any level, DEBUG included.** Case content is evidence text, a question or search query, a case or runbook title, a prompt, or a model's reply. A line names the content's identifier and length instead.
+4. **An exception renders as frames and class names only.** It is rendered as `exception_frames` (`utils/exception_name.py`) renders it once S2 (#2888) extends it: each link's class, then its frames, never a message. It follows `__cause__` and unsuppressed `__context__`, descends into `ExceptionGroup` members (`api/protection.py:403` raises one), and drops `__notes__`. This applies on the traceback channel and to any exception value in a log call's fields. Chains stay intact: `from None` is not how a site satisfies this rule, because `modules/agent/tools/base.py` reads the cause chain.
+5. **One chain for every output.** Every output in the outputs table renders by serializing the record through one chain, never by pasting text into a template. The redactor runs last on every output. The worker child must forward its exception as frames, not text. Any output left out of the table is listed with its reason.
+6. **The redactor is defence in depth, not the control.** The credential names and forms it blanks are the redactor table below, and extending that table is a design edit, not a per-issue ruling.
+
+**The outputs.** Every output a log line leaves by, and whether it keeps the rules today; an output that does not names the stage that brings it in, or #2898 where no stage does yet. Paths are `faultmaven/` relative unless they start with `alembic`.
+
+| Output | Configured at | In the chain today | Stage |
+|---|---|---|---|
+| The API process, uvicorn included | `infrastructure/logging/config.py` (`ProcessorFormatter`); uvicorn through `server.py`'s `log_config=None` | Yes, but a traceback keeps each exception's message | S2, #2888 |
+| Traceback and subprocess text pasted into an API message | `_container_impl.py:267` (`traceback.format_exc()`); `bootstrap/data_init.py:729-740` (alembic's stdout and stderr) | Redacted, but the message carries the text | No stage yet: #2898 |
+| The maintenance jobs | `jobs/run.py:168`: `RedactingFormatter` over a `%`-template | Redacted, but the line is not serialized | S2, #2888 |
+| A job's error `print` | `jobs/run.py:766`: `print(f"Error: {e}")` to stderr | No | No stage yet: #2898 |
+| The alembic migration Job | `alembic/env.py` (`fileConfig`) and `alembic.ini` | No | S2, #2888 |
+| The worker child's forwarded records | `infrastructure/worker_process.py:391-392`, `:490` paste formatted traceback text into the message; the parent re-logs each record through the API chain (`:183-185`) | Redacted, but the message carries exception text | S2, #2888 |
+| The worker child's stderr | inherited: the child is started with no `stderr=` (`infrastructure/worker_process.py:313`), and points its fd 1 at it (`:443`) | No | No stage yet: #2898 |
+| `traceback.print_exc()` | `container/providers/services.py`: five calls, to stderr | No | S2, #2888 |
+| An image launched through the `uvicorn` CLI rather than `run_server` | the CLI cannot set `log_config=None` (`server.py:53-60`), so uvicorn installs its own handlers | No | No stage yet: #2898 |
+| Records emitted before logging is configured | `logging.lastResort`, plain text to stderr | No | No stage yet: #2898 |
+| `fm-*` commands run in a pod | `print` calls in `cli/` | No | S3, #2889 |
+
+**The redactor table.** What the redactor (`redact_log_line`, `infrastructure/logging/url_redaction.py`) blanks on a rendered line.
+
+| Name or form | Status |
+|---|---|
+| URL query strings (`redact_urls`) | Enforced |
+| The values of `set-cookie`, `cookie`, `authorization` and `proxy-authorization`, also after a `_` or `.` segment (`HTTP_AUTHORIZATION`, `HTTP_COOKIE`) | Enforced (#2865) |
+| `x-api-key`, `api-key`, `x-goog-api-key`, `x-auth-token`; `Set-Cookie2` | Pending: S5, #2891 |
+| `www-authenticate` | Excluded: a challenge, not a credential |
+| Flat pairs or lists | Excluded: they cannot be told from a scopes list |
+| URL-encoded headers, value-first records, unusual YAML | Excluded: rules 1–4 keep such text off the line |
+
 ### Enforcement
 
 | Rule | Check that fails on the next violation | Status |
 |---|---|---|
 | One switch, one path | Importing each collector-defining module with the switch off registers nothing. Outside the shim, no module imports from `prometheus_client` beyond a listed set of exposition, registry and parser names, and none takes a `Prometheus*` class from the shim, by import or attribute (#2745, S1's pin 2). | Enforced by `tests/unit/infrastructure/shims/test_metrics_one_path_2748.py` |
 | Bounded labels | S2's pins 4-6: each label's vocabulary tied to its producer, an out-of-set value raising under tests, and no collector without a writer. | Pending: #2749 |
+| The redactor table's enforced rows (rule 6) | A URL query string and a credential header value are blanked on the API process's rendered lines (in a message, a field or a traceback) and in the jobs' rendered message, at a cost linear in the line. Not tested: a job's traceback. Not covered: `jobs/run.py:766`'s print. | Enforced by `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` and `tests/unit/infrastructure/logging/test_url_query_redaction.py` |
+| Frames and class names; one chain (rules 4 and 5) | #2888's pins, for the outputs S2 delivers; #2898 for the outputs that read "No stage yet" | Pending: S2, #2888; #2898 |
+| What a line holds: the message channel (rule 1) | #2889's pins | Pending: S3, #2889 |
+| No case content (rule 3) | #2890's pins | Pending: S4, #2890 |
+| The redactor table's pending row (rule 6) | #2891's pins | Pending: S5, #2891 |
 
 ---
 
@@ -1059,7 +1100,7 @@ The mechanism is one shared worker, `faultmaven/infrastructure/worker_process.py
 | Frontmatter (`utils/frontmatter.py:90` `yaml.safe_load`; the alias expansion at `:125` and `:131`, after the load; on `tags`, which is not in `_LIST_FIELDS` (`:20`), at `modules/knowledge/domain/services/conversion_service/service.py:2230` (after `yaml.safe_load` at `:2225`) and `modules/knowledge/domain/services/conversion_service/runbook_scan.py:360`, `:362` (after `:253`)) | YAML whose aliases the author writes, over the frontmatter block | The runbook upload, by `MAX_UPLOAD_SIZE_MB` (`modules/knowledge/api/routes.py:631`); the conversion upload, by the same setting (`modules/knowledge/api/conversion_routes.py:260`); the draft edit, by `DRAFT_CONTENT_MAX_CHARS` = 100,000 (`modules/knowledge/draft_content.py:24`; `DraftUpdateRequest.content`, `modules/knowledge/domain/models/conversion.py:267-272`), parsed on verify (`conversion_service/service.py:2220`), where the text is not bounded by it: `frontmatter.dumps` re-emits the aliases expanded, so a 62 KB draft published 30 MB (#2674); the scan (`runbook_scan.py:241` check, parsed at `:253`, `:353`); the manual create form (`conversion_routes.py:740`) declares no `max_length` beyond `title`, but `RequestBodySizeLimitMiddleware` (`api/middleware/body_size.py`, mounted at `bootstrap/middleware.py:321`) caps the whole JSON body at `MAX_UPLOAD_SIZE_MB` | none yet | The in-process stage (#2674): refused, or expanded under a declared limit off the loop |
 | The query classifier (`modules/agent/domain/services/query_classifier.py`, `classify_query`) and the continuation gate (`modules/agent/domain/services/out_of_band.py`, `reads_as_continuation`) | The system's patterns over the user's message | `classification_window`: the whole message up to 4,000 characters, else its first and last 2,000, cut at whitespace (at most 4,003; #2798) | `tests/unit/modules/agent/domain/services/test_query_classifier.py` (`TestClassificationReadsABoundedWindow`, `TestTheWindowsSeam`), `test_out_of_band.py` (`TestTheContinuationGateIsBounded`) | Stays |
 | The KB query patterns (`infrastructure/knowledge/knowledge_vector_store.py:96-103`, used at `:1095`, `:1167`; the tokenizer split `_TOKEN_SEPARATORS.split(query)` at `:1071`) | The system's patterns over the query | none declared on the `hybrid_search` callers (`modules/knowledge/domain/services/knowledge_service.py:535`, `modules/agent/tools/document_qa_tool.py:509`) | none yet | Stays once the in-process stage (#2596, pin 3) declares its limit and builds its growth test; its patterns at `:97`, `:99` and `:102` are quadratic over a long separator-free token (#2721) |
-| `redact_log_line` (`infrastructure/logging/url_redaction.py:373`: `redact_urls` at `:122`, then `redact_credential_headers` at `:361`, #2865; run in the API process by the logging renderer at `:414`; the formatter at `:437` is used only by `faultmaven/jobs/run.py:168`, the maintenance jobs, not the API process) | The system's URL and credential-header patterns over each log record, inline on every record; a log line can carry case content | none declared | `test_a_long_near_miss_line_does_not_blow_up` and `test_a_line_of_many_scheme_separators_does_not_blow_up` in `tests/unit/infrastructure/logging/test_url_query_redaction.py`; `TestTheCostIsLinear` in `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` | Stays once the in-process stage declares its limit |
+| `redact_log_line` (`infrastructure/logging/url_redaction.py:373`: `redact_urls` at `:122`, then `redact_credential_headers` at `:361`, #2865; run in the API process by the logging renderer, `redacting_renderer` at `:408` (calling it at `:419`); the formatter at `:432` is used only by `faultmaven/jobs/run.py:168`, the maintenance jobs, not the API process) | The system's URL and credential-header patterns over each log record, inline on every record; [§7](#7-observability-by-default) bars case content from a log line, and S4 (#2890) removes the sites that still carry it | none declared | `test_a_long_near_miss_line_does_not_blow_up` and `test_a_line_of_many_scheme_separators_does_not_blow_up` in `tests/unit/infrastructure/logging/test_url_query_redaction.py`; `TestTheCostIsLinear` in `tests/unit/infrastructure/logging/test_credential_header_redaction_2865.py` | Stays once the in-process stage declares its limit |
 
 `core/processing/log_analyzer.py` is not yet traced.
 
