@@ -161,6 +161,11 @@ silent-corruption failure modes are guarded rather than left to chance:
   hashes and row order the CI gate checks (below). The gate checks only that pack:
   a pack read from `KB_PACK_DIR` is not checked at load.
 
+- **Value types** (`KbPack.load`, #2248). A `vectors` array whose dtype is not
+  `float32` (either byte order), or a runbook whose `content_hash` is not a
+  string, logs an `ERROR` naming the dtype or the runbook and type, and
+  **refuses the pack whole**, as the guards above do.
+
 ### Per-Cause `causes` record (toolkit-emitted, ignored by the app)
 
 Each runbook entry also ships a **`causes`** array — one record per `### Cause`
@@ -238,8 +243,12 @@ copy and no drift.) The app *consumes* a vendored baseline snapshot of the pack.
   `DocumentChunker` is **not** used for the pack.
 - Freshness gate: `scripts/check_kb_pack.py` (this repo, pre-commit + CI) verifies
   the committed pack is structurally valid **and in sync with the sources** under
-  `resources/knowledge/runbooks/` — so a PR that edits a runbook without rebuilding
-  the pack fails CI. (`kb-build-pack --check` does the same on the toolkit side.)
+  `resources/knowledge/runbooks/`, in both directions by content hash. A source
+  runbook missing from the pack fails it, so a PR that edits a runbook without
+  rebuilding the pack fails CI (`kb-build-pack --check` makes this one check on
+  the toolkit side). So do a pack runbook that matches no source (deleted, or
+  edited without a rebuild), a missing sources directory, and a runbook whose
+  `chunk_index` values do not run `0..n-1` in list order (which startup refuses).
   It also checks that each chunk's text is the text its vector was embedded from
   (#1286): per chunk, `text_sha256` (of the text) and `pair_sha256` (of that hash
   plus the `vectors[vector_row]` bytes, little-endian float32); in the manifest,
@@ -355,7 +364,7 @@ new image.
 | Pack format + loader | `faultmaven/bootstrap/kb_pack.py` |
 | Bootstrap ingestion from pack | `faultmaven/bootstrap/kb_init.py` |
 | `KB_PACK_DIR` setting | `faultmaven/config/settings.py` (`DatabaseSettings.kb_pack_dir`) |
-| App-side check (integrity + source↔pack freshness + text↔vector pairing) | `scripts/check_kb_pack.py` |
+| App-side check (integrity incl. `chunk_index` order + source↔pack freshness, both directions + text↔vector pairing) | `scripts/check_kb_pack.py` |
 | Bundled baseline pack (generated artifact) | `faultmaven/resources/knowledge/pack/` |
 | Local delivery | `faultmaven/docker-compose.yml` |
 | Pack builder + CLI | `faultmaven-kb-toolkit` → `kb_toolkit/core/pack_builder.py`, `cli/kb_build_pack.py` |

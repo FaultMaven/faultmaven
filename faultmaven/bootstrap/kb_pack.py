@@ -105,6 +105,15 @@ def baseline_pack_dir(project_root: Path) -> Path:
     return project_root / BASELINE_SUBDIR
 
 
+def chunks_in_order(chunks: List[PackChunk]) -> bool:
+    """True when a runbook's chunks' ``chunk_index`` run ``0..n-1`` in list order.
+
+    The one statement of the order startup requires (``kb_init`` refuses the
+    runbook otherwise) and ``scripts/check_kb_pack.py`` gates (#2245).
+    """
+    return [c.chunk_index for c in chunks] == list(range(len(chunks)))
+
+
 def resolve_pack_dir(project_root: Path, configured: str) -> Path:
     """Return the pack directory to load: the configured override, else baseline."""
     configured = (configured or "").strip()
@@ -218,6 +227,17 @@ class KbPack:
                     "KB pack vectors shape %s does not match dim %d — ignoring.",
                     getattr(vectors, "shape", None),
                     dim,
+                )
+                return None
+            # The vectors are written as float32 and ingested as floats; a
+            # string or other numeric array would carry its values to the
+            # store as they are (#2248). Either byte order is a float32.
+            if vectors.dtype.kind != "f" or vectors.dtype.itemsize != 4:
+                logger.error(
+                    "KB pack at %s: vectors dtype is %s, not float32. Ignoring "
+                    "the pack; no runbooks are ingested from it. Rebuild the pack.",
+                    pack_dir,
+                    vectors.dtype,
                 )
                 return None
 
@@ -380,6 +400,17 @@ class KbPack:
                         rb.get("item_id"),
                         rb.get("scope"),
                         sorted(_pack_scopes()),
+                    )
+                    return None
+                # The hash is compared and stamped as a string (#2248).
+                if not isinstance(rb.get("content_hash"), str):
+                    logger.error(
+                        "KB pack at %s: runbook %r has a content_hash of type %s, "
+                        "not a string. Ignoring the pack; no runbooks are "
+                        "ingested from it. Rebuild the pack.",
+                        pack_dir,
+                        rb.get("item_id"),
+                        type(rb.get("content_hash")).__name__,
                     )
                     return None
                 runbooks.append(

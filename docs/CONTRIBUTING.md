@@ -104,7 +104,8 @@ To get started with local development for the `faultmaven` monolith:
 The pre-commit framework (`.pre-commit-config.yaml`) runs **black** and **ruff**
 (`--fix`, failing the commit when it rewrote something), **detect-secrets**,
 **check-api-keys** (custom API-key patterns), **check-hardcoded-rsa-keys**,
-**check-kb-pack** (the KB pack is valid and in sync with its runbook sources),
+**check-kb-pack** (the KB pack is valid, keeps each runbook's chunk_index in
+0..n-1 order, and holds every runbook source and only those, by content hash),
 **brand-lint**, **venv-staleness** (warns when a virtualenv is behind its
 lockfile) and the standard file hooks (JSON/YAML, merge conflicts, private keys,
 large files, whitespace, line endings). It is the recommended setup and matches
