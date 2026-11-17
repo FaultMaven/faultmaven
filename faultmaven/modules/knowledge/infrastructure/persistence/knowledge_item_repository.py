@@ -704,6 +704,35 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             ).scalar()
         )
 
+    async def delete_other_shares(self, item_id: str, *, team_id: Optional[str]) -> int:
+        """Delete ``item_id``'s shares other than its team share to ``team_id``
+        (every share when None), in the caller's transaction; never commits
+        (#2386). Returns how many it deleted.
+
+        A SELECT first, and the DELETE only when it found one: a role that
+        holds only SELECT on ``resource_shares`` is refused a DELETE even
+        when it would match no row.
+        """
+        stale = select(ResourceShareModel.share_id).where(
+            ResourceShareModel.resource_type == "knowledge_item",
+            ResourceShareModel.resource_id == item_id,
+        )
+        if team_id is not None:
+            stale = stale.where(
+                ~and_(
+                    ResourceShareModel.scope_type == "team",
+                    ResourceShareModel.scope_id == team_id,
+                )
+            )
+        share_ids = list((await self.db.execute(stale)).scalars())
+        if share_ids:
+            await self.db.execute(
+                delete(ResourceShareModel).where(
+                    ResourceShareModel.share_id.in_(share_ids)
+                )
+            )
+        return len(share_ids)
+
     # =========================================================================
     # Query Operations
     # =========================================================================

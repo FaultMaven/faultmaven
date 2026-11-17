@@ -321,12 +321,12 @@ async def test_a_pack_replacement_leaves_only_the_new_generation(
     }
 
 
-async def test_a_pack_replacement_keeps_every_share_and_writes_its_own_once(
+async def test_a_pack_replacement_keeps_only_its_own_share_written_once(
     session_factory, tmp_path  # noqa: F811
 ):
-    """A team-scoped pack row carries its own team share, and an operator added
-    one for a second team. A new pack version replaces the row: both shares
-    stay, and the pack's own is not written twice."""
+    """A team-scoped pack row carries its own team share, and a second team's
+    share stands on the id. A new pack version replaces the row: the pack's
+    own share stays, not written twice, and the other is dropped (#2386)."""
     other_team = "22222222-2222-4222-8222-222222222222"
     world = _world(session_factory, tmp_path)
     shares = _Shares(session_factory)
@@ -366,7 +366,7 @@ async def test_a_pack_replacement_keeps_every_share_and_writes_its_own_once(
                 .order_by(ResourceShareModel.scope_id)
             )
         ).all()
-    assert [tuple(r) for r in rows] == [("team", TEAM_ID), ("team", other_team)]
+    assert [tuple(r) for r in rows] == [("team", TEAM_ID)]
 
 
 async def test_a_failed_generation_delete_is_logged_and_the_replacement_stands(
