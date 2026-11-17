@@ -950,6 +950,7 @@ class StructuredOutputGenerator:
                     result,
                     path="tool_loop",
                     position="first" if iteration == 0 else "later",
+                    model=call_kwargs.get("model"),
                 )
                 if self.deps.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
@@ -2226,7 +2227,10 @@ class StructuredOutputGenerator:
                     self.deps.llm_provider, **generate_params
                 )
                 record_investigation_call(
-                    response, path="single_shot", position="first"
+                    response,
+                    path="single_shot",
+                    position="first",
+                    model=generate_params.get("model"),
                 )
             except RawModelContentRefused:
                 # A refusal is a programming error, never a fallback (#1998).

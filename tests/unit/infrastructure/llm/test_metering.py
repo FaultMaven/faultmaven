@@ -303,6 +303,22 @@ class TestRecordInvestigationCall:
             ("groq", "claude-sonnet-4-6", "tool_loop", "first", "input"): 9
         }
 
+    def test_the_requested_model_labels_the_call_like_the_spend_counters(
+        self, investigation_counter
+    ):
+        """A call that named its model is labelled with it, as
+        record_provider_call labels spend, even when the API reports another
+        id (a dated snapshot, an Azure deployment's resolved model)."""
+        record_investigation_call(
+            _FakeResponse(model="claude-sonnet-4-6-20260101", input_tokens=4),
+            path="tool_loop",
+            position="first",
+            model="claude-sonnet-4-6",
+        )
+        assert investigation_counter == {
+            ("anthropic", "claude-sonnet-4-6", "tool_loop", "first", "input"): 4
+        }
+
     def test_junk_never_raises(self, investigation_counter):
         record_investigation_call(None, path="tool_loop", position="first")
         record_investigation_call("text", path="tool_loop", position="first")

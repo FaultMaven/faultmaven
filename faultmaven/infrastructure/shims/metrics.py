@@ -698,8 +698,10 @@ llm_call_tokens = Counter(
 # follow-up). A tool-loop iteration re-sends the previous iteration's request
 # and appends to it, so a provider prompt cache can serve it almost whole; the
 # first call of the turn can be served at most its standing prefix. So the turn's
-# uncached case shows up as path="tool_loop" position="first" input, which a
-# blended hit rate (rising with the iteration count) cannot show. Recorded
+# uncached case shows up as path="tool_loop" position="first" input plus
+# cache_write (Anthropic writes it for the next iteration; other providers
+# report it as input), which a blended hit rate (rising with the iteration
+# count) cannot show. Recorded
 # where the engine receives each response from its provider: every response it
 # received, including one it then re-issues (a cut body, a refusal, an
 # unparseable single-shot reply), but never a response-cache hit, which bills

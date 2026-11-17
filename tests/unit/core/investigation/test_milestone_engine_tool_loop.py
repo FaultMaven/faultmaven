@@ -291,9 +291,11 @@ class TestToolAugmentedGenerate:
         assert [c.args[0] for c in record.call_args_list] == (
             search_responses + [forced_schema]
         )
+        # The router path names no model: the label comes from the response,
+        # as it does on the spend counters.
         assert [c.kwargs for c in record.call_args_list] == [
-            {"path": "tool_loop", "position": "first"}
-        ] + [{"path": "tool_loop", "position": "later"}] * 4
+            {"path": "tool_loop", "position": "first", "model": None}
+        ] + [{"path": "tool_loop", "position": "later", "model": None}] * 4
 
         # Verify the last call used tool_choice="required"
         last_call_kwargs = mock_provider.route.call_args_list[-1]
@@ -756,7 +758,7 @@ class TestGenerateStructuredOutputRouting:
 
         # The single-shot call is counted on its own path (#613's follow-up).
         record.assert_called_once_with(
-            schema_response, path="single_shot", position="first"
+            schema_response, path="single_shot", position="first", model=None
         )
 
         # Assert

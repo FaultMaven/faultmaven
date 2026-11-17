@@ -19,7 +19,7 @@ which are the most common cause of a runaway bill.
 |---|---|---|
 | `llm_cost_usd_total` | `provider`, `model` | Estimated USD spend per **provider API call** (from the price table). The dollar figure to alert on. |
 | `llm_call_tokens_total` | `provider`, `model`, `token_type` | Tokens per API call, split into `input` / `output` / `cache_read` / `cache_write`. Buckets are disjoint. |
-| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | Tokens of every response the investigation engine received from its provider, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, re-issues of a cut or refused body included, and every single-shot call; `later` = later tool-loop iterations). No response-cache hits, no discarded fallback attempts. `path="tool_loop"`, `position="first"` `input` is what each turn's first call could not read back: at best the case, re-sent every turn; on OpenAI GPT-5.6+ also the standing prefix, which shares the case's message ([prompt-assembly §3.3](../../architecture/investigation-engine/prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). A blended hit rate hides it, because later iterations read the earlier ones back. |
+| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | Tokens of every response the investigation engine received from its provider, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, re-issues of a cut or refused body included, and every single-shot call; `later` = later tool-loop iterations). No response-cache hits, no discarded fallback attempts. `path="tool_loop"`, `position="first"` `input` + `cache_write` is what each turn's first call could not read back (Anthropic bills the tail as `cache_write`, because it writes the request to the cache for the next iteration; every other provider reports it as `input`): at best the case, re-sent every turn; on OpenAI GPT-5.6+ also the standing prefix, which shares the case's message ([prompt-assembly §3.3](../../architecture/investigation-engine/prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). A blended hit rate hides it, because later iterations read the earlier ones back. |
 | `llm_provider_calls_total` | `provider`, `model`, `outcome` | API calls by disposition. `outcome=kept` = returned to caller; `outcome=low_confidence` = **billed then discarded** by the fallback chain (pure waste). |
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
 | `llm_usage_unpersisted_calls_total` | `reason` | Billed calls the [usage ledger](#the-usage-ledger) did not persist. **Non-zero ⇒ the ledger under-reports** by exactly this many calls. |
@@ -311,13 +311,17 @@ landing.
    expired). Split the tool loop by position with
    `llm_investigation_call_tokens_total{path="tool_loop"}`: `position="later"`
    is mostly `cache_read` (each iteration re-sends the previous one and only
-   appends), except the schema-only final call, whose different tool set
-   misses the cache on every provider; `position="first"` `input` is what each
-   turn's first call could not read back (on OpenAI GPT-5.6+ that includes the
-   standing prefix, see the row above). A turn whose tool loop fell back to
-   the single-shot path counts a `first` call on both paths, and the
-   single-shot path is not marked cacheable on Anthropic, so its whole prompt
-   is `input` there.
+   appends), except the calls whose tool set differs from the iteration before
+   them, which miss the cache on every provider: the schema-only final call,
+   and a #1770 refusal re-issue (`_omitted` schema) after the first iteration
+   with the iteration after it. Read `position="first"` as `input` +
+   `cache_write`: what each turn's first call could not read back. On
+   Anthropic most of it is `cache_write` (the request's end is written for
+   the next iteration to read), elsewhere `input`; on OpenAI GPT-5.6+ it
+   includes the standing prefix (see the row above). A turn whose tool loop
+   fell back to the single-shot path counts a `first` call on both paths; the
+   single-shot call caches its standing prefix too, so its `input` is this
+   turn's case.
 
 ## Coverage note
 
