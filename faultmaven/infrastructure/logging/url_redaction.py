@@ -46,7 +46,7 @@ a credential header on the same unit is lost with it, which is the safe side.
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from faultmaven.infrastructure.security.secret_patterns import ESCAPE_BOUNDARY
 
@@ -281,13 +281,9 @@ def _key_is_name(key: str) -> bool:
     return _KEY_SEGMENT.split(key.strip().lower())[-1].strip() in _HEADER_NAMES
 
 
-def _unique_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
-    """A JSON object, refused when a key repeats: the decoder keeps the last,
-    and a value the walk never sees would go out unredacted."""
-    fields = dict(pairs)
-    if len(fields) != len(pairs):
-        raise ValueError("duplicate key")
-    return fields
+class _Pairs(list):
+    """A JSON object as its decoded pairs: a repeated key and the order are
+    kept, so no value is shadowed from the walk and the line keeps them."""
 
 
 def _redact_json_value(value: Any) -> Tuple[Any, bool]:
@@ -300,10 +296,30 @@ def _redact_json_value(value: Any) -> Tuple[Any, bool]:
     if isinstance(value, str):
         redacted = _redact_text_value(value)
         return redacted, redacted != value
+    if isinstance(value, _Pairs):
+        record = any(
+            key.lower() in ("name", "key") and _is_name(item) for key, item in value
+        )
+        fields, changed = _Pairs(), False
+        for key, item in value:
+            if _key_is_name(key) or (record and key.lower() == "value"):
+                item_changed = item != _REDACTED
+                item = _REDACTED
+            else:
+                item, item_changed = _redact_json_value(item)
+            redacted_key = _redact_text_value(key)
+            fields.append((redacted_key, item))
+            changed = changed or item_changed or redacted_key != key
+        return fields, changed
     if isinstance(value, list):
         items, changed = [], False
         for item in value:
-            if isinstance(item, list) and len(item) == 2 and _is_name(item[0]):
+            if (
+                not isinstance(item, _Pairs)
+                and isinstance(item, list)
+                and len(item) == 2
+                and _is_name(item[0])
+            ):
                 item_changed = item[1] != _REDACTED
                 item = [item[0], _REDACTED]
             else:
@@ -311,23 +327,21 @@ def _redact_json_value(value: Any) -> Tuple[Any, bool]:
             items.append(item)
             changed = changed or item_changed
         return items, changed
-    if isinstance(value, dict):
-        record = any(
-            key.lower() in ("name", "key") and _is_name(item)
-            for key, item in value.items()
-        )
-        fields, changed = {}, False
-        for key, item in value.items():
-            if _key_is_name(key) or (record and key.lower() == "value"):
-                item_changed = item != _REDACTED
-                item = _REDACTED
-            else:
-                item, item_changed = _redact_json_value(item)
-            redacted_key = _redact_text_value(key)
-            fields[redacted_key] = item
-            changed = changed or item_changed or redacted_key != key
-        return fields, changed
     return value, False
+
+
+def _dumps(value: Any, ensure_ascii: bool) -> str:
+    """``json.dumps`` with its default separators, writing a ``_Pairs`` object
+    from its pairs."""
+    if isinstance(value, _Pairs):
+        fields = (
+            f"{json.dumps(key, ensure_ascii=ensure_ascii)}: {_dumps(item, ensure_ascii)}"
+            for key, item in value
+        )
+        return "{" + ", ".join(fields) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_dumps(item, ensure_ascii) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=ensure_ascii)
 
 
 def _redact_headers(text: str, ensure_ascii: bool) -> str:
@@ -336,9 +350,9 @@ def _redact_headers(text: str, ensure_ascii: bool) -> str:
         return text
     if text.startswith('{"'):
         try:
-            parsed = json.loads(text, object_pairs_hook=_unique_keys)
+            parsed = json.loads(text, object_pairs_hook=_Pairs)
             redacted, changed = _redact_json_value(parsed)
-            return json.dumps(redacted, ensure_ascii=ensure_ascii) if changed else text
+            return _dumps(redacted, ensure_ascii) if changed else text
         except (ValueError, RecursionError):
             pass
     return _redact_header_text(text, low)
@@ -350,8 +364,8 @@ def redact_credential_headers(text: str) -> str:
     A line naming neither ``cookie`` nor ``authorization`` is returned as is,
     after one lowercase copy and two finds. A JSON object line is redacted on
     its decoded value and re-serialized only when something changed, so it
-    stays valid JSON; one the decoder refuses (not JSON, nested too deep, or a
-    key repeated) is redacted as text.
+    stays valid JSON, a repeated key included; one the decoder refuses (not
+    JSON, or nested too deep) is redacted as text.
     """
     return _redact_headers(text, ensure_ascii=True)
 
@@ -362,15 +376,28 @@ def redact_log_line(text: str) -> str:
 
 
 def redact_log_line_bytes(data: bytes) -> bytes:
-    """``redact_log_line`` for renderers that emit bytes. A changed JSON line
-    keeps the input's encoding: unchanged characters keep their bytes."""
+    """``redact_log_line`` for renderers that emit bytes.
+
+    A changed JSON line is re-serialized in the input's form: ``\\uXXXX``
+    escapes for an ASCII line, raw UTF-8 otherwise, and escapes again where a
+    decoded character has no UTF-8 encoding (a lone surrogate).
+    """
     data = redact_urls_bytes(data)
     low = data.lower()
     if b"cookie" not in low and b"authorization" not in low:
         return data
-    text = data.decode("utf-8", "surrogateescape")
-    redacted = _redact_headers(text, ensure_ascii=False)
-    return redacted.encode("utf-8", "surrogateescape")
+    # A valid line is encoded back strictly, so a decoded "\\udcff" escape
+    # cannot come back as a raw invalid byte; an invalid one keeps its bytes.
+    try:
+        text, errors = data.decode("utf-8"), "strict"
+    except UnicodeDecodeError:
+        text, errors = data.decode("utf-8", "surrogateescape"), "surrogateescape"
+    try:
+        return _redact_headers(text, ensure_ascii=data.isascii()).encode(
+            "utf-8", errors
+        )
+    except UnicodeEncodeError:
+        return _redact_headers(text, ensure_ascii=True).encode("utf-8", errors)
 
 
 def redacting_renderer(renderer: Callable) -> Callable:

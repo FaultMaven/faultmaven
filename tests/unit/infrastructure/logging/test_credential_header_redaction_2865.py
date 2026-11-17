@@ -204,6 +204,20 @@ class TestEveryRenderedLine:
         get_logger("faultmaven.p").info(message)
         assert message in rendered.buffer.getvalue()
 
+    @pytest.mark.parametrize("rendered", ["json"], indirect=True)
+    def test_a_repeated_key_is_kept_and_walked(self, rendered):
+        """structlog writes colliding int and str keys as a repeated key. The
+        line stays JSON with both, and the record after it is still blanked."""
+        get_logger("faultmaven.p").error(
+            "x", d={1: "a", "1": "b"}, h=[{"value": "VALUE", "name": "Cookie"}]
+        )
+        output = rendered.buffer.getvalue()
+        assert SECRET not in output
+        (line,) = output.splitlines()
+        fields = dict(json.loads(line, object_pairs_hook=list))
+        assert fields["d"] == [("1", "a"), ("1", "b")]
+        assert fields["h"] == [[("value", "<redacted>"), ("name", "Cookie")]]
+
     def test_a_bytes_renderer_is_redacted(self):
         line = "GET https://h/p?q=1 Cookie: sid=VALUE"
         wrapped = redacting_renderer(lambda *_: line.encode())
@@ -244,9 +258,9 @@ class TestTheJobsFormatter:
         "message, still_json",
         [
             ("headers {'cookie': 'sid=VALUE'} retry", True),
-            # Valid JSON with "event" twice: the decoder keeps the last, so
-            # the line is read as text (#2883 is the template's own root).
-            ('Cookie: VALUE", "event": "ok', False),
+            # Valid JSON with "event" twice (#2883 is the template's own
+            # root): both are walked and kept, so the line stays JSON.
+            ('Cookie: VALUE", "event": "ok', True),
             ('authorization="Bearer VALUE"', False),  # a raw quote: not JSON
         ],
     )
@@ -336,6 +350,23 @@ class TestTheBytesForm:
         assert redact_log_line_bytes(data) == (
             b'{"e": "\xc3\xa9 cookie: <redacted>", "x": "\xff"}'
         )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            b'{"e": "\\ud800 cookie: VALUE"}',  # a lone surrogate: no UTF-8
+            b'{"e": "\\udcff cookie: VALUE"}',  # must not become a raw 0xFF
+            b'{"e": "\\u00e9 cookie: VALUE"}',  # an ASCII line stays ASCII
+            b'{"e": "\xc3\xa9 \\ud800 cookie: VALUE"}',  # raw UTF-8, then none
+            b'{"e": "\xc3\xa9 \\udcff cookie: VALUE"}',  # raw UTF-8, then 0xFF
+        ],
+    )
+    def test_an_escape_comes_back_as_valid_utf8_json(self, data):
+        redacted = redact_log_line_bytes(data)
+        assert SECRET.encode() not in redacted
+        assert "<redacted>" in json.loads(redacted.decode("utf-8"))["e"]
+        if data.isascii():
+            assert redacted.isascii()
 
 
 class TestTheUnitBlanked:
