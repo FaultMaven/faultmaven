@@ -28,12 +28,15 @@ Per runbook
     ``_ingest_pack_runbook`` ingests one runbook:
       1. Take the deterministic ``item_id`` the pack carries.
       2. Check ``knowledge_items`` — if present, ingested from this pack
-         version (the pack hash stamped on the row) AND served (a chunk
-         carries the row's ``vector_generation``, #2388), skip.
+         version (the pack hash stamped on the row), at the pack's scope and,
+         with a share repository wired, its team share (#2386), AND served (a
+         chunk carries the row's ``vector_generation``, #2388), skip, deleting
+         any share that is not the row's own.
       3. Call ``KnowledgeService.ingest_runbook(prechunked=...,
          replaces_generation=...)`` — the pack vectors first, under a new
          generation, then one transaction that deletes the row it observed
-         (guarded on that row's generation) and inserts the new one.
+         (guarded on that row's generation), inserts the new one and leaves
+         the id only the pack's own share.
       4. ``ingest_runbook`` raises when indexing returns 0 chunks, before any
          row is written. ``bootstrap_kb`` catches an ``Exception`` from
          ``_ingest_pack_runbook``, logs it at ERROR and records the runbook in
@@ -45,8 +48,8 @@ Idempotency
     Re-running is safe. Runbooks whose pack version is unchanged (the pack's
     content hash equals the one stamped on the row at ingest, NOT a hash of the
     row's current content, which an operator may have edited) and whose row is
-    served are skipped; a new pack version, or a row no chunk of its
-    generation serves, is re-ingested. Runbooks removed from the pack have
+    served are skipped; a new pack version or placement, or a row no chunk of
+    its generation serves, is re-ingested. Runbooks removed from the pack have
     their rows pruned; the reconcile collects their vectors. No step here
     deletes a vector but the collectors.
 """
@@ -69,6 +72,7 @@ from typing import (
     NamedTuple,
     Optional,
     Set,
+    Tuple,
 )
 
 from sqlalchemy import select
@@ -91,6 +95,9 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     sweep_authored_orphans,
 )
 from faultmaven.infrastructure.knowledge.admission import chunk_generation_from_id
+from faultmaven.infrastructure.persistence.share_repository import (
+    PostgreSQLShareRepository,
+)
 from faultmaven.models.interfaces import IKnowledgeVectorStore
 
 logger = logging.getLogger(__name__)
@@ -412,6 +419,10 @@ async def _ingest_pack_runbook(
     generation as ``replaces_generation``, so the transaction that replaces
     it deletes only that row: a peer that replaced it first wins, and this
     ingest fails.
+
+    A new placement (a scope other than the row's or, with a share
+    repository wired, a team share the row lacks) is a change whatever the
+    hash (#2386). A skipped row has the shares its read found stale deleted.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -446,7 +457,13 @@ async def _ingest_pack_runbook(
             f"in list order — the pack is malformed (rebuild required)."
         )
 
-    # Idempotency: skip if the item exists and content is unchanged.
+    # Idempotency: skip if the item exists and content is unchanged. The id's
+    # shares are read with it: a pack entry's own share is its team's (#2386).
+    own_share = (
+        ("team", runbook.team_id)
+        if runbook.scope == "team" and runbook.team_id
+        else None
+    )
     async with db_session_factory() as session:
         existing = await session.execute(
             select(KnowledgeItemModel).where(
@@ -454,6 +471,14 @@ async def _ingest_pack_runbook(
             )
         )
         existing_row = existing.scalar_one_or_none()
+        shares: Dict[str, Tuple[str, str]] = {}  # share_id -> its scope
+        if existing_row is not None:
+            shares = {
+                share.share_id: (share.scope_type, share.scope_id)
+                for share in await PostgreSQLShareRepository(
+                    session
+                ).list_scopes_for_resource("knowledge_item", runbook.item_id)
+            }
 
     replaces_generation: Optional[str] = None
     if existing_row is not None:
@@ -486,8 +511,19 @@ async def _ingest_pack_runbook(
                     {**metadata, PACK_CONTENT_HASH_KEY: runbook.content_hash},
                     db_session_factory,
                 )
+        # A move to another scope, or a team row lacking the pack's team share
+        # (when a share repository can write it), is a change (#2386).
+        moved = existing_row.scope != runbook.scope or bool(
+            own_share
+            and getattr(knowledge_service, "_share_repo", None)
+            and own_share not in shares.values()
+        )
+        pack_unchanged = pack_unchanged and not moved
         if pack_unchanged and not unserved:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
+            await _drop_stale_shares(
+                existing_row, own_share, shares, db_session_factory
+            )
             return "skipped"
         if pack_unchanged and _content_hash(existing_row.content) != (
             runbook.content_hash
@@ -500,13 +536,16 @@ async def _ingest_pack_runbook(
                 "the row was edited since the pack ingested it — left to the "
                 "repair, which keeps the edit"
             )
+            await _drop_stale_shares(
+                existing_row, own_share, shares, db_session_factory
+            )
             return "skipped"
         logger.info(
             f"{runbook.relpath}: "
             + (
                 "no chunk carries its row's generation"
                 if pack_unchanged
-                else "the pack carries a new version since the last ingest"
+                else "the pack carries a new version or placement since the last ingest"
             )
             + " — re-ingesting"
         )
@@ -542,6 +581,36 @@ async def _ingest_pack_runbook(
         f"Ingested {runbook.relpath} ({chunks_created} chunks, scope={runbook.scope})"
     )
     return "ingested"
+
+
+async def _drop_stale_shares(
+    row: Any,
+    own_share: Optional[Tuple[str, str]],
+    shares: Dict[str, Tuple[str, str]],
+    db_session_factory: Callable[[], Awaitable[Any]],
+) -> None:
+    """Delete exactly the stale shares the skip's read found (#2386), in a
+    transaction of their own: a share a peer wrote since is never touched.
+    The DELETE matches only while ``row`` (the row the skip read) still holds
+    its generation and scope; under PostgreSQL it share-locks that row, so a
+    peer's re-ingest either replaced it first or waits for this commit."""
+    from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+    stale = [sid for sid, scope in shares.items() if scope != own_share]
+    if not stale:
+        return
+    unmoved = select(KnowledgeItemModel.item_id).filter_by(
+        item_id=row.item_id, vector_generation=row.vector_generation, scope=row.scope
+    )
+    async with db_session_factory() as session:
+        await PostgreSQLShareRepository(session).delete_other_scopes(
+            resource_type="knowledge_item",
+            resource_id=row.item_id,
+            keep=own_share,
+            share_ids=stale,
+            guard=(unmoved.with_for_update(read=True).exists(),),
+        )
+        await session.commit()
 
 
 def _content_hash(content: str) -> str:

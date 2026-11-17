@@ -1265,11 +1265,13 @@ class KnowledgeService:
         * **Pack** (``shipped`` true): the vectors first, then
           :meth:`_insert_pack_row`, one transaction that deletes the row it
           replaces (``replaces_generation``, guarded on that generation),
-          INSERTs this one complete, ensures a team scope's own share (an
-          idempotent add), and commits. The ``kb_seed`` maintenance role holds
-          INSERT and DELETE on ``knowledge_items`` and no UPDATE, and nothing on
-          ``resource_shares``, so the shipped (all-global) pack issues no share
-          write.
+          INSERTs this one complete, deletes the id's shares that are not the
+          pack's own, ensures a team scope's own share (an idempotent add), and
+          commits (#2386). The ``kb_seed`` maintenance role holds INSERT and
+          DELETE on ``knowledge_items`` and no UPDATE, and only SELECT on
+          ``resource_shares``, so a global pack row's transaction reads the
+          id's shares and writes none: the shipped (all-global) pack issues no
+          share write.
 
         **The failure contract (#2397, #2063, #2388).** The two stores cannot
         commit together, and no KB door needs them to: every door admits a
@@ -1662,16 +1664,31 @@ class KnowledgeService:
         created_by: Optional[str],
     ) -> None:
         """A pack row's one transaction (#2388): DELETE the row it replaces,
-        guarded on ``replaces_generation``; INSERT ``item``; at team scope,
-        ensure the pack's own team share (an idempotent add, which leaves every
-        other share of the id); COMMIT.
+        guarded on ``replaces_generation``; INSERT ``item``; delete the id's
+        shares other than the pack's own (#2386); ensure the pack's own team
+        share (an idempotent add); COMMIT.
 
-        The INSERT is issued before the share write, so a duplicate id raises
-        there and rolls the whole transaction back, the guarded DELETE
-        included. ``PostgreSQLShareRepository.share``, bound to this session,
-        never commits; ``repo.commit()`` commits the transaction. Anything
-        that raises leaves the transaction uncommitted, and closing the
-        session rolls it back.
+        **The share rule (#2386).** The pack's own share is the team share to
+        ``team_id`` (passed only at team scope), and it is written only when
+        ``team_id`` is set and a share repository is wired; a team-scoped
+        entry without either ends with a team row and no share. Every other
+        share of the id is removed, whatever the scope, so a team the runbook
+        moved away from loses it. The id's shares are read first, and a DELETE
+        is issued only for one that is not the pack's own: a re-ingest at the
+        same team keeps its share, and a global row with none writes nothing.
+        The ``kb_seed`` maintenance role holds only SELECT on
+        ``resource_shares``: should a stale share stand on an id it seeds, the
+        DELETE is refused, the transaction rolls back and the runbook is
+        reported failed, as a team pack row already is under that role. No
+        share can stand there today: that role cannot write one, and shares
+        are written only at ingest.
+
+        The INSERT is issued before any share statement, so a duplicate id
+        raises there and rolls the whole transaction back, the guarded DELETE
+        included. ``PostgreSQLShareRepository``, bound to this session, never
+        commits; ``repo.commit()`` commits the transaction. Anything that
+        raises leaves the transaction uncommitted, and closing the session
+        rolls it back.
 
         Once the transaction is known to have committed with its guarded
         DELETE matched, the replaced generation's chunks are never served
@@ -1693,8 +1710,14 @@ class KnowledgeService:
                     item.item_id, commit=False, vector_generation=replaces_generation
                 )
             await repo.create(item, commit=False)
+            shares = PostgreSQLShareRepository(session)
+            await shares.delete_other_scopes(
+                resource_type="knowledge_item",
+                resource_id=item.item_id,
+                keep=("team", team_id) if team_id else None,
+            )
             if team_id and self._share_repo:
-                await PostgreSQLShareRepository(session).share(
+                await shares.share(
                     resource_type="knowledge_item",
                     resource_id=item.item_id,
                     scope_type="team",
