@@ -132,7 +132,7 @@ The three-step framework is an internal reasoning scaffold, not an output format
 
 **Why this is the strongest rule**: The internal reasoning scaffold forces the LLM to anchor every claim in evidence before reaching a conclusion, making hallucination structurally visible even when the output is conversational prose.
 
-**Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs are only for internal schema fields (`evidence_analyzed`, `milestone_justifications`).
+**Evidence referencing**: Each evidence item in the LLM context carries a `label` attribute (filename, description, or data type). The agent MUST reference evidence by its label in responses (e.g., "in the nginx error log"), never by internal `ev_` IDs which are meaningless to users. IDs belong only in the internal schema fields that ask for evidence IDs (for example `milestone_justifications`, `symptom_verification_evidence_ids`, `rechecks`); `evidence_trail.evidence_analyzed` takes turn references (`turn_N`), never `ev_` IDs.
 
 **Note on enforcement layers**: Rule 2 is enforced solely at the prompt layer. An earlier implementation included a `diagnostic_reasoning_validator.py` that ran post-generation; it was removed after the failure-mode analysis showed the architectural approach was unsound. The case study and the principle that motivated removal are preserved under [Post-Generation Validators (Historical Case Study)](#post-generation-validators-historical-case-study).
 
