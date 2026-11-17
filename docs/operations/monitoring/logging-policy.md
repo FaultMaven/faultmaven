@@ -184,4 +184,7 @@ Two fallbacks are worth knowing when reading a line:
   `correlation_id`, which every record carries.
 
 ## Redaction
+- What a log line may hold is [principles §7's rule](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default),
+  with the outputs it covers and the redactor's table; it is the authority, and this
+  section does not restate it.
 - Strip or hash PII/session identifiers; avoid storing raw user content in logs

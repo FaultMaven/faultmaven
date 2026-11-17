@@ -5,9 +5,10 @@ values, or an internal host or storage key. Its class name carries none of
 that, so a failure reported to a case reader, or to the model whose answer a
 case reader is served, names the class (#2072, #2332).
 
-**The server log follows the same rule (#2844).** A log line never holds the
-text of an exception whose message can carry a third party's output: a
-client's, a backend's or a store's. It names the class chain
+**The server log follows the same rule** (principles §7, "What a log line may
+hold", in ``docs/architecture/core-architecture/architectural-design-principles.md``).
+A log line never holds the text of an exception whose message can carry a third
+party's output: a client's, a backend's or a store's. It names the class chain
 (:func:`exception_class_chain`), and where the frames matter it adds them
 without the messages (:func:`exception_frames`). The rendered-line redactor
 (``infrastructure/logging/url_redaction.py``), which strips URL query strings

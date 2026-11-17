@@ -83,7 +83,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **LLM response cache** | in-process dict, per replica, at most 1,000 entries | customer content: model responses | case | none: the case id is hashed into the key | `LLMRouter`, through `LLMResponseCache` | outside: stored when the call returns |
 | **`cached_content_tokens`** | in-process `lru_cache`, per replica, at most 4,096 entries | customer content: the evidence text is the key; its token set is the value | case | none: keyed by the text alone | `core/investigation/cause_assurance.py` | outside: filled as the turn reads evidence |
 | **Metrics** | the in-process Prometheus registry, scraped | operational metadata: no label carries a case, user or enterprise id, and every label's values are bounded by code or by operator configuration | process | none | each module's metric definitions | outside: counters move as work happens |
-| **Logs** | stderr, collected by the deployment's log pipeline | operational metadata, by policy: avoid raw user content | process | none; records carry `user_id` and `correlation_id` | every module | outside |
+| **Logs** | stderr, collected by the deployment's log pipeline | operational metadata only, by [principles §7's rule, "What a log line may hold"](../core-architecture/architectural-design-principles.md#7-observability-by-default) | process | none; records carry `user_id` and `correlation_id` | every module | outside |
 | **Secret files under the data root** (`data/.jwt_secret`, `data/.redaction_pseudonym_key`) | local files, standalone | operational metadata: deployment secrets | process | none | `config/settings.py` (JWT secret), `infrastructure/security/pseudonym_key.py` | not written by turns |
 
 ## How each store's data ends
@@ -320,6 +320,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 ### Logs
 
 - `infrastructure/logging/config.py:146-176`, `:345-357`; `user_id`: `:60-64`, `:417-418`.
+- What a line may hold: [principles §7, "What a log line may hold"](../core-architecture/architectural-design-principles.md#7-observability-by-default),
+  with its outputs and redactor tables.
 - Policy: [Logging Policy, Redaction](../../operations/monitoring/logging-policy.md#redaction).
 
 ### Secret files under the data root
