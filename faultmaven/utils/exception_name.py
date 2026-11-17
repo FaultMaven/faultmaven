@@ -44,7 +44,8 @@ def exception_frames(exc: BaseException) -> str:
     cycle-guarded), each under its class name, with no exception's message:
     where a failure was raised, for a log line that may hold no exception's
     text (#2844). It does not descend into an ``ExceptionGroup``'s member
-    exceptions: a group shows its own frames only."""
+    exceptions: a member's frames appear only if it is also a cause or
+    context in the chain."""
     frames, link, seen = [], exc, set()
     while link is not None and id(link) not in seen:
         seen.add(id(link))

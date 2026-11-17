@@ -4,9 +4,9 @@ A client's or a backend's exception text can carry its output: a cookie, a
 credential, a response body. Every site the ruling lists, and every emitter of
 ``UnifiedLogger``, names the class chain instead, and so do the messages
 ``execute_operation`` raises. Each logging case asserts on the line the real
-``configure_structlog`` chain renders (JSON, and console with colour forced),
-and shows the capture live: the same exception logged the old way does reach
-it.
+``configure_structlog`` chain renders (JSON, and console with colour forced).
+Each one that asserts a sentinel absent also shows the capture live: the same
+exception logged the old way does reach it.
 """
 
 import asyncio
@@ -276,11 +276,17 @@ class TestCallExternal:
 
         if case == "transform_response":
             assert run() == "ok"
-        else:
-            raising = RuntimeError if case == "validate_response" else BackendError
-            with pytest.raises(raising) as raised:
+        elif case == "validate_response":
+            with pytest.raises(RuntimeError) as raised:
                 run()
-            assert raised.value is error or SENTINEL not in str(raised.value)
+            assert str(raised.value) == (
+                "Response validation failed: BackendError <- ConnectionError"
+            )
+            assert raised.value.__cause__ is error
+        else:
+            with pytest.raises(BackendError) as raised:
+                run()
+            assert raised.value is error
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
     async def test_each_unified_emitter(self, rendered):
@@ -363,6 +369,12 @@ class TestCallExternal:
         assert "Exception <- ConnectionError" in row
         if row.startswith("{"):
             assert json.loads(row)["error_type"] == "Exception"
+        # The positive control, scoped to the row: the bare name reaches it.
+        output = rendered.getvalue()
+        get_logger("faultmaven.control").warning(
+            "will retry", error_type=type(error).__name__
+        )
+        assert SENTINEL in rendered.getvalue()[len(output) :]
 
 
 class _Service(BaseService):
