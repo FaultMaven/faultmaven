@@ -162,7 +162,16 @@ The `BaseExternalClient.call_external()` method checks `retryable` before retryi
 - `retryable=True` (5xx, 429, explicit): retry with exponential backoff
 - `retryable=False` (other 4xx, billing, default): fail immediately, no retries
 
-The provider registry re-raises the last provider's error directly (preserving retryability and `error_code`) rather than wrapping in a generic exception.
+**Which failure a fallback chain raises** (#2832). The provider registry raises a provider's error directly (preserving retryability and `error_code`) rather than wrapping it in a generic exception. When no provider in a chain returned a response, the chain raises the highest-ranked failure, the later one on a tie. The ranks, highest first:
+
+1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation;
+2. service-scoped: quota, rejected credentials (the breaker then latches their `error_code`);
+3. counted and retryable: a 5xx, a timeout, an unclassified exception;
+4. a throttle the provider's waits did not outlast;
+5. any other request-scoped rejection;
+6. `CallShapeUnsupported`.
+
+A low-confidence response still beats every failure, and `RawModelContentRefused` still aborts the chain. **A provider's health** records every failure except a throttle, a call-shape refusal and a 4xx rejection that carries a status code; a malfunction raised with no status (such as "returned no choices") is recorded. Two consequences follow: [quota, request-scoped 400] raises quota, so three such calls open the breaker with a 402 latch; and a provider that rejects every request with a status-carrying 4xx (a deprecated model's 404) is never recorded on health, so it can stay ahead in routing. The rule is `chain_failure_rank` and `records_on_provider_health` (`faultmaven/infrastructure/llm/providers/registry.py`), pinned by `tests/unit/infrastructure/llm/providers/test_chain_failure_order_2833.py`.
 
 **Circuit breaker carries the classification.** When repeated failures open the breaker, `CircuitBreakerError` carries the `error_code` of the failure that tripped it (latched across the failing streak so a trailing transient error does not erase a permanent billing signal). This keeps a billing condition distinguishable as `QUOTA_EXHAUSTED` even on turns where the request never reaches the provider — without it, an open breaker would mask billing as a generic 500.
 

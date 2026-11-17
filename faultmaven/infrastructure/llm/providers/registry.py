@@ -17,10 +17,13 @@ from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import (
+    SERVICE_SCOPED_ERROR_CODES,
     CallShapeUnsupported,
+    LLMErrorCategory,
     RawModelContentRefused,
-    counts_against_breaker,
+    declared_llm_category,
     is_rate_limit_throttle,
+    walk_cause_chain,
 )
 from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
@@ -113,6 +116,49 @@ class ProviderState:
         if len(self._latency_window) > self.LATENCY_WINDOW_SIZE:
             self._latency_window.pop(0)
         self.avg_latency_ms = sum(self._latency_window) / len(self._latency_window)
+
+
+_CALLER_REMEDY_CATEGORIES = frozenset(
+    {LLMErrorCategory.CONTEXT_OVERFLOW, LLMErrorCategory.OUTPUT_TRUNCATION}
+)
+
+
+def chain_failure_rank(exc: BaseException) -> int:
+    """How a fallback chain ranks ``exc`` against its other failures (#2833).
+
+    ``route_request`` raises the highest-ranked failure, the later one on a
+    tie: 6 a caller remedy (context overflow, output truncation); 5
+    service-scoped (quota, rejected credentials); 4 counted and retryable (a
+    5xx, a timeout, an unclassified exception); 3 a throttle; 2 any other
+    request-scoped rejection; 1 ``CallShapeUnsupported``.
+    """
+    if isinstance(exc, CallShapeUnsupported):
+        return 1
+    if declared_llm_category(exc) in _CALLER_REMEDY_CATEGORIES:
+        return 6
+    if getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
+        return 5
+    if is_rate_limit_throttle(exc):
+        return 3
+    if getattr(exc, "retryable", True) is not False:
+        return 4
+    return 2
+
+
+def records_on_provider_health(exc: BaseException) -> bool:
+    """Whether a provider's health records ``exc`` as a failure (#2833).
+
+    Not a throttle, not a call-shape refusal, and not a 4xx rejection: one
+    whose first ``status_code`` on the ``__cause__`` chain is 400-499. A
+    malfunction raised with no status is recorded.
+    """
+    if is_rate_limit_throttle(exc) or isinstance(exc, CallShapeUnsupported):
+        return False
+    for cursor in walk_cause_chain(exc):
+        status = getattr(cursor, "status_code", None)
+        if isinstance(status, int):
+            return not 400 <= status <= 499
+    return True
 
 
 # Data-driven provider schema - single source of truth.
@@ -1049,37 +1095,42 @@ class ProviderRegistry:
                 # This CALL's shape on this transport, not the provider's
                 # health (#2016): no failure is recorded. Unlike a refused
                 # content grammar, another provider may carry the call, so
-                # the chain continues; a real failure already seen outranks
-                # the refusal when the chain is exhausted.
+                # the chain continues; ``chain_failure_rank`` ranks it last.
                 self.logger.warning(
                     f"{provider_name} cannot carry this call shape and was "
                     f"skipped without a health penalty: {e}"
                 )
-                if last_error is None or isinstance(last_error, CallShapeUnsupported):
+                if last_error is None or (
+                    chain_failure_rank(e) >= chain_failure_rank(last_error)
+                ):
                     last_error = e
                 continue
             except Exception as e:
                 if is_rate_limit_throttle(e):
                     # A 429 the provider's own waits did not outlast: the
                     # provider is up and busy, not down (#2793). No health
-                    # penalty; the chain moves on. A failure seen earlier that
-                    # the router's breaker counts stays the raised error, so
-                    # the router still counts it; any other is replaced.
+                    # penalty; the chain moves on (``chain_failure_rank``).
                     self.logger.warning(
                         f"{provider_name} rate-limited this call and was skipped "
                         f"without a health penalty: {e}"
                     )
-                    if last_error is None or not counts_against_breaker(last_error):
+                    if last_error is None or (
+                        chain_failure_rank(e) >= chain_failure_rank(last_error)
+                    ):
                         last_error = e
                     continue
-                # Record failure for health tracking
-                state.record_failure()
+                # Health records what ``records_on_provider_health`` names.
+                if records_on_provider_health(e):
+                    state.record_failure()
 
                 self.logger.warning(
                     f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
                     f"health: {state.health.value}): {e}"
                 )
-                last_error = e
+                if last_error is None or (
+                    chain_failure_rank(e) >= chain_failure_rank(last_error)
+                ):
+                    last_error = e
                 continue
 
         # If we have a low-confidence response, return it with appropriate metadata
@@ -1094,10 +1145,10 @@ class ProviderRegistry:
             )
             return best_low_confidence_response
 
-        # All providers failed completely — re-raise the last error directly
-        # so that retryability metadata (e.g. LLMException.retryable) is
-        # preserved for upstream retry logic in call_external().
-        self.logger.error(f"All providers failed. Last error: {last_error}")
+        # All providers failed completely — re-raise the highest-ranked
+        # failure directly (``chain_failure_rank``) so that retryability
+        # metadata is preserved for upstream retry logic in call_external().
+        self.logger.error(f"All providers failed. Raised error: {last_error}")
         if last_error is not None:
             raise last_error
         raise Exception("All providers failed with no error details")
