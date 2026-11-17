@@ -1116,8 +1116,11 @@ written*, as amended by #2811, ruled 2026-11-15):
   (so a terminal write that raised is still repaired), and on a terminal case
   the closure a terminal write folded. The write point is a `WritePoint`.
 - **Computed on demand for narration** (`narration_outcome`): folded in memory
-  over the stored record, stored nowhere, minting nothing, once per narration
-  pass.
+  over the stored record, stored nowhere, minting nothing. The turn's
+  narration folds it once, at its entry, when the cycle's write failed and a
+  logged code reads the record; the `<fix_verification>` block folds it
+  lazily, at most once per prompt assembly (`NarrationFold`), and only where
+  the block is shown.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;

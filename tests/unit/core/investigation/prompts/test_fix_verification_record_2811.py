@@ -338,25 +338,43 @@ async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
     assert _rest(prompt, _block(prompt)) == _rest(whole, _block(whole))
 
 
-async def test_a_failed_counter_still_omits_the_block(monkeypatch):
-    monkeypatch.setattr(block_module, "narration_outcome", _raise)
+_STAGES = ["narration_outcome", "_fresh", "render_fix_verification"]
+
+
+@pytest.mark.parametrize("where", _STAGES)
+async def test_a_failed_counter_still_omits_the_block(monkeypatch, where):
+    """A metrics error is swallowed where the counter is the only guard (the
+    fresh read and the render) as on the fold's path; the build never
+    raises."""
+    monkeypatch.setattr(block_module, where, _raise)
     monkeypatch.setattr(
         block_module,
         "case_outcome_write_failures_total",
-        SimpleNamespace(labels=_raise),
+        SimpleNamespace(labels=lambda at: SimpleNamespace(inc=_raise)),
     )
     assert build_fix_verification_block(await build("R:other_cause")) == _OMITTED
 
 
-async def test_one_fold_serves_and_counts_once_per_assembly(monkeypatch, failures):
+@pytest.mark.parametrize("where", _STAGES)
+async def test_one_fold_serves_and_counts_once_per_assembly(
+    monkeypatch, failures, where
+):
+    """Three builds of one assembly: the record is folded once, and a
+    failure at any stage is counted once."""
     case = await build("R:other_cause")
     calls: list = []
-    monkeypatch.setattr(
-        block_module, "narration_outcome", lambda c: calls.append(c) or _raise()
-    )
-    fold = NarrationFold(case)
+    real = block_module.narration_outcome
+
+    def fold(c):
+        calls.append(c)
+        return _raise() if where == "narration_outcome" else real(c)
+
+    monkeypatch.setattr(block_module, "narration_outcome", fold)
+    if where != "narration_outcome":
+        monkeypatch.setattr(block_module, where, _raise)
+    assembly = NarrationFold(case)
     for _ in range(3):
-        assert build_fix_verification_block(case, fold) == _OMITTED
+        assert build_fix_verification_block(case, assembly) == _OMITTED
     assert (len(calls), failures) == (1, [WritePoint.NARRATION])
 
 

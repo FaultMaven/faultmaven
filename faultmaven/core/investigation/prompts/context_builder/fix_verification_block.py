@@ -213,7 +213,8 @@ def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
     """The verdicts ruling Q1 (a) keeps read fresh until stage S3, by today's
     deciders: each dated attempt's window, joined by action id at the
     action's current execution turn; what the latest window says of the
-    problem; and whether the gate would refuse ``mitigation_verified``. A
+    problem; and, where its ask prints, whether the gate would refuse
+    ``mitigation_verified`` (True elsewhere). A
     cause re-check is owed only where readiness would ask for one: in the
     latest window, while the legs do not stand."""
     latest = windows[-1]
@@ -238,14 +239,23 @@ def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
     elif _relief_without_cause_recheck(case, latest, subjects):
         leg, turn = ProblemLeg.RELIEF, latest.relief_turn
         gone = tuple(_problem_rows(latest, subjects))
+    # The gate's refusal is read only where its line prints, as ``main`` read
+    # it: a holding relief of a dated mitigation, in MITIGATION.
+    seen = outcome.mitigation
+    asks = (
+        case.current_stage == InvestigationStage.MITIGATION
+        and seen is not None
+        and seen.attempt_turn is not None
+        and seen.relief_turn is not None
+        and seen.holding
+    )
     return FixVerificationFresh(
         fixes=fixes,
         problem_leg=leg,
         problem_leg_turn=turn,
         gone_row_ids=gone,
-        mitigation_verify_refused=(
-            outcome.mitigation is None or _mitigation_verify_refusal(case) is not None
-        ),
+        mitigation_verify_refused=not asks
+        or _mitigation_verify_refusal(case) is not None,
     )
 
 

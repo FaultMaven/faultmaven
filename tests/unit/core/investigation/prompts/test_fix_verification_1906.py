@@ -55,6 +55,7 @@ from tests.unit.core.investigation.bound_rows import (
     SUPPORT_ID,
     bound_row,
     ensure_subjects,
+    mitigated,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
@@ -527,14 +528,28 @@ def test_older_attempts_are_counted_not_dropped():
     assert "executed turn 6" in block
 
 
-@pytest.mark.parametrize("shape", [dict(problem=True), dict(cause=False, problem=True)])
+@pytest.mark.parametrize(
+    "shape",
+    [
+        dict(problem=True),
+        dict(cause=False, problem=True),
+        # MITIGATION, its attempt dated after the only relief: no ask prints,
+        # so the gate's refusal is not read (#2811 S2b-1a).
+        dict(stage="mitigation", problem=True, mitigated=True),
+    ],
+)
 def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
     from faultmaven.core.investigation import cause_assurance, terminal_transitions
     from faultmaven.core.investigation.prompts.context_builder import (
         fix_verification_block as block_module,
     )
 
-    case = _case("treatment", **shape)
+    shape = {"stage": "treatment", **shape}
+    dated = shape.pop("mitigated", False)
+    case = _case(**shape)
+    if dated:
+        mitigated(case, attempt=6)
+        assert block_module._shown(case), "premise: the block is shown"
     # The prompt assembly's record, folded before the count (#2811 S2b-1a).
     fold = NarrationFold(case)
     assert fold.outcome() is not None

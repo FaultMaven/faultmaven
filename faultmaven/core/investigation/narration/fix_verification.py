@@ -111,6 +111,8 @@ class FixVerificationFresh:
     gone_row_ids: tuple[str, ...] = ()
     """RELIEF's problem-gone rows in the latest window."""
     mitigation_verify_refused: bool = True
+    """Whether the gate would refuse ``mitigation_verified``: read only where
+    its ask prints (a holding relief in MITIGATION), True elsewhere."""
 
 
 class FixVerificationHead(NamedTuple):
