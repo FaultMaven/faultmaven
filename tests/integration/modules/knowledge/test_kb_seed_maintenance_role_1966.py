@@ -27,6 +27,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
+from faultmaven.bootstrap.kb_pack import KbPack
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
@@ -78,6 +79,9 @@ class _KbStore:
 
     async def delete_chunk_ids(self, chunk_ids, where, collection_name=None):
         return []
+
+    async def delete_generation(self, parent_document_id, generation, **_kwargs):
+        return 0
 
 
 async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
@@ -187,16 +191,29 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
                         project_root=tmp_path,
                         pack_dir=_write_pack(tmp_path),
                     )
-
-                async with factory() as session:
-                    stored_meta = (
-                        await session.execute(
-                            text(
-                                "SELECT metadata FROM knowledge_items WHERE item_id = :i"
-                            ),
-                            {"i": shipped},
-                        )
-                    ).scalar()
+                    async with factory() as session:
+                        stored_meta = (
+                            await session.execute(
+                                text(
+                                    "SELECT metadata FROM knowledge_items WHERE item_id = :i"
+                                ),
+                                {"i": shipped},
+                            )
+                        ).scalar()
+                    # A new pack version of the global built-in: its
+                    # replacing transaction reads the id's shares and, with
+                    # none, writes nothing to resource_shares, which this
+                    # role may only SELECT (#2386).
+                    revised = KbPack.load(
+                        _write_pack(tmp_path / "v2", content=RUNBOOK_MD + "\nRevised.")
+                    )
+                    reingested = await kb_init._ingest_pack_runbook(
+                        runbook=revised.runbooks[0],
+                        knowledge_service=svc,
+                        db_session_factory=factory,
+                        enterprise_id=STANDALONE_ENTERPRISE_ID,
+                        role_may_update=False,
+                    )
             finally:
                 await maint.dispose()
 
@@ -221,6 +238,7 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             ), "a stamp was attempted under a role without UPDATE"
             assert stored_meta in ({}, "{}")
             assert result.failed == []
+            assert reingested == "ingested"
     finally:
         async with admin.connect() as conn:
             await conn.execute(text(f"DROP ROLE IF EXISTS {role}"))

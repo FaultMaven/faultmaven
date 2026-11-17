@@ -6,6 +6,8 @@ path's id resolver both grant by share whatever the row's scope: a team the
 runbook moved away from kept reading it. ``_insert_pack_row`` now deletes the
 id's shares that are not the pack's own, after the INSERT and in the same
 transaction, and issues that DELETE only when the read before it finds one.
+``kb_init`` re-ingests an entry that moves to another scope or team whatever
+its hash, and a skipped row has its stale shares deleted.
 
 Driven through ``kb_init._ingest_pack_runbook``, the entry the KB bootstrap
 uses, on FK-on SQLite (RLS off) with the real share repository, an on-disk
@@ -147,15 +149,20 @@ async def _sees(world, team: str) -> bool:
 
 
 class _ShareStatements:
-    """The verb of every statement the engine runs against ``resource_shares``."""
+    """Every statement the engine runs, as ``(verb, table)`` in order; ``verbs``
+    are those against ``resource_shares``."""
 
     def __init__(self, factory_) -> None:
-        self.verbs: List[str] = []
+        self.seen: List[tuple] = []
         self._engine = factory_.kw["bind"].sync_engine
 
+    @property
+    def verbs(self) -> List[str]:
+        return [verb for verb, table in self.seen if table == "resource_shares"]
+
     def _record(self, _conn, _cursor, statement, *_args) -> None:
-        if re.search(r"\bresource_shares\b", statement):
-            self.verbs.append(statement.split(None, 1)[0].upper())
+        table = re.search(r"\b(?:INTO|FROM|UPDATE)\s+(\w+)", statement, re.I)
+        self.seen.append((statement.split(None, 1)[0].upper(), table and table[1]))
 
     def __enter__(self):
         event.listen(self._engine, "before_cursor_execute", self._record)
@@ -291,3 +298,58 @@ async def test_a_stale_replace_rolls_back_and_leaves_the_peers_shares(
 
     assert await _shares(world) == peers
     assert [s[:2] for s in peers] == [("team", T2)]
+
+
+@pytest.mark.parametrize("scope, team", [("team", T2), ("personal", None)])
+async def test_an_unchanged_runbook_that_moves_is_reingested(
+    factory, tmp_path, scope, team  # noqa: F811
+):
+    """The same content (and hash) at another team or scope is a change."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+
+    assert await _seed(world, _pack("v1", scope, team)) == "ingested"
+
+    assert [s[:2] for s in await _shares(world)] == ([("team", T2)] if team else [])
+    async with factory() as session:
+        assert (await session.get(KnowledgeItemModel, DOC)).scope == scope
+
+
+async def test_a_skipped_row_drops_a_stale_share(factory, tmp_path):  # noqa: F811
+    """A share an earlier ingest left is repaired on the next boot, without a
+    new pack version; a boot that finds none stale deletes nothing."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T2))
+    own = await _shares(world)
+    await world.shares.share(
+        resource_type="knowledge_item",
+        resource_id=DOC,
+        scope_type="team",
+        scope_id=T1,
+        enterprise_id=STANDALONE_ENTERPRISE_ID,
+    )
+
+    assert await _seed(world, _pack("v1", "team", T2)) == "skipped"
+    assert await _shares(world) == own
+
+    with _ShareStatements(factory) as spy:
+        assert await _seed(world, _pack("v1", "team", T2)) == "skipped"
+    assert set(spy.verbs) == {"SELECT"}
+
+
+async def test_the_share_clean_up_runs_after_the_insert(
+    factory, tmp_path  # noqa: F811
+):
+    """The INSERT is the transaction's first write, so a duplicate id fails
+    before any share statement; the clean-up's read and delete follow it."""
+    world = _world(factory, tmp_path)
+    await _seed(world, _pack("v1", "team", T1))
+
+    with _ShareStatements(factory) as spy:
+        await _seed(world, _pack("v2", "team", T2))
+
+    order = spy.seen
+    insert = order.index(("INSERT", "knowledge_items"))
+    delete = order.index(("DELETE", "resource_shares"))
+    read = max(i for i in range(delete) if order[i] == ("SELECT", "resource_shares"))
+    assert insert < read < delete, order

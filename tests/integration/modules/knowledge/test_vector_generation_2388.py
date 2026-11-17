@@ -337,8 +337,20 @@ async def test_a_pack_replacement_keeps_only_its_own_share_written_once(
         runbook.scope, runbook.owner_id, runbook.team_id = "team", TEAM_OWNER, TEAM_ID
         return runbook
 
+    async def share_rows():
+        async with session_factory() as session:
+            rows = await session.execute(
+                select(
+                    ResourceShareModel.scope_type,
+                    ResourceShareModel.scope_id,
+                    ResourceShareModel.share_id,
+                ).where(ResourceShareModel.resource_id == DOC)
+            )
+            return sorted(tuple(r) for r in rows)
+
     await _seed(world, team_pack("v0", REAL_VECTORS[0]))
     old = (await _row(world)).vector_generation
+    own = await share_rows()
     await shares.share(
         resource_type="knowledge_item",
         resource_id=DOC,
@@ -358,15 +370,9 @@ async def test_a_pack_replacement_keeps_only_its_own_share_written_once(
 
     assert replacing == [old]
     assert (await _row(world)).vector_generation != old
-    async with session_factory() as session:
-        rows = (
-            await session.execute(
-                select(ResourceShareModel.scope_type, ResourceShareModel.scope_id)
-                .where(ResourceShareModel.resource_id == DOC)
-                .order_by(ResourceShareModel.scope_id)
-            )
-        ).all()
-    assert [tuple(r) for r in rows] == [("team", TEAM_ID)]
+    # The pack's own share row itself, same ``share_id``: never rewritten.
+    assert [r[:2] for r in own] == [("team", TEAM_ID)]
+    assert await share_rows() == own
 
 
 async def test_a_failed_generation_delete_is_logged_and_the_replacement_stands(

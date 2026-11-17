@@ -14,9 +14,9 @@ to a soft-deleted team are already unreachable (``list_all_user_team_ids`` filte
 
 import logging
 import uuid
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.config.tenant_context import (
@@ -120,6 +120,40 @@ class PostgreSQLShareRepository(IShareRepository):
             scope_id,
         )
         return existing
+
+    async def delete_other_scopes(
+        self,
+        *,
+        resource_type: str,
+        resource_id: str,
+        keep: Optional[Tuple[str, str]],
+    ) -> int:
+        """Delete the resource's shares other than ``keep`` (``(scope_type,
+        scope_id)``; every share when None); never commits, as :meth:`share`
+        (#2386). The DELETE is issued only when the SELECT found one: a
+        SELECT-only role is refused a DELETE even when it matches no row."""
+        stale = select(ResourceShareModel.share_id).where(
+            ResourceShareModel.resource_type == resource_type,
+            ResourceShareModel.resource_id == resource_id,
+        )
+        if keep is not None:
+            stale = stale.where(
+                or_(
+                    ResourceShareModel.scope_type != keep[0],
+                    ResourceShareModel.scope_id != keep[1],
+                )
+            )
+        share_ids = list((await self.db.execute(stale)).scalars())
+        if share_ids:
+            await self.db.execute(
+                delete(ResourceShareModel).where(
+                    ResourceShareModel.share_id.in_(share_ids)
+                )
+            )
+            logger.info(
+                f"Removed {len(share_ids)} other share(s) of {resource_type}:{resource_id}"
+            )
+        return len(share_ids)
 
     async def unshare(
         self,
