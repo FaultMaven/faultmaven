@@ -231,8 +231,8 @@ class KbPack:
                 return None
             # The vectors are written as float32 and ingested as floats; a
             # string or other numeric array would carry its values to the
-            # store as they are (#2248).
-            if vectors.dtype != np.float32:
+            # store as they are (#2248). Either byte order is a float32.
+            if vectors.dtype.kind != "f" or vectors.dtype.itemsize != 4:
                 logger.error(
                     "KB pack at %s: vectors dtype is %s, not float32. Ignoring "
                     "the pack; no runbooks are ingested from it. Rebuild the pack.",

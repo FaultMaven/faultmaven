@@ -13,7 +13,7 @@ This check verifies three things:
    ``resources/knowledge/runbooks/`` is in the pack, and every pack runbook is a
    source runbook. This catches a runbook edited, added or deleted without
    rebuilding the pack — i.e. a contributor's PR that changed a ``.md`` but not
-   the pack.
+   the pack. A missing sources directory is itself a problem.
 3. **Pairing** (#1286) — each chunk's text is the text its vector was embedded
    from: ``text_sha256`` and ``pair_sha256`` (the producer's recipe) match the
    chunk's text and ``vectors[vector_row]``, the rows run ``0..n-1`` in manifest
@@ -145,7 +145,9 @@ def main(pack_dir: Optional[Path] = None, runbooks_src: Optional[Path] = None) -
     # runbooks start with YAML frontmatter, docs do not. Pack relpaths carry a
     # scope prefix (``global/...``), so the match is by hash, not path.
     stale = []
-    if runbooks_src.exists():
+    if not runbooks_src.is_dir():
+        problems.append(f"runbook sources directory not found: {runbooks_src}")
+    else:
         source_hashes = set()
         for md in sorted(runbooks_src.rglob("*.md")):
             content = md.read_text(encoding="utf-8")

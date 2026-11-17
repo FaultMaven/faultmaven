@@ -257,8 +257,50 @@ def test_chunk_index_not_in_order_fails(check, tmp_path, indices):
     assert f"global/net/beta.md: chunk_index sequence {indices} is not 0..2" in out
 
 
-def test_source_runbook_deleted_fails(check, tmp_path):
-    """The vendored pack against its sources less one runbook (#2246)."""
+def test_pack_runbook_without_a_source_fails(check, tmp_path):
+    """A source deleted without a rebuild leaves its runbook in the pack (#2246)."""
+    pack = _build(tmp_path, _vectors())
+    (tmp_path / "src" / "global" / "net" / "beta.md").unlink()
+    code, out = check(pack)
+    assert code == 1
+    assert (
+        "pack runbook not in sources (deleted, or edited without a rebuild): "
+        "global/net/beta.md"
+    ) in out
+    assert "global/db/alpha.md" not in out
+
+
+def test_sources_holding_only_a_readme_fail(check, tmp_path):
+    """A README (no frontmatter) is not a runbook, so it matches no pack runbook."""
+    pack = _build(tmp_path, _vectors())
+    shutil.rmtree(tmp_path / "src")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "README.md").write_text("# Runbooks\n", encoding="utf-8")
+    code, out = check(pack)
+    assert code == 1
+    for relpath in RUNBOOKS:
+        assert (
+            f"pack runbook not in sources (deleted, or edited without a rebuild): {relpath}"
+            in out
+        )
+
+
+def test_missing_sources_directory_fails(check, tmp_path):
+    pack = _build(tmp_path, _vectors())
+    src = tmp_path / "no-such-dir"
+    code, out = check(pack, src)
+    assert code == 1
+    assert f"runbook sources directory not found: {src}" in out
+
+
+def test_big_endian_float32_vectors_pass(check, tmp_path):
+    """``>f4`` is a float32 in the other byte order, and a valid pack."""
+    code, out = check(_build(tmp_path, _vectors().astype(">f4")))
+    assert code == 0, out
+
+
+def test_vendored_pack_less_one_source_fails(check, tmp_path):
+    """The issue's reproduction: the vendored pack against its sources less one."""
     src = tmp_path / "src"
     shutil.copytree(SCRIPT.parents[1] / "resources" / "knowledge" / "runbooks", src)
     (src / "application" / "argocd-sync-failure.md").unlink()
@@ -287,6 +329,14 @@ def _vectors_as(pack: Path, vectors: np.ndarray) -> Path:
             "vectors dtype is float64, not float32",
         ),
         (
+            lambda p: _vectors_as(p, np.zeros((5, 1024), dtype=np.int32)),
+            "vectors dtype is int32, not float32",
+        ),
+        (
+            lambda p: _vectors_as(p, np.zeros((5, 1024), dtype=bool)),
+            "vectors dtype is bool, not float32",
+        ),
+        (
             lambda p: _edit(p, lambda m: m["runbooks"][1].update(content_hash=[])),
             "runbook 'kb_beta' has a content_hash of type list",
         ),
@@ -295,7 +345,14 @@ def _vectors_as(pack: Path, vectors: np.ndarray) -> Path:
             "runbook 'kb_beta' has a content_hash of type dict",
         ),
     ],
-    ids=["str-vectors", "float64-vectors", "list-hash", "dict-hash"],
+    ids=[
+        "str-vectors",
+        "float64-vectors",
+        "int-vectors",
+        "bool-vectors",
+        "list-hash",
+        "dict-hash",
+    ],
 )
 def test_wrongly_typed_value_is_refused_by_the_loader(
     check, tmp_path, caplog, corrupt, expected
