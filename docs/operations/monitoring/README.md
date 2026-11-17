@@ -17,7 +17,9 @@ collector is created through the metrics shim and records only with
   cache_write), `llm_provider_calls_total{provider,model,outcome}` (kept vs
   low_confidence), `llm_unpriced_calls_total{provider,model}` — per **billed
   provider call**, recorded at the registry chokepoint so fallback/retry spend
-  is counted (not just the winner). See
+  is counted (not just the winner); `llm_investigation_call_tokens_total{provider,
+  model,path,position,token_type}` — the investigation engine's responses by
+  tool-loop position, where prompt caching shows per turn. See
   [LLM Cost & Token Observability](./llm-cost-observability.md) for the price
   table, the `LLM_PRICING_OVERRIDES` env override, the structured `llm_call` /
   `turn_token_spend` logs, and a cost-spike diagnosis playbook.

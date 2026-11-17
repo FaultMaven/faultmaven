@@ -19,7 +19,7 @@ which are the most common cause of a runaway bill.
 |---|---|---|
 | `llm_cost_usd_total` | `provider`, `model` | Estimated USD spend per **provider API call** (from the price table). The dollar figure to alert on. |
 | `llm_call_tokens_total` | `provider`, `model`, `token_type` | Tokens per API call, split into `input` / `output` / `cache_read` / `cache_write`. Buckets are disjoint. |
-| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | The investigation engine's kept responses, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, its retries included, and every single-shot call; `later` = later tool-loop iterations). One count per engine call: no response-cache hits, no discarded fallback attempts. `position="first"` `input` is the uncached part of each turn's case, which a blended hit rate hides because later iterations read almost everything back. |
+| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | Tokens of every response the investigation engine received from its provider, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, re-issues of a cut or refused body included, and every single-shot call; `later` = later tool-loop iterations). No response-cache hits, no discarded fallback attempts. `path="tool_loop"`, `position="first"` `input` is what the cached standing prefix leaves uncached of each turn: the case, re-sent every turn, which a blended hit rate hides because later iterations read the earlier ones back. |
 | `llm_provider_calls_total` | `provider`, `model`, `outcome` | API calls by disposition. `outcome=kept` = returned to caller; `outcome=low_confidence` = **billed then discarded** by the fallback chain (pure waste). |
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
 | `llm_usage_unpersisted_calls_total` | `reason` | Billed calls the [usage ledger](#the-usage-ledger) did not persist. **Non-zero ⇒ the ledger under-reports** by exactly this many calls. |
@@ -307,10 +307,15 @@ landing.
 4. **Is caching working?** Check `prompt_cache_hit` in `llm_call` logs (DEBUG) and the
    `cache_read` series. Zero cache reads on Anthropic tool-loop turns means the
    prefix isn't being reused (e.g. turns > 5 min apart, so the ephemeral cache
-   expired). Split it by position with `llm_investigation_call_tokens_total`:
-   `position="later"` should be nearly all `cache_read` (each iteration re-sends
-   the previous one), and `position="first"` `input` per turn is what the
-   standing prefix leaves uncached — the case itself, re-sent every turn.
+   expired). Split the tool loop by position with
+   `llm_investigation_call_tokens_total{path="tool_loop"}`: `position="later"`
+   is mostly `cache_read` (each iteration re-sends the previous one and only
+   appends), except the schema-only final call, whose different tool set
+   misses the cache on every provider; `position="first"` `input` is what each
+   turn's standing prefix leaves uncached. A turn whose tool loop fell back to
+   the single-shot path counts a `first` call on both paths, and the
+   single-shot path is not marked cacheable on Anthropic, so its whole prompt
+   is `input` there.
 
 ## Coverage note
 

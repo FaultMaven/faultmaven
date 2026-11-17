@@ -283,11 +283,11 @@ def record_provider_call(
 
 
 def record_investigation_call(response: Any, *, path: str, position: str) -> None:
-    """Count one investigation-engine call's tokens by path and position.
+    """Count the tokens of one response the investigation engine received.
 
     Best-effort; never raises. ``path`` is ``tool_loop`` or ``single_shot``;
     ``position`` is ``first`` (the turn's first tool-loop iteration and its
-    retries, and every single-shot call) or ``later``. A response-cache hit
+    re-issues, and every single-shot call) or ``later``. A response-cache hit
     (``cached``) billed nothing and is skipped. Spend and persistence stay with
     :func:`record_provider_call`, which every billed attempt already reached.
     """
