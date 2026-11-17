@@ -304,7 +304,8 @@ class FaultMavenLogger:
         # dict keys, anything the renderer repr()s such as an exception passed
         # as error=e, and anything nested past the walk's depth. After
         # rendering, all of it is text, and one pass covers the message, the
-        # fields, the keys and the traceback alike.
+        # fields, the keys and the traceback alike: URL query strings, and
+        # credential header values (a JSON line on its decoded keys and values).
         renderer = redacting_renderer(renderer)
 
         # Native structlog loggers: filter + shared processors, then hand the

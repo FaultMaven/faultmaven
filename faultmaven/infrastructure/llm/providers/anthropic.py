@@ -7,13 +7,13 @@ reasoning and analysis tasks using the Claude API.
 
 import asyncio
 import json
-import re
 import time
 from typing import List, Mapping, NamedTuple, Optional
 
 import aiohttp
 
 from faultmaven.exceptions import LLMException
+from faultmaven.infrastructure.llm.claude_model_id import parse_claude_model_id
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
@@ -171,12 +171,6 @@ class AnthropicProvider(BaseLLMProvider):
         ("opus", (5, 5)): _OFF_EFFORT_LOW,
         ("fable", (5, 1)): _OFF_EFFORT_LOW,
     }
-    # claude-<family>-<major>[-<minor>][-<yyyymmdd>]. The minor is 1-2 digits
-    # and the date 8, so claude-opus-4-20250514 is (4, 0) and
-    # claude-haiku-4-5-20251001 is (4, 5).
-    _CLAUDE_MODEL_ID = re.compile(
-        r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?"
-    )
     # Model ids whose request shape has been logged: one line per model id per
     # process, not one per call.
     _REQUEST_SHAPE_LOGGED: set[str] = set()
@@ -196,11 +190,13 @@ class AnthropicProvider(BaseLLMProvider):
     @classmethod
     def _claude_version(cls, model: str) -> tuple[str, tuple[int, int]] | None:
         """(family, (major, minor)) from a Claude model id, or None if the id
-        does not follow ``claude-<family>-<major>[-<minor>][-<yyyymmdd>]``."""
-        m = cls._CLAUDE_MODEL_ID.fullmatch((model or "").strip().lower())
-        if m is None:
+        does not follow the grammar in ``claude_model_id``. No minor reads as 0,
+        so claude-opus-4-20250514 is (4, 0)."""
+        parsed = parse_claude_model_id(model)
+        if parsed is None:
             return None
-        return m.group(1), (int(m.group(2)), int(m.group(3) or 0))
+        family, major, minor = parsed
+        return family, (major, minor or 0)
 
     @classmethod
     def _accepted_through(cls, model: str, ceilings: dict) -> bool:

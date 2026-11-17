@@ -163,10 +163,11 @@ HOW TO ANSWER:
   NOT ask the user for FaultMaven's configuration, manifests or logs as
   evidence — the answer is not in the case, and FaultMaven is not the system
   being diagnosed.
-- Leave the investigation untouched: no evidence, hypotheses, milestones,
-  evidence requests or state changes on this turn; keep evidence_trail to
-  one line. Do NOT re-issue pending data requests — end with ONE sentence
-  offering to pick the investigation back up where it left off.
+- Leave the investigation untouched for the FaultMaven part: it adds no
+  evidence, hypotheses, milestones, evidence requests or state changes, and
+  nothing to evidence_trail (where your output has one). Do NOT re-issue
+  pending data requests — end with ONE sentence offering to pick the
+  investigation back up where it left off.
 - Only the FaultMaven part of the message is exempt. If the same message also
   reports a symptom, asks about case data, or delivers a file or pasted text,
   handle that part exactly as you otherwise would — the exemption above does

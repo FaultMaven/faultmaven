@@ -670,17 +670,6 @@ class ResponseApplier:
                     if hasattr(milestones, field_name):
                         setattr(milestones, field_name, None)
                         stripped.append(field_name)
-                # Drop only the stripped milestones' justifications; keep the rest.
-                # ``milestone_justifications`` is a model now, so clearing a
-                # justification is setting its field to None rather than popping
-                # a key — ``as_dict()`` then omits it, which is what "dropped"
-                # meant when this was a dict (fm#1057).
-                ir = getattr(response_obj, "evidence_trail", None)
-                justifications = getattr(ir, "milestone_justifications", None)
-                if justifications is not None:
-                    for field_name in stripped:
-                        if field_name in type(justifications).model_fields:
-                            setattr(justifications, field_name, None)
             logger.info(
                 f"Surgically stripped {stripped or 'no'} milestone(s) for case "
                 f"{case.case_id}; preserved the rest. Continuing with response."
@@ -1404,7 +1393,7 @@ class ResponseApplier:
                 )
             _record_rechecks(case, updates.evidence_to_add, metadata["evidence_slots"])
 
-        # 2b. Validate Milestone Claims Against Cited Evidence
+        # 2b. Validate Milestone Claims Against the Case's Evidence
         # Milestones are applied optimistically from LLM output (step 1 above),
         # then validated here. Invalid claims are REVERTED to prevent milestones
         # advancing without supporting evidence.
@@ -1473,7 +1462,7 @@ class ResponseApplier:
         # method the LLM attaches to it. Cause work is accepted only on a
         # verified problem (``cause_work_accepted``), and this is the first
         # point where the turn's verification is final: step 1 applied the
-        # claim and step 2b reverted it if the cited evidence did not hold.
+        # claim and step 2b reverted it if the evidence did not support it.
         # So a turn that verifies the symptom AND concludes the cause lands
         # both. Nothing between step 1 and here reads these fields.
         if not staging:
@@ -1485,8 +1474,8 @@ class ResponseApplier:
         #
         # Hypotheses are formed only on a verified problem. ``cause_work_accepted``
         # reads the status the turn ENDS with — step 1 applied this turn's
-        # symptom claim and step 2b reverted it if the cited evidence did not
-        # hold — so a turn that verifies the symptom and proposes its cause
+        # symptom claim and step 2b reverted it if the evidence did not
+        # support it — so a turn that verifies the symptom and proposes its cause
         # mints the hypotheses ACTIVE on the spot (the opportunistic flow).
         # On an unverified problem they are refused, not queued: the evidence
         # behind them is already recorded, and the pool evaluation links it to

@@ -330,14 +330,14 @@ The milestone engine validates evidence claims for **progress indicators** (non-
 | `solution_accepted` (+ `accepted_action_ref`) | the named SOLUTION's `accepted_in_turn` + `ActionAttempt`, then, once chain emission has run, its `target_ids` and `fix_kind` (remediation or interception), read from two records: the cause pool at the start of the turn it ran in (`TurnProgress.cause_at_start`) and the licence M5 recorded on the fix when it was proposed (`licence_ids`), #2036 D2.3; `solution_accepted` stays True from the first | User acknowledges executing the proposed solution the ref names (an ACTION_ID, or `new_index_N`); each fix registers once, and after the first only when named (#2105) |
 | `solution_verified` | `solution_verified` | User confirmed fix worked (User-Agent Handshake) |
 
-**How progress milestone validation works:**
+**How progress milestone validation works** (`ResponseApplier` step 2b, `milestone_engine/response_application.py`). It reviews only the milestones the LLM claims (`llm_claimable_milestones`, `milestone_engine/stage_gates.py`); an engine-derived milestone (`ENGINE_DERIVED_MILESTONES`: `root_cause_identified`) is never reviewed here:
 
 1. LLM sets progress milestone = True in structured output
-2. System reads turn references (`turn_N`) from `evidence_trail.evidence_analyzed`; evidence collected on a cited turn counts alongside the current turn's
-3. System counts cited evidence matching expected categories
-4. If count < minimum: warning logged (milestone still set, but flagged)
+2. System counts the current turn's evidence in the expected categories
+3. Only when that falls short of the minimum does it add the evidence collected on the turns cited as turn references (`turn_N`) in `evidence_trail.evidence_analyzed`
+4. If count < minimum: the claim is reverted — the milestone leaves the turn's completed milestones, and the symptom claim is withdrawn through `unverify_problem` — and a warning is logged and recorded in `milestone_validation_warnings`
 
-Validation is **advisory, not blocking**. The LLM's progress milestone assertions are trusted, with validation providing quality feedback for monitoring.
+For these claims validation is **blocking**: an unsupported claim is reverted, never set and flagged.
 
 ```python
 class InvestigationStage(str, Enum):
