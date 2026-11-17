@@ -97,6 +97,18 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-opus-4-7": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-4-8": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
+        # Claude 5.x generations, from Anthropic's pricing page (read
+        # 2026-11-17). Cache reads are cheaper than the 0.1x convention above:
+        # 0.05x on Opus 5.5 and Sonnet 5.5, 0.025x on Fable 5.2. Opus 5.5 MUST
+        # have its own key: without it "claude-opus-5" is a substring of
+        # "claude-opus-5-5" and bills it at Opus 5's $5 / $25 (#2881).
+        "claude-opus-5-5": TokenRates(4.0, 20.0, 0.20, 5.0),
+        "claude-sonnet-5-5": TokenRates(2.0, 10.0, 0.10, 2.50),
+        "claude-fable-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
+        # Haiku 5.5 bills by prompt size: these are the rates for prompts of
+        # 100K tokens or fewer; above that every bucket is 5x. Short tier for
+        # the reason the gpt-5.6-luna row gives (PROMPT_TARGET_TOKENS is 32K).
+        "claude-haiku-5-5": TokenRates(0.10, 0.50, 0.01, 0.125),
         # Haiku 4.5 is $1 in / $5 out. The key is VERSIONED for the same
         # reason the Opus keys are: the bare "claude-haiku" it replaces was
         # fully version-blind, so it silently under-reported the shipped
@@ -206,6 +218,10 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
         "claude-opus-4-6": TokenRates(5.0, 25.0, 0.50, 6.25),
         "claude-opus-5": TokenRates(5.0, 25.0, 0.50, 6.25),
+        "claude-opus-5-5": TokenRates(4.0, 20.0, 0.20, 5.0),
+        "claude-sonnet-5-5": TokenRates(2.0, 10.0, 0.10, 2.50),
+        "claude-fable-5-2": TokenRates(8.0, 40.0, 0.20, 10.0),
+        "claude-haiku-5-5": TokenRates(0.10, 0.50, 0.01, 0.125),
     },
     "azure": {
         # Keyed by the model a deployment is named after (the default

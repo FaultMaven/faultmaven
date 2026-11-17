@@ -471,6 +471,31 @@ class TestVersionedModelKeys:
         """
         assert lookup_rates("anthropic", "claude-haiku-5") is None
 
+    # Claude 5.x rows: (input, output, cache_read, cache_write) per 1M, from
+    # Anthropic's pricing page (Haiku 5.5: the prompts-up-to-100K tier).
+    CLAUDE_5X = {
+        "claude-opus-5-5": (4.0, 20.0, 0.20, 5.0),
+        "claude-sonnet-5-5": (2.0, 10.0, 0.10, 2.50),
+        "claude-fable-5-2": (8.0, 40.0, 0.20, 10.0),
+        "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+    }
+
+    @pytest.mark.parametrize("provider", ["anthropic", "openrouter"])
+    @pytest.mark.parametrize("model", sorted(CLAUDE_5X))
+    def test_claude_5x_priced_at_their_own_rates(self, provider, model):
+        # A dated id goes through the substring loop, where "claude-opus-5"
+        # is a substring of "claude-opus-5-5": without its own key Opus 5.5
+        # billed at Opus 5's $5 / $25 with priced=True (#2881).
+        for model_id in (model, f"{model}-20260901"):
+            rates = lookup_rates(provider, model_id)
+            assert rates is not None, model_id
+            assert (
+                rates.input,
+                rates.output,
+                rates.cache_read,
+                rates.cache_write,
+            ) == pytest.approx(self.CLAUDE_5X[model]), model_id
+
     def test_openrouter_routes_opus_at_the_same_published_rate(self):
         # Same model, same rate, different path to it -- pricing only the
         # direct path would leave an Opus 5 deployment reporting $0 purely
