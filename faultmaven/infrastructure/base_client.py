@@ -24,8 +24,10 @@ from faultmaven.exceptions import (
     counts_against_breaker,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
-from faultmaven.models.exceptions import FaultMavenError
-from faultmaven.utils.exception_name import exception_class_chain
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_class_name,
+)
 
 # Type variable for generic return types
 T = TypeVar("T")
@@ -57,6 +59,10 @@ def _provider_codes(error: BaseException) -> Dict[str, Any]:
     third party's attributes of the same names are not first-party fields, and
     their values are its own to word.
     """
+    # Imported here: ``faultmaven.models`` runs the modules layer on import,
+    # which this client must not pull in.
+    from faultmaven.models.exceptions import FaultMavenError
+
     if not isinstance(error, (FaultMavenException, FaultMavenError)):
         return {}
     return {
@@ -369,7 +375,7 @@ class BaseExternalClient(ABC):
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
                                 exception_class_chain(last_exception)
-                                if last_exception
+                                if last_exception is not None
                                 else None
                             ),
                         }
@@ -622,7 +628,7 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error_type=type(call_error).__name__,
+                            error_type=exception_class_name(call_error),
                             error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
@@ -765,7 +771,7 @@ class BaseExternalClient(ABC):
                             "delay": retry_delay * (2 ** (attempt - 1)),
                             "previous_error": (
                                 exception_class_chain(last_exception)
-                                if last_exception
+                                if last_exception is not None
                                 else None
                             ),
                         }
@@ -928,7 +934,7 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error_type=type(call_error).__name__,
+                            error_type=exception_class_name(call_error),
                             error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,

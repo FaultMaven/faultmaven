@@ -556,7 +556,7 @@ class UnifiedLogger:
         """
         error_data = {"layer": self.layer, **extra_fields}
 
-        if error:
+        if error is not None:
             error_data["error_message"] = exception_class_chain(error)
             error_data["error_type"] = type(error).__name__
 
@@ -565,7 +565,7 @@ class UnifiedLogger:
         if request_ctx and request_ctx.error_context:
             if request_ctx.error_context.should_log_error(self.layer):
                 self.logger.error(message, **error_data)
-                if error:
+                if error is not None:
                     request_ctx.error_context.add_layer_error(self.layer, error)
         else:
             self.logger.error(message, **error_data)
@@ -576,7 +576,7 @@ class UnifiedLogger:
         """Log critical message with cascade prevention."""
         error_data = {"layer": self.layer, **extra_fields}
 
-        if error:
+        if error is not None:
             error_data["error_message"] = exception_class_chain(error)
             error_data["error_type"] = type(error).__name__
 
@@ -585,7 +585,7 @@ class UnifiedLogger:
         if request_ctx and request_ctx.error_context:
             if request_ctx.error_context.should_log_error(self.layer):
                 self.logger.critical(message, **error_data)
-                if error:
+                if error is not None:
                     request_ctx.error_context.add_layer_error(self.layer, error)
         else:
             self.logger.critical(message, **error_data)

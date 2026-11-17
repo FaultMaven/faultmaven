@@ -2,10 +2,11 @@
 
 A client's or a backend's exception text can carry its output: a cookie, a
 credential, a response body. Every site the ruling lists, and every emitter of
-``UnifiedLogger``, names the class chain instead. Each case asserts on the line
-the real ``configure_structlog`` chain renders (JSON, and console with colour
-forced), and shows the capture live: the same exception logged the old way does
-reach it.
+``UnifiedLogger``, names the class chain instead, and so do the messages
+``execute_operation`` raises. Each logging case asserts on the line the real
+``configure_structlog`` chain renders (JSON, and console with colour forced),
+and shows the capture live: the same exception logged the old way does reach
+it.
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from faultmaven.exceptions import (
     LLMException,
     ServiceError,
     ValidationException,
+    walk_cause_chain,
 )
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.concurrency import inflight, owned_claim
@@ -50,6 +52,20 @@ SENTINEL = "SECRET-SENTINEL"
 
 class BackendError(Exception):
     """A third party's exception, its text the backend's output."""
+
+
+class FalsyError(BackendError):
+    """An exception whose truth value is False."""
+
+    def __bool__(self):
+        return False
+
+
+class UnaskableError(BackendError):
+    """An exception whose truth value raises, carrying the sentinel."""
+
+    def __bool__(self):
+        raise RuntimeError(SENTINEL)
 
 
 def _backend_error(cls=BackendError, retryable=None, **kwargs):
@@ -225,16 +241,21 @@ class TestCallExternal:
 
     @pytest.mark.parametrize("hook", ["validate_response", "transform_response"])
     async def test_a_raising_validator_or_transformer(self, rendered, hook):
+        """A failed validation raises by class; a failed transformation
+        returns the untransformed result."""
         error = _backend_error()
-        client = _Client()
-        try:
-            await client.call_external(
-                "op",
-                AsyncMock(return_value="ok"),
-                **{hook: MagicMock(side_effect=error)},
+        call = _Client().call_external(
+            "op", AsyncMock(return_value="ok"), **{hook: MagicMock(side_effect=error)}
+        )
+        if hook == "validate_response":
+            with pytest.raises(RuntimeError) as raised:
+                await call
+            assert str(raised.value) == (
+                "Response validation failed: BackendError <- ConnectionError"
             )
-        except RuntimeError as raised:
-            assert SENTINEL not in str(raised)
+            assert raised.value.__cause__ is error
+        else:
+            assert await call == "ok"
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
     @pytest.mark.parametrize(
@@ -247,10 +268,19 @@ class TestCallExternal:
             call, hooks = MagicMock(return_value="ok"), {
                 case: MagicMock(side_effect=error)
             }
-        try:
-            _Client().call_external_sync("op", call, retries=1, retry_delay=0, **hooks)
-        except (BackendError, RuntimeError) as raised:
-            assert SENTINEL not in str(raised) or raised is error
+
+        def run():
+            return _Client().call_external_sync(
+                "op", call, retries=1, retry_delay=0, **hooks
+            )
+
+        if case == "transform_response":
+            assert run() == "ok"
+        else:
+            raising = RuntimeError if case == "validate_response" else BackendError
+            with pytest.raises(raising) as raised:
+                run()
+            assert raised.value is error or SENTINEL not in str(raised.value)
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
     async def test_each_unified_emitter(self, rendered):
@@ -265,12 +295,74 @@ class TestCallExternal:
         with pytest.raises(BackendError):
             with logger("core").operation_sync("sync_op"):
                 raise error
-        logger("infrastructure").error("err", error=error)
-        logger("api").critical("crit", error=error)
-        output = rendered.getvalue()
-        for event in ("async_op", "sync_op", "err", "crit"):
-            assert event in output
-        _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
+        logger("infrastructure").error("the error line", error=error)
+        logger("api").critical("the critical line", error=error)
+        chain = "BackendError <- ConnectionError"
+        rows = rendered.getvalue().splitlines()
+        for own in (
+            "Operation failed: async_op",
+            "Operation failed: sync_op",
+            "the error line",
+            "the critical line",
+        ):
+            (row,) = [row for row in rows if own in row]  # the emitter's own line
+            assert SENTINEL not in row
+            assert chain in row
+            if row.startswith("{"):
+                assert json.loads(row)["error_message"] == chain
+        _named(rendered, chain, _old_structlog(error))
+
+    @pytest.mark.parametrize("cls", [FalsyError, UnaskableError])
+    @pytest.mark.parametrize("sync", [False, True], ids=["async", "sync"])
+    async def test_an_exceptions_truth_value_is_never_read(self, rendered, cls, sync):
+        """A falsy exception is still named, and one whose truth value raises
+        does not turn a logging call into a raise."""
+        error = _backend_error(cls)
+        get_unified_logger("faultmaven.test.service", "service").error(
+            "the error line", error=error
+        )
+        get_unified_logger("faultmaven.test.api", "api").critical(
+            "the critical line", error=error
+        )
+        call = (MagicMock if sync else AsyncMock)(side_effect=error)
+        with pytest.raises(cls):
+            if sync:
+                _Client().call_external_sync("op", call, retries=1, retry_delay=0)
+            else:
+                await _Client().call_external("op", call, retries=1, retry_delay=0)
+        chain = f"{cls.__name__} <- ConnectionError"
+        rows = rendered.getvalue().splitlines()
+        for own in ("the error line", "the critical line"):
+            (row,) = [row for row in rows if own in row]
+            assert chain in row
+        if rows[0].startswith("{"):
+            (failed,) = [
+                e
+                for e in _json_lines(rendered)
+                if e.get("event_type") == "operation_error"
+            ]
+            assert failed["retry_attempt_1"]["previous_error"] == chain
+        _named(rendered, chain, _old_structlog(error))
+
+    @pytest.mark.parametrize("sync", [False, True], ids=["async", "sync"])
+    async def test_a_retry_line_filters_the_class_name(self, rendered, sync):
+        """A class's name is whatever its creator chose: the "will retry" line
+        names it only when it is a plain identifier."""
+        cls = type(f"{SENTINEL} x", (BackendError,), {})
+        error = _backend_error(cls)
+        call = (MagicMock if sync else AsyncMock)(side_effect=error)
+        with pytest.raises(cls):
+            if sync:
+                _Client().call_external_sync("op", call, retries=1, retry_delay=0)
+            else:
+                await _Client().call_external("op", call, retries=1, retry_delay=0)
+        (row,) = [
+            row for row in rendered.getvalue().splitlines() if "will retry" in row
+        ]
+        assert SENTINEL not in row
+        assert "Exception <- ConnectionError" in row
+        if row.startswith("{"):
+            assert json.loads(row)["error_type"] == "Exception"
 
 
 class _Service(BaseService):
@@ -282,11 +374,38 @@ class _Service(BaseService):
 class TestExecuteOperation:
     async def _run(self, sync, operation, **hooks):
         service = _Service("test_service")
-        with pytest.raises(Exception):
+        with pytest.raises(Exception) as raised:
             if sync:
                 service.execute_operation_sync("op", operation, **hooks)
             else:
                 await service.execute_operation("op", operation, **hooks)
+        return raised.value
+
+    @pytest.mark.parametrize("hook", ["operation", "validate_inputs"])
+    async def test_a_raise_names_the_class(self, sync, hook):
+        """What ``execute_operation`` raises for a third party's failure names
+        its class at every link, each keeping the one below as its cause. A
+        failed validation's ``ValueError`` is wrapped like any failure."""
+        error = OSError(SENTINEL)
+        operation, hooks = MagicMock(side_effect=error), {}
+        expected = [
+            "RuntimeError: Service operation failed: test_service.op: OSError",
+            "OSError",
+        ]
+        if hook == "validate_inputs":
+            operation = MagicMock(return_value="ok")
+            hooks = {hook: MagicMock(side_effect=error)}
+            expected = [
+                "RuntimeError: Service operation failed: test_service.op: "
+                "ValueError <- OSError",
+                "ValueError: Validation failed: OSError",
+                "OSError",
+            ]
+        raised = await self._run(sync, operation, **hooks)
+        links = list(walk_cause_chain(raised))
+        assert links[-1] is error
+        rendered_links = [f"{type(link).__name__}: {link}" for link in links[:-1]]
+        assert rendered_links + ["OSError"] == expected
 
     async def test_a_failed_transformation(self, rendered, sync):
         """The result is returned untransformed; the failure line and the

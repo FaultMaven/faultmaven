@@ -177,7 +177,7 @@ class BaseService(ABC):
                             service=self.service_name,
                         )
                         raise ValueError(
-                            f"Validation failed: {str(validation_error)}"
+                            f"Validation failed: {exception_class_chain(validation_error)}"
                         ) from validation_error
 
                 # Execute the operation function
@@ -334,7 +334,8 @@ class BaseService(ABC):
 
                 # Raise as RuntimeError with context for non-FaultMaven exceptions
                 raise RuntimeError(
-                    f"Service operation failed: {self.service_name}.{operation_name}: {str(operation_error)}"
+                    f"Service operation failed: {self.service_name}.{operation_name}: "
+                    f"{exception_class_chain(operation_error)}"
                 ) from operation_error
 
     def execute_operation_sync(
@@ -405,7 +406,7 @@ class BaseService(ABC):
                             service=self.service_name,
                         )
                         raise ValueError(
-                            f"Validation failed: {str(validation_error)}"
+                            f"Validation failed: {exception_class_chain(validation_error)}"
                         ) from validation_error
 
                 # Execute the operation function
@@ -554,7 +555,8 @@ class BaseService(ABC):
 
                 # Raise as RuntimeError with context for non-FaultMaven exceptions
                 raise RuntimeError(
-                    f"Service operation failed: {self.service_name}.{operation_name}: {str(operation_error)}"
+                    f"Service operation failed: {self.service_name}.{operation_name}: "
+                    f"{exception_class_chain(operation_error)}"
                 ) from operation_error
 
     def log_metric(
