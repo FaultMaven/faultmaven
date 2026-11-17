@@ -117,6 +117,9 @@ _REGISTRY: Dict[str, ModelWindow] = {
     # family entry, which would otherwise claim it by prefix and under-report
     # its window by 2.3x.
     "gpt-5.6": ModelWindow(922_000, 16_000),
+    # gpt-6-luna: the same 1,050,000 total / 922,000 max-input split
+    # (developers.openai.com/api/docs/models/gpt-6-luna, read 2026-11-17).
+    "gpt-6-luna": ModelWindow(922_000, 16_000),
     "gpt-5": ModelWindow(400_000, 16_000),
     "gpt-4.1": ModelWindow(1_000_000, 16_000),
     "gpt-4o": ModelWindow(128_000, 8_000),
@@ -153,7 +156,7 @@ _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     # one. These drifted when the defaults moved: openai pointed at gpt-4o
     # (128K) while shipping a 922K model, and openrouter pointed at gpt-4o
     # while defaulting to anthropic/claude-sonnet-4-6.
-    "openai": "gpt-5.6",
+    "openai": "gpt-6-luna",
     "openrouter": "claude",
     "google": "gemini",
     "gemini": "gemini",

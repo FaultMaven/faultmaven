@@ -251,10 +251,8 @@ class TestEstimateCostUsd:
         assert priced is True
         assert cost == pytest.approx(3.0 + 15.0 + 0.30 + 3.75)
 
-    def test_default_openai_model_gpt_5_6_luna_is_priced(self):
-        """gpt-5.6-luna is the shipped OpenAI default; an unpriced default is
-        the worst case for the module's guarantee (every call on it would
-        report $0 with priced=True nowhere to be seen). Short-context rates
+    def test_gpt_5_6_luna_is_priced(self):
+        """gpt-5.6-luna is offered in the OpenAI picker; short-context rates
         per developers.openai.com/api/docs/pricing."""
         rates = lookup_rates("openai", "gpt-5.6-luna")
         assert rates is not None
