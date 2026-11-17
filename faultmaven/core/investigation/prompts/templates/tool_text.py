@@ -20,7 +20,8 @@ the turns that share one. Within a case it can change with the route: a
 single-shot turn (nothing to search) is given none, a knowledge_query turn on
 the same case runs the tool loop and is given the loop's set. That costs no
 cache read: a knowledge_query turn already has a prefix of its own (its stage
-instructions differ), and the single-shot path sends no ``cache_prompt``.
+instructions differ), and a single-shot turn's prefix (no tools given) is
+cached for the next single-shot turn, not for the loop.
 """
 
 from __future__ import annotations
