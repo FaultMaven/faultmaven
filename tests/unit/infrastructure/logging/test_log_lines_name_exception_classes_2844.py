@@ -20,7 +20,7 @@ import pytest
 import structlog
 
 import faultmaven.infrastructure.logging.config as logging_config
-from faultmaven.exceptions import LLMException, ServiceError
+from faultmaven.exceptions import LLMException, ServiceError, ValidationException
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.concurrency import inflight, owned_claim
 from faultmaven.infrastructure.logging.config import (
@@ -41,6 +41,7 @@ from faultmaven.infrastructure.logging.url_redaction import (
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
+from faultmaven.services.base import BaseService
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -112,27 +113,45 @@ def _old_stdlib(exc):
     return lambda: logging.getLogger("faultmaven.control").warning("%r", exc)
 
 
+def _json_lines(rendered):
+    return [json.loads(line) for line in rendered.getvalue().splitlines()]
+
+
 class _Client(BaseExternalClient):
     def __init__(self):
         super().__init__("test_client", "TestService", enable_circuit_breaker=False)
 
 
-@pytest.mark.parametrize("in_request", [False, True], ids=["no-context", "request"])
-class TestCallExternal:
-    @pytest.fixture(autouse=True)
-    def _request_context(self, in_request):
-        coordinator = LoggingCoordinator()
-        if in_request:
-            coordinator.start_request()
-        yield
-        if in_request:
-            coordinator.end_request()
+@pytest.fixture(params=[False, True], ids=["no-context", "request"])
+def request_context(request):
+    coordinator = LoggingCoordinator()
+    if request.param:
+        coordinator.start_request()
+    yield
+    if request.param:
+        coordinator.end_request()
 
+
+@pytest.mark.usefixtures("request_context")
+class TestCallExternal:
     async def test_a_non_retryable_error(self, rendered):
         error = _backend_error(retryable=False)
         with pytest.raises(BackendError):
             await _Client().call_external("op", AsyncMock(side_effect=error))
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
+
+    async def test_a_providers_codes_stay_as_fields(self, rendered):
+        """The fail-fast line and the attempt keep what the text used to carry."""
+        error = _backend_error(LLMException, status_code=400)
+        with pytest.raises(LLMException):
+            await _Client().call_external("op", AsyncMock(side_effect=error))
+        if rendered.getvalue().startswith("{"):
+            lines = _json_lines(rendered)
+            fail_fast = [e for e in lines if e["event"].startswith("Non-retryable")]
+            assert fail_fast[0]["status_code"] == 400
+            failed = [e for e in lines if e.get("event_type") == "operation_error"]
+            assert failed[0]["error_attempt_0"]["status_code"] == 400
+        _named(rendered, "LLMException <- ConnectionError", _old_structlog(error))
 
     @pytest.mark.parametrize(
         "error",
@@ -148,6 +167,12 @@ class TestCallExternal:
             await _Client().call_external("op", call, retries=1, retry_delay=0)
         assert call.await_count == 2
         chain = f"{type(error).__name__} <- ConnectionError"
+        if rendered.getvalue().startswith("{"):
+            (retry,) = [e for e in _json_lines(rendered) if "will retry" in e["event"]]
+            assert (retry["error_type"], retry["error_chain"]) == (
+                type(error).__name__,
+                chain,
+            )
         _named(rendered, chain, _old_structlog(error))
 
     @pytest.mark.parametrize("hook", ["validate_response", "transform_response"])
@@ -164,12 +189,20 @@ class TestCallExternal:
             assert SENTINEL not in str(raised)
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
-    def test_the_sync_path(self, rendered):
-        error = _backend_error()
-        with pytest.raises(BackendError):
-            _Client().call_external_sync(
-                "op", MagicMock(side_effect=error), retries=1, retry_delay=0
-            )
+    @pytest.mark.parametrize(
+        "case", ["retried", "non-retryable", "validate_response", "transform_response"]
+    )
+    def test_the_sync_path(self, rendered, case):
+        error = _backend_error(retryable=False if case == "non-retryable" else None)
+        call, hooks = MagicMock(side_effect=error), {}
+        if case.endswith("_response"):
+            call, hooks = MagicMock(return_value="ok"), {
+                case: MagicMock(side_effect=error)
+            }
+        try:
+            _Client().call_external_sync("op", call, retries=1, retry_delay=0, **hooks)
+        except (BackendError, RuntimeError) as raised:
+            assert SENTINEL not in str(raised) or raised is error
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
     async def test_each_unified_emitter(self, rendered):
@@ -192,12 +225,82 @@ class TestCallExternal:
         _named(rendered, "BackendError <- ConnectionError", _old_structlog(error))
 
 
+class _Service(BaseService):
+    pass
+
+
+@pytest.mark.usefixtures("request_context")
+@pytest.mark.parametrize("sync", [False, True], ids=["async", "sync"])
+class TestExecuteOperation:
+    async def _run(self, sync, operation, **hooks):
+        service = _Service("test_service")
+        with pytest.raises(Exception):
+            if sync:
+                service.execute_operation_sync("op", operation, **hooks)
+            else:
+                await service.execute_operation("op", operation, **hooks)
+
+    @pytest.mark.parametrize("cls", [BackendError, ServiceError])
+    async def test_a_failed_operation(self, rendered, sync, cls):
+        error = _backend_error(cls)
+        await self._run(sync, MagicMock(side_effect=error))
+        chain = f"{cls.__name__} <- ConnectionError"
+        _named(rendered, chain, _old_structlog(error))
+
+    @pytest.mark.parametrize(
+        "cls", [BackendError, ValidationException, FileNotFoundError]
+    )
+    async def test_a_failed_validation(self, rendered, sync, cls):
+        error = _backend_error(cls)
+        hook = {"validate_inputs": MagicMock(side_effect=error)}
+        await self._run(sync, MagicMock(return_value="ok"), **hook)
+        chain = f"{cls.__name__} <- ConnectionError"
+        _named(rendered, chain, _old_structlog(error))
+
+
+def _backend(**methods):
+    backend = MagicMock(**methods)
+    backend.get_storage_type.return_value.value = "local"
+    return backend
+
+
 class TestFileStorageService:
+    async def test_store_and_sidecar_failures_name_the_class(self, rendered):
+        error = _backend_error()
+        service = FileStorageService(
+            backend=_backend(
+                store_file=AsyncMock(side_effect=error),
+                retrieve_file=AsyncMock(side_effect=error),
+            )
+        )
+        with pytest.raises(ServiceError) as stored:
+            await service.store_file(b"x", "a.log", "ent", "case", "text/plain")
+        with pytest.raises(ServiceError) as read:
+            await service.read_sidecar("evidence/a.log")
+
+        chain = "BackendError <- ConnectionError"
+        assert str(stored.value) == f"Failed to store file: {chain}"
+        assert str(read.value) == f"Failed to read sidecar: {chain}"
+        _named(rendered, f"read_sidecar failed: {chain}", _old_structlog(error))
+
+    async def test_a_logged_chain_keeps_its_implicit_links(self, rendered):
+        """``mark_linked`` logs a ``ServiceError`` raised while handling the
+        backend's: the frames name both, as a traceback would, without text."""
+        error = _backend_error()
+        backend = _backend(retrieve_file=AsyncMock(side_effect=error))
+        assert (
+            await FileStorageService(backend=backend).mark_linked("ev/a.log") is False
+        )
+        output = rendered.getvalue()
+        at = output.index("mark_linked failed")
+        line = output[output.rfind("\n", 0, at) + 1 :]  # and the console's stack
+        for link in ("ServiceError:", "BackendError:", "ConnectionError:"):
+            assert link in line
+        _named(rendered, "mark_linked failed: ServiceError", _old_structlog(error))
+
     async def test_a_backend_failure_is_logged_and_raised_by_class(self, rendered):
         error = _backend_error()
-        backend = MagicMock()
-        backend.get_storage_type.return_value.value = "local"
-        backend.retrieve_file = AsyncMock(side_effect=error)
+        backend = _backend(retrieve_file=AsyncMock(side_effect=error))
 
         with pytest.raises(ServiceError) as raised:
             await FileStorageService(backend=backend).retrieve_file("evidence/a.log")
@@ -214,9 +317,7 @@ class TestFileStorageService:
 
     async def test_a_failed_delete_names_the_class(self, rendered):
         error = _backend_error()
-        backend = MagicMock()
-        backend.get_storage_type.return_value.value = "local"
-        backend.delete_file = AsyncMock(side_effect=error)
+        backend = _backend(delete_file=AsyncMock(side_effect=error))
 
         with pytest.raises(ServiceError) as raised:
             await FileStorageService(backend=backend).delete_file("evidence/a.log")
@@ -298,6 +399,15 @@ POSITIVES = [
     ('Set-Cookie: sid="x"; tok=VALUE', "VALUE"),
     ("{'cookie': \"it's VALUE\", 'x': 1}", "VALUE"),
     ("Proxy-Authorization: Basic VALUE", "VALUE"),
+    # The review of #2864: a repr's escaped quotes, cookie pairs, any auth
+    # scheme and its parameters, and a bracketed value.
+    ("E('b: {\"d\": 1}, h: {\\'set-cookie\\': \\'a=VALUE; P=/\\'}')", "VALUE"),
+    ("cookie=sid=x; tok=VALUE next=1", "VALUE"),
+    ("authorization=Splunk VALUE next=1", "VALUE"),
+    ("authorization=ApiKey VALUE", "VALUE"),
+    ("authorization=AWS4-HMAC-SHA256 Credential=A/x, Signature=VALUE", "VALUE"),
+    ('authorization=Digest username="u", realm="r", response="VALUE"', "VALUE"),
+    ("{'set-cookie': ['a=VALUE', 'b=x'], 'x': 1}", "VALUE"),
 ]
 NEGATIVES = [
     "Authorization failed for user 42: missing scope cases:write",
@@ -318,6 +428,54 @@ class TestCredentialHeaders:
         for row in output.splitlines():
             if row.startswith('{"'):
                 json.loads(row)
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"headers": [("authorization", "Bearer VALUE"), ("cookie", "sid=x")]},
+            {"headers": [(b"authorization", b"Bearer VALUE")]},
+            {"headers": {"set-cookie": ["a=VALUE", "b=x"]}},
+            {"headers": {"cookie": {"sid": "VALUE"}}},
+            {"cookie": {"sid": "VALUE"}},
+        ],
+    )
+    def test_a_structured_value_is_blanked_and_later_fields_kept(
+        self, rendered, fields
+    ):
+        get_logger("faultmaven.p").error("headers", **fields, later="kept")
+        output = rendered.getvalue()
+        assert "VALUE" not in output
+        assert "kept" in output
+        if output.startswith("{"):
+            assert json.loads(output)["later"] == "kept"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            'authorization="Bearer VALUE"',
+            'cookie="sid=VALUE"',
+            "{'Authorization': \"it's VALUE\"}",
+            "Set-Cookie: sid=VALUE\nthe next line is kept",
+        ],
+    )
+    def test_the_jobs_json_template_is_redacted_as_text(self, monkeypatch, message):
+        """The jobs' JSON template interpolates the raw message, so the line is
+        not JSON and is read as text."""
+        from faultmaven.config import settings
+        from faultmaven.jobs.run import _job_log_format
+
+        json_setting = types.SimpleNamespace(log_output_format="json")
+        monkeypatch.setattr(
+            settings,
+            "get_settings",
+            lambda: types.SimpleNamespace(logging=json_setting),
+        )
+        record = logging.LogRecord("job", logging.ERROR, __file__, 1, message, (), None)
+        output = RedactingFormatter(_job_log_format()).format(record)
+        assert output.startswith('{"timestamp"')
+        assert "VALUE" not in output
+        assert "<redacted>" in output
+        assert "the next line is kept" in output or "\n" not in message
 
     def test_the_formatter_and_the_bytes_form(self):
         for line, value in POSITIVES:

@@ -39,11 +39,18 @@ def exception_class_chain(exc: BaseException) -> str:
 
 
 def exception_frames(exc: BaseException) -> str:
-    """The traceback frames of ``exc`` and of each ``__cause__`` ancestor, each
-    under its class name, with no exception's message: where a failure was
-    raised, for a log line that may hold no exception's text (#2844)."""
-    return "".join(
-        f"{exception_class_name(link)}:\n"
-        + "".join(traceback.format_tb(link.__traceback__))
-        for link in walk_cause_chain(exc)
-    )
+    """The traceback frames of ``exc`` and of each exception its traceback would
+    show (the ``__cause__``, else an unsuppressed ``__context__``,
+    cycle-guarded), each under its class name, with no exception's message:
+    where a failure was raised, for a log line that may hold no exception's
+    text (#2844)."""
+    frames, link, seen = [], exc, set()
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        frames.append(f"{exception_class_name(link)}:\n")
+        frames.extend(traceback.format_tb(link.__traceback__))
+        if link.__cause__ is not None or link.__suppress_context__:
+            link = link.__cause__
+        else:
+            link = link.__context__
+    return "".join(frames)

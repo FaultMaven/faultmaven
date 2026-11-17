@@ -45,6 +45,17 @@ def remaining_call_time() -> Optional[float]:
     return deadline - time.monotonic()
 
 
+def _provider_codes(error: BaseException) -> Dict[str, Any]:
+    """The ``status_code`` and ``error_code`` a provider's exception declares:
+    first-party fields the breaker decision reads, logged beside the class
+    chain where its text no longer carries them (#2844)."""
+    return {
+        name: value
+        for name, kind in (("status_code", int), ("error_code", str))
+        if isinstance(value := getattr(error, name, None), kind)
+    }
+
+
 class CircuitBreaker:
     """
     Simple circuit breaker implementation for external service calls.
@@ -548,6 +559,7 @@ class BaseExternalClient(ABC):
                     ctx[f"error_attempt_{attempt}"] = {
                         "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
+                        **_provider_codes(call_error),
                     }
 
                     # Non-retryable errors (e.g. HTTP 4xx) — fail fast,
@@ -591,6 +603,7 @@ class BaseExternalClient(ABC):
                             f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
+                            **_provider_codes(call_error),
                         )
 
                         raise
@@ -599,7 +612,8 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error_type=exception_class_chain(call_error),
+                            error_type=type(call_error).__name__,
+                            error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
@@ -869,6 +883,7 @@ class BaseExternalClient(ABC):
                     ctx[f"error_attempt_{attempt}"] = {
                         "error": exception_class_chain(call_error),
                         "error_type": type(call_error).__name__,
+                        **_provider_codes(call_error),
                     }
 
                     # Non-retryable errors (e.g. HTTP 4xx) — fail fast. Counted
@@ -894,6 +909,7 @@ class BaseExternalClient(ABC):
                             f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
+                            **_provider_codes(call_error),
                         )
 
                         raise
@@ -902,7 +918,8 @@ class BaseExternalClient(ABC):
                     if attempt < retries:
                         self.logger.warning(
                             f"External call failed, will retry: {self.service_name}.{operation_name}",
-                            error_type=exception_class_chain(call_error),
+                            error_type=type(call_error).__name__,
+                            error_chain=exception_class_chain(call_error),
                             client=self.client_name,
                             service=self.service_name,
                             attempt=attempt + 1,
