@@ -97,32 +97,30 @@ async def pg_engine():
     await engine.dispose()
 
 
-#: Read before the test and diffed after, so the teardown removes exactly what
-#: the test added and nothing a sibling module owns.
-_ENTERPRISES_HERE = text(
-    "SELECT enterprise_id FROM enterprises WHERE enterprise_id LIKE 'ent\\_%'"
-)
-
-
 @pytest.fixture
-async def pg_repo(pg_engine):
+async def pg_repo(pg_engine, monkeypatch):
     """A PostgreSQLHybridCaseRepository on a real PG session, with the
     case's FK prerequisites (enterprise/org/user) seeded.
 
     Every test here mints its own ``ent_…`` enterprise, and they used to be
     left behind. That is not a private mess: the two-enterprise probe's residue
     check greps exactly that prefix, so this suite's leftovers fail a sibling
-    module. It passed only because ``tests/integration/security/`` sorts before
-    this file and the database was fresh — a green that depends on collection
-    order rather than on the property.
+    module.
 
-    The teardown diffs the enterprise set around the test and removes what
-    appeared, so it can never reach a row another module owns.
+    The teardown removes the enterprises the test seeded, recorded as it seeds
+    them. A diff of the table around the test also took the enterprises a
+    parallel worker had seeded meanwhile, and that worker's next write failed
+    its foreign key (#2414).
     """
-    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
-    async with Session() as session:
-        before = set((await session.execute(_ENTERPRISES_HERE)).scalars())
+    seeded: list[str] = []
+    seed = seed_enterprises
 
+    async def recording(session, enterprise_ids):
+        seeded.extend(enterprise_ids)
+        await seed(session, enterprise_ids)
+
+    monkeypatch.setitem(globals(), "seed_enterprises", recording)
+    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
     async with Session() as session:
         # Sanity: the factory-style detection must agree this is PG, or the
         # cast helper would silently emit SQLite-style bare placeholders.
@@ -131,8 +129,7 @@ async def pg_repo(pg_engine):
         yield repo
 
     async with Session() as session:
-        added = set((await session.execute(_ENTERPRISES_HERE)).scalars()) - before
-        for enterprise_id in added:
+        for enterprise_id in seeded:
             # Cases first: the child rows cascade from the case, and
             # ``cases.enterprise_id`` is itself an FK to the row being removed.
             await session.execute(

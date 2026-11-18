@@ -214,14 +214,16 @@ _PROBES = (
 )
 
 
-async def _execute(
+async def _execute_as(
     url: str,
     *statements: str,
     confined: bool = False,
     bind: str | None = None,
     **params,
 ):
-    """Run ``statements`` in one transaction on a fresh connection and return the
+    """Not the shared ``_execute``: it confines the path and binds the enterprise.
+
+    Run ``statements`` in one transaction on a fresh connection and return the
     last one's rows. ``confined`` sets the path before anything else runs;
     ``bind`` binds the enterprise after it, through ``pg_catalog``. The
     connection is new each time, so no plan cached before a plant can answer
@@ -252,7 +254,7 @@ async def _execute(
 
 async def _plant_record(url: str) -> tuple[dict, set]:
     """How many times each plant has run, and as whom."""
-    counts = await _execute(
+    counts = await _execute_as(
         url,
         " UNION ALL ".join(
             f"SELECT '{plant}', (SELECT CASE WHEN is_called THEN last_value "
@@ -261,7 +263,7 @@ async def _plant_record(url: str) -> tuple[dict, set]:
         ),
         confined=True,
     )
-    ran_as = await _execute(
+    ran_as = await _execute_as(
         url,
         "SELECT DISTINCT plant, ran_as::text FROM public.fm_planted_calls",
         confined=True,
@@ -346,11 +348,13 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
         try:
             await create_limited_role(owner_url, role, _PW)
             caller = limited_url(owner_url, role, _PW)
-            await _execute(caller, *_planting())
+            await _execute_as(caller, *_planting())
 
             for plant, probe, expected in _PROBES:
                 calls_before, _ = await _plant_record(owner_url)
-                rows = await _execute(caller, "SET LOCAL search_path = public", probe)
+                rows = await _execute_as(
+                    caller, "SET LOCAL search_path = public", probe
+                )
                 calls_after, ran_as = await _plant_record(owner_url)
                 assert [tuple(row) for row in rows] == [(expected,)], plant
                 assert calls_after[plant] > calls_before[plant], (
@@ -387,7 +391,7 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
             outcomes = {}
             for label, statement in calls.items():
                 try:
-                    outcomes[label] = await _execute(
+                    outcomes[label] = await _execute_as(
                         caller, statement, confined=True, bind=ent_a
                     )
                 except DBAPIError as exc:
@@ -395,13 +399,13 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
 
             definer_calls, definer_ran_as = await _plant_record(owner_url)
             # What the admitted writes left, read back as the owner.
-            members = await _execute(
+            members = await _execute_as(
                 owner_url,
                 "SELECT user_id FROM public.team_members WHERE team_id = :t",
                 confined=True,
                 t=team_a,
             )
-            roles = await _execute(
+            roles = await _execute_as(
                 owner_url,
                 "SELECT user_id, role_id FROM public.organization_members "
                 "WHERE organization_id = :o ORDER BY user_id",
@@ -410,7 +414,7 @@ async def test_a_planted_operator_or_aggregate_never_runs_inside_a_definer_funct
             )
         finally:
             # The database goes with the context; the role is cluster-wide.
-            await _execute(owner_url, drop_role_sql(role), confined=True)
+            await _execute_as(owner_url, drop_role_sql(role), confined=True)
 
     ran = {
         plant: definer_calls[plant] - control_calls[plant]
@@ -444,7 +448,7 @@ async def _definer_catalog(url: str) -> dict:
     """Per definer function: its whole ``pg_proc`` row except the two things
     revision 005 changes (``proconfig``, ``prosrc``), its settings, its comment
     and who may execute it; per guard trigger, its whole ``pg_trigger`` row."""
-    rows = await _execute(
+    rows = await _execute_as(
         url,
         "SELECT p.proname, to_jsonb(p) - 'proconfig' - 'prosrc', "
         "coalesce(p.proconfig, '{}'), obj_description(p.oid, 'pg_proc'), "
@@ -456,7 +460,7 @@ async def _definer_catalog(url: str) -> dict:
         runtime=RUNTIME_ROLE,
         names=list(_DEFINER_FUNCTIONS),
     )
-    triggers = await _execute(
+    triggers = await _execute_as(
         url,
         "SELECT tgname, to_jsonb(t) FROM pg_trigger t WHERE tgname = ANY(:names)",
         names=list(_GUARD_TRIGGERS),
@@ -543,13 +547,13 @@ async def test_revision_005_refuses_a_function_it_would_otherwise_create():
     ) as url:
         result = alembic_on(url, f"upgrade {_PARENT_REVISION}")
         assert result.returncode == 0, result.stderr[-2000:]
-        await _execute(
+        await _execute_as(
             url, "DROP FUNCTION public.admin_case_metadata_count(text, text)"
         )
 
         result = alembic_on(url, f"upgrade {_REVISION}")
         catalog = await _definer_catalog(url)
-        (version,) = await _execute(url, "SELECT version_num FROM alembic_version")
+        (version,) = await _execute_as(url, "SELECT version_num FROM alembic_version")
 
     assert result.returncode != 0, "the upgrade created a function it should refuse"
     assert (
@@ -572,7 +576,7 @@ def _load_migration():
 
 
 async def _public_may_create(url: str) -> bool:
-    ((may,),) = await _execute(
+    ((may,),) = await _execute_as(
         url, "SELECT has_schema_privilege('public', 'public', 'CREATE')"
     )
     return may
@@ -580,14 +584,14 @@ async def _public_may_create(url: str) -> bool:
 
 async def _with_role(superuser_url: str, role: str, body):
     """Run ``body(role)`` with a login role that exists only meanwhile."""
-    await _execute(superuser_url, drop_role_sql(role))
-    await _execute(
+    await _execute_as(superuser_url, drop_role_sql(role))
+    await _execute_as(
         superuser_url, f"CREATE ROLE {role} LOGIN PASSWORD '{_PW}' NOSUPERUSER"
     )
     try:
         return await body(role)
     finally:
-        await _execute(superuser_url, drop_role_sql(role))
+        await _execute_as(superuser_url, drop_role_sql(role))
 
 
 async def test_revision_005_closes_public_to_public_when_the_migrator_owns_it():
@@ -603,7 +607,7 @@ async def test_revision_005_closes_public_to_public_when_the_migrator_owns_it():
             superuser_url, "fm_definer_close", owner=role
         ) as su_url:
             # Before the chain runs: PostgreSQL 14's grant on a database 16 made.
-            await _execute(su_url, "GRANT CREATE ON SCHEMA public TO PUBLIC")
+            await _execute_as(su_url, "GRANT CREATE ON SCHEMA public TO PUBLIC")
             owner_url = limited_url(su_url, role, _PW)
             steps = {}
             for step, command in (
@@ -617,7 +621,7 @@ async def test_revision_005_closes_public_to_public_when_the_migrator_owns_it():
                 assert _REVOKE not in result.stdout + result.stderr, step
                 steps[step] = await _public_may_create(su_url)
                 if step == "to 005":
-                    await _execute(
+                    await _execute_as(
                         owner_url,
                         "CREATE TABLE public.fm_created_after_005 (x integer)",
                         "DROP TABLE public.fm_created_after_005",
@@ -643,7 +647,7 @@ async def test_revision_005_warns_when_the_migrator_cannot_close_public():
 
     async def migrate_as(role: str):
         async with database_of_its_own(superuser_url, "fm_definer_warn") as su_url:
-            await _execute(su_url, "GRANT CREATE ON SCHEMA public TO PUBLIC")
+            await _execute_as(su_url, "GRANT CREATE ON SCHEMA public TO PUBLIC")
             migrator_url = limited_url(su_url, role, _PW)
             result = alembic_on(migrator_url, "upgrade head")
             may_create = await _public_may_create(su_url)

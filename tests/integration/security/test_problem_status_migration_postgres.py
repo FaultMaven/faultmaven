@@ -23,11 +23,11 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
+    _execute,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -50,20 +50,6 @@ _REVISION = "497ae8900ae2"
 #: ``006_kb_conversion_source_storage_ref_null``, the revision 007 parents onto.
 _PARENT_REVISION = "f37066de2792"  # pragma: allowlist secret
 _PW = "fm_problem_status_probe_pw"
-
-
-async def _execute(url: str, *statements: str) -> list:
-    """Run ``statements`` in one transaction; return the last one's rows."""
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            rows: list = []
-            for statement in statements:
-                result = await conn.execute(text(statement))
-                rows = list(result.fetchall()) if result.returns_rows else []
-            return rows
-    finally:
-        await engine.dispose()
 
 
 async def _seed(url: str) -> dict:
@@ -102,11 +88,6 @@ async def _progress(url: str) -> dict:
 
 async def _states(url: str) -> dict:
     return dict(await _execute(url, "SELECT hypothesis_id, state FROM hypotheses"))
-
-
-async def _revision(url: str) -> str:
-    ((version,),) = await _execute(url, "SELECT version_num FROM alembic_version")
-    return version
 
 
 async def test_the_owner_rewrites_every_enterprise_and_round_trips():

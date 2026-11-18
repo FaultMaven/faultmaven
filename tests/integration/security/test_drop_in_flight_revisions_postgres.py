@@ -23,10 +23,10 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
+    _execute,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -56,20 +56,6 @@ _REVISION_PV = (
     '{"text": "r", "prior_status": "verified"}}'
 )
 _NOT_HELD = '{"problem_status": "verified"}'
-
-
-async def _execute(url: str, *statements: str) -> list:
-    """Run ``statements`` in one transaction; return the last one's rows."""
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            rows: list = []
-            for statement in statements:
-                result = await conn.execute(text(statement))
-                rows = list(result.fetchall()) if result.returns_rows else []
-            return rows
-    finally:
-        await engine.dispose()
 
 
 async def _seed(url: str) -> tuple:
@@ -114,11 +100,6 @@ async def _rows(url: str) -> dict:
         case_id: (json.loads(progress), json.loads(verification))
         for case_id, progress, verification in rows
     }
-
-
-async def _revision(url: str) -> str:
-    ((version,),) = await _execute(url, "SELECT version_num FROM alembic_version")
-    return version
 
 
 async def test_the_owner_drops_every_enterprises_revisions():

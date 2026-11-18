@@ -31,10 +31,12 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -45,6 +47,9 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     EnterpriseModel,
     KnowledgeItemModel,
+    ResourceShareModel,
+    UploadedFileModel,
+    UserModel,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -61,7 +66,7 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer
+from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = pytest.mark.integration
 
@@ -168,11 +173,24 @@ _postgres = pytest.param(
     ],
 )
 
-#: What one test writes, cleared before the next on the shared PG database.
-_WRITTEN_TABLES = (
-    "resource_shares, knowledge_items, conversion_drafts, conversion_jobs, "
-    "uploaded_files"
+#: What one test writes, deleted by its enterprise after it on the shared PG
+#: database, children first.
+_WRITTEN = (
+    ResourceShareModel,
+    KnowledgeItemModel,
+    ConversionDraftModel,
+    ConversionJobModel,
+    UploadedFileModel,
+    UserModel,
 )
+
+
+class Tenant(NamedTuple):
+    """A test's database and the enterprise and author it writes as."""
+
+    factory: async_sessionmaker
+    enterprise_id: str
+    user_id: str
 
 
 def _async_url(url: str) -> str:
@@ -200,45 +218,62 @@ def migrated_postgres():
 
 
 @pytest.fixture(params=["orm", "migrated", _postgres])
-async def session_factory(request, tmp_path, migrated_template):
+async def tenant(request, tmp_path, migrated_template):
+    """The database, and who writes. On the shared PostgreSQL the enterprise
+    and author are the test's own and deleted after it, so a parallel run
+    cannot meet them (#2414)."""
     if request.param == "postgres":
-        from sqlalchemy import text
-
+        tag = uuid4().hex[:8]
+        enterprise_id, user_id = f"ent_tax_{tag}", f"user-tax-{tag}"
         engine = create_async_engine(request.getfixturevalue("migrated_postgres"))
-        async with engine.begin() as conn:
-            await conn.execute(text(f"TRUNCATE {_WRITTEN_TABLES} CASCADE"))
+    else:
+        enterprise_id, user_id = STANDALONE_ENTERPRISE_ID, "u1"
+        if request.param == "migrated":
+            db = tmp_path / "db.sqlite"
+            db.write_bytes(migrated_template.read_bytes())
+            engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
+        else:
+            engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        if request.param == "postgres":
             # PostgreSQL enforces the foreign keys SQLite leaves off: the
             # author the drafts and items name must exist.
-            await conn.execute(
-                text(
-                    "INSERT INTO users (user_id, enterprise_id, username, email, "
-                    "display_name, created_at, updated_at) VALUES ('u1', :e, "
-                    "'author', 'author@example.com', 'Author', now(), now()) "
-                    "ON CONFLICT DO NOTHING"
-                ),
-                {"e": STANDALONE_ENTERPRISE_ID},
-            )
-    elif request.param == "migrated":
-        db = tmp_path / "db.sqlite"
-        db.write_bytes(migrated_template.read_bytes())
-        engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
-    else:
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    if request.param == "orm":
-        async with factory() as session:
-            session.add(
-                EnterpriseModel(
-                    enterprise_id=STANDALONE_ENTERPRISE_ID,
-                    name="Default Enterprise",
-                    slug="default",
+            async with factory() as session:
+                await seed_enterprises(session, [enterprise_id])
+                await seed_users(session, [user_id], enterprise_id=enterprise_id)
+        elif request.param == "orm":
+            async with factory() as session:
+                session.add(
+                    EnterpriseModel(
+                        enterprise_id=STANDALONE_ENTERPRISE_ID,
+                        name="Default Enterprise",
+                        slug="default",
+                    )
                 )
-            )
-            await session.commit()
-    yield factory
-    await engine.dispose()
+                await session.commit()
+        yield Tenant(factory, enterprise_id, user_id)
+    finally:
+        if request.param == "postgres":
+            async with factory() as session:
+                for model in _WRITTEN:
+                    await session.execute(
+                        delete(model).where(model.enterprise_id == enterprise_id)
+                    )
+                await session.execute(
+                    delete(EnterpriseModel).where(
+                        EnterpriseModel.enterprise_id == enterprise_id
+                    )
+                )
+                await session.commit()
+        await engine.dispose()
+
+
+@pytest.fixture
+def session_factory(tenant):
+    return tenant.factory
 
 
 @pytest.fixture
@@ -262,13 +297,13 @@ def service(session_factory, tmp_path):
         yield conversion
 
 
-async def _create_and_verify(service: ConversionService, fields: dict):
+async def _create_and_verify(service: ConversionService, fields: dict, tenant):
     created = await service.create_runbook_from_template(
         title="Connection Pool Exhausted On The API",
         service_name="postgresql",
         tags=["pgbouncer"],
-        user_id="u1",
-        enterprise_id=STANDALONE_ENTERPRISE_ID,
+        user_id=tenant.user_id,
+        enterprise_id=tenant.enterprise_id,
         **fields,
         **SECTIONS,
     )
@@ -276,7 +311,7 @@ async def _create_and_verify(service: ConversionService, fields: dict):
     verified = await service.verify_draft(
         created["conversion_id"],
         draft.draft_id,
-        user_id="u1",
+        user_id=tenant.user_id,
         is_platform_admin=True,
     )
     return created, draft, verified
@@ -284,12 +319,12 @@ async def _create_and_verify(service: ConversionService, fields: dict):
 
 @pytest.mark.parametrize("case", CASES, ids=_case_id)
 async def test_every_allowed_value_is_validated_stored_and_verified(
-    case, service, session_factory
+    case, service, session_factory, tenant
 ):
     field, value = case
     fields = {**BASELINE, field: value}
 
-    created, draft, verified = await _create_and_verify(service, fields)
+    created, draft, verified = await _create_and_verify(service, fields, tenant)
 
     assert draft.validation.passed, draft.validation.errors
     assert verified is not None and verified.status == "verified"
@@ -312,13 +347,13 @@ async def test_every_allowed_value_is_validated_stored_and_verified(
 
 
 @pytest.mark.parametrize("schema_case", [("severity", "info")], ids=["info"])
-async def test_info_severity_is_verified(schema_case, service, session_factory):
+async def test_info_severity_is_verified(schema_case, service, session_factory, tenant):
     """The reported defect, named: ``severity: info`` through the manual
     Create path, validated, verified, and stored. Red before #1886 on both
     schemas — verify raised ``IntegrityError`` on
     ``conversion_drafts_severity_check``."""
     fields = {**BASELINE, "severity": RunbookSeverity.INFO.value}
-    _, draft, verified = await _create_and_verify(service, fields)
+    _, draft, verified = await _create_and_verify(service, fields, tenant)
     assert draft.validation.passed, draft.validation.errors
     assert verified.status == "verified"
     async with session_factory() as session:
@@ -377,7 +412,7 @@ def test_migrated_check_admits_exactly_the_vocabulary(
 
 
 async def test_a_scanned_file_with_an_off_vocabulary_severity_is_recorded(
-    service, session_factory, tmp_path
+    service, session_factory, tenant, tmp_path
 ):
     """The disk scan records every file whatever its validation verdict, and
     copied the raw frontmatter severity into the CHECKed column — so one file
@@ -395,14 +430,20 @@ async def test_a_scanned_file_with_an_off_vocabulary_severity_is_recorded(
     (root / "good.md").write_text(good, encoding="utf-8")
 
     result = await service.scan_for_runbooks(
-        "u1", STANDALONE_ENTERPRISE_ID, is_platform_admin=True
+        tenant.user_id, tenant.enterprise_id, is_platform_admin=True
     )
 
     assert result["discovered"] == 2, result
     async with session_factory() as session:
         rows = {
             row.runbook_id: row
-            for row in (await session.execute(select(ConversionDraftModel))).scalars()
+            for row in (
+                await session.execute(
+                    select(ConversionDraftModel).where(
+                        ConversionDraftModel.enterprise_id == tenant.enterprise_id
+                    )
+                )
+            ).scalars()
         }
     assert rows["sample-runbook"].severity is None
     assert rows["sample-runbook"].validation_passed is False
