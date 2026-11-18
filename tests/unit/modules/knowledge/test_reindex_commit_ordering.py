@@ -57,8 +57,8 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 
 pytestmark = [pytest.mark.unit]
 
-# The encode, on the KB indexing slot's thread (#2055).
-_EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
+# The encode, from the KB indexing slot's thread (#2055), in its worker (#2851).
+_EMBED_TEXTS = "faultmaven.infrastructure.index_slot.encode_in_worker"
 _REPO = (
     "faultmaven.modules.knowledge.infrastructure.persistence."
     "knowledge_item_repository.DatabaseKnowledgeItemRepository"
@@ -368,7 +368,7 @@ async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
     state = _state()
     service, repo, calls = _service(state)
 
-    def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(_ticket, texts, _guard_seconds):
         # The concurrent retirement lands while we are embedding.
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
@@ -394,7 +394,7 @@ async def test_a_row_deleted_mid_update_leaves_no_admitted_vector():
     state = _state()
     service, repo, calls = _service(state)
 
-    def _embed_then_someone_deletes(texts):
+    def _embed_then_someone_deletes(_ticket, texts, _guard_seconds):
         state["present"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -515,7 +515,7 @@ async def test_a_concurrent_unpublish_leaves_the_vectors_we_added_unadmitted():
     state = _state()
     service, repo, calls = _service(state)
 
-    def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(_ticket, texts, _guard_seconds):
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -540,7 +540,7 @@ async def test_a_failed_commit_on_a_row_unpublished_meanwhile_writes_nothing_mor
         state, commit_raises=RuntimeError("database gone"), commit_lands=False
     )
 
-    def _embed_then_someone_unpublishes(texts):
+    def _embed_then_someone_unpublishes(_ticket, texts, _guard_seconds):
         state["is_published"] = False
         return [[0.1] * 1024 for _ in texts]
 
@@ -586,7 +586,7 @@ async def test_the_response_describes_the_committed_row_not_the_snapshot():
     state = _state()
     service, repo, calls = _service(state)
 
-    def _embed_then_someone_retitles(texts):
+    def _embed_then_someone_retitles(_ticket, texts, _guard_seconds):
         state["title"] = "Renamed by someone else"
         return [[0.1] * 1024 for _ in texts]
 

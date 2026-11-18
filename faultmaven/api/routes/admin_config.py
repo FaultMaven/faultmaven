@@ -1413,8 +1413,8 @@ async def get_env_config_status(
             None,
         )
 
-        # The KB indexing window and this process's slot (#2055): a hung
-        # encode holds the slot until restart, and this is where it shows.
+        # The KB indexing window and this process's slot (#2055): a slot held
+        # past an encode's time bound shows here (#2851 kills it there).
         from faultmaven.api.dependencies import knowledge_indexing_status
 
         knowledge_indexing = knowledge_indexing_status(

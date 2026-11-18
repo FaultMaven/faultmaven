@@ -153,8 +153,8 @@ class TestModelCacheLazyLoading:
 class TestAsyncEmbedBoundary:
     """The `aembed_query` async boundary — the place that runs a query's
     CPU-bound BGE-M3 `encode()` off the event loop via `asyncio.to_thread` — and
-    `embed_texts_sync`, the batch encode the indexing slots run on their own
-    threads (#2055).
+    `embed_texts_sync`, the batch encode the evidence slot runs on its own
+    thread (#2055), at batch 4 (#2851).
 
     This is where the cold-start timeout regression is guarded now: a synchronous
     `encode()` on the loop thread froze the request loop and starved the k8s
@@ -174,7 +174,7 @@ class TestAsyncEmbedBoundary:
         assert result is not None
         assert len(result) == 3
         assert len(result[0]) == 1024
-        mock_model.encode.assert_called_once_with(["a", "b", "c"])
+        mock_model.encode.assert_called_once_with(["a", "b", "c"], batch_size=4)
 
     @pytest.mark.asyncio
     async def test_aembed_query_returns_single_vector(self):

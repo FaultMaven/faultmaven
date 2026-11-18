@@ -30,8 +30,10 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 
 pytestmark = [pytest.mark.unit]
 
-# Every indexing encode runs on a slot's thread (#2055).
+# An indexing encode with no KB ticket runs on the evidence slot's thread
+# (#2055); one with a KB ticket (update, boot repair) in its worker (#2851).
 _EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
+_KB_ENCODE = "faultmaven.infrastructure.index_slot.encode_in_worker"
 #: The generation the indexer writes under (#2388).
 GEN = "9e" * 16
 
@@ -199,7 +201,7 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
         "knowledge_item_repository.DatabaseKnowledgeItemRepository",
         return_value=repo,
     ):
-        with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
+        with patch(_KB_ENCODE, new=MagicMock(return_value=None)):
             with pytest.raises(KnowledgeBaseError):
                 await service.update_document_metadata(
                     principal="user-1",
@@ -247,19 +249,27 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
 
-    with patch(_EMBED_TEXTS, new=MagicMock(return_value=None)):
-        chunks = await service.reindex_missing_vectors("doc-1")
+    with patch(_KB_ENCODE, new=MagicMock(return_value=None)):
+        chunks = await service.reindex_missing_vectors(["doc-1"])
 
-    assert chunks == 0, "boot repair must degrade, not raise"
+    assert chunks == {"doc-1": 0}, "boot repair must degrade, not raise"
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "enterprise_id", ["", "   ", None], ids=["empty", "blank", "none"]
+    "field,value",
+    [
+        ("enterprise_id", ""),
+        ("enterprise_id", "   "),
+        ("enterprise_id", None),
+        ("scope", None),
+        ("vector_generation", ""),
+    ],
+    ids=["empty", "blank", "none", "no-scope", "no-generation"],
 )
 async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
-    enterprise_id, caplog
+    field, value, caplog
 ):
     """``reindex_missing_vectors`` promises "fail-safe 0 (no raise)". The
     indexer's #1168 tenant check raises ``ValueError`` before any work, outside
@@ -271,7 +281,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
 
     row = MagicMock()
     row.item_id = "doc-no-tenant"
-    row.enterprise_id = enterprise_id
+    row.enterprise_id = STANDALONE_ENTERPRISE_ID
     row.title = "Draining a node"
     row.content = "# Draining a node\n\nCordon, then drain."
     row.item_type = "runbook"
@@ -282,6 +292,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     row.created_at = "2026-01-01T00:00:00Z"
     row.updated_at = "2026-01-01T00:00:00Z"
     row.vector_generation = GEN
+    setattr(row, field, value)  # the tier and generation too (#2851 review)
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=row)
@@ -292,10 +303,10 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     service._db_session_factory = MagicMock(return_value=session)
     embed = MagicMock(return_value=[[0.1] * 1024])
 
-    with caplog.at_level("ERROR"), patch(_EMBED_TEXTS, new=embed):
-        chunks = await service.reindex_missing_vectors("doc-no-tenant")
+    with caplog.at_level("ERROR"), patch(_KB_ENCODE, new=embed):
+        chunks = await service.reindex_missing_vectors(["doc-no-tenant"])
 
-    assert chunks == 0, "a refused repair must degrade to 0, not raise"
+    assert chunks == {"doc-no-tenant": 0}, "a refused repair must degrade, not raise"
     errors = [r for r in caplog.records if r.levelname == "ERROR"]
     assert any(
         "doc-no-tenant" in r.getMessage() for r in errors

@@ -150,8 +150,8 @@ INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "Unavailable; nothing was saved. `x-error-code: "
             "KNOWLEDGE_INDEXING_BUSY`: within the request window there is no "
             "room for this document because other indexing is queued on this "
-            "server, the indexing model is loading, or an encode is stuck past "
-            "its time bound; retry after `Retry-After` seconds."
+            "server, or an encode is stuck past its time bound; retry after "
+            "`Retry-After` seconds."
         ),
         "headers": {
             "x-error-code": {

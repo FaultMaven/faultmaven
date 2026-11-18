@@ -11,7 +11,8 @@ imports, ``working`` once it has the request and is bounded, ``done`` when the
 work returns, and a ``failure``; text parts travel raw, never as JSON.
 
 ``serve``, the worker, bounds itself before the work: it dies with its parent,
-volunteers for the OOM killer and caps CPU time and address space; past the
+raises its ``oom_score_adj`` (first choice only where a container's OOM is not
+grouped) and caps CPU time and address space; past the
 cap it exits ``OUT_OF_MEMORY_EXIT``. This module imports the standard library
 and the bare package, and ``asyncio`` only in the parent's functions.
 """
@@ -402,8 +403,9 @@ class _Forward(logging.Handler):
 
 
 def _bound(parent_pid: int, memory_bytes: int, cpu_seconds: int) -> None:
-    """Die with the parent, volunteer for the OOM killer, and cap CPU time and
-    address space, with no core file. A missing ``prctl`` or ``oom_score_adj``
+    """Die with the parent, raise ``oom_score_adj`` (first choice only where a
+    container's OOM is not grouped), and cap CPU time and address space, with
+    no core file. A missing ``prctl`` or ``oom_score_adj``
     is logged."""
     logger = logging.getLogger(__name__)
     try:
@@ -484,7 +486,12 @@ def serve(
             forward.report_dropped()
     except MemoryError:
         os._exit(OUT_OF_MEMORY_EXIT)
-    except Exception as e:
+    except BaseException as e:
+        # pyo3's ``PanicException`` (a Rust library's panic, as its thread
+        # pool failing to start under the address-space cap) is a
+        # ``BaseException``; it is a failure like any other (#2851).
+        if not isinstance(e, Exception) and type(e).__name__ != "PanicException":
+            raise
         if phased:
             send({"failure": str(e)[:MAX_RECORD_CHARS]})
         failure = f"the {label} failed\n" + traceback.format_exc()
