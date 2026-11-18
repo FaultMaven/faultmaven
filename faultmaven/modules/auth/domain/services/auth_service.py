@@ -727,9 +727,11 @@ class AuthService:
         ``W2 = now + REVOCATION_CLOCK_ALLOWANCE`` from a fresh clock read. A
         mint captured after ``W1`` was taken but before a stamp landed read no
         watermark. A final stamp that landed within the allowance of its
-        capture (monotonic clock) is later than every such capture, unless
-        the mint's replica runs ahead of this one by more than the allowance;
-        one that landed later is written again from a fresh read, at most
+        capture (monotonic clock, so this process's event-loop stalls count
+        as well as the store's latency) is later than every such capture,
+        unless the mint's replica runs ahead of this one by more than the
+        allowance less that landing time; one that landed later is written
+        again from a fresh read, at most
         ``_FINAL_STAMP_ATTEMPTS`` times. The cost is that a sign-in captured
         within the allowance after this returns is born dead and needs one
         more sign-in.

@@ -459,6 +459,7 @@ async def test_the_in_memory_double_reads_through_the_production_rule():
         pytest.param("0x7FFFFFFFFF", id="hex"),
         pytest.param("0x1p40", id="hex-float"),
         pytest.param(" 1e300 ", id="padded"),
+        pytest.param("in-window-hex", id="hex-inside-the-window"),
         pytest.param(["x"], id="list-typed-key"),
     ],
 )
@@ -471,11 +472,13 @@ async def test_redis_keeps_only_a_strict_decimal_watermark(stored):
     redis = fakeredis_aio.FakeRedis(decode_responses=True)
     store = RedisTokenRevocationStore(redis, key_prefix="revoked:token:")
     key = f"revoked:token:user:{USER_ID}"
+    t = _anchor()
+    if stored == "in-window-hex":
+        stored = "0x%X" % (int(t) + 1)  # T+1: within the window of T+0.5
     if isinstance(stored, list):
         await redis.rpush(key, *stored)
     else:
         await redis.set(key, stored)
-    t = _anchor()
 
     await store.revoke_user_tokens_before(USER_ID, t + 0.5, TTL)
 

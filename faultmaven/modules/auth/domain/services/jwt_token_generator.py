@@ -2496,8 +2496,9 @@ class ITokenRevocationStore(ABC):
         """Raise the user's revocation watermark to ``revoked_at``.
 
         Every token for this user whose basis is at or before ``revoked_at``
-        becomes invalid. A stored watermark above ``revoked_at`` by no more
-        than ``REVOCATION_MONOTONE_WINDOW`` is kept (#2050 —
+        becomes invalid. A stored watermark above ``revoked_at``, and no more
+        than ``REVOCATION_MONOTONE_WINDOW`` ahead of the later of it and the
+        store's own clock, is kept (#2050 —
         ``revoke_user_tokens``'s final stamp sits ahead of ``now``, and an
         overlapping revocation's first write must not lower it). One further
         ahead, or corrupt, is overwritten, not compared, so a revocation always

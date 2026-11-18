@@ -81,7 +81,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import Float, and_, case, cast, delete, func, or_, select
 
 from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -225,8 +225,9 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
             return RefreshClaim.ALREADY_REDEEMED
         return RefreshClaim.REVOKED
 
-    #: Keep a stored watermark above the new one by at most the window
-    #: (ARGV[3]), with the new TTL (#2050). Kept only when it is a string in
+    #: Keep a stored watermark above the new one and at most the window
+    #: (ARGV[3]) ahead of the later of the new one and Redis's own clock
+    #: (``TIME``), with the new TTL (#2050). Kept only when it is a string in
     #: strict decimal-float form, which Lua's ``tonumber`` and Python's
     #: ``float`` read alike (``tonumber`` also reads hex and padding), and
     #: finite. Anything else, a non-string key included, is replaced. The kept
@@ -249,7 +250,9 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         end
     end
     local new = tonumber(ARGV[1])
-    if not (stored and stored > new and stored <= new + tonumber(ARGV[3])) then
+    local time = redis.call('TIME')
+    local bound = math.max(new, tonumber(time[1]) + tonumber(time[2]) / 1e6)
+    if not (stored and stored > new and stored <= bound + tonumber(ARGV[3])) then
         raw = ARGV[1]
     end
     redis.call('DEL', KEYS[1])
@@ -387,9 +390,10 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # PostgreSQL constructs cannot drift (they are NOT interchangeable
             # — see ``db_compat``).
             #
-            # A stored watermark above the written one by at most
-            # ``REVOCATION_MONOTONE_WINDOW`` is kept (#2050); anything else is
-            # overwritten. The upper bound also refuses what is not a finite
+            # A stored watermark above the written one, and at most
+            # ``REVOCATION_MONOTONE_WINDOW`` ahead of the later of the written
+            # one and the database's own clock, is kept (#2050); anything else
+            # is overwritten. The upper bound also refuses what is not a finite
             # number: NaN sorts above every number on PostgreSQL, and text and
             # blobs above every number on SQLite. A jti entry is only ever
             # lengthened, and keeps its writer's mark, so a revocation can
@@ -414,7 +418,15 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                 stored = TokenRevocationModel.revoked_at
                 written = statement.excluded.revoked_at
                 window = REVOCATION_MONOTONE_WINDOW.total_seconds()
-                keep = and_(stored > written, stored <= written + window)
+                if postgresql:
+                    db_now = cast(func.extract("epoch", func.clock_timestamp()), Float)
+                    newest = func.greatest(written, db_now)
+                else:
+                    # julianday('now') carries milliseconds; the Unix epoch is
+                    # Julian day 2440587.5.
+                    db_now = (func.julianday("now") - 2440587.5) * 86400.0
+                    newest = func.max(written, db_now)
+                keep = and_(stored > written, stored <= newest + window)
                 set_ = {
                     "revoked_at": case((keep, stored), else_=written),
                     "expires_at": proposed,

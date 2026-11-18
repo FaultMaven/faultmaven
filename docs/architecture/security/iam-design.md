@@ -422,7 +422,8 @@ shapes the response.
 - With clock skew between the revoking and minting processes, "every token
   whose basis is at or before the watermark" is measured on the *revoker's*
   clock. The final stamp's allowance absorbs skew up to
-  `REVOCATION_CLOCK_ALLOWANCE`; past it, residual (b) below.
+  `REVOCATION_CLOCK_ALLOWANCE` less the stamp's landing time; past it,
+  residual (b) below.
 - Revocation state outlives the API process on **standalone** (#828), where it
   is written to `token_revocations`. **Cloud is a known gap, not a guarantee**:
   it keeps the Redis store because that cache is an external service which
@@ -482,7 +483,8 @@ have missed it. `AuthService.revoke_user_tokens` takes `W1 = now` before its
 write lands, so a refresh captured in between reads no watermark and mints with
 a basis after `W1`. So it writes `W1`, then — once that write has returned — a
 final stamp `W2 = now + REVOCATION_CLOCK_ALLOWANCE` from a fresh clock read. A
-stamp that landed within the allowance of its capture (monotonic clock) is later
+stamp that landed within the allowance of its capture (monotonic clock, so
+this process's event-loop stalls count as well as the store's latency) is later
 than every capture made before it landed; one that landed later is written
 again from a fresh read, at most three times. It returns the last stamp written.
 Any write failing, or no stamp landing within the allowance, raises
@@ -490,17 +492,19 @@ Any write failing, or no stamp landing within the allowance, raises
 sweep. The allowance (`config/settings.py`, 100 ms) is the deployment's
 clock-sync assumption: replicas' clocks agree within it. The user-arm write is
 monotone within `REVOCATION_MONOTONE_WINDOW` (2 × the allowance, rounded up to
-1 s): a stored watermark above a new write by no more than the window is kept,
-so an overlapping revocation's `W1` cannot lower an earlier `W2`. One further
-ahead, or one that is not a finite number in strict decimal form, is
-overwritten. The TTL adds the allowance, rounded up to a second. Deleting a user revokes
+1 s): a stored watermark above a new write, and no more than the window ahead
+of the later of that write and the store's own clock, is kept. A stamp any
+revocation wrote stays within that bound, so an overlapping revocation's `W1`
+cannot lower an earlier `W2`, however slowly it lands. One further ahead, or
+one that is not a finite number in strict decimal form, is overwritten. The TTL adds the allowance, rounded up to a second. Deleting a user revokes
 before the delete (a failed revoke leaves the account intact) and stamps once
 more after it, because a refresh or SSO exchange can read the account between
 the two.
 
 What this guarantees: after `revoke_user_tokens` returns, every mint whose
 capture precedes its revocation read, and preceded that return, has a basis at
-or before the stored watermark, given skew below the allowance. The residuals,
+or before the stored watermark, given skew below the allowance less the final
+stamp's landing time. The residuals,
 stated as residuals:
 
 - (a) A sign-in captured within the allowance after a revocation returns is
@@ -508,10 +512,13 @@ stated as residuals:
   immediately after logout: the login no longer clears, and standalone applies
   the same allowance.
 - (b) A mint that straddled the revocation survives only on a replica whose
-  clock runs *ahead* of the revoker's by more than the allowance.
-- (c) A store whose final-stamp writes each take longer than the allowance
-  fails the revocation after three of them, rather than leave a window a
-  refresh chain could complete in: the caller is told the revocation failed.
+  clock runs *ahead* of the revoker's by more than the allowance less the
+  final stamp's landing time.
+- (c) A final stamp whose landing, as this process measures it, takes longer
+  than the allowance is written again; after three, the revocation fails rather
+  than leave a window a refresh chain could complete in, and the caller is told
+  it failed. The measure includes this process's event-loop stalls, not only
+  the store's latency.
 - (d) If the post-delete stamp fails, the delete stands and the route says so in
   its `message`; a mint that read the account before the delete may live until
   its token expires.
@@ -519,10 +526,11 @@ stated as residuals:
   (`api/oauth.py` `require_authentication` → `oauth_service.py`
   `create_authorization_code`), so a revocation landing between them is not
   covered. Moving the capture is out of scope.
-- (f) The monotone write holds only within the window. A later revocation from
-  a replica whose clock trails by more than the window lowers the stored
-  watermark, and a far-future one (a clock that stepped forward) holds only
-  until the next revocation overwrites it.
+- (f) The monotone write holds only within the window ahead of the store's
+  own clock. A stamp written by a revoker whose clock runs ahead of the
+  store's by more than the window less the allowance can be lowered by the next
+  revocation's first write, and a far-future one (a clock that stepped forward)
+  holds only until that write overwrites it.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who

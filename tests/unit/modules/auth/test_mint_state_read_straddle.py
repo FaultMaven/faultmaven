@@ -161,12 +161,12 @@ def _claims(token: str) -> dict:
 # The window is simulated by backdating: the read's capture sits 10s in the
 # past, the watermark 5s in the past, and the mint runs now. That keeps the
 # ordering of the real race (read began, THEN the revocation landed, THEN the
-# mint ran) while spanning whole seconds — necessary because ``iat`` has
-# 1-second granularity and the comparison is ``<=``: with all three events in
-# the same second, even a mint-time ``iat`` equals the watermark and is
-# rejected, and the test would pass against the pre-#831 code it exists to
-# refute. Verified by mutation: with ``_mint_instant`` returning ``now``,
-# these go RED; a same-second version stayed GREEN.
+# mint ran) while spanning whole seconds. The spacing dates from the
+# whole-second rule. These tokens carry ``fm_basis``, compared at full
+# precision (#2050), so a mint-time stamp in the watermark's own second would
+# now survive it too; the spacing keeps these tests independent of that.
+# Verified by mutation before #2050: with ``_mint_instant`` returning ``now``,
+# these went RED; a same-second version stayed GREEN.
 
 #: read capture ... 5s ... watermark ... 5s ... mint (now)
 STRADDLE_READ_AGE = timedelta(seconds=10)
@@ -416,12 +416,13 @@ async def test_marginally_future_state_read_at_degrades_to_now():
 # the minted pair would postdate the watermark and these go RED, with the
 # generator fix intact.
 #
-# The read then stalls past the next whole second before returning. Without
-# that, the capture, the watermark and the mint all land in the same second,
-# where ``iat <= watermark`` rejects the pair even for a mint-time (or
-# post-read) stamp — and the test would pass against exactly the defects it
-# exists to catch. Real wall-clock delay, not a mocked clock: the handler's
-# capture must be the thing under test.
+# The read then stalls past the next whole second before returning. The stall
+# dates from the whole-second rule, under which a mint-time (or post-read)
+# stamp in the watermark's second was rejected too; with ``fm_basis`` compared
+# at full precision (#2050) it would now survive either way, and the stall
+# keeps these tests independent of that (see ``_revoke_then_stall``). Real
+# wall-clock delay, not a mocked clock: the handler's capture must be the thing
+# under test.
 
 
 class _StraddlingUserStore:

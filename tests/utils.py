@@ -4,6 +4,7 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
@@ -857,11 +858,13 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
-        # Kept only within the window above the new value (#2050), as the
-        # production stores keep it.
+        # Kept only above the new value and within the window ahead of the
+        # later of it and the clock (#2050), as the production stores keep it.
         stored = self.user_watermarks.get(user_id, (revoked_at, ttl))[0]
-        window = REVOCATION_MONOTONE_WINDOW.total_seconds()
-        if not revoked_at < stored <= revoked_at + window:
+        bound = (
+            max(revoked_at, time.time()) + REVOCATION_MONOTONE_WINDOW.total_seconds()
+        )
+        if not revoked_at < stored <= bound:
             stored = revoked_at
         self.user_watermarks[user_id] = (stored, ttl)
 

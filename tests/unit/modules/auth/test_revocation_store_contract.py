@@ -739,16 +739,44 @@ class TestTheStoredWatermarkIsTheLatest:
         self, claim_store, ahead, kept
     ):
         """Review fix 3: a stored watermark more than the window above a new
-        write (a clock that stepped forward) is overwritten by it, so it cannot
-        renew itself and lock the account out. The window is one second
+        write that is later than the store's clock is overwritten by it, so it
+        cannot renew itself and lock the account out. The window is one second
         (``test_the_window_these_instants_assume``)."""
-        t = float(int(time.time()) - 30)
-        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.5 + ahead, ttl=60)
-        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.5, ttl=60)
+        new = float(int(time.time()) + 100)
+        await claim_store.revoke_user_tokens_before(USER_ID, new + ahead, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, new, ttl=60)
 
-        claims = {"jti": JTI, "sub": USER_ID, "iat": int(t), "fm_basis": t + 0.6}
+        claims = {"jti": JTI, "sub": USER_ID, "iat": int(new), "fm_basis": new + 0.1}
         expected = "user_revoked" if kept else None
         assert await revocation_reason(claim_store, claims) == expected
+
+    async def test_a_slow_first_write_cannot_lower_a_completed_revocation(
+        self, claim_store
+    ):
+        """Delta fix 1. R2 takes ``W1 = T``; before it lands, R1 completes with
+        the stamps T+1.2 and T+1.4, killing A (basis T+1.25). R2's ``W1`` then
+        lands 1.4s below, past a window measured from the new value, but the
+        window runs from the store's own clock, so the stamp stays and A stays
+        dead."""
+        t = float(int(time.time()) - 30)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 1.2, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 1.4, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t, ttl=60)
+
+        a = {"jti": JTI, "sub": USER_ID, "iat": int(t) + 1, "fm_basis": t + 1.25}
+        assert await revocation_reason(claim_store, a) == "user_revoked"
+
+    async def test_a_value_further_ahead_of_the_stores_clock_is_overwritten(
+        self, claim_store
+    ):
+        """The bound against the store's clock still refuses a far-future value
+        (10s ahead, against a one-second window) under a write in the past."""
+        t = float(int(time.time()) - 30)
+        await claim_store.revoke_user_tokens_before(USER_ID, time.time() + 10, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t, ttl=60)
+
+        claims = {"jti": JTI, "sub": USER_ID, "iat": int(t), "fm_basis": t + 0.5}
+        assert await revocation_reason(claim_store, claims) is None
 
     def test_the_window_these_instants_assume(self):
         from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
