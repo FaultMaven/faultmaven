@@ -63,6 +63,8 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     InvestigationActionType,
     MitigationRecord,
+    NeedState,
+    PendingCheckReason,
     RecheckReason,
     RecheckWhy,
     WritePoint,
@@ -174,6 +176,16 @@ def derived(case) -> dict:
             [e.evidence_id for e in cause],
         ),
         "held_need": held.need_id if held is not None else None,
+        # Shape 4 (#2811 S2b-1b-i): why it holds, as the block's mark read it.
+        "held_reason": (
+            None
+            if held is None
+            else (
+                PendingCheckReason.FULFILLED_BEFORE_ASK
+                if held.state == NeedState.FULFILLED
+                else PendingCheckReason.UNANSWERED
+            )
+        ),
         "declined": declined_resolve_entry(case) is not None,
         "mitigation": (
             None
@@ -243,6 +255,7 @@ def recorded(outcome, case) -> dict:
         "unrechecked": resolution.unrechecked_row_ids,
         "bindable": (outcome.bindable.problem_row_ids, outcome.bindable.cause_row_ids),
         "held_need": resolution.pending_check_need_id,
+        "held_reason": resolution.pending_check_reason,
         "declined": resolution.declined_stands,
         "mitigation": (
             None

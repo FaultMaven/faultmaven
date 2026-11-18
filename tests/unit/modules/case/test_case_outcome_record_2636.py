@@ -43,6 +43,7 @@ from faultmaven.modules.case.contracts import (
     MitigationOutcome,
     MitigationRefusalReason,
     NoWindowKind,
+    PendingCheckReason,
     PoolEmptyReason,
     ProblemOutcome,
     ProblemStatus,
@@ -98,6 +99,7 @@ PINNED: dict = {
         "problem_unrechecked",
         "no_symptom_row",
     ],
+    PendingCheckReason: ["unanswered", "fulfilled_before_ask"],
     MitigationRefusalReason: [
         "attempt_undated",
         "revision_pending",

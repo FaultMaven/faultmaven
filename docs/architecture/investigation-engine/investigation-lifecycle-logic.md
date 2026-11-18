@@ -1125,8 +1125,8 @@ written*, as amended by #2811, ruled 2026-11-15):
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
   the 1 -> 2 step marks the finals shape 1 held; 2 -> 3, which adds
-  `resolution.off_cause_turn` and `resolution.unrechecked_row_ids`, is the
-  identity), and
+  `resolution.off_cause_turn` and `resolution.unrechecked_row_ids`, and
+  3 -> 4, which adds `resolution.pending_check_reason`, are the identity), and
   `fm-backfill-case-outcome` rewrites it, so the backfill runs after each
   shape change, not once (amending #2615 Q6). A re-shape mints nothing.
 - **The narrators read by id.** The record holds codes and ids, never display
@@ -1134,13 +1134,19 @@ written*, as amended by #2811, ruled 2026-11-15):
   typed fields, rendered by `narration.rechecks`). A narrator fetches the
   text an id names through one accessor with no predicate, `content(id)`, with
   the selected ids the record holds for it (stage S2b). The first is the
-  `<fix_verification>` block (S2b-1a, `narration.fix_verification`): all but
-  its needs lines rendered from the record, the identity fields, `content(id)`
-  (`content_by_id`, proposed actions) and the window verdicts ruling Q1 (a)
-  keeps fresh until S3 (`FixVerificationFresh`). The record is folded at most
-  once per prompt assembly (`NarrationFold`), and only where the block is
-  shown. A fold, fresh read or render that raises replaces the block with one
-  declared line, counted once per assembly on
+  `<fix_verification>` block (S2b-1a and S2b-1b-i, `narration.fix_verification`),
+  rendered from the record, the identity fields, `content(id)`
+  (`content_by_id`: a proposed action's description, a need's current
+  request text), the window verdicts ruling Q1 (a) keeps fresh until S3
+  (`FixVerificationFresh`) and the needs pool (`narration.needs.NeedsView`).
+  A need's state is the pool's own, never an outcome fact (ruled 2026-11-17),
+  so the narrators read it through that one typed, text-free view; the held
+  need, why it holds (`resolution.pending_check_reason`: unanswered, or
+  FULFILLED only on rows from before the ask) and a standing resolve decline
+  are the record's. The record is folded at most once per prompt assembly
+  (`NarrationFold`), and only where the block is shown. A fold, fresh read,
+  needs read or render that raises replaces the block with one declared
+  line; each failure is logged, and counted once per assembly on
   `case_outcome_write_failures_total{at="narration"}`.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound

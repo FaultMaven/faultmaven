@@ -2,6 +2,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
+from faultmaven.core.investigation.narration.needs import _truncate_request_text
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -16,7 +17,6 @@ from .history import (
     _EVIDENCE_NEEDS_RENDER_CAP,
     _PRIORITY_ORDER,
     _render_ask_history,
-    _truncate_request_text,
 )
 
 
