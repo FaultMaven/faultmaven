@@ -65,6 +65,10 @@ KNOWN_ENV_ACCESS = {
     # The Postgres root inputs it refuses are the drivers' own variables, and
     # libpq's Windows CRL default is under ``APPDATA`` (#2787).
     "faultmaven/config/tls_root_set.py": 8,
+    # A model worker pins its native libraries' thread pools, which read these
+    # knobs once, at their start, before it imports them (#2851): the worker
+    # process's own environment, never configuration.
+    "faultmaven/infrastructure/encode_worker.py": 1,
     "faultmaven/infrastructure/llm/pricing.py": 1,
     "faultmaven/infrastructure/llm/router.py": 3,
     # The Opik SDK reads its configuration from the environment (``OpikConfig``),
@@ -75,6 +79,7 @@ KNOWN_ENV_ACCESS = {
     "faultmaven/infrastructure/shims/metrics.py": 1,
     "faultmaven/infrastructure/shims/security.py": 1,
     "faultmaven/infrastructure/tasks/job_runners.py": 2,
+    "faultmaven/infrastructure/token_count_worker.py": 1,
 }
 
 

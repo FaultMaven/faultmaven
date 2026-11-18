@@ -440,9 +440,11 @@ def test_the_caps_are_the_stated_formulas_of_the_thread_count(
     assert ENCODE_MEMORY_BYTES == 12 * 1024**3
 
 
-@pytest.mark.skipif(
-    (os.cpu_count() or 1) < 4, reason="needs more cores than the pinned count"
-)
+def _cores() -> int:
+    return os.cpu_count() or 1
+
+
+@pytest.mark.skipif(_cores() < 4, reason="needs more cores than the pinned count")
 async def test_the_workers_pin_their_threads_whatever_the_load_sets(
     monkeypatch, caplog
 ):
