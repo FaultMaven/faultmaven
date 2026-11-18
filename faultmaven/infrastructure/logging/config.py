@@ -17,6 +17,7 @@ import structlog
 from opentelemetry import trace
 
 from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
+from faultmaven.utils.exception_name import exception_class_chain, exception_frames
 
 # Third-party loggers whose DEBUG output is per-operation tracing rather than
 # signal, each with the level it is pinned at. Raising our own verbosity to
@@ -48,10 +49,12 @@ NOISY_THIRD_PARTY_LOGGERS: Mapping[str, int] = MappingProxyType(
 )
 
 
-# Event keys the formatter's later steps read or write: format_exc_info and
-# StackInfoRenderer take exc_info / stack_info as directives and write
-# exception / stack; ProcessorFormatter writes the _record / _from_structlog
-# meta keys.
+# Event keys the formatter's later steps read or write: exc_info_as_frames and
+# StackInfoRenderer take exc_info / stack_info as directives (exc_info_as_frames
+# writes frames, StackInfoRenderer stack); the console renderer renders an
+# exception key; ProcessorFormatter writes the _record / _from_structlog meta
+# keys. ``frames`` is not one: a caller's own (``log_error``, the policy's
+# ``extra={"frames": ...}``) is lifted and wins over exc_info_as_frames'.
 _FORMATTER_KEYS = frozenset(
     {"exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"}
 )
@@ -84,6 +87,55 @@ def frames_as_console_stack(
         del event_dict["frames"]
         event_dict["stack"] = frames if stack is None else f"{stack}\n{frames}"
     return event_dict
+
+
+def exc_info_as_frames(
+    _logger: Any, _name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Render an ``exc_info`` (``True``, an exception or a ``sys.exc_info()``
+    tuple) as ``frames``: :func:`exception_frames`, each link's class and frames
+    with no message (principles §7, rule 4; #2888). A ``frames`` the caller
+    gave is kept."""
+    exc_info = event_dict.pop("exc_info", None)
+    if exc_info is True:
+        exc_info = sys.exc_info()
+    error = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if isinstance(error, BaseException):
+        event_dict.setdefault("frames", exception_frames(error))
+    return event_dict
+
+
+def _without_exceptions(value: Any, depth: int = 0) -> Any:
+    """``value`` with each exception in it, through dicts, lists, tuples and
+    sets up to 10 levels deep, replaced by its class chain."""
+    if isinstance(value, BaseException):
+        return exception_class_chain(value)
+    if depth < 10 and type(value) in (dict, list, tuple, set, frozenset):
+        if type(value) is dict:
+            return {k: _without_exceptions(v, depth + 1) for k, v in value.items()}
+        return type(value)(_without_exceptions(v, depth + 1) for v in value)
+    return value
+
+
+def exceptions_as_class_chains(
+    _logger: Any, _name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Write an exception passed as a field (``error=e``, ``extra={"e": e}``,
+    or nested in a field's dict or list) as its class chain, never its repr,
+    which holds its message (principles §7, rule 4; #2888). The JSON renderer's
+    ``default`` does the same for an exception deeper than this reaches."""
+    for key, value in event_dict.items():
+        event_dict[key] = _without_exceptions(value)
+    return event_dict
+
+
+def _json_default(value: Any) -> Any:
+    """The JSON renderer's fallback: an exception's class chain, else what
+    structlog's own fallback writes (``__structlog__()``, else the repr)."""
+    if isinstance(value, BaseException):
+        return exception_class_chain(value)
+    structlog_form = getattr(value, "__structlog__", None)
+    return structlog_form() if callable(structlog_form) else repr(value)
 
 
 def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
@@ -320,7 +372,7 @@ class FaultMavenLogger:
         if console:
             renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
         else:
-            renderer = structlog.processors.JSONRenderer()
+            renderer = structlog.processors.JSONRenderer(default=_json_default)
 
         # Redact on the RENDERED line rather than on the event dict. Walking
         # values by type leaked every type it did not handle -- bytes, sets,
@@ -360,7 +412,9 @@ class FaultMavenLogger:
             processors=[
                 structlog.stdlib.ProcessorFormatter.remove_processors_meta,
                 structlog.processors.StackInfoRenderer(),
-                structlog.processors.format_exc_info,
+                # Not format_exc_info: it writes every link's message (#2888).
+                exc_info_as_frames,
+                exceptions_as_class_chains,
                 structlog.processors.UnicodeDecoder(),
                 *([frames_as_console_stack] if console else []),
                 renderer,

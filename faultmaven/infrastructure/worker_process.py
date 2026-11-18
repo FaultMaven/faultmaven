@@ -12,8 +12,10 @@ work returns, and a ``failure``; text parts travel raw, never as JSON.
 
 ``serve``, the worker, bounds itself before the work: it dies with its parent,
 volunteers for the OOM killer and caps CPU time and address space; past the
-cap it exits ``OUT_OF_MEMORY_EXIT``. This module imports the standard library
-and the bare package, and ``asyncio`` only in the parent's functions.
+cap it exits ``OUT_OF_MEMORY_EXIT``. An exception it forwards is its frames and
+class names, never its text (#2888). This module imports the standard library,
+the bare package and ``exception_frames`` (standard library only), and
+``asyncio`` only in the parent's functions.
 """
 
 import ctypes
@@ -24,13 +26,13 @@ import os
 import resource
 import signal
 import sys
-import traceback
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, Optional
 
 import faultmaven
+from faultmaven.utils.exception_name import exception_frames
 
 if TYPE_CHECKING:
     import asyncio
@@ -388,8 +390,9 @@ class _Forward(logging.Handler):
             return
         self._sent += 1
         message = record.getMessage()
-        if record.exc_info:
-            message += "\n" + "".join(traceback.format_exception(*record.exc_info))
+        if record.exc_info and record.exc_info[1] is not None:
+            # Frames and class names, never the exception's text (#2888).
+            message += "\n" + exception_frames(record.exc_info[1])
         self._send({"log": [record.name, record.levelno, _clipped(message)]})
 
     def report_dropped(self) -> None:
@@ -487,7 +490,7 @@ def serve(
     except Exception as e:
         if phased:
             send({"failure": str(e)[:MAX_RECORD_CHARS]})
-        failure = f"the {label} failed\n" + traceback.format_exc()
+        failure = f"the {label} failed\n" + exception_frames(e)
         send({"log": [__name__, logging.ERROR, _clipped(failure)]})
         return 1
     return 0

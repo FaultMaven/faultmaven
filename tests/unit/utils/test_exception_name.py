@@ -1,6 +1,7 @@
 """``exception_class_name``: the class name, or ``Exception`` for an odd one;
 ``exception_class_chain``: those of an exception's cause chain (#2587);
-``exception_frames``: the frames a traceback would show, without a message (#2844)."""
+``exception_frames``: the frames a traceback would show, without a message (#2844),
+into a group's members as far as ``traceback`` goes (#2888)."""
 
 import pytest
 
@@ -98,3 +99,23 @@ def test_frames_stop_where_a_traceback_does(cause_class):
     first, second = ValueError("a"), cause_class("b")
     first.__cause__, second.__context__ = second, first
     assert exception_frames(first) == f"ValueError:\n{cause_class.__name__}:\n"
+
+
+def test_a_group_shows_its_first_members_and_counts_the_rest():
+    """As ``traceback`` caps a group: 15 members shown, the rest counted (#2888)."""
+    group = ExceptionGroup("g", [ValueError(str(i)) for i in range(40)])
+    headers = exception_frames(group).splitlines()
+    assert headers == [
+        "ExceptionGroup:",
+        *(f"[{i}] ValueError:" for i in range(1, 16)),
+        "and 25 more exceptions",
+    ]
+
+
+def test_nested_groups_stop_at_ten_deep():
+    error: BaseException = ValueError("leaf")
+    for _ in range(12):
+        error = ExceptionGroup("g", [error])
+    headers = exception_frames(error).splitlines()
+    assert len(headers) == 12
+    assert headers[-1] == "[1] " * 10 + "and 1 more exceptions"

@@ -37,21 +37,47 @@ def exception_class_chain(exc: BaseException) -> str:
     return " <- ".join(exception_class_name(link) for link in walk_cause_chain(exc))
 
 
+#: How far :func:`exception_frames` descends into an ``ExceptionGroup``, the caps
+#: ``traceback`` applies: members shown per group, and groups nested.
+GROUP_MEMBERS_SHOWN = 15
+GROUP_DEPTH_SHOWN = 10
+
+
 def exception_frames(exc: BaseException) -> str:
     """The traceback frames of ``exc`` and of each exception its traceback would
-    show (the ``__cause__``, else an unsuppressed ``__context__``,
-    cycle-guarded), each under its class name, with no exception's message:
-    where a failure was raised, for a log line that may hold no exception's
-    text (#2844). It does not descend into an ``ExceptionGroup``'s member
-    exceptions: a member's frames appear only if it is also a cause or
-    context in the chain."""
-    frames, link, seen = [], exc, set()
+    show (the ``__cause__``, else an unsuppressed ``__context__``), each under
+    its class name, with no exception's message or note: where a failure was
+    raised, for a log line that may hold no exception's text (#2844).
+
+    An ``ExceptionGroup``'s members follow its own frames, depth first, each
+    header prefixed with its position (``[2] OSError:``): at most
+    ``GROUP_MEMBERS_SHOWN`` per group and ``GROUP_DEPTH_SHOWN`` groups deep, the
+    rest counted (``and 25 more exceptions``). An exception reached twice is
+    shown once (#2888)."""
+    lines: list = []
+    _add_frames(exc, "", 0, set(), lines)
+    return "".join(lines)
+
+
+def _add_frames(exc: BaseException, prefix: str, depth: int, seen: set, lines: list):
+    link = exc
     while link is not None and id(link) not in seen:
         seen.add(id(link))
-        frames.append(f"{exception_class_name(link)}:\n")
-        frames.extend(traceback.format_tb(link.__traceback__))
+        lines.append(f"{prefix}{exception_class_name(link)}:\n")
+        lines.extend(traceback.format_tb(link.__traceback__))
+        if isinstance(link, BaseExceptionGroup):
+            shown = (
+                link.exceptions[:GROUP_MEMBERS_SHOWN]
+                if depth < GROUP_DEPTH_SHOWN
+                else ()
+            )
+            for i, member in enumerate(shown, 1):
+                _add_frames(member, f"{prefix}[{i}] ", depth + 1, seen, lines)
+            if len(link.exceptions) > len(shown):
+                lines.append(
+                    f"{prefix}and {len(link.exceptions) - len(shown)} more exceptions\n"
+                )
         if link.__cause__ is not None or link.__suppress_context__:
             link = link.__cause__
         else:
             link = link.__context__
-    return "".join(frames)

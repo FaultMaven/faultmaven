@@ -46,9 +46,10 @@ a credential header on the same unit is lost with it, which is the safe side.
 import json
 import logging
 import re
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, TextIO, Tuple
 
 from faultmaven.infrastructure.security.secret_patterns import ESCAPE_BOUNDARY
+from faultmaven.utils.exception_name import exception_frames
 
 # Anchored on the literal "://".
 #
@@ -429,14 +430,55 @@ def redacting_renderer(renderer: Callable) -> Callable:
     return render
 
 
-class RedactingFormatter(logging.Formatter):
-    """A stdlib formatter that redacts its own output.
+class JobLogFormatter(logging.Formatter):
+    """The line every process that is not the API writes: the maintenance jobs
+    and alembic (principles §7, "What a log line may hold"; #2888).
 
-    For log paths that deliberately do not use structlog — the maintenance
-    jobs configure plain ``logging.basicConfig`` so their output stays a
-    process's own stdout — the rule has to hold there too, or the exception
-    from a failing job is exactly the record that carries a DSN.
+    Under ``LOG_FORMAT=json`` a record is one JSON object, serialized, never
+    pasted into a template: ``timestamp``, ``logger``, ``level``, ``event``, and
+    ``exception`` when it carries ``exc_info``. Otherwise it is the plain line,
+    with the exception after it. The exception is :func:`exception_frames`,
+    each link's class and frames with no message; a cached ``exc_text`` is never
+    read. :func:`redact_log_line` runs last, on the finished line.
     """
 
+    def __init__(self, json_lines: bool) -> None:
+        super().__init__()
+        self.json_lines = json_lines
+
     def format(self, record: logging.LogRecord) -> str:
-        return redact_log_line(super().format(record))
+        error = record.exc_info[1] if record.exc_info else None
+        frames = exception_frames(error).rstrip("\n") if error is not None else None
+        fields = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "logger": record.name,
+            "level": record.levelname,
+            "event": record.getMessage(),
+        }
+        if self.json_lines:
+            line = json.dumps({**fields, **({"exception": frames} if frames else {})})
+        else:
+            line = " - ".join(fields.values()) + (f"\n{frames}" if frames else "")
+        return redact_log_line(line)
+
+
+def install_job_log_handler(stream: TextIO, level: Optional[int]) -> None:
+    """Give the root logger one handler writing ``stream`` with
+    :class:`JobLogFormatter`, at ``level`` (``None`` keeps the root's), unless
+    it already has a handler (``logging.basicConfig``'s rule).
+
+    ``LOG_FORMAT`` is read from the logging settings alone (the working
+    directory's ``.env`` loaded first, as the app loads it), never the whole
+    settings: alembic must not refuse a migration over an unrelated setting.
+    Settings that do not load give the plain line.
+    """
+    try:
+        from faultmaven.config.settings import LoggingSettings, load_settings_dotenv
+
+        load_settings_dotenv()
+        json_lines = LoggingSettings().log_output_format == "json"
+    except Exception:  # settings unavailable: keep the process runnable
+        json_lines = False
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JobLogFormatter(json_lines))
+    logging.basicConfig(level=level, handlers=[handler])

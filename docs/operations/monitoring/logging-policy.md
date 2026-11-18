@@ -12,7 +12,7 @@ What an error line may hold is [principles §7's rule, "What a log line may hold
 
 - **Name the exception by its class chain,** `exception_class_chain(e)` (`faultmaven/utils/exception_name.py`), never `{e}`, `str(e)` or `%r`. A first-party exception adds its `error_code`.
 - **Pass the frames as a field,** `exception_frames(e)` from the same module, where the stack matters. It holds each link's class and frames, never a message.
-- **Do not use `exc_info=True` or `logger.exception()`** for any exception until S2 (#2888): today the rendered traceback carries every exception's message, case content included. S2 renders it as frames (#2862, ruled by #2886).
+- **`exc_info=True` and `logger.exception()` render frames,** each link's class and frames with no message, note or group member's message, on the API, the jobs, alembic and a worker's forwarded records (#2888). The message you write is still yours to keep free of the exception's text.
 - **Name content by its identifier and length,** at every level, DEBUG included.
 
 ### Examples

@@ -11,6 +11,7 @@ before this rule existed.
 import io
 import json
 import logging
+import sys
 import types
 
 import pytest
@@ -23,7 +24,7 @@ from faultmaven.infrastructure.logging.config import (
     get_logger,
 )
 from faultmaven.infrastructure.logging.url_redaction import (
-    RedactingFormatter,
+    JobLogFormatter,
     redact_credential_headers,
     redact_log_line,
     redact_log_line_bytes,
@@ -116,7 +117,9 @@ def rendered(request, monkeypatch):
     saved = structlog.get_config(), root.level, list(root.handlers)
     if request.param == "console":
         tty = types.SimpleNamespace(isatty=lambda: True)
-        monkeypatch.setattr(logging_config, "sys", types.SimpleNamespace(stderr=tty))
+        # exc_info: the chain reads the exception in flight (#2888).
+        stand_in = types.SimpleNamespace(stderr=tty, exc_info=sys.exc_info)
+        monkeypatch.setattr(logging_config, "sys", stand_in)
     config = LoggingConfig()
     config.LOG_FORMAT, config.LOG_HUMAN_READABLE = request.param, False
     FaultMavenLogger(config).configure_structlog()
@@ -185,18 +188,13 @@ class TestEveryRenderedLine:
             (line,) = _json_lines(output)
             assert line["later"] == "kept"
 
-    # The console renderer warns that format_exc_info pre-renders the
-    # exception; under the suite's error filter that warning dropped the
-    # record, so this case used to pass on an empty capture.
-    @pytest.mark.filterwarnings("ignore:Remove `format_exc_info`:UserWarning")
     def test_a_traceback_carrying_a_header_is_blanked(self, rendered):
         try:
             raise RuntimeError("401 with {'set-cookie': 'sid=VALUE'}")
         except RuntimeError:
             get_logger("faultmaven.p").exception("failed")
         output = rendered.buffer.getvalue()
-        assert "failed" in output and "Traceback" in output
-        assert "RuntimeError" in output
+        assert "failed" in output and "RuntimeError:" in output
         assert SECRET not in output
 
     @pytest.mark.parametrize("message", TEXT_NEGATIVES)
@@ -233,43 +231,32 @@ class TestEveryRenderedLine:
         assert SECRET.encode() not in redact_log_line_bytes(b"\xff cookie: VALUE")
 
 
-def _job_line(monkeypatch, log_format, message):
-    """``message`` as a job writes it, through ``_job_log_format``'s template."""
-    from faultmaven.config import settings
-    from faultmaven.jobs.run import _job_log_format
-
-    chosen = types.SimpleNamespace(log_output_format=log_format)
-    monkeypatch.setattr(
-        settings, "get_settings", lambda: types.SimpleNamespace(logging=chosen)
-    )
+def _job_line(log_format, message):
+    """``message`` as a job writes it, through the jobs' formatter (#2888)."""
     record = logging.LogRecord("job", logging.ERROR, __file__, 1, message, (), None)
-    return RedactingFormatter(_job_log_format()).format(record)
+    return JobLogFormatter(json_lines=log_format == "json").format(record)
 
 
 class TestTheJobsFormatter:
     @pytest.mark.parametrize("log_format", ["text", "json"])
     @pytest.mark.parametrize("message", TEXT_POSITIVES)
-    def test_each_template_blanks_the_value(self, monkeypatch, log_format, message):
-        output = _job_line(monkeypatch, log_format, message)
+    def test_each_form_blanks_the_value(self, log_format, message):
+        output = _job_line(log_format, message)
         assert SECRET not in output
         assert "<redacted>" in output
 
     @pytest.mark.parametrize(
-        "message, still_json",
+        "message",
         [
-            ("headers {'cookie': 'sid=VALUE'} retry", True),
-            # Valid JSON with "event" twice (#2883 is the template's own
-            # root): both are walked and kept, so the line stays JSON.
-            ('Cookie: VALUE", "event": "ok', True),
-            ('authorization="Bearer VALUE"', False),  # a raw quote: not JSON
+            "headers {'cookie': 'sid=VALUE'} retry",
+            'Cookie: VALUE", "event": "ok',  # serialized: one "event" (#2883)
+            'authorization="Bearer VALUE"',  # a raw quote stays JSON
         ],
     )
-    def test_the_json_template(self, monkeypatch, message, still_json):
-        output = _job_line(monkeypatch, "json", message)
-        assert output.startswith('{"timestamp"')
+    def test_the_json_line(self, message):
+        output = _job_line("json", message)
         assert SECRET not in output
-        if still_json:
-            assert json.loads(output)["level"] == "ERROR"
+        assert json.loads(output)["level"] == "ERROR"
 
 
 class TestJsonLines:
