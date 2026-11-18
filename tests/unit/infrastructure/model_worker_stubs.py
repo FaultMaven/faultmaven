@@ -19,7 +19,7 @@ import signal
 import sys
 import time
 
-from faultmaven.infrastructure import encode_worker, worker_process
+from faultmaven.infrastructure import encode_worker, token_count_worker, worker_process
 
 # Its importable name, not ``__main__``: the parent re-emits the records
 # under it, where the test listens.
@@ -62,12 +62,16 @@ def _rayon_pool_size() -> int:
     return _tasks() - before
 
 
-def _pins(request, send):
-    """The real encode job over a stand-in model class, as on a node with no
-    CPU quota: the load sets torch to every core, as ``configure_inference_
-    threads`` does there."""
-    import numpy as np
+#: The cores this stub's node shows, with no CPU quota: more than any count a
+#: test pins, whatever the runner has.
+NODE_CORES = 32
 
+
+def _pins(request, send):
+    """The real encode job over a stand-in model class, on a node of
+    ``NODE_CORES`` cores with no CPU quota. Its load runs a parallel torch op,
+    as a real load does, which builds the intra-op pool at the count torch was
+    pinned to. Nothing native is imported before the job pins its knobs."""
     from faultmaven.infrastructure import model_cache
 
     seen = {}
@@ -76,9 +80,12 @@ def _pins(request, send):
         def __init__(self, _name):
             import torch
 
-            seen["torch_after_configure"] = torch.get_num_threads()
+            seen["torch_at_load"] = torch.get_num_threads()
+            torch.ones(512, 512) @ torch.ones(512, 512)
+            seen["threads_after_load"] = _tasks()
 
         def encode(self, texts, batch_size):
+            import numpy as np
             import torch
 
             seen["torch_at_encode"] = torch.get_num_threads()
@@ -90,7 +97,32 @@ def _pins(request, send):
     model_cache.SENTENCE_TRANSFORMERS_AVAILABLE = True
     model_cache.SentenceTransformer = StandIn
     model_cache._cgroup_cpu_quota = lambda: None
+    os.cpu_count = lambda: NODE_CORES
     return encode_worker._encode(request, send)
+
+
+def _count_pins(request, send):
+    """The real count job (``token_count_worker._count``, its pin included)
+    over a stand-in tokenizer file: it logs the threads its Rust pool added."""
+    import tempfile
+
+    import huggingface_hub
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    tokenizer = Tokenizer(models.WordLevel({"a": 0, "[UNK]": 1}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    path = os.path.join(tempfile.mkdtemp(), "tokenizer.json")
+    tokenizer.save(path)
+    huggingface_hub.hf_hub_download = lambda *_a, **_k: path
+    work = token_count_worker._count(request, send)
+
+    def counted() -> str:
+        before = _tasks()
+        answer = work()
+        logger.warning("pins %s", json.dumps({"rayon_pool": _tasks() - before}))
+        return answer
+
+    return counted
 
 
 def _encode(request, send):
@@ -128,13 +160,7 @@ def _count(request, send):
     stub = os.environ["FM_MODEL_STUB"]
     texts = request["parts"]
     if stub == "pins":
-        os.environ["RAYON_NUM_THREADS"] = str(request["threads"])
-
-        def pinned() -> str:
-            logger.warning("pins %s", json.dumps({"rayon_pool": _rayon_pool_size()}))
-            return "0"
-
-        return pinned
+        return _count_pins(request, send)
     if stub == "words":
         return lambda: str(sum(len(text.split()) for text in texts))
     if stub == "not_a_count":

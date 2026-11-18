@@ -697,10 +697,11 @@ class DatabaseTimeoutsStatus(BaseModel):
 class KnowledgeIndexingStatus(BaseModel):
     """The KB indexing window and this process's indexing slot (#2055).
 
-    Numbers, so not a ``features`` entry. An encode that never returns holds
-    the slot until the process restarts. Once it is past its time bound, and
-    with a window set, every later KB write is refused 503 meanwhile:
-    ``encoding_for_seconds`` far past any document's estimate is that state.
+    Numbers, so not a ``features`` entry. A KB encode that never returns is
+    killed at its time bound, and the slot frees once its worker is reaped
+    (#2851). While one is held past that bound, and with a window set, every
+    later KB write is refused 503: ``encoding_for_seconds`` far past any
+    document's estimate is that state.
     """
 
     window_seconds: int = Field(

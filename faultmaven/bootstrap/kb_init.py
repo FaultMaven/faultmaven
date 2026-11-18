@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1008,7 +1009,9 @@ async def _reconcile_vectors(
 #     loads BGE-M3 and embeds, and (on the single-tenant web-startup path) it runs
 #     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
 #     time: one worker's model load (``index_slot.WORKER_LOAD_SECONDS``; a boot's
-#     rows encode in one worker, #2851) plus chunks x pod CPU, NOT the row count. Bounding rows alone is
+#     rows encode in one worker, #2851), which the budget counts as chunks of
+#     the measured runbook's mean size (``repair_chunk_budget``), plus chunks x
+#     pod CPU, NOT the row count. Bounding rows alone is
 #     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
 #     of chunks (minutes on a limited pod → startupProbe SIGKILL). Once this
 #     boot's chunk budget is spent, remaining rows are DEFERRED to the next boot;
@@ -1016,6 +1019,18 @@ async def _reconcile_vectors(
 #     consistent and startup readiness is never gated on unbounded embedding.
 KB_REPAIR_MAX_ROWS = 25
 KB_REPAIR_MAX_CHUNKS = 60
+
+#: Tokens in a KB chunk on average: the measured runbook's 29,746 in 61 (#2055).
+KB_REPAIR_TOKENS_PER_CHUNK = 488
+
+
+def repair_chunk_budget(max_chunks: int) -> int:
+    """``max_chunks`` less the worker's model load, counted in chunks of
+    ``KB_REPAIR_TOKENS_PER_CHUNK`` (#2851); at least one, so a boot repairs."""
+    from faultmaven.infrastructure import index_slot
+
+    chunk = index_slot.index_estimate_seconds(KB_REPAIR_TOKENS_PER_CHUNK)
+    return max(1, max_chunks - math.ceil(index_slot.WORKER_LOAD_SECONDS / chunk))
 
 
 def _resolve_repair_bounds() -> tuple[int, int]:
@@ -1104,7 +1119,7 @@ async def _repair_unserved_rows(
     # on a later boot.
     try:
         counts = await knowledge_service.reindex_missing_vectors(
-            unserved_rows, max_chunks=max_chunks
+            unserved_rows, max_chunks=repair_chunk_budget(max_chunks)
         )
     except Exception as exc:
         logger.warning(f"KB repair failed: {exc}")

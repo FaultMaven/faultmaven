@@ -185,6 +185,7 @@ httpx2==2.16.0
     # via faultmaven (pyproject.toml)
 huggingface-hub==1.11.0
     # via
+    #   faultmaven (pyproject.toml)
     #   sentence-transformers
     #   tokenizers
     #   transformers

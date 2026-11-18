@@ -3342,8 +3342,8 @@ class TestDatabaseTimeoutsAreTheOnesInForce:
 
 class TestKnowledgeIndexingIsReported:
     """The window from settings; the queue, the running encode's age and the
-    host lock from this process's slot: a hung encode holds the slot until
-    restart, and a slot behind another process's lock shows no age, and this
+    host lock from this process's slot: a slot held past an encode's time
+    bound, and a slot behind another process's lock shows no age, and this
     is where an operator sees both."""
 
     @pytest.mark.asyncio

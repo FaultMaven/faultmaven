@@ -4,10 +4,10 @@ by the KB indexing slot (``index_slot``, Principle 14, #2851).
 BGE-M3 loads inside the work's bound, through ``ModelCache``, and encodes the
 texts at ``ENCODE_BATCH_SIZE``; the answer is the vectors as little-endian
 float32, base64, one raw part. The parent's thread count ``threads`` is pinned
-three times: the BLAS/OpenMP knobs and the Rust tokenizer's pool before the
-imports read them, and torch's own count again after the load, which
-``configure_inference_threads`` sets to the node's cores when the container
-has no CPU quota.
+before the load: the BLAS/OpenMP knobs and the Rust tokenizer's pool before
+the imports read them, and ``model_cache.THREAD_COUNT``, which the load's
+``configure_inference_threads`` pins torch to (with no CPU quota it would
+otherwise build a pool of every core, #2851).
 """
 
 import base64
@@ -34,15 +34,14 @@ def _encode(request: Dict[str, Any], send) -> Callable[[], str]:
 
     def work() -> str:
         import numpy as np
-        import torch
 
-        from faultmaven.infrastructure.model_cache import ENCODE_BATCH_SIZE, ModelCache
+        from faultmaven.infrastructure import model_cache
 
-        model = ModelCache().get_bge_m3_model("index-worker")
+        model_cache.THREAD_COUNT = threads
+        model = model_cache.ModelCache().get_bge_m3_model("index-worker")
         if model is None:
             raise RuntimeError("BGE-M3 would not load")
-        torch.set_num_threads(threads)
-        vectors = model.encode(texts, batch_size=ENCODE_BATCH_SIZE)
+        vectors = model.encode(texts, batch_size=model_cache.ENCODE_BATCH_SIZE)
         raw = np.ascontiguousarray(vectors, dtype="<f4").tobytes()
         return base64.b64encode(raw).decode("ascii")
 

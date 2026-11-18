@@ -323,6 +323,25 @@ class TestUpload:
         )
         assert set((await _counts(session_factory)).values()) == {0}
 
+    async def test_the_token_counts_time_is_spent_from_the_window(
+        self, session_factory, world, window, clock
+    ):
+        """#2851 review: a count that waits ``w`` seconds for a slot leaves the
+        document ``w`` less: 401.8 s of work fits 600 s, not 600 - 200. On
+        ``7c5318825`` the count's time was not charged, and it was admitted."""
+
+        async def waits_then_counts(_chunks, **_kwargs):
+            clock.now += 200.0
+            return RUNBOOK_TOKENS
+
+        world.tokens.side_effect = waits_then_counts
+
+        with pytest.raises(IndexAdmissionRefused) as refused:
+            await _upload(_knowledge(session_factory))
+
+        assert (refused.value.status_code, refused.value.reason) == (503, "busy")
+        assert world.encodes.calls == []
+
     async def test_a_document_inside_the_window_indexes_on_the_slot(
         self, session_factory, world, window
     ):

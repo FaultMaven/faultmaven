@@ -171,10 +171,14 @@ the embedding model first and is killed at its time bound. So:
   21,600 / 45,600 at a window of 60 / 120 / 300 / 600 s (before, 4,800 /
   9,600 / 24,000 / 48,000). The cut is half the figure at the 60 s floor and
   5% at 600 s;
-* on an empty queue a document is admitted or answered 413, never 503: the
-  503 sentence "The indexing model is loading on this server" is gone, and a
-  503 `KNOWLEDGE_INDEXING_BUSY` now means only that indexing queued on the
-  server leaves no room, or that an encode is stuck past its time bound;
+* on an empty queue, while a token-count slot is free, a document is admitted
+  or answered 413: the 503 sentence "The indexing model is loading on this
+  server" is gone, and a 503 `KNOWLEDGE_INDEXING_BUSY` now means only that
+  indexing queued on the server, or the token count's own time, leaves no
+  room, or that an encode is stuck past its time bound. A count that finds no
+  slot within its wait, or gives no answer, is refused as an unavailable
+  embedder (`KNOWLEDGE_EMBEDDER_UNAVAILABLE`, "the server could not prepare
+  this document for search indexing right now");
 * `POST /knowledge/drafts/verify-batch` fits about
   `window / (30 + estimate)` drafts in one request, and returns the rest as
   `deferred`, as it did before for drafts its window could not fit. Its

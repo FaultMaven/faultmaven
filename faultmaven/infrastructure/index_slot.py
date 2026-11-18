@@ -30,7 +30,8 @@ the reservation are one step. Every KB ticket is charged a worker's load
 written, a document too large for the window less that charge (413), one the
 queue ahead leaves no room for (503), and every document while an encode is
 past its time bound (503). On an empty queue, with the whole window to spend,
-a document is admitted or refused 413, never 503. With a window of 0 it
+a document is admitted or refused 413 (the KB routes first spend the token
+count's time from it). With a window of 0 it
 refuses nothing, and the embedding guard alone bounds the embed.
 """
 
@@ -64,8 +65,9 @@ EMBED_BATCH_LOAD_SECONDS = 180.0
 #: four encoded (19.3-20.7 s cold, the weights evicted; 17.4-19.1 s warm). The
 #: load is mostly one core, so this is wall seconds, not core-seconds, and the
 #: disk read is under 1 s of it. A slower core, a CPU quota under 1 or a load
-#: beside an evidence encode can take longer: then the encode overruns the
-#: request window, never the guard's 180 s.
+#: beside an evidence encode can take longer, and the encode overruns the
+#: window; four 8,192-token texts beside an evidence encode of the same
+#: passed the guard too, and were killed (#2920).
 WORKER_LOAD_SECONDS = 30.0
 
 #: The guard's bound less the worker's phases: the time to kill and reap it
@@ -293,7 +295,7 @@ class IndexTicket:
         chunks: List[str],
         tokens: Optional[int],
         estimate_seconds: float,
-        principal: str,
+        principal: Optional[str],
     ) -> None:
         self._slot = slot
         self.chunks = chunks
@@ -429,10 +431,10 @@ class EncodeSlot:
     load_seconds = 0.0
 
     def admit_forced(
-        self, chunks: List[str], tokens: Optional[int], *, principal: str
+        self, chunks: List[str], tokens: Optional[int], *, principal=None
     ) -> IndexTicket:
         """A ticket that is never refused: the boot repair's on the KB slot,
-        every evidence encode's."""
+        every evidence encode's (no principal: it counts no tokens)."""
         return self._issue(chunks, tokens, principal)
 
     def _encode(
@@ -459,7 +461,7 @@ class EncodeSlot:
         return max(ages) if ages else None
 
     def _issue(
-        self, chunks: List[str], tokens: Optional[int], principal: str
+        self, chunks: List[str], tokens: Optional[int], principal: Optional[str]
     ) -> IndexTicket:
         estimate = index_estimate_seconds(tokens) if tokens is not None else 0.0
         ticket = IndexTicket(
@@ -567,8 +569,8 @@ class IndexAdmission(EncodeSlot):
             return self._issue(chunks, tokens, principal)
         if tokens is None:
             raise KnowledgeBaseError(
-                "Indexing unavailable: the embedding model's tokenizer could not "
-                "be loaded",
+                "Indexing unavailable: the server could not prepare this document "
+                "for search indexing right now; retry shortly",
                 error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
             )
         limit = window_seconds if size_limit_seconds is None else size_limit_seconds

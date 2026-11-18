@@ -3848,7 +3848,7 @@
         "type": "object"
       },
       "KnowledgeIndexingStatus": {
-        "description": "The KB indexing window and this process's indexing slot (#2055).\n\nNumbers, so not a ``features`` entry. An encode that never returns holds\nthe slot until the process restarts. Once it is past its time bound, and\nwith a window set, every later KB write is refused 503 meanwhile:\n``encoding_for_seconds`` far past any document's estimate is that state.",
+        "description": "The KB indexing window and this process's indexing slot (#2055).\n\nNumbers, so not a ``features`` entry. A KB encode that never returns is\nkilled at its time bound, and the slot frees once its worker is reaped\n(#2851). While one is held past that bound, and with a window set, every\nlater KB write is refused 503: ``encoding_for_seconds`` far past any\ndocument's estimate is that state.",
         "properties": {
           "encoding_for_seconds": {
             "anyOf": [

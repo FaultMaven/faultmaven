@@ -289,6 +289,7 @@ httpx==0.28.1
 huggingface-hub==1.11.0
     # via
     #   -c requirements/cloud.txt
+    #   faultmaven (pyproject.toml)
     #   sentence-transformers
     #   tokenizers
     #   transformers

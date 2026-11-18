@@ -286,7 +286,6 @@ class VectorizeFileTool(AgentTool):
                     "file_data_type": data_type_str,
                 },
                 case_vector_store=self.case_vector_store,
-                principal=context.user_id,
             )
 
             logger.info(

@@ -100,6 +100,10 @@ ENCODE_BATCH_SIZE = 4
 
 _THREADS_CONFIGURED = False
 
+#: A worker's own thread count, which wins over the quota (``encode_worker``,
+#: #2851): set before the load, so the load builds a pool of that size.
+THREAD_COUNT: Optional[int] = None
+
 
 def _cgroup_cpu_quota() -> Optional[float]:
     """Return the container's CPU quota in cores, or None if unconstrained.
@@ -133,7 +137,10 @@ def _cgroup_cpu_quota() -> Optional[float]:
 
 
 def _resolve_thread_count() -> int:
-    """Threads to pin to: the pod's CFS quota, or the node count when free."""
+    """Threads to pin to: ``THREAD_COUNT`` when set, else the pod's CFS quota,
+    or the node count when free."""
+    if THREAD_COUNT is not None:
+        return THREAD_COUNT
     quota = _cgroup_cpu_quota()
     # Round up so a 2000m limit → 2 threads, a 1500m limit → 2 threads. Floor at
     # 1. When unconstrained (bare metal / no cgroup), fall back to the node count

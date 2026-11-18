@@ -212,8 +212,6 @@ async def store_in_vector_db_background(
     case_vector_store: Any,
     max_chunk_tokens: Optional[int] = None,
     overlap_tokens: Optional[int] = None,
-    *,
-    principal: str,
 ) -> VectorIndexOutcome:
     """
     Chunk a structural index and store it in the case's ChromaDB collection.
@@ -230,7 +228,7 @@ async def store_in_vector_db_background(
     proactively as a background task, or reactively under
     ``vectorization_reactive_timeout_seconds``. Those are the callers' budgets.
     The embed itself runs through ``embedding_guard.embed_texts_or_raise``,
-    which bounds it by its token count, on the evidence slot: one evidence
+    which bounds it by its UTF-8 bytes, on the evidence slot: one evidence
     encode at a time per process, in this process at ``ENCODE_BATCH_SIZE``, so
     a re-trigger queues behind an encode still running, and never on the KB
     indexing slot (#2055, #2851).
@@ -246,8 +244,6 @@ async def store_in_vector_db_background(
             settings (VECTOR_CHUNK_SIZE_TOKENS, default 500).
         overlap_tokens: Overlap between chunks. When None, read from
             settings (VECTOR_CHUNK_OVERLAP_TOKENS, default 50).
-        principal: The user who asked, whose slot the bound's token count
-            takes (#2851).
 
     Returns:
         The :class:`VectorIndexOutcome`. Only ``INDEXED`` means searchable.
@@ -322,7 +318,6 @@ async def store_in_vector_db_background(
                 texts,
                 subject=f"Indexing evidence {evidence_id}",
                 operation="vectorize_evidence",
-                principal=principal,
             )
         except KnowledgeBaseError as embed_error:
             if embed_error.error_code != "KNOWLEDGE_EMBEDDER_UNAVAILABLE":

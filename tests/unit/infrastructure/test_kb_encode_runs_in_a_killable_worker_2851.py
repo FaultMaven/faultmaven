@@ -156,6 +156,7 @@ async def test_an_encode_past_its_phases_is_killed_and_the_next_is_admitted(
         await _encode(["a"])
     await asyncio.wait_for(_until(lambda: not index_slot.index_admission.queued()), 30)
     encode_stub("vectors")
+    monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 70.0)
     after = await _encode(["b"])
 
     assert timed_out.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
@@ -397,26 +398,33 @@ async def test_a_count_runs_for_the_user_who_asked():
         await count_index_tokens(["a"], principal="")
 
 
-async def test_an_unavailable_count_refuses_kb_admission_and_bounds_evidence_by_bytes(
-    monkeypatch,
-):
-    """The same outcome on every path (#2851): a KB window refuses it as an
-    unavailable embedder; the evidence guard sizes its bound by bytes."""
-    monkeypatch.setattr(_QUOTA, lambda: 2.0)
-    monkeypatch.setattr(
-        embedding_guard, "count_index_tokens", AsyncMock(return_value=None)
-    )
+async def test_an_uncounted_kb_document_is_unavailable_naming_no_cause_it_cannot_know():
+    """A count that found no slot, or gave no answer: the sentence says the
+    server could not prepare the document now, never that a tokenizer would
+    not load (owner's ruling on the #2919 review). On ``7c5318825`` it said the
+    tokenizer could not be loaded."""
+    with pytest.raises(KnowledgeBaseError) as refused:
+        IndexAdmission().admit(["c"], None, principal=USER, window_seconds=600)
+
+    assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert "could not prepare this document" in refused.value.message
+    assert "tokenizer" not in refused.value.message
+
+
+async def test_an_evidence_encode_counts_no_tokens_and_bounds_by_bytes(monkeypatch):
+    """No count worker, no count slot: an evidence encode never waits behind
+    KB counts (Q1 (b)). On ``7c5318825`` it counted under the user's slot."""
+    count = AsyncMock(return_value=7)
+    monkeypatch.setattr(embedding_guard, "count_index_tokens", count)
     seen = []
     monkeypatch.setattr(model_cache, "embed_texts_sync", lambda t: [[0.1]] * len(t))
     monkeypatch.setattr(
         embedding_guard, "batch_embed_timeout", lambda n: seen.append(n) or 5.0
     )
 
-    with pytest.raises(KnowledgeBaseError) as refused:
-        IndexAdmission().admit(["c"], None, principal=USER, window_seconds=600)
-    await embed_texts_or_raise(["héllo"], subject="E", operation="t", principal=USER)
+    await embed_texts_or_raise(["héllo"], subject="E", operation="t")
 
-    assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    count.assert_not_awaited()
     assert seen == [len("héllo".encode()) + 2]
 
 
@@ -440,18 +448,13 @@ def test_the_caps_are_the_stated_formulas_of_the_thread_count(
     assert ENCODE_MEMORY_BYTES == 12 * 1024**3
 
 
-def _cores() -> int:
-    return os.cpu_count() or 1
-
-
-@pytest.mark.skipif(_cores() < 4, reason="needs more cores than the pinned count")
-async def test_the_workers_pin_their_threads_whatever_the_load_sets(
-    monkeypatch, caplog
-):
-    """Inside a real encode job over a stand-in model, with no CPU quota: the
-    load sets torch to every core, the worker pins it back before the encode,
-    and the Rust pool is the pinned size; the count worker's pool likewise.
-    The encode is at ``ENCODE_BATCH_SIZE``."""
+async def test_the_workers_pin_their_threads_before_the_load(monkeypatch, caplog):
+    """Inside a real encode job over a stand-in model, on a node of 32 cores
+    with no CPU quota: the load runs with torch at the pinned 2, so its pool
+    holds at most the pinned threads and a few more; the Rust pool is the
+    pinned size; the real count job's pool likewise. The encode is at
+    ``ENCODE_BATCH_SIZE``. On ``7c5318825`` the load ran at 32 threads, and
+    the count half set the pin itself, so it could not fail."""
     caplog.set_level(logging.WARNING, logger=_STUBS)
     monkeypatch.setenv("FM_MODEL_STUB", "pins")
     for role in ("encode", "count"):
@@ -463,7 +466,7 @@ async def test_the_workers_pin_their_threads_whatever_the_load_sets(
             cpu_seconds=600,
             output_limit_bytes=16 * 1024 * 1024,
             phases=worker_process.Phases(120, 10, 120, 10),
-            parts=("a", "b"),
+            parts=tuple(["a a"] * 200),
         )
         assert end.result is not None, end
 
@@ -472,7 +475,8 @@ async def test_the_workers_pin_their_threads_whatever_the_load_sets(
         for r in caplog.records
         if r.getMessage().startswith("pins ")
     )
-    assert encode["torch_after_configure"] == os.cpu_count()
+    assert encode["torch_at_load"] == 2
+    assert encode["threads_after_load"] <= 2 + 4, encode
     assert encode["torch_at_encode"] == 2
     assert encode["batch_size"] == ENCODE_BATCH_SIZE
     assert 1 <= encode["rayon_pool"] <= 2

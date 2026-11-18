@@ -989,8 +989,10 @@ class KnowledgeService:
         ``window_seconds`` is what this request may still spend, None meaning
         ``INDEX_REQUEST_WINDOW_SECONDS``; a document alone must fit the setting.
         Tokens are counted only when the setting is non-zero, in a worker under
-        ``principal``'s slot (#2851): at 0 nothing is refused, and the guard
-        counts inside the embed. ``forced`` (the boot repair) is never refused.
+        ``principal``'s slot (#2851), and the count's time, its wait for a slot
+        included, is spent from the window: at 0 nothing is refused, and the
+        guard counts inside the embed. ``forced`` (the boot repair) is never
+        refused.
 
         Raises:
             IndexAdmissionRefused: 413 or 503, see ``IndexAdmission.admit``.
@@ -999,19 +1001,23 @@ class KnowledgeService:
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.embedding_guard import count_index_tokens
-        from faultmaven.infrastructure.index_slot import index_admission
+        from faultmaven.infrastructure.index_slot import index_admission, now
 
         limit = float(get_settings().knowledge.index_request_window_seconds)
+        started = now()
         tokens = (
             await count_index_tokens(chunks, principal=principal) if limit > 0 else None
         )
         if forced:
             return index_admission.admit_forced(chunks, tokens, principal=principal)
+        window = limit if window_seconds is None else window_seconds
+        if window > 0:  # a window the count spent is busy, never "no window"
+            window = max(window - (now() - started), 0.001)
         return index_admission.admit(
             chunks,
             tokens,
             principal=principal,
-            window_seconds=limit if window_seconds is None else window_seconds,
+            window_seconds=window,
             size_limit_seconds=limit,
         )
 
@@ -1164,7 +1170,6 @@ class KnowledgeService:
                     subject=f"Indexing document {document.document_id}",
                     operation="index_document",
                     ticket=ticket,
-                    principal=document.owner_id or SYSTEM_GATE_PRINCIPAL,
                 )
 
             # Extract RAG-enrichment fields from frontmatter
@@ -1870,7 +1875,8 @@ class KnowledgeService:
         rows' chunks encode together, in ONE KB encode worker on one forced
         ticket of the KB indexing slot (#2055, #2851), so a boot's repair pays
         one model load, not one a row; each row's vectors are then written
-        through :meth:`_index_document_in_vector_store`. ``max_chunks`` bounds
+        through :meth:`_index_document_in_vector_store`. When that encode
+        fails, each row encodes alone, so a bad row fails only itself. ``max_chunks`` bounds
         the work: rows are taken in order until their chunks reach it, the row
         that reaches it included, and the rest are deferred, absent from the
         answer. Re-embedding the whole KB reintroduces the on-pod
@@ -1894,9 +1900,8 @@ class KnowledgeService:
         raise) when the row is absent or unpublished, its ingest
         never completed (#2394: not an orphan, which the reconcile does not
         list either), no vector store is wired, the embedding
-        model is unavailable (for every row of the encode), or the row names
-        no usable tenant (the indexer's #1168 ``ValueError``, logged at ERROR
-        with the item id) — leaving the row orphaned for a later boot to
+        model is unavailable for the row, or the row fails the indexer's tier,
+        tenant or generation check (logged at ERROR with the item id) — leaving the row orphaned for a later boot to
         repair, which the caller counts as a failed repair.
 
         This is the ONE caller that legitimately tolerates an indexing failure,
@@ -1941,42 +1946,46 @@ class KnowledgeService:
 
         from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
 
-        texts = [chunk for *_, chunks in repairs for chunk in chunks]
-        try:
+        async def encode(texts: List[str]) -> List[List[float]]:
             # On the KB indexing slot, never refused (#2055): a repair encode
             # still takes turns with an upload's, on this host.
             async with await self._index_ticket(
                 texts, principal=SYSTEM_GATE_PRINCIPAL, forced=True
             ) as ticket:
-                vectors = await embed_texts_or_raise(
+                return await embed_texts_or_raise(
                     texts,
-                    subject=f"Repairing {len(repairs)} knowledge base row(s)",
+                    subject=f"Repairing {len(texts)} knowledge base chunk(s)",
                     operation="reindex_missing_vectors",
                     ticket=ticket,
                 )
-        except KnowledgeBaseError as e:
-            # Deliberate, documented tolerance — see the docstring. A failed
-            # boot-time repair leaves the rows orphaned for a later attempt;
-            # it must not abort startup.
-            logger.warning(
-                f"reindex_missing_vectors: repair failed for {len(repairs)} "
-                f"row(s): {e} — leaving them orphaned for a later boot to retry"
+
+        try:
+            vectors: Optional[List[List[float]]] = await encode(
+                [chunk for *_, chunks in repairs for chunk in chunks]
             )
-            counts.update((repair[0], 0) for repair in repairs)
-            return counts
+        except Exception as e:
+            # One row can fail the combined encode: each row then encodes
+            # alone, so a bad row fails only itself and the others repair.
+            logger.warning(f"reindex_missing_vectors: one encode failed ({e}); per row")
+            if len(repairs) == 1:  # the row alone just failed: no second try
+                counts[repairs[0][0]] = 0
+                return counts
+            vectors = None
 
         at = 0
         for item_id, doc_model, enterprise_id, generation, chunks in repairs:
-            pairs = list(zip(chunks, vectors[at : at + len(chunks)]))
-            at += len(chunks)
             try:
+                if vectors is None:
+                    row_vectors = await encode(chunks)
+                else:
+                    row_vectors, at = vectors[at : at + len(chunks)], at + len(chunks)
                 counts[item_id] = await self._index_document_in_vector_store(
                     doc_model,
-                    prechunked=pairs,
+                    prechunked=list(zip(chunks, row_vectors)),
                     enterprise_id=enterprise_id,
                     generation=generation,
                 )
-            except (KnowledgeBaseError, ValueError) as e:
+            except Exception as e:  # deliberate, documented tolerance: per row
                 logger.warning(
                     f"reindex_missing_vectors: repair failed for {item_id}: {e} "
                     "— leaving the row orphaned for a later boot to retry"
@@ -2024,6 +2033,29 @@ class KnowledgeService:
             )
             return None
 
+        if not self._vector_store:
+            logger.warning(f"reindex_missing_vectors: no vector store for {item_id}")
+            return None
+        try:
+            # The indexer's tier, tenant (#1166, #1168) and generation (#2388)
+            # checks, before any work. Not reachable from a real row (the
+            # columns are NOT NULL), but the repair promises no raise, so a row
+            # that fails one is a failed repair like any other: loud, per row,
+            # and never an aborted startup.
+            require_write_scope(item_id, row.scope)
+            VectorMetadata.require_enterprise_id_value(
+                row.enterprise_id, document_id=item_id
+            )
+            if not (isinstance(row.vector_generation, str) and row.vector_generation):
+                raise ValueError(
+                    f"names no vector_generation ({row.vector_generation!r})"
+                )
+        except (KnowledgeBaseError, ValueError) as e:
+            logger.error(
+                f"reindex_missing_vectors: repair refused for {item_id}: {e} — "
+                "leaving it orphaned"
+            )
+            return None
         # Mirror the KnowledgeBaseDocument that ingest_runbook builds from the
         # same fields (knowledge_service.py ~968) so the repaired index is
         # metadata-identical to a normal ingest.
@@ -2044,23 +2076,6 @@ class KnowledgeService:
             created_at=to_json_compatible(row.created_at),
             updated_at=to_json_compatible(row.updated_at),
         )
-        if not self._vector_store:
-            return None
-        try:
-            VectorMetadata.require_enterprise_id_value(
-                row.enterprise_id, document_id=item_id
-            )
-        except ValueError as e:
-            # The indexer's tenant check (#1168), refused before any work. Not
-            # reachable from a real row — ``knowledge_items.enterprise_id`` is
-            # NOT NULL — but the repair promises no raise, so a row that names
-            # no usable tenant is a failed repair like any other: loud, per
-            # row, and never an aborted startup.
-            logger.error(
-                f"reindex_missing_vectors: repair refused for {item_id}: {e} — "
-                "the row names no usable enterprise_id; leaving it orphaned"
-            )
-            return None
         return doc_model, row.enterprise_id, row.vector_generation
 
     async def _delete_knowledge_item_row(

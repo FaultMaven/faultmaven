@@ -258,10 +258,18 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "enterprise_id", ["", "   ", None], ids=["empty", "blank", "none"]
+    "field,value",
+    [
+        ("enterprise_id", ""),
+        ("enterprise_id", "   "),
+        ("enterprise_id", None),
+        ("scope", None),
+        ("vector_generation", ""),
+    ],
+    ids=["empty", "blank", "none", "no-scope", "no-generation"],
 )
 async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
-    enterprise_id, caplog
+    field, value, caplog
 ):
     """``reindex_missing_vectors`` promises "fail-safe 0 (no raise)". The
     indexer's #1168 tenant check raises ``ValueError`` before any work, outside
@@ -273,7 +281,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
 
     row = MagicMock()
     row.item_id = "doc-no-tenant"
-    row.enterprise_id = enterprise_id
+    row.enterprise_id = STANDALONE_ENTERPRISE_ID
     row.title = "Draining a node"
     row.content = "# Draining a node\n\nCordon, then drain."
     row.item_type = "runbook"
@@ -284,6 +292,7 @@ async def test_boot_repair_counts_a_row_with_no_tenant_as_a_failed_repair(
     row.created_at = "2026-01-01T00:00:00Z"
     row.updated_at = "2026-01-01T00:00:00Z"
     row.vector_generation = GEN
+    setattr(row, field, value)  # the tier and generation too (#2851 review)
 
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value=row)

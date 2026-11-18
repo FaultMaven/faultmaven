@@ -152,9 +152,7 @@ async def test_without_a_tokenizer_the_guard_bounds_by_bytes(
         tokens_counted_as(None),
         patch.object(embedding_guard, "batch_embed_timeout", _bound),
     ):
-        await embed_texts_or_raise(
-            texts, subject="Indexing", operation="test", principal=USER
-        )
+        await embed_texts_or_raise(texts, subject="Indexing", operation="test")
 
     assert seen == [sum(len(t.encode("utf-8")) + 2 for t in texts)]
 
@@ -171,9 +169,7 @@ async def test_a_hung_embed_raises_instead_of_hanging(
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
 
     with tokens_counted_as(0), pytest.raises(KnowledgeBaseError) as excinfo:
-        await embed_texts_or_raise(
-            ["chunk"], subject="Indexing", operation="test", principal=USER
-        )
+        await embed_texts_or_raise(["chunk"], subject="Indexing", operation="test")
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
 
@@ -182,9 +178,7 @@ async def test_an_unavailable_model_still_raises_unavailable_not_timeout(monkeyp
     monkeypatch.setattr(model_cache, "embed_texts_sync", lambda _texts: None)
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
-        await embed_texts_or_raise(
-            ["chunk"], subject="Indexing", operation="test", principal=USER
-        )
+        await embed_texts_or_raise(["chunk"], subject="Indexing", operation="test")
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
 
@@ -198,9 +192,7 @@ async def test_a_healthy_embed_returns_its_vectors_from_the_evidence_slot(monkey
 
     monkeypatch.setattr(model_cache, "embed_texts_sync", _encode)
 
-    vectors = await embed_texts_or_raise(
-        ["chunk"], subject="Indexing", operation="t", principal=USER
-    )
+    vectors = await embed_texts_or_raise(["chunk"], subject="Indexing", operation="t")
 
     assert vectors == [[0.1] * 1024]
     assert threads == ["evidence-index_0"]
@@ -219,7 +211,7 @@ async def test_a_slow_but_progressing_embed_is_not_cut_off(
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 5.0)
     with tokens_counted_as(0):
         vectors = await embed_texts_or_raise(
-            ["chunk"], subject="Indexing", operation="test", principal=USER
+            ["chunk"], subject="Indexing", operation="test"
         )
 
     assert vectors == [[0.1] * 1024]

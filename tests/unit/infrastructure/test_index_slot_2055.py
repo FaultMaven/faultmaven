@@ -1,7 +1,7 @@
 """The indexing slots: admission against the window, one encode at a time, and
 a slot held until its thread settles (#2055).
 
-Admission runs at Cloud's shape: window 600 s, 2 cores; the clock, the
+Admission runs at window 600 s and 2 cores; the clock, the
 token counts and the cores are patched. Every KB ticket is charged a worker's
 load (``WORKER_LOAD_SECONDS``, #2851). The slot tests hold fake encodes (the
 KB slot's ``encode_in_worker`` and the evidence slot's ``embed_texts_sync``)
@@ -192,6 +192,7 @@ def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
         IndexAdmission().admit(["c"], None, principal=USER, window_seconds=WINDOW)
 
     assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert "could not prepare this document" in refused.value.message
 
 
 def test_a_forced_ticket_is_never_refused(cloud):
@@ -505,7 +506,6 @@ async def _vectorize(case_vector_store=None):
         case_vector_store=case_vector_store or MagicMock(add_documents=AsyncMock()),
         max_chunk_tokens=500,
         overlap_tokens=50,
-        principal=USER,
     )
 
 
@@ -525,9 +525,7 @@ async def test_an_unavailable_model_is_embedder_unavailable(monkeypatch):
 
 
 def _evidence(text):
-    return embed_texts_or_raise(
-        [text], subject="Evidence", operation="t", principal=USER
-    )
+    return embed_texts_or_raise([text], subject="Evidence", operation="t")
 
 
 async def test_evidence_encodes_queue_one_at_a_time_beside_the_kb_slot(encodes):

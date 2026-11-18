@@ -195,25 +195,28 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
     return int(answer) if answer.isdigit() else None
 
 
-async def _guard_tokens(texts: List[str], known: Optional[int], principal: str) -> int:
-    """The token count the guard sizes its bound from: ``known``, else a count,
-    else UTF-8 bytes plus the two special tokens per text. A token spans at
-    least a byte of text (bar SentencePiece's word marker before a text's first
-    word), so that is an upper bound to within a token per text, which the
-    bound's 2x margin covers. A loose bound is safe for a hang bound; the
-    fallback is logged once."""
+async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
+    """The token count the guard sizes its bound from: a KB ticket's, else a
+    count under its principal; else UTF-8 bytes plus the two special tokens
+    per text. A token spans at least a byte of text (bar SentencePiece's word
+    marker before a text's first word), so that is an upper bound to within a
+    token per text, which the bound's 2x margin covers. A loose bound is safe
+    for a hang bound. An evidence encode (no ticket) always takes it, so it
+    never waits behind KB counts for a slot (#2851); a KB count that gave no
+    answer is logged where it ended, and this fallback once."""
     global _byte_fallback_logged
-    if known is not None:
-        return known
-    counted = await count_index_tokens(texts, principal=principal)
-    if counted is not None:
-        return counted
-    if not _byte_fallback_logged:
-        _byte_fallback_logged = True
-        logger.warning(
-            "BGE-M3 tokenizer unavailable: the indexing time bound counts UTF-8 "
-            "bytes instead of tokens, an upper bound"
-        )
+    if ticket is not None and ticket.tokens is not None:
+        return ticket.tokens
+    if ticket is not None:
+        counted = await count_index_tokens(texts, principal=ticket.principal)
+        if counted is not None:
+            return counted
+        if not _byte_fallback_logged:
+            _byte_fallback_logged = True
+            logger.warning(
+                "A KB token count gave no answer: the indexing time bound counts "
+                "UTF-8 bytes instead of tokens, an upper bound"
+            )
     return sum(len(text.encode("utf-8")) + 2 for text in texts)
 
 
@@ -287,7 +290,6 @@ async def embed_texts_or_raise(
     operation: str,
     log: Optional[logging.Logger] = None,
     ticket: Optional[Any] = None,
-    principal: Optional[str] = None,
 ) -> List[List[float]]:
     """Embed a BATCH of texts for indexing, raising rather than degrading.
 
@@ -310,19 +312,17 @@ async def embed_texts_or_raise(
             (``infrastructure.index_slot``): the encode runs in a worker from
             that slot, one at a time per host. None (evidence vectorization)
             takes a ticket on the evidence slot, one encode at a time per
-            process, in this process. Either way the bound also covers the
-            guard bounds of the encodes queued ahead.
-        principal: The user who asked, whose slot a token count takes when
-            the bound must count (#2851); a ticket carries its own.
+            process, in this process, its bound sized by bytes. Either way
+            the bound also covers the guard bounds of the encodes queued ahead.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
     unbounded on the grounds that ``kb_init``'s per-boot chunk budget already
     governs it; it should not, because that budget is checked BETWEEN rows. It
     bounds how much work a boot starts, not how long one call may take, so a
     single non-returning load never reaches the next budget check — it hangs
-    the awaited startup lifespan until the probe kills the pod. The repair loop
-    already catches per-row exceptions and defers the row to the next boot, so
-    a bound there costs a retry and buys the crashloop back.
+    the awaited startup lifespan until the probe kills the pod. The repair
+    catches each row's exceptions and defers the row to the next boot, so a
+    bound there costs a retry and buys the crashloop back.
 
     Returns:
         One 1024-dim BGE-M3 vector per input text, in order.
@@ -346,16 +346,10 @@ async def embed_texts_or_raise(
     """
     log = log or logger
 
-    tokens = await _guard_tokens(
-        texts,
-        ticket.tokens if ticket is not None else None,
-        ticket.principal if ticket is not None else principal,
-    )
+    tokens = await _guard_tokens(texts, ticket)
     timeout = batch_embed_timeout(tokens)
     if ticket is None:
-        async with index_slot.evidence_slot.admit_forced(
-            texts, tokens, principal=principal
-        ) as evidence:
+        async with index_slot.evidence_slot.admit_forced(texts, tokens) as evidence:
             embeddings = await _encode_on(
                 evidence, texts, timeout, subject, operation, log
             )

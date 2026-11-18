@@ -11,7 +11,8 @@ imports, ``working`` once it has the request and is bounded, ``done`` when the
 work returns, and a ``failure``; text parts travel raw, never as JSON.
 
 ``serve``, the worker, bounds itself before the work: it dies with its parent,
-volunteers for the OOM killer and caps CPU time and address space; past the
+raises its ``oom_score_adj`` (first choice only where a container's OOM is not
+grouped) and caps CPU time and address space; past the
 cap it exits ``OUT_OF_MEMORY_EXIT``. This module imports the standard library
 and the bare package, and ``asyncio`` only in the parent's functions.
 """

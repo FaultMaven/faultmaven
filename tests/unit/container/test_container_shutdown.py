@@ -1363,13 +1363,7 @@ def _evidence_write(monkeypatch, written):
 
     monkeypatch.setattr(vector_storage, "embed_texts_or_raise", _embed)
     return lambda: vector_storage.store_in_vector_db_background(
-        "c1",
-        "ev1",
-        "## A\nline\n",
-        UnifiedDataType.LOGS,
-        {},
-        _Store(),
-        principal="user-1",
+        "c1", "ev1", "## A\nline\n", UnifiedDataType.LOGS, {}, _Store()
     )
 
 

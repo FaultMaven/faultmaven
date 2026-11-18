@@ -173,7 +173,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.LOGS,
             metadata={"source": "upload"},
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
         mock_store.add_documents.assert_called_once()
@@ -219,7 +218,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.LOGS,
             metadata={},
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
         mock_store.add_documents.assert_not_called()
@@ -235,7 +233,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.TEXT,
             metadata={},
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
         mock_store.add_documents.assert_not_called()
@@ -266,7 +263,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.TEXT,
             metadata=metadata,
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
         docs = mock_store.add_documents.call_args[1]["documents"]
@@ -294,7 +290,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.LOGS,
             metadata={},
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
     @pytest.mark.asyncio
@@ -317,7 +312,6 @@ class TestStoreInVectorDbBackground:
             data_type=UnifiedDataType.CONFIGURATION,
             metadata={},
             case_vector_store=mock_store,
-            principal="user-1",
         )
 
         docs = mock_store.add_documents.call_args[1]["documents"]
