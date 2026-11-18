@@ -3,7 +3,6 @@ from typing import Any, Optional
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.modules.case.contracts import (
     Case,
-    NeedPriority,
     is_server_written_assistant_row,
     is_server_written_user_row,
     server_note_of,
@@ -493,54 +492,6 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
         result += f"{role}: {content}\n"
 
     return _fence_conversation(result, fence)
-
-
-# =============================================================================
-# Evidence-needs block (Phase 4 of evidence-needs rollout)
-# =============================================================================
-
-# Cap on rendered needs per section to keep token cost bounded. Each
-# rendered need is ~80 chars of header (capped via
-# ``narration.needs._REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
-# Single-section case (DIAGNOSIS, or MITIGATION/TREATMENT with one of
-# outstanding/re-verification empty): ~600 tokens worst case at 15
-# needs. Both-sections case (MITIGATION/TREATMENT with both populated):
-# up to 30 needs total, ~1200 tokens worst case. Typical cases stay
-# well under either bound because the LLM emits short request_text.
-_EVIDENCE_NEEDS_RENDER_CAP = 15
-
-# Priority sort key — HIGH first so the LLM sees the urgent demand
-# without scrolling. Keyed by enum member rather than ``.value`` so a
-# future ``NeedPriority`` addition raises ``KeyError`` here instead of
-# silently sinking the new bucket to the bottom of the list.
-_PRIORITY_ORDER: dict[NeedPriority, int] = {
-    NeedPriority.HIGH: 0,
-    NeedPriority.MEDIUM: 1,
-    NeedPriority.LOW: 2,
-}
-
-
-def _render_ask_history(need) -> str:
-    """The ``asked N×`` fragment for a need's header line, or ``""`` if never.
-
-    This is the stored counter the mention-decay rule used to tell the model to
-    reconstruct "by scanning your prior turns in the conversation history"
-    (#1079). That scan cannot work: ``HISTORY_VERBATIM_TURNS`` is 3, and older
-    turns collapse to ``_build_turn_summary``, which records milestones,
-    artifact counts and 200 chars of the reply — never what was asked for. Past
-    three turns every repeat read as a first mention, so the ask never decayed.
-
-    Stating the count as a fact removes the reconstruction entirely. The last
-    turn is included because "asked 4×, last on turn 14" and "asked 4×, last on
-    turn 6" call for opposite responses — the first is a live loop, the second
-    is an old ask the user has moved past.
-    """
-    count = need.times_surfaced
-    if count <= 0:
-        return ""
-    if count == 1:
-        return f", asked once (turn {need.last_surfaced_turn})"
-    return f", asked {count}× (last turn {need.last_surfaced_turn})"
 
 
 def _build_compact_history(

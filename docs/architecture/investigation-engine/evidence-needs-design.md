@@ -1291,7 +1291,7 @@ Copilot is already live.
 | ~~Engine backstop (path-conditional rejection)~~ | **Removed in the flow redesign** — `_path_conditional_emission_restriction` / `_RESTRICTED_STATE_BLOCK_NAMES` deleted; causal-need gating is now prompt-guided by `cause_state` (§7.3). |
 | Terminal-hypothesis supersession | `milestone_engine/terminal_proposals.py` `_supersede_needs_on_terminal_hypothesis` (+ `_TERMINAL_HYPOTHESIS_STATES`) |
 | Wire-flattening seam (`new_index_N` → real ID) | `milestone_engine/turn_records.py` `_flatten_follow_ups` |
-| Context block `<evidence_needs>` | `context_builder/evidence_needs.py` `_build_evidence_needs_block` (line render `_render_need_line`) |
+| Context block `<evidence_needs>` | call site `context_builder/evidence_needs.py` `_build_evidence_needs_block`; renderer `narration/evidence_needs.py` `render_evidence_needs` (line render `_render_need_line`) and `recheck_checklist` |
 | Prompt directives | `prompts/templates/diagnosis.py:_EVIDENCE_NEEDS_LIFECYCLE_BLOCK`, `_..._RCA_POOL_EVAL_BLOCK`, `_..._REVERIFICATION_ADDENDUM`. The symptom-only addendum (`_EVIDENCE_NEEDS_SYMPTOM_ONLY_ADDENDUM`) was **removed in the flow redesign** (#410), together with the path backstop and path-dispatch blocks it served (§7.3). |
 | Persistence (save/load) | `sqlite_case_repository/saving.py:_upsert_evidence_needs`, `sqlite_case_repository/loading.py:_load_evidence_needs_for_case` |
 | Migration | `alembic/versions/20260526_1000_014_evidence_needs.py` |
@@ -1378,10 +1378,13 @@ authoritative**.
   `_apply_evidence_need_updates`) coerces any non-SUPPORTS stance to a likelihood penalty). Before/after
   presence↔absence pairing (#1906 D1): `EvidenceToAdd.rechecks`, resolved
   by `milestone_engine.response_application._record_rechecks`; the list
-  renders only the rows a re-check binds to (`_rows_a_recheck_binds` over
-  `cause_assurance.SubjectIndex.bindable_rows`: the verifying rows, unnarrowed
-  while none is recorded, and the cited basis of the cause pool's roots — the rows their terminal verdicts cite, #2557).
-  `context_builder.evidence_needs._build_evidence_needs_block` (re-verification
+  renders only the rows a re-check binds to, from the case outcome record
+  (`narration.evidence_needs.recheck_checklist` over `bindable`, which
+  `cause_assurance.SubjectIndex.bindable_rows` writes: the verifying rows, and
+  the cited basis of the cause pool's roots — the rows their terminal verdicts
+  cite, #2557; while no verifying row is recorded, every symptom row, read
+  fresh at the call site as `EvidenceNeedsFresh`, #2811).
+  `narration.evidence_needs.render_evidence_needs` (re-verification
   section) + `templates.diagnosis._EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM` + the
   per-stage EVIDENCE-TYPES sections and the classification decision-tree
   step 4. This makes the "always-create a need per hypothesis" idea

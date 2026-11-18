@@ -29,8 +29,10 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
 )
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
     FIX_VERIFICATION_MAX_TOKENS,
-    NarrationFold,
     build_fix_verification_block,
+)
+from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
+    NarrationFold,
 )
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
@@ -555,7 +557,7 @@ def test_one_build_reads_one_index_and_one_window_list(monkeypatch, shape):
         assert block_module._shown(case), "premise: the block is shown"
     # The prompt assembly's record, folded before the count (#2811 S2b-1a).
     fold = NarrationFold(case)
-    assert fold.outcome() is not None
+    assert fold.outcome("<fix_verification> block") is not None
     calls = {"subject_index": 0, "fix_windows": 0}
     for name in calls:
         real = getattr(cause_assurance, name)

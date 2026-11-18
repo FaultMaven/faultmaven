@@ -396,7 +396,7 @@ class TestPriorityOrdering:
 @pytest.mark.unit
 class TestRenderCap:
     def test_overflow_marker_appears_when_pool_exceeds_cap(self):
-        from faultmaven.core.investigation.prompts.context_builder.history import (
+        from faultmaven.core.investigation.narration.evidence_needs import (
             _EVIDENCE_NEEDS_RENDER_CAP,
         )
 
@@ -667,7 +667,7 @@ class TestCausalSurfaceCap:
         from faultmaven.core.investigation.evidence_need_surfacing import (
             select_surfaced_causal_needs,
         )
-        from faultmaven.core.investigation.prompts.context_builder.history import (
+        from faultmaven.core.investigation.narration.evidence_needs import (
             _EVIDENCE_NEEDS_RENDER_CAP,
         )
 

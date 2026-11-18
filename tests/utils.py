@@ -5,9 +5,19 @@ and other shared test infrastructure.
 """
 
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    NamedTuple,
+    Optional,
+)
 from uuid import uuid4
 
 from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
@@ -211,6 +221,78 @@ async def seed_users(
             )
         )
     await session.commit()
+
+
+class Tenant(NamedTuple):
+    """A test's session factory, and the enterprise and owner it writes as."""
+
+    factory: Any
+    enterprise_id: str
+    owner: str
+
+
+@asynccontextmanager
+async def pg_tenant(url: str, prefix: str) -> AsyncIterator[Tenant]:
+    """An enterprise and an owner anchored in it, of the caller's own, on the
+    PostgreSQL at ``url`` (#2414).
+
+    The database is shared with every other ``-m postgres`` test, possibly on
+    other xdist workers, so both keys are minted here (``ent_<prefix>_<hex>``,
+    ``user-<prefix>-<hex>``) and inserted, never adopted: a key that exists
+    already raises. Teardown deletes the enterprise, and ``ON DELETE CASCADE``
+    on every ``enterprise_id`` key takes each row the test wrote under it, the
+    owner included; it deletes nothing when the insert did not land.
+    """
+    from sqlalchemy import delete
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from faultmaven.infrastructure.persistence.models import (
+        EnterpriseModel,
+        UserModel,
+    )
+
+    tag = uuid4().hex[:8]
+    enterprise_id, owner = f"ent_{prefix}_{tag}", f"user-{prefix}-{tag}"
+    engine = create_async_engine(url)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    inserted = False
+    try:
+        async with factory() as session:
+            session.add(
+                EnterpriseModel(
+                    enterprise_id=enterprise_id,
+                    name=f"Test Enterprise {enterprise_id}",
+                    slug=enterprise_id,
+                )
+            )
+            await session.flush()
+            session.add(
+                UserModel(
+                    user_id=owner,
+                    enterprise_id=enterprise_id,
+                    username=owner,
+                    email=f"{owner}@test.local",
+                    display_name=f"Test User {owner}",
+                    hashed_password="x" * 60,  # bcrypt-shaped placeholder
+                )
+            )
+            await session.commit()
+        inserted = True
+        yield Tenant(factory, enterprise_id, owner)
+    finally:
+        if inserted:
+            async with factory() as session:
+                await session.execute(
+                    delete(EnterpriseModel).where(
+                        EnterpriseModel.enterprise_id == enterprise_id
+                    )
+                )
+                await session.commit()
+        await engine.dispose()
 
 
 async def seed_enterprises(session, enterprise_ids: Iterable[str]) -> None:

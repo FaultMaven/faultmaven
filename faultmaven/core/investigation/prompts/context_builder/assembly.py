@@ -56,11 +56,11 @@ from .evidence import (
 )
 from .evidence_needs import _build_evidence_needs_block
 from .fix_verification_block import (
-    NarrationFold,
     build_fix_verification_block,
     cap_fix_verification_block,
 )
 from .history import _build_compact_history, _build_graduated_history
+from .narration_fold import NarrationFold
 from .text_shaping import sanitize_user_input
 
 logger = logging.getLogger(__name__)
@@ -615,10 +615,10 @@ def build_investigation_context(
     ``kb_lookup`` is this turn's knowledge-base question lookup
     (``milestone_engine/kb_question.py``), rendered as ``ctx["kb_lookup"]``.
 
-    ``narration_fold`` is the prompt assembly's record for the
-    ``<fix_verification>`` block (#2811 S2b-1a): one per assembly, so a
-    context built again at a tighter budget folds once; a fresh one per
-    build without it.
+    ``narration_fold`` is the prompt assembly's record and needs pool for the
+    ``<fix_verification>`` and ``<evidence_needs>`` blocks (#2811 S2b-1a,
+    S2b-1b-ii): one per assembly, so a context built again at a tighter
+    budget folds and reads the pool once; a fresh one per build without it.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -1125,7 +1125,9 @@ def build_investigation_context(
     # Evidence-needs Phase 4 — demand-side pool block. Empty string when
     # the pool has no visible needs for this stage (progressive
     # activation; design §10.6).
-    evidence_needs_str = _build_evidence_needs_block(case)
+    if narration_fold is None:
+        narration_fold = NarrationFold(case)
+    evidence_needs_str = _build_evidence_needs_block(case, narration_fold)
     # The fix, its legs and the open asks (#1906 D7): MITIGATION and TREATMENT.
     fix_verification_str = build_fix_verification_block(case, narration_fold)
 
