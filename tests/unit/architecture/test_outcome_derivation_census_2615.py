@@ -435,9 +435,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt. The fix-verification block renders from the record
-    # (#2811 S2b-1a, ``narration.fix_verification``): the assembly's one fold,
-    # and the one window list its fresh verdicts (ruling Q1 (a)) and the held
-    # need read, until stage S3.
+    # (#2811 S2b-1a and S2b-1b-i, ``narration.fix_verification``): the
+    # assembly's one fold, and the one window list its fresh verdicts (ruling
+    # Q1 (a)) read, until stage S3; the held need is the record's.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
     # #2811 S2b-1b-i: the focus block's resolve-decline lines, a prompt site
     # of stage S2b-1c.
