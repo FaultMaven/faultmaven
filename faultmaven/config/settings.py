@@ -489,7 +489,7 @@ class LLMSettings(BaseSettings):
     # The DEPLOYMENT name on the Azure resource. The default assumes the
     # deployment is named after its model; the inherited OpenAI capability
     # rules key on that name (AzureProvider).
-    azure_model: str = Field(default="gpt-6-luna")
+    azure_model: str = Field(default="gpt-6-luna-1")
 
     # Local provider configuration
     local_url: Optional[str] = Field(default=None, validation_alias="LOCAL_LLM_URL")

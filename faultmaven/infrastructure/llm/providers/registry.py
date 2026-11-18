@@ -349,7 +349,9 @@ PROVIDER_SCHEMA = {
         "required_vars": ("AZURE_API_KEY", "AZURE_API_BASE"),
         # No usable default: every Azure resource has its own host.
         "default_base_url": None,
-        "default_model": "gpt-6-luna",
+        # A deployment name: gpt-6-luna deployed as gpt-6-luna-1, the name the
+        # model families in openai_provider.py match by prefix.
+        "default_model": "gpt-6-luna-1",
         # Deployments are named by the operator on their own resource, so
         # there is no catalogue to enumerate (same as openrouter / local).
         "available_models": [],
