@@ -1919,16 +1919,18 @@ def shipped_data_defaults(monkeypatch, tmp_path):
     on purpose). Changes into ``tmp_path`` first, so the shipped defaults land
     there and never in the checkout, which is what this session's data root
     exists to prevent (#1772); a test may still ``chdir`` elsewhere. Unsets the
-    variables too, so the defaults are what settings resolve, and restores this
-    process's paths afterwards.
+    variables too, in every letter case, so the defaults are what settings
+    resolve, and restores this process's paths afterwards.
     """
     from faultmaven.config.settings import reset_settings
+    from tests.utils import delenv_every_spelling
 
     monkeypatch.chdir(tmp_path)
     root = os.environ[TEST_DATA_ROOT_ENV]
-    for _module, _owner, _attribute, variable in _DATA_DEFAULT_TARGETS:
-        if variable is not None:
-            monkeypatch.delenv(variable, raising=False)
+    delenv_every_spelling(
+        monkeypatch,
+        *(target[3] for target in _DATA_DEFAULT_TARGETS if target[3] is not None),
+    )
     for target, shipped in SHIPPED_DATA_DEFAULTS.items():
         _set_data_default(*target, shipped)
     reset_settings()

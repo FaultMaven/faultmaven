@@ -1647,8 +1647,9 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
 
     Local auth requires a JWT secret. Rather than make the user set one (or ship a
     shared dev secret — which would let every install forge each other's tokens),
-    generate a unique secret once on first run, persist it to data/.jwt_secret,
-    and reuse it on every later run.
+    generate a unique secret once on first run, persist it to the secret file
+    (``settings.security.jwt_secret_file``, data/.jwt_secret by default), and
+    reuse it on every later run.
 
     Called once from get_settings(), after ``FaultMavenSettings()`` has validated
     and before the instance is published. It decides from that object — the one
@@ -1855,17 +1856,20 @@ class SecuritySettings(BaseSettings):
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (data/.jwt_secret) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (JWT_SECRET_FILE, data/.jwt_secret by default) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
     # Where resolve_local_jwt_secret() keeps the local HS256 secret. A field, so
-    # JWT_SECRET_FILE binds as every setting does: any letter case, environment
-    # over .env (#2918). The test session moves its default under its own data
+    # JWT_SECRET_FILE binds as every setting does: any letter case (the last
+    # spelling wins), environment over .env, and a nested SECURITY JSON over the
+    # flat name (#2918). The test session moves its default under its own data
     # root (#1772).
     jwt_secret_file: str = Field(
         default="data/.jwt_secret",
         description=(
-            "Where local mode persists its generated HS256 secret. Unused when "
-            "JWT_SECRET_KEY is set or in OAuth/RS256 mode."
+            "The local-mode HS256 secret file: read when it holds a secret, "
+            "written when one is generated with a persistent database, and named "
+            "in the refusal of a JWT_SECRET_KEY that cannot sign. Unused in "
+            "OAuth/RS256 mode."
         ),
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
