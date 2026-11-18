@@ -38,7 +38,7 @@ Module level is ``<module>``. Three tables:
   ``lapse_offers``), the transitions' two executors, and the entries that
   open, answer or close through them; and the narrators' one accessor of a
   case's text, ``content_by_id`` (#2811: an action's description, a need's
-  request text, a row's text and established turn). Each row's note says what that
+  request text; by kind, a row's text and established turn). Each row's note says what that
   caller opens, answers, closes or reads. An entry referenced other than by a
   call fails, so every way in stays visible here.
 
@@ -218,8 +218,8 @@ ENTRIES: dict[str, str] = {
     "lapse_offers": _OFFERS,
     # #2811 S2b-1a: not a closure entry. The narrators' one accessor of a
     # case's text, by id (ruling 5 of 2026-11-15; a need's request text can
-    # be rewritten, S2b-1b-i): every caller is enumerated, so a narrator
-    # reading the case through it is seen here.
+    # be rewritten, S2b-1b-i; a row's, by kind, S2b-1b-ii): every caller is
+    # enumerated, so a narrator reading the case through it is seen here.
     "content_by_id": _INV + "narration/fix_verification.py",
 }
 
@@ -587,10 +587,11 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "a need's request text by id (#2811 S2b-1a, S2b-1b-i)",
     ),
     (_CB + "evidence_needs.py", "_build_evidence_needs_block"): (
-        {"content_by_id": 1},
+        {"content_by_id": 2},
         "binds the narration's text accessor to the case for the "
-        "evidence-needs renderer, which reads a need's request text and a "
-        "row's text and established turn by id; its one fresh input, the "
+        "evidence-needs renderer, once per kind: a need's request text for "
+        "the need sections, a row's text and established turn for the "
+        "checklist (row=True); its one fresh input, the "
         "symptom rows where none verified, is read beside it from "
         "case.evidence (#2811 S2b-1b-ii)",
     ),

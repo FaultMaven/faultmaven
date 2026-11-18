@@ -27,12 +27,15 @@ the prompt assembly's ``NarrationFold`` (``narration_fold``) for the record
 (``narration_outcome``, folded at most once per assembly), then computes the
 window verdicts ruling Q1 (a) keeps fresh (``FixVerificationFresh``) and
 renders, with the needs pool (``NarrationFold.needs``, read at most once per
-assembly and only where the need lines print), inside one guard. If any of it
-raises, the block is the one declared line ``OMITTED``; each distinct failure
-is logged and a failure counted once per assembly, on
-``case_outcome_write_failures_total{at="narration"}``. The fold and the needs
-pool are shared with ``<evidence_needs>`` (S2b-1b-ii), so a fold failure also
-replaces that block's re-verification checklist with its declared line.
+assembly), inside one guard. If the fold, the fresh read, the identity or the
+render raises, the block is the one declared line ``OMITTED``; the block logs
+each distinct failure once per assembly, naming itself, and a failure is
+counted once per assembly, on ``case_outcome_write_failures_total{at="narration"}``.
+The fold and the needs pool are shared with ``<evidence_needs>`` (S2b-1b-ii):
+a fold failure also replaces that block's re-verification checklist with its
+declared line, and a needs-pool failure propagates out of the prompt build
+through that block, which reads the pool first and unguarded (this block,
+built alone, omits itself on it).
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).

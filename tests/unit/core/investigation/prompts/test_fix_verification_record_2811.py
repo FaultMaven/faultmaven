@@ -262,6 +262,10 @@ def _fresh(case, outcome):
     return block_module._fresh(case, outcome, subjects, fix_windows(case, subjects))
 
 
+#: What this block's ``content`` reads: actions and needs, never a row.
+_TEXTS = {"proposed_actions", "evidence_needs"}
+
+
 @pytest.mark.parametrize("name", sorted(set(CASES) - _DECLARED_FIXTURES))
 async def test_the_renderer_reads_no_case_field(name):
     case = await build(name)
@@ -274,7 +278,7 @@ async def test_the_renderer_reads_no_case_field(name):
     _no_text(fresh)
     _no_text(needs)
     poisoned = _Poisoned(case, _IDENTITY, outcome)
-    texts = _Poisoned(case, {"proposed_actions", "evidence_needs", "evidence"})
+    texts = _Poisoned(case, _TEXTS)
     lines = render_fix_verification(
         poisoned.progress.outcome,
         CaseIdentity.of(poisoned),
@@ -283,6 +287,23 @@ async def test_the_renderer_reads_no_case_field(name):
         lambda: needs,
     )
     assert ("" if lines is None else "\n".join(lines)) == ORACLE[name]
+
+
+async def test_a_gone_action_reads_no_row():
+    """The carried attempt whose action is gone (``D:gone_action``): its id
+    answers None from actions and needs, without a scan of the rows, so the
+    block renders on the same reads as every other fixture."""
+    case = await build("D:gone_action")
+    outcome = narration_outcome(case)
+    texts = _Poisoned(case, _TEXTS)
+    lines = render_fix_verification(
+        outcome,
+        CaseIdentity.of(case),
+        lambda item_id: content_by_id(texts, item_id),
+        _fresh(case, outcome),
+        lambda: NeedsView.of(case),
+    )
+    assert "\n".join(lines) == build_fix_verification_block(case)
 
 
 # ---------------------------------------------------------------------------

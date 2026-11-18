@@ -3,16 +3,19 @@ the case outcome record (#2811 S2b-1b-ii, #2615 stage S2).
 
 ``render_evidence_needs`` is pure: its need sections read the needs pool
 (``NeedsView``, ruling 2 of 2026-11-17) and a need's text by id
-(``content(id)``) alone. Its re-verification checklist is
+(``content(id)``, actions and needs) alone. Its re-verification checklist is
 ``recheck_checklist``'s, rendered from the record (``bindable``'s rows and
-the dated attempts, ``_dated``), each row's text and established turn by id,
-and, where no row verified the problem, the rows passed fresh
-(``EvidenceNeedsFresh``). Where the checklist could not be read (the fold or
-a row's text failed), it is the one declared line ``CHECKLIST_OMITTED``.
+the dated attempts, ``_dated``), each row's text and established turn by id
+(``content(id, row=True)``, rows only), and, where no row verified the
+problem, the rows passed fresh (``EvidenceNeedsFresh``). Where the checklist
+could not be read (the fold, the fresh rows or a row's text failed), it is
+the one declared line ``CHECKLIST_OMITTED``.
 
 Where it may differ from a fresh read, the checklist's heading reads the
-record's dated attempts: an attempt the record carries dated when the case no
-longer dates it (declared; neither is known to be reachable).
+record's dated attempts, so it names the row where only the record still
+dates an attempt: an ``accepted_in_turn`` carried final after the action's
+was cleared, or a final FAILED attempt whose action is gone (declared; the
+tests build both by hand, and neither is known to be reachable).
 """
 
 from dataclasses import dataclass
@@ -140,7 +143,8 @@ def _render_finding_line(row_id: str, found: Content, label: str) -> str:
     verifying data wasn't already in hand), so a need-anchored checklist
     silently omits every symptom/cause that was confirmed from
     already-available data. Evidence rows exist for every confirmed
-    finding, so this checklist is complete.
+    finding; the checklist lists those a re-check can bind to
+    (``recheck_checklist``).
     """
     summary = found.text or "(no summary)"
     return (
@@ -159,13 +163,19 @@ def recheck_checklist(
     ``bindable``), the rows that showed the problem, then the cited basis of
     the cause pool (the rows its terminal verdicts cite, #2557). With no
     verifying row on record (a legacy case) the problem half is ``fresh``'s
-    every symptom_evidence row: the model is asked to cite one. A row whose
-    text does not read raises."""
-    problem = (
-        outcome.bindable.problem_row_ids
-        if outcome.problem.verifying_row_ids
-        else fresh.uncited_symptom_row_ids
-    )
+    every symptom_evidence row: the model is asked to cite one; ``fresh`` is
+    required there, and its absence raises ``ValueError``. The verifying rows
+    keep their recorded order; the cause rows and ``fresh``'s are
+    chronological. A row whose text does not read raises."""
+    if outcome.problem.verifying_row_ids:
+        problem = outcome.bindable.problem_row_ids
+    elif fresh is None:
+        raise ValueError(
+            "recheck_checklist: no row verified the problem, so the fresh "
+            "symptom rows (EvidenceNeedsFresh) are required"
+        )
+    else:
+        problem = fresh.uncited_symptom_row_ids
     rows = [("SYMPTOM", i) for i in problem] + [
         ("CAUSE", i) for i in outcome.bindable.cause_row_ids
     ]
@@ -220,10 +230,8 @@ def render_evidence_needs(
 
     Returns ``""`` (progressive activation, design §10.6) when:
 
-    - The pool is empty.
-    - All needs are filtered out by status (no PENDING/PARTIALLY_MET
-      in DIAGNOSIS; no PENDING/PARTIALLY_MET/FULFILLED in
-      MITIGATION/TREATMENT).
+    - No need is outstanding (PENDING or PARTIALLY_MET; the STOPPED ones
+      included) and the checklist has no line.
     - The case is not INVESTIGATING (terminal/inquiry have their own
       surfaces).
 
@@ -356,7 +364,9 @@ def render_evidence_needs(
     # finding; FULFILLED needs are gap-conditional and gap-rare, so a
     # need-anchored checklist silently omits findings confirmed from
     # already-available data. Narrowed to the rows a re-check binds to
-    # (#1906 D1): symptom rows first, then cause rows, each chronological.
+    # (#1906 D1): symptom rows first, in their recorded verifying order (or
+    # chronological, read fresh, with none verifying), then cause rows,
+    # chronological.
     re_verification = (CHECKLIST_OMITTED,) if checklist is None else checklist
 
     if not outstanding and not re_verification and not exhausted:

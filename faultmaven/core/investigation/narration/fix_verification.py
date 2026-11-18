@@ -3,7 +3,8 @@
 
 ``render_fix_verification`` is pure: it reads the record (``CaseOutcome``,
 ``narration_outcome``), the case's identity (``CaseIdentity``), the text of an
-action or a need by id (``content_by_id``, ruling 5's ``content(id)``), the
+action or a need by id (``content_by_id``, ruling 5's ``content(id)``, which
+for this block reads actions and needs only, never an evidence row), the
 window verdicts ruling Q1 (a) keeps read fresh until the deciders switch
 (stage S3), which the call site computes with today's deciders and passes in
 as ``FixVerificationFresh``, and the needs pool (``NeedsView``, ruling 2 of
@@ -16,7 +17,8 @@ the call site prints the declared ``OMITTED`` line, never an empty need.
 
 Where it may differ from a fresh read, it prints the record's: an attempt's
 carried ``accepted_in_turn``, and a carried FAILED attempt whose action no
-longer reads (declared; neither is known to be reachable).
+longer reads (``content`` answers None for it, and its description prints
+empty; declared; neither is known to be reachable).
 """
 
 from dataclasses import dataclass, field
@@ -80,21 +82,26 @@ class Content(NamedTuple):
     established_turn: Optional[int] = None
 
 
-def content_by_id(case, item_id: str) -> Optional[Content]:
-    """What an id names (ruling 5 of 2026-11-15): a proposed action's
-    description, a need's current ``request_text`` (which an update may
-    rewrite), or an evidence row's ``summary or extract or ""`` with its
-    established turn (S2b-1b-ii), looked up in that order; None when nothing
-    has the id."""
+def content_by_id(case, item_id: str, *, row: bool = False) -> Optional[Content]:
+    """What an id names (ruling 5 of 2026-11-15), by kind: a proposed
+    action's description or a need's current ``request_text`` (which an update
+    may rewrite), looked up in that order; with ``row``, an evidence row's
+    ``summary or extract or ""`` with its established turn (S2b-1b-ii), and
+    only that. None when nothing of that kind has the id."""
+    if row:
+        for evidence in case.evidence or []:
+            if evidence.evidence_id == item_id:
+                return Content(
+                    evidence.summary or evidence.extract or "",
+                    evidence.collected_at_turn,
+                )
+        return None
     for action in case.proposed_actions or []:
         if action.action_id == item_id:
             return Content(action.description)
     for need in case.evidence_needs or []:
         if need.need_id == item_id:
             return Content(need.request_text)
-    for row in case.evidence or []:
-        if row.evidence_id == item_id:
-            return Content(row.summary or row.extract or "", row.collected_at_turn)
     return None
 
 

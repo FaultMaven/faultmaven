@@ -3,7 +3,7 @@ case outcome record (#2811 S2b-1b-ii, #2615 stage S2).
 
 The need sections render from ``NeedsView`` and ``content(id)`` alone; the
 re-verification checklist from the record (``bindable``, the dated attempts),
-``content(id)`` and, where no row verified the problem, the symptom rows read
+``content(id, row=True)`` and, where no row verified the problem, the symptom rows read
 fresh (``EvidenceNeedsFresh``). On every fixture of the corpus
 (``evidence_needs_cases_2811``) the block is byte for byte what ``main``
 rendered (``evidence_needs_oracle_2811.json``, captured through
@@ -123,7 +123,15 @@ async def _shows_heading(case, block, want):
 _SHOWS = {"omitted": _shows_omitted, "heading": _shows_heading}
 
 
-def test_the_declared_differences_are_the_plans():
+async def test_the_declared_differences_are_the_plans():
+    """The fixtures that render other than the oracle are exactly the
+    declared ones, and each difference has its check."""
+    differing = {
+        name
+        for name in CASES
+        if _build_evidence_needs_block(await build(name)) != ORACLE[name]
+    }
+    assert differing == _DECLARED_FIXTURES
     assert set(DECLARED) == set(_SHOWS) == {"omitted", "heading"}
 
 
@@ -158,12 +166,13 @@ def _post_diagnosis(case) -> bool:
 
 
 def _render(case, fresh=None):
-    """The block on the poisoned case: ``content`` reads actions, needs and
-    rows; the needs view and the fresh rows are passed in, checked text-free."""
+    """The block on the poisoned case: the need sections' ``content`` reads
+    actions and needs, the checklist's rows only; the needs view and the
+    fresh rows are passed in, checked text-free."""
     needs = NeedsView.of(case)
     _no_text(needs)
-    texts = _Poisoned(case, {"proposed_actions", "evidence_needs", "evidence"})
-    content = lambda item_id: content_by_id(texts, item_id)  # noqa: E731
+    texts = _Poisoned(case, {"proposed_actions", "evidence_needs"})
+    rows = _Poisoned(case, {"evidence"})
     checklist = ()
     if _post_diagnosis(case):
         outcome = narration_outcome(case)
@@ -171,10 +180,17 @@ def _render(case, fresh=None):
             fresh = call_site._uncited_symptom_rows(case)
         _no_text(fresh)
         poisoned = _Poisoned(case, _IDENTITY, outcome)
-        checklist = recheck_checklist(poisoned.progress.outcome, content, fresh)
+        checklist = recheck_checklist(
+            poisoned.progress.outcome,
+            lambda item_id: content_by_id(rows, item_id, row=True),
+            fresh,
+        )
     poisoned = _Poisoned(case, _IDENTITY)
     return render_evidence_needs(
-        CaseIdentity.of(poisoned), content, lambda: needs, checklist
+        CaseIdentity.of(poisoned),
+        lambda item_id: content_by_id(texts, item_id),
+        lambda: needs,
+        checklist,
     )
 
 
@@ -192,6 +208,10 @@ async def test_the_fallback_is_the_fresh_rows():
     assert _render(case) == ORACLE["E:fallback"]
     assert _render(case, EvidenceNeedsFresh()) != ORACLE["E:fallback"]
     assert "(SYMPTOM," not in _render(case, EvidenceNeedsFresh())
+
+    outcome = narration_outcome(case)
+    with pytest.raises(ValueError, match="fresh symptom rows"):
+        recheck_checklist(outcome, lambda item_id: None, None)
 
     named = await build("E:verifying_names_no_row")
     rows = call_site._uncited_symptom_rows(named)
@@ -226,8 +246,8 @@ def _rows_without_text(monkeypatch):
     monkeypatch.setattr(
         call_site,
         "content_by_id",
-        lambda case, item_id: (
-            None if item_id.startswith("ev_") else real(case, item_id)
+        lambda case, item_id, row=False: (
+            None if row else real(case, item_id, row=row)
         ),
     )
 
@@ -261,6 +281,28 @@ async def test_a_failure_omits_only_the_checklist(
     ]
     assert len(logged) == 1
     assert "<evidence_needs> re-verification checklist was not rendered" in logged[0]
+
+
+async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
+    """``D:omitted``: the fold fails once, and each block that renders an
+    omission logs it once, naming itself, over the assembly's builds; the
+    failure is counted once."""
+    case = await build("D:omitted")
+    with caplog.at_level("ERROR", logger=fold_module.__name__):
+        prompt = templates.get_prompt_for_case(
+            case, "status", given_tools=DEFAULT_GIVEN
+        )
+    assert CHECKLIST_OMITTED in prompt
+    logged = sorted(
+        r.getMessage() for r in caplog.records if "not rendered" in r.getMessage()
+    )
+    assert logged == [
+        f"Case {case.case_id}: the <evidence_needs> re-verification checklist "
+        "was not rendered (#2811)",
+        f"Case {case.case_id}: the <fix_verification> block was not rendered "
+        "(#2811)",
+    ]
+    assert failures == [WritePoint.NARRATION]
 
 
 async def test_the_omitted_line_prints_where_no_row_would_show(monkeypatch, failures):
