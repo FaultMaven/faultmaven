@@ -559,8 +559,8 @@ and `verify-batch` fits about
 `window / (30 + estimate)` drafts in one request. KB indexing encodes run one
 at a time per container. The token count runs first, in a worker, and its
 time is spent from the window: on an empty queue a document is admitted or
-answered 413 unless its count waited for a slot (then it can be answered
-503); a count that finds no slot within its wait is answered as an
+answered 413 unless its count waited for a slot or ran past its 2 s
+allowance (then it can be answered 503); a count that finds no slot within its wait is answered as an
 unavailable embedder. While an encode is past its time bound every document is
 answered 503. The
 window, the queue, the running encode's age and the host lock's state are

@@ -173,9 +173,10 @@ the embedding model first and is killed at its time bound. So:
   9,600 / 24,000 / 48,000). The cut is 53% of the figure at the 60 s floor
   and 5% at 600 s;
 * on an empty queue a document is admitted or answered 413 unless its token
-  count waited for a slot: the 503 sentence "The indexing model is loading on
-  this server" is gone, and a 503 `KNOWLEDGE_INDEXING_BUSY` now means only
-  that indexing queued on the server, or a count's wait for a slot, leaves no
+  count waited for a slot or ran past its 2 s allowance: the 503 sentence
+  "The indexing model is loading on this server" is gone, and a 503
+  `KNOWLEDGE_INDEXING_BUSY` now means only that indexing queued on the
+  server, or a count's wait for a slot or run past its allowance, leaves no
   room, or that an encode is stuck past its time bound. A count that finds no
   slot within its wait, or gives no answer, is refused as an unavailable
   embedder (`KNOWLEDGE_EMBEDDER_UNAVAILABLE`, "the server could not prepare

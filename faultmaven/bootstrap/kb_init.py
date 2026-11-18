@@ -1009,8 +1009,9 @@ async def _reconcile_vectors(
 #     loads BGE-M3 and embeds, and (on the single-tenant web-startup path) it runs
 #     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
 #     time: one worker's model load (``index_slot.WORKER_LOAD_SECONDS``; a boot's
-#     rows encode in one worker, #2851; at most three loads when it fails and
-#     the rows go one by one), which the budget counts (one load) as chunks of
+#     rows encode in one worker, #2851; when that encode fails, each row tried
+#     pays one more load, once, and two consecutive failures defer the rest),
+#     which the budget counts (the one load) as chunks of
 #     the measured runbook's mean size (``repair_chunk_budget``), plus chunks x
 #     pod CPU, NOT the row count. Bounding rows alone is
 #     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
@@ -1118,8 +1119,8 @@ async def _repair_unserved_rows(
     )
 
     # One encode for the rows the chunk budget takes, in one worker: one model
-    # load per boot, at most three when it fails and the rows go one by one
-    # (#2851). Overshoot is bounded by one runbook's chunk count (the row that
+    # load per boot; when it fails, each row tried pays one more, once (repaired
+    # rows persist), and two consecutive failures defer the rest (#2851). Overshoot is bounded by one runbook's chunk count (the row that
     # reaches the budget is taken); the deferred rows self-heal on a later boot.
     try:
         counts = await knowledge_service.reindex_missing_vectors(

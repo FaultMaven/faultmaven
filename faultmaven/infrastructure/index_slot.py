@@ -30,8 +30,8 @@ the reservation are one step. Every KB ticket is charged a worker's load
 written, a document too large for the window less that charge and a token
 count's allowance (413), one the queue ahead leaves no room for (503), and
 every document while an encode is past its time bound (503). On an empty
-queue, with at most the allowance spent on the count, a document is admitted
-or refused 413. With a window of 0 it
+queue, with at most the allowance spent on the count (no wait for a slot, no
+run past the allowance), a document is admitted or refused 413. With a window of 0 it
 refuses nothing, and the embedding guard alone bounds the embed.
 """
 
@@ -74,7 +74,8 @@ WORKER_LOAD_SECONDS = 30.0
 #: routes spend from the window before admission (#2851): spawn to answer,
 #: tokenizer load included, measured 1.4-1.8 s (the largest admitted runbook,
 #: in the image at 2 CPUs). So on an empty queue only a count that waited for
-#: a slot leaves a document under the line too little room.
+#: a slot, or ran past its 2 s allowance (beside an evidence encode, or under
+#: a quota below 2 cores), leaves a document under the line too little room.
 COUNT_ALLOWANCE_SECONDS = 2.0
 
 #: The guard's bound less the worker's phases: the time to kill and reap it

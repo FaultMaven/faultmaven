@@ -1967,10 +1967,10 @@ class KnowledgeService:
             )
         except Exception as e:
             # One row can fail the combined encode: each row then encodes
-            # alone, so a bad row fails only itself. Two failures in a row
-            # are systemic (a model that will not load, a hung host): the
-            # rows not yet tried are deferred, so a boot pays at most three
-            # loads.
+            # alone, so a bad row fails only itself, and each row tried pays
+            # one more model load (once: repaired rows persist). Two failures
+            # in a row are systemic (a model that will not load, a hung
+            # host): the rows not yet tried are deferred.
             logger.warning(f"reindex_missing_vectors: one encode failed ({e}); per row")
             if len(repairs) == 1:  # the row alone just failed: no second try
                 counts[repairs[0][0]] = 0
