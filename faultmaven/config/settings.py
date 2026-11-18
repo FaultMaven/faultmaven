@@ -1866,10 +1866,11 @@ class SecuritySettings(BaseSettings):
     jwt_secret_file: str = Field(
         default="data/.jwt_secret",
         description=(
-            "The local-mode HS256 secret file: read when it holds a secret, "
-            "written when one is generated with a persistent database, and named "
-            "in the refusal of a JWT_SECRET_KEY that cannot sign. Unused in "
-            "OAuth/RS256 mode."
+            "The local-mode HS256 secret file. With JWT_SECRET_KEY unset it is "
+            "read when it holds a secret, and written when one is generated with "
+            "a persistent database; with JWT_SECRET_KEY set it is only named in "
+            "that key's refusal when the key cannot sign. Unused in OAuth/RS256 "
+            "mode."
         ),
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
