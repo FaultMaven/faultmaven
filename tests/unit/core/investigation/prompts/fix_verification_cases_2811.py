@@ -1,6 +1,6 @@
 """The ``<fix_verification>`` block's fixture corpus (#2811 S2b-1a).
 
-The 25 narration fixtures of ``test_narrator_record_parity_2811`` (its 11
+The 26 narration fixtures of ``test_narrator_record_parity_2811`` (its 12
 ``FIXTURES`` and 14 ``REASONS``), plus one per block line none of them
 renders: the mitigation's lines (each state, the unregistered relief with and
 without the gate's refusal, no rows on record, beside a dated fix), "Fix
@@ -8,13 +8,15 @@ attempts: none recorded", "…and N earlier", an interception seen gone, the
 cited basis withheld after an off-cause attempt, a repeated pending why, each
 re-check reason's text no parity fixture renders in the block, an id list and
 a description past their bounds, and a problem-gone row outside the latest
-window. ``DECLARED`` adds one fixture per declared difference.
+window. ``NEEDS`` adds one per need line or mark (S2b-1b-i). ``DECLARED``
+adds one fixture per declared difference.
 
 ``render_all`` renders each through ``build_fix_verification_block``. Its
-output on ``main`` at 9b4d0b1e1 is ``fix_verification_oracle_2811.json``,
-captured there by running ``render_all`` with this file copied into that
-tree, never typed by hand. Ids are made deterministic while a fixture is
-built (``_deterministic_ids``), so the capture is compared byte for byte.
+output on ``main`` is ``fix_verification_oracle_2811.json``, captured by
+running ``render_all`` with this file copied into that tree, never typed by
+hand: at 9b4d0b1e1, and at 92e98cdbf for ``NEEDS`` and the parity corpus's
+``held_check_on_a_false_alarm``. Ids are made deterministic while a fixture
+is built (``_deterministic_ids``), so the capture is compared byte for byte.
 """
 
 from __future__ import annotations
@@ -222,6 +224,84 @@ ADDED = {
 }
 
 
+async def _needs(held: str = "", *, declined=False, extra=0, long=False):
+    """The fix's case with its one symptom-verification need (S2b-1b-i).
+    ``held``: "pending" or "fulfilled" (both legs standing, asked at 5, the
+    second citing only a row from before the ask), "exhausted" (asked at 7
+    and 8, the block at 9, behind a live need asked before the fix) or
+    "stopped" (exhausted, nothing held); ``extra`` more live needs."""
+    from faultmaven.modules.case.contracts import EvidenceNeed, NeedPurpose, NeedState
+    from tests.case_builders import with_declined_offer
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _case,
+    )
+
+    case = _case("treatment", problem=held in ("pending", "fulfilled", "exhausted"))
+    need = case.evidence_needs[0]
+    if held in ("pending", "fulfilled"):
+        need.created_at_turn = 5
+    if held == "fulfilled":
+        need.state = NeedState.FULFILLED
+        need.fulfilling_evidence_ids = list(
+            case.problem_verification.verifying_evidence_ids
+        )
+    if held in ("exhausted", "stopped"):
+        case.current_turn = 9
+        need.created_at_turn = 7
+        need.surfaced_turns = [7, 8]
+    if held == "exhausted":
+        extra = 1
+    for i in range(extra):
+        case.evidence_needs.insert(
+            i,
+            EvidenceNeed(
+                case_id=case.case_id,
+                purpose=NeedPurpose.SYMPTOM_VERIFICATION,
+                request_text=f"the scrape target's state from probe {i}",
+                rationale="the reported symptom, re-checked",
+                created_at_turn=2,
+            ),
+        )
+    if long:
+        need.request_text = "the billing-exporter scrape target " * 6
+    if declined:
+        with_declined_offer(case, kind="resolve", basis="backstop")
+    return case
+
+
+#: The fixtures S2b-1b-i adds, one per need line or mark no fixture above
+#: shows; captured on ``main`` at 92e98cdbf.
+NEEDS = {
+    "N:held_pending": lambda: _needs("pending"),
+    "N:held_pending_declined": lambda: _needs("pending", declined=True),
+    "N:held_fulfilled": lambda: _needs("fulfilled"),
+    "N:held_fulfilled_declined": lambda: _needs("fulfilled", declined=True),
+    "N:held_exhausted": lambda: _needs("exhausted"),
+    "N:more_than_five": lambda: _needs(extra=6),
+    "N:none_stopped": lambda: _needs("stopped"),
+    "N:long_request": lambda: _needs(long=True),
+    "N:invalidated": lambda: _invalidated(),
+}
+
+
+async def _invalidated():
+    """The finding of a false alarm applied with ``invalidate_problem``
+    directly, past ``invalidation_refusal``, which refuses it on this case
+    while its cause leg stands; a need FULFILLED on rows from before its ask
+    holds the resolution. The finding supersedes the open symptom need, and
+    the held one stays listed and marked. Readiness answers FALSE_ALARM
+    before it reads the held need."""
+    from faultmaven.core.investigation.problem_status import invalidate_problem
+
+    case = await _needs("fulfilled", extra=1)
+    invalidate_problem(
+        case,
+        evidence_ids=list(case.problem_verification.verifying_evidence_ids),
+        basis="the scrape target was never down",
+    )
+    return case
+
+
 async def _closure_disagrees():
     """A closed case whose stored reason moved since its terminal write."""
     from faultmaven.modules.case.contracts import ClosureReason
@@ -266,12 +346,13 @@ DECLARED = {
     "omitted": ("D:omitted", _unreadable_record),
 }
 
-#: Every fixture, by name: the parity corpus's 25, the added ones, then the
+#: Every fixture, by name: the parity corpus's 26, the added ones, then the
 #: declared differences'.
 CASES = {
     **{name: build for name, (build, _declared) in parity.FIXTURES.items()},
     **{f"R:{name}": build for name, (build, _shows) in parity.REASONS.items()},
     **ADDED,
+    **NEEDS,
     **dict(DECLARED.values()),
 }
 

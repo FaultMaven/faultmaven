@@ -14,23 +14,23 @@ hold (#2427, turn 11). It shows, one line each:
   ``symptom_elimination_rows``), by row id, and the rows that showed the
   problem with no re-check in the problem leg;
 - the outstanding symptom-verification needs, the one that holds the resolve
-  offer (``pending_symptom_check``) first and marked;
+  offer (the record's ``resolution.pending_check_need_id``) first and marked;
 - in MITIGATION, the mitigation's attempt, what the problem did after it
   (``mitigation_observation``) and the rows a re-check can name, and a
   holding relief the model has not registered, with the ask for
   ``mitigation_verified`` (#2602); with no fix dated, only these, never the
   resolution legs (#2100).
 
-All but the needs lines are rendered from the case outcome record by
-``narration.fix_verification`` (#2811 S2b-1a). Where ``main`` showed a block,
-this call site asks the prompt assembly's ``NarrationFold`` for the record
-(``narration_outcome``, folded at most once per assembly), then computes the
-window verdicts ruling Q1 (a) keeps fresh (``FixVerificationFresh``) and
-renders, inside one guard. If any of it raises, the block is the one declared
-line ``OMITTED``, the failure is logged and counted once per assembly on
+It is rendered from the case outcome record by ``narration.fix_verification``
+(#2811 S2b-1a, S2b-1b-i). Where ``main`` showed a block, this call site asks
+the prompt assembly's ``NarrationFold`` for the record (``narration_outcome``,
+folded at most once per assembly), then computes the window verdicts ruling
+Q1 (a) keeps fresh (``FixVerificationFresh``) and the needs pool
+(``NeedsView``) and renders, inside one guard. If any of it raises, the block
+is the one declared line ``OMITTED``; each distinct failure is logged and a
+failure counted once per assembly, on
 ``case_outcome_write_failures_total{at="narration"}``, and the rest of the
-prompt is unchanged. The needs lines, the held need's mark and
-``DECLINE_STILL_BINDS`` still read the case (stage S2b-1b).
+prompt is unchanged. The needs pool is read only where the need lines print.
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -46,6 +46,8 @@ the long post-fix cases that need this block bring.
 """
 
 import logging
+import sys
+import traceback
 from typing import Optional
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -53,10 +55,8 @@ from faultmaven.core.investigation.cause_assurance import (
     _dated_fixes,
     fix_windows,
     mitigation_attempt_turn,
-    pending_symptom_check,
     subject_index,
 )
-from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
@@ -74,10 +74,10 @@ from faultmaven.core.investigation.narration.fix_verification import (
     content_by_id,
     render_fix_verification,
 )
+from faultmaven.core.investigation.narration.needs import NeedsView
 from faultmaven.core.investigation.outcome import _problem_rows, narration_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
-    declined_resolve_entry,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -85,13 +85,10 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     FixWindowState,
     InvestigationStage,
-    NeedPurpose,
-    NeedState,
     WritePoint,
 )
 
 from .budget import TokenBudget
-from .history import _truncate_request_text
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +96,6 @@ logger = logging.getLogger(__name__)
 #: section. Its construction bounds keep it well under this; the cap is the
 #: backstop.
 FIX_VERIFICATION_MAX_TOKENS = 600
-#: The outstanding needs shown.
-MAX_NEEDS = 5
 
 _OMITTED_BLOCK = "\n".join([OPEN_TAG, OMITTED, CLOSE_TAG])
 
@@ -109,14 +104,16 @@ class NarrationFold:
     """One prompt assembly's narration fold (#2811 S2b-1a): the record
     ``narration_outcome`` folds, computed at most once, on the first request,
     and cached with its failure. ``get_prompt_for_case`` makes one per
-    assembly, so the context it builds up to three times folds once and a
-    failure is logged and counted once (``fail``)."""
+    assembly, so the context it builds up to three times folds once, each
+    distinct failure is logged once, and a failure is counted once
+    (``fail``)."""
 
     def __init__(self, case: Case) -> None:
         self._case = case
         self._outcome: Optional[CaseOutcome] = None
         self._asked = False
         self._failed = False
+        self._logged: set = set()
 
     def outcome(self) -> Optional[CaseOutcome]:
         """The record, or None when the fold raised."""
@@ -129,15 +126,21 @@ class NarrationFold:
         return self._outcome
 
     def fail(self) -> None:
-        """Log the exception being handled and count it, once per assembly;
-        a metrics error is logged and swallowed."""
+        """Log the exception being handled once per distinct failure (its class
+        and the line that raised it) and count a failure once per assembly; a
+        metrics error is logged and swallowed."""
+        _kind, error, tb = sys.exc_info()
+        raised = traceback.extract_tb(tb)[-1] if tb is not None else None
+        key = (type(error), raised and (raised.filename, raised.lineno))
+        if key not in self._logged:
+            self._logged.add(key)
+            logger.exception(
+                "Case %s: the fix-verification block was not rendered (#2811)",
+                getattr(self._case, "case_id", None),
+            )
         if self._failed:
             return
         self._failed = True
-        logger.exception(
-            "Case %s: the fix-verification block was not rendered (#2811)",
-            getattr(self._case, "case_id", None),
-        )
         try:
             case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
         except Exception:  # noqa: BLE001 — the block is omitted either way
@@ -152,61 +155,6 @@ def _shown(case: Case) -> bool:
         stage == InvestigationStage.MITIGATION
         and (bool(_dated_fixes(case)) or mitigation_attempt_turn(case) is not None)
     )
-
-
-def _need_lines(case: Case, held) -> list[str]:
-    """The outstanding symptom-verification needs the engine still puts to the
-    user; ask-exhausted ones are counted, in ``<evidence_needs>``'s own words,
-    not listed as live asks (#1079). The ``held`` need
-    (``pending_symptom_check``) is listed first and marked, exhausted or
-    FULFILLED on rows from before its ask, so the model is shown which need to
-    dispose of (#1906 D5.2)."""
-    needs = [
-        n
-        for n in case.evidence_needs
-        if n is held
-        or (n.is_outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION)
-    ]
-    live = [n for n in needs if n is held or not is_ask_exhausted(n, case.current_turn)]
-    live.sort(key=lambda n: n is not held)
-    stopped = len(needs) - len(live)
-    if not live:
-        lines = ["Outstanding symptom-verification needs: none"]
-    else:
-        lines = ["Outstanding symptom-verification needs:"]
-        lines += [
-            f"  - [{n.need_id}] {_truncate_request_text(n.request_text)}"
-            + (_held_mark(case, n) if n is held else "")
-            for n in live[:MAX_NEEDS]
-        ]
-        if len(live) > MAX_NEEDS:
-            lines.append(f"  …and {len(live) - MAX_NEEDS} more")
-    if stopped:
-        lines.append(
-            f"  ({stopped} the engine has STOPPED surfacing: see <evidence_needs>)"
-        )
-    return lines
-
-
-#: The held mark's addition while the user's decline of the resolution
-#: stands: the answer alone does not lapse it (``offers.decline_stands``).
-DECLINE_STILL_BINDS = (
-    "; the user's decline of the resolution still binds after it, unless the "
-    "answer is a new problem-bound row showing the problem gone"
-)
-
-
-def _held_mark(case: Case, need) -> str:
-    """The held need's mark. Under a standing resolve decline
-    (``declined_resolve_entry``) it says the decline outlives the answer, so
-    the mark promises no offer the decline would refuse."""
-    why = (
-        ": the rows it cites predate the ask"
-        if need.state == NeedState.FULFILLED
-        else ""
-    )
-    decline = DECLINE_STILL_BINDS if declined_resolve_entry(case) is not None else ""
-    return f" (holds the resolution offer until answered{why}{decline})"
 
 
 def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
@@ -265,10 +213,7 @@ def build_fix_verification_block(
     """The block, or ``""``: in TREATMENT, and in MITIGATION once a SOLUTION or
     the mitigation's attempt is dated; with only the mitigation dated, its
     lines alone (#2100). ``fold`` is the prompt assembly's record (a fresh
-    one per build without it). One ``SubjectIndex`` and one ``fix_windows``
-    list serve the fresh verdicts and the held need (``pending_symptom_check``);
-    a held need's mark reads the resolve decline (``declined_resolve_entry``,
-    through the closure verdict), which builds its own."""
+    one per build without it)."""
     if not _shown(case):
         return ""
     fold = NarrationFold(case) if fold is None else fold
@@ -279,22 +224,17 @@ def build_fix_verification_block(
         subjects = subject_index(case)
         windows = fix_windows(case, subjects)
         fresh = _fresh(case, outcome, subjects, windows)
-        head = render_fix_verification(
+        lines = render_fix_verification(
             outcome,
             CaseIdentity.of(case),
             lambda item_id: content_by_id(case, item_id),
             fresh,
+            lambda: NeedsView.of(case),
         )
     except Exception:  # noqa: BLE001 — only this block is lost (#2811)
         fold.fail()
         return _OMITTED_BLOCK
-    if head is None:
-        return ""
-    needs = []
-    if head.needs:
-        held = pending_symptom_check(case, subjects=subjects, windows=windows)
-        needs = _need_lines(case, held)
-    return "\n".join([*head.lines, *needs, CLOSE_TAG])
+    return "" if lines is None else "\n".join(lines)
 
 
 def cap_fix_verification_block(text: str, budget: TokenBudget) -> str:

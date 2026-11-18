@@ -1,14 +1,15 @@
 """The ``<fix_verification>`` block rendered from the case outcome record
-(#2811 S2b-1a, #2615 stage S2).
+(#2811 S2b-1a and S2b-1b-i, #2615 stage S2).
 
-The block, all but its needs lines, the held need's mark and
-``DECLINE_STILL_BINDS``, is rendered by ``narration.fix_verification`` from
-the record, the case's identity, an action's text by id (``content_by_id``) and the
-fresh window verdicts (``FixVerificationFresh``, ruling Q1 (a)). On every
-fixture of the corpus (``fix_verification_cases_2811``) it is byte for byte
-what ``main`` rendered at 9b4d0b1e1 (``fix_verification_oracle_2811.json``,
-captured there through ``build_fix_verification_block``), but on the one
-fixture per declared difference, where it differs exactly as declared.
+The block is rendered by ``narration.fix_verification`` from the record, the
+case's identity, the text of an action or a need by id (``content_by_id``),
+the fresh window verdicts (``FixVerificationFresh``, ruling Q1 (a)) and the
+needs pool (``NeedsView``, ruling 2 of 2026-11-17). On every fixture of the
+corpus (``fix_verification_cases_2811``) it is byte for byte what ``main``
+rendered (``fix_verification_oracle_2811.json``, captured through
+``build_fix_verification_block``: at 9b4d0b1e1, and the fixtures S2b-1b-i
+adds at 92e98cdbf), but on the one fixture per declared difference, where it
+differs exactly as declared.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,9 +25,14 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
-from faultmaven.core.investigation.cause_assurance import fix_windows, subject_index
+from faultmaven.core.investigation.cause_assurance import (
+    fix_windows,
+    pending_symptom_check,
+    subject_index,
+)
 from faultmaven.core.investigation.narration.fix_verification import (
     CLOSE_TAG,
+    DECLINE_STILL_BINDS,
     OMITTED,
     OPEN_TAG,
     CaseIdentity,
@@ -33,6 +40,7 @@ from faultmaven.core.investigation.narration.fix_verification import (
     content_by_id,
     render_fix_verification,
 )
+from faultmaven.core.investigation.narration.needs import NeedsView, NeedView
 from faultmaven.core.investigation.outcome import (
     SHAPE_STEPS,
     compute_case_outcome,
@@ -50,6 +58,10 @@ from faultmaven.modules.case.contracts import (
     CURRENT_OUTCOME_SHAPE,
     CaseOutcome,
     EvidenceCategory,
+    NeedState,
+    PendingCheckReason,
+    ProblemStatus,
+    ResolutionReason,
     WritePoint,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, bound_row
@@ -157,24 +169,54 @@ class _Poisoned:
         raise AssertionError(f"the renderer read case.{name}")
 
 
-_ID = re.compile(r"(ev|act)_[0-9a-f]{12}")
+_ID = re.compile(r"(ev|act|eneed|hyp)_[0-9a-f]{12}")
 
 
 def _no_text(value) -> None:
-    """No field of ``fresh``, nested ones included, is a ``str``; the ids it
-    keys and lists are ids."""
+    """No field of ``fresh`` or ``NeedsView``, nested ones included, is text:
+    every string it holds, as a field, a key or a member of any container, is
+    an id; an enum member is closed vocabulary."""
     if dataclasses.is_dataclass(value):
         for f in dataclasses.fields(value):
             _no_text(getattr(value, f.name))
     elif isinstance(value, dict):
         for key, nested in value.items():
-            assert _ID.fullmatch(key), key
+            _no_text(key)
             _no_text(nested)
-    elif isinstance(value, tuple):
+    elif isinstance(value, (tuple, list, set, frozenset)):
         for nested in value:
-            assert _ID.fullmatch(nested), nested
-    else:
-        assert type(value) is not str, value
+            _no_text(nested)
+    elif isinstance(value, str) and not isinstance(value, Enum):
+        assert _ID.fullmatch(value), value
+
+
+class _Text(str):
+    """A ``str`` subclass that is not an enum."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _StandIn:
+    """A view that holds text where ``NeedsView`` holds ids."""
+
+    texts: object
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["the scrape target, re-read"],
+        {"the scrape target, re-read"},
+        frozenset({"the scrape target, re-read"}),
+        (_Text("eneed_0123456789ab is down"),),
+        {"ev_0123456789ab": [_Text("free text")]},
+    ],
+)
+def test_the_text_check_sees_text_in_any_container(texts):
+    """The negative control: text inside a list, set, frozenset or a ``str``
+    subclass fails the check that ``fresh`` and ``NeedsView`` pass."""
+    with pytest.raises(AssertionError):
+        _no_text(_StandIn(texts))
+    _no_text(_StandIn([NeedState.PENDING, "eneed_0123456789ab"]))
 
 
 def test_fresh_holds_the_q1_verdicts():
@@ -184,6 +226,19 @@ def test_fresh_holds_the_q1_verdicts():
         "problem_leg_turn",
         "gone_row_ids",
         "mitigation_verify_refused",
+    }
+
+
+def test_the_needs_view_holds_the_rulings_reading():
+    """Ruling 2 of 2026-11-17: the pool's own state, read through one typed
+    accessor that pin 2 exempts permanently."""
+    assert [f.name for f in dataclasses.fields(NeedsView)] == ["needs"]
+    assert {f.name for f in dataclasses.fields(NeedView)} == {
+        "need_id",
+        "purpose",
+        "state",
+        "outstanding",
+        "exhausted",
     }
 
 
@@ -200,20 +255,19 @@ async def test_the_renderer_reads_no_case_field(name):
         return
     outcome = narration_outcome(case)
     fresh = _fresh(case, outcome)
+    needs = NeedsView.of(case)
     _no_text(fresh)
+    _no_text(needs)
     poisoned = _Poisoned(case, _IDENTITY, outcome)
-    actions = _Poisoned(case, {"proposed_actions"})
-    head = render_fix_verification(
+    texts = _Poisoned(case, {"proposed_actions", "evidence_needs"})
+    lines = render_fix_verification(
         poisoned.progress.outcome,
         CaseIdentity.of(poisoned),
-        lambda item_id: content_by_id(actions, item_id),
+        lambda item_id: content_by_id(texts, item_id),
         fresh,
+        lambda: needs,
     )
-    if head is None:
-        assert ORACLE[name] == ""
-        return
-    assert ORACLE[name].startswith("\n".join(head.lines) + "\n")
-    assert head.needs == ("Outstanding symptom-verification needs" in ORACLE[name])
+    assert ("" if lines is None else "\n".join(lines)) == ORACLE[name]
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +276,14 @@ async def test_the_renderer_reads_no_case_field(name):
 
 
 def _render(case, outcome: CaseOutcome) -> str:
-    head = render_fix_verification(
+    lines = render_fix_verification(
         outcome,
         CaseIdentity.of(case),
         lambda item_id: content_by_id(case, item_id),
         _fresh(case, outcome),
+        lambda: NeedsView.of(case),
     )
-    return "\n".join(head.lines)
+    return "\n".join(lines)
 
 
 def _resolution(outcome: CaseOutcome, **update) -> CaseOutcome:
@@ -253,8 +308,6 @@ async def test_the_off_cause_turn_is_recorded_whatever_readiness_answers():
     """On a false alarm readiness returns before reading the off-cause
     attempt; the record still holds it, and the block withholds the basis as
     ``main`` did."""
-    from faultmaven.modules.case.contracts import ProblemStatus
-
     case = await build("T:interception_only")
     want = build_fix_verification_block(case)
     case.progress.problem_status = ProblemStatus.INVALIDATED
@@ -276,6 +329,86 @@ async def test_no_row_is_unrechecked_without_the_cause_leg():
     outcome = narration_outcome(await build("R:held_open"))
     assert outcome.resolution.cause_row_ids == [], "premise"
     assert outcome.resolution.unrechecked_row_ids == []
+
+
+# ---------------------------------------------------------------------------
+# The held need's mark, from the record (shape 4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, reason",
+    [
+        ("N:held_pending", PendingCheckReason.UNANSWERED),
+        ("N:held_exhausted", PendingCheckReason.UNANSWERED),
+        ("N:held_fulfilled", PendingCheckReason.FULFILLED_BEFORE_ASK),
+    ],
+)
+async def test_the_held_need_and_its_reason_are_recorded(name, reason):
+    case = await build(name)
+    resolution = narration_outcome(case).resolution
+    held = pending_symptom_check(case)
+    assert resolution.pending_check_need_id == held.need_id
+    assert resolution.pending_check_reason == reason
+
+
+async def test_a_false_alarm_keeps_the_held_need():
+    """``invalidate_problem``, applied directly (``invalidation_refusal``
+    refuses this case while its cause leg stands), supersedes the open symptom
+    need; the need FULFILLED on rows from before its ask still holds, and
+    readiness answers FALSE_ALARM before it reads it. The record holds it as
+    ``main``'s block did (the fixture renders as the oracle)."""
+    case = await build("N:invalidated")
+    assert case.progress.problem_status == ProblemStatus.INVALIDATED
+    superseded, held = case.evidence_needs
+    assert superseded.state == NeedState.SUPERSEDED
+    assert pending_symptom_check(case) is held
+    resolution = narration_outcome(case).resolution
+    assert resolution.reason == ResolutionReason.FALSE_ALARM
+    assert resolution.pending_check_need_id == held.need_id
+    assert resolution.pending_check_reason == PendingCheckReason.FULFILLED_BEFORE_ASK
+
+
+async def test_no_reason_without_a_held_need():
+    resolution = narration_outcome(await build("N:none_stopped")).resolution
+    assert resolution.pending_check_need_id is None
+    assert resolution.pending_check_reason is None
+
+
+async def test_the_mark_renders_the_records_reason_and_decline():
+    """The mark reads the record alone: its reason gates "predate the ask",
+    ``declined_stands`` gates ``DECLINE_STILL_BINDS``, and the held id gates
+    the mark and the order."""
+    case = await build("N:held_exhausted")
+    outcome = narration_outcome(case)
+    held = outcome.resolution.pending_check_need_id
+    plain = _render(case, outcome)
+    assert f"needs:\n  - [{held}] " in plain, "premise: listed first"
+    fulfilled = _render(
+        case,
+        _resolution(
+            outcome,
+            pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
+            declined_stands=True,
+        ),
+    )
+    mark = f": the rows it cites predate the ask{DECLINE_STILL_BINDS})"
+    assert plain.replace("until answered)", "until answered" + mark) == fulfilled
+    released = _render(case, _resolution(outcome, pending_check_need_id=None))
+    assert "holds the resolution offer" not in released
+    assert "(1 the engine has STOPPED surfacing" in released
+
+
+async def test_a_need_reads_its_current_text():
+    """A need's ``request_text`` can be rewritten (``evidence_need_updates``):
+    ``content`` reads it as it stands."""
+    case = await build("N:held_pending")
+    need = case.evidence_needs[0]
+    need.request_text = "the scrape target, re-read"
+    assert content_by_id(case, need.need_id) == "the scrape target, re-read"
+    assert f"[{need.need_id}] the scrape target, re-read (holds" in (
+        build_fix_verification_block(case)
+    )
 
 
 async def test_a_carried_turn_keeps_the_fresh_verdict():
@@ -319,7 +452,14 @@ def _rest(prompt: str, block: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "where", ["narration_outcome", "_fresh", "CaseIdentity", "render_fix_verification"]
+    "where",
+    [
+        "narration_outcome",
+        "_fresh",
+        "CaseIdentity",
+        "NeedsView",
+        "render_fix_verification",
+    ],
 )
 async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
     from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
@@ -329,7 +469,9 @@ async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
 
     case = await build("R:other_cause")
     whole = _prompt(case)
-    raising = SimpleNamespace(of=_raise) if where == "CaseIdentity" else _raise
+    raising = (
+        SimpleNamespace(of=_raise) if where in ("CaseIdentity", "NeedsView") else _raise
+    )
     monkeypatch.setattr(block_module, where, raising)
     assert build_fix_verification_block(case) == _OMITTED
     assert failures == [WritePoint.NARRATION]
@@ -376,6 +518,59 @@ async def test_one_fold_serves_and_counts_once_per_assembly(
     for _ in range(3):
         assert build_fix_verification_block(case, assembly) == _OMITTED
     assert (len(calls), failures) == (1, [WritePoint.NARRATION])
+
+
+def _value_error(*_args, **_kwargs):
+    raise ValueError("probe")
+
+
+async def test_each_distinct_failure_is_logged_once(monkeypatch, failures, caplog):
+    """A ``NeedsView`` that raises on each of an assembly's three builds is
+    logged once; a second failure of another class and line is logged too;
+    the count is one."""
+    monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
+    case = await build("N:held_pending")
+    assembly = NarrationFold(case)
+    with caplog.at_level("ERROR", logger=block_module.__name__):
+        for _ in range(3):
+            assert build_fix_verification_block(case, assembly) == _OMITTED
+        logged = [r for r in caplog.records if "was not rendered" in r.getMessage()]
+        assert len(logged) == 1
+        monkeypatch.setattr(block_module, "_fresh", _value_error)
+        assert build_fix_verification_block(case, assembly) == _OMITTED
+    logged = [r for r in caplog.records if "was not rendered" in r.getMessage()]
+    assert [r.exc_info[0] for r in logged] == [RuntimeError, ValueError]
+    assert failures == [WritePoint.NARRATION]
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(n for n in ORACLE if n.startswith("M:") and "needs:" not in ORACLE[n]),
+)
+async def test_a_block_without_need_lines_never_reads_the_needs(
+    monkeypatch, failures, name
+):
+    """MITIGATION with only the mitigation dated prints no need line, so a
+    ``NeedsView`` that would raise leaves the block as ``main`` shows it."""
+    monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
+    block = build_fix_verification_block(await build(name))
+    assert block == ORACLE[name] != ""
+    assert failures == []
+
+
+async def test_a_need_without_text_omits_the_block(monkeypatch, failures):
+    """A need whose text does not read raises into the guard: the declared
+    line, never an empty need line."""
+    real = block_module.content_by_id
+    monkeypatch.setattr(
+        block_module,
+        "content_by_id",
+        lambda case, item_id: (
+            None if item_id.startswith("eneed_") else real(case, item_id)
+        ),
+    )
+    assert build_fix_verification_block(await build("N:held_pending")) == _OMITTED
+    assert failures == [WritePoint.NARRATION]
 
 
 @pytest.mark.parametrize("name", ["gate_one", "terminal_qa", "M:refused"])
@@ -433,24 +628,49 @@ async def test_an_assembly_that_rebuilds_the_context_folds_once():
 # ---------------------------------------------------------------------------
 
 
-async def test_a_shape_2_record_upgrades_through_the_identity_step(monkeypatch):
-    case = await build("R:other_cause")
+def _stored(case, shape: int, *dropped: str) -> CaseOutcome:
+    """The case's record as a shape-``shape`` writer stored it, without the
+    resolution fields later shapes add."""
     stored = compute_case_outcome(None, case, at=WritePoint.CYCLE)
-    old = CaseOutcome.model_validate(
+    return CaseOutcome.model_validate(
         {
             **stored.model_dump(mode="json"),
-            "shape": 2,
+            "shape": shape,
             "resolution": stored.resolution.model_dump(
-                mode="json", exclude={"off_cause_turn", "unrechecked_row_ids"}
+                mode="json", exclude=set(dropped)
             ),
         }
     )
-    assert CURRENT_OUTCOME_SHAPE == 3
+
+
+async def test_a_shape_2_record_upgrades_through_the_identity_steps(monkeypatch):
+    case = await build("R:other_cause")
+    old = _stored(case, 2, "off_cause_turn", "unrechecked_row_ids")
     assert old.resolution.unrechecked_row_ids == [], "premise: loads with defaults"
     folded = compute_case_outcome(old, case, at=WritePoint.COMMIT)
-    assert folded.shape == 3
+    assert folded.shape == CURRENT_OUTCOME_SHAPE
     assert folded.resolution.unrechecked_row_ids == [VERIFYING_ID]
 
     monkeypatch.delitem(SHAPE_STEPS, 3)
+    with pytest.raises(KeyError):
+        compute_case_outcome(old, case, at=WritePoint.COMMIT)
+
+
+async def test_a_shape_3_record_upgrades_to_4(monkeypatch):
+    """Shape 4 adds ``pending_check_reason``: a shape-3 record loads with its
+    default and folds to shape 4 with the reason; without ``_shape_4`` the
+    upgrade raises."""
+    case = await build("N:held_fulfilled")
+    old = _stored(case, 3, "pending_check_reason")
+    assert CURRENT_OUTCOME_SHAPE == 4
+    assert old.resolution.pending_check_reason is None, "premise: the default"
+    folded = compute_case_outcome(old, case, at=WritePoint.COMMIT)
+    assert folded.shape == 4
+    assert (
+        folded.resolution.pending_check_reason
+        == PendingCheckReason.FULFILLED_BEFORE_ASK
+    )
+
+    monkeypatch.delitem(SHAPE_STEPS, 4)
     with pytest.raises(KeyError):
         compute_case_outcome(old, case, at=WritePoint.COMMIT)

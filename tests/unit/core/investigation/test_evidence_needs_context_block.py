@@ -585,7 +585,7 @@ class TestRequestTextTruncation:
         assert "…" not in out
 
     def test_long_request_text_truncated_with_ellipsis(self):
-        from faultmaven.core.investigation.prompts.context_builder.history import (
+        from faultmaven.core.investigation.narration.needs import (
             _REQUEST_TEXT_RENDER_CAP,
         )
 
@@ -602,7 +602,7 @@ class TestRequestTextTruncation:
         assert prefix in out
 
     def test_at_exact_cap_no_truncation(self):
-        from faultmaven.core.investigation.prompts.context_builder.history import (
+        from faultmaven.core.investigation.narration.needs import (
             _REQUEST_TEXT_RENDER_CAP,
         )
 
