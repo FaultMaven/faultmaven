@@ -1398,9 +1398,9 @@ class TokenRevocationModel(Base):
     #: Watermark instant as a Unix timestamp, at full precision. Meaningful
     #: only for ``scope='user'``; a ``jti`` row revokes unconditionally and
     #: carries its writer's mark instead: ``0`` a revocation, ``-1`` a
-    #: refresh-token claim (#2764). Float rather than an integer because
-    #: ``clear_user_revocation_if_before`` orders a login's pre-read capture
-    #: against it and cannot do that at second granularity (#831).
+    #: refresh-token claim (#2764). Float rather than an integer because a
+    #: token's full-precision basis (``fm_basis``) is compared against it
+    #: unfloored (#2050).
     revoked_at = Column(Float, nullable=False, server_default="0")
     #: When this entry may be forgotten. Reads filter on it, so an elapsed row
     #: is already invisible whether or not anything has swept it — the Redis

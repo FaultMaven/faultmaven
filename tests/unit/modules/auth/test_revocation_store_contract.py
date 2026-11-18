@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import math
 import os
 import time
 from contextlib import asynccontextmanager
@@ -36,6 +37,7 @@ from faultmaven.infrastructure.persistence.models import Base, TokenRevocationMo
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     ITokenRevocationStore,
     RefreshClaim,
+    RevocationBasis,
     SequentialRevocationState,
     _claim_token_by_jti,
     revocation_reason,
@@ -48,6 +50,11 @@ from tests.utils import InMemoryRevocationStore
 
 USER_ID = "user-828"
 JTI = "jti-828"
+
+
+def _iat(seconds: int) -> RevocationBasis:
+    """A token's whole-second ``iat``: a token with no usable ``fm_basis``."""
+    return RevocationBasis(seconds, precise=False)
 
 
 #: Every engine this module opens. An engine that is not disposed leaves its
@@ -153,13 +160,13 @@ class TestPerTokenArm:
 
 class TestPerUserArm:
     async def test_no_watermark_means_not_revoked(self, store):
-        assert await store.is_user_revoked(USER_ID, int(time.time())) is False
+        assert await store.is_user_revoked(USER_ID, _iat(int(time.time()))) is False
 
     async def test_tokens_issued_before_the_watermark_are_revoked(self, store):
         now = time.time()
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
-        assert await store.is_user_revoked(USER_ID, int(now) - 1) is True
+        assert await store.is_user_revoked(USER_ID, _iat(int(now) - 1)) is True
 
     async def test_a_token_issued_in_the_same_second_is_revoked(self, store):
         """``iat`` has whole-second granularity and the comparison is ``<=``.
@@ -170,21 +177,21 @@ class TestPerUserArm:
         now = time.time()
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
-        assert await store.is_user_revoked(USER_ID, int(now)) is True
+        assert await store.is_user_revoked(USER_ID, _iat(int(now))) is True
 
     async def test_tokens_issued_after_the_watermark_still_work(self, store):
         """Re-login is not broken by a revocation."""
         now = time.time()
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
-        assert await store.is_user_revoked(USER_ID, int(now) + 5) is False
+        assert await store.is_user_revoked(USER_ID, _iat(int(now) + 5)) is False
 
     async def test_a_later_revocation_overwrites_an_earlier_one(self, store):
         now = time.time()
         await store.revoke_user_tokens_before(USER_ID, now - 100, ttl=60)
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
-        assert await store.is_user_revoked(USER_ID, int(now) - 1) is True
+        assert await store.is_user_revoked(USER_ID, _iat(int(now) - 1)) is True
 
 
 class TestCountUserWatermarks:
@@ -214,15 +221,6 @@ class TestCountUserWatermarks:
 
         assert await store.count_user_watermarks() == 0
 
-    async def test_a_cleared_watermark_leaves_the_count(self, store):
-        now = time.time()
-        await store.revoke_user_tokens_before("user-a", now - 10, ttl=60)
-        await store.revoke_user_tokens_before("user-b", now - 10, ttl=60)
-
-        assert await store.clear_user_revocation_if_before("user-a", now) is True
-
-        assert await store.count_user_watermarks() == 1
-
 
 @pytest.mark.slow
 class TestEntriesStopRevokingAtTheirDeadline:
@@ -245,16 +243,19 @@ class TestEntriesStopRevokingAtTheirDeadline:
         await store.add_revoked_token(JTI, ttl=1)
         await store.revoke_user_tokens_before(USER_ID, now, ttl=1)
         assert await store.is_revoked(JTI) is True
-        assert await store.is_user_revoked(USER_ID, int(now)) is True
+        assert await store.is_user_revoked(USER_ID, _iat(int(now))) is True
 
         await asyncio.sleep(1.2)
 
         assert await store.is_revoked(JTI) is False
-        assert await store.is_user_revoked(USER_ID, int(now)) is False
+        assert await store.is_user_revoked(USER_ID, _iat(int(now))) is False
         # And on the BATCHED read, which is the one the request path calls: it
         # carries its own deadline filter, so it needs its own observable here
         # or a store could expire correctly through the methods nobody uses.
-        assert await store.revocation_state(JTI, USER_ID, int(now)) == (False, False)
+        assert await store.revocation_state(JTI, USER_ID, _iat(int(now))) == (
+            False,
+            False,
+        )
         # And an elapsed watermark is no longer part of the gauge's population.
         assert await store.count_user_watermarks() == 0
 
@@ -288,11 +289,13 @@ class TestTheBatchedReadAgreesWithTheSingleReads:
             await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
         issued_at = int(now) + iat_offset
 
-        batched = await store.revocation_state(JTI, USER_ID, issued_at)
+        batched = await store.revocation_state(JTI, USER_ID, _iat(issued_at))
 
         sequential_jti = await store.is_revoked(JTI)
         sequential_user = (
-            False if sequential_jti else await store.is_user_revoked(USER_ID, issued_at)
+            False
+            if sequential_jti
+            else await store.is_user_revoked(USER_ID, _iat(issued_at))
         )
         assert batched == (sequential_jti, sequential_user)
 
@@ -305,7 +308,10 @@ class TestTheBatchedReadAgreesWithTheSingleReads:
         now = time.time()
         await store.revoke_user_tokens_before(USER_ID, now, ttl=60)
 
-        assert await store.revocation_state(None, USER_ID, int(now)) == (False, True)
+        assert await store.revocation_state(None, USER_ID, _iat(int(now))) == (
+            False,
+            True,
+        )
 
 
 class TestTheJtiArmIsNeverGatedOnTheWatermarkInputs:
@@ -365,61 +371,14 @@ class TestTheTwoArmsCannotCollide:
         await store.add_revoked_token(f"user:{USER_ID}", ttl=60)
 
         # The watermark is untouched...
-        assert await store.is_user_revoked(USER_ID, int(now) - 1) is True
+        assert await store.is_user_revoked(USER_ID, _iat(int(now) - 1)) is True
         # ...and the crafted jti did not become one.
-        assert await store.is_user_revoked(f"user:{USER_ID}", int(now)) is False
+        assert await store.is_user_revoked(f"user:{USER_ID}", _iat(int(now))) is False
 
     async def test_revoking_a_user_does_not_revoke_a_like_named_jti(self, store):
         await store.revoke_user_tokens_before(USER_ID, time.time(), ttl=60)
 
         assert await store.is_revoked(USER_ID) is False
-
-
-class TestClearIsConditionalAndAtomic:
-    """A fresh authentication supersedes a watermark it postdates — only that.
-
-    One statement server-side in both implementations, so a revocation landing
-    between a read and a delete cannot be cleared on the strength of the
-    PREVIOUS watermark (the #831 straddle).
-    """
-
-    async def test_a_watermark_predating_the_instant_is_cleared(self, store):
-        now = time.time()
-        await store.revoke_user_tokens_before(USER_ID, now - 1, ttl=60)
-
-        assert await store.clear_user_revocation_if_before(USER_ID, now) is True
-        assert await store.is_user_revoked(USER_ID, int(now) - 5) is False
-
-    async def test_a_watermark_at_or_after_the_instant_survives(self, store):
-        now = time.time()
-        await store.revoke_user_tokens_before(USER_ID, now + 1, ttl=60)
-
-        assert await store.clear_user_revocation_if_before(USER_ID, now) is False
-        assert await store.is_user_revoked(USER_ID, int(now)) is True
-
-    async def test_clearing_an_absent_watermark_reports_nothing_cleared(self, store):
-        assert (
-            await store.clear_user_revocation_if_before(USER_ID, time.time()) is False
-        )
-
-    @pytest.mark.slow
-    async def test_an_elapsed_watermark_is_not_there_to_clear(self, store):
-        """The arms disagreed here, and nothing looked (#828 review).
-
-        Redis answers False because its key is already gone. The SQL arm
-        answered True, because nothing had swept the row yet — the two stores
-        disagreeing about whether a login superseded a revocation that had
-        already stopped revoking. A deadline is the same rule for every read,
-        including the read that happens to delete.
-        """
-        import asyncio
-
-        now = time.time()
-        await store.revoke_user_tokens_before(USER_ID, now - 10, ttl=1)
-        await asyncio.sleep(1.2)
-        assert await store.is_user_revoked(USER_ID, int(now) - 20) is False
-
-        assert await store.clear_user_revocation_if_before(USER_ID, now) is False
 
 
 class TestSurvivesARestart:
@@ -463,10 +422,13 @@ class TestSurvivesARestart:
         restarted_factory, restarted_engine = _sqlite_session_factory(url)
         restarted = SqlTokenRevocationStore(session_factory=restarted_factory)
         try:
-            assert await restarted.is_user_revoked(USER_ID, int(revoked_at)) is True
+            assert (
+                await restarted.is_user_revoked(USER_ID, _iat(int(revoked_at))) is True
+            )
             # And a token minted after it still works, across the restart too.
             assert (
-                await restarted.is_user_revoked(USER_ID, int(revoked_at) + 5) is False
+                await restarted.is_user_revoked(USER_ID, _iat(int(revoked_at) + 5))
+                is False
             )
         finally:
             await restarted_engine.dispose()
@@ -594,7 +556,7 @@ class TestTheSqlStoreOwnsItsUnitOfWork:
         try:
             assert (
                 await SqlTokenRevocationStore(session_factory=reader).is_user_revoked(
-                    USER_ID, int(revoked_at)
+                    USER_ID, _iat(int(revoked_at))
                 )
                 is True
             )
@@ -747,6 +709,34 @@ class TestAClaimIsWonOnce:
 
 
 @pytest.mark.slow
+class TestTheStoredWatermarkIsTheLatest:
+    """Pin 3a (#2050): the user-arm write is monotone, on every store.
+
+    ``revoke_user_tokens``'s final stamp sits ahead of ``now``, so a second
+    revocation's first write can be lower than it. Keeping the stored value
+    is what stops that write reopening a straddler's window. Values span a
+    second boundary so the whole-second ``iat`` shows the drop too.
+    """
+
+    async def test_a_lower_write_keeps_the_stored_watermark(self, claim_store):
+        t = float(int(time.time()) - 30)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 1.05, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.95, ttl=60)
+
+        claims = {"jti": JTI, "sub": USER_ID, "iat": int(t) + 1, "fm_basis": t + 1.0}
+        assert await revocation_reason(claim_store, claims) == "user_revoked"
+
+    async def test_a_non_finite_stored_watermark_is_overwritten(self, claim_store):
+        t = float(int(time.time()) - 30)
+        await claim_store.revoke_user_tokens_before(USER_ID, math.inf, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.5, ttl=60)
+
+        claims = {"jti": JTI, "sub": USER_ID, "iat": int(t), "fm_basis": t + 0.6}
+        assert await revocation_reason(claim_store, claims) is None
+        claims["fm_basis"] = t + 0.4
+        assert await revocation_reason(claim_store, claims) == "user_revoked"
+
+
 class TestAClaimOutlivesItsToken:
     """No write shortens a claim, and the claim outlives ``exp`` (#2764).
 
@@ -815,10 +805,7 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
 
             async def revoke_user_tokens_before(self, user_id, revoked_at, ttl): ...
 
-            async def is_user_revoked(self, user_id, issued_at):
-                return False
-
-            async def clear_user_revocation_if_before(self, user_id, instant):
+            async def is_user_revoked(self, user_id, basis):
                 return False
 
             async def cleanup_expired(self):
@@ -845,10 +832,7 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
 
             async def revoke_user_tokens_before(self, user_id, revoked_at, ttl): ...
 
-            async def is_user_revoked(self, user_id, issued_at):
-                return False
-
-            async def clear_user_revocation_if_before(self, user_id, instant):
+            async def is_user_revoked(self, user_id, basis):
                 return False
 
             async def cleanup_expired(self):
@@ -860,7 +844,7 @@ class TestTheInterfaceDemandsTheMethodTheRequestPathCalls:
         store = FreeReads()
         await store.add_revoked_token(JTI, ttl=60)
 
-        assert await store.revocation_state(JTI, USER_ID, 1) == (True, False)
+        assert await store.revocation_state(JTI, USER_ID, _iat(1)) == (True, False)
 
 
 def test_every_engine_here_is_registered():

@@ -177,17 +177,16 @@ async def _revoke_then_stall(store, user_id: str) -> None:
     """Write the user's watermark NOW, then stall past that whole second.
 
     The stall is load-bearing, not boilerplate: ``iat`` has 1-second
-    granularity and the comparison is ``<=``, so without stepping into the
-    second AFTER the watermark, a post-read or mint-time stamp would land in
-    the same second and be rejected anyway — the test would pass against the
+    granularity and the whole-second fallback compares ``iat <= floor(W)``, so
+    without stepping into the second AFTER the watermark, a post-read or
+    mint-time stamp would land in the same second and be rejected anyway on it — the test would pass against the
     very defect it exists to catch. One computed sleep, not a poll.
 
     Written at FULL precision, as ``AuthService.revoke_user_tokens`` does.
     Truncating here would make a watermark that landed mid-read look older than
-    the login's pre-read capture, and ``clear_user_revocation_if_before`` reads
-    exactly that ordering to tell a concurrent revocation (leave it; the pair
-    must die) from one that preceded the login (clear it; the user is signing
-    back in). A truncated write would fake the second case.
+    the login's pre-read capture, and a token's full-precision basis is
+    compared against exactly that ordering (#2050): a truncated write would let
+    the straddling pair live.
     """
     now = datetime.now(timezone.utc)
     await store.revoke_user_tokens_before(user_id, now.timestamp(), TTL)
@@ -353,6 +352,9 @@ async def test_decoy_and_real_reset_mints_stamp_the_same_instant(algo):
     # branch under the split, so it may differ by the second boundary between
     # the two mints; a 1s bound still refutes a lifetime-sized divergence.
     assert _claims(real.token)["iat"] == _claims(decoy.token)["iat"]
+    # And the full-precision basis both carry (#2050).
+    assert _claims(real.token)["fm_basis"] == _claims(decoy.token)["fm_basis"]
+    assert _claims(real.token)["fm_basis"] == captured.timestamp()
     assert abs(_claims(real.token)["exp"] - _claims(decoy.token)["exp"]) <= 1
 
 

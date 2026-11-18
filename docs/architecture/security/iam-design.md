@@ -277,7 +277,9 @@ change/reset and role-change flows in `UserService` — goes through
 that same store at `{token_revocation_prefix}user:{user_id}`
 (`revoked:token:user:{user_id}` by default), holding the revocation instant
 with a TTL that outlives the longest-lived refresh token. Every validate path
-then rejects a token whose `iat` is at or before its user's watermark.
+then rejects a token whose basis is at or before its user's watermark: its
+`fm_basis` claim at full precision, or its whole-second `iat` when that claim is
+unusable (§"The basis rule and the final stamp" below).
 
 Per-token entries are namespaced separately, at
 `{token_revocation_prefix}jti:{jti}`. The two namespaces sit under distinct
@@ -349,8 +351,9 @@ survives it while carrying pre-change state. So every
 `IJWTTokenGenerator.generate_*` method requires a `state_read_at` argument —
 captured by the caller before its first read of any state the claims derive
 from (the user row, the presented refresh token, the reset-request account
-lookup) — and stamps `iat` from it. A mint whose reads straddled a
-revocation then necessarily carries `iat <= watermark` and dies with it. The
+lookup) — and stamps `iat` (and `fm_basis`) from it. A mint whose reads
+straddled a revocation then carries a basis at or before the watermark the
+revocation leaves (its final stamp, below) and dies with it. The
 argument is required with no default, so a future mint path that forgets it
 fails loudly rather than silently reopening the straddle; a `state_read_at`
 more than a couple of seconds in the future is refused outright (a miswired
@@ -412,14 +415,14 @@ shapes the response.
 
 **Limits of the watermark, stated precisely:**
 
-- Matching is on `sub` + `iat`, so completeness holds only while every mint
-  path emits both and keys `sub` to the same user_id the watermark is written
-  under. All current minters do; a test pins it, because nothing in the type
-  system enforces it.
+- Matching is on `sub` + `iat` (and `fm_basis` where usable), so completeness
+  holds only while every mint path emits them and keys `sub` to the same
+  user_id the watermark is written under. All current minters do; a test pins
+  it, because nothing in the type system enforces it.
 - With clock skew between the revoking and minting processes, "every token
-  issued at or before the revocation instant" is measured on the *revoker's*
-  clock. If a minter's clock runs ahead by S seconds, tokens minted up to S
-  seconds before the revocation can survive it.
+  whose basis is at or before the watermark" is measured on the *revoker's*
+  clock. The final stamp's allowance absorbs skew up to
+  `REVOCATION_CLOCK_ALLOWANCE`; past it, residual (b) below.
 - Revocation state outlives the API process on **standalone** (#828), where it
   is written to `token_revocations`. **Cloud is a known gap, not a guarantee**:
   it keeps the Redis store because that cache is an external service which
@@ -445,13 +448,11 @@ shapes the response.
   expires the watermark before them and brings them back, which durability
   alone does not fix: a persisted row with too short a TTL is just as gone at
   its deadline. The per-jti arm has read the same ceiling since #830.
-- A local-mode sign-in (`POST /auth/login`, served only under
-  `AUTH_MODE=local`) clears a watermark that predates it (below). SSO and
-  OAuth sign-ins mint without clearing, and cloud refuses to boot without
-  `AUTH_MODE=oauth`, so on cloud a watermark lives its full ceiling from the
-  latest write to it — and every sign-out writes one, as does every other
-  account-wide revocation. There the reach of a revocation is bounded by the
-  ceiling, not by the account's next login.
+- No sign-in clears a watermark, in any auth mode (#2050). SSO and OAuth
+  sign-ins mint without clearing, and so does `POST /auth/login`, so a
+  watermark lives its full ceiling from the latest write to it — and every
+  sign-out writes one, as does every other account-wide revocation. The reach
+  of a revocation is bounded by the ceiling, not by the account's next login.
 
 **The watermark keyspace is measured.** The gauge
 `faultmaven_auth_revocation_watermarks` reports how many per-user watermarks can
@@ -465,36 +466,53 @@ A count that fails sets it to `NaN`, so a failure reads as unknown, never as a
 stale number. The store is deployment-wide, so every API replica reports the
 same value: aggregate it with `max()`, not `sum()`.
 
-**A fresh authentication supersedes a watermark that predates it.** The
-watermark means "everything issued before instant T is stale", and an
-authentication whose state reads all began after T is not. `POST /auth/login`
-therefore calls `clear_user_revocation_if_before(user_id, state_read_at)` before
-minting, gated on the account still being active and undeleted.
+**The basis rule and the final stamp (#2050).** `iat` has whole-second
+granularity, so it cannot tell a sign-in that began after a sign-out in the same
+second from a mint whose reads straddled it (#831). Every token both generators
+mint (access, refresh and password reset, decoy included) therefore also
+carries `fm_basis`: the same instant `iat` is stamped from, unfloored.
+`revocation_reason` compares `fm_basis <= W` at full precision when the claim is
+a finite non-bool number in `iat`'s second, and `iat <= floor(W)` otherwise —
+the stricter answer. A stored `W` that is not a finite number refuses
+(`CorruptRevocationEntry`). Nothing clears a watermark: a sign-in after a
+revocation is live by its basis, and tokens minted before it stay dead.
 
-Without it, deliberate sign-out — which is account-scoped, so it writes a
-watermark on an ordinary user action rather than an admin one — locks the user
-out of signing back in for the remainder of that second: `iat` has whole-second
-granularity and the rule is `iat <= watermark`, so a login landing in the same
-second mints an access *and* a refresh token that are rejected on sight. The
-login reports success and every request 401s, with no way forward because the
-refresh token is dead too. Across replicas the window is not one second but the
-clock skew between the pod that wrote the watermark and the pod that mints.
+A precise compare needs the watermark to be later than every capture that could
+have missed it. `AuthService.revoke_user_tokens` takes `W1 = now` before its
+write lands, so a refresh captured in between reads no watermark and mints with
+a basis after `W1`. So it writes twice: `W1`, then — once that write has
+returned — a final stamp `W2 = now + REVOCATION_CLOCK_ALLOWANCE` from a fresh
+clock read, and returns `W2`. Either write failing raises `ServiceError` (fail
+closed). The allowance (`config/settings.py`, 100 ms) is the deployment's
+clock-sync assumption: replicas' clocks agree within it. The user-arm write is
+monotone — the stored watermark is the latest written, so a second revocation's
+`W1` cannot lower an earlier `W2` — while a corrupt stored value is overwritten.
+The TTL adds the allowance, rounded up to a second. Deleting a user revokes
+before the delete (a failed revoke leaves the account intact) and stamps once
+more after it, because a refresh or SSO exchange can read the account between
+the two.
 
-The comparison is against the caller's **pre-read capture, not `now`**, and this
-is what keeps it from undoing the straddle protection above: a watermark written
-*during* the login's reads does not predate the capture, is left in place, and
-the pair that login mints still dies. Second granularity cannot separate those
-two cases, so the stored watermark keeps a sub-second fraction (floored again by
-`is_user_revoked`, so the revocation rule itself is unchanged), and the
-compare-and-delete runs server-side in Redis so a revocation landing between the
-read and the delete cannot be deleted on the strength of the previous value.
+What this guarantees: after `revoke_user_tokens` returns, every mint whose
+capture precedes its revocation read, and preceded that return, has a basis at
+or before the stored watermark, given skew below the allowance. The residuals,
+stated as residuals:
 
-Residual: a watermark from an admin revocation that the user's own later
-sign-out has already overwritten is indistinguishable from the sign-out's own.
-The sequence revoke → user signs out → user signs in therefore revives tokens
-minted before the admin revocation, for the remainder of their TTL.
-Deactivation and deletion are unaffected — both block the sign-in — so what can
-revive is stale roles or scopes, bounded by the access-token lifetime.
+- (a) A sign-in captured within the allowance after a revocation returns is
+  born dead and needs one more sign-in — including a local-mode login
+  immediately after logout: the login no longer clears, and standalone applies
+  the same allowance.
+- (b) A mint that straddled the revocation survives only on a replica whose
+  clock runs *ahead* of the revoker's by more than the allowance.
+- (c) A two-refresh chain that completes between `W2`'s capture and its write
+  landing, while `W2` is still the allowance in the future, is practically
+  infeasible.
+- (d) If the post-delete stamp fails, the delete stands and the route says so in
+  its `message`; a mint that read the account before the delete may live until
+  its token expires.
+- (e) The OAuth authorize leg reads revocation before its capture
+  (`api/oauth.py` `require_authentication` → `oauth_service.py`
+  `create_authorization_code`), so a revocation landing between them is not
+  covered. Moving the capture is out of scope.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who
@@ -511,10 +529,10 @@ tokens to report, so the endpoint returns the watermark
 (`{"message": ..., "revoked_before": "<ISO 8601>"}`) rather than a token
 count.
 
-Comparison is `iat <= watermark`, not `<`: `iat` has whole-second
-granularity, and honouring a token minted in the same second as a revocation
-is the more dangerous of the two rounding errors. A user who re-authenticates
-within that same second gets one rejected token and succeeds on retry.
+Comparison is `<=`, not `<`: a basis equal to the watermark is revoked. A token
+without a usable `fm_basis` falls back to whole seconds, where honouring a token
+minted in the same second as a revocation is the more dangerous of the two
+rounding errors, so such a token minted in that second is refused.
 
 Both revocation arms share one rule (`revocation_reason` in
 `jwt_token_generator.py`) so no validate path can diverge from another, and
@@ -523,7 +541,7 @@ and the watermark *write* propagates store errors — an admin never gets a
 revocation confirmation while the user's tokens keep authenticating.
 
 **That one rule governs every token type this system issues, including
-password-reset tokens (#829).** Reset tokens carry `sub`, `iat` and `jti`, so
+password-reset tokens (#829).** Reset tokens carry `sub`, `iat`, `fm_basis` and `jti`, so
 `UserService.reset_password` runs `revocation_reason` against their claims
 exactly as the access and refresh paths do: revoking a user's tokens — or
 deactivating them, which revokes — kills any outstanding reset link with them.
@@ -2391,7 +2409,8 @@ one mode and was silently inert in the other (#888). Settings construction now
 watermark has to outlive every token that could still be presented, including
 tokens minted before an operator lowered the knob, so it is held against the
 schema **ceiling** on token lifetime (`MAX_TOKEN_LIFETIME_DAYS`) rather than
-against whatever is configured at the moment of revocation (#828).
+against whatever is configured at the moment of revocation (#828), padded by the
+basis carry and the final stamp's clock allowance.
 
 ### Configuration File
 

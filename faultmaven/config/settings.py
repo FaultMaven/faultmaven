@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import secrets
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -1792,6 +1793,15 @@ MAX_OAUTH_CODE_EXPIRY_SECONDS = 1800
 #: slowly-redeemed code would outlive the watermark entry and rotate back to
 #: life for up to this window.
 MAX_MINT_BASIS_CARRY_SECONDS = MAX_OAUTH_CODE_EXPIRY_SECONDS
+
+#: How far ahead of the revoker's clock the final watermark stamp is written
+#: (#2050). The deployment's clock-sync assumption: replicas' clocks agree within
+#: this (NTP keeps a cluster's nodes within a few ms). ``revoke_user_tokens``
+#: stamps ``now + allowance`` once its first write has landed, so a mint whose
+#: capture preceded that landing dies on any replica within the allowance. Kept
+#: below an SSO round trip: a sign-in captured inside it after a revocation is
+#: born dead and needs one more sign-in.
+REVOCATION_CLOCK_ALLOWANCE = timedelta(milliseconds=100)
 
 #: Every env name that has EVER addressed the two token-expiry fields except the
 #: current pair, mapped to the current name that replaces it. Two generations:

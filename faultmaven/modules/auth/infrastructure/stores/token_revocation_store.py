@@ -48,10 +48,9 @@ Redis store, that means each per-user key is held in memory for the ceiling
 rather than for the configured refresh lifetime. Every sign-out writes a
 watermark (``logout`` → ``_revoke_account_wide``), as does every other caller
 of ``AuthService.revoke_user_tokens``, and each write restarts the key's
-lifetime. Only a sign-in through ``local_login`` clears one early;
-``require_local_mode`` serves that route only under ``AUTH_MODE=local``, which
-cloud refuses at boot, and SSO and the OAuth token exchange mint without
-clearing. So on the Redis store a key lives its full lifetime, and the
+lifetime. No sign-in clears one, in any auth mode (#2050): a mint after a
+revocation is told apart from a straddling one by its full-precision basis,
+not by removing the watermark. So a key lives its full lifetime, and the
 population is one key per user who signed out or was revoked within it. The
 alternative is the resurrection the ceiling exists to prevent, so the cost is
 accepted rather than traded away.
@@ -76,11 +75,12 @@ in-process FakeRedis were never on disk to carry over.
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
@@ -89,6 +89,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     ITokenRevocationStore,
     RefreshClaim,
+    RevocationBasis,
     SequentialRevocationState,
 )
 
@@ -114,39 +115,39 @@ def escape_glob(text: str) -> str:
     return text
 
 
-def _watermark_seconds(raw, *, field: str = "watermark") -> int:
-    """A stored watermark as whole seconds, or refuse (#1478).
+def _watermark_covers(raw, basis: RevocationBasis) -> bool:
+    """Whether a stored watermark covers a token's basis, or refuse (#1478, #2050).
 
-    **One helper for all three parse sites** — the Redis arm's
+    **One helper for all three compare sites** — the Redis arm's
     ``is_user_revoked`` and the SQL arm's ``is_user_revoked`` and
     ``revocation_state`` — because the rule is one rule and a second copy is
-    the half that gets missed. All three previously spelled
-    ``int(float(raw))`` inline, and a corrupt value therefore raised a bare
-    ``ValueError``/``TypeError`` that the request path could not tell from a
-    bug in our own arithmetic.
-
-    ``float`` then ``int``, so a watermark written by a pre-fraction build
-    (``"1700000000"``) reads identically to one written by this one, and the
-    revocation rule stays ``iat <= watermark`` at whole-second granularity.
+    the half that gets missed. A precise basis (``fm_basis``) is covered when
+    ``basis <= watermark`` at full precision; a whole-second ``iat`` when
+    ``iat <= floor(watermark)``. A watermark written by a pre-fraction build
+    (``"1700000000"``) reads as the same instant.
 
     The ``try`` is deliberately this small. Everything inside it is the
-    interpretation of a value that came out of storage, so a failure here can
+    interpretation of a value that came out of storage, so a failure there can
     only mean the stored value is corrupt — which is what lets
     :class:`CorruptRevocationEntry` be classified as a store read failure
     without the classifier having to trust a broad exception type.
 
     Raises:
-        CorruptRevocationEntry: The stored value is not readable as a number.
-            ``TypeError`` as well as ``ValueError``: a ``NULL`` column gives
-            ``int(float(None))``, which is the same corruption by another
-            route.
+        CorruptRevocationEntry: The stored value is not readable as a finite
+            number. ``TypeError`` as well as ``ValueError``: a ``NULL`` column
+            gives ``float(None)``, the same corruption by another route.
     """
     try:
         if isinstance(raw, bytes):
             raw = raw.decode()
-        return int(float(raw))
+        watermark = float(raw)
     except (TypeError, ValueError) as exc:
-        raise CorruptRevocationEntry(raw, field=field) from exc
+        raise CorruptRevocationEntry(raw, field="watermark") from exc
+    if not math.isfinite(watermark):
+        raise CorruptRevocationEntry(raw, field="watermark")
+    if basis.precise:
+        return basis.seconds <= watermark
+    return int(basis.seconds) <= math.floor(watermark)
 
 
 class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore):
@@ -222,19 +223,29 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
             return RefreshClaim.ALREADY_REDEEMED
         return RefreshClaim.REVOKED
 
+    #: Keep the later of the stored and the new watermark, with the new TTL
+    #: (#2050). A stored value that is not a finite number is overwritten. The
+    #: stored string is written back as it was, so no precision is lost. SET
+    #: EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
+    _RAISE_WATERMARK = """
+    local raw = redis.call('GET', KEYS[1])
+    local stored = raw and tonumber(raw)
+    if not (stored and stored < math.huge and stored > tonumber(ARGV[1])) then
+        raw = ARGV[1]
+    end
+    redis.call('SET', KEYS[1], raw, 'EX', ARGV[2])
+    return 0
+    """
+
     async def revoke_user_tokens_before(
         self, user_id: str, revoked_at: float, ttl: int
     ) -> None:
         key = self._make_user_key(user_id)
-        # Stored at full precision, compared at whole seconds. `is_user_revoked`
-        # floors it back, so the revocation rule is bit-for-bit what it was when
-        # this held an int — the fraction exists only for
-        # `clear_user_revocation_if_before`, which has to order this instant
-        # against a caller's capture and cannot do that at second granularity.
-        # SET EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
-        await self.redis.set(key, str(revoked_at), ex=ttl)
+        # Stored at full precision: a precise basis is compared against it
+        # unfloored (#2050).
+        await self.redis.eval(self._RAISE_WATERMARK, 1, key, str(revoked_at), ttl)
 
-    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+    async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
         key = self._make_user_key(user_id)
         raw = await self.redis.get(key)
         if raw is None:
@@ -245,30 +256,7 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
         # is preferable to silently guessing at a corrupt value here. The
         # decode lives inside the helper for the same reason the parse does:
         # a body that is not valid UTF-8 is corruption too.
-        return issued_at <= _watermark_seconds(raw, field="watermark")
-
-    #: Delete the watermark only if it is strictly older than ARGV[1].
-    #:
-    #: Server-side so the read and the delete are one operation. Read-then-
-    #: delete in Python would let a revocation landing between the two be
-    #: deleted on the strength of having inspected the *previous* watermark —
-    #: which is the straddle (#831) this comparison exists to respect, arrived
-    #: at by a different route.
-    _CLEAR_IF_BEFORE = """
-    local raw = redis.call('GET', KEYS[1])
-    if raw and tonumber(raw) and tonumber(raw) < tonumber(ARGV[1]) then
-        redis.call('DEL', KEYS[1])
-        return 1
-    end
-    return 0
-    """
-
-    async def clear_user_revocation_if_before(
-        self, user_id: str, instant: float
-    ) -> bool:
-        key = self._make_user_key(user_id)
-        cleared = await self.redis.eval(self._CLEAR_IF_BEFORE, 1, key, repr(instant))
-        return bool(cleared)
+        return _watermark_covers(raw, basis)
 
     async def cleanup_expired(self) -> int:
         return 0  # Redis handles expiration automatically
@@ -315,15 +303,6 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     the table without a scheduled job that could be forgotten at wiring time —
     and nothing calls ``cleanup_expired``, in this class or the Redis one, so
     the opportunistic path is the one that runs.
-
-    ``clear_user_revocation_if_before`` deliberately does NOT sweep, which is
-    why the rule is stated as "the writes that add" rather than "every write":
-    its one production caller is ``local_login``, which runs it on every
-    local-mode sign-in of an active account, so sweeping there would put a
-    table-wide delete on that sign-in path to reclaim rows that a revocation
-    write will reclaim anyway. No other sign-in calls it. It also refuses to
-    delete an elapsed watermark, by design (Redis answers the same, its key
-    having already gone).
 
     The cost is bounded either way: measured over 20,000 live 90-day
     watermarks, a revocation write carrying the sweep costs 3.81ms, and the one
@@ -383,9 +362,10 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # PostgreSQL constructs cannot drift (they are NOT interchangeable
             # — see ``db_compat``).
             #
-            # A later watermark overwrites an earlier one unconditionally (the
-            # interface's contract: "the caller has already decided to
-            # invalidate everything outstanding"). A jti entry is only ever
+            # The stored watermark is the latest written (#2050): a write below
+            # a stored finite number keeps it, and anything else is
+            # overwritten — on SQLite a text value too, which ``typeof`` tells
+            # apart (it sorts above every number). A jti entry is only ever
             # lengthened, and keeps its writer's mark, so a revocation can
             # neither shorten nor relabel a claim (#2764).
             statement = dialect_insert(session, TokenRevocationModel).values(
@@ -396,16 +376,22 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             )
             current = TokenRevocationModel.expires_at
             proposed = statement.excluded.expires_at
+            postgresql = session.get_bind().dialect.name == "postgresql"
             if scope == _JTI_SCOPE:
                 later = (
                     func.greatest(current, proposed)
-                    if session.get_bind().dialect.name == "postgresql"
+                    if postgresql
                     else func.max(current, proposed)
                 )
                 set_ = {"expires_at": later}
             else:
+                stored = TokenRevocationModel.revoked_at
+                written = statement.excluded.revoked_at
+                keep = and_(stored > written, stored < math.inf)
+                if not postgresql:
+                    keep = and_(func.typeof(stored).in_(("real", "integer")), keep)
                 set_ = {
-                    "revoked_at": statement.excluded.revoked_at,
+                    "revoked_at": case((keep, stored), else_=written),
                     "expires_at": proposed,
                 }
             await session.execute(
@@ -485,7 +471,7 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
     ) -> None:
         await self._upsert(_USER_SCOPE, user_id, revoked_at, ttl)
 
-    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+    async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
         async with self._session_factory() as session:
             result = await session.execute(
                 select(TokenRevocationModel.revoked_at).where(
@@ -497,13 +483,13 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             row = result.first()
             if row is None:
                 return False
-            # Floored to whole seconds, exactly as the Redis arm does — the
-            # same helper, so the two arms cannot drift on either the rule or
-            # what a corrupt value does. A NULL ``revoked_at`` lands here as
-            # ``None`` and refuses rather than raising a bare TypeError.
-            return issued_at <= _watermark_seconds(row[0], field="watermark")
+            # The same helper as the Redis arm, so the two arms cannot drift on
+            # either the rule or what a corrupt value does. A NULL
+            # ``revoked_at`` lands here as ``None`` and refuses rather than
+            # raising a bare TypeError.
+            return _watermark_covers(row[0], basis)
 
-    async def revocation_state(self, jti, user_id, issued_at):
+    async def revocation_state(self, jti, user_id, basis):
         """Both arms in ONE session and ONE query (see the base class).
 
         The request path asks this on every authenticated request, and here a
@@ -528,9 +514,9 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
         deadline frees it rather than leaving it to the server.
         """
         async with asyncio.timeout(self.read_timeout_seconds):
-            return await self._revocation_state(jti, user_id, issued_at)
+            return await self._revocation_state(jti, user_id, basis)
 
-    async def _revocation_state(self, jti, user_id, issued_at):
+    async def _revocation_state(self, jti, user_id, basis):
         if not jti and not user_id:
             return False, False
 
@@ -540,7 +526,7 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                 (TokenRevocationModel.scope == _JTI_SCOPE)
                 & (TokenRevocationModel.subject == jti)
             )
-        if user_id and issued_at is not None:
+        if user_id and basis is not None:
             wanted.append(
                 (TokenRevocationModel.scope == _USER_SCOPE)
                 & (TokenRevocationModel.subject == user_id)
@@ -563,15 +549,13 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             for scope, revoked_at in rows.all():
                 if scope == _JTI_SCOPE:
                     token_revoked = True
-                elif issued_at is not None:
-                    # Floored to whole seconds, the same rule ``is_user_revoked``
-                    # applies — one comparison, spelled once per arm. THIS is
-                    # the site the authenticated request path reaches, so it is
-                    # the one where a corrupt row used to produce a bare
-                    # ValueError/TypeError and a generic 401 (#1478).
-                    user_revoked = issued_at <= _watermark_seconds(
-                        revoked_at, field="watermark"
-                    )
+                elif basis is not None:
+                    # The rule ``is_user_revoked`` applies, through the same
+                    # helper. THIS is the site the authenticated request path
+                    # reaches, so it is the one where a corrupt row used to
+                    # produce a bare ValueError/TypeError and a generic 401
+                    # (#1478).
+                    user_revoked = _watermark_covers(revoked_at, basis)
             if token_revoked:
                 return True, False
             return False, user_revoked
@@ -588,36 +572,6 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
                 )
             )
             return int(result.scalar_one())
-
-    async def clear_user_revocation_if_before(
-        self, user_id: str, instant: float
-    ) -> bool:
-        async with self._session_factory() as session:
-            # ONE statement, for the same reason the Redis arm uses a Lua
-            # script: a read-then-delete in Python would let a revocation that
-            # landed between the two be deleted on the strength of the
-            # PREVIOUS watermark — the straddle (#831) this comparison exists
-            # to respect.
-            result = await session.execute(
-                delete(TokenRevocationModel).where(
-                    TokenRevocationModel.scope == _USER_SCOPE,
-                    TokenRevocationModel.subject == user_id,
-                    TokenRevocationModel.revoked_at < instant,
-                    # An ELAPSED watermark is not there to clear. Redis answers
-                    # False because its key is already gone; without this the
-                    # SQL arm answered True, because nothing had swept the row
-                    # yet — the two arms disagreeing about whether a login
-                    # superseded a revocation that had already stopped
-                    # revoking. Every read here filters on the deadline, and
-                    # this is a read that happens to delete.
-                    TokenRevocationModel.expires_at > datetime.now(timezone.utc),
-                )
-            )
-            await session.commit()
-            # ``> 0``, not ``bool(...)``: -1 means "the driver could not count",
-            # and bool(-1) is True — reporting a clear that may not have
-            # happened. Same guard as ``_sweep``.
-            return max(result.rowcount or 0, 0) > 0
 
     async def cleanup_expired(self) -> int:
         async with self._session_factory() as session:
