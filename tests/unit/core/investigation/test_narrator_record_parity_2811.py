@@ -413,6 +413,30 @@ async def _held_check():
     return case
 
 
+async def _held_check_on_a_false_alarm():
+    """The held check FULFILLED on rows from before its ask, then the problem
+    found a false alarm: the finding supersedes no FULFILLED need, so the
+    check still holds while readiness answers FALSE_ALARM first."""
+    from faultmaven.core.investigation.problem_status import invalidate_problem
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _held_case,
+    )
+
+    case = _held_case()
+    need = case.evidence_needs[-1]
+    need.state = NeedState.FULFILLED
+    need.fulfilling_evidence_ids = list(
+        case.problem_verification.verifying_evidence_ids
+    )
+    invalidate_problem(
+        case,
+        evidence_ids=list(case.problem_verification.verifying_evidence_ids),
+        basis="the scrape target was never down",
+    )
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    return case
+
+
 async def _held_check_then_interception():
     """A check asked after the fix holds the resolution, and an interception
     run since, re-checked gone then present; committed as a step-0 exit."""
@@ -524,6 +548,7 @@ FIXTURES = {
     "terminal_qa": (_terminal_qa, set()),
     "told_then_committed": (_told_then_committed, set()),
     "held_check": (_held_check, set()),
+    "held_check_on_a_false_alarm": (_held_check_on_a_false_alarm, set()),
     "held_check_then_interception": (_held_check_then_interception, set()),
     "2609_relapsed_mitigation": (_relapsed_mitigation, {"mitigation.verified"}),
     "2582_cited_failure_re_rooted": (_2582, {"windows"}),

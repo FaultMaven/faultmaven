@@ -460,19 +460,29 @@ async def test_a_disagreement_first_stored_by_a_patch_is_counted_once(counted, t
 
 
 def test_each_shape_step_runs_once_and_only_on_its_own_shape(monkeypatch):
-    """A record already at shape 2, moved to a shape 3 whose step adds
-    nothing: an off-cycle FAILED window it holds non-final stays non-final;
-    only the 1 -> 2 step marks what shape 1 held final."""
+    """A record at the current shape, moved to the next one by a step that
+    adds nothing: that step runs once, on a record of the shape below it, an
+    off-cycle FAILED window the record holds non-final stays non-final (only
+    the 1 -> 2 step marks what shape 1 held final), and the shape rises."""
     case, _root, _hyp, fix = _failed_after_a_cycle()
     record_before_save(case, at=WritePoint.COMMIT)
     stored = case.progress.outcome
+    assert stored.shape == CURRENT_OUTCOME_SHAPE, "premise: written current"
     assert _window(stored, fix.action_id).final_at is None, "premise: off-cycle"
-    monkeypatch.setattr(outcome_module, "CURRENT_OUTCOME_SHAPE", 3)
-    monkeypatch.setitem(outcome_module.SHAPE_STEPS, 3, lambda prior, *_: prior)
+    following = CURRENT_OUTCOME_SHAPE + 1
+    ran: list[int] = []
+
+    def step(prior, *_):
+        ran.append(prior.shape)
+        return prior
+
+    monkeypatch.setattr(outcome_module, "CURRENT_OUTCOME_SHAPE", following)
+    monkeypatch.setitem(outcome_module.SHAPE_STEPS, following, step)
 
     folded = compute_case_outcome(stored, case, at=WritePoint.COMMIT)
 
-    assert folded.shape == 3
+    assert ran == [CURRENT_OUTCOME_SHAPE]
+    assert folded.shape == following
     assert _window(folded, fix.action_id).final_at is None
 
 

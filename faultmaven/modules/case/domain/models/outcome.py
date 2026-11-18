@@ -384,7 +384,13 @@ class ResolutionOutcome(BaseModel):
     confirmation_gaps: List[ConfirmationGap] = Field(default_factory=list)
     cause_row_ids: List[str] = Field(default_factory=list)
     problem_row_ids: List[str] = Field(default_factory=list)
-    pending_check_need_id: Optional[str] = None
+    pending_check_need_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The need ``pending_symptom_check`` holds, whatever readiness "
+            "answered (it returns FALSE_ALARM first)"
+        ),
+    )
     pending_check_reason: Optional[PendingCheckReason] = Field(
         default=None,
         description="Why the held need holds, beside its id (shape 4)",

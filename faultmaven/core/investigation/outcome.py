@@ -73,6 +73,7 @@ from faultmaven.core.investigation.cause_assurance import (
     mitigation_refusal_reason,
     mitigation_settled,
     off_cause_attempt,
+    pending_symptom_check,
     subject_index,
     symptom_elimination_rows,
     unbound_post_fix_rows,
@@ -623,8 +624,9 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
         elif fold.mint is None:
             confirmed = []  # minted only where finals are (#2811)
     # The held need, and why it holds (ruling 3 of 2026-11-17): FULFILLED
-    # holds only on rows from before its ask.
-    check = readiness.pending_check
+    # holds only on rows from before its ask. Read whatever readiness
+    # answered, which returns before it on a false alarm.
+    check = pending_symptom_check(case, subjects=subjects, windows=windows)
     reason = None
     if check is not None:
         reason = PendingCheckReason.UNANSWERED

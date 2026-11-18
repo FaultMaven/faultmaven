@@ -1140,13 +1140,17 @@ written*, as amended by #2811, ruled 2026-11-15):
   request text), the window verdicts ruling Q1 (a) keeps fresh until S3
   (`FixVerificationFresh`) and the needs pool (`narration.needs.NeedsView`).
   A need's state is the pool's own, never an outcome fact (ruled 2026-11-17),
-  so the narrators read it through that one typed, text-free view; the held
-  need, why it holds (`resolution.pending_check_reason`: unanswered, or
-  FULFILLED only on rows from before the ask) and a standing resolve decline
-  are the record's. The record is folded at most once per prompt assembly
+  so the narrators read it through that one typed, text-free view, and only
+  where the need lines print; the held need, why it holds
+  (`resolution.pending_check_reason`: unanswered, or FULFILLED only on rows
+  from before the ask) and a standing resolve decline are the record's. The
+  held need is `pending_symptom_check`'s, written whatever readiness
+  answered, so a false-alarm finding (which readiness answers first) keeps
+  it. The record is folded at most once per prompt assembly
   (`NarrationFold`), and only where the block is shown. A fold, fresh read,
-  needs read or render that raises replaces the block with one declared
-  line; each failure is logged, and counted once per assembly on
+  needs read, unreadable need text or render that raises replaces the block
+  with one declared line; each distinct failure is logged once, and a failure
+  counted once per assembly, on
   `case_outcome_write_failures_total{at="narration"}`.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound

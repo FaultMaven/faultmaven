@@ -414,6 +414,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "confirmation_stamp_rows": 1,
         "declined_resolve_entry": 1,
         "off_cause_attempt": 1,
+        "pending_symptom_check": 1,
         "resolution_record_lines": 1,
         "symptom_elimination_rows": 1,
     },

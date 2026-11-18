@@ -1,6 +1,6 @@
 """The ``<fix_verification>`` block's fixture corpus (#2811 S2b-1a).
 
-The 25 narration fixtures of ``test_narrator_record_parity_2811`` (its 11
+The 26 narration fixtures of ``test_narrator_record_parity_2811`` (its 12
 ``FIXTURES`` and 14 ``REASONS``), plus one per block line none of them
 renders: the mitigation's lines (each state, the unregistered relief with and
 without the gate's refusal, no rows on record, beside a dated fix), "Fix
@@ -14,8 +14,9 @@ adds one fixture per declared difference.
 ``render_all`` renders each through ``build_fix_verification_block``. Its
 output on ``main`` is ``fix_verification_oracle_2811.json``, captured by
 running ``render_all`` with this file copied into that tree, never typed by
-hand: at 9b4d0b1e1, and at 92e98cdbf for ``NEEDS`` and ``D:invalidated``. Ids are made deterministic while a fixture is
-built (``_deterministic_ids``), so the capture is compared byte for byte.
+hand: at 9b4d0b1e1, and at 92e98cdbf for ``NEEDS`` and the parity corpus's
+``held_check_on_a_false_alarm``. Ids are made deterministic while a fixture
+is built (``_deterministic_ids``), so the capture is compared byte for byte.
 """
 
 from __future__ import annotations
@@ -279,16 +280,23 @@ NEEDS = {
     "N:more_than_five": lambda: _needs(extra=6),
     "N:none_stopped": lambda: _needs("stopped"),
     "N:long_request": lambda: _needs(long=True),
+    "N:invalidated": lambda: _invalidated(),
 }
 
 
 async def _invalidated():
-    """A held need on a problem since found a false alarm: readiness answers
-    FALSE_ALARM before it reads the held need."""
-    from faultmaven.modules.case.contracts import ProblemStatus
+    """The problem found a false alarm (``invalidate_problem``) while a need
+    FULFILLED on rows from before its ask holds the resolution: the finding
+    supersedes the open symptom need, and the held one stays listed and
+    marked. Readiness answers FALSE_ALARM before it reads the held need."""
+    from faultmaven.core.investigation.problem_status import invalidate_problem
 
-    case = await _needs("pending")
-    case.progress.problem_status = ProblemStatus.INVALIDATED
+    case = await _needs("fulfilled", extra=1)
+    invalidate_problem(
+        case,
+        evidence_ids=list(case.problem_verification.verifying_evidence_ids),
+        basis="the scrape target was never down",
+    )
     return case
 
 
@@ -334,10 +342,9 @@ DECLARED = {
     "accepted_in_turn": ("D:carried_turn", _carried_turn),
     "gone_action": ("D:gone_action", _gone_action),
     "omitted": ("D:omitted", _unreadable_record),
-    "invalidated": ("D:invalidated", _invalidated),
 }
 
-#: Every fixture, by name: the parity corpus's 25, the added ones, then the
+#: Every fixture, by name: the parity corpus's 26, the added ones, then the
 #: declared differences'.
 CASES = {
     **{name: build for name, (build, _declared) in parity.FIXTURES.items()},

@@ -7,15 +7,16 @@ action or a need by id (``content_by_id``, ruling 5's ``content(id)``), the
 window verdicts ruling Q1 (a) keeps read fresh until the deciders switch
 (stage S3), which the call site computes with today's deciders and passes in
 as ``FixVerificationFresh``, and the needs pool (``NeedsView``, ruling 2 of
-2026-11-17). It renders the whole block. The held need, its mark and
-``DECLINE_STILL_BINDS`` are the record's (``resolution.pending_check_need_id``,
-``pending_check_reason``, ``declined_stands``; S2b-1b-i).
+2026-11-17), read only where the need lines print. It renders the whole
+block. The held need, its mark and ``DECLINE_STILL_BINDS`` are the record's
+(``resolution.pending_check_need_id`` and ``pending_check_reason``, written
+from ``pending_symptom_check`` whatever readiness answered, and
+``declined_stands``; S2b-1b-i). A need whose text does not read raises, so
+the call site prints the declared ``OMITTED`` line, never an empty need.
 
 Where it may differ from a fresh read, it prints the record's: an attempt's
 carried ``accepted_in_turn``, and a carried FAILED attempt whose action no
-longer reads (declared; neither is known to be reachable); and on an
-INVALIDATED problem no held mark, since readiness answers FALSE_ALARM before
-it reads the held need (declared).
+longer reads (declared; neither is known to be reachable).
 """
 
 from dataclasses import dataclass, field
@@ -319,17 +320,17 @@ def _need_lines(resolution: ResolutionOutcome, needs: NeedsView, content) -> lis
     live = [n for n in listed if n.need_id == held or not n.exhausted]
     live.sort(key=lambda n: n.need_id != held)
     stopped = len(listed) - len(live)
+    lines = ["Outstanding symptom-verification needs:"]
+    for n in live[:MAX_NEEDS]:
+        text = content(n.need_id)
+        if text is None:
+            raise LookupError(f"no text reads for need {n.need_id}")
+        mark = _held_mark(resolution) if n.need_id == held else ""
+        lines.append(f"  - [{n.need_id}] {_truncate_request_text(text)}{mark}")
     if not live:
         lines = ["Outstanding symptom-verification needs: none"]
-    else:
-        lines = ["Outstanding symptom-verification needs:"]
-        lines += [
-            f"  - [{n.need_id}] {_truncate_request_text(content(n.need_id) or '')}"
-            + (_held_mark(resolution) if n.need_id == held else "")
-            for n in live[:MAX_NEEDS]
-        ]
-        if len(live) > MAX_NEEDS:
-            lines.append(f"  …and {len(live) - MAX_NEEDS} more")
+    elif len(live) > MAX_NEEDS:
+        lines.append(f"  …and {len(live) - MAX_NEEDS} more")
     if stopped:
         lines.append(
             f"  ({stopped} the engine has STOPPED surfacing: see <evidence_needs>)"
@@ -342,12 +343,12 @@ def render_fix_verification(
     identity: CaseIdentity,
     content: Callable[[str], Optional[str]],
     fresh: FixVerificationFresh,
-    needs: NeedsView,
+    needs: Callable[[], NeedsView],
 ) -> Optional[tuple[str, ...]]:
     """The block's lines, its tags included, or None where no block is shown:
     in TREATMENT, and in MITIGATION once a SOLUTION or the mitigation's
     attempt is dated; with only the mitigation dated, its lines alone and no
-    needs (#2100)."""
+    needs (#2100). ``needs`` is called only where the need lines print."""
     stage = (
         identity.current_stage if identity.state == CaseState.INVESTIGATING else None
     )
@@ -378,6 +379,6 @@ def render_fix_verification(
             else ["Fix attempts: none recorded"]
         ),
         *_leg_lines(outcome, attempts, fresh),
-        *_need_lines(outcome.resolution, needs, content),
+        *_need_lines(outcome.resolution, needs(), content),
         CLOSE_TAG,
     )

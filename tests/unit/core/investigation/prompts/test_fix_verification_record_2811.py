@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -57,6 +58,7 @@ from faultmaven.modules.case.contracts import (
     CURRENT_OUTCOME_SHAPE,
     CaseOutcome,
     EvidenceCategory,
+    NeedState,
     PendingCheckReason,
     ProblemStatus,
     ResolutionReason,
@@ -94,13 +96,7 @@ async def test_the_block_renders_as_main_did(name):
 
 
 def test_the_declared_differences_are_the_plans():
-    assert set(DECLARED) == {
-        "closure",
-        "accepted_in_turn",
-        "gone_action",
-        "omitted",
-        "invalidated",
-    }
+    assert set(DECLARED) == {"closure", "accepted_in_turn", "gone_action", "omitted"}
 
 
 async def _shows_closure(case, block, want):
@@ -133,28 +129,11 @@ async def _shows_omitted(case, block, want):
     return block == _OMITTED and want.startswith(OPEN_TAG)
 
 
-_HOLDS = " (holds the resolution offer until answered)"
-
-
-async def _shows_invalidated(case, block, want):
-    """On a false alarm readiness answers before it reads the held need, so
-    the record holds none and the need is listed unmarked; ``main`` marked
-    it from a fresh read."""
-    (need,) = case.evidence_needs
-    assert pending_symptom_check(case) is need, "premise: main's fresh read"
-    resolution = narration_outcome(case).resolution
-    assert resolution.reason == ResolutionReason.FALSE_ALARM
-    assert resolution.pending_check_need_id is None
-    assert f"[{need.need_id}]" in want and _HOLDS in want
-    return block == want.replace(_HOLDS, "")
-
-
 _SHOWS = {
     "closure": _shows_closure,
     "accepted_in_turn": _shows_accepted_in_turn,
     "gone_action": _shows_gone_action,
     "omitted": _shows_omitted,
-    "invalidated": _shows_invalidated,
 }
 
 
@@ -195,7 +174,8 @@ _ID = re.compile(r"(ev|act|eneed|hyp)_[0-9a-f]{12}")
 
 def _no_text(value) -> None:
     """No field of ``fresh`` or ``NeedsView``, nested ones included, is text:
-    every ``str`` it holds, as a field, a key or a member, is an id."""
+    every string it holds, as a field, a key or a member of any container, is
+    an id; an enum member is closed vocabulary."""
     if dataclasses.is_dataclass(value):
         for f in dataclasses.fields(value):
             _no_text(getattr(value, f.name))
@@ -203,11 +183,40 @@ def _no_text(value) -> None:
         for key, nested in value.items():
             _no_text(key)
             _no_text(nested)
-    elif isinstance(value, tuple):
+    elif isinstance(value, (tuple, list, set, frozenset)):
         for nested in value:
             _no_text(nested)
-    elif type(value) is str:
+    elif isinstance(value, str) and not isinstance(value, Enum):
         assert _ID.fullmatch(value), value
+
+
+class _Text(str):
+    """A ``str`` subclass that is not an enum."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _StandIn:
+    """A view that holds text where ``NeedsView`` holds ids."""
+
+    texts: object
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["the scrape target, re-read"],
+        {"the scrape target, re-read"},
+        frozenset({"the scrape target, re-read"}),
+        (_Text("eneed_0123456789ab is down"),),
+        {"ev_0123456789ab": [_Text("free text")]},
+    ],
+)
+def test_the_text_check_sees_text_in_any_container(texts):
+    """The negative control: text inside a list, set, frozenset or a ``str``
+    subclass fails the check that ``fresh`` and ``NeedsView`` pass."""
+    with pytest.raises(AssertionError):
+        _no_text(_StandIn(texts))
+    _no_text(_StandIn([NeedState.PENDING, "eneed_0123456789ab"]))
 
 
 def test_fresh_holds_the_q1_verdicts():
@@ -256,7 +265,7 @@ async def test_the_renderer_reads_no_case_field(name):
         CaseIdentity.of(poisoned),
         lambda item_id: content_by_id(texts, item_id),
         fresh,
-        needs,
+        lambda: needs,
     )
     assert ("" if lines is None else "\n".join(lines)) == ORACLE[name]
 
@@ -272,7 +281,7 @@ def _render(case, outcome: CaseOutcome) -> str:
         CaseIdentity.of(case),
         lambda item_id: content_by_id(case, item_id),
         _fresh(case, outcome),
-        NeedsView.of(case),
+        lambda: NeedsView.of(case),
     )
     return "\n".join(lines)
 
@@ -341,6 +350,22 @@ async def test_the_held_need_and_its_reason_are_recorded(name, reason):
     held = pending_symptom_check(case)
     assert resolution.pending_check_need_id == held.need_id
     assert resolution.pending_check_reason == reason
+
+
+async def test_a_false_alarm_keeps_the_held_need():
+    """``invalidate_problem`` supersedes the open symptom need; the need
+    FULFILLED on rows from before its ask still holds, and readiness answers
+    FALSE_ALARM before it reads it. The record holds it as ``main``'s block
+    did (the fixture renders as the oracle)."""
+    case = await build("N:invalidated")
+    assert case.progress.problem_status == ProblemStatus.INVALIDATED
+    superseded, held = case.evidence_needs
+    assert superseded.state == NeedState.SUPERSEDED
+    assert pending_symptom_check(case) is held
+    resolution = narration_outcome(case).resolution
+    assert resolution.reason == ResolutionReason.FALSE_ALARM
+    assert resolution.pending_check_need_id == held.need_id
+    assert resolution.pending_check_reason == PendingCheckReason.FULFILLED_BEFORE_ASK
 
 
 async def test_no_reason_without_a_held_need():
@@ -494,17 +519,56 @@ async def test_one_fold_serves_and_counts_once_per_assembly(
     assert (len(calls), failures) == (1, [WritePoint.NARRATION])
 
 
-async def test_each_failure_is_logged_and_counted_once(monkeypatch, failures, caplog):
-    """A ``NeedsView`` that raises on each of an assembly's three builds: each
-    failure is logged, the count is one."""
+def _value_error(*_args, **_kwargs):
+    raise ValueError("probe")
+
+
+async def test_each_distinct_failure_is_logged_once(monkeypatch, failures, caplog):
+    """A ``NeedsView`` that raises on each of an assembly's three builds is
+    logged once; a second failure of another class and line is logged too;
+    the count is one."""
     monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
     case = await build("N:held_pending")
     assembly = NarrationFold(case)
     with caplog.at_level("ERROR", logger=block_module.__name__):
         for _ in range(3):
             assert build_fix_verification_block(case, assembly) == _OMITTED
+        logged = [r for r in caplog.records if "was not rendered" in r.getMessage()]
+        assert len(logged) == 1
+        monkeypatch.setattr(block_module, "_fresh", _value_error)
+        assert build_fix_verification_block(case, assembly) == _OMITTED
     logged = [r for r in caplog.records if "was not rendered" in r.getMessage()]
-    assert len(logged) == 3
+    assert [r.exc_info[0] for r in logged] == [RuntimeError, ValueError]
+    assert failures == [WritePoint.NARRATION]
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(n for n in ORACLE if n.startswith("M:") and "needs:" not in ORACLE[n]),
+)
+async def test_a_block_without_need_lines_never_reads_the_needs(
+    monkeypatch, failures, name
+):
+    """MITIGATION with only the mitigation dated prints no need line, so a
+    ``NeedsView`` that would raise leaves the block as ``main`` shows it."""
+    monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
+    block = build_fix_verification_block(await build(name))
+    assert block == ORACLE[name] != ""
+    assert failures == []
+
+
+async def test_a_need_without_text_omits_the_block(monkeypatch, failures):
+    """A need whose text does not read raises into the guard: the declared
+    line, never an empty need line."""
+    real = block_module.content_by_id
+    monkeypatch.setattr(
+        block_module,
+        "content_by_id",
+        lambda case, item_id: (
+            None if item_id.startswith("eneed_") else real(case, item_id)
+        ),
+    )
+    assert build_fix_verification_block(await build("N:held_pending")) == _OMITTED
     assert failures == [WritePoint.NARRATION]
 
 
