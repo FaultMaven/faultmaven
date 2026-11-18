@@ -708,14 +708,15 @@ class TestAClaimIsWonOnce:
         assert await sql_claim_store.claim_token(JTI, ttl=60) is RefreshClaim.CLAIMED
 
 
-@pytest.mark.slow
 class TestTheStoredWatermarkIsTheLatest:
-    """Pin 3a (#2050): the user-arm write is monotone, on every store.
+    """Pin 3a (#2050): the user-arm write is monotone within the window, on
+    every store.
 
-    ``revoke_user_tokens``'s final stamp sits ahead of ``now``, so a second
-    revocation's first write can be lower than it. Keeping the stored value
-    is what stops that write reopening a straddler's window. Values span a
-    second boundary so the whole-second ``iat`` shows the drop too.
+    ``revoke_user_tokens``'s final stamp sits ahead of ``now``, so an
+    overlapping revocation's first write can be lower than it. Keeping the
+    stored value is what stops that write reopening a straddler's window.
+    Values span a second boundary so the whole-second ``iat`` shows the drop
+    too.
     """
 
     async def test_a_lower_write_keeps_the_stored_watermark(self, claim_store):
@@ -725,6 +726,34 @@ class TestTheStoredWatermarkIsTheLatest:
 
         claims = {"jti": JTI, "sub": USER_ID, "iat": int(t) + 1, "fm_basis": t + 1.0}
         assert await revocation_reason(claim_store, claims) == "user_revoked"
+
+    @pytest.mark.parametrize(
+        "ahead,kept",
+        [
+            pytest.param(0.9, True, id="inside-the-window"),
+            pytest.param(1.5, False, id="past-the-window"),
+            pytest.param(86400.0, False, id="a-day-ahead"),
+        ],
+    )
+    async def test_the_stored_watermark_is_kept_only_within_the_window(
+        self, claim_store, ahead, kept
+    ):
+        """Review fix 3: a stored watermark more than the window above a new
+        write (a clock that stepped forward) is overwritten by it, so it cannot
+        renew itself and lock the account out. The window is one second
+        (``test_the_window_these_instants_assume``)."""
+        t = float(int(time.time()) - 30)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.5 + ahead, ttl=60)
+        await claim_store.revoke_user_tokens_before(USER_ID, t + 0.5, ttl=60)
+
+        claims = {"jti": JTI, "sub": USER_ID, "iat": int(t), "fm_basis": t + 0.6}
+        expected = "user_revoked" if kept else None
+        assert await revocation_reason(claim_store, claims) == expected
+
+    def test_the_window_these_instants_assume(self):
+        from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
+
+        assert REVOCATION_MONOTONE_WINDOW.total_seconds() == 1
 
     async def test_a_non_finite_stored_watermark_is_overwritten(self, claim_store):
         t = float(int(time.time()) - 30)
@@ -737,6 +766,7 @@ class TestTheStoredWatermarkIsTheLatest:
         assert await revocation_reason(claim_store, claims) == "user_revoked"
 
 
+@pytest.mark.slow
 class TestAClaimOutlivesItsToken:
     """No write shortens a claim, and the claim outlives ``exp`` (#2764).
 

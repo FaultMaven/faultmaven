@@ -439,8 +439,10 @@ async def local_login(
             },
         )
 
-        # No watermark is cleared here (#2050): a mint after a revocation is
-        # live by its full-precision basis, and a straddling one dies.
+        # No watermark is cleared here (#2050): a mint captured after the
+        # revocation's final stamp is live by its full-precision basis, and one
+        # captured before it dies — a straddle, and also a login within the
+        # clock allowance after a logout, which needs one more sign-in.
         #
         # Gated on the account still being usable: a deactivated or deleted
         # account's login attempt must not write fresh audit metadata to the

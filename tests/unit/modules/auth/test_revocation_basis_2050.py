@@ -8,7 +8,8 @@ watermark is compared against it at full precision, and nothing clears.
 
 A precise compare needs the stored watermark to postdate every capture that
 missed its write, so ``AuthService.revoke_user_tokens`` writes ``W1 = now`` and
-then, once that write has returned, ``W2 = now + REVOCATION_CLOCK_ALLOWANCE``.
+then, once that write has returned, ``W2 = now + REVOCATION_CLOCK_ALLOWANCE``,
+again until a final stamp lands within the allowance of its capture.
 
 Instants are injected, never read off the wall clock: ``T`` is a whole second
 safely in the past (``_mint_instant`` clamps a future capture and PyJWT refuses
@@ -59,6 +60,7 @@ from faultmaven.modules.auth.domain.services import user_service as user_module
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     HS256JWTTokenGenerator,
+    RevocationBasis,
     RS256JWTTokenGenerator,
     revocation_reason,
 )
@@ -67,6 +69,7 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
     SqlTokenRevocationStore,
 )
+from tests.utils import InMemoryRevocationStore
 
 pytestmark = [pytest.mark.unit, pytest.mark.security, pytest.mark.asyncio]
 
@@ -195,42 +198,55 @@ def _auth_service(store):
 
 
 @contextmanager
-def _revoker_clock(*instants: float):
-    """The revoker reads ``now`` from ``instants``, in order (W1, then W2's base)."""
+def _revoker_clock(*instants: float, monotonic: tuple[float, ...] = (0.0,)):
+    """The revoker reads ``now`` from ``instants``, in order (W1, then each final
+    stamp's base), and its monotonic clock from ``monotonic`` (the last reading
+    repeats, so by default every final stamp lands the instant it is taken)."""
     readings = iter(_at(i) for i in instants)
+    ticks = list(monotonic)
 
     class _Clock(datetime):
         @classmethod
         def now(cls, tz=None):
             return next(readings)
 
-    with patch.object(auth_module, "datetime", _Clock):
+    def _monotonic():
+        return ticks.pop(0) if len(ticks) > 1 else ticks[0]
+
+    with (
+        patch.object(auth_module, "datetime", _Clock),
+        patch.object(
+            auth_module, "time", SimpleNamespace(monotonic=_monotonic), create=True
+        ),
+    ):
         yield
 
 
 class _Holding:
-    """The store, with a hook run before or after the FIRST watermark write lands.
+    """The store, with hooks run before or after its Nth watermark write lands
+    (a callable means the first), and the writes numbered in ``fail`` failing.
 
-    Models a mint that reads revocation state while ``W1`` is in flight (before
-    it lands) or between the two stamps (after it lands, before ``W2``).
+    Models a mint that reads revocation state while a stamp is in flight
+    (before it lands) or between two stamps (after one lands).
     """
 
-    def __init__(self, store, *, before=None, after=None, fail_second=False):
+    def __init__(self, store, *, before=None, after=None, fail=()):
         self._store = store
-        self._before, self._after = before, after
-        self._fail_second = fail_second
+        self._before = before if isinstance(before, dict) else {1: before}
+        self._after = after if isinstance(after, dict) else {1: after}
+        self._fail = set(fail)
         self.writes: list[float] = []
 
-    async def revoke_user_tokens_before(self, user_id, revoked_at, ttl):
+    async def revoke_user_tokens_before(self, user_id, revoked_at, ttl, **kwargs):
         self.writes.append(revoked_at)
-        first = len(self.writes) == 1
-        if first and self._before:
-            await self._before()
-        if not first and self._fail_second:
-            raise ConnectionError("store went away between the stamps")
-        await self._store.revoke_user_tokens_before(user_id, revoked_at, ttl)
-        if first and self._after:
-            await self._after()
+        n = len(self.writes)
+        if self._before.get(n):
+            await self._before[n]()
+        if n in self._fail:
+            raise ConnectionError(f"store went away at write {n}")
+        await self._store.revoke_user_tokens_before(user_id, revoked_at, ttl, **kwargs)
+        if self._after.get(n):
+            await self._after[n]()
 
 
 async def _live(generator, token: str) -> bool:
@@ -361,6 +377,111 @@ async def test_a_refresh_chain_between_the_stamps_dies(store, algo):
 
     assert await generator.validate_refresh_token(tokens["a"]) is None
     assert await generator.validate_refresh_token(tokens["b"]) is None
+
+
+@pytest.mark.parametrize("algo", GENERATORS)
+async def test_a_final_stamp_slower_than_the_allowance_is_stamped_again(store, algo):
+    """Review fix 1. W2 = T+0.3 is taken at T+0.2 and held until T+0.5. While
+    it is in flight, A (captured T+0.15, live past W1) rotates to B, captured
+    at T+0.4: after W2's value, before it lands. W2 landed 0.3s after its
+    capture, past the allowance, so a fresh stamp W3 = T+0.6 follows and B
+    dies with A. With W2 the last write, B was live."""
+    t = _anchor()
+    generator = GENERATORS[algo](store)
+    tokens = {}
+
+    async def mint_a():
+        tokens["a"] = await generator.generate_refresh_token(
+            _user(), state_read_at=_at(t + 0.15)
+        )
+
+    async def rotate_to_b():
+        assert await generator.validate_refresh_token(tokens["a"]) is not None
+        tokens["b"] = await generator.generate_refresh_token(
+            _user(), state_read_at=_at(t + 0.4)
+        )
+
+    holding = _Holding(store, before={1: mint_a, 2: rotate_to_b})
+    with _revoker_clock(t + 0.1, t + 0.2, t + 0.5, monotonic=(0.2, 0.5, 0.5, 0.55)):
+        await _auth_service(holding).revoke_user_tokens(USER_ID)
+
+    assert await generator.validate_refresh_token(tokens["b"]) is None
+    assert await generator.validate_refresh_token(tokens["a"]) is None
+    assert holding.writes == [t + 0.1, t + 0.3, t + 0.6]
+
+
+async def test_three_slow_final_stamps_fail_the_revocation(store):
+    """Review fix 1: past three final stamps, each landing later than the
+    allowance after its capture, the revocation fails closed."""
+    t = _anchor()
+    holding = _Holding(store)
+    with (
+        _revoker_clock(
+            *(t + i / 10 for i in range(1, 5)), monotonic=(0, 1, 1, 2, 2, 3)
+        ),
+        pytest.raises(ServiceError),
+    ):
+        await _auth_service(holding).revoke_user_tokens(USER_ID)
+
+    assert len(holding.writes) == 4
+
+
+async def test_only_a_revocations_first_write_sweeps():
+    """Review fix 8: the final stamps do not run the SQL store's table-wide
+    expiry sweep; the first write already did."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(TokenRevocationModel.__table__.create)
+    store = SqlTokenRevocationStore(session_factory=async_sessionmaker(engine))
+    sweep = AsyncMock(return_value=0)
+    try:
+        with patch.object(store, "_sweep", sweep), _revoker_clock(1.0, 2.0):
+            await _auth_service(store).revoke_user_tokens(USER_ID)
+    finally:
+        await engine.dispose()
+
+    assert sweep.await_count == 1
+
+
+async def test_the_in_memory_double_reads_through_the_production_rule():
+    """Review fix 5: the double answers what the stores answer, including a
+    refusal on a non-finite entry, rather than re-implementing the rule."""
+    store = InMemoryRevocationStore()
+    store.user_watermarks[USER_ID] = (math.inf, TTL)
+
+    with pytest.raises(CorruptRevocationEntry):
+        await store.is_user_revoked(USER_ID, RevocationBasis(1, precise=False))
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param("0x7FFFFFFFFF", id="hex"),
+        pytest.param("0x1p40", id="hex-float"),
+        pytest.param(" 1e300 ", id="padded"),
+        pytest.param(["x"], id="list-typed-key"),
+    ],
+)
+async def test_redis_keeps_only_a_strict_decimal_watermark(stored):
+    """Review fix 2. Lua's ``tonumber`` reads hex and padding, which Python's
+    ``float`` refuses or (padding) reads as a far-future watermark; a list
+    makes ``GET`` raise inside the script. Each is overwritten."""
+    import fakeredis.aioredis as fakeredis_aio
+
+    redis = fakeredis_aio.FakeRedis(decode_responses=True)
+    store = RedisTokenRevocationStore(redis, key_prefix="revoked:token:")
+    key = f"revoked:token:user:{USER_ID}"
+    if isinstance(stored, list):
+        await redis.rpush(key, *stored)
+    else:
+        await redis.set(key, stored)
+    t = _anchor()
+
+    await store.revoke_user_tokens_before(USER_ID, t + 0.5, TTL)
+
+    claims = {"jti": "j", "sub": USER_ID, "iat": int(t), "fm_basis": t + 0.6}
+    assert await revocation_reason(store, claims) is None
+    assert await redis.get(key) == str(t + 0.5)
 
 
 @pytest.mark.parametrize(
@@ -613,30 +734,33 @@ async def _delete(request, users):
         )
 
 
-def _doomed_users():
-    users = AsyncMock()
-    users.get_user_by_username = AsyncMock(
-        return_value=SimpleNamespace(user_id=USER_ID, username="doomed")
-    )
-    users.delete_user = AsyncMock(return_value=True)
-    return users
+class _DoomedUsers:
+    def __init__(self):
+        self.users = {"doomed": SimpleNamespace(user_id=USER_ID, username="doomed")}
+
+    async def get_user_by_username(self, username):
+        return self.users.get(username)
+
+    async def delete_user(self, user_id):
+        return self.users.pop("doomed", None) is not None
 
 
 async def test_a_failed_final_stamp_fails_the_revocation_and_the_delete(store):
-    """W1 lands and W2 fails: ``ServiceError`` (fail closed), and the delete
-    route deletes nothing and answers its existing 500."""
-    holding = _Holding(store, fail_second=True)
-    auth_service = _auth_service(holding)
-
+    """W1 lands and W2 fails: ``ServiceError`` (fail closed). The delete route's
+    own revocation meets the same failure at its W2, so the account survives
+    and the route answers its existing 500. Writes are counted per call."""
     with pytest.raises(ServiceError):
-        await auth_service.revoke_user_tokens(USER_ID)
+        await _auth_service(_Holding(store, fail={2})).revoke_user_tokens(USER_ID)
 
-    users = _doomed_users()
+    users = _DoomedUsers()
+    holding = _Holding(store, fail={2})
     with pytest.raises(HTTPException) as refused:
-        await _delete(_delete_request(auth_service), users)
+        await _delete(_delete_request(_auth_service(holding)), users)
 
+    assert len(holding.writes) == 2, "the route's W1 landed, its W2 failed"
     assert refused.value.status_code == 500
-    users.delete_user.assert_not_awaited()
+    assert refused.value.detail["error"] == "internal_error"
+    assert "doomed" in users.users
 
 
 async def test_a_failed_post_delete_stamp_leaves_the_delete_standing(caplog):
@@ -651,12 +775,13 @@ async def test_a_failed_post_delete_stamp_leaves_the_delete_standing(caplog):
         return datetime.now(timezone.utc)
 
     auth_service = SimpleNamespace(revoke_user_tokens=revoke)
-    users = _doomed_users()
+    users = _DoomedUsers()
 
     with caplog.at_level(logging.ERROR, logger=auth_routes.logger.name):
         result = await _delete(_delete_request(auth_service), users)
 
-    users.delete_user.assert_awaited_once_with(USER_ID)
+    assert "doomed" not in users.users
+    assert calls == [USER_ID, USER_ID]
     assert result["user_id"] == USER_ID
     assert "deleted successfully" in result["message"]
     assert "final revocation stamp failed" in result["message"]

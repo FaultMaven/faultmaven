@@ -13,6 +13,7 @@ ARCHITECTURAL PRINCIPLES:
 
 import json
 import logging
+import math
 import os
 import secrets
 from datetime import timedelta
@@ -1797,11 +1798,22 @@ MAX_MINT_BASIS_CARRY_SECONDS = MAX_OAUTH_CODE_EXPIRY_SECONDS
 #: How far ahead of the revoker's clock the final watermark stamp is written
 #: (#2050). The deployment's clock-sync assumption: replicas' clocks agree within
 #: this (NTP keeps a cluster's nodes within a few ms). ``revoke_user_tokens``
-#: stamps ``now + allowance`` once its first write has landed, so a mint whose
-#: capture preceded that landing dies on any replica within the allowance. Kept
-#: below an SSO round trip: a sign-in captured inside it after a revocation is
-#: born dead and needs one more sign-in.
+#: stamps ``now + allowance`` once its first write has landed, again until a
+#: stamp lands within the allowance of its capture, so a mint whose capture
+#: preceded that landing dies on any replica within the allowance. Kept below an
+#: SSO round trip: a sign-in captured inside it after a revocation is born dead
+#: and needs one more sign-in.
 REVOCATION_CLOCK_ALLOWANCE = timedelta(milliseconds=100)
+
+#: How far above a new watermark write a stored one is kept (#2050). The write
+#: is monotone only for overlapping revocations: one's first write landing on
+#: another's final stamp, which sits above it by at most the allowance plus the
+#: replicas' skew (itself within the allowance). So 2 x allowance, rounded up
+#: to a whole second. A stored value further ahead (a clock that stepped
+#: forward) is overwritten, so it cannot renew itself and lock an account out.
+REVOCATION_MONOTONE_WINDOW = timedelta(
+    seconds=math.ceil(2 * REVOCATION_CLOCK_ALLOWANCE.total_seconds())
+)
 
 #: Every env name that has EVER addressed the two token-expiry fields except the
 #: current pair, mapped to the current name that replaces it. Two generations:

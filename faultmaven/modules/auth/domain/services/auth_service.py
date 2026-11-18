@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -50,6 +51,10 @@ from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How many final stamps ``revoke_user_tokens`` writes before it fails closed,
+#: when each lands later than ``REVOCATION_CLOCK_ALLOWANCE`` after its capture.
+_FINAL_STAMP_ATTEMPTS = 3
 
 #: Exception families that mean "the revocation store could not answer" (#1478).
 #:
@@ -692,7 +697,8 @@ class AuthService:
         - **Redis store**: a key held in memory, expiring by TTL.
         - **SQL store**: a row that stops revoking at its deadline, because
           every read filters on ``expires_at``, and is deleted by the sweep in
-          the next revocation write (per-jti or watermark, for any user).
+          the next revocation write that sweeps (a per-jti one, or the first
+          watermark write of a revocation, for any user).
 
         The retention reasoning is in ``token_revocation_store``'s module
         docstring. That cost is set against the resurrection of every token
@@ -716,26 +722,29 @@ class AuthService:
         watermark covers every token from every mint path, which a JTI index
         could not guarantee.
 
-        **Two stamps** (#2050). ``W1 = now`` is written first; once that write
-        has returned, a final stamp ``W2 = now + REVOCATION_CLOCK_ALLOWANCE``
-        from a fresh clock read. A mint captured after ``W1`` was taken but
-        before it landed read no watermark, and its basis is later than
-        ``W1``; it is not later than ``W2`` unless its replica's clock runs
-        ahead of this one by more than the allowance. The cost is that a
-        sign-in captured within the allowance after this returns is born dead
-        and needs one more sign-in.
+        **A first write and a final stamp** (#2050). ``W1 = now`` is written
+        first; once that write has returned, a final stamp
+        ``W2 = now + REVOCATION_CLOCK_ALLOWANCE`` from a fresh clock read. A
+        mint captured after ``W1`` was taken but before a stamp landed read no
+        watermark. A final stamp that landed within the allowance of its
+        capture (monotonic clock) is later than every such capture, unless
+        the mint's replica runs ahead of this one by more than the allowance;
+        one that landed later is written again from a fresh read, at most
+        ``_FINAL_STAMP_ATTEMPTS`` times. The cost is that a sign-in captured
+        within the allowance after this returns is born dead and needs one
+        more sign-in.
 
         Args:
             user_id: User ID to revoke tokens for
 
         Returns:
-            ``W2``, the watermark the store holds. Tokens whose basis is at or
-            before it are invalid.
+            The final stamp this call wrote; the store holds it or a later one.
+            Tokens whose basis is at or before it are invalid.
 
         Raises:
-            ServiceError: The revocation could not be recorded — either stamp.
-                Callers must not report a revocation as successful when this
-                raises.
+            ServiceError: The revocation could not be recorded — any write
+                failed, or no final stamp landed within the allowance. Callers
+                must not report a revocation as successful when this raises.
         """
         if self._revocation_store is None:
             raise ServiceError("Token revocation failed: no revocation store")
@@ -753,10 +762,22 @@ class AuthService:
             await self._revocation_store.revoke_user_tokens_before(
                 user_id, revoked_at.timestamp(), ttl
             )
-            revoked_at = datetime.now(timezone.utc) + REVOCATION_CLOCK_ALLOWANCE
-            await self._revocation_store.revoke_user_tokens_before(
-                user_id, revoked_at.timestamp(), ttl
-            )
+            # The final stamps skip the store's expiry sweep: the first write
+            # ran it, and a sweep would only lengthen the stamp's landing.
+            for _ in range(_FINAL_STAMP_ATTEMPTS):
+                captured = time.monotonic()
+                revoked_at = datetime.now(timezone.utc) + REVOCATION_CLOCK_ALLOWANCE
+                await self._revocation_store.revoke_user_tokens_before(
+                    user_id, revoked_at.timestamp(), ttl, sweep=False
+                )
+                landed = time.monotonic() - captured
+                if landed <= REVOCATION_CLOCK_ALLOWANCE.total_seconds():
+                    break
+            else:
+                raise ServiceError(
+                    f"no final stamp landed within the allowance in "
+                    f"{_FINAL_STAMP_ATTEMPTS} attempts"
+                )
         except Exception as e:
             logger.error(f"Failed to revoke user tokens: {e}")
             raise ServiceError(f"Token revocation failed: {e}")

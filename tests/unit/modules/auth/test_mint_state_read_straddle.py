@@ -176,17 +176,16 @@ STRADDLE_WATERMARK_AGE = timedelta(seconds=5)
 async def _revoke_then_stall(store, user_id: str) -> None:
     """Write the user's watermark NOW, then stall past that whole second.
 
-    The stall is load-bearing, not boilerplate: ``iat`` has 1-second
-    granularity and the whole-second fallback compares ``iat <= floor(W)``, so
-    without stepping into the second AFTER the watermark, a post-read or
-    mint-time stamp would land in the same second and be rejected anyway on it — the test would pass against the
-    very defect it exists to catch. One computed sleep, not a poll.
+    The stall dates from the whole-second rule. These handlers mint tokens
+    that carry ``fm_basis``, compared at full precision (#2050), so a
+    post-read or mint-time stamp would now survive this watermark in its own
+    second too; the stall keeps these tests independent of that, since such a
+    stamp then lands a second later and survives on either rule.
 
-    Written at FULL precision, as ``AuthService.revoke_user_tokens`` does.
-    Truncating here would make a watermark that landed mid-read look older than
-    the login's pre-read capture, and a token's full-precision basis is
-    compared against exactly that ordering (#2050): a truncated write would let
-    the straddling pair live.
+    One write at FULL precision, as a store write is (not the stamps of
+    ``AuthService.revoke_user_tokens``). Truncating here would make a watermark
+    that landed mid-read look older than the login's pre-read capture, and a
+    truncated write would let the straddling pair live.
     """
     now = datetime.now(timezone.utc)
     await store.revoke_user_tokens_before(user_id, now.timestamp(), TTL)

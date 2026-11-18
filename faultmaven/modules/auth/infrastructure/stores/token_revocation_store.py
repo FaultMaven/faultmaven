@@ -38,8 +38,9 @@ held for different lifetimes:
   given in full to a token with no ``exp`` (``revocation_entry_ttl``); no
   write shortens a live one (#2764);
 - a watermark (``revoke_user_tokens_before``) for that ceiling plus
-  ``MAX_MINT_BASIS_CARRY_SECONDS``, whatever lifetime the user's tokens were
-  minted with (``AuthService._watermark_ttl_seconds``).
+  ``MAX_MINT_BASIS_CARRY_SECONDS`` plus ``REVOCATION_CLOCK_ALLOWANCE`` rounded
+  up to a second, whatever lifetime the user's tokens were minted with
+  (``AuthService._watermark_ttl_seconds``).
 
 **Watermark retention is the same on both stores**, because
 ``AuthService._watermark_ttl_seconds`` is store-agnostic and holds against the
@@ -82,6 +83,7 @@ from typing import Optional
 
 from sqlalchemy import and_, case, delete, func, or_, select
 
+from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
 from faultmaven.infrastructure.persistence.models import TokenRevocationModel
@@ -223,27 +225,48 @@ class RedisTokenRevocationStore(SequentialRevocationState, ITokenRevocationStore
             return RefreshClaim.ALREADY_REDEEMED
         return RefreshClaim.REVOKED
 
-    #: Keep the later of the stored and the new watermark, with the new TTL
-    #: (#2050). A stored value that is not a finite number is overwritten. The
-    #: stored string is written back as it was, so no precision is lost. SET
-    #: EX, not SETEX: fakeredis floors a SETEX deadline to the second (#2400).
+    #: Keep a stored watermark above the new one by at most the window
+    #: (ARGV[3]), with the new TTL (#2050). Kept only when it is a string in
+    #: strict decimal-float form, which Lua's ``tonumber`` and Python's
+    #: ``float`` read alike (``tonumber`` also reads hex and padding), and
+    #: finite. Anything else, a non-string key included, is replaced. The kept
+    #: string is written back as it was, so no precision is lost. SET EX, not
+    #: SETEX: fakeredis floors a SETEX deadline to the second (#2400).
     _RAISE_WATERMARK = """
-    local raw = redis.call('GET', KEYS[1])
-    local stored = raw and tonumber(raw)
-    if not (stored and stored < math.huge and stored > tonumber(ARGV[1])) then
+    local raw = false
+    if redis.call('TYPE', KEYS[1]).ok == 'string' then
+        raw = redis.call('GET', KEYS[1])
+    end
+    local stored = nil
+    for _, form in ipairs({'^[+-]?%d+%.?%d*', '^[+-]?%.%d+'}) do
+        local _, last = string.find(raw or '', form)
+        if last then
+            local rest = string.sub(raw, last + 1)
+            if rest == '' or string.find(rest, '^[eE][+-]?%d+$') then
+                stored = tonumber(raw)
+            end
+            break
+        end
+    end
+    local new = tonumber(ARGV[1])
+    if not (stored and stored > new and stored <= new + tonumber(ARGV[3])) then
         raw = ARGV[1]
     end
+    redis.call('DEL', KEYS[1])
     redis.call('SET', KEYS[1], raw, 'EX', ARGV[2])
     return 0
     """
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
         key = self._make_user_key(user_id)
         # Stored at full precision: a precise basis is compared against it
-        # unfloored (#2050).
-        await self.redis.eval(self._RAISE_WATERMARK, 1, key, str(revoked_at), ttl)
+        # unfloored (#2050). Redis has no sweep: TTL expires the keys.
+        window = REVOCATION_MONOTONE_WINDOW.total_seconds()
+        await self.redis.eval(
+            self._RAISE_WATERMARK, 1, key, str(revoked_at), ttl, str(window)
+        )
 
     async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
         key = self._make_user_key(user_id)
@@ -298,7 +321,8 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
 
     Rows are then reclaimed opportunistically, by **the writes that ADD an
     entry** (``add_revoked_token`` and ``revoke_user_tokens_before``, both
-    through ``_upsert``, and ``claim_token``) and by the explicit
+    through ``_upsert`` — a revocation's final stamps skip it, its first write
+    having swept — and ``claim_token``) and by the explicit
     ``cleanup_expired``. That bounds
     the table without a scheduled job that could be forgotten at wiring time —
     and nothing calls ``cleanup_expired``, in this class or the Redis one, so
@@ -347,10 +371,11 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
         return max(result.rowcount or 0, 0)
 
     async def _upsert(
-        self, scope: str, subject: str, revoked_at: float, ttl: int
+        self, scope: str, subject: str, revoked_at: float, ttl: int, sweep=True
     ) -> None:
         async with self._session_factory() as session:
-            await self._sweep(session)
+            if sweep:
+                await self._sweep(session)
             # ONE statement, via the repository's dialect helper. The
             # delete-then-insert this replaced was not atomic: two concurrent
             # revocations of the same (scope, subject) — a double-submitted
@@ -362,10 +387,11 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             # PostgreSQL constructs cannot drift (they are NOT interchangeable
             # — see ``db_compat``).
             #
-            # The stored watermark is the latest written (#2050): a write below
-            # a stored finite number keeps it, and anything else is
-            # overwritten — on SQLite a text value too, which ``typeof`` tells
-            # apart (it sorts above every number). A jti entry is only ever
+            # A stored watermark above the written one by at most
+            # ``REVOCATION_MONOTONE_WINDOW`` is kept (#2050); anything else is
+            # overwritten. The upper bound also refuses what is not a finite
+            # number: NaN sorts above every number on PostgreSQL, and text and
+            # blobs above every number on SQLite. A jti entry is only ever
             # lengthened, and keeps its writer's mark, so a revocation can
             # neither shorten nor relabel a claim (#2764).
             statement = dialect_insert(session, TokenRevocationModel).values(
@@ -387,9 +413,8 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             else:
                 stored = TokenRevocationModel.revoked_at
                 written = statement.excluded.revoked_at
-                keep = and_(stored > written, stored < math.inf)
-                if not postgresql:
-                    keep = and_(func.typeof(stored).in_(("real", "integer")), keep)
+                window = REVOCATION_MONOTONE_WINDOW.total_seconds()
+                keep = and_(stored > written, stored <= written + window)
                 set_ = {
                     "revoked_at": case((keep, stored), else_=written),
                     "expires_at": proposed,
@@ -467,9 +492,9 @@ class SqlTokenRevocationStore(ITokenRevocationStore):
             return result.first() is not None
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
-        await self._upsert(_USER_SCOPE, user_id, revoked_at, ttl)
+        await self._upsert(_USER_SCOPE, user_id, revoked_at, ttl, sweep)
 
     async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
         async with self._session_factory() as session:

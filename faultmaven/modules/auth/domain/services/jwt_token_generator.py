@@ -131,8 +131,8 @@ def _mint_instant(state_read_at: datetime) -> datetime:
     once its write has landed (``AuthService.revoke_user_tokens``'s final
     stamp, #2050) is later than a ``state_read_at`` captured before that, so a
     mint that straddled the revocation carries a basis at or before the
-    watermark and dies with it. An ``iat`` of "now" would postdate the watermark and survive it,
-    carrying pre-revocation roles or claims.
+    watermark and dies with it. An ``iat`` of "now" would postdate the
+    watermark and survive it, carrying pre-revocation roles or claims.
 
     ``iat`` ONLY. ``exp`` is stamped from mint-time ``now`` at each mint site:
     revocation consumes nothing from ``exp``, and deriving it from the basis
@@ -663,11 +663,12 @@ class IJWTTokenGenerator(ABC):
             user: User to generate token for
             state_read_at: Instant captured by the caller BEFORE its first
                 read of any state these claims derive from (the user row, a
-                presented token, an authorization code). ``iat`` and ``exp``
-                are stamped from it, so a mint whose reads straddled a
-                revocation carries ``iat <= watermark`` and dies with it
-                (#831). Required with no default: a mint path that forgets it
-                fails loudly instead of silently reopening the straddle.
+                presented token, an authorization code). ``iat`` and
+                ``fm_basis`` are stamped from it (``exp`` from mint time), so
+                a mint whose reads straddled a revocation carries a basis at or
+                before the watermark and dies with it (#831, #2050). Required
+                with no default: a mint path that forgets it fails loudly
+                instead of silently reopening the straddle.
 
         Returns:
             JWT access token string
@@ -2436,8 +2437,9 @@ class ITokenRevocationStore(ABC):
       ``REVOCATION_ENTRY_MARGIN_SECONDS``, capped at
       ``max_revocation_entry_ttl()`` and given in full to a token with no
       ``exp`` (``revocation_entry_ttl``, the one rule for every writer);
-    - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS``,
-      whatever lifetime the user's tokens were minted with
+    - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS`` plus
+      ``REVOCATION_CLOCK_ALLOWANCE`` rounded up to a second, whatever lifetime
+      the user's tokens were minted with
       (``AuthService._watermark_ttl_seconds``). Each new watermark for the user
       restarts it.
     """
@@ -2489,17 +2491,18 @@ class ITokenRevocationStore(ABC):
 
     @abstractmethod
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
         """Raise the user's revocation watermark to ``revoked_at``.
 
         Every token for this user whose basis is at or before ``revoked_at``
-        becomes invalid. The stored watermark is the latest written: a write
-        below it keeps the stored value (#2050 — ``revoke_user_tokens``'s
-        final stamp sits ahead of ``now``, and a second revocation's first
-        write must not lower it), while a corrupt stored value is overwritten,
-        not compared, so a revocation always lands. Either way the entry takes
-        the new ``ttl``.
+        becomes invalid. A stored watermark above ``revoked_at`` by no more
+        than ``REVOCATION_MONOTONE_WINDOW`` is kept (#2050 —
+        ``revoke_user_tokens``'s final stamp sits ahead of ``now``, and an
+        overlapping revocation's first write must not lower it). One further
+        ahead, or corrupt, is overwritten, not compared, so a revocation always
+        lands and a far-future value cannot renew itself. Either way the entry
+        takes the new ``ttl``.
 
         Args:
             user_id: User whose tokens are being revoked
@@ -2509,10 +2512,12 @@ class ITokenRevocationStore(ABC):
             ttl: Time to live in seconds; must outlive the longest-lived token
                 the deployment issues MEASURED FROM ITS BASIS — the schema
                 CEILING on token lifetime (``MAX_TOKEN_LIFETIME_DAYS``) plus
-                ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat`` (what the
-                watermark compares against) can trail the mint by up to the
-                hand-off artifact's TTL (#831) — or tokens could outlive the
-                watermark that revokes them.
+                ``MAX_MINT_BASIS_CARRY_SECONDS``, since a token's basis (what
+                the watermark compares against) can trail the mint by up to the
+                hand-off artifact's TTL (#831), plus the final stamp's
+                ``REVOCATION_CLOCK_ALLOWANCE`` rounded up to a second, since
+                that stamp sits ahead of its write — or tokens could outlive
+                the watermark that revokes them.
 
                 **The ceiling, NOT the configured lifetime** (#828). Sizing
                 against the current configuration covers every mint path, but
@@ -2524,6 +2529,8 @@ class ITokenRevocationStore(ABC):
                 an implementer sizing storage from the old rule would
                 under-provision by that much. ``AuthService._watermark_ttl_seconds``
                 is the one caller and computes it.
+            sweep: Whether a store with an expiry sweep runs it on this write.
+                ``revoke_user_tokens`` sweeps on its first write only.
         """
         ...
 

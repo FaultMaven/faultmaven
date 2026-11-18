@@ -4,12 +4,12 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
-import math
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, List, Optional
 from uuid import uuid4
 
+from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -18,6 +18,9 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RefreshClaim,
     RevocationBasis,
     SequentialRevocationState,
+)
+from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+    _watermark_covers,
 )
 
 if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
@@ -852,22 +855,20 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
         return RefreshClaim.CLAIMED
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
-        # The stored watermark is the latest written (#2050), as the
-        # production stores.
+        # Kept only within the window above the new value (#2050), as the
+        # production stores keep it.
         stored = self.user_watermarks.get(user_id, (revoked_at, ttl))[0]
-        if not (math.isfinite(stored) and stored > revoked_at):
+        window = REVOCATION_MONOTONE_WINDOW.total_seconds()
+        if not revoked_at < stored <= revoked_at + window:
             stored = revoked_at
         self.user_watermarks[user_id] = (stored, ttl)
 
     async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
+        # The production rule itself, so the double cannot diverge from it.
         entry = self.user_watermarks.get(user_id)
-        if entry is None:
-            return False
-        if basis.precise:
-            return basis.seconds <= entry[0]
-        return int(basis.seconds) <= math.floor(entry[0])
+        return entry is not None and _watermark_covers(entry[0], basis)
 
     async def cleanup_expired(self) -> int:
         return 0

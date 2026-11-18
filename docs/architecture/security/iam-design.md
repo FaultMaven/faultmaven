@@ -480,14 +480,20 @@ revocation is live by its basis, and tokens minted before it stay dead.
 A precise compare needs the watermark to be later than every capture that could
 have missed it. `AuthService.revoke_user_tokens` takes `W1 = now` before its
 write lands, so a refresh captured in between reads no watermark and mints with
-a basis after `W1`. So it writes twice: `W1`, then — once that write has
-returned — a final stamp `W2 = now + REVOCATION_CLOCK_ALLOWANCE` from a fresh
-clock read, and returns `W2`. Either write failing raises `ServiceError` (fail
-closed). The allowance (`config/settings.py`, 100 ms) is the deployment's
+a basis after `W1`. So it writes `W1`, then — once that write has returned — a
+final stamp `W2 = now + REVOCATION_CLOCK_ALLOWANCE` from a fresh clock read. A
+stamp that landed within the allowance of its capture (monotonic clock) is later
+than every capture made before it landed; one that landed later is written
+again from a fresh read, at most three times. It returns the last stamp written.
+Any write failing, or no stamp landing within the allowance, raises
+`ServiceError` (fail closed). Only the first write runs the SQL store's expiry
+sweep. The allowance (`config/settings.py`, 100 ms) is the deployment's
 clock-sync assumption: replicas' clocks agree within it. The user-arm write is
-monotone — the stored watermark is the latest written, so a second revocation's
-`W1` cannot lower an earlier `W2` — while a corrupt stored value is overwritten.
-The TTL adds the allowance, rounded up to a second. Deleting a user revokes
+monotone within `REVOCATION_MONOTONE_WINDOW` (2 × the allowance, rounded up to
+1 s): a stored watermark above a new write by no more than the window is kept,
+so an overlapping revocation's `W1` cannot lower an earlier `W2`. One further
+ahead, or one that is not a finite number in strict decimal form, is
+overwritten. The TTL adds the allowance, rounded up to a second. Deleting a user revokes
 before the delete (a failed revoke leaves the account intact) and stamps once
 more after it, because a refresh or SSO exchange can read the account between
 the two.
@@ -503,9 +509,9 @@ stated as residuals:
   the same allowance.
 - (b) A mint that straddled the revocation survives only on a replica whose
   clock runs *ahead* of the revoker's by more than the allowance.
-- (c) A two-refresh chain that completes between `W2`'s capture and its write
-  landing, while `W2` is still the allowance in the future, is practically
-  infeasible.
+- (c) A store whose final-stamp writes each take longer than the allowance
+  fails the revocation after three of them, rather than leave a window a
+  refresh chain could complete in: the caller is told the revocation failed.
 - (d) If the post-delete stamp fails, the delete stands and the route says so in
   its `message`; a mint that read the account before the delete may live until
   its token expires.
@@ -513,6 +519,10 @@ stated as residuals:
   (`api/oauth.py` `require_authentication` → `oauth_service.py`
   `create_authorization_code`), so a revocation landing between them is not
   covered. Moving the capture is out of scope.
+- (f) The monotone write holds only within the window. A later revocation from
+  a replica whose clock trails by more than the window lowers the stored
+  watermark, and a far-future one (a clock that stepped forward) holds only
+  until the next revocation overwrites it.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who
@@ -541,8 +551,8 @@ and the watermark *write* propagates store errors — an admin never gets a
 revocation confirmation while the user's tokens keep authenticating.
 
 **That one rule governs every token type this system issues, including
-password-reset tokens (#829).** Reset tokens carry `sub`, `iat`, `fm_basis` and `jti`, so
-`UserService.reset_password` runs `revocation_reason` against their claims
+password-reset tokens (#829).** Reset tokens carry `sub`, `iat`, `fm_basis` and
+`jti`, so `UserService.reset_password` runs `revocation_reason` against their claims
 exactly as the access and refresh paths do: revoking a user's tokens — or
 deactivating them, which revokes — kills any outstanding reset link with them.
 The check runs before the one-time `password_reset:{jti}` key is consumed, so a
