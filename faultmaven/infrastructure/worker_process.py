@@ -403,8 +403,9 @@ class _Forward(logging.Handler):
 
 
 def _bound(parent_pid: int, memory_bytes: int, cpu_seconds: int) -> None:
-    """Die with the parent, volunteer for the OOM killer, and cap CPU time and
-    address space, with no core file. A missing ``prctl`` or ``oom_score_adj``
+    """Die with the parent, raise ``oom_score_adj`` (first choice only where a
+    container's OOM is not grouped), and cap CPU time and address space, with
+    no core file. A missing ``prctl`` or ``oom_score_adj``
     is logged."""
     logger = logging.getLogger(__name__)
     try:

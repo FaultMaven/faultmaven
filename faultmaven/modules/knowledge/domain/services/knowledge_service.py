@@ -1906,10 +1906,12 @@ class KnowledgeService:
 
         This is the ONE caller that legitimately tolerates an indexing failure,
         because it runs as a bounded best-effort repair pass during boot and a
-        failed repair must not abort startup. It therefore catches
-        ``KnowledgeBaseError`` **explicitly**: after #945 the tolerance is
-        opt-in and visible here, rather than a 0-sentinel that every caller
-        silently inherited and only some checked.
+        failed repair must not abort startup. It therefore catches each row's
+        failure **explicitly**, any exception, and counts that row 0: after
+        #945 the tolerance is opt-in and visible here, rather than a
+        0-sentinel that every caller silently inherited and only some checked.
+        After two consecutive per-row encode failures the rows not yet tried
+        are deferred: absent from the answer, retried next boot.
 
         A re-run under the same generation is idempotent with no delete:
         ChromaDB's ``add`` keeps the chunk already stored under an id and adds
@@ -1965,18 +1967,26 @@ class KnowledgeService:
             )
         except Exception as e:
             # One row can fail the combined encode: each row then encodes
-            # alone, so a bad row fails only itself and the others repair.
+            # alone, so a bad row fails only itself. Two failures in a row
+            # are systemic (a model that will not load, a hung host): the
+            # rows not yet tried are deferred, so a boot pays at most three
+            # loads.
             logger.warning(f"reindex_missing_vectors: one encode failed ({e}); per row")
             if len(repairs) == 1:  # the row alone just failed: no second try
                 counts[repairs[0][0]] = 0
                 return counts
             vectors = None
 
-        at = 0
+        at = failed = 0
         for item_id, doc_model, enterprise_id, generation, chunks in repairs:
+            if failed == 2:
+                logger.warning("reindex_missing_vectors: two failed; the rest deferred")
+                break
             try:
                 if vectors is None:
+                    failed += 1
                     row_vectors = await encode(chunks)
+                    failed = 0
                 else:
                     row_vectors, at = vectors[at : at + len(chunks)], at + len(chunks)
                 counts[item_id] = await self._index_document_in_vector_store(
@@ -1998,8 +2008,8 @@ class KnowledgeService:
     ) -> Optional[tuple[KnowledgeBaseDocument, str, str]]:
         """The row :meth:`reindex_missing_vectors` may repair, as the document
         an ingest builds, its tenant and its generation; None (logged) when
-        it is absent, unpublished, incomplete, or names no usable tenant, or
-        no vector store is wired."""
+        it is absent, unpublished or incomplete, fails the indexer's tier,
+        tenant or generation check, or no vector store is wired."""
         from sqlalchemy import select as _select
 
         from faultmaven.infrastructure.persistence.models import KnowledgeItemModel

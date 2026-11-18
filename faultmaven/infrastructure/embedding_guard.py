@@ -35,8 +35,9 @@ which runs its encode in a worker from the KB indexing slot
 (``infrastructure.index_slot``, #2851), and the case evidence indexer
 (``core/preprocessing/vector_storage.py``, live via the ``vectorize_file``
 agent tool), whose encodes run one at a time on the evidence slot beside it,
-never on the default executor. The bound is sized from the batch's BGE-M3
-token count, counted in a worker, not its chunk count: a
+never on the default executor. A KB bound is sized from the batch's BGE-M3
+token count, counted in a worker (an evidence bound from its UTF-8 bytes,
+#2851), not its chunk count: a
 chunk can hold 50 tokens or 3,000, and the per-chunk rule allowed a
 97k-character runbook 302 s of the 373 s it took (#2055).
 

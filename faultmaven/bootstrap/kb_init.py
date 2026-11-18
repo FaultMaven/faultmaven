@@ -1009,7 +1009,8 @@ async def _reconcile_vectors(
 #     loads BGE-M3 and embeds, and (on the single-tenant web-startup path) it runs
 #     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
 #     time: one worker's model load (``index_slot.WORKER_LOAD_SECONDS``; a boot's
-#     rows encode in one worker, #2851), which the budget counts as chunks of
+#     rows encode in one worker, #2851; at most three loads when it fails and
+#     the rows go one by one), which the budget counts (one load) as chunks of
 #     the measured runbook's mean size (``repair_chunk_budget``), plus chunks x
 #     pod CPU, NOT the row count. Bounding rows alone is
 #     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
@@ -1104,22 +1105,25 @@ async def _repair_unserved_rows(
 
     # Surface the EFFECTIVE bounds in the log whenever repair actually acts, so an
     # operator can confirm what a KB_REPAIR_MAX_* override resolved to (the values
-    # are otherwise only visible in settings, not at runtime).
+    # are otherwise only visible in settings, not at runtime): the chunk budget
+    # less the worker's load (#2851).
+    budget = repair_chunk_budget(max_chunks)
     logger.info(
-        "KB repair: %d unserved row(s) within bounds (max_rows=%d, max_chunks=%d) "
-        "— re-embedding with BGE-M3.",
+        "KB repair: %d unserved row(s) within bounds (max_rows=%d, chunks=%d of "
+        "max_chunks=%d after the model load) — re-embedding with BGE-M3.",
         len(unserved_rows),
         max_rows,
+        budget,
         max_chunks,
     )
 
     # One encode for the rows the chunk budget takes, in one worker: one model
-    # load per boot (#2851). Overshoot is bounded by one runbook's chunk count
-    # (the row that reaches the budget is taken); the deferred rows self-heal
-    # on a later boot.
+    # load per boot, at most three when it fails and the rows go one by one
+    # (#2851). Overshoot is bounded by one runbook's chunk count (the row that
+    # reaches the budget is taken); the deferred rows self-heal on a later boot.
     try:
         counts = await knowledge_service.reindex_missing_vectors(
-            unserved_rows, max_chunks=repair_chunk_budget(max_chunks)
+            unserved_rows, max_chunks=budget
         )
     except Exception as exc:
         logger.warning(f"KB repair failed: {exc}")
@@ -1145,10 +1149,11 @@ async def _repair_unserved_rows(
             )
     if deferred:
         logger.warning(
-            "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
-            "deferring %d unserved row(s) to the next boot (repair is "
-            "incremental to keep startup readiness off the embedding path).",
-            max_chunks,
+            "KB repair: per-boot chunk budget (%d) reached, or the encodes kept "
+            "failing, after %d row(s) — deferring %d unserved row(s) to the next "
+            "boot (repair is incremental to keep startup readiness off the "
+            "embedding path).",
+            budget,
             len(counts),
             len(deferred),
         )

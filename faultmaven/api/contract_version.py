@@ -156,8 +156,8 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         title=(
             "`KNOWLEDGE_INDEXING_BUSY` no longer answers that the indexing "
             'model is loading, and the 413\'s "at most N tokens" figure takes '
-            "a 30 s model-load charge (#2851). MINOR: no field, status or code "
-            "is added or removed."
+            "a 30 s model-load charge and a 2 s token-count allowance (#2851). "
+            "MINOR: no field, status or code is added or removed."
         ),
         body=r"""Each KB indexing encode (upload, `PUT /knowledge/documents/{id}`
 content, draft verify) now runs in a worker process of its own, which loads
@@ -166,15 +166,16 @@ the embedding model first and is killed at its time bound. So:
 * every KB write takes at least one model load, about 20 s measured at 2 CPUs,
   however small the document;
 * with `INDEX_REQUEST_WINDOW_SECONDS` set, admission charges every document
-  30 s for that load. The 413's figure becomes
-  `floor((window − 30) × cores / 0.025)` tokens: at 2 cores, 2,400 / 7,200 /
-  21,600 / 45,600 at a window of 60 / 120 / 300 / 600 s (before, 4,800 /
-  9,600 / 24,000 / 48,000). The cut is half the figure at the 60 s floor and
-  5% at 600 s;
-* on an empty queue, while a token-count slot is free, a document is admitted
-  or answered 413: the 503 sentence "The indexing model is loading on this
-  server" is gone, and a 503 `KNOWLEDGE_INDEXING_BUSY` now means only that
-  indexing queued on the server, or the token count's own time, leaves no
+  30 s for that load, and the token count's time is spent from the window.
+  The 413's figure becomes `floor((window − 32) × cores / 0.025)` tokens,
+  the 2 s an uncontended count takes allowed for: at 2 cores, 2,240 / 7,040 /
+  21,440 / 45,440 at a window of 60 / 120 / 300 / 600 s (before, 4,800 /
+  9,600 / 24,000 / 48,000). The cut is 53% of the figure at the 60 s floor
+  and 5% at 600 s;
+* on an empty queue a document is admitted or answered 413 unless its token
+  count waited for a slot: the 503 sentence "The indexing model is loading on
+  this server" is gone, and a 503 `KNOWLEDGE_INDEXING_BUSY` now means only
+  that indexing queued on the server, or a count's wait for a slot, leaves no
   room, or that an encode is stuck past its time bound. A count that finds no
   slot within its wait, or gives no answer, is refused as an unavailable
   embedder (`KNOWLEDGE_EMBEDDER_UNAVAILABLE`, "the server could not prepare

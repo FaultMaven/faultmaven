@@ -553,13 +553,14 @@ document's BGE-M3 token count at a measured 25 core-ms a token, divided by the
 CPU quota (at most 4 cores), plus 30 s for the encode worker's model load.
 Each KB indexing encode runs in a worker process of its own, which loads
 BGE-M3 first (#2851): every KB write takes at least about 20 s, so the most
-tokens one request can index is `(window − 30) × cores / 0.025` (at 2 cores,
-2,400 at the 60 s floor and 45,600 at 600 s), and `verify-batch` fits about
+tokens one request can index is `(window − 32) × cores / 0.025`, 2 s allowed
+for the token count (at 2 cores, 2,240 at the 60 s floor and 45,440 at 600 s),
+and `verify-batch` fits about
 `window / (30 + estimate)` drafts in one request. KB indexing encodes run one
 at a time per container. The token count runs first, in a worker, and its
-time is spent from the window: on an empty queue, while a count slot is free,
-a document is admitted or answered 413 (one within the count's own seconds of
-the line is answered 503); a count that finds no slot is answered as an
+time is spent from the window: on an empty queue a document is admitted or
+answered 413 unless its count waited for a slot (then it can be answered
+503); a count that finds no slot within its wait is answered as an
 unavailable embedder. While an encode is past its time bound every document is
 answered 503. The
 window, the queue, the running encode's age and the host lock's state are

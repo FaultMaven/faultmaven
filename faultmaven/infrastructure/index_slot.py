@@ -27,11 +27,11 @@ started cannot be stopped, and holds its slot until its thread settles.
 **Admission.** :meth:`IndexAdmission.admit` is synchronous, so the check and
 the reservation are one step. Every KB ticket is charged a worker's load
 (``WORKER_LOAD_SECONDS``). With a window set it refuses, before anything is
-written, a document too large for the window less that charge (413), one the
-queue ahead leaves no room for (503), and every document while an encode is
-past its time bound (503). On an empty queue, with the whole window to spend,
-a document is admitted or refused 413 (the KB routes first spend the token
-count's time from it). With a window of 0 it
+written, a document too large for the window less that charge and a token
+count's allowance (413), one the queue ahead leaves no room for (503), and
+every document while an encode is past its time bound (503). On an empty
+queue, with at most the allowance spent on the count, a document is admitted
+or refused 413. With a window of 0 it
 refuses nothing, and the embedding guard alone bounds the embed.
 """
 
@@ -69,6 +69,13 @@ EMBED_BATCH_LOAD_SECONDS = 180.0
 #: window; four 8,192-token texts beside an evidence encode of the same
 #: passed the guard too, and were killed (#2920).
 WORKER_LOAD_SECONDS = 30.0
+
+#: What the 413 line allows for an uncontended token count, which the KB
+#: routes spend from the window before admission (#2851): spawn to answer,
+#: tokenizer load included, measured 1.4-1.8 s (the largest admitted runbook,
+#: in the image at 2 CPUs). So on an empty queue only a count that waited for
+#: a slot leaves a document under the line too little room.
+COUNT_ALLOWANCE_SECONDS = 2.0
 
 #: The guard's bound less the worker's phases: the time to kill and reap it
 #: (4-8 ms measured), so a ticket never reads ``hung`` while its worker is
@@ -552,13 +559,14 @@ class IndexAdmission(EncodeSlot):
             principal: The user who asked.
             window_seconds: What the request may spend; 0 refuses nothing.
             size_limit_seconds: The window a document alone must fit, when the
-                caller has spent part of it already (verify-batch); defaults
-                to ``window_seconds``. A remaining window shorter than it can
+                caller has spent part of it already (verify-batch's earlier
+                drafts, or the token count); defaults to ``window_seconds``. A
+                remaining window shorter than it less the count allowance can
                 answer ``busy`` on an empty queue, by design.
 
         Raises:
             IndexAdmissionRefused: 413 above ``index_max_tokens`` of the limit
-                less ``WORKER_LOAD_SECONDS``. 503 while an encode is past its
+                less ``WORKER_LOAD_SECONDS`` and ``COUNT_ALLOWANCE_SECONDS``. 503 while an encode is past its
                 time bound (``hung``), or when the queue leaves it no room
                 (``busy``).
             KnowledgeBaseError: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window is
@@ -574,7 +582,7 @@ class IndexAdmission(EncodeSlot):
                 error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
             )
         limit = window_seconds if size_limit_seconds is None else size_limit_seconds
-        most = index_max_tokens(limit - WORKER_LOAD_SECONDS)
+        most = index_max_tokens(limit - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
         if tokens > most:
             raise refusal("too_large", tokens=tokens, most=most)
         at = _clock()

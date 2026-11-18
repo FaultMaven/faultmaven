@@ -1271,6 +1271,44 @@ async def test_a_row_whose_encode_fails_leaves_the_others_repaired(
     assert counts == {ids[0]: 3, ids[1]: 0, ids[2]: 3}
 
 
+@pytest.mark.asyncio
+async def test_a_model_that_never_loads_costs_three_encodes_and_defers_the_rest(
+    fk_on_ingest_service, monkeypatch
+):
+    """#2851 delta B1: the combined encode fails, then two rows in a row fail
+    alone: that is systemic, so the rows not yet tried are deferred (absent),
+    and the boot pays three encodes, not one a row. On ``fbb129525`` every row
+    encoded alone (six encodes for five rows) and was counted failed."""
+    from faultmaven.infrastructure import index_slot
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, _ = fk_on_ingest_service
+    ids = [f"kb_{c * 12}" for c in "ghijk"]
+    for item_id in ids:
+        await svc.ingest_runbook(
+            document_id=item_id,
+            title=item_id,
+            content=f"# {item_id}\n\nBody.",
+            enterprise_id="ent-1",
+            scope="global",
+            verified_by=None,
+            verification_level=VerificationLevel.COMMUNITY,
+            record=record_nothing,
+        )
+    svc._vector_store = MagicMock()
+    encodes = []
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: encodes.append(1)
+    )
+
+    counts = await svc.reindex_missing_vectors(ids)
+
+    assert len(encodes) == 3
+    assert counts == {ids[0]: 0, ids[1]: 0}
+
+
 class TestRepairOrphanedRows:
     """The bounded startup repair over the orphaned-row set reconcile produces.
     The service repairs the rows in one call (one encode, one worker, #2851):

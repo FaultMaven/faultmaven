@@ -71,7 +71,7 @@ from tests.utils import record_nothing, regex_only_sanitizer
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
 RUNBOOK_TOKENS = 29_746  # 371.825 s warm on 2 cores, 401.825 s with the load
-TOO_LARGE = 45_601  # 570.0125 s warm: fits no 600 s window with the load
+TOO_LARGE = 45_601  # 570.0125 s warm: past the 600 s line (45,440, #2851)
 ITEM = "kb_0123456789ab"
 _TABLES = (
     KnowledgeItemModel,
@@ -322,6 +322,32 @@ class TestUpload:
             "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
         )
         assert set((await _counts(session_factory)).values()) == {0}
+
+    @pytest.mark.parametrize("over", [0, 1])
+    async def test_an_uncontended_count_leaves_the_413_line_admitted(
+        self, session_factory, world, window, clock, over
+    ):
+        """#2851 delta B2: the line is the window less the load and the
+        count's 2 s allowance (45,440 at 600 s, 2 cores). A count that took
+        1.9 s uncontended leaves the document at the line admitted, and one
+        token over it is 413. On ``fbb129525`` the line was 45,600, so the
+        token over it was admitted, and a band below 45,600 answered busy."""
+        line = index_slot.index_max_tokens(600 - 30 - 2)
+
+        async def counts(_chunks, **_kwargs):
+            clock.now += 1.9
+            return line + over
+
+        world.tokens.side_effect = counts
+
+        if over:
+            with pytest.raises(IndexAdmissionRefused) as refused:
+                await _upload(_knowledge(session_factory))
+            assert refused.value.status_code == 413
+            assert f"at most {line:,} tokens" in refused.value.message
+        else:
+            await _upload(_knowledge(session_factory))
+            assert len(world.encodes.calls) == 1
 
     async def test_the_token_counts_time_is_spent_from_the_window(
         self, session_factory, world, window, clock

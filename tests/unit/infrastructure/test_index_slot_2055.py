@@ -28,6 +28,7 @@ from faultmaven.core.preprocessing.vector_storage import (
 from faultmaven.infrastructure import embedding_guard, index_slot
 from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
 from faultmaven.infrastructure.index_slot import (
+    COUNT_ALLOWANCE_SECONDS,
     WORKER_LOAD_SECONDS,
     IndexAdmission,
     index_max_tokens,
@@ -107,16 +108,16 @@ def test_the_413_line_takes_the_load_and_an_empty_queue_never_answers_busy(
     cloud, monkeypatch, cores, window
 ):
     """#2851 (Q2 (a)): at window ``W`` the line is
-    ``index_max_tokens(W - WORKER_LOAD_SECONDS)``, the charge the fit check
-    takes, so on an empty queue every count up to it is admitted and the next
-    is 413. On ``main`` the line took no charge: on an empty queue a count up
+    ``index_max_tokens(W - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)``,
+    the charge the fit check takes and the count's allowance, so on an empty
+    queue every count up to it is admitted and the next is 413. On ``main`` the line took no charge: on an empty queue a count up
     to it found the cold model's load charge and was answered ``loading``, or
     was admitted, and the counts above the line less the charge were never
     413."""
     monkeypatch.setattr(
         "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: cores
     )
-    most = index_max_tokens(window - WORKER_LOAD_SECONDS)
+    most = index_max_tokens(window - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
 
     refused = _refused(IndexAdmission(), most + 1, window)
     step = max(1, most // 500)
