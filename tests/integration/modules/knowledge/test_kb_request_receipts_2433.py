@@ -23,14 +23,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
@@ -45,7 +43,6 @@ from faultmaven.config.idempotency_key import (
 from faultmaven.config.tenant_context import _current_enterprise_id
 from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
-    EnterpriseModel,
     KbRequestReceiptModel,
     KnowledgeItemModel,
     ResourceShareModel,
@@ -100,7 +97,7 @@ from tests.integration.modules.knowledge.test_upload_writes_rows_after_ingest_23
     session_factory,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import pg_tenant, regex_only_sanitizer
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -513,45 +510,32 @@ async def test_the_deployed_app_leaves_both_routes_to_their_receipts():
 async def test_a_duplicate_is_refused_at_the_key_on_postgresql():
     """PostgreSQL's key refuses the duplicate's receipt at its flush, and the
     refusal is classified once the session is back in the pool."""
-    tag = uuid4().hex[:8]
-    enterprise, owner = f"ent_2433_{tag}", f"user-2433-{tag}"
-    engine = create_async_engine(os.environ["DATABASE_URL"])
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    token = _current_enterprise_id.set(enterprise)
-    key = KbReceiptKey(enterprise, owner, ROUTE_UPLOAD, KEY, "f" * 64)
-    service = _knowledge(factory)
-    try:
-        async with factory() as session:
-            await seed_enterprises(session, [enterprise])
-            await seed_users(session, [owner], enterprise_id=enterprise)
-        upload = dict(
-            content=RUNBOOK_BYTES.decode(),
-            title="Redis Evictions",
-            document_type="runbook",
-            scope="personal",
-            owner_id=owner,
-            receipt_key=key,
-        )
-
-        first = await service.upload_document(**upload)
-        with pytest.raises(KbReceiptExistsError):
-            await service.upload_document(**upload)
-
-        assert (await service.get_request_receipt(key)).response == first
-        async with factory() as session:
-            items = await session.execute(
-                select(KnowledgeItemModel.item_id).where(
-                    KnowledgeItemModel.enterprise_id == enterprise
-                )
+    async with pg_tenant(os.environ["DATABASE_URL"], "2433") as tenant:
+        enterprise, owner, factory = tenant.enterprise_id, tenant.owner, tenant.factory
+        token = _current_enterprise_id.set(enterprise)
+        try:
+            key = KbReceiptKey(enterprise, owner, ROUTE_UPLOAD, KEY, "f" * 64)
+            service = _knowledge(factory)
+            upload = dict(
+                content=RUNBOOK_BYTES.decode(),
+                title="Redis Evictions",
+                document_type="runbook",
+                scope="personal",
+                owner_id=owner,
+                receipt_key=key,
             )
-            assert items.scalars().all() == [first["document_id"]]
-    finally:
-        async with factory() as session:
-            await session.execute(
-                delete(EnterpriseModel).where(
-                    EnterpriseModel.enterprise_id == enterprise
+
+            first = await service.upload_document(**upload)
+            with pytest.raises(KbReceiptExistsError):
+                await service.upload_document(**upload)
+
+            assert (await service.get_request_receipt(key)).response == first
+            async with factory() as session:
+                items = await session.execute(
+                    select(KnowledgeItemModel.item_id).where(
+                        KnowledgeItemModel.enterprise_id == enterprise
+                    )
                 )
-            )
-            await session.commit()
-        _current_enterprise_id.reset(token)
-        await engine.dispose()
+                assert items.scalars().all() == [first["document_id"]]
+        finally:
+            _current_enterprise_id.reset(token)

@@ -24,13 +24,12 @@ import logging
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import anyio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, event, func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -42,11 +41,9 @@ from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
     ConversionJobModel,
-    EnterpriseModel,
     KnowledgeItemModel,
     ResourceShareModel,
     UploadedFileModel,
-    UserModel,
 )
 from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
@@ -70,7 +67,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
     KnowledgeItemRepositoryException,
 )
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import pg_tenant, regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -540,37 +537,11 @@ def test_the_upload_route_logs_the_class_not_the_text(caplog):
 )
 async def test_an_upload_lands_on_postgresql():
     """PostgreSQL's key is non-deferrable: the draft's INSERT is checked at once."""
-    tag = uuid4().hex[:8]
-    enterprise, owner = f"ent_2365_{tag}", f"user-2365-{tag}"
-    engine = create_async_engine(os.environ["DATABASE_URL"])
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    token = _current_enterprise_id.set(enterprise)
-    try:
-        async with factory() as session:
-            await seed_enterprises(session, [enterprise])
-            await seed_users(session, [owner], enterprise_id=enterprise)
+    async with pg_tenant(os.environ["DATABASE_URL"], "2365") as tenant:
+        token = _current_enterprise_id.set(tenant.enterprise_id)
+        try:
+            result = await _upload(_knowledge(tenant.factory), owner=tenant.owner)
 
-        result = await _upload(_knowledge(factory), owner=owner)
-
-        await _assert_landed(factory, result["document_id"], owner)
-    finally:
-        async with factory() as session:
-            for model in (
-                ResourceShareModel,
-                ConversionDraftModel,
-                ConversionJobModel,
-                UploadedFileModel,
-                KnowledgeItemModel,
-                UserModel,
-            ):
-                await session.execute(
-                    delete(model).where(model.enterprise_id == enterprise)
-                )
-            await session.execute(
-                delete(EnterpriseModel).where(
-                    EnterpriseModel.enterprise_id == enterprise
-                )
-            )
-            await session.commit()
-        _current_enterprise_id.reset(token)
-        await engine.dispose()
+            await _assert_landed(tenant.factory, result["document_id"], tenant.owner)
+        finally:
+            _current_enterprise_id.reset(token)

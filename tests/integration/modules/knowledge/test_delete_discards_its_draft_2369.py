@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -47,9 +46,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseModel,
     ConversionDraftModel,
     ConversionJobModel,
-    EnterpriseModel,
-    KnowledgeItemModel,
-    ResourceShareModel,
     UploadedFileModel,
     UserModel,
 )
@@ -85,7 +81,7 @@ from tests.unit.modules.knowledge.test_conversion_service import (
     _case_analysis,
     _make_case_draft,
 )
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import pg_tenant, regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -557,66 +553,34 @@ _needs_postgres = pytest.mark.skipif(
 )
 
 
-@asynccontextmanager
-async def _pg_tenant():
-    """An enterprise and an owner of their own in the configured PostgreSQL,
-    deleted after: the database is shared with every other ``-m postgres``
-    test, and ``users_pkey`` is on ``user_id`` alone (#2414)."""
-    tag = uuid4().hex[:8]
-    enterprise, owner = f"ent_2369_{tag}", f"user-2369-{tag}"
-    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    token = _current_enterprise_id.set(enterprise)
-    try:
-        async with factory() as session:
-            await seed_enterprises(session, [enterprise])
-            await seed_users(session, [owner], enterprise_id=enterprise)
-        yield factory, owner
-    finally:
-        async with factory() as session:
-            for model in (
-                ResourceShareModel,
-                ConversionDraftModel,
-                ConversionJobModel,
-                UploadedFileModel,
-                KnowledgeItemModel,
-                UserModel,
-            ):
-                await session.execute(
-                    delete(model).where(model.enterprise_id == enterprise)
-                )
-            await session.execute(
-                delete(EnterpriseModel).where(
-                    EnterpriseModel.enterprise_id == enterprise
-                )
-            )
-            await session.commit()
-        _current_enterprise_id.reset(token)
-        await engine.dispose()
-
-
 @pytest.fixture
 async def pg_factory():
-    """The session factory and owner id of a ``_pg_tenant``."""
-    async with _pg_tenant() as tenant:
-        yield tenant
+    """The session factory and owner of a ``pg_tenant`` of the test's own, its
+    enterprise the current one."""
+    async with pg_tenant(os.environ["DATABASE_URL"], "2369") as tenant:
+        token = _current_enterprise_id.set(tenant.enterprise_id)
+        try:
+            yield tenant.factory, tenant.owner
+        finally:
+            _current_enterprise_id.reset(token)
 
 
 @pytest.mark.postgres
 @_needs_postgres
 async def test_two_pg_tenants_seed_without_colliding():
-    """Two tests on different xdist workers seed their tenants at once. Each
-    seeds an owner of its own, anchored in its own enterprise: a shared id met
-    the other's on ``users_pkey``, or, seeded second, was skipped and left in
-    the other's enterprise, whose teardown deleted it."""
+    """Two tests on different xdist workers seed their ``pg_tenant``s at once.
+    Each seeds an owner of its own, anchored in its own enterprise: a shared id
+    met the other's on ``users_pkey``, or, seeded second, was skipped and left
+    in the other's enterprise, whose teardown deleted it. Each teardown then
+    leaves neither row."""
     both, seeded = asyncio.Barrier(2), []
 
     async def hold() -> None:
         try:
-            async with _pg_tenant() as (factory, owner):
-                async with factory() as session:
-                    row = await session.get(UserModel, owner)
-                seeded.append((owner, row.enterprise_id, _current_enterprise_id.get()))
+            async with pg_tenant(os.environ["DATABASE_URL"], "2369") as tenant:
+                async with tenant.factory() as session:
+                    row = await session.get(UserModel, tenant.owner)
+                seeded.append((tenant.owner, row.enterprise_id, tenant.enterprise_id))
                 await both.wait()
         except BaseException:
             await both.abort()
@@ -628,6 +592,17 @@ async def test_two_pg_tenants_seed_without_colliding():
     assert not failures, failures
     assert len({owner for owner, _, _ in seeded}) == 2
     assert all(anchor == own for _, anchor, own in seeded), seeded
+    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            left = await conn.execute(
+                select(UserModel.user_id).where(
+                    UserModel.enterprise_id.in_([own for _, _, own in seeded])
+                )
+            )
+            assert left.all() == []
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.postgres
@@ -657,12 +632,13 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
     knowledge = _knowledge(factory)
     item_id, draft_id = await _publish(factory, knowledge, "upload", owner)
     job_id = (await _draft_and_key(factory, draft_id))[0].conversion_id
-    await _add(factory, _draft("linked", job_id))
+    linked = f"linked-{uuid4().hex[:8]}"
+    await _add(factory, _draft(linked, job_id))
 
     async with factory() as linking, factory() as probe:
         await linking.execute(
             update(ConversionDraftModel)
-            .where(ConversionDraftModel.id == "linked")
+            .where(ConversionDraftModel.id == linked)
             .values(status="verified", knowledge_item_id=item_id)
         )
         linker = (await linking.execute(text("SELECT pg_backend_pid()"))).scalar()
@@ -686,7 +662,7 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
         await linking.commit()
         assert (await deleting)["success"] is True
 
-    draft, _ = await _draft_and_key(factory, "linked")
+    draft, _ = await _draft_and_key(factory, linked)
     assert (draft.status, draft.knowledge_item_id) == ("discarded", None)
 
 

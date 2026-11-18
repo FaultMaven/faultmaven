@@ -31,12 +31,10 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
@@ -47,9 +45,6 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionJobModel,
     EnterpriseModel,
     KnowledgeItemModel,
-    ResourceShareModel,
-    UploadedFileModel,
-    UserModel,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -65,8 +60,9 @@ from faultmaven.modules.knowledge.taxonomy import (
     SymptomClass,
     vocabulary,
 )
+from tests.integration.security.conftest import alembic_on, database_of_its_own
 from tests.runbook_samples import valid_runbook
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import Tenant, pg_tenant, regex_only_sanitizer
 
 pytestmark = pytest.mark.integration
 
@@ -173,24 +169,12 @@ _postgres = pytest.param(
     ],
 )
 
-#: What one test writes, deleted by its enterprise after it on the shared PG
-#: database, children first.
-_WRITTEN = (
-    ResourceShareModel,
-    KnowledgeItemModel,
-    ConversionDraftModel,
-    ConversionJobModel,
-    UploadedFileModel,
-    UserModel,
+#: The scan reads and updates every enterprise's drafts (single-tenant by
+#: design), so no key of its own isolates it: its PostgreSQL arm runs on a
+#: database of its own.
+_postgres_own_database = pytest.param(
+    "postgres-own", marks=_postgres.marks, id="postgres"
 )
-
-
-class Tenant(NamedTuple):
-    """A test's database and the enterprise and author it writes as."""
-
-    factory: async_sessionmaker
-    enterprise_id: str
-    user_id: str
 
 
 def _async_url(url: str) -> str:
@@ -220,55 +204,41 @@ def migrated_postgres():
 @pytest.fixture(params=["orm", "migrated", _postgres])
 async def tenant(request, tmp_path, migrated_template):
     """The database, and who writes. On the shared PostgreSQL the enterprise
-    and author are the test's own and deleted after it, so a parallel run
-    cannot meet them (#2414)."""
+    and author are a ``pg_tenant`` of the test's own, so a parallel run cannot
+    meet them (#2414); ``postgres-own`` is a migrated database of its own."""
     if request.param == "postgres":
-        tag = uuid4().hex[:8]
-        enterprise_id, user_id = f"ent_tax_{tag}", f"user-tax-{tag}"
-        engine = create_async_engine(request.getfixturevalue("migrated_postgres"))
+        url = request.getfixturevalue("migrated_postgres")
+        async with pg_tenant(url, "tax") as tenant:
+            yield tenant
+        return
+    if request.param == "postgres-own":
+        async with database_of_its_own(_async_url(POSTGRES_URL), "fm_tax") as url:
+            result = alembic_on(url, "upgrade head")
+            assert result.returncode == 0, result.stderr[-2000:]
+            async with pg_tenant(url, "tax") as tenant:
+                yield tenant
+        return
+    if request.param == "migrated":
+        db = tmp_path / "db.sqlite"
+        db.write_bytes(migrated_template.read_bytes())
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
     else:
-        enterprise_id, user_id = STANDALONE_ENTERPRISE_ID, "u1"
-        if request.param == "migrated":
-            db = tmp_path / "db.sqlite"
-            db.write_bytes(migrated_template.read_bytes())
-            engine = create_async_engine(f"sqlite+aiosqlite:///{db}")
-        else:
-            engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    try:
-        if request.param == "postgres":
-            # PostgreSQL enforces the foreign keys SQLite leaves off: the
-            # author the drafts and items name must exist.
-            async with factory() as session:
-                await seed_enterprises(session, [enterprise_id])
-                await seed_users(session, [user_id], enterprise_id=enterprise_id)
-        elif request.param == "orm":
-            async with factory() as session:
-                session.add(
-                    EnterpriseModel(
-                        enterprise_id=STANDALONE_ENTERPRISE_ID,
-                        name="Default Enterprise",
-                        slug="default",
-                    )
+    if request.param == "orm":
+        async with factory() as session:
+            session.add(
+                EnterpriseModel(
+                    enterprise_id=STANDALONE_ENTERPRISE_ID,
+                    name="Default Enterprise",
+                    slug="default",
                 )
-                await session.commit()
-        yield Tenant(factory, enterprise_id, user_id)
-    finally:
-        if request.param == "postgres":
-            async with factory() as session:
-                for model in _WRITTEN:
-                    await session.execute(
-                        delete(model).where(model.enterprise_id == enterprise_id)
-                    )
-                await session.execute(
-                    delete(EnterpriseModel).where(
-                        EnterpriseModel.enterprise_id == enterprise_id
-                    )
-                )
-                await session.commit()
-        await engine.dispose()
+            )
+            await session.commit()
+    yield Tenant(factory, STANDALONE_ENTERPRISE_ID, "u1")
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -302,7 +272,7 @@ async def _create_and_verify(service: ConversionService, fields: dict, tenant):
         title="Connection Pool Exhausted On The API",
         service_name="postgresql",
         tags=["pgbouncer"],
-        user_id=tenant.user_id,
+        user_id=tenant.owner,
         enterprise_id=tenant.enterprise_id,
         **fields,
         **SECTIONS,
@@ -311,7 +281,7 @@ async def _create_and_verify(service: ConversionService, fields: dict, tenant):
     verified = await service.verify_draft(
         created["conversion_id"],
         draft.draft_id,
-        user_id=tenant.user_id,
+        user_id=tenant.owner,
         is_platform_admin=True,
     )
     return created, draft, verified
@@ -411,6 +381,9 @@ def test_migrated_check_admits_exactly_the_vocabulary(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "tenant", ["orm", "migrated", _postgres_own_database], indirect=True
+)
 async def test_a_scanned_file_with_an_off_vocabulary_severity_is_recorded(
     service, session_factory, tenant, tmp_path
 ):
@@ -430,7 +403,7 @@ async def test_a_scanned_file_with_an_off_vocabulary_severity_is_recorded(
     (root / "good.md").write_text(good, encoding="utf-8")
 
     result = await service.scan_for_runbooks(
-        tenant.user_id, tenant.enterprise_id, is_platform_admin=True
+        tenant.owner, tenant.enterprise_id, is_platform_admin=True
     )
 
     assert result["discovered"] == 2, result

@@ -52,6 +52,7 @@ from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from tests.integration.security.conftest import (
     PROJECT_ROOT,
     RUNTIME_ROLE,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -553,7 +554,7 @@ async def test_revision_005_refuses_a_function_it_would_otherwise_create():
 
         result = alembic_on(url, f"upgrade {_REVISION}")
         catalog = await _definer_catalog(url)
-        (version,) = await _execute_as(url, "SELECT version_num FROM alembic_version")
+        version = await _revision(url)
 
     assert result.returncode != 0, "the upgrade created a function it should refuse"
     assert (
@@ -565,7 +566,7 @@ async def test_revision_005_refuses_a_function_it_would_otherwise_create():
     )
     for name, function in catalog["functions"].items():
         assert function["config"] == _PARENT_CONFIG, name
-    assert tuple(version) == (_PARENT_REVISION,)
+    assert version == _PARENT_REVISION
 
 
 def _load_migration():

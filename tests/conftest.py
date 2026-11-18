@@ -172,8 +172,11 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # caller's choice and is left alone; one an ancestor test process set (the
 # xdist controller, a pytest that runs a pytest) names that process's root and
 # is replaced, which is why the root is recorded together with the pid that
-# made it. Either is read in any letter case, as pydantic-settings binds it
-# (the last spelling wins), and a replacement leaves one spelling (#1835).
+# made it. Each spelling is judged, in any letter case as pydantic-settings
+# binds them: one holding the ancestor's root is dropped wherever it sits, and
+# the variable is set only when no spelling is left (#1835). ``JWT_SECRET_FILE``
+# is the exception: the product reads it by its exact name (#2918), so only that
+# spelling is the caller's, and only that spelling is written.
 #
 # The variables alone do not survive a test that empties or pins the
 # environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
@@ -190,6 +193,10 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # import must reuse the first one's root.
 TEST_DATA_ROOT_ENV = "FAULTMAVEN_TEST_DATA_ROOT"
 _TEST_DATA_ROOT_PID_ENV = "FAULTMAVEN_TEST_DATA_ROOT_PID"
+
+
+#: Read by the product under their exact name, not through pydantic-settings.
+_READ_BY_EXACT_NAME = frozenset({"JWT_SECRET_FILE"})
 
 
 def data_paths_under(root: str) -> dict[str, str]:
@@ -218,11 +225,12 @@ if os.environ.get(_TEST_DATA_ROOT_PID_ENV) != str(os.getpid()):
 
     atexit.register(shutil.rmtree, _root, ignore_errors=True)
     for _name, _value in data_paths_under(_root).items():
-        _spellings = env_var_spellings(os.environ, _name)
-        _current = os.environ[_spellings[-1]] if _spellings else None
-        if _current is None or (
-            _inherited_root and (_inherited_root + os.sep) in _current
-        ):
+        for _key in env_var_spellings(os.environ, _name):
+            if _inherited_root and (_inherited_root + os.sep) in os.environ[_key]:
+                del os.environ[_key]
+        if _name in _READ_BY_EXACT_NAME:
+            os.environ.setdefault(_name, _value)
+        elif not env_var_spellings(os.environ, _name):
             set_env_var(os.environ, _name, _value)
     os.environ[TEST_DATA_ROOT_ENV] = _root
     os.environ[_TEST_DATA_ROOT_PID_ENV] = str(os.getpid())

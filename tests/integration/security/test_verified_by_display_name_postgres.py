@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
     _execute,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -233,8 +234,6 @@ async def test_a_role_the_policy_filters_raises_instead_of_rewriting_nothing():
                 )
                 == before
             )
-            assert await _execute(
-                su_url, "SELECT version_num FROM alembic_version"
-            ) == [(_PARENT_REVISION,)]
+            assert await _revision(su_url) == _PARENT_REVISION
         finally:
             await _execute(su_url, drop_role_sql(role))
