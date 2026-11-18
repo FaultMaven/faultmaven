@@ -42,10 +42,23 @@ class _Holder:
     error: object
 
 
+@dataclasses.dataclass
+class _Login:
+    password: str = dataclasses.field(repr=False)
+    error: object = None
+
+
 def _deep(error, levels=12):
     for _ in range(levels):
         error = [error]
     return error
+
+
+def _twin(error):
+    """Another exception with ``error``'s class chain."""
+    twin = type(error)()
+    twin.__cause__ = error.__cause__
+    return twin
 
 
 #: Containers an exception field can sit in, each built around ``error``.
@@ -58,6 +71,8 @@ SHAPES = {
     "dataclass": _Holder,
     "namespace": lambda e: types.SimpleNamespace(e=e),
     "dict-key": lambda e: {e: 1},
+    "tuple-key": lambda e: {(e, 1): 1},
+    "keys-of-one-chain": lambda e: {e: 1, _twin(e): 2},
     "twelve-deep": _deep,
 }
 
@@ -149,7 +164,7 @@ class TestTheApiChain:
         _api_frames(api, marker)
 
     @pytest.mark.parametrize("where", ["extra", "top-level", "event", *SHAPES])
-    def test_an_exception_field_is_its_class_chain(self, api, marker, where):
+    def test_an_exception_field_is_its_class_chain(self, api, marker, where, capsys):
         error = chained(marker)
         if where == "extra":
             logging.getLogger("faultmaven.test").error("failed", extra={"e": error})
@@ -161,12 +176,36 @@ class TestTheApiChain:
             get_logger("faultmaven.test").error("failed", e=SHAPES[where](error))
         output = api.buffer.getvalue()
         assert marker not in output
+        assert capsys.readouterr().err == ""  # the line rendered
         if api.mode == "json":
-            json.loads(output)
+            line = json.loads(output)
+            if where == "keys-of-one-chain":  # both values kept
+                assert sorted(line["e"].values()) == [1, 2]
         if where != "twelve-deep":
             assert "RuntimeError <- ExceptionGroup" in output
         else:  # past the walk's depth, a container is its type name
             assert "'list'" in output or '"list"' in output
+
+    def test_a_dataclass_field_hidden_from_its_repr_stays_hidden(self, api, marker):
+        secret = secrets.token_hex(8)
+        get_logger("faultmaven.test").error("failed", e=_Login(secret, chained(marker)))
+        output = api.buffer.getvalue()
+        assert secret not in output and marker not in output
+        assert "RuntimeError <- ExceptionGroup" in output
+
+    @pytest.mark.parametrize(
+        "value",
+        [_deep(1, levels=11), collections.UserString("hello")],
+        ids=["eleven-deep", "user-string"],
+    )
+    def test_a_field_with_no_exception_renders_as_before(self, api, value):
+        get_logger("faultmaven.test").info("plain", v=value)
+        output = api.buffer.getvalue()
+        if api.mode == "json":
+            expected = value if isinstance(value, list) else repr(value)
+            assert json.loads(output)["v"] == expected
+        else:
+            assert f"v={value!r}" in output
 
     @pytest.mark.parametrize("api", ["json"], indirect=True)
     def test_a_line_without_an_exception_keeps_its_keys(self, api):

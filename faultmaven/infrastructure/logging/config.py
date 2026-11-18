@@ -11,6 +11,7 @@ at runtime, not at import time.
 import dataclasses
 import logging
 import sys
+from collections import UserString
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from types import MappingProxyType, SimpleNamespace
@@ -108,25 +109,24 @@ def exc_info_as_frames(
     return event_dict
 
 
-#: Levels :func:`_without_exceptions` walks before a container is written as
-#: its type name.
+#: Levels :func:`_without_exceptions` walks before a container that holds an
+#: exception is written as its type name.
 _FIELD_DEPTH = 10
 
 #: Sequences written as they are, never walked.
-_LEAF_SEQUENCES = (str, bytes, bytearray, range, memoryview)
+_LEAF_SEQUENCES = (str, bytes, bytearray, range, memoryview, UserString)
 
 
 def _parts(value: Any) -> Optional[Tuple[bool, list]]:
     """``(True, [(key, value), ...])`` for a mapping-like value (a ``Mapping``,
-    a dataclass instance's fields, a ``SimpleNamespace``'s attributes),
-    ``(False, [item, ...])`` for any other ``Sequence`` or ``Set`` (``deque``
-    included), else ``None``."""
+    a dataclass instance's ``repr`` fields, a ``SimpleNamespace``'s
+    attributes), ``(False, [item, ...])`` for any other ``Sequence`` or ``Set``
+    (``deque`` included), else ``None``."""
     if isinstance(value, Mapping):
         return True, list(value.items())
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return True, [
-            (f.name, getattr(value, f.name)) for f in dataclasses.fields(value)
-        ]
+        fields = [f for f in dataclasses.fields(value) if f.repr]
+        return True, [(f.name, getattr(value, f.name)) for f in fields]
     if isinstance(value, SimpleNamespace):
         return True, list(vars(value).items())
     if isinstance(value, (Sequence, AbstractSet)) and not isinstance(
@@ -136,41 +136,68 @@ def _parts(value: Any) -> Optional[Tuple[bool, list]]:
     return None
 
 
+def _holds_exception(value: Any) -> bool:
+    """Whether an exception sits anywhere in ``value``'s walkable parts, each
+    object visited once; ``True`` past 100 levels (a sequence whose items are
+    new sequences), the safe side."""
+    stack, seen = [(value, 0)], set()
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, BaseException) or depth > 100:
+            return True
+        parts = _parts(item) if id(item) not in seen else None
+        seen.add(id(item))
+        for part in parts[1] if parts else ():
+            stack.extend((x, depth + 1) for x in (part if parts[0] else (part,)))
+    return False
+
+
 def _without_exceptions(value: Any, depth: int = 0) -> Any:
     """``value`` with each exception in it, key or value, replaced by its class
-    chain: the object itself, uncopied, when it holds none; otherwise a ``dict``
-    (for a mapping-like value) or a ``list`` of the rewritten parts. A container
-    ``_FIELD_DEPTH`` levels down is written as its type name, never its repr."""
+    chain. ``value`` itself, uncopied, is returned when it holds no exception
+    (at any depth); otherwise a ``dict`` (for a mapping-like value) or a
+    ``list`` of the rewritten parts, where a rewritten key that is not a
+    ``str`` is written as one, suffixed ``#2``, ``#3``, ... on a collision. A
+    container ``_FIELD_DEPTH`` levels down that holds one is written as its
+    type name, never its repr."""
     if isinstance(value, BaseException):
         return exception_class_chain(value)
     parts = _parts(value)
     if parts is None:
         return value
     if depth >= _FIELD_DEPTH:
-        return type(value).__name__
+        return type(value).__name__ if _holds_exception(value) else value
     mapping, items = parts
-    if mapping:
-        pairs = [
-            (_without_exceptions(k, depth + 1), _without_exceptions(v, depth + 1))
-            for k, v in items
-        ]
-        if all(a is k and b is v for (a, b), (k, v) in zip(pairs, items)):
-            return value
-        return dict(pairs)
-    rewritten = [_without_exceptions(item, depth + 1) for item in items]
-    if all(a is b for a, b in zip(rewritten, items)):
+    if not mapping:
+        rewritten = [_without_exceptions(item, depth + 1) for item in items]
+        return value if all(a is b for a, b in zip(rewritten, items)) else rewritten
+    pairs = [
+        (k, _without_exceptions(k, depth + 1), _without_exceptions(v, depth + 1), v)
+        for k, v in items
+    ]
+    if all(a is k and b is v for k, a, b, v in pairs):
         return value
-    return rewritten
+    kept, written = {k for k, a, _, _ in pairs if a is k}, {}
+    for k, a, b, _ in pairs:
+        if a is not k:
+            a = name = a if isinstance(a, str) else str(a)
+            n = 1
+            while a in written or a in kept:
+                n += 1
+                a = f"{name} #{n}"
+        written[a] = b
+    return written
 
 
 def exceptions_as_class_chains(
     _logger: Any, _name: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Write an exception passed as a field (``error=e``, ``extra={"e": e}``,
-    the event itself, or a key or value inside a field's container) as its
-    class chain, never its repr, which holds its message (principles §7,
-    rule 4; #2888). The JSON renderer's ``default`` is the backstop for an
-    object this does not walk."""
+    the event itself, or a key or value inside a container
+    :func:`_without_exceptions` walks) as its class chain, never its repr,
+    which holds its message (principles §7, rule 4; #2888). An exception inside
+    any other object renders through that object's repr. The JSON renderer's
+    ``default`` names an exception it meets by its class chain."""
     for key, value in event_dict.items():
         event_dict[key] = _without_exceptions(value)
     return event_dict
