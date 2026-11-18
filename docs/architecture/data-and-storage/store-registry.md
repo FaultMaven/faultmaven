@@ -234,7 +234,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - SSO: `modules/auth/infrastructure/stores/sso_ephemeral_store.py:19-47`;
   `modules/auth/domain/services/sso_login_service.py:117`, `:121`.
 - OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:87-103`,
-  `:117-119`, `:178-182`; `container/providers/services.py:1051-1066`, `:1505-1512`;
+  `:117-119`, `:178-182`; `container/providers/services.py:1040-1055`, `:1494-1501`;
   `config/settings.py:1864-1867`.
 - `password_reset:`: `modules/auth/domain/services/user_service.py:123`, `:460-462`;
   `modules/auth/domain/services/jwt_token_generator.py:67`.
@@ -243,7 +243,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Pseudonym key fingerprint: `infrastructure/security/pseudonym_key.py:233`, `:283`;
   rotation by hand: `:86-92`.
 - Token revocations: `modules/auth/infrastructure/stores/token_revocation_store.py:157-196`;
-  `config/settings.py:1723`; `container/providers/services.py:1090-1100`;
+  `config/settings.py:1723`; `container/providers/services.py:1079-1089`;
   `modules/auth/domain/services/auth_service.py:642-703`.
 - Rate limits: `infrastructure/protection/rate_limiter.py:135-137`, `:222`, `:842-848`;
   `api/middleware/rate_limiting.py:161`; `config/protection.py:75-82`.
@@ -255,7 +255,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - `job:`: `infrastructure/jobs/job_service.py:51-52`; `bootstrap/composition.py:591`;
   no caller of `create_job` in `faultmaven/`.
 - `lock:report_generation:case:`: `infrastructure/concurrency/report_lock_manager.py:51`;
-  `container/providers/services.py:1659-1664`; nothing sets `container.lock_manager`.
+  `container/providers/services.py:1648-1653`; nothing sets `container.lock_manager`.
 - `auth:`: `infrastructure/auth/user_store.py:74-78`, `:534-537`;
   `container/providers/infrastructure.py:548-553`, `:604-627`.
 - `faultmaven:llm_config:version`: `config/llm_config_overrides.py:28-34`, `:256`.
@@ -319,7 +319,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Logs
 
-- `infrastructure/logging/config.py:146-176`, `:345-357`; `user_id`: `:60-64`, `:417-418`.
+- `infrastructure/logging/config.py:245-275`, `:444-456`; `user_id`: `:70-74`, `:543-544`.
 - What a line may hold: [principles §7, "What a log line may hold"](../core-architecture/architectural-design-principles.md#7-observability-by-default),
   with its outputs and redactor tables.
 - Policy: [Logging Policy, Redaction](../../operations/monitoring/logging-policy.md#redaction).
@@ -347,10 +347,10 @@ Each of these was considered and is not a row, for the reason given.
 | Work in flight: `inflight._TRACKED` and `_LEASES` (`infrastructure/concurrency/inflight.py:117-119`), `EvidenceVectorizer._inflight_vectorize` (`core/investigation/milestone_engine/vectorization.py:21`) | Live only while the work runs; drained at shutdown (#2505) |
 | The OAuth endpoints' rate limiter (`modules/auth/api/rate_limiting.py:58-63`) | Process-local windows keyed by client IP and endpoint; no tenant data |
 | `InMemoryTurnLedger` (`infrastructure/protection/tenant_turn_cap.py:315`) | Never composed: the composition wires `SqlTurnLedger` (`container/providers/services.py:403-426`), a relational table |
-| `InMemoryOAuthCodeRepository` (`container/providers/services.py:1062-1066`) | Selected only when no Redis client is passed; the composition passes one (`:1509-1512`) |
+| `InMemoryOAuthCodeRepository` (`container/providers/services.py:1051-1055`) | Selected only when no Redis client is passed; the composition passes one (`:1498-1501`) |
 | `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:512`), which stores into it (`case_data_ingestion_service.py:343`, `:532`), but nothing outside the service resolves it: only `app.state.data_service` holds it (`bootstrap/composition.py:579`), and its dependency (`api/v1/dependencies.py:204`) is used by no route |
-| `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:836-843`). It writes no file: a model reaches it as bytes (`:593-602`) |
-| `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:383-391`) |
+| `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:834-841`). It writes no file: a model reaches it as bytes (`:593-602`) |
+| `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:381-389`) |
 | APScheduler job stores (`infrastructure/tasks/job_runners.py:89`, `infrastructure/tasks/case_cleanup.py:165`) | In-memory schedule definitions; no tenant data |
 | `faultmaven-kb-index.lock` in the temporary directory (`infrastructure/index_slot.py:83`) | A host-wide lock file; holds no data |
 | The Slack agent's `credentials.db`, `cases.db` and the `faultmaven_slack` database | The Slack agent repository's stores ([Deployment Wipe](../../operations/deployment-wipe.md#the-surfaces)) |

@@ -8,16 +8,23 @@ Configuration is read from the unified settings system (faultmaven.config.settin
 at runtime, not at import time.
 """
 
+import dataclasses
 import logging
 import sys
-from types import MappingProxyType
-from typing import Any, Dict, Mapping, Optional, TextIO
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
+from types import MappingProxyType, SimpleNamespace
+from typing import Any, Dict, Optional, TextIO, Tuple
 
 import structlog
 from opentelemetry import trace
 
 from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
-from faultmaven.utils.exception_name import exception_class_chain, exception_frames
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_frames,
+    logged_exception,
+)
 
 # Third-party loggers whose DEBUG output is per-operation tracing rather than
 # signal, each with the level it is pinned at. Raising our own verbosity to
@@ -92,38 +99,78 @@ def frames_as_console_stack(
 def exc_info_as_frames(
     _logger: Any, _name: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Render an ``exc_info`` (``True``, an exception or a ``sys.exc_info()``
-    tuple) as ``frames``: :func:`exception_frames`, each link's class and frames
-    with no message (principles §7, rule 4; #2888). A ``frames`` the caller
-    gave is kept."""
-    exc_info = event_dict.pop("exc_info", None)
-    if exc_info is True:
-        exc_info = sys.exc_info()
-    error = exc_info[1] if isinstance(exc_info, tuple) else exc_info
-    if isinstance(error, BaseException):
-        event_dict.setdefault("frames", exception_frames(error))
+    """Render an ``exc_info`` (:func:`logged_exception`'s shapes) as ``frames``:
+    :func:`exception_frames`, each link's class and frames with no message
+    (principles §7, rule 4; #2888). A ``frames`` the caller gave is kept."""
+    logged = logged_exception(event_dict.pop("exc_info", None))
+    if logged is not None and "frames" not in event_dict:
+        event_dict["frames"] = exception_frames(*logged)
     return event_dict
 
 
+#: Levels :func:`_without_exceptions` walks before a container is written as
+#: its type name.
+_FIELD_DEPTH = 10
+
+#: Sequences written as they are, never walked.
+_LEAF_SEQUENCES = (str, bytes, bytearray, range, memoryview)
+
+
+def _parts(value: Any) -> Optional[Tuple[bool, list]]:
+    """``(True, [(key, value), ...])`` for a mapping-like value (a ``Mapping``,
+    a dataclass instance's fields, a ``SimpleNamespace``'s attributes),
+    ``(False, [item, ...])`` for any other ``Sequence`` or ``Set`` (``deque``
+    included), else ``None``."""
+    if isinstance(value, Mapping):
+        return True, list(value.items())
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return True, [
+            (f.name, getattr(value, f.name)) for f in dataclasses.fields(value)
+        ]
+    if isinstance(value, SimpleNamespace):
+        return True, list(vars(value).items())
+    if isinstance(value, (Sequence, AbstractSet)) and not isinstance(
+        value, _LEAF_SEQUENCES
+    ):
+        return False, list(value)
+    return None
+
+
 def _without_exceptions(value: Any, depth: int = 0) -> Any:
-    """``value`` with each exception in it, through dicts, lists, tuples and
-    sets up to 10 levels deep, replaced by its class chain."""
+    """``value`` with each exception in it, key or value, replaced by its class
+    chain: the object itself, uncopied, when it holds none; otherwise a ``dict``
+    (for a mapping-like value) or a ``list`` of the rewritten parts. A container
+    ``_FIELD_DEPTH`` levels down is written as its type name, never its repr."""
     if isinstance(value, BaseException):
         return exception_class_chain(value)
-    if depth < 10 and type(value) in (dict, list, tuple, set, frozenset):
-        if type(value) is dict:
-            return {k: _without_exceptions(v, depth + 1) for k, v in value.items()}
-        return type(value)(_without_exceptions(v, depth + 1) for v in value)
-    return value
+    parts = _parts(value)
+    if parts is None:
+        return value
+    if depth >= _FIELD_DEPTH:
+        return type(value).__name__
+    mapping, items = parts
+    if mapping:
+        pairs = [
+            (_without_exceptions(k, depth + 1), _without_exceptions(v, depth + 1))
+            for k, v in items
+        ]
+        if all(a is k and b is v for (a, b), (k, v) in zip(pairs, items)):
+            return value
+        return dict(pairs)
+    rewritten = [_without_exceptions(item, depth + 1) for item in items]
+    if all(a is b for a, b in zip(rewritten, items)):
+        return value
+    return rewritten
 
 
 def exceptions_as_class_chains(
     _logger: Any, _name: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Write an exception passed as a field (``error=e``, ``extra={"e": e}``,
-    or nested in a field's dict or list) as its class chain, never its repr,
-    which holds its message (principles §7, rule 4; #2888). The JSON renderer's
-    ``default`` does the same for an exception deeper than this reaches."""
+    the event itself, or a key or value inside a field's container) as its
+    class chain, never its repr, which holds its message (principles §7,
+    rule 4; #2888). The JSON renderer's ``default`` is the backstop for an
+    object this does not walk."""
     for key, value in event_dict.items():
         event_dict[key] = _without_exceptions(value)
     return event_dict

@@ -38,9 +38,9 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # Log through the jobs' line on stderr, as alembic.ini's levels set, before
-# anything below can log (principles §7; #2888). It reads the logging settings
-# alone. fileConfig, below, removes it with the root's handlers, and it is
-# installed again after it.
+# anything below can log (principles §7; #2888). It reads LOG_FORMAT alone.
+# fileConfig, below, removes it with the root's handlers, and it is installed
+# again after it.
 from faultmaven.infrastructure.logging.url_redaction import install_job_log_handler
 
 install_job_log_handler(sys.stderr, None)

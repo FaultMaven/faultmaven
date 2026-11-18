@@ -12,10 +12,11 @@ work returns, and a ``failure``; text parts travel raw, never as JSON.
 
 ``serve``, the worker, bounds itself before the work: it dies with its parent,
 volunteers for the OOM killer and caps CPU time and address space; past the
-cap it exits ``OUT_OF_MEMORY_EXIT``. An exception it forwards is its frames and
-class names, never its text (#2888). This module imports the standard library,
-the bare package and ``exception_frames`` (standard library only), and
-``asyncio`` only in the parent's functions.
+cap it exits ``OUT_OF_MEMORY_EXIT``. A ``log`` record's exception travels as its
+frames and class names, never its text, in the record's fourth element, which
+the parent logs as the ``frames`` field (#2888). This module imports the
+standard library, the bare package and ``exception_name`` (standard library
+only), and ``asyncio`` only in the parent's functions.
 """
 
 import ctypes
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, Optional
 
 import faultmaven
-from faultmaven.utils.exception_name import exception_frames
+from faultmaven.utils.exception_name import exception_frames, logged_exception
 
 if TYPE_CHECKING:
     import asyncio
@@ -40,9 +41,10 @@ if TYPE_CHECKING:
 #: The exit code of a worker an allocation past its memory limit stopped.
 OUT_OF_MEMORY_EXIT = 3
 
-#: Log records forwarded per job, and characters per record (its head and its
-#: tail); past the count, one record counts the rest. So input that makes a
-#: job warn on every object cannot fill the parent's output limit.
+#: Log records forwarded per job, and characters of a record's message and of
+#: its frames, each (its head and its tail); past the count, one record counts
+#: the rest. So input that makes a job warn on every object cannot fill the
+#: parent's output limit.
 MAX_FORWARDED_RECORDS = 50
 MAX_RECORD_CHARS = 2000
 
@@ -183,8 +185,10 @@ async def _control(
             elif "failure" in frame:
                 seen["failure"] = str(frame["failure"])
             elif "log" in frame:
-                name, level, message = frame["log"]
-                logging.getLogger(name).log(level, message)
+                # The exception's frames, when sent, are their own field (#2888).
+                name, level, message, *frames = frame["log"]
+                extra = {"frames": frames[0]} if frames and frames[0] else None
+                logging.getLogger(name).log(level, message, extra=extra)
             else:
                 return frame
         except (ValueError, TypeError, KeyError) as e:
@@ -389,11 +393,11 @@ class _Forward(logging.Handler):
             self._dropped += 1
             return
         self._sent += 1
-        message = record.getMessage()
-        if record.exc_info and record.exc_info[1] is not None:
-            # Frames and class names, never the exception's text (#2888).
-            message += "\n" + exception_frames(record.exc_info[1])
-        self._send({"log": [record.name, record.levelno, _clipped(message)]})
+        # Frames and class names, never the exception's text (#2888).
+        logged = logged_exception(record.exc_info)
+        frames = _clipped(exception_frames(*logged)) if logged else None
+        message = _clipped(record.getMessage())
+        self._send({"log": [record.name, record.levelno, message, frames]})
 
     def report_dropped(self) -> None:
         """Count the records past the cap, once: before the result, which the
@@ -490,7 +494,7 @@ def serve(
     except Exception as e:
         if phased:
             send({"failure": str(e)[:MAX_RECORD_CHARS]})
-        failure = f"the {label} failed\n" + exception_frames(e)
-        send({"log": [__name__, logging.ERROR, _clipped(failure)]})
+        frames = _clipped(exception_frames(e))
+        send({"log": [__name__, logging.ERROR, f"the {label} failed", frames]})
         return 1
     return 0

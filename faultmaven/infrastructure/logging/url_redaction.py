@@ -49,7 +49,7 @@ import re
 from typing import Any, Callable, Optional, TextIO, Tuple
 
 from faultmaven.infrastructure.security.secret_patterns import ESCAPE_BOUNDARY
-from faultmaven.utils.exception_name import exception_frames
+from faultmaven.utils.exception_name import exception_frames, logged_exception
 
 # Anchored on the literal "://".
 #
@@ -435,11 +435,13 @@ class JobLogFormatter(logging.Formatter):
     and alembic (principles §7, "What a log line may hold"; #2888).
 
     Under ``LOG_FORMAT=json`` a record is one JSON object, serialized, never
-    pasted into a template: ``timestamp``, ``logger``, ``level``, ``event``, and
-    ``exception`` when it carries ``exc_info``. Otherwise it is the plain line,
-    with the exception after it. The exception is :func:`exception_frames`,
-    each link's class and frames with no message; a cached ``exc_text`` is never
-    read. :func:`redact_log_line` runs last, on the finished line.
+    pasted into a template: ``timestamp``, ``logger``, ``level``, ``event``;
+    ``exception`` when it carries ``exc_info`` (:func:`logged_exception`'s
+    shapes); ``frames`` when a caller or a worker passed them; ``stack`` with
+    ``stack_info``. Otherwise it is the plain line with those after it. The
+    exception is :func:`exception_frames`, each link's class and frames with no
+    message; a cached ``exc_text`` is never read. :func:`redact_log_line` runs
+    last, on the finished line.
     """
 
     def __init__(self, json_lines: bool) -> None:
@@ -447,8 +449,14 @@ class JobLogFormatter(logging.Formatter):
         self.json_lines = json_lines
 
     def format(self, record: logging.LogRecord) -> str:
-        error = record.exc_info[1] if record.exc_info else None
-        frames = exception_frames(error).rstrip("\n") if error is not None else None
+        logged = logged_exception(record.exc_info)
+        frames = getattr(record, "frames", None)
+        after = {
+            "exception": exception_frames(*logged).rstrip("\n") if logged else None,
+            "frames": frames if isinstance(frames, str) else None,
+            "stack": record.stack_info,
+        }
+        after = {key: text for key, text in after.items() if text}
         fields = {
             "timestamp": self.formatTime(record, self.datefmt),
             "logger": record.name,
@@ -456,9 +464,9 @@ class JobLogFormatter(logging.Formatter):
             "event": record.getMessage(),
         }
         if self.json_lines:
-            line = json.dumps({**fields, **({"exception": frames} if frames else {})})
+            line = json.dumps({**fields, **after})
         else:
-            line = " - ".join(fields.values()) + (f"\n{frames}" if frames else "")
+            line = "\n".join([" - ".join(fields.values()), *after.values()])
         return redact_log_line(line)
 
 
@@ -467,18 +475,17 @@ def install_job_log_handler(stream: TextIO, level: Optional[int]) -> None:
     :class:`JobLogFormatter`, at ``level`` (``None`` keeps the root's), unless
     it already has a handler (``logging.basicConfig``'s rule).
 
-    ``LOG_FORMAT`` is read from the logging settings alone (the working
-    directory's ``.env`` loaded first, as the app loads it), never the whole
-    settings: alembic must not refuse a migration over an unrelated setting.
-    Settings that do not load give the plain line.
+    JSON or plain is decided by ``LOG_FORMAT`` alone (``configured_log_format``,
+    the working directory's ``.env`` loaded first, as the app loads it), after
+    the handler is in place: an unrecognized value is JSON,
+    and its warning is written on that JSON line. No other setting is read, so
+    none can refuse a migration or change the line.
     """
-    try:
-        from faultmaven.config.settings import LoggingSettings, load_settings_dotenv
+    from faultmaven.config.settings import configured_log_format, load_settings_dotenv
 
-        load_settings_dotenv()
-        json_lines = LoggingSettings().log_output_format == "json"
-    except Exception:  # settings unavailable: keep the process runnable
-        json_lines = False
+    load_settings_dotenv()
+    formatter = JobLogFormatter(json_lines=True)
     handler = logging.StreamHandler(stream)
-    handler.setFormatter(JobLogFormatter(json_lines))
+    handler.setFormatter(formatter)
     logging.basicConfig(level=level, handlers=[handler])
+    formatter.json_lines = configured_log_format() == "json"

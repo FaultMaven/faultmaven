@@ -119,3 +119,21 @@ def test_nested_groups_stop_at_ten_deep():
     headers = exception_frames(error).splitlines()
     assert len(headers) == 12
     assert headers[-1] == "[1] " * 10 + "and 1 more exceptions"
+
+
+def test_a_member_shown_already_is_listed_as_shown_above():
+    shared = _raised(KeyError("a"))
+    try:
+        raise ExceptionGroup("g1", [shared])
+    except ExceptionGroup as first:
+        later = ExceptionGroup("g2", [shared, ValueError("b")])
+        later.__cause__ = first
+    lines = exception_frames(later).splitlines()
+    headers = [line for line in lines if not line.startswith(" ")]
+    assert headers == [
+        "ExceptionGroup:",
+        "[1] KeyError:",
+        "[2] ValueError:",
+        "ExceptionGroup:",
+        "[1] KeyError (shown above)",
+    ]
