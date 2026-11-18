@@ -22,6 +22,7 @@ import pytest
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
+from faultmaven.config.settings import env_var_spellings
 from tests.conftest import SHIPPED_DATA_DEFAULTS, TEST_DATA_ROOT_ENV
 
 pytest_plugins = ["pytester"]
@@ -40,6 +41,7 @@ KNOWN_DATA_FIELDS = {
     ("DatabaseSettings", "chromadb_evidence_persist_dir"),
     ("EvidenceStorageSettings", "evidence_storage_root"),
     ("ProtectionSettings", "pseudonym_key_path"),
+    ("SecuritySettings", "jwt_secret_file"),
 }
 
 
@@ -104,10 +106,13 @@ def _variable_of(cls: type, name: str) -> str:
 
 
 def _set_by_the_caller(variable: str) -> bool:
-    """Set, and not to a path under this session's root: the caller's choice,
-    which the conftest leaves alone (the ``-m postgres`` lane's DATABASE_URL)."""
-    value = os.environ.get(variable)
-    return value is not None and (os.environ[TEST_DATA_ROOT_ENV] + os.sep) not in value
+    """Set in any letter case, and not to a path under this session's root: the
+    caller's choice, which the conftest leaves alone (the ``-m postgres`` lane's
+    DATABASE_URL)."""
+    root = os.environ[TEST_DATA_ROOT_ENV] + os.sep
+    return any(
+        root not in os.environ[key] for key in env_var_spellings(os.environ, variable)
+    )
 
 
 def _module_attributes() -> list[tuple[str, str]]:
@@ -141,8 +146,7 @@ def test_the_introspection_finds_every_known_data_field():
     found = {(cls.__name__, name) for cls, name in _data_fields()}
     assert KNOWN_DATA_FIELDS <= found
     assert {attribute for _module, attribute in _module_attributes()} == {
-        "DEFAULT_JWT_SECRET_FILE",
-        "KNOWLEDGE_ROOT",
+        "KNOWLEDGE_ROOT"
     }
     for value in SHIPPED_DATA_DEFAULTS.values():
         assert _is_under_data(value), "the record holds the shipped ./data values"
@@ -225,6 +229,11 @@ def _assert_every_data_default_in_the_session_root() -> list[str]:
                 "protection.pseudonym_key_path",
                 settings.protection.pseudonym_key_path,
             ),
+            (
+                "JWT_SECRET_FILE",
+                "security.jwt_secret_file",
+                settings.security.jwt_secret_file,
+            ),
         ):
             if variable not in skipped:
                 _assert_in_the_session_root(label, value)
@@ -261,7 +270,7 @@ def test_an_emptied_environment_still_resolves_in_the_session_root(environment):
 def test_shipped_data_defaults_restores_the_shipped_layout(
     tmp_path, monkeypatch, shipped_data_defaults
 ):
-    from faultmaven.config.settings import DEFAULT_JWT_SECRET_FILE, get_settings
+    from faultmaven.config.settings import get_settings
     from faultmaven.utils.runbook_id import knowledge_root
 
     monkeypatch.chdir(tmp_path)
@@ -270,8 +279,46 @@ def test_shipped_data_defaults_restores_the_shipped_layout(
     assert settings.database.database_url == (
         "sqlite+aiosqlite:///./data/faultmaven.db"
     )
-    assert DEFAULT_JWT_SECRET_FILE == "data/.jwt_secret"
+    assert settings.security.jwt_secret_file == "data/.jwt_secret"
     assert knowledge_root() == pathlib.Path("data/knowledge")
+
+
+def test_a_callers_lowercase_spelling_is_honoured_and_left_alone(tmp_path):
+    """A caller's ``jwt_secret_file`` is the caller's choice in any letter case:
+    this file passes under it (a check of the exact name alone left it standing
+    in the shipped layout, and judged it unset), and the caller's file keeps
+    its bytes. Run in a fresh pytest, because the data root is set at conftest
+    import; the xdist case is left out for time, and this one to stop recursion.
+    """
+    import subprocess
+    import sys
+
+    caller_file = tmp_path / "caller.jwt"
+    caller_file.write_text("the-callers-secret")
+    caller_file.chmod(0o600)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PYTEST_")
+        and key not in env_var_spellings(os.environ, "JWT_SECRET_FILE")
+    }
+    env["jwt_secret_file"] = str(caller_file)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            *("-m", "pytest", "-q", "-p", "no:cacheprovider", __file__),
+            *("-k", "not callers_lowercase and not two_xdist_workers"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 0, result.stdout[-3000:]
+    assert caller_file.read_text() == "the-callers-secret"
 
 
 _CHILD_CONFTEST = """

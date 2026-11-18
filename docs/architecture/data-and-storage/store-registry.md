@@ -329,7 +329,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Secret files under the data root
 
-- `config/settings.py` (`DEFAULT_JWT_SECRET_FILE`, `resolve_local_jwt_secret`,
+- `config/settings.py` (`SecuritySettings.jwt_secret_file`, `resolve_local_jwt_secret`,
   `ProtectionSettings.pseudonym_key_path`);
   `infrastructure/security/pseudonym_key.py:159`.
 

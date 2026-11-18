@@ -35,7 +35,7 @@ def isolated(monkeypatch):
     delenv_every_spelling(
         monkeypatch,
         *("DATABASE_URL", "DATABASE", "JWT_SECRET_KEY", "JWT_SECRET_FILE"),
-        *("JWT_PRIVATE_KEY", "AUTH_MODE", "OAUTH_ENABLED"),
+        *("SECURITY", "JWT_PRIVATE_KEY", "AUTH_MODE", "OAUTH_ENABLED"),
     )
     monkeypatch.setenv("JWT_SECRET_KEY", "restored-at-teardown")
     monkeypatch.delenv("JWT_SECRET_KEY")
