@@ -13,8 +13,10 @@ ARCHITECTURAL PRINCIPLES:
 
 import json
 import logging
+import math
 import os
 import secrets
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -1792,6 +1794,29 @@ MAX_OAUTH_CODE_EXPIRY_SECONDS = 1800
 #: slowly-redeemed code would outlive the watermark entry and rotate back to
 #: life for up to this window.
 MAX_MINT_BASIS_CARRY_SECONDS = MAX_OAUTH_CODE_EXPIRY_SECONDS
+
+#: How far ahead of the revoker's clock the final watermark stamp is written
+#: (#2050). The deployment's clock-sync assumption: replicas' clocks agree within
+#: this (NTP keeps a cluster's nodes within a few ms). ``revoke_user_tokens``
+#: stamps ``now + allowance`` once its first write has landed, again until a
+#: stamp lands within the allowance of its capture, so a mint whose capture
+#: preceded that landing dies on any replica ahead of the revoker by no more
+#: than the allowance less that stamp's landing time. Kept below an SSO round
+#: trip: a sign-in captured inside it after a revocation is born dead and needs
+#: one more sign-in.
+REVOCATION_CLOCK_ALLOWANCE = timedelta(milliseconds=100)
+
+#: How far ahead of the store's own clock (or of a later new write) a stored
+#: watermark is kept by a lower write (#2050). A final stamp is written at most
+#: the allowance ahead of its revoker's clock, which is within the allowance of
+#: the store's, and only falls behind the store's clock after that; so a stamp
+#: any revocation wrote is at most 2 x allowance ahead, however slowly an
+#: overlapping revocation's first write lands. Rounded up to a whole second. A
+#: stored value further ahead (a clock that stepped forward) is overwritten, so
+#: it cannot renew itself and lock an account out.
+REVOCATION_MONOTONE_WINDOW = timedelta(
+    seconds=math.ceil(2 * REVOCATION_CLOCK_ALLOWANCE.total_seconds())
+)
 
 #: Every env name that has EVER addressed the two token-expiry fields except the
 #: current pair, mapped to the current name that replaces it. Two generations:

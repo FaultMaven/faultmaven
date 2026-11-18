@@ -439,47 +439,19 @@ async def local_login(
             },
         )
 
-        # A fresh authentication supersedes a watermark that predates it.
+        # No watermark is cleared here (#2050): a mint captured after the
+        # revocation's final stamp is live by its full-precision basis, and one
+        # captured before it dies — a straddle, and also a login within the
+        # clock allowance after a logout, which needs one more sign-in.
         #
-        # The watermark means "everything issued before instant T is stale"; an
-        # authentication whose state reads all began after T is not. Without
-        # this, a sign-in landing in the same wall-clock second as a sign-out is
-        # dead on arrival: `iat` has whole-second granularity and
-        # `is_user_revoked` compares `<=`, so the access AND refresh tokens
-        # minted below both fall under the watermark the logout just wrote. The
-        # login reports success and every subsequent request 401s, with no way
-        # forward because the refresh token is dead too. Now that ordinary
-        # logout is account-scoped, that is a routine sequence rather than an
-        # admin-path curiosity (scripted logout→login; and across replicas the
-        # window widens from one second to the inter-pod clock skew).
-        #
-        # Cleared here rather than by relaxing the comparison: `<=` is
-        # deliberate (`revocation_reason` — of the two rounding errors,
-        # honouring a token minted in the same second as a revocation is the
-        # more dangerous one), and it has to keep holding for the admin paths
-        # that have no login after them.
-        #
-        # `state_read_at`, NOT `now`, and the store compares strictly. That is
-        # what separates this from the #831 straddle: a watermark written while
-        # this request was reading the pre-change user row does not predate the
-        # capture, is left in place, and the pair this mints stays dead — which
-        # is the whole point of stamping `iat` from the capture. Passing `now`
-        # here would clear that watermark too and undo #831 silently.
-        #
-        # Gated on the account still being usable: this decides whether the
-        # user's OTHER outstanding tokens revive, so a deactivated or deleted
-        # account must not reach it. The same gate covers the last_login stamp
-        # below — a deactivated account's login attempt must not write fresh
-        # audit metadata (an admin reading "last login: just now" on a disabled
-        # account would conclude the deactivation isn't holding).
+        # Gated on the account still being usable: a deactivated or deleted
+        # account's login attempt must not write fresh audit metadata to the
+        # last_login stamp below (an admin reading "last login: just now" on a
+        # disabled account would conclude the deactivation isn't holding).
         account_usable = (
             getattr(user, "is_active", True)
             and getattr(user, "deleted_at", None) is None
         )
-        if account_usable:
-            await revocation_store.clear_user_revocation_if_before(
-                user.user_id, state_read_at.timestamp()
-            )
 
         # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
@@ -498,9 +470,8 @@ async def local_login(
             user, state_read_at=state_read_at
         )
 
-        # Authentication has succeeded — stamp the row /auth/me reports from.
-        # Same gate as the watermark clear above: a deactivated or deleted
-        # account must not gain fresh login metadata.
+        # Authentication has succeeded — stamp the row /auth/me reports from,
+        # for a usable account only (above).
         if account_usable:
             await _record_login_best_effort(user_store, user.user_id)
 
@@ -1150,10 +1121,27 @@ async def delete_user(
 
         if success:
             logger.info(f"Deleted user: {username} ({user.user_id})")
-            return {
-                "message": f"User '{username}' deleted successfully",
-                "user_id": user.user_id,
-            }
+            message = f"User '{username}' deleted successfully"
+            # One more stamp after the delete (#2050): a refresh or SSO
+            # exchange that read the account between the revocation above and
+            # the delete minted from it, and its basis postdates that
+            # revocation. If this fails the delete stands, and saying it failed
+            # would report a deletion that happened as not done.
+            try:
+                await auth_service.revoke_user_tokens(user.user_id)
+            except Exception as e:
+                logger.error(
+                    "Post-delete revocation stamp failed: a token minted from "
+                    "the account just before the delete may stay valid until "
+                    f"it expires: {type(e).__name__}",
+                    extra={"target_user_id": user.user_id},
+                )
+                message += (
+                    ", but the final revocation stamp failed: a token minted "
+                    "from the account just before the delete may stay valid "
+                    "until it expires"
+                )
+            return {"message": message, "user_id": user.user_id}
 
         raise HTTPException(
             status_code=500,

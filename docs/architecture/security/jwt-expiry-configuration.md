@@ -109,7 +109,8 @@ tokens**:
   fails settings construction with a message naming the canonical retired
   spelling and its replacement.
 - `_watermark_ttl_seconds` does **not** move with the configured lifetime: it
-  is `MAX_TOKEN_LIFETIME_DAYS` plus the #831 basis carry, whatever the two
+  is `MAX_TOKEN_LIFETIME_DAYS` plus the #831 basis carry plus the final
+  stamp's clock allowance rounded up to a second (#2050), whatever the two
   knobs are set to, and it still covers tokens outstanding under the longest
   permitted refresh lifetime after the knob has been lowered to the shortest.
   (The mis-wiring raise it used to carry is gone with the settings read: a

@@ -42,6 +42,7 @@ from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
+    RevocationBasis,
     RS256JWTTokenGenerator,
 )
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
@@ -395,9 +396,9 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 ):
     """Deactivation must stop the exchange, not just the tokens already out.
 
-    The revocation watermark cannot cover this: ``is_user_revoked`` compares
-    ``iat <= watermark``, and a token minted *by this exchange* is newer than the
-    watermark by construction.
+    The revocation watermark cannot cover this: ``is_user_revoked`` compares a
+    token's basis with the watermark, and a token minted *by this exchange* is
+    newer than the watermark by construction.
 
     The watermark half is asserted in BOTH directions, and that is the whole
     point of it. Asserting only that a now-minted token escapes the watermark
@@ -438,10 +439,12 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
     assert refusal.value.error_code == "USER_INACTIVE"
 
     # The watermark is real and it does kill the account's OLDER tokens...
-    assert await store.is_user_revoked("user_123", watermark - 1) is True
+    older = RevocationBasis(watermark - 1, precise=False)
+    assert await store.is_user_revoked("user_123", older) is True
     # ...and yet a token minted after it walks straight through, which is why the
     # explicit guard above has to exist.
-    assert await store.is_user_revoked("user_123", watermark + 1) is False
+    newer = RevocationBasis(watermark + 1, precise=False)
+    assert await store.is_user_revoked("user_123", newer) is False
 
 
 @pytest.mark.unit

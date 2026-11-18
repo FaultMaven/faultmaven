@@ -4,6 +4,7 @@ Provides common utilities for test ID generation, test data creation,
 and other shared test infrastructure.
 """
 
+import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import (
@@ -19,12 +20,18 @@ from typing import (
 )
 from uuid import uuid4
 
+from faultmaven.config.settings import REVOCATION_MONOTONE_WINDOW
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    REVOCATION_BASIS_CLAIM,
     ITokenRevocationStore,
     RefreshClaim,
+    RevocationBasis,
     SequentialRevocationState,
+)
+from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
+    _watermark_covers,
 )
 
 if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
@@ -931,22 +938,22 @@ class InMemoryRevocationStore(SequentialRevocationState, ITokenRevocationStore):
         return RefreshClaim.CLAIMED
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
-        self.user_watermarks[user_id] = (revoked_at, ttl)
+        # Kept only above the new value and within the window ahead of the
+        # later of it and the clock (#2050), as the production stores keep it.
+        stored = self.user_watermarks.get(user_id, (revoked_at, ttl))[0]
+        bound = (
+            max(revoked_at, time.time()) + REVOCATION_MONOTONE_WINDOW.total_seconds()
+        )
+        if not revoked_at < stored <= bound:
+            stored = revoked_at
+        self.user_watermarks[user_id] = (stored, ttl)
 
-    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
+    async def is_user_revoked(self, user_id: str, basis: RevocationBasis) -> bool:
+        # The production rule itself, so the double cannot diverge from it.
         entry = self.user_watermarks.get(user_id)
-        return entry is not None and issued_at <= int(entry[0])
-
-    async def clear_user_revocation_if_before(
-        self, user_id: str, instant: float
-    ) -> bool:
-        entry = self.user_watermarks.get(user_id)
-        if entry is None or not entry[0] < instant:
-            return False
-        del self.user_watermarks[user_id]
-        return True
+        return entry is not None and _watermark_covers(entry[0], basis)
 
     async def cleanup_expired(self) -> int:
         return 0
@@ -1099,6 +1106,7 @@ def forge_access_token(
             ),
             "exp": int((now + timedelta(minutes=expires_in_minutes)).timestamp()),
             "iat": int(now.timestamp()),
+            REVOCATION_BASIS_CLAIM: now.timestamp(),
             "iss": auth_service._settings.security.jwt_issuer,
             "aud": auth_service._settings.security.jwt_audience,
             "jti": str(uuid4()),
@@ -1139,6 +1147,7 @@ def forge_refresh_token(
             "iss": auth_service._settings.security.jwt_issuer,
             "aud": auth_service._settings.security.jwt_audience,
             "iat": int(now.timestamp()),
+            REVOCATION_BASIS_CLAIM: now.timestamp(),
             "exp": int((now + timedelta(days=expires_in_days)).timestamp()),
             "jti": str(uuid4()),
             "type": "refresh",

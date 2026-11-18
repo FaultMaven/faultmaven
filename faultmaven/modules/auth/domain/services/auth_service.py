@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -29,7 +31,7 @@ import jwt
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 
-from faultmaven.config.settings import get_settings
+from faultmaven.config.settings import REVOCATION_CLOCK_ALLOWANCE, get_settings
 
 if TYPE_CHECKING:
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
@@ -49,6 +51,10 @@ from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How many final stamps ``revoke_user_tokens`` writes before it fails closed,
+#: when each lands later than ``REVOCATION_CLOCK_ALLOWANCE`` after its capture.
+_FINAL_STAMP_ATTEMPTS = 3
 
 #: Exception families that mean "the revocation store could not answer" (#1478).
 #:
@@ -672,7 +678,9 @@ class AuthService:
         instant the watermark compares against) exceeds the configured lifetime
         by up to that carry. Without the pad, a revoked pair minted from a
         slowly-redeemed code would outlive the watermark entry that revokes it
-        and rotate back to life.
+        and rotate back to life. And by ``REVOCATION_CLOCK_ALLOWANCE``, rounded
+        up to a second (#2050): the final stamp sits that far ahead of its
+        write, so it covers bases up to that far past the moment its TTL starts.
 
         Nothing configurable is read, which is why the mis-wired-settings raise
         this method used to carry is gone: a constant cannot under-cover, and a
@@ -683,17 +691,14 @@ class AuthService:
         caller of ``revoke_user_tokens`` (password reset and change, role and
         membership changes, deactivation, deletion, admin revoke-tokens, the
         operator CLIs that change an account's standing), and each write
-        restarts the full lifetime. The one thing that removes an entry early
-        is a sign-in through ``local_login``, which clears a watermark that
-        predates it; ``require_local_mode`` serves that route only under
-        ``AUTH_MODE=local``, and SSO and the OAuth token exchange mint without
-        clearing. Cloud refuses to boot without ``AUTH_MODE=oauth``, so on the
-        Redis store nothing clears a watermark. What an entry costs, per store:
+        restarts the full lifetime. No sign-in removes an entry, in any auth
+        mode (#2050). What an entry costs, per store:
 
         - **Redis store**: a key held in memory, expiring by TTL.
         - **SQL store**: a row that stops revoking at its deadline, because
           every read filters on ``expires_at``, and is deleted by the sweep in
-          the next revocation write (per-jti or watermark, for any user).
+          the next revocation write that sweeps (a per-jti one, or the first
+          watermark write of a revocation, for any user).
 
         The retention reasoning is in ``token_revocation_store``'s module
         docstring. That cost is set against the resurrection of every token
@@ -701,7 +706,8 @@ class AuthService:
         """
         from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
 
-        return max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS
+        allowance = math.ceil(REVOCATION_CLOCK_ALLOWANCE.total_seconds())
+        return max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS + allowance
 
     async def revoke_user_tokens(
         self,
@@ -710,21 +716,37 @@ class AuthService:
         """Revoke every outstanding token for a user (#769).
 
         Writes a revocation watermark to the shared store; the request path
-        and both generators then reject any token for this user whose ``iat``
-        is at or before that instant. Nothing indexes issued JTIs, so there is
-        no token count to report — and no need for one: the watermark covers
-        every token from every mint path, which a JTI index could not
-        guarantee.
+        and both generators then reject any token for this user whose basis is
+        at or before it (``revocation_reason``). Nothing indexes issued JTIs,
+        so there is no token count to report — and no need for one: the
+        watermark covers every token from every mint path, which a JTI index
+        could not guarantee.
+
+        **A first write and a final stamp** (#2050). ``W1 = now`` is written
+        first; once that write has returned, a final stamp
+        ``W2 = now + REVOCATION_CLOCK_ALLOWANCE`` from a fresh clock read. A
+        mint captured after ``W1`` was taken but before a stamp landed read no
+        watermark. A final stamp that landed within the allowance of its
+        capture (monotonic clock, so this process's event-loop stalls count
+        as well as the store's latency) is later than every such capture,
+        unless the mint's replica runs ahead of this one by more than the
+        allowance less that landing time; one that landed later is written
+        again from a fresh read, at most
+        ``_FINAL_STAMP_ATTEMPTS`` times. The cost is that a sign-in captured
+        within the allowance after this returns is born dead and needs one
+        more sign-in.
 
         Args:
             user_id: User ID to revoke tokens for
 
         Returns:
-            The revocation instant. Tokens issued at or before it are invalid.
+            The final stamp this call wrote; the store holds it or a later one.
+            Tokens whose basis is at or before it are invalid.
 
         Raises:
-            ServiceError: The revocation could not be recorded. Callers must
-                not report a revocation as successful when this raises.
+            ServiceError: The revocation could not be recorded — any write
+                failed, or no final stamp landed within the allowance. Callers
+                must not report a revocation as successful when this raises.
         """
         if self._revocation_store is None:
             raise ServiceError("Token revocation failed: no revocation store")
@@ -737,14 +759,27 @@ class AuthService:
         # `_watermark_ttl_seconds` for why the difference is a resurrection.
         ttl = self._watermark_ttl_seconds()
         try:
-            # Full precision, not `int(...)`: the revocation rule still floors
-            # it, but `clear_user_revocation_if_before` has to order this
-            # instant against a login's pre-read capture, and truncating here
-            # would make a revocation that landed mid-request indistinguishable
-            # from one that preceded it (#831).
+            # Full precision, not `int(...)`: a precise basis is compared
+            # against it unfloored (#2050).
             await self._revocation_store.revoke_user_tokens_before(
                 user_id, revoked_at.timestamp(), ttl
             )
+            # The final stamps skip the store's expiry sweep: the first write
+            # ran it, and a sweep would only lengthen the stamp's landing.
+            for _ in range(_FINAL_STAMP_ATTEMPTS):
+                captured = time.monotonic()
+                revoked_at = datetime.now(timezone.utc) + REVOCATION_CLOCK_ALLOWANCE
+                await self._revocation_store.revoke_user_tokens_before(
+                    user_id, revoked_at.timestamp(), ttl, sweep=False
+                )
+                landed = time.monotonic() - captured
+                if landed <= REVOCATION_CLOCK_ALLOWANCE.total_seconds():
+                    break
+            else:
+                raise ServiceError(
+                    f"no final stamp landed within the allowance in "
+                    f"{_FINAL_STAMP_ATTEMPTS} attempts"
+                )
         except Exception as e:
             logger.error(f"Failed to revoke user tokens: {e}")
             raise ServiceError(f"Token revocation failed: {e}")

@@ -100,9 +100,9 @@ def mock_revocation_store():
     # the mixin production stores use keeps this double honest: the two stubs
     # above stay the thing tests flip, and a store method added later that
     # nothing here implements still fails loudly.
-    async def _revocation_state(jti, user_id, issued_at):
+    async def _revocation_state(jti, user_id, basis):
         return await SequentialRevocationState.revocation_state(
-            store, jti, user_id, issued_at
+            store, jti, user_id, basis
         )
 
     store.revocation_state = _revocation_state

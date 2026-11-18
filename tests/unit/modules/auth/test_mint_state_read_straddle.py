@@ -161,12 +161,12 @@ def _claims(token: str) -> dict:
 # The window is simulated by backdating: the read's capture sits 10s in the
 # past, the watermark 5s in the past, and the mint runs now. That keeps the
 # ordering of the real race (read began, THEN the revocation landed, THEN the
-# mint ran) while spanning whole seconds — necessary because ``iat`` has
-# 1-second granularity and the comparison is ``<=``: with all three events in
-# the same second, even a mint-time ``iat`` equals the watermark and is
-# rejected, and the test would pass against the pre-#831 code it exists to
-# refute. Verified by mutation: with ``_mint_instant`` returning ``now``,
-# these go RED; a same-second version stayed GREEN.
+# mint ran) while spanning whole seconds. The spacing dates from the
+# whole-second rule. These tokens carry ``fm_basis``, compared at full
+# precision (#2050), so a mint-time stamp in the watermark's own second would
+# now survive it too; the spacing keeps these tests independent of that.
+# Verified by mutation before #2050: with ``_mint_instant`` returning ``now``,
+# these went RED; a same-second version stayed GREEN.
 
 #: read capture ... 5s ... watermark ... 5s ... mint (now)
 STRADDLE_READ_AGE = timedelta(seconds=10)
@@ -176,18 +176,16 @@ STRADDLE_WATERMARK_AGE = timedelta(seconds=5)
 async def _revoke_then_stall(store, user_id: str) -> None:
     """Write the user's watermark NOW, then stall past that whole second.
 
-    The stall is load-bearing, not boilerplate: ``iat`` has 1-second
-    granularity and the comparison is ``<=``, so without stepping into the
-    second AFTER the watermark, a post-read or mint-time stamp would land in
-    the same second and be rejected anyway — the test would pass against the
-    very defect it exists to catch. One computed sleep, not a poll.
+    The stall dates from the whole-second rule. These handlers mint tokens
+    that carry ``fm_basis``, compared at full precision (#2050), so a
+    post-read or mint-time stamp would now survive this watermark in its own
+    second too; the stall keeps these tests independent of that, since such a
+    stamp then lands a second later and survives on either rule.
 
-    Written at FULL precision, as ``AuthService.revoke_user_tokens`` does.
-    Truncating here would make a watermark that landed mid-read look older than
-    the login's pre-read capture, and ``clear_user_revocation_if_before`` reads
-    exactly that ordering to tell a concurrent revocation (leave it; the pair
-    must die) from one that preceded the login (clear it; the user is signing
-    back in). A truncated write would fake the second case.
+    One write at FULL precision, as a store write is (not the stamps of
+    ``AuthService.revoke_user_tokens``). Truncating here would make a watermark
+    that landed mid-read look older than the login's pre-read capture, and a
+    truncated write would let the straddling pair live.
     """
     now = datetime.now(timezone.utc)
     await store.revoke_user_tokens_before(user_id, now.timestamp(), TTL)
@@ -353,6 +351,9 @@ async def test_decoy_and_real_reset_mints_stamp_the_same_instant(algo):
     # branch under the split, so it may differ by the second boundary between
     # the two mints; a 1s bound still refutes a lifetime-sized divergence.
     assert _claims(real.token)["iat"] == _claims(decoy.token)["iat"]
+    # And the full-precision basis both carry (#2050).
+    assert _claims(real.token)["fm_basis"] == _claims(decoy.token)["fm_basis"]
+    assert _claims(real.token)["fm_basis"] == captured.timestamp()
     assert abs(_claims(real.token)["exp"] - _claims(decoy.token)["exp"]) <= 1
 
 
@@ -415,12 +416,13 @@ async def test_marginally_future_state_read_at_degrades_to_now():
 # the minted pair would postdate the watermark and these go RED, with the
 # generator fix intact.
 #
-# The read then stalls past the next whole second before returning. Without
-# that, the capture, the watermark and the mint all land in the same second,
-# where ``iat <= watermark`` rejects the pair even for a mint-time (or
-# post-read) stamp — and the test would pass against exactly the defects it
-# exists to catch. Real wall-clock delay, not a mocked clock: the handler's
-# capture must be the thing under test.
+# The read then stalls past the next whole second before returning. The stall
+# dates from the whole-second rule, under which a mint-time (or post-read)
+# stamp in the watermark's second was rejected too; with ``fm_basis`` compared
+# at full precision (#2050) it would now survive either way, and the stall
+# keeps these tests independent of that (see ``_revoke_then_stall``). Real
+# wall-clock delay, not a mocked clock: the handler's capture must be the thing
+# under test.
 
 
 class _StraddlingUserStore:

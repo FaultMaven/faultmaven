@@ -365,7 +365,8 @@ class TestTheRevocationWatermarkOutlivesEveryOutstandingToken:
             MAX_TOKEN_LIFETIME_DAYS,
         )
 
-        return MAX_TOKEN_LIFETIME_DAYS * 86400 + MAX_MINT_BASIS_CARRY_SECONDS
+        # +1: the final stamp's clock allowance, rounded up to a second (#2050).
+        return MAX_TOKEN_LIFETIME_DAYS * 86400 + MAX_MINT_BASIS_CARRY_SECONDS + 1
 
     @staticmethod
     def _service(monkeypatch, minutes: int, days: int):
@@ -415,7 +416,7 @@ class TestTheRevocationWatermarkOutlivesEveryOutstandingToken:
 
         assert (
             service._watermark_ttl_seconds() - MAX_TOKEN_LIFETIME_DAYS * 86400
-            == MAX_MINT_BASIS_CARRY_SECONDS
+            == MAX_MINT_BASIS_CARRY_SECONDS + 1
         )
 
     def test_both_revocation_arms_read_one_ceiling(self, monkeypatch):
@@ -430,7 +431,7 @@ class TestTheRevocationWatermarkOutlivesEveryOutstandingToken:
 
         assert (
             service._watermark_ttl_seconds()
-            == max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS
+            == max_revocation_entry_ttl() + MAX_MINT_BASIS_CARRY_SECONDS + 1
         )
 
     @pytest.mark.asyncio
@@ -448,5 +449,7 @@ class TestTheRevocationWatermarkOutlivesEveryOutstandingToken:
 
         await service.revoke_user_tokens("user-828")
 
-        store.revoke_user_tokens_before.assert_awaited_once()
-        assert store.revoke_user_tokens_before.await_args.args[2] == self._ceiling()
+        # Both stamps (#2050), each with the ceiling.
+        assert store.revoke_user_tokens_before.await_count == 2
+        for call in store.revoke_user_tokens_before.await_args_list:
+            assert call.args[2] == self._ceiling()

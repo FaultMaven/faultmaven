@@ -73,6 +73,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     ITokenRevocationStore,
+    RevocationBasis,
     SequentialRevocationState,
 )
 from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
@@ -163,11 +164,8 @@ class _RaisingStore(SequentialRevocationState, ITokenRevocationStore):
     async def revoke_user_tokens_before(self, user_id, revoked_at, ttl):
         raise self._exc  # pragma: no cover - unused
 
-    async def is_user_revoked(self, user_id, issued_at):
+    async def is_user_revoked(self, user_id, basis):
         raise self._exc  # pragma: no cover - reached only without a jti
-
-    async def clear_user_revocation_if_before(self, user_id, instant):
-        raise self._exc  # pragma: no cover - unused
 
     async def cleanup_expired(self):  # pragma: no cover - unused
         raise self._exc
@@ -511,7 +509,9 @@ class TestACorruptStoredValueIsAlsoUnknown:
             await _write_corrupt_watermark(factory, USER_ID, "not-a-number")
 
             with pytest.raises(CorruptRevocationEntry):
-                await store.is_user_revoked(USER_ID, 1_700_000_000)
+                await store.is_user_revoked(
+                    USER_ID, RevocationBasis(1_700_000_000, precise=False)
+                )
 
 
 class TestTheStoreReadFailureFamilies:

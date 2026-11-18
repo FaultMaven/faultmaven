@@ -283,11 +283,11 @@ class TestDeactivatedAccountsAreNotEnumerable:
         assert len({real["jti"], deactivated["jti"], unknown["jti"]}) == 3
 
         # Exactly which claims differ, asserted rather than asserted-about: any
-        # claim that starts differing shows up here. iat/exp are excluded
-        # because these three tokens are minted seconds apart by this test —
-        # they carry request time, which the holder knows anyway; their
+        # claim that starts differing shows up here. iat/fm_basis/exp are
+        # excluded because these three tokens are minted seconds apart by this
+        # test — they carry request time, which the holder knows anyway; their
         # LIFETIME is asserted equal above.
-        time_claims = {"iat", "exp"}
+        time_claims = {"iat", "fm_basis", "exp"}
         assert {
             claim
             for claim in real

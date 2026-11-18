@@ -105,7 +105,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `password_reset:`** | none | none needed: bounded by its TTL | cleared | 1 h |
 | **Redis `redaction:registry:{case_id}`** | case: erased by the case delete | through the case row: `not built` | cleared | 7 days, re-armed on every write |
 | **Redis `redaction:pseudonym_key_fingerprint`** | none; deleted by hand when the key is rotated | not tenant data | cleared | none |
-| **Redis token revocations** | none | through the user row: `not built` | cleared (the configured prefix) | a token id: the token's remaining life; a user watermark: the longest token lifetime plus the mint-basis carry |
+| **Redis token revocations** | none | through the user row: `not built` | cleared (the configured prefix) | a token id: the token's remaining life; a user watermark: the longest token lifetime plus the mint-basis carry and the final stamp's clock allowance (rounded up to 1 s) |
 | **Redis `<preset>:rl:`** | none | none needed: bounded by its TTL | cleared, for all three namespaces (`faultmaven_dev`, `faultmaven_prod`, `faultmaven_staging`) | the limit's window plus 60 s |
 | **Redis `<preset>:dedup:`** | none | none needed: bounded by its TTL | cleared, for all three namespaces | the endpoint's TTL (default 30 s) |
 | **Redis `case-inflight:`, `case-deleting:`** | the tombstone is removed when its delete is refused or fails | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 30 s after the holder's last renewal (every 10 s), plus a 5 s key margin for the lease |
