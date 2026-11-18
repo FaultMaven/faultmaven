@@ -514,7 +514,7 @@ Its context window is in `model_context` (`gpt-6-luna`: 922,000 max input tokens
 
 ### OpenAI prompt-cache breakpoints (GPT-5.6+)
 
-From GPT-5.6, OpenAI (Azure included) matches the prompt cache only at message ends and at explicit `prompt_cache_breakpoint`s. `_PROMPT_CACHE_BREAKPOINT_FAMILIES` (`gpt-5.6`, `gpt-6`) gets one at `CACHE_BOUNDARY` on a `cache_prompt` request; OpenRouter and HuggingFace never send it (`_SENDS_PROMPT_CACHE_BREAKPOINTS`). Probe of the Azure deployment `gpt-6-luna-1`, 2026-11-17, two consecutive investigation turns whose text differs only after the boundary, a fresh nonce per arm:
+From GPT-5.6, OpenAI (Azure included) matches the prompt cache only at message ends and at explicit `prompt_cache_breakpoint`s. A `cache_prompt` request to any `gpt-<major>[.<minor>]` id at or above 5.6 (`_PROMPT_CACHE_BREAKPOINT_FLOOR`) gets one at `CACHE_BOUNDARY`; a refusal is re-sent without it and remembered per model; OpenRouter and HuggingFace never send it (`_SENDS_PROMPT_CACHE_BREAKPOINTS`). Probe of the Azure deployment `gpt-6-luna-1`, 2026-11-17, two consecutive investigation turns whose text differs only after the boundary, a fresh nonce per arm:
 
 | Arm | Turn 2 prompt | Cached | Written |
 |---|---|---|---|

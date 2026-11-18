@@ -251,6 +251,17 @@ class TestEstimateCostUsd:
         assert priced is True
         assert cost == pytest.approx(3.0 + 15.0 + 0.30 + 3.75)
 
+    def test_a_write_with_no_published_rate_bills_as_input(self):
+        """gpt-5.4-mini publishes no write premium (its row's cache_write is
+        0.0). A write reported for it is ordinary input, never free."""
+        rates = lookup_rates("openai", "gpt-5.4-mini")
+        assert rates is not None and rates.cache_write == 0.0
+        cost, priced = estimate_cost_usd(
+            "openai", "gpt-5.4-mini", cache_write_tokens=1_000_000
+        )
+        assert priced is True
+        assert cost == pytest.approx(rates.input)
+
     def test_gpt_5_6_luna_is_priced(self):
         """gpt-5.6-luna is offered in the OpenAI picker; short-context rates
         per developers.openai.com/api/docs/pricing."""

@@ -282,7 +282,7 @@ instructions bill at the reduced cache-read rate across consecutive turns
 inside the TTL; within a turn, each iteration also reads the previous
 iteration's whole request (this turn's case and the tool results so far) back
 from the cache. The **OpenAI** provider (Azure included) acts on it for
-gpt-5.6 and gpt-6 models with one `prompt_cache_breakpoint` at the end of the
+models at or above gpt-5.6 with one `prompt_cache_breakpoint` at the end of the
 durable prefix: those models match the cache only at message ends and explicit
 breakpoints, and they bill a cache write at 1.25x input, reported as
 `cache_write_tokens` (the `cache_write` bucket). The **local** provider's

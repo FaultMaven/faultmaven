@@ -20,7 +20,7 @@ Four users read ``CACHE_BOUNDARY``:
   on its own line in ``INVESTIGATION_BASE``, as the last line of the durable
   prefix.
 - ``faultmaven.infrastructure.llm.providers.anthropic`` splits the first user
-  message of a ``cache_prompt`` request with :func:`split_at_cache_boundary`
+  message of a ``cache_prompt`` request with :func:`cache_boundary_parts`
   and places an explicit ``cache_control`` breakpoint at the end of the
   boundary line.
 - ``faultmaven.infrastructure.llm.providers.openai_provider`` does the same
@@ -66,3 +66,17 @@ def split_at_cache_boundary(content: str) -> tuple[str, str] | None:
     if not tail.strip():
         return None
     return head, tail
+
+
+def cache_boundary_parts(content: str, marker: dict) -> list[dict] | None:
+    """*content* as two text parts split at the boundary, the head carrying
+    *marker* (each adapter's breakpoint key), or None when it does not split
+    (see :func:`split_at_cache_boundary`)."""
+    split = split_at_cache_boundary(content)
+    if split is None:
+        return None
+    head, tail = split
+    return [
+        {"type": "text", "text": head, **marker},
+        {"type": "text", "text": tail},
+    ]

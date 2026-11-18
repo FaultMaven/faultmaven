@@ -35,6 +35,7 @@ from unittest.mock import patch
 import pytest
 
 from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.infrastructure.llm.providers.azure_provider import AzureProvider
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.fireworks_provider import (
@@ -50,7 +51,9 @@ from tests.unit.infrastructure.llm.conftest import make_mock_aiohttp_session
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
 STATIC_PREFIX = "Static investigation guidance. " * 200
-H0_USER = f"{STATIC_PREFIX}\n=== CURRENT CASE ===\nsymptom: 500s on checkout\n"
+# The real boundary, so the Azure case (gpt-5.6-luna) carries the OpenAI
+# prompt_cache_breakpoint and the guard covers marked bodies too.
+H0_USER = f"{STATIC_PREFIX}\n{CACHE_BOUNDARY}\nsymptom: 500s on checkout\n"
 
 TOOLS = [
     {
@@ -332,3 +335,13 @@ async def test_each_tool_loop_iteration_only_appends_to_the_previous_request(
         old, new = before[conversation_key], after[conversation_key]
         assert len(new) > len(old), f"{label}: the conversation did not grow"
         assert new[: len(old)] == old, f"{label}: earlier turns were not re-sent as-is"
+
+
+async def test_the_azure_case_exercises_the_breakpoint():
+    """The matrix above guards marked bodies only if one carries a breakpoint."""
+    bodies = await _iterate(_azure(), lambda c: _patch_post_chat_completion(c), False)
+    for body in bodies:
+        first_user = body["messages"][1]
+        assert first_user["content"][0]["prompt_cache_breakpoint"] == {
+            "mode": "explicit"
+        }

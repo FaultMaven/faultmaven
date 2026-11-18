@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set
 import aiohttp
 
 from faultmaven.exceptions import LLMErrorCategory, LLMException
-from faultmaven.infrastructure.llm.prompt_cache import split_at_cache_boundary
+from faultmaven.infrastructure.llm.prompt_cache import cache_boundary_parts
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -321,12 +321,11 @@ class OpenAIProvider(BaseLLMProvider):
     # (2026-11-17): a second turn read 11,116 cached tokens without the
     # breakpoint (system + tools) and 32,933 with it; one byte changed inside
     # the prefix fell back to 11,116.
-    _PROMPT_CACHE_BREAKPOINT_FAMILIES = ("gpt-5.6", "gpt-6")
-    _PROMPT_CACHE_BREAKPOINT_RE = re.compile(
-        r"(?:^|/)(?:"
-        + "|".join(re.escape(f) for f in _PROMPT_CACHE_BREAKPOINT_FAMILIES)
-        + r")(?:[-.]|$)"
-    )
+    # Gated by version, not by family list, because the reference states a
+    # floor ("gpt-5.6 and later") and a wrong guess costs one refused round
+    # trip per model (learned below), never a failed call.
+    _PROMPT_CACHE_BREAKPOINT_FLOOR = (5, 6)
+    _GPT_VERSION_RE = re.compile(r"(?:^|/)gpt-(\d+)(?:\.(\d+))?(?:[-.]|$)")
     #: Whether this endpoint takes ``prompt_cache_breakpoint`` at all. A
     #: gateway subclass whose routed models are not OpenAI's opts out.
     _SENDS_PROMPT_CACHE_BREAKPOINTS = True
@@ -335,9 +334,13 @@ class OpenAIProvider(BaseLLMProvider):
     def _marks_cache_boundary(cls, model_name: str) -> bool:
         """Whether a ``cache_prompt`` request to *model_name* gets a
         ``prompt_cache_breakpoint`` at ``CACHE_BOUNDARY``."""
-        return cls._SENDS_PROMPT_CACHE_BREAKPOINTS and bool(
-            cls._PROMPT_CACHE_BREAKPOINT_RE.search(model_name.lower())
-        )
+        if not cls._SENDS_PROMPT_CACHE_BREAKPOINTS:
+            return False
+        m = cls._GPT_VERSION_RE.search(model_name.lower())
+        if m is None:
+            return False
+        version = (int(m.group(1)), int(m.group(2) or 0))
+        return version >= cls._PROMPT_CACHE_BREAKPOINT_FLOOR
 
     @staticmethod
     def _is_cache_breakpoint_rejection(error: LLMException) -> bool:
@@ -835,16 +838,52 @@ class OpenAIProvider(BaseLLMProvider):
                 unmarked = request_messages
                 payload["messages"] = marked
 
+        if unmarked is None:
+            return await self._send_with_param_corrections(
+                headers, payload, effective_model, token_limit_param
+            )
+        # The breakpoint only saves cost, so the call never fails for it: a
+        # refusal naming it, whether on the first send or on a parameter
+        # correction's re-send, drops it and sends again through the same
+        # corrections. The 400 is the endpoint's answer, so it is remembered
+        # at once, before the re-send.
+        try:
+            return await self._send_with_param_corrections(
+                headers, payload, effective_model, token_limit_param
+            )
+        except LLMException as rejected:
+            if not self._is_cache_breakpoint_rejection(rejected):
+                raise
+            self._cache_breakpoint_refused.add(effective_model)
+            self.logger.warning(
+                f"{self.provider_name} refused 'prompt_cache_breakpoint' on "
+                f"{effective_model} ({rejected}) — re-sending without it; "
+                f"learned for the life of this provider instance, so its "
+                f"durable prefix is not cached across turns."
+            )
+            payload["messages"] = unmarked
+            try:
+                return await self._send_with_param_corrections(
+                    headers, payload, effective_model, token_limit_param
+                )
+            except LLMException as still_failing:
+                raise still_failing from rejected
+
+    async def _send_with_param_corrections(
+        self,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        effective_model: str,
+        token_limit_param: str,
+    ) -> LLMResponse:
+        """POST *payload*, answering a refusal of ``temperature`` or of the
+        token-cap spelling with its one in-line correction."""
         # A rejection that names the spelling we sent is the endpoint telling
         # us our expectation for this model is wrong. Take its word for it:
         # one in-line re-send under the other name, then remember (#510).
         try:
             return await self._post_chat_completion(headers, payload, effective_model)
         except LLMException as rejected:
-            if unmarked is not None and self._is_cache_breakpoint_rejection(rejected):
-                return await self._omit_cache_breakpoint_and_retry(
-                    headers, payload, effective_model, unmarked, rejected
-                )
             # Same rule for ``temperature``: a refusal naming it means this
             # endpoint serves the model at its default only.
             if "temperature" in payload and self._is_temperature_rejection(rejected):
@@ -864,37 +903,6 @@ class OpenAIProvider(BaseLLMProvider):
                 sent_param=token_limit_param,
                 rejected=rejected,
             )
-
-    async def _omit_cache_breakpoint_and_retry(
-        self,
-        headers: Dict[str, str],
-        payload: Dict[str, Any],
-        effective_model: str,
-        unmarked: List[Dict[str, Any]],
-        rejected: LLMException,
-    ) -> LLMResponse:
-        """Re-send *payload* once without the prompt-cache breakpoint, then
-        remember, under the rules of ``_omit_temperature_and_retry``. The
-        breakpoint only saves cost, so the call must never fail for it. A
-        second failure is raised, chained from the first."""
-        self.logger.warning(
-            f"{self.provider_name} refused 'prompt_cache_breakpoint' on "
-            f"{effective_model} ({rejected}) — re-sending once without it."
-        )
-        payload["messages"] = unmarked
-        try:
-            response = await self._post_chat_completion(
-                headers, payload, effective_model
-            )
-        except LLMException as still_failing:
-            raise still_failing from rejected
-        self._cache_breakpoint_refused.add(effective_model)
-        self.logger.warning(
-            f"{self.provider_name} model {effective_model} takes no "
-            f"prompt_cache_breakpoint — learned for the life of this provider "
-            f"instance; its durable prefix is not cached across turns."
-        )
-        return response
 
     async def _omit_temperature_and_retry(
         self,
@@ -1148,21 +1156,12 @@ def _mark_prompt_cache_breakpoint(
         content = msg.get("content")
         if role != "user" or not isinstance(content, str):
             return None
-        split = split_at_cache_boundary(content)
-        if split is None:
+        parts = cache_boundary_parts(
+            content, {"prompt_cache_breakpoint": {"mode": "explicit"}}
+        )
+        if parts is None:
             return None
-        head, tail = split
         marked = list(messages)
-        marked[i] = {
-            **msg,
-            "content": [
-                {
-                    "type": "text",
-                    "text": head,
-                    "prompt_cache_breakpoint": {"mode": "explicit"},
-                },
-                {"type": "text", "text": tail},
-            ],
-        }
+        marked[i] = {**msg, "content": parts}
         return marked
     return None

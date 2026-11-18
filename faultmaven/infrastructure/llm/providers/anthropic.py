@@ -14,7 +14,7 @@ import aiohttp
 
 from faultmaven.exceptions import LLMException
 from faultmaven.infrastructure.llm.claude_model_id import parse_claude_model_id
-from faultmaven.infrastructure.llm.prompt_cache import split_at_cache_boundary
+from faultmaven.infrastructure.llm.prompt_cache import cache_boundary_parts
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -1140,21 +1140,10 @@ def _mark_cache_boundary(messages: list) -> None:
     content = first.get("content")
     if not isinstance(content, str):
         return
-    split = split_at_cache_boundary(content)
-    if split is None:
+    parts = cache_boundary_parts(content, {"cache_control": {"type": "ephemeral"}})
+    if parts is None:
         return
-    head, tail = split
-    messages[0] = {
-        **first,
-        "content": [
-            {
-                "type": "text",
-                "text": head,
-                "cache_control": {"type": "ephemeral"},
-            },
-            {"type": "text", "text": tail},
-        ],
-    }
+    messages[0] = {**first, "content": parts}
 
 
 # Block types a cache_control breakpoint may not sit on: Anthropic caches

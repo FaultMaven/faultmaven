@@ -253,3 +253,114 @@ class TestCacheWriteUsage:
         assert result.cache_read_tokens == 32933
         assert result.cache_write_tokens == 3964
         assert result.input_tokens == 37023 - 32933 - 3964
+
+
+def _refuses_token_param():
+    return {
+        "status": 400,
+        "text": json.dumps(
+            {
+                "error": {
+                    "message": "Unsupported parameter: 'max_completion_tokens' is "
+                    "not supported with this model. Use 'max_tokens' instead.",
+                    "type": "invalid_request_error",
+                    "param": "max_completion_tokens",
+                    "code": "unsupported_parameter",
+                }
+            }
+        ),
+    }
+
+
+def _refuses_temperature():
+    return {
+        "status": 400,
+        "text": json.dumps(
+            {
+                "error": {
+                    "message": "Unsupported value: 'temperature' does not support "
+                    "0.2 with this model. Only the default (1) value is supported.",
+                    "type": "invalid_request_error",
+                    "param": "temperature",
+                    "code": "unsupported_value",
+                }
+            }
+        ),
+    }
+
+
+def _unavailable():
+    return {"status": 503, "text": json.dumps({"error": {"message": "busy"}})}
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestBreakpointRefusalBesideOtherCorrections:
+    """The breakpoint only saves cost: a call never fails for it, whichever
+    refusal comes first."""
+
+    async def test_breakpoint_then_token_param(self):
+        provider = _azure()
+        result, sent = await _send(
+            provider,
+            [_refuses_breakpoint(), _refuses_token_param(), _ok()],
+            messages=_loop_messages(),
+            cache_prompt=True,
+        )
+        assert result.content == "ok"
+        assert len(sent) == 3
+        assert "prompt_cache_breakpoint" not in json.dumps(sent[2])
+        assert "max_tokens" in sent[2] and "max_completion_tokens" not in sent[2]
+
+    async def test_temperature_then_breakpoint(self):
+        """A gpt-6 line outside the default-reasoning families is sent a
+        temperature; the temperature correction's re-send still carries the
+        breakpoint, and its refusal is answered too."""
+        provider = AzureProvider(_config("gpt-6.2-astra", "azure"))
+        result, sent = await _send(
+            provider,
+            [_refuses_temperature(), _refuses_breakpoint(), _ok()],
+            messages=_loop_messages(),
+            cache_prompt=True,
+            temperature=0.2,
+        )
+        assert result.content == "ok"
+        assert len(sent) == 3
+        assert "temperature" not in sent[2]
+        assert "prompt_cache_breakpoint" not in json.dumps(sent[2])
+
+    async def test_the_refusal_is_learned_even_when_the_resend_fails(self):
+        """The 400 is the endpoint's answer: the ladder's next attempt must
+        not pay for the breakpoint again."""
+        provider = _azure()
+        with pytest.raises(Exception):
+            await _send(
+                provider,
+                [_refuses_breakpoint(), _unavailable()],
+                messages=_loop_messages(),
+                cache_prompt=True,
+            )
+        _, later = await _send(
+            provider, [_ok()], messages=_loop_messages(), cache_prompt=True
+        )
+        assert "prompt_cache_breakpoint" not in json.dumps(later[0])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "model,marked",
+    [
+        ("gpt-5.6-luna", True),
+        ("gpt-6-luna-1", True),
+        ("gpt-5.7", True),
+        ("gpt-7-mini", True),
+        ("gpt-5.4-mini", False),
+        ("gpt-5", False),
+        ("gpt-4o", False),
+        ("gpt-4.1-mini", False),
+        ("o3", False),
+    ],
+)
+def test_breakpoints_go_to_every_model_from_gpt_5_6(model, marked):
+    assert OpenAIProvider._marks_cache_boundary(model) is marked

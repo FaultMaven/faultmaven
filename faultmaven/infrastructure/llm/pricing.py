@@ -370,10 +370,15 @@ def estimate_cost_usd(
     rates = lookup_rates(provider, model)
     if rates is None:
         return 0.0, False
+    # A row with no published write rate bills a reported write as the
+    # ordinary input it is (no premium), never as free: a provider that
+    # reports writes for such a model (OpenRouter, an older OpenAI model)
+    # must not under-count while still reading as priced.
+    write_rate = rates.cache_write or rates.input
     cost = (
         input_tokens * rates.input
         + output_tokens * rates.output
         + cache_read_tokens * rates.cache_read
-        + cache_write_tokens * rates.cache_write
+        + cache_write_tokens * write_rate
     ) / 1_000_000.0
     return cost, True
