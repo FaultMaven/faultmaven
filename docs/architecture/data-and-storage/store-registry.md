@@ -9,9 +9,10 @@ The relational rows are [Principle 3](../core-architecture/architectural-design-
 tables, enumerated by the [ER diagram](er-diagram.md). No other document lists
 stores; each links here.
 
-Every cell is a fact read in the code, cited by path and line in the
-[notes](#notes), or it says `not built` or `pending #N`. Line numbers are those
-of the commit that last changed this file. One exception: the trace SDK's own
+Every cell is a fact read in the code, cited in the [notes](#notes)
+by path and line, or by symbol for `config/settings.py`, or it says `not built`
+or `pending #N`. Line numbers are as read when each citation was written; many
+have since drifted (#2911). One exception: the trace SDK's own
 local buffer, which FaultMaven's code does not show, is cited to the document
 and the issue that state it.
 
@@ -154,8 +155,9 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Place: `core/investigation/milestone_engine/engine.py:410-417`, `:529-537`; fails
   open: `infrastructure/llm/usage_ledger.py:32-38`.
 - Delete, case: `infrastructure/persistence/models.py:699-701`, `:712-721`.
-- Retention: `jobs/llm_usage_retention.py:1-18`; `config/settings.py:2386-2410`;
-  `bootstrap/lifespan.py:296-316`; `config/settings.py:172-173`.
+- Retention: `jobs/llm_usage_retention.py:1-18`; `config/settings.py` (`ObservabilitySettings.llm_usage_daily_retention_days`,
+  `ObservabilitySettings.llm_usage_turn_retention_days`);
+  `bootstrap/lifespan.py:296-316`; `config/settings.py` (`ServerSettings.run_scheduler`).
   [The usage ledger](../../operations/monitoring/llm-cost-observability.md#the-usage-ledger)
   describes it.
 
@@ -181,14 +183,15 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Evidence objects
 
-- Backend: `config/settings.py:104-108`; `infrastructure/storage/factory.py:75-80` (no other backend).
+- Backend: `config/settings.py` (`StorageBackend`); `infrastructure/storage/factory.py:75-80` (no other backend).
 - Key and tenant: `modules/evidence/domain/services/file_storage_service.py:540-555`.
 - Sidecars: `modules/evidence/domain/services/file_storage_service.py:28-33`;
   `infrastructure/storage/filesystem.py:167`.
 - Place: `modules/agent/domain/services/investigation_service/attachments.py:666-678`.
 - Delete: `modules/evidence/domain/services/file_storage_service.py:558-582`.
 - Retention: no lifecycle or expiry code in `infrastructure/storage/`;
-  `modules/agent/jobs/storage_cleanup.py:1-6`; `config/settings.py:3454-3466`.
+  `modules/agent/jobs/storage_cleanup.py:1-6`; `config/settings.py` (`EvidenceStorageSettings.orphan_cleanup_enabled`,
+  `EvidenceStorageSettings.orphan_file_ttl_hours`, `EvidenceStorageSettings.orphan_cleanup_dry_run`).
 
 ### Redis families
 
@@ -196,7 +199,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   reported and never fails `--verify`: `cli/wipe_deployment.py:992-1006`.
 - Auth sessions: `modules/auth/infrastructure/stores/redis_session_store.py:44-51`,
   `:93-96`, `:136`, `:185`; `container/providers/infrastructure.py:454-467`;
-  `config/settings.py:1396-1398`; `modules/auth/domain/services/auth_session_service.py:351-366`, `:544-551`;
+  `config/settings.py` (`SessionSettings.timeout_minutes`); `modules/auth/domain/services/auth_session_service.py:351-366`, `:544-551`;
   `modules/auth/api/session.py:670-716`.
 - Case number counters: `modules/case/domain/services/case_service.py:244-248`;
   the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:205-212`.
@@ -235,7 +238,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `modules/auth/domain/services/sso_login_service.py:117`, `:121`.
 - OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:87-103`,
   `:117-119`, `:178-182`; `container/providers/services.py:1051-1066`, `:1505-1512`;
-  `config/settings.py:1864-1867`.
+  `config/settings.py` (`AuthSettings.oauth_code_expiry_seconds`).
 - `password_reset:`: `modules/auth/domain/services/user_service.py:123`, `:460-462`;
   `modules/auth/domain/services/jwt_token_generator.py:67`.
 - PII redaction registry: `infrastructure/security/case_redaction.py:104-105`, `:130`,
@@ -243,7 +246,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Pseudonym key fingerprint: `infrastructure/security/pseudonym_key.py:233`, `:283`;
   rotation by hand: `:86-92`.
 - Token revocations: `modules/auth/infrastructure/stores/token_revocation_store.py:157-196`;
-  `config/settings.py:1723`; `container/providers/services.py:1090-1100`;
+  `config/settings.py` (`SecuritySettings.token_revocation_prefix`); `container/providers/services.py:1090-1100`;
   `modules/auth/domain/services/auth_service.py:642-703`.
 - Rate limits: `infrastructure/protection/rate_limiter.py:135-137`, `:222`, `:842-848`;
   `api/middleware/rate_limiting.py:161`; `config/protection.py:75-82`.
@@ -326,7 +329,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Secret files under the data root
 
-- `config/settings.py:1423`, `:1545-1556`; `config/settings.py:2293-2297`;
+- `config/settings.py` (`DEFAULT_JWT_SECRET_FILE`, `resolve_local_jwt_secret`,
+  `ProtectionSettings.pseudonym_key_path`);
   `infrastructure/security/pseudonym_key.py:159`.
 
 ## Not stores
@@ -335,8 +339,8 @@ Each of these was considered and is not a row, for the reason given.
 
 | Candidate | Reason |
 |---|---|
-| Relational tables' files and the ChromaDB directories under `data/` (`faultmaven.db`, `chroma-kb/`, `chroma-evidence/`) | The relational tables, KB vectors and case evidence vectors rows (`config/settings.py:1099`, `:1207-1208`) |
-| `data/evidence/` | The evidence objects row (`config/settings.py:3414`) |
+| Relational tables' files and the ChromaDB directories under `data/` (`faultmaven.db`, `chroma-kb/`, `chroma-evidence/`) | The relational tables, KB vectors and case evidence vectors rows (`config/settings.py` (`DatabaseSettings.database_url`, `DatabaseSettings.chromadb_kb_persist_dir`, `DatabaseSettings.chromadb_evidence_persist_dir`)) |
+| `data/evidence/` | The evidence objects row (`config/settings.py` (`EvidenceStorageSettings.evidence_storage_root`)) |
 | `data/knowledge/` | An import directory an operator fills by hand; FaultMaven reads it on a scan and writes nothing there (`utils/runbook_id.py:282`; [Data and Storage Management](../../operations/data-storage-management.md)) |
 | The KB pack (`resources/knowledge/pack/` or `KB_PACK_DIR`) | Shipped input, read at startup, never written by the runtime |
 | The in-process FakeRedis keyspace (`infrastructure/redis_client.py:34`) | The Redis rows' backend on a standalone deployment, not a store of its own |
