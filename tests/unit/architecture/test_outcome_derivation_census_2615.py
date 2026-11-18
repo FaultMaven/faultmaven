@@ -38,7 +38,7 @@ Module level is ``<module>``. Three tables:
   ``lapse_offers``), the transitions' two executors, and the entries that
   open, answer or close through them; and the narrators' one accessor of a
   case's text, ``content_by_id`` (#2811: an action's description, a need's
-  request text). Each row's note says what that
+  request text; by kind, a row's text and established turn). Each row's note says what that
   caller opens, answers, closes or reads. An entry referenced other than by a
   call fails, so every way in stays visible here.
 
@@ -183,7 +183,16 @@ DERIVATIONS: dict[str, str] = {
     # ``pending_check_reason``, ``declined_stands``).
     "pending_symptom_check": _CA,
     "declined_resolve_entry": _TT,
+    # #2811 S2b-1b-ii: the checklist rows and the dated fix the
+    # ``<evidence_needs>`` block read, which it now reads off the record
+    # (``bindable``, the dated attempts). ``bindable_rows`` is a method,
+    # ``SubjectIndex.bindable_rows`` (``_METHODS``).
+    "fix_application_turn": _CA,
+    "bindable_rows": _CA,
 }
+
+#: The watched names that are methods, by the class that defines each.
+_METHODS: dict[str, str] = {"bindable_rows": "SubjectIndex"}
 
 #: Each outcome field read raw, by the module and class that define it.
 FIELDS: dict[str, tuple[str, str]] = {
@@ -209,8 +218,8 @@ ENTRIES: dict[str, str] = {
     "lapse_offers": _OFFERS,
     # #2811 S2b-1a: not a closure entry. The narrators' one accessor of a
     # case's text, by id (ruling 5 of 2026-11-15; a need's request text can
-    # be rewritten, S2b-1b-i): every caller is enumerated, so a narrator
-    # reading the case through it is seen here.
+    # be rewritten, S2b-1b-i; a row's, by kind, S2b-1b-ii): every caller is
+    # enumerated, so a narrator reading the case through it is seen here.
     "content_by_id": _INV + "narration/fix_verification.py",
 }
 
@@ -218,7 +227,7 @@ ENTRIES: dict[str, str] = {
 DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The derivations' own modules: a derivation built from others.
     (_DISCONF, "_disconfirmed_cause_trigger"): {"failed_fix_of": 1},
-    (_DISCONF, "_fix_failure_refusal"): {"fix_windows": 1},
+    (_DISCONF, "_fix_failure_refusal"): {"fix_application_turn": 1, "fix_windows": 1},
     (_DISCONF, "failed_fix_of"): {"latest_decided_fix_window": 1},
     (_DISCONF, "m6_disconfirmation_basis"): {"latest_decided_fix_window": 1},
     (_CA, "_cause_pool"): {"_pool_legs": 1},
@@ -233,6 +242,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # #2811: the typed parameters, rendered by ``narration.rechecks``.
     (_CA, "uncited_recheck_why"): {"uncited_recheck": 1},
+    # #2811 S2b-1b-ii: the dated fix and the bindable rows, which the
+    # ``<evidence_needs>`` block now reads off the record.
+    (_CA, "unbound_post_fix_rows"): {"fix_application_turn": 1},
+    (_CA, "uncited_recheck"): {"bindable_rows": 1},
     # #2811 S2b-1a: the three names the fix-verification block switched to
     # the record, where the deciders still derive them.
     (_CA, "_no_confirming_window"): {"off_cause_attempt": 1},
@@ -311,15 +324,24 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "_date_to_the_report"): {"fix_windows": 2},
     (_SG, "_flag_absence_inside_a_failed_fix_window"): {"latest_fix_window": 1},
     (_SG, "_flag_unbound_post_fix_rows"): {
+        "bindable_rows": 1,
+        "fix_application_turn": 1,
         "fix_windows": 1,
         "unbound_post_fix_rows": 1,
         "uncited_recheck_why": 1,
     },
-    (_SG, "_mitigation_verify_refusal"): {"mitigation_refusal_reason": 1},
+    (_SG, "_mitigation_verify_refusal"): {
+        "bindable_rows": 1,
+        "mitigation_refusal_reason": 1,
+    },
     (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
-    (_SG, "standing_fix_action"): {"fix_windows": 1, "interception_relief": 1},
+    (_SG, "standing_fix_action"): {
+        "fix_application_turn": 1,
+        "fix_windows": 1,
+        "interception_relief": 1,
+    },
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
         "assess_resolution_readiness": 1,
         "resolution_record_lines": 1,
@@ -418,7 +440,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "resolution_record_lines": 1,
         "symptom_elimination_rows": 1,
     },
-    (_OUTCOME, "_bindable"): {"uncited_recheck_why": 1},
+    (_OUTCOME, "_bindable"): {"bindable_rows": 1, "uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
     (_OUTCOME, "compute_case_outcome"): {
@@ -446,9 +468,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "declined_resolve_entry": 1,
         "pending_symptom_check": 1,
     },
-    (_CB + "fix_verification_block.py", "NarrationFold.outcome"): {
-        "narration_outcome": 1
-    },
+    (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
         "fix_windows": 1
     },
@@ -565,6 +585,15 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "binds the narration's text accessor to the case for the "
         "fix-verification renderer, which reads an action's description and "
         "a need's request text by id (#2811 S2b-1a, S2b-1b-i)",
+    ),
+    (_CB + "evidence_needs.py", "_build_evidence_needs_block"): (
+        {"content_by_id": 2},
+        "binds the narration's text accessor to the case for the "
+        "evidence-needs renderer, once per kind: a need's request text for "
+        "the need sections, a row's text and established turn for the "
+        "checklist (row=True); its one fresh input, the "
+        "symptom rows where none verified, is read beside it from "
+        "case.evidence (#2811 S2b-1b-ii)",
     ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl._answer"): (
         {"answer_offer": 1},
@@ -1068,10 +1097,15 @@ def test_the_regular_package_check_bites(tmp_path):
 
 
 def _module_functions(path: str) -> set[str]:
-    return {
-        node.name
-        for node in parse_file(_ROOT / path).body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    """The module's functions, and its classes' methods as ``Class.method``."""
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    body = parse_file(_ROOT / path).body
+    return {node.name for node in body if isinstance(node, functions)} | {
+        f"{node.name}.{method.name}"
+        for node in body
+        if isinstance(node, ast.ClassDef)
+        for method in node.body
+        if isinstance(method, functions)
     }
 
 
@@ -1079,7 +1113,8 @@ def _module_functions(path: str) -> set[str]:
 def test_each_watched_function_is_defined_where_the_census_says(name):
     """A rename would otherwise leave the census watching a name nothing has."""
     path = {**DERIVATIONS, **ENTRIES}[name]
-    assert name in _module_functions(path), f"{name} is not defined in {path}"
+    qualname = f"{_METHODS[name]}.{name}" if name in _METHODS else name
+    assert qualname in _module_functions(path), f"{qualname} is not defined in {path}"
 
 
 @pytest.mark.parametrize("name", sorted(FIELDS))

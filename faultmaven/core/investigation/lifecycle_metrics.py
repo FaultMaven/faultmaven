@@ -1056,15 +1056,17 @@ case_outcome_conflicts_total = Counter(
 # is logged with its traceback and counted here, by write point: the cycle,
 # a replay, the two terminal transitions, and the saves that fold it (#2811:
 # a turn's commit, the case service's write, the metadata write, creation).
-# "narration" is no write: the <fix_verification> block was omitted because
-# its fold, fresh read, identity or render raised, counted once per prompt
-# assembly (#2811 S2b-1a).
+# "narration" is no write: the <fix_verification> block, or the
+# <evidence_needs> block's re-verification checklist, was omitted because the
+# shared fold, a fresh read, the identity, a text read or a render raised,
+# counted once per prompt assembly (#2811 S2b-1a, S2b-1b-ii).
 case_outcome_write_failures_total = Counter(
     "faultmaven_case_outcome_write_failures_total",
     "A case outcome record write raised and was skipped (#2615), by write "
     "point (cycle|replay|resolved|closed|commit|write|metadata|create); or, "
-    "as narration, the prompt's fix-verification block was omitted because "
-    "its fold, fresh read, identity or render raised, counted once per "
+    "as narration, the prompt's fix-verification block or its evidence-needs "
+    "re-verification checklist was omitted because the shared fold, a fresh "
+    "read, the identity, a text read or a render raised, counted once per "
     "prompt assembly (#2811).",
     labelnames=["at"],
     label_values={
