@@ -3367,8 +3367,8 @@ class TestKnowledgeIndexingIsReported:
             return result.knowledge_indexing
 
         idle = await _status()
-        running = admission.admit_forced(["a"], 1000)
-        admission.admit_forced(["b"], 1000)
+        running = admission.admit_forced(["a"], 1000, principal="u1")
+        admission.admit_forced(["b"], 1000, principal="u1")
         running._started()
         clock.return_value = 142.5
         admission.host_lock_available = False

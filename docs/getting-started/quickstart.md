@@ -9,7 +9,7 @@ Get FaultMaven running locally in under 5 minutes with zero external dependencie
 - **(Optional)** OpenAI, Anthropic, or Fireworks AI API key
 
 **System Requirements**:
-- 4GB RAM minimum (8GB recommended)
+- 6GB RAM minimum (8GB recommended): indexing a knowledge-base document while an evidence file is indexed peaked at 3.4GB, and at 5.4GB on the longest inputs
 - 2GB free disk space
 - macOS, Linux, or Windows
 

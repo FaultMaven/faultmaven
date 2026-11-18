@@ -342,9 +342,9 @@ async def test_a_repaired_row_is_restamped_from_the_row(
     )
 
     with _ambient_enterprise(ENTERPRISE_A):
-        chunks = await service.reindex_missing_vectors("kb_orphan_row")
+        chunks = await service.reindex_missing_vectors(["kb_orphan_row"])
 
-    assert chunks >= 1
+    assert chunks["kb_orphan_row"] >= 1
     assert _stamps(chroma, "kb_orphan_row") == {ENTERPRISE_B}
 
 

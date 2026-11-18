@@ -484,7 +484,12 @@ def serve(
             forward.report_dropped()
     except MemoryError:
         os._exit(OUT_OF_MEMORY_EXIT)
-    except Exception as e:
+    except BaseException as e:
+        # pyo3's ``PanicException`` (a Rust library's panic, as its thread
+        # pool failing to start under the address-space cap) is a
+        # ``BaseException``; it is a failure like any other (#2851).
+        if not isinstance(e, Exception) and type(e).__name__ != "PanicException":
+            raise
         if phased:
             send({"failure": str(e)[:MAX_RECORD_CHARS]})
         failure = f"the {label} failed\n" + traceback.format_exc()

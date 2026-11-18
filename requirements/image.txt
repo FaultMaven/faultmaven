@@ -902,6 +902,7 @@ tldextract==5.3.1
 tokenizers==0.23.1
     # via
     #   -c requirements/cloud.txt
+    #   faultmaven (pyproject.toml)
     #   chromadb
     #   litellm
     #   sentence-transformers

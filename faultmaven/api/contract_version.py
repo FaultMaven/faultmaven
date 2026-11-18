@@ -151,6 +151,38 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.5.0",
+        level="MINOR",
+        title=(
+            "`KNOWLEDGE_INDEXING_BUSY` no longer answers that the indexing "
+            'model is loading, and the 413\'s "at most N tokens" figure takes '
+            "a 30 s model-load charge (#2851). MINOR: no field, status or code "
+            "is added or removed."
+        ),
+        body=r"""Each KB indexing encode (upload, `PUT /knowledge/documents/{id}`
+content, draft verify) now runs in a worker process of its own, which loads
+the embedding model first and is killed at its time bound. So:
+
+* every KB write takes at least one model load, about 20 s measured at 2 CPUs,
+  however small the document;
+* with `INDEX_REQUEST_WINDOW_SECONDS` set, admission charges every document
+  30 s for that load. The 413's figure becomes
+  `floor((window − 30) × cores / 0.025)` tokens: at 2 cores, 2,400 / 7,200 /
+  21,600 / 45,600 at a window of 60 / 120 / 300 / 600 s (before, 4,800 /
+  9,600 / 24,000 / 48,000). The cut is half the figure at the 60 s floor and
+  5% at 600 s;
+* on an empty queue a document is admitted or answered 413, never 503: the
+  503 sentence "The indexing model is loading on this server" is gone, and a
+  503 `KNOWLEDGE_INDEXING_BUSY` now means only that indexing queued on the
+  server leaves no room, or that an encode is stuck past its time bound;
+* `POST /knowledge/drafts/verify-batch` fits about
+  `window / (30 + estimate)` drafts in one request, and returns the rest as
+  `deferred`, as it did before for drafts its window could not fit. Its
+  remaining window can answer a draft `busy` on an empty queue, by design.
+
+No client branches on the removed sentence.""",
+    ),
+    ContractChange(
         version="15.4.0",
         level="MINOR",
         title=(

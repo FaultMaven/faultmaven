@@ -6,31 +6,37 @@ read timeout a document that takes longer is cut off after all the work. And
 nothing serialised the encodes: two uploads on one pod shared its CPUs, and
 both overran. This module is both halves, and what an encode costs here.
 
-**Two slots, one encode each.** Every KB indexing encode runs on one
-single-thread executor per process (:data:`index_admission`), and takes an
-exclusive ``flock`` on a file in the container's temp directory first. The file
-is per container, which is the scope of the CPU quota, so the worker processes
-of one pod take turns too. Evidence encodes run on a second single-thread
-executor (:data:`evidence_slot`), with no host lock: a re-trigger queues behind
-an encode still running rather than starting beside it, and a KB encode does
-not wait for one. Query embeds use neither.
+**Two slots, one encode each.** Every KB indexing encode is driven from one
+single-thread executor per process (:data:`index_admission`), which takes an
+exclusive ``flock`` on a file in the container's temp directory first, and
+runs in an ``encode_worker`` process its phase bounds kill (Principle 14,
+#2851): the thread waits on a file lock and a worker, which is I/O. The file is
+per container, which is the scope of the CPU quota, so the worker processes of
+one pod take turns too. Evidence encodes run in this process on a second
+single-thread executor (:data:`evidence_slot`), with no host lock: a re-trigger
+queues behind an encode still running rather than starting beside it, and a KB
+encode does not wait for one. Query embeds use neither.
 
 **The tickets.** A slot holds its tickets and is touched only on the event
 loop's thread. A ticket is released when its encode's thread settles, or when
-its encode never started, and never because its caller gave up: an encode that
-has started cannot be stopped, and the next one would share its CPUs. A caller
-that gives up while its job waits for the host lock stops it before it encodes.
+its encode never started. A caller that gives up while its job waits for the
+host lock stops it before it encodes; one that gives up mid-encode kills a KB
+worker, and the thread settles once it is reaped. An evidence encode that has
+started cannot be stopped, and holds its slot until its thread settles.
 
 **Admission.** :meth:`IndexAdmission.admit` is synchronous, so the check and
-the reservation are one step. With a window set it refuses, before anything is
-written, a document too large for the window (413), one the queue ahead leaves
-no room for (503), one that fits only once the model has loaded (503, and the
-load starts), and every document while an encode is past its time bound (503).
-With a window of 0 it refuses nothing, and the embedding guard alone bounds
-the embed.
+the reservation are one step. Every KB ticket is charged a worker's load
+(``WORKER_LOAD_SECONDS``). With a window set it refuses, before anything is
+written, a document too large for the window less that charge (413), one the
+queue ahead leaves no room for (503), and every document while an encode is
+past its time bound (503). On an empty queue, with the whole window to spend,
+a document is admitted or refused 413, never 503. With a window of 0 it
+refuses nothing, and the embedding guard alone bounds the embed.
 """
 
 import asyncio
+import base64
+import contextvars
 import fcntl
 import logging
 import math
@@ -41,16 +47,48 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, List, Optional, Tuple
 
+from faultmaven.infrastructure import encode_worker, worker_process
 from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
 
-# A cold BGE-M3 load: 60-120s (`model_cache.py`, `PRELOAD_MODELS`, a supported
-# opt-out precisely because operators accept that latency), 180s with headroom.
-# The embedding guard's batch bound covers it, because a write is not cheap to
-# repeat (see ``embedding_guard``); admission charges it to the first ticket a
-# cold model sees, and a cold-band refusal's load is estimated at it.
+# The embedding guard's constant term: a worker's BGE-M3 load, 180 s. Measured
+# in the image at 2 CPUs a cold worker loaded in 14.1-15.5 s (#2851), so this
+# is about 12x, the headroom of a hang bound: a slower core, a sub-1 CPU quota
+# or a load beside an evidence encode stays inside it. The guard covers it,
+# because a write is not cheap to repeat (see ``embedding_guard``).
 EMBED_BATCH_LOAD_SECONDS = 180.0
+
+#: What admission charges every KB ticket for its worker's load (#2851): 1.45x
+#: the worst of seven runs in the image at 2 CPUs, spawn to the first batch of
+#: four encoded (19.3-20.7 s cold, the weights evicted; 17.4-19.1 s warm). The
+#: load is mostly one core, so this is wall seconds, not core-seconds, and the
+#: disk read is under 1 s of it. A slower core, a CPU quota under 1 or a load
+#: beside an evidence encode can take longer: then the encode overruns the
+#: request window, never the guard's 180 s.
+WORKER_LOAD_SECONDS = 30.0
+
+#: The guard's bound less the worker's phases: the time to kill and reap it
+#: (4-8 ms measured), so a ticket never reads ``hung`` while its worker is
+#: reaped.
+REAP_MARGIN_SECONDS = 5.0
+
+#: Spawn to ``ready`` (0.29-0.40 s measured), and each transfer of the texts
+#: or the vectors, for an encode worker.
+ENCODE_START_SECONDS = 10.0
+ENCODE_TRANSFER_SECONDS = 10.0
+
+#: ``RLIMIT_AS`` of an encode worker, whatever its thread count: four texts at
+#: the 8,192-token cap, the most one batch holds, peaked at a VmPeak of
+#: 6,159 MiB with no CPU quota (4 threads), and 7,190 and 7,566 MiB at 2 and 4
+#: CPUs (measured in the image, #2851), 1.6x below this.
+ENCODE_MEMORY_BYTES = 12 * 1024 * 1024 * 1024
+
+#: The encode worker. Always this value: tests point it at one of their own.
+_ENCODE_WORKER = encode_worker.__name__
+
+#: One vector's float32 values.
+_DIMENSIONS = 1024
 
 # Core-seconds BGE-M3 spends encoding one token. Measured on the image under
 # ``--cpus=2 --network none``, model warm, torch pinned to 2 threads (what
@@ -115,10 +153,101 @@ def index_max_tokens(seconds: float) -> int:
     return math.floor(seconds * index_cores() / INDEX_CORE_SECONDS_PER_TOKEN)
 
 
+def encode_threads() -> int:
+    """An encode worker's threads: ``index_cores()`` rounded up."""
+    return math.ceil(index_cores())
+
+
+def encode_cpu_seconds(guard_seconds: float) -> int:
+    """``RLIMIT_CPU`` of an encode worker: its guard bound on every thread,
+    and 10 s more, so the phase bounds end it first."""
+    return math.ceil(guard_seconds * encode_threads()) + 10
+
+
+def encode_output_limit_bytes(texts: int) -> int:
+    """What the parent reads from an encode worker: the vectors' base64, and
+    1 MiB of frames and log records."""
+    return 4 * math.ceil(texts * _DIMENSIONS * 4 / 3) + 1024 * 1024
+
+
+def encode_phases(guard_seconds: float) -> worker_process.Phases:
+    """An encode worker's steps, summing to its guard bound less the reap
+    margin: the work gets what the start and the transfers leave."""
+    fixed = ENCODE_START_SECONDS + 2 * ENCODE_TRANSFER_SECONDS + REAP_MARGIN_SECONDS
+    return worker_process.Phases(
+        start=ENCODE_START_SECONDS,
+        request=ENCODE_TRANSFER_SECONDS,
+        work=guard_seconds - fixed,
+        result=ENCODE_TRANSFER_SECONDS,
+    )
+
+
+def encode_in_worker(
+    ticket: "IndexTicket", texts: List[str], guard_seconds: float
+) -> Optional[List[List[float]]]:
+    """On the KB slot's thread: one ``encode_worker`` over ``texts``, its
+    vectors, or None when it gave none (logged with how it ended). Raises
+    ``TimeoutError`` past its phases."""
+    return asyncio.run(_encode_in_worker(ticket, texts, guard_seconds))
+
+
+async def _encode_in_worker(
+    ticket: "IndexTicket", texts: List[str], guard_seconds: float
+) -> Optional[List[List[float]]]:
+    if not ticket._attach(asyncio.current_task()):
+        return None  # its caller gave up before this task existed
+    try:
+        end = await worker_process.run(
+            _ENCODE_WORKER,
+            {"threads": encode_threads()},
+            memory_bytes=ENCODE_MEMORY_BYTES,
+            cpu_seconds=encode_cpu_seconds(guard_seconds),
+            output_limit_bytes=encode_output_limit_bytes(len(texts)),
+            phases=encode_phases(guard_seconds),
+            parts=tuple(texts),
+        )
+    except worker_process.WorkerFailed as e:
+        logger.error("KB encode worker gave no vectors: %s", e)
+        return None
+    except asyncio.CancelledError:
+        return None  # its caller gave up: the worker is reaped
+    if end.timed_out:
+        raise TimeoutError(f"KB encode worker passed its {end.phase} phase bound")
+    if end.result is None:
+        logger.error(
+            "KB encode worker gave no vectors: ended in %s, exit %s%s",
+            end.phase,
+            end.code,
+            (
+                " (past its memory limit)"
+                if end.code == worker_process.OUT_OF_MEMORY_EXIT
+                else ""
+            ),
+        )
+        return None
+    return _vectors(end.result, len(texts))
+
+
+def _vectors(parts: List[str], texts: int) -> Optional[List[List[float]]]:
+    """The worker's answer as ``texts`` vectors, or None (logged) for any other
+    shape: a short or misshapen answer is never written."""
+    import numpy as np
+
+    try:
+        raw = base64.b64decode(parts[0], validate=True) if len(parts) == 1 else b""
+    except ValueError:
+        raw = b""
+    if len(raw) != texts * _DIMENSIONS * 4:
+        logger.error("KB encode worker answered %d bytes for %d texts", len(raw), texts)
+        return None
+    values = np.frombuffer(raw, dtype="<f4").reshape(texts, _DIMENSIONS)
+    return values.tolist()
+
+
 def refusal(reason: str, *, wait: int = 0, tokens: int = 0, most: int = 0):
     """The one place each refusal's sentence is written, for ``admit`` and for
-    the 503 handler. ``reason``: ``too_large`` (413), ``busy``, ``loading`` or
-    ``hung`` (503)."""
+    the 503 handler. ``reason``: ``too_large`` (413), ``busy`` or ``hung``
+    (503)."""
     sentences = {
         "too_large": (
             f"This document is {tokens:,} tokens, and this server can index at "
@@ -129,10 +258,6 @@ def refusal(reason: str, *, wait: int = 0, tokens: int = 0, most: int = 0):
             "Other indexing on this server leaves no room for this document "
             f"within this request. Nothing was saved; retry in about {wait} "
             "seconds."
-        ),
-        "loading": (
-            "The indexing model is loading on this server. Nothing was saved; "
-            f"retry in about {wait} seconds."
         ),
         "hung": (
             "Indexing on this server is stuck past its time bound. Nothing was "
@@ -155,7 +280,8 @@ def _call_on_loop(loop: asyncio.AbstractEventLoop, callback: Callable[[], None])
 
 
 class IndexTicket:
-    """One encode on a slot: its chunks, token count and estimate.
+    """One encode on a slot: its chunks, token count, estimate and principal
+    (the user who asked, whose slot a token count takes).
 
     An async context manager. Leaving it releases the ticket only if nothing
     was submitted; a submitted job releases it when its thread settles.
@@ -167,11 +293,13 @@ class IndexTicket:
         chunks: List[str],
         tokens: Optional[int],
         estimate_seconds: float,
+        principal: str,
     ) -> None:
         self._slot = slot
         self.chunks = chunks
         self.tokens = tokens
         self.estimate_seconds = estimate_seconds
+        self.principal = principal
         self.started_at: Optional[float] = None
         #: Its guard bound, set when it submits; None before.
         self.guard_seconds: Optional[float] = None
@@ -179,6 +307,8 @@ class IndexTicket:
         # Between the job, once it holds the host lock, and a caller giving up.
         self._gate = threading.Lock()
         self._abandoned = self._encoding = False
+        # The worker's task, on the slot thread's own loop, once it exists.
+        self._task: Optional["asyncio.Task[Any]"] = None
 
     async def __aenter__(self) -> "IndexTicket":
         return self
@@ -222,10 +352,8 @@ class IndexTicket:
     def run(self, texts: List[str], *, guard_seconds: float) -> Tuple[Future, float]:
         """Submit the encode. Returns its future and the guard bounds still
         outstanding ahead of it, which the caller's wait adds to its own."""
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        encode = model_cache.embed_texts_sync
-        return self._submit(lambda: encode(texts), guard_seconds)
+        encode = self._slot._encode
+        return self._submit(lambda: encode(self, texts, guard_seconds), guard_seconds)
 
     def _submit(self, work: Callable[[], Any], guard_seconds: float):
         if self._future is not None:
@@ -239,7 +367,11 @@ class IndexTicket:
         )
         self.guard_seconds = guard_seconds
         self._future = self._slot._executor.submit(
-            self._slot._job, self, work, lambda: _call_on_loop(loop, self._started)
+            contextvars.copy_context().run,
+            self._slot._job,
+            self,
+            work,
+            lambda: _call_on_loop(loop, self._started),
         )
         self._future.add_done_callback(
             lambda _done: _call_on_loop(loop, lambda: self._slot._release(self))
@@ -249,12 +381,23 @@ class IndexTicket:
     def abandon(self) -> bool:
         """The caller gave up. True when the encode will never run: it was
         still queued, or still waiting for the host lock, and is stopped. False
-        when it is encoding, and holds the slot until its thread settles."""
+        when it is encoding: a worker's task is cancelled, which reaps it, and
+        the slot is held until its thread settles."""
         if self._future is None or self._future.cancel():
             return True
         with self._gate:
             self._abandoned = True
+            if self._task is not None:
+                _call_on_loop(self._task.get_loop(), self._task.cancel)
             return not self._encoding
+
+    def _attach(self, task: "asyncio.Task[Any]") -> bool:
+        """On the slot's thread, the worker's task as its first step: False
+        when the caller gave up before it existed, which ``abandon`` could not
+        cancel."""
+        with self._gate:
+            self._task = task
+            return not self._abandoned
 
     def _begin(self) -> bool:
         """On the slot's thread, once it holds the host lock: go on, unless the
@@ -282,10 +425,23 @@ class EncodeSlot:
         #: True while the slot's thread is blocked in ``flock``.
         self.waiting_for_host_lock = False
 
-    def admit_forced(self, chunks: List[str], tokens: Optional[int]) -> IndexTicket:
+    #: What each ticket is charged beyond its estimate.
+    load_seconds = 0.0
+
+    def admit_forced(
+        self, chunks: List[str], tokens: Optional[int], *, principal: str
+    ) -> IndexTicket:
         """A ticket that is never refused: the boot repair's on the KB slot,
         every evidence encode's."""
-        return self._issue(chunks, tokens)
+        return self._issue(chunks, tokens, principal)
+
+    def _encode(
+        self, ticket: IndexTicket, texts: List[str], guard_seconds: float
+    ) -> Optional[List[List[float]]]:
+        """The encode, on the slot's thread: in this process."""
+        from faultmaven.infrastructure.model_cache import model_cache
+
+        return model_cache.embed_texts_sync(texts)
 
     def pending_seconds(self) -> float:
         """The estimate of the work held ahead of a new request."""
@@ -302,17 +458,13 @@ class EncodeSlot:
         ages = [at - t.started_at for t in self._tickets if t.started_at is not None]
         return max(ages) if ages else None
 
-    def _load_charge(self) -> float:
-        """A cold model's load, charged to the first ticket only."""
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        if model_cache.peek_bge_m3_model() is None and not self._tickets:
-            return EMBED_BATCH_LOAD_SECONDS
-        return 0.0
-
-    def _issue(self, chunks: List[str], tokens: Optional[int]) -> IndexTicket:
+    def _issue(
+        self, chunks: List[str], tokens: Optional[int], principal: str
+    ) -> IndexTicket:
         estimate = index_estimate_seconds(tokens) if tokens is not None else 0.0
-        ticket = IndexTicket(self, chunks, tokens, estimate + self._load_charge())
+        ticket = IndexTicket(
+            self, chunks, tokens, estimate + self.load_seconds, principal
+        )
         self._tickets.append(ticket)
         return ticket
 
@@ -362,27 +514,31 @@ class EncodeSlot:
 class IndexAdmission(EncodeSlot):
     """The KB indexing slot, and its admission against the request window."""
 
+    load_seconds = WORKER_LOAD_SECONDS
+
     def __init__(self) -> None:
         super().__init__(_KB_EXECUTOR, host_lock=True)
-        self._loading: Optional[IndexTicket] = None
+
+    def _encode(
+        self, ticket: IndexTicket, texts: List[str], guard_seconds: float
+    ) -> Optional[List[List[float]]]:
+        """The encode, on the slot's thread: in a worker."""
+        return encode_in_worker(ticket, texts, guard_seconds)
 
     def retry_after_seconds(self, reason: str = "busy") -> int:
         """The 503's wait, from the queue as it stands: the stuck encode's
-        fixed wait, the model load's remaining estimate, or the pending
-        estimate; rounded up, and at least a second."""
+        fixed wait, or the pending estimate; rounded up, and at least a
+        second."""
         if reason == "hung":
             return HUNG_RETRY_SECONDS
-        if reason == "loading" and self._loading is not None:
-            seconds = self._loading.remaining_estimate(_clock())
-        else:
-            seconds = self.pending_seconds()
-        return max(1, math.ceil(seconds))
+        return max(1, math.ceil(self.pending_seconds()))
 
     def admit(
         self,
         chunks: List[str],
         tokens: Optional[int],
         *,
+        principal: str,
         window_seconds: float,
         size_limit_seconds: Optional[float] = None,
     ) -> IndexTicket:
@@ -390,91 +546,42 @@ class IndexAdmission(EncodeSlot):
 
         Args:
             tokens: The chunks' BGE-M3 token count; None when it was not
-                counted (no window) or could not be (no tokenizer).
+                counted (no window) or could not be.
+            principal: The user who asked.
             window_seconds: What the request may spend; 0 refuses nothing.
             size_limit_seconds: The window a document alone must fit, when the
                 caller has spent part of it already (verify-batch); defaults
-                to ``window_seconds``.
+                to ``window_seconds``. A remaining window shorter than it can
+                answer ``busy`` on an empty queue, by design.
 
         Raises:
-            IndexAdmissionRefused: 413 above ``index_max_tokens`` of the limit.
-                503 while an encode is past its time bound (``hung``); when the
-                document fits only once the cold model has loaded, which starts
-                the load (``loading``); when the queue leaves it no room
+            IndexAdmissionRefused: 413 above ``index_max_tokens`` of the limit
+                less ``WORKER_LOAD_SECONDS``. 503 while an encode is past its
+                time bound (``hung``), or when the queue leaves it no room
                 (``busy``).
             KnowledgeBaseError: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window is
-                set and the tokenizer could not count: nothing can be
-                estimated, and the embed would fail the same way.
+                set and the tokens could not be counted: nothing can be
+                estimated.
         """
         if not window_seconds or window_seconds <= 0:
-            return self._issue(chunks, tokens)
+            return self._issue(chunks, tokens, principal)
         if tokens is None:
             raise KnowledgeBaseError(
                 "Indexing unavailable: the embedding model's tokenizer could not "
                 "be loaded",
                 error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
             )
-        most = index_max_tokens(
-            window_seconds if size_limit_seconds is None else size_limit_seconds
-        )
+        limit = window_seconds if size_limit_seconds is None else size_limit_seconds
+        most = index_max_tokens(limit - WORKER_LOAD_SECONDS)
         if tokens > most:
             raise refusal("too_large", tokens=tokens, most=most)
         at = _clock()
         if any(ticket.hung(at) for ticket in self._tickets):
             raise refusal("hung", wait=self.retry_after_seconds("hung"))
-        pending = self.pending_seconds()
-        if tokens <= index_max_tokens(window_seconds - pending - self._load_charge()):
-            return self._issue(chunks, tokens)
-        loading = self._loading.remaining_estimate(at) if self._loading else 0.0
-        if self._cold() and tokens <= index_max_tokens(
-            window_seconds - pending + loading
-        ):
-            if self._load_failed():
-                # Not "loading" forever: the model would not load, so the
-                # embed would fail the same way (as for an unloadable
-                # tokenizer above), and no load is started.
-                raise KnowledgeBaseError(
-                    "Indexing unavailable: the embedding model could not be " "loaded",
-                    error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-                )
-            self._start_load()
-            raise refusal("loading", wait=self.retry_after_seconds("loading"))
+        room = window_seconds - self.pending_seconds() - WORKER_LOAD_SECONDS
+        if tokens <= index_max_tokens(room):
+            return self._issue(chunks, tokens, principal)
         raise refusal("busy", wait=self.retry_after_seconds())
-
-    @staticmethod
-    def _cold() -> bool:
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        return model_cache.peek_bge_m3_model() is None
-
-    @staticmethod
-    def _load_failed() -> bool:
-        """The latest BGE-M3 load recorded an error, and no load is in
-        progress: a retry another path is running may still succeed."""
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        info = model_cache.get_model_load_info()
-        failed = info is not None and info.error is not None
-        return failed and not model_cache.is_bge_m3_loading()
-
-    def _start_load(self) -> None:
-        """Start the model load on the slot, once: a forced ticket the queue
-        counts at a load's estimate."""
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        if self._loading is not None:
-            return
-        self._loading = IndexTicket(self, [], None, EMBED_BATCH_LOAD_SECONDS)
-        self._tickets.append(self._loading)
-        self._loading._submit(
-            lambda: model_cache.get_bge_m3_model("index-admission"),
-            EMBED_BATCH_LOAD_SECONDS,
-        )
-
-    def _release(self, ticket: IndexTicket) -> None:
-        super()._release(ticket)
-        if ticket is self._loading:
-            self._loading = None
 
 
 #: The process's KB indexing slot and admission.

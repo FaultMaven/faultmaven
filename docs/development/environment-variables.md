@@ -550,11 +550,15 @@ cannot fit, **503** `KNOWLEDGE_INDEXING_BUSY` + `Retry-After` when the indexing
 already queued on the server leaves no room for it, and `verify-batch` returns
 the drafts the rest of its window cannot fit as `deferred`. The estimate is the
 document's BGE-M3 token count at a measured 25 core-ms a token, divided by the
-CPU quota (at most 4 cores). KB indexing encodes run one at a time per
-container. A document that fits only once a cold model has loaded starts the
-load and is answered 503 until it has (after a failed load, with no load in
-progress, it is answered as for an unavailable embedder and no load starts);
-while an encode is past its time bound every document is answered 503. The
+CPU quota (at most 4 cores), plus 30 s for the encode worker's model load.
+Each KB indexing encode runs in a worker process of its own, which loads
+BGE-M3 first (#2851): every KB write takes at least about 20 s, so the most
+tokens one request can index is `(window − 30) × cores / 0.025` (at 2 cores,
+2,400 at the 60 s floor and 45,600 at 600 s), and `verify-batch` fits about
+`window / (30 + estimate)` drafts in one request. KB indexing encodes run one
+at a time per container. On an empty queue a document is admitted or answered
+413, never 503; while an encode is past its time bound every document is
+answered 503. The
 window, the queue, the running encode's age and the host lock's state are
 reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
 

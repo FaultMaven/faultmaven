@@ -842,6 +842,49 @@ def _own_kb_index_host_lock(_kb_index_lock_dir, monkeypatch):
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(path))
 
 
+#: The model workers no test spawns for real (#2851): ``REAL_MODEL_WORKERS``.
+REAL_MODEL_WORKERS = frozenset(
+    {
+        "faultmaven.infrastructure.encode_worker",
+        "faultmaven.infrastructure.token_count_worker",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_model_worker(monkeypatch):
+    """No test spawns the real encode or token-count worker (#2851).
+
+    Either would load BGE-M3, or its tokenizer, from a snapshot present on one
+    machine and absent on another. A spawn of either is refused as a worker
+    that could not start, so a token count is unavailable as it is without a
+    snapshot; a spawn of the encode worker also fails the test, even when the
+    code under test swallowed the refusal: a test of a KB encode serves a stub
+    in its place (``index_slot._ENCODE_WORKER``) or replaces
+    ``index_slot.encode_in_worker``. ``test_model_workers_on_the_real_model``
+    lifts this, behind the snapshot, by restoring ``REAL_RUN``.
+    """
+    from faultmaven.infrastructure import worker_process
+
+    real_run = worker_process.run
+    spawned: list = []
+
+    async def guarded(module, *args, **kwargs):
+        if module in REAL_MODEL_WORKERS:
+            spawned.append(module)
+            raise worker_process.WorkerNotStarted(f"{module} is not spawned in tests")
+        return await real_run(module, *args, **kwargs)
+
+    guarded.REAL_RUN = real_run
+    monkeypatch.setattr(worker_process, "run", guarded)
+    yield
+    encodes = [m for m in spawned if m.endswith(".encode_worker")]
+    assert not encodes, (
+        "an un-stubbed path spawned the real encode worker: serve a stub in "
+        "its place, or replace index_slot.encode_in_worker"
+    )
+
+
 # Session-level fixture to clear .env variables that may have been loaded before tests started
 @pytest.fixture(scope="session", autouse=True)
 def clean_test_environment():

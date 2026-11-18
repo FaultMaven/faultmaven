@@ -160,8 +160,9 @@ class RunbookKnowledgeBase(BaseExternalClient):
         # caller-side deadline they can exhaust: the runbook dedup in
         # terminal_transitions runs inside the 120s per-turn budget, and the
         # report-recommendation endpoint under the HTTP/ingress budget. A cold
-        # BGE-M3 load is 60-120s, so an unbounded await here consumes that
-        # whole budget instead of refusing in 10s.
+        # BGE-M3 load takes about 15 s (measured in the image at 2 CPUs, #2851),
+        # longer on a slower core, so an unbounded await here spends that much
+        # of the budget instead of refusing in 10s.
         #
         # Consequence, accepted: a terminal transition during a cold start
         # refuses, and the resolution carries the "dedup could not run" caveat

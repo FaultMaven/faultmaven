@@ -132,7 +132,13 @@ async def test_the_draining_flag_skips_the_evidence_vector_write(monkeypatch):
 
     async def _store():
         return await vector_storage.store_in_vector_db_background(
-            "c1", "ev1", "## A\nline\n", UnifiedDataType.LOGS, {}, _Store()
+            "c1",
+            "ev1",
+            "## A\nline\n",
+            UnifiedDataType.LOGS,
+            {},
+            _Store(),
+            principal="user-1",
         )
 
     monkeypatch.setattr(inflight, "_DRAINS", [lambda: True])

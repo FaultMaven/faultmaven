@@ -7935,7 +7935,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.4.0"
+    "version": "15.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -13829,7 +13829,7 @@
             "description": "With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
@@ -14243,7 +14243,7 @@
             "description": "With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",
@@ -14635,7 +14635,7 @@
             "description": "Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind. With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone."
           },
           "503": {
-            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, the indexing model is loading, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
+            "description": "Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds, with KNOWLEDGE_INDEXING_BUSY. Seconds, with RUNBOOK_VALIDATION_BUSY or RUNBOOK_VALIDATION_UNAVAILABLE.",

@@ -32,6 +32,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -105,7 +106,11 @@ class _KbStore:
         ),
     ]
 )
-async def race(request, tmp_path):
+async def race(request, tmp_path, monkeypatch):
+    # The KB encode's worker (#2851): the repair's one encode, an edit's.
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: [[0.1]] * len(texts)
+    )
     if request.param == "sqlite":
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/race.db")
 
@@ -273,7 +278,7 @@ async def test_a_delete_during_the_repair_embed_leaves_nothing_admitted(
         return 3
 
     race.svc._index_document_in_vector_store = gated_index
-    repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
+    repairing = asyncio.create_task(race.svc.reindex_missing_vectors([item_id]))
     await asyncio.wait_for(entered.wait(), 10)
 
     removed = await race.svc.delete_document(item_id)
@@ -300,7 +305,7 @@ async def test_a_repair_during_the_delete_hold_leaves_nothing_admitted(
     document is not admitted, and the repair never deleted a vector."""
     await race.seed(item_id, scope)
     async with _HeldDelete(race.svc, item_id) as held:
-        repairing = asyncio.create_task(race.svc.reindex_missing_vectors(item_id))
+        repairing = asyncio.create_task(race.svc.reindex_missing_vectors([item_id]))
         await asyncio.sleep(0.2)
     await asyncio.wait_for(repairing, 10)
 

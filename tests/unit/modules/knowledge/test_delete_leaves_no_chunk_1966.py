@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.exceptions import CircuitBreakerError
+from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
@@ -180,7 +181,7 @@ def _builtin(**kwargs):
 
 
 @pytest.fixture
-async def kb():
+async def kb(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -211,7 +212,8 @@ async def kb():
     async def _index(
         document, prechunked=None, enterprise_id=None, generation=None, ticket=None
     ):
-        # The embedder is the only stubbed step: whatever is indexed lands in
+        # The embedder (``encode_in_worker``, the repair's one encode, #2851)
+        # and this write are the stubbed steps: whatever is indexed lands in
         # the store, so a re-index is observable as the parent coming back.
         indexed.append(document.document_id)
         store.parents[document.document_id] = 3
@@ -225,6 +227,9 @@ async def kb():
     svc._share_repo = _Shares(factory)
     svc._trace_eraser = None
     svc._index_document_in_vector_store = _index
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: [[0.1]] * len(texts)
+    )
     svc._delete_knowledge_item_row = AsyncMock()
     svc._sanitizer = MagicMock()
 
@@ -489,7 +494,7 @@ async def test_t10_reindex_missing_vectors_refuses_an_unpublished_row(kb, caplog
     await kb.seed(_builtin(published=False), chunks=0)
 
     with caplog.at_level(logging.WARNING):
-        assert await kb.svc.reindex_missing_vectors(BUILTIN_ID) == 0
+        assert await kb.svc.reindex_missing_vectors([BUILTIN_ID]) == {BUILTIN_ID: 0}
 
     assert kb.indexed == []
     assert BUILTIN_ID not in kb.store.parents

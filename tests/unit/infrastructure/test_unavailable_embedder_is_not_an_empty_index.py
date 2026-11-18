@@ -330,6 +330,7 @@ async def _index(case_vector_store, embeddings, structural_index="## Errors\nOOM
             case_vector_store=case_vector_store,
             max_chunk_tokens=500,
             overlap_tokens=50,
+            principal="user-1",
         )
 
 

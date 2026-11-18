@@ -1007,7 +1007,8 @@ async def _reconcile_vectors(
 #   max_chunks — a per-boot WORK budget. Repair is the one bootstrap step that
 #     loads BGE-M3 and embeds, and (on the single-tenant web-startup path) it runs
 #     BEFORE the app serves readiness — so the risk is the on-pod CPU-embedding
-#     time (chunks x pod CPU), NOT the row count. Bounding rows alone is
+#     time: one worker's model load (``index_slot.WORKER_LOAD_SECONDS``; a boot's
+#     rows encode in one worker, #2851) plus chunks x pod CPU, NOT the row count. Bounding rows alone is
 #     insufficient: even a sub-cap orphan set of small runbooks can be hundreds
 #     of chunks (minutes on a limited pod → startupProbe SIGKILL). Once this
 #     boot's chunk budget is spent, remaining rows are DEFERRED to the next boot;
@@ -1097,46 +1098,43 @@ async def _repair_unserved_rows(
         max_chunks,
     )
 
-    repaired: list[str] = []
-    still_unserved: list[str] = []
-    chunks_embedded = 0
-    for i, item_id in enumerate(unserved_rows):
-        # Work budget: stop before starting a row once this boot's chunk budget is
-        # spent. Overshoot is bounded by one runbook's chunk count (the row in
-        # flight always finishes); the deferred rows self-heal on a later boot.
-        if chunks_embedded >= max_chunks:
-            deferred = unserved_rows[i:]
-            still_unserved.extend(deferred)
-            logger.warning(
-                "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
-                "deferring %d unserved row(s) to the next boot (repair is "
-                "incremental to keep startup readiness off the embedding path).",
-                max_chunks,
-                len(repaired),
-                len(deferred),
-            )
-            break
-        try:
-            chunks = await knowledge_service.reindex_missing_vectors(item_id)
-        except Exception as exc:
-            logger.warning(f"KB repair failed for {item_id}: {exc}")
-            still_unserved.append(item_id)
-            continue
-        if chunks > 0:
-            repaired.append(item_id)
-            chunks_embedded += chunks
-            logger.info(
-                f"KB repair: re-embedded {chunks} chunk(s) for unserved row {item_id}"
-            )
-        else:
+    # One encode for the rows the chunk budget takes, in one worker: one model
+    # load per boot (#2851). Overshoot is bounded by one runbook's chunk count
+    # (the row that reaches the budget is taken); the deferred rows self-heal
+    # on a later boot.
+    try:
+        counts = await knowledge_service.reindex_missing_vectors(
+            unserved_rows, max_chunks=max_chunks
+        )
+    except Exception as exc:
+        logger.warning(f"KB repair failed: {exc}")
+        return [], list(unserved_rows)
+    repaired = [item_id for item_id in unserved_rows if counts.get(item_id, 0) > 0]
+    still_unserved = [item_id for item_id in unserved_rows if item_id not in repaired]
+    deferred = [item_id for item_id in unserved_rows if item_id not in counts]
+    for item_id in repaired:
+        logger.info(
+            f"KB repair: re-embedded {counts[item_id]} chunk(s) for unserved row "
+            f"{item_id}"
+        )
+    for item_id in still_unserved:
+        if item_id in counts:
             # 0 chunks = embedding model unavailable / empty content. Fail-safe:
-            # leave the row for a later boot (mirrors reconcile's warn-only prior),
-            # never raise on the startup path.
-            still_unserved.append(item_id)
+            # leave the row for a later boot (mirrors reconcile's warn-only
+            # prior), never raise on the startup path.
             logger.warning(
                 f"KB repair produced 0 chunks for {item_id} (embedding model "
                 "unavailable, or the row is gone, unpublished or incomplete — "
                 "see the line before) — if the row is still live it stays "
                 "unretrievable until a later boot retries it."
             )
+    if deferred:
+        logger.warning(
+            "KB repair: per-boot chunk budget (%d) reached after %d row(s) — "
+            "deferring %d unserved row(s) to the next boot (repair is "
+            "incremental to keep startup readiness off the embedding path).",
+            max_chunks,
+            len(counts),
+            len(deferred),
+        )
     return repaired, still_unserved

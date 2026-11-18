@@ -1,11 +1,12 @@
 """The indexing slots: admission against the window, one encode at a time, and
 a slot held until its thread settles (#2055).
 
-Admission runs at Cloud's shape: window 600 s, 2 cores, the model resident
-unless stated; the clock, the token counts, the cores and the model's
-residency are patched. The slot tests hold fake encodes on
-``threading.Event``s and wait for them on events, so no test loads the model
-or depends on how fast a thread starts.
+Admission runs at Cloud's shape: window 600 s, 2 cores; the clock, the
+token counts and the cores are patched. Every KB ticket is charged a worker's
+load (``WORKER_LOAD_SECONDS``, #2851). The slot tests hold fake encodes (the
+KB slot's ``encode_in_worker`` and the evidence slot's ``embed_texts_sync``)
+on ``threading.Event``s and wait for them on events, so no test loads the
+model or depends on how fast a thread starts.
 """
 
 import asyncio
@@ -14,9 +15,7 @@ import os
 import subprocess
 import sys
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,20 +26,20 @@ from faultmaven.core.preprocessing.vector_storage import (
     store_in_vector_db_background,
 )
 from faultmaven.infrastructure import embedding_guard, index_slot
-from faultmaven.infrastructure import model_cache as model_cache_module
 from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
-from faultmaven.infrastructure.index_slot import IndexAdmission, index_max_tokens
-from faultmaven.infrastructure.model_cache import (
-    BGE_M3_MODEL_ID,
-    ModelLoadInfo,
-    model_cache,
+from faultmaven.infrastructure.index_slot import (
+    WORKER_LOAD_SECONDS,
+    IndexAdmission,
+    index_max_tokens,
 )
+from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
 
 pytestmark = [pytest.mark.unit]
 
 WINDOW = 600.0
 RUNBOOK_TOKENS = 29_746  # 371.825 s warm on 2 cores
+USER = "user-1"
 REPO = Path(__file__).resolve().parents[3]
 
 
@@ -61,17 +60,16 @@ def clock(monkeypatch):
 
 @pytest.fixture
 def cloud(monkeypatch, clock):
-    """2 cores, the model resident."""
+    """2 cores."""
     monkeypatch.setattr(
         "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: 2.0
     )
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: object())
     return clock
 
 
 def _refused(admission, tokens, window=WINDOW) -> IndexAdmissionRefused:
     with pytest.raises(IndexAdmissionRefused) as refused:
-        admission.admit(["c"], tokens, window_seconds=window)
+        admission.admit(["c"], tokens, principal=USER, window_seconds=window)
     return refused.value
 
 
@@ -80,66 +78,84 @@ def _refused(admission, tokens, window=WINDOW) -> IndexAdmissionRefused:
 # ---------------------------------------------------------------------------
 
 
-def test_an_idle_runbook_is_admitted_at_its_estimate(cloud):
-    ticket = IndexAdmission().admit(["c"], RUNBOOK_TOKENS, window_seconds=WINDOW)
+def test_an_idle_runbook_is_admitted_at_its_estimate_and_the_load(cloud):
+    ticket = IndexAdmission().admit(
+        ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
+    )
 
-    assert ticket.estimate_seconds == pytest.approx(371.825)
+    assert ticket.estimate_seconds == pytest.approx(371.825 + 30)
+    assert ticket.principal == USER
 
 
 def test_a_second_concurrent_one_is_refused_503_with_the_pending_wait(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, window_seconds=WINDOW)
+    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
 
     refused = _refused(admission, RUNBOOK_TOKENS)
 
     assert (refused.status_code, refused.reason) == (503, "busy")
     assert refused.error_code == "KNOWLEDGE_INDEXING_BUSY"
-    assert refused.retry_after_seconds == 372  # ceil(371.825)
-    assert refused.message == index_slot.refusal("busy", wait=372).message
+    assert refused.retry_after_seconds == 402  # ceil(371.825 + 30)
+    assert refused.message == index_slot.refusal("busy", wait=402).message
     assert admission.queued() == 1
 
 
 @pytest.mark.parametrize(
     "cores,window", [(2.0, 600), (3.3, 67), (1.7, 601), (0.5, 60), (3.9, 3599)]
 )
-def test_the_413_line_is_one_integer_for_the_decision_and_the_sentence(
+def test_the_413_line_takes_the_load_and_an_empty_queue_never_answers_busy(
     cloud, monkeypatch, cores, window
 ):
+    """#2851 (Q2 (a)): at window ``W`` the line is
+    ``index_max_tokens(W - WORKER_LOAD_SECONDS)``, the charge the fit check
+    takes, so on an empty queue every count up to it is admitted and the next
+    is 413. On ``main`` the line took no charge: on an empty queue a count up
+    to it found the cold model's load charge and was answered ``loading``, or
+    was admitted, and the counts above the line less the charge were never
+    413."""
     monkeypatch.setattr(
         "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: cores
     )
-    most = index_max_tokens(window)
-    admission = IndexAdmission()
+    most = index_max_tokens(window - WORKER_LOAD_SECONDS)
 
-    refused = _refused(admission, most + 1, window)
-    ticket = admission.admit(["c"], most, window_seconds=window)
+    refused = _refused(IndexAdmission(), most + 1, window)
+    step = max(1, most // 500)
+    for tokens in [*range(0, most, step), most]:
+        admission = IndexAdmission()
+        ticket = admission.admit(["c"], tokens, principal=USER, window_seconds=window)
+        assert ticket in admission._tickets, tokens
 
     assert (refused.status_code, refused.reason) == (413, "too_large")
     assert refused.retry_after_seconds is None
     assert f"{most + 1:,} tokens" in refused.message
     assert f"at most {most:,} tokens" in refused.message
-    assert ticket in admission._tickets
 
 
-def test_a_cold_model_charges_the_load_to_the_first_ticket_only(cloud, monkeypatch):
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: None)
+def test_every_kb_ticket_is_charged_the_worker_load_and_none_says_loading(cloud):
+    """A forced ticket too; the evidence slot's none (it encodes in this
+    process). No refusal says the model is loading (#2851)."""
     admission = IndexAdmission()
 
-    first = admission.admit(["c"], RUNBOOK_TOKENS, window_seconds=WINDOW)
-    second = admission.admit(["c"], RUNBOOK_TOKENS, window_seconds=0)
+    first = admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=0)
+    forced = admission.admit_forced(["c"], RUNBOOK_TOKENS, principal=USER)
+    evidence = index_slot.evidence_slot.admit_forced(["c"], 8_000, principal=USER)
+    evidence.close()
 
-    assert first.estimate_seconds == pytest.approx(371.825 + 180)
-    assert second.estimate_seconds == pytest.approx(371.825)
+    assert first.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
+    assert forced.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
+    assert evidence.estimate_seconds == pytest.approx(100.0)
+    with pytest.raises(KeyError):
+        index_slot.refusal("loading", wait=1)
 
 
 def test_an_overrun_counts_its_guard_bound_then_the_floor(cloud):
     admission = IndexAdmission()
-    ticket = admission.admit_forced(["c"], 8_000)  # 100 s warm
+    ticket = admission.admit_forced(["c"], 8_000, principal=USER)  # 100 s + 30
     ticket.guard_seconds = 380.0
     ticket._started()
 
     cloud.now = 60.0
-    assert admission.pending_seconds() == pytest.approx(40.0)
+    assert admission.pending_seconds() == pytest.approx(70.0)
     cloud.now = 150.0
     assert admission.pending_seconds() == pytest.approx(230.0)  # 380 - 150
     cloud.now = 375.0
@@ -149,7 +165,7 @@ def test_an_overrun_counts_its_guard_bound_then_the_floor(cloud):
 
 def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
     admission = IndexAdmission()
-    ticket = admission.admit_forced(["c"], 8_000)
+    ticket = admission.admit_forced(["c"], 8_000, principal=USER)
     ticket.guard_seconds = 380.0
     ticket._started()
     cloud.now = 381.0
@@ -160,157 +176,30 @@ def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
     assert (refused.status_code, refused.reason) == (503, "hung")
     assert refused.retry_after_seconds == 60
     assert "stuck" in refused.message
-    assert admission.admit(["c"], 1, window_seconds=WINDOW)
+    assert admission.admit(["c"], 1, principal=USER, window_seconds=WINDOW)
 
 
 def test_a_window_of_zero_refuses_nothing(cloud):
     admission = IndexAdmission()
     for tokens in (10_000_000, RUNBOOK_TOKENS, None):
-        admission.admit(["c"], tokens, window_seconds=0)
+        admission.admit(["c"], tokens, principal=USER, window_seconds=0)
 
     assert admission.queued() == 3
 
 
 def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
     with pytest.raises(KnowledgeBaseError) as refused:
-        IndexAdmission().admit(["c"], None, window_seconds=WINDOW)
+        IndexAdmission().admit(["c"], None, principal=USER, window_seconds=WINDOW)
 
     assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
 
 
 def test_a_forced_ticket_is_never_refused(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, window_seconds=WINDOW)
+    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
 
-    assert admission.admit_forced(["c"], 10_000_000)
+    assert admission.admit_forced(["c"], 10_000_000, principal=USER)
     assert admission.queued() == 2
-
-
-# ---------------------------------------------------------------------------
-# The cold band: a document that fits once the model has loaded
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def cold(cloud, monkeypatch):
-    """A cold model whose load, on the slot, waits for ``loaded``."""
-    state = SimpleNamespace(
-        resident=False, loads=0, loading=threading.Event(), loaded=threading.Event()
-    )
-
-    def _load(triggered_by):
-        state.loads += 1
-        state.triggered_by = triggered_by
-        state.loading.set()
-        state.loaded.wait(30)
-        state.resident = True
-
-    monkeypatch.setattr(model_cache, "get_bge_m3_model", _load)
-    monkeypatch.setattr(
-        model_cache, "peek_bge_m3_model", lambda: object() if state.resident else None
-    )
-    monkeypatch.setattr(model_cache, "_load_info", {})
-    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
-    yield state
-    state.loaded.set()
-
-
-@pytest.mark.parametrize(
-    "window,tokens", [(WINDOW, 40_000), (120.0, 2_000)], ids=["600s", "under-180s"]
-)
-async def test_a_cold_band_refusal_starts_one_load_and_a_retry_after_it_fits(
-    cold, clock, window, tokens
-):
-    admission = IndexAdmission()
-
-    first = _refused(admission, tokens, window)
-    await asyncio.to_thread(cold.loading.wait, 30)
-    clock.now = 50.0
-    second = _refused(admission, tokens, window)
-    cold.loaded.set()
-    await _settled(admission)
-    ticket = admission.admit(["c"], tokens, window_seconds=window)
-
-    assert (first.status_code, first.reason, first.retry_after_seconds) == (
-        503,
-        "loading",
-        180,
-    )
-    assert "model is loading" in first.message
-    assert (second.reason, second.retry_after_seconds) == ("loading", 130)
-    assert (cold.loads, cold.triggered_by) == (1, "index-admission")
-    assert ticket.estimate_seconds == pytest.approx(tokens * 0.025 / 2)
-
-
-def test_after_a_failed_load_a_document_that_fits_with_the_load_is_admitted(
-    cloud, monkeypatch
-):
-    """The failed-load refusal is the cold band's alone: a small document that
-    fits with the load charge is admitted as before, and its encode loads."""
-    failed = ModelLoadInfo(
-        model_name=BGE_M3_MODEL_ID,
-        loaded_at=datetime.now(timezone.utc),
-        load_time_seconds=0.0,
-        error="OSError",
-    )
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: None)
-    monkeypatch.setattr(model_cache, "_load_info", {BGE_M3_MODEL_ID: failed})
-    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
-
-    ticket = IndexAdmission().admit(["c"], 1_000, window_seconds=WINDOW)
-
-    assert ticket.estimate_seconds == pytest.approx(12.5 + 180)
-
-
-@pytest.fixture
-def real_load(monkeypatch, clock):
-    """The real ``get_bge_m3_model`` on an empty cache, its model class a
-    stand-in (no torch): it raises while ``fails``, else waits for
-    ``release`` and returns a model."""
-    state = SimpleNamespace(
-        fails=True, started=threading.Event(), release=threading.Event()
-    )
-
-    def _model_class(_name):
-        if state.fails:
-            raise OSError("no snapshot")
-        state.started.set()
-        state.release.wait(30)
-        return object()
-
-    monkeypatch.setattr(
-        "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: 2.0
-    )
-    monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
-    monkeypatch.setattr(
-        model_cache_module, "_sentence_transformer_class", lambda: _model_class
-    )
-    monkeypatch.setattr(model_cache_module, "pin_thread_env", lambda: 2)
-    monkeypatch.setattr(model_cache_module, "configure_inference_threads", lambda: 2)
-    monkeypatch.setattr(model_cache, "_models", {})
-    monkeypatch.setattr(model_cache, "_load_info", {})
-    monkeypatch.setattr(model_cache, "_bge_m3_loading", False)
-    yield state
-    state.release.set()
-
-
-async def test_a_retry_load_in_progress_after_a_failed_one_answers_loading(real_load):
-    admission = IndexAdmission()
-    assert model_cache.get_bge_m3_model("search") is None  # the failed load
-    real_load.fails = False
-    retry = threading.Thread(target=model_cache.get_bge_m3_model, args=("search",))
-    retry.start()
-    await asyncio.to_thread(real_load.started.wait, 30)
-
-    loading = _refused(admission, 40_000)
-    real_load.release.set()
-    await asyncio.to_thread(retry.join, 30)
-    await _settled(admission)
-    ticket = admission.admit(["c"], 40_000, window_seconds=WINDOW)
-
-    assert (loading.status_code, loading.reason) == (503, "loading")
-    assert model_cache.is_bge_m3_loading() is False
-    assert ticket.estimate_seconds == pytest.approx(500.0)
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +208,9 @@ async def test_a_retry_load_in_progress_after_a_failed_one_answers_loading(real_
 
 
 class Encodes:
-    """``embed_texts_sync``: records each encode's text and slot thread, and
-    holds those named in ``held`` until the test releases them."""
+    """Both slots' encodes (the KB slot's ``encode_in_worker``, the evidence
+    slot's ``embed_texts_sync``): records each encode's text and slot thread,
+    and holds those named in ``held`` until the test releases them."""
 
     def __init__(self) -> None:
         self.started: list[str] = []
@@ -354,6 +244,9 @@ class Encodes:
 async def encodes(monkeypatch):
     fake = Encodes()
     monkeypatch.setattr(model_cache, "embed_texts_sync", fake)
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: fake(texts)
+    )
     monkeypatch.setattr(
         embedding_guard, "count_index_tokens", AsyncMock(return_value=0)
     )
@@ -389,17 +282,19 @@ def _embed(ticket, text):
     )
 
 
-async def test_a_caller_that_gave_up_mid_encode_keeps_the_slot_until_it_settles(
+async def test_an_evidence_caller_that_gave_up_mid_encode_keeps_the_slot(
     encodes,
 ):
+    """An evidence encode runs in this process: once started, nothing stops
+    it. (A KB encode's worker is killed: #2851's tests.)"""
     encodes.held = {"a"}
-    admission = IndexAdmission()
-    first = admission.admit_forced(["a"], 0)
+    admission = index_slot.EncodeSlot(index_slot._EVIDENCE_EXECUTOR, host_lock=False)
+    first = admission.admit_forced(["a"], 0, principal=USER)
     future, _ = first.run(["a"], guard_seconds=60.0)
     await _entered(encodes, "a")
 
     assert first.abandon() is False, "an encoding job cannot be stopped"
-    second = admission.admit_forced(["b"], 0)
+    second = admission.admit_forced(["b"], 0, principal=USER)
     waiting = asyncio.create_task(_embed(second, "b"))
     await _until(lambda: second._future is not None)
 
@@ -416,10 +311,10 @@ async def test_a_request_cancelled_while_queued_never_runs_and_frees_its_ticket(
 ):
     encodes.held = {"a"}
     admission = IndexAdmission()
-    first = admission.admit_forced(["a"], 0)
+    first = admission.admit_forced(["a"], 0, principal=USER)
     running = asyncio.create_task(_embed(first, "a"))
     await _entered(encodes, "a")
-    second = admission.admit_forced(["b"], 0)
+    second = admission.admit_forced(["b"], 0, principal=USER)
     queued = asyncio.create_task(_embed(second, "b"))
     await _until(lambda: second._future is not None)
 
@@ -444,7 +339,7 @@ async def test_two_concurrent_indexing_calls_never_encode_at_once(
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
     encodes.held = {"a", "b"}
     admission = IndexAdmission()
-    tickets = [admission.admit_forced([t], 0) for t in ("a", "b")]
+    tickets = [admission.admit_forced([t], 0, principal=USER) for t in ("a", "b")]
     calls = [asyncio.create_task(_embed(t, t.chunks[0])) for t in tickets]
     await _entered(encodes, "a")
     await _until(lambda: tickets[1]._future is not None)
@@ -465,11 +360,11 @@ async def test_a_request_timing_out_while_queued_says_it_waited_for_other_indexi
 ):
     encodes.held = {"a"}
     admission = IndexAdmission()
-    first = admission.admit_forced(["a"], 0)
+    first = admission.admit_forced(["a"], 0, principal=USER)
     future, _ = first.run(["a"], guard_seconds=0.0)
     await _entered(encodes, "a")
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
-    second = admission.admit_forced(["b"], 0)
+    second = admission.admit_forced(["b"], 0, principal=USER)
 
     with pytest.raises(KnowledgeBaseError, match="for other indexing") as waited:
         await _embed(second, "b")
@@ -498,7 +393,7 @@ async def test_a_caller_that_gives_up_behind_the_host_lock_never_encodes(
     encodes, held_host_lock, monkeypatch, gives_up
 ):
     admission = IndexAdmission()
-    ticket = admission.admit_forced(["a"], 0)
+    ticket = admission.admit_forced(["a"], 0, principal=USER)
     if gives_up == "times_out":
         monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
     caller = asyncio.create_task(_embed(ticket, "a"))
@@ -528,10 +423,14 @@ def test_a_later_successful_lock_reports_the_host_lock_available_again(
 ):
     admission = IndexAdmission()
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
-    admission._job(admission.admit_forced([], 0), lambda: None, lambda: None)
+    admission._job(
+        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
+    )
     after_failure = admission.host_lock_available
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "kb.lock"))
-    admission._job(admission.admit_forced([], 0), lambda: None, lambda: None)
+    admission._job(
+        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
+    )
 
     assert (after_failure, admission.host_lock_available) == (False, True)
 
@@ -554,7 +453,7 @@ def job():
     with open(log, "a") as out:
         out.write(f"end {name}\\n")
 
-ticket = index_slot.index_admission.admit_forced([], 0)
+ticket = index_slot.index_admission.admit_forced([], 0, principal="p")
 index_slot.index_admission._job(ticket, job, lambda: None)
 """
 
@@ -606,6 +505,7 @@ async def _vectorize(case_vector_store=None):
         case_vector_store=case_vector_store or MagicMock(add_documents=AsyncMock()),
         max_chunk_tokens=500,
         overlap_tokens=50,
+        principal=USER,
     )
 
 
@@ -625,7 +525,9 @@ async def test_an_unavailable_model_is_embedder_unavailable(monkeypatch):
 
 
 def _evidence(text):
-    return embed_texts_or_raise([text], subject="Evidence", operation="t")
+    return embed_texts_or_raise(
+        [text], subject="Evidence", operation="t", principal=USER
+    )
 
 
 async def test_evidence_encodes_queue_one_at_a_time_beside_the_kb_slot(encodes):
@@ -642,7 +544,7 @@ async def test_evidence_encodes_queue_one_at_a_time_beside_the_kb_slot(encodes):
 
     retrigger = asyncio.create_task(_evidence("retrigger"))
     await _until(lambda: slot.queued() == 2)
-    kb = IndexAdmission().admit_forced(["kb"], 0)
+    kb = IndexAdmission().admit_forced(["kb"], 0, principal=USER)
     assert await _embed(kb, "kb") == [[0.1]], "the KB slot waited for evidence"
     retrigger.cancel()
     with pytest.raises(asyncio.CancelledError):

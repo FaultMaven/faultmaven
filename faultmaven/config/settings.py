@@ -2769,7 +2769,8 @@ class EmbeddingSettings(BaseSettings):
         "cold-load penalty (see data-preprocessing-design-specification.md §5.7). "
         "Set to [] (via PRELOAD_MODELS='[]'; the value is JSON, and an empty string "
         "fails settings construction) to opt out for faster startup, accepting "
-        "~60–120s first-request latency while the model loads.",
+        "first-request latency while the model loads (about 15 s measured "
+        "in the image at 2 CPUs, longer on a slower core).",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}

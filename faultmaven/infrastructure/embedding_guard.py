@@ -31,10 +31,12 @@ right.
 The write side is here for the same reason, and every indexing embed now
 routes through it (#2055): ``embed_texts_or_raise`` bounds the KB indexer
 (``KnowledgeService._index_document_in_vector_store``, the one #953 was about),
-which runs its encode on the KB indexing slot (``infrastructure.index_slot``),
-and the case evidence indexer (``core/preprocessing/vector_storage.py``, live
-via the ``vectorize_file`` agent tool), whose encodes run one at a time on the
-evidence slot beside it, never on the default executor. The bound is sized from the batch's BGE-M3 token count, not its chunk count: a
+which runs its encode in a worker from the KB indexing slot
+(``infrastructure.index_slot``, #2851), and the case evidence indexer
+(``core/preprocessing/vector_storage.py``, live via the ``vectorize_file``
+agent tool), whose encodes run one at a time on the evidence slot beside it,
+never on the default executor. The bound is sized from the batch's BGE-M3
+token count, counted in a worker, not its chunk count: a
 chunk can hold 50 tokens or 3,000, and the per-chunk rule allowed a
 97k-character runbook 302 s of the 373 s it took (#2055).
 
@@ -57,10 +59,10 @@ turn budget.
 
 import asyncio
 import logging
-import threading
+import math
 from typing import Any, List, Optional, Sequence
 
-from faultmaven.infrastructure import index_slot
+from faultmaven.infrastructure import index_slot, token_count_worker, worker_process
 from faultmaven.models.exceptions import KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
@@ -69,10 +71,11 @@ logger = logging.getLogger(__name__)
 # than sharing it, so a search's worst case is embed + query, not one 10s
 # ceiling for both. Matched to call_external's 10s for consistency.
 #
-# This is SHORTER than a cold BGE-M3 load takes (60-120s, see
-# ``ModelCache.peek_bge_m3_model``), and deliberately so: a search that gives up
-# fast is recoverable — the load continues on its worker thread and warms the
-# cache, so the retry succeeds. A search is cheap to repeat.
+# This is SHORTER than a BGE-M3 load takes (about 15 s measured in the image at
+# 2 CPUs, #2851; see ``ModelCache.peek_bge_m3_model``), and deliberately so: a
+# search that gives up fast is recoverable — the load continues on its worker
+# thread and warms the cache, so the retry succeeds. A search is cheap to
+# repeat.
 EMBED_TIMEOUT_SECONDS = 10.0
 
 # The batch equivalent does NOT reuse that number, because a write is not cheap
@@ -84,9 +87,38 @@ EMBED_TIMEOUT_SECONDS = 10.0
 # One-shot flag: the byte fallback is logged once per process, not per embed.
 _byte_fallback_logged = False
 
-# One count at a time: a fast tokenizer's truncation state is per object, and
-# two counts at once on one object corrupt each other's.
-_TOKENIZER_CALLS = threading.Lock()
+#: Token counts at once, in workers under the admission rule (#2851): each
+#: peaked at 336 MiB of address space in use counting 10 MB of runbook text.
+TOKEN_COUNT_SLOTS = 2
+
+#: The Rust tokenizer's threads in each count worker.
+TOKEN_COUNT_THREADS = 2
+
+#: ``RLIMIT_AS`` of a count worker. Counting 10 MB of pack text in the image,
+#: its pool pinned, its VmPeak was 593 MiB at 2 CPUs and 621 MiB with no CPU
+#: quota (#2851).
+TOKEN_COUNT_MEMORY_BYTES = 1024 * 1024 * 1024
+
+#: Each step of a count: spawn to ``ready`` (0.3-0.4 s measured), each
+#: transfer, and the work: loading the tokenizer (1.0-1.1 s) and counting 10 MB
+#: of pack text (4.3 s at 2 CPUs), with an order of magnitude of headroom.
+TOKEN_COUNT_PHASES = worker_process.Phases(
+    start=10.0, request=10.0, work=60.0, result=10.0
+)
+
+#: A count's hang bound: its steps' sum, which is also how long it waits for a
+#: slot. Past it the count is unavailable; there is no busy answer.
+TOKEN_COUNT_HANG_SECONDS = (
+    TOKEN_COUNT_PHASES.start
+    + TOKEN_COUNT_PHASES.request
+    + TOKEN_COUNT_PHASES.work
+    + TOKEN_COUNT_PHASES.result
+)
+
+#: The count worker. Always this value: tests point it at one of their own.
+_TOKEN_COUNT_WORKER = token_count_worker.__name__
+
+_count_slots_state: Optional[tuple] = None
 
 
 def batch_embed_timeout(tokens: int) -> float:
@@ -111,42 +143,59 @@ def batch_embed_timeout(tokens: int) -> float:
     )
 
 
-def _count_index_tokens_sync(texts: List[str]) -> Optional[int]:
-    from faultmaven.infrastructure.model_cache import BGE_M3_MAX_SEQ_LENGTH, model_cache
+async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optional[int]:
+    """BGE-M3 tokens in ``texts``, counted the way the encode sees them, in a
+    ``token_count_worker`` its phase bounds kill (Principle 14, #2851).
 
-    try:
-        tokenizer = model_cache.get_bge_m3_tokenizer()
-        if tokenizer is None:
-            return None
-        if not texts:
-            return 0
-        with _TOKENIZER_CALLS:
-            encoded = tokenizer(
-                texts,
-                add_special_tokens=True,
-                truncation=True,
-                max_length=BGE_M3_MAX_SEQ_LENGTH,
-            )["input_ids"]
-        counts = [len(ids) for ids in encoded]
-    except Exception as exc:
-        logger.debug("BGE-M3 token count failed: %s", type(exc).__name__)
-        return None
-    return sum(counts) if len(counts) == len(texts) else None
-
-
-async def count_index_tokens(texts: Sequence[str]) -> Optional[int]:
-    """BGE-M3 tokens in ``texts``, counted the way the encode sees them.
-
-    BGE-M3's tokenizer, special tokens included and each text truncated at the
-    model's sequence limit, summed: a tokenizer object of the count's own, never
-    the resident model's, called one count at a time. Off the event loop. None
-    when it cannot load (``ModelCache.get_bge_m3_tokenizer``), which never
-    touches the network.
+    The worker runs under ``TOKEN_COUNT_SLOTS`` slots keyed by ``principal``,
+    the user who asked. A count waits for a slot for its hang bound at most.
+    None when it cannot count: no slot within the wait, any end but an answer,
+    or an answer that is not a count.
     """
-    return await asyncio.to_thread(_count_index_tokens_sync, list(texts))
+    global _count_slots_state
+    if not isinstance(principal, str) or not principal:
+        raise ValueError("a token count runs for the user who asked: none given")
+    texts = list(texts)
+    if not texts:
+        return 0
+    _count_slots_state = worker_process.loop_slots(
+        _count_slots_state, TOKEN_COUNT_SLOTS
+    )
+    slots = _count_slots_state[1]
+    try:
+        async with asyncio.timeout(TOKEN_COUNT_HANG_SECONDS):
+            await slots.acquire(principal)
+    except TimeoutError:
+        logger.warning("BGE-M3 token count found no slot free")
+        return None
+    try:
+        end = await worker_process.run(
+            _TOKEN_COUNT_WORKER,
+            {"threads": TOKEN_COUNT_THREADS},
+            memory_bytes=TOKEN_COUNT_MEMORY_BYTES,
+            cpu_seconds=math.ceil(TOKEN_COUNT_PHASES.work * TOKEN_COUNT_THREADS) + 10,
+            output_limit_bytes=1024 * 1024,
+            phases=TOKEN_COUNT_PHASES,
+            parts=tuple(texts),
+        )
+    except worker_process.WorkerFailed as e:
+        logger.warning("BGE-M3 token count did not answer: %s", e)
+        return None
+    finally:
+        slots.release(principal)
+    if end.result is None:
+        logger.warning(
+            "BGE-M3 token count did not answer: ended in %s, exit %s, timed out %s",
+            end.phase,
+            end.code,
+            end.timed_out,
+        )
+        return None
+    answer = end.result[0] if len(end.result) == 1 else ""
+    return int(answer) if answer.isdigit() else None
 
 
-async def _guard_tokens(texts: List[str], known: Optional[int]) -> int:
+async def _guard_tokens(texts: List[str], known: Optional[int], principal: str) -> int:
     """The token count the guard sizes its bound from: ``known``, else a count,
     else UTF-8 bytes plus the two special tokens per text. A token spans at
     least a byte of text (bar SentencePiece's word marker before a text's first
@@ -156,7 +205,7 @@ async def _guard_tokens(texts: List[str], known: Optional[int]) -> int:
     global _byte_fallback_logged
     if known is not None:
         return known
-    counted = await count_index_tokens(texts)
+    counted = await count_index_tokens(texts, principal=principal)
     if counted is not None:
         return counted
     if not _byte_fallback_logged:
@@ -238,6 +287,7 @@ async def embed_texts_or_raise(
     operation: str,
     log: Optional[logging.Logger] = None,
     ticket: Optional[Any] = None,
+    principal: Optional[str] = None,
 ) -> List[List[float]]:
     """Embed a BATCH of texts for indexing, raising rather than degrading.
 
@@ -257,10 +307,13 @@ async def embed_texts_or_raise(
         operation: Call-site name for the log line (e.g. "update_document").
         log: Logger to report on. Defaults to this module's.
         ticket: The KB indexing slot's ``IndexTicket``
-            (``infrastructure.index_slot``): the encode runs on that slot, one
-            at a time per host. None (evidence vectorization) takes a ticket on
-            the evidence slot, one encode at a time per process. Either way the
-            bound also covers the guard bounds of the encodes queued ahead.
+            (``infrastructure.index_slot``): the encode runs in a worker from
+            that slot, one at a time per host. None (evidence vectorization)
+            takes a ticket on the evidence slot, one encode at a time per
+            process, in this process. Either way the bound also covers the
+            guard bounds of the encodes queued ahead.
+        principal: The user who asked, whose slot a token count takes when
+            the bound must count (#2851); a ticket carries its own.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
     unbounded on the grounds that ``kb_init``'s per-boot chunk budget already
@@ -282,19 +335,27 @@ async def embed_texts_or_raise(
             list for a non-empty input — a caller that wrote those would index
             a document against someone else's chunks.
 
-    Same caveat as the query path: the bound is on the CALLER, not the work.
-    An encode that has started runs on its thread to completion, which nothing
-    can cancel. A caller that gives up while its encode is still queued, or
-    still waiting for the host lock, stops it, so it never runs. An encode
-    keeps its slot until its thread settles, whatever its caller did. What this guarantees is that the caller returns,
-    not that the encode stops.
+    A KB encode runs in a worker whose phases end before this bound
+    (``index_slot.REAP_MARGIN_SECONDS``): past them it is killed and this
+    raises ``KNOWLEDGE_EMBEDDER_TIMEOUT``, and a caller that goes away kills
+    it too (#2851). An evidence encode runs on its slot's thread, which
+    nothing can cancel: there the bound is on the CALLER, and the encode keeps
+    its slot until its thread settles. Either way a caller that gives up while
+    its encode is still queued, or still waiting for the host lock, stops it,
+    so it never runs.
     """
     log = log or logger
 
-    tokens = await _guard_tokens(texts, ticket.tokens if ticket is not None else None)
+    tokens = await _guard_tokens(
+        texts,
+        ticket.tokens if ticket is not None else None,
+        ticket.principal if ticket is not None else principal,
+    )
     timeout = batch_embed_timeout(tokens)
     if ticket is None:
-        async with index_slot.evidence_slot.admit_forced(texts, tokens) as evidence:
+        async with index_slot.evidence_slot.admit_forced(
+            texts, tokens, principal=principal
+        ) as evidence:
             embeddings = await _encode_on(
                 evidence, texts, timeout, subject, operation, log
             )

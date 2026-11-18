@@ -399,7 +399,7 @@ async def test_an_update_leaves_only_the_new_generation(
     authored = "kb_" + "6" * 16
     await _authored(world, authored)
     _embedder(monkeypatch)
-    await world.service.reindex_missing_vectors(authored)
+    await world.service.reindex_missing_vectors([authored])
     before = (await _row(world, authored)).vector_generation
 
     await world.service.update_document_metadata(
@@ -709,7 +709,7 @@ async def test_an_update_between_the_row_read_and_the_listing_is_not_unserved(
     authored = "kb_" + "5" * 16
     await _authored(world, authored)
     _embedder(monkeypatch)
-    await world.service.reindex_missing_vectors(authored)
+    await world.service.reindex_missing_vectors([authored])
     real_list = world.store.list_all_chunk_ids_by_parent
     real_read = kb_init._read_rows
     reads: List[Optional[List[str]]] = []
@@ -750,11 +750,11 @@ async def test_a_repair_re_run_under_the_same_generation_is_idempotent(
     await _authored(world, authored)
     _embedder(monkeypatch)
 
-    assert await world.service.reindex_missing_vectors(authored) > 0
+    assert (await world.service.reindex_missing_vectors([authored]))[authored] > 0
     once = world.chroma.get_collection(KB_COLLECTION).get(
         ids=_all_chunk_ids(world, authored), include=["documents", "metadatas"]
     )
-    assert await world.service.reindex_missing_vectors(authored) > 0
+    assert (await world.service.reindex_missing_vectors([authored]))[authored] > 0
     twice = world.chroma.get_collection(KB_COLLECTION).get(
         ids=_all_chunk_ids(world, authored), include=["documents", "metadatas"]
     )
