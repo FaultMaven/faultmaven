@@ -48,6 +48,16 @@ class _Login:
     error: object = None
 
 
+@dataclasses.dataclass(repr=False)
+class _Session:
+    user: str
+    token: str
+    error: object
+
+    def __repr__(self):
+        return f"_Session(user={self.user!r})"
+
+
 def _deep(error, levels=12):
     for _ in range(levels):
         error = [error]
@@ -181,6 +191,8 @@ class TestTheApiChain:
             line = json.loads(output)
             if where == "keys-of-one-chain":  # both values kept
                 assert sorted(line["e"].values()) == [1, 2]
+        elif where == "keys-of-one-chain":
+            assert "ExceptionGroup': 1" in output and "ExceptionGroup #2': 2" in output
         if where != "twelve-deep":
             assert "RuntimeError <- ExceptionGroup" in output
         else:  # past the walk's depth, a container is its type name
@@ -192,6 +204,29 @@ class TestTheApiChain:
         output = api.buffer.getvalue()
         assert secret not in output and marker not in output
         assert "RuntimeError <- ExceptionGroup" in output
+
+    def test_a_class_with_its_own_repr_renders_through_it(self, api, marker):
+        token = secrets.token_hex(8)
+        get_logger("faultmaven.test").error(
+            "failed", e=_Session("u", token, chained(marker))
+        )
+        output = api.buffer.getvalue()
+        assert token not in output and marker not in output
+        assert "_Session(user='u')" in output
+
+    def test_a_self_reference_ends_and_renders_as_before(self, api, monkeypatch):
+        visits = []
+        walk = logging_config._parts
+        monkeypatch.setattr(
+            logging_config, "_parts", lambda v: visits.append(v) or walk(v)
+        )
+        loop: list = []
+        loop.extend([loop] * 4)
+        get_logger("faultmaven.test").info("plain", v=loop)
+        # Walked once: each revisit is a self-reference, returned as it is.
+        assert sum(v is loop for v in visits) == 1
+        if api.mode == "console":
+            assert f"v={loop!r}" in api.buffer.getvalue()
 
     @pytest.mark.parametrize(
         "value",

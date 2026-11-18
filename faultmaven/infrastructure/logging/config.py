@@ -117,11 +117,29 @@ _FIELD_DEPTH = 10
 _LEAF_SEQUENCES = (str, bytes, bytearray, range, memoryview, UserString)
 
 
+def _standard_repr(value: Any) -> bool:
+    """Whether ``value``'s ``__repr__`` is a standard library one or the one
+    ``dataclass`` generates: one that shows what the walk writes. A class's own
+    ``__repr__`` chooses what it shows, so its instance is not walked."""
+    owner = next(c for c in type(value).__mro__ if "__repr__" in c.__dict__)
+    wrapped = getattr(owner.__dict__["__repr__"], "__wrapped__", None)
+    code = getattr(wrapped, "__code__", None)
+    return owner.__module__ in ("builtins", "collections", "types") or (
+        dataclasses.is_dataclass(owner)
+        and getattr(code, "co_filename", "") == "<string>"
+    )
+
+
 def _parts(value: Any) -> Optional[Tuple[bool, list]]:
-    """``(True, [(key, value), ...])`` for a mapping-like value (a ``Mapping``,
-    a dataclass instance's ``repr`` fields, a ``SimpleNamespace``'s
-    attributes), ``(False, [item, ...])`` for any other ``Sequence`` or ``Set``
-    (``deque`` included), else ``None``."""
+    """``(True, [(key, value), ...])`` for a mapping-like value with a
+    :func:`_standard_repr` (a ``Mapping``, a dataclass instance's ``repr``
+    fields, a ``SimpleNamespace``'s attributes), ``(False, [item, ...])`` for
+    any other ``Sequence`` or ``Set`` (``deque`` included), else ``None``."""
+    mapping_like = isinstance(value, (Mapping, SimpleNamespace)) or (
+        dataclasses.is_dataclass(value) and not isinstance(value, type)
+    )
+    if mapping_like and not _standard_repr(value):
+        return None
     if isinstance(value, Mapping):
         return True, list(value.items())
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -138,41 +156,50 @@ def _parts(value: Any) -> Optional[Tuple[bool, list]]:
 
 def _holds_exception(value: Any) -> bool:
     """Whether an exception sits anywhere in ``value``'s walkable parts, each
-    object visited once; ``True`` past 100 levels (a sequence whose items are
-    new sequences), the safe side."""
-    stack, seen = [(value, 0)], set()
+    object visited once (kept alive, so its id is not reused); ``True`` past
+    100 levels (a sequence whose items are new sequences), the safe side."""
+    stack, seen = [(value, 0)], {}
     while stack:
         item, depth = stack.pop()
         if isinstance(item, BaseException) or depth > 100:
             return True
         parts = _parts(item) if id(item) not in seen else None
-        seen.add(id(item))
+        seen[id(item)] = item
         for part in parts[1] if parts else ():
             stack.extend((x, depth + 1) for x in (part if parts[0] else (part,)))
     return False
 
 
-def _without_exceptions(value: Any, depth: int = 0) -> Any:
+def _without_exceptions(
+    value: Any, depth: int = 0, path: frozenset = frozenset()
+) -> Any:
     """``value`` with each exception in it, key or value, replaced by its class
     chain. ``value`` itself, uncopied, is returned when it holds no exception
-    (at any depth); otherwise a ``dict`` (for a mapping-like value) or a
-    ``list`` of the rewritten parts, where a rewritten key that is not a
-    ``str`` is written as one, suffixed ``#2``, ``#3``, ... on a collision. A
-    container ``_FIELD_DEPTH`` levels down that holds one is written as its
-    type name, never its repr."""
+    within ``_FIELD_DEPTH`` + 100 levels, or when it is a container already on
+    the walk's ``path`` (a self-reference); otherwise a ``dict`` (for a
+    mapping-like value) or a ``list`` of the rewritten parts, where a rewritten
+    key that is not a ``str`` is written as one, suffixed ``#2``, ``#3``, ...
+    on a collision. A container ``_FIELD_DEPTH`` levels down that holds one is
+    written as its type name, never its repr."""
     if isinstance(value, BaseException):
         return exception_class_chain(value)
-    parts = _parts(value)
+    parts = None if id(value) in path else _parts(value)
     if parts is None:
         return value
+    path = path | {id(value)}
     if depth >= _FIELD_DEPTH:
         return type(value).__name__ if _holds_exception(value) else value
     mapping, items = parts
     if not mapping:
-        rewritten = [_without_exceptions(item, depth + 1) for item in items]
+        rewritten = [_without_exceptions(item, depth + 1, path) for item in items]
         return value if all(a is b for a, b in zip(rewritten, items)) else rewritten
     pairs = [
-        (k, _without_exceptions(k, depth + 1), _without_exceptions(v, depth + 1), v)
+        (
+            k,
+            _without_exceptions(k, depth + 1, path),
+            _without_exceptions(v, depth + 1, path),
+            v,
+        )
         for k, v in items
     ]
     if all(a is k and b is v for k, a, b, v in pairs):
