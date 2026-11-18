@@ -30,6 +30,7 @@ from faultmaven.core.investigation.cause_assurance import (
     pending_symptom_check,
     subject_index,
 )
+from faultmaven.core.investigation.narration.evidence_needs import CHECKLIST_OMITTED
 from faultmaven.core.investigation.narration.fix_verification import (
     CLOSE_TAG,
     DECLINE_STILL_BINDS,
@@ -49,9 +50,17 @@ from faultmaven.core.investigation.outcome import (
 from faultmaven.core.investigation.prompts.context_builder import (
     fix_verification_block as block_module,
 )
+from faultmaven.core.investigation.prompts.context_builder import (
+    narration_fold as fold_module,
+)
+from faultmaven.core.investigation.prompts.context_builder.evidence_needs import (
+    _build_evidence_needs_block,
+)
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
-    NarrationFold,
     build_fix_verification_block,
+)
+from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
+    NarrationFold,
 )
 from faultmaven.core.investigation.prompts.templates import assembly as templates
 from faultmaven.modules.case.contracts import (
@@ -237,8 +246,14 @@ def test_the_needs_view_holds_the_rulings_reading():
         "need_id",
         "purpose",
         "state",
+        "priority",
+        "obtainability",
+        "motivating_hypothesis_ids",
         "outstanding",
         "exhausted",
+        "surfaced",
+        "times_surfaced",
+        "last_surfaced_turn",
     }
 
 
@@ -259,7 +274,7 @@ async def test_the_renderer_reads_no_case_field(name):
     _no_text(fresh)
     _no_text(needs)
     poisoned = _Poisoned(case, _IDENTITY, outcome)
-    texts = _Poisoned(case, {"proposed_actions", "evidence_needs"})
+    texts = _Poisoned(case, {"proposed_actions", "evidence_needs", "evidence"})
     lines = render_fix_verification(
         poisoned.progress.outcome,
         CaseIdentity.of(poisoned),
@@ -405,7 +420,7 @@ async def test_a_need_reads_its_current_text():
     case = await build("N:held_pending")
     need = case.evidence_needs[0]
     need.request_text = "the scrape target, re-read"
-    assert content_by_id(case, need.need_id) == "the scrape target, re-read"
+    assert content_by_id(case, need.need_id).text == "the scrape target, re-read"
     assert f"[{need.need_id}] the scrape target, re-read (holds" in (
         build_fix_verification_block(case)
     )
@@ -430,7 +445,7 @@ async def test_a_carried_turn_keeps_the_fresh_verdict():
 def failures(monkeypatch) -> list:
     counted: list = []
     monkeypatch.setattr(
-        block_module,
+        fold_module,
         "case_outcome_write_failures_total",
         SimpleNamespace(
             labels=lambda at: SimpleNamespace(inc=lambda: counted.append(at))
@@ -451,16 +466,15 @@ def _rest(prompt: str, block: str) -> str:
     return re.sub(r"CURRENT_TIME: .*", "CURRENT_TIME:", rest)
 
 
-@pytest.mark.parametrize(
-    "where",
-    [
-        "narration_outcome",
-        "_fresh",
-        "CaseIdentity",
-        "NeedsView",
-        "render_fix_verification",
-    ],
-)
+#: Where each stage the failure tests raise at is read from.
+_MODULE = {"narration_outcome": fold_module, "NeedsView": fold_module}
+
+
+def _patch(monkeypatch, where: str, raising) -> None:
+    monkeypatch.setattr(_MODULE.get(where, block_module), where, raising)
+
+
+@pytest.mark.parametrize("where", ["_fresh", "CaseIdentity", "render_fix_verification"])
 async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
     from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
         _block,
@@ -469,15 +483,51 @@ async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
 
     case = await build("R:other_cause")
     whole = _prompt(case)
-    raising = (
-        SimpleNamespace(of=_raise) if where in ("CaseIdentity", "NeedsView") else _raise
-    )
-    monkeypatch.setattr(block_module, where, raising)
+    raising = SimpleNamespace(of=_raise) if where == "CaseIdentity" else _raise
+    _patch(monkeypatch, where, raising)
     assert build_fix_verification_block(case) == _OMITTED
     assert failures == [WritePoint.NARRATION]
     prompt = _prompt(case)
     assert _block(prompt) == _OMITTED
     assert _rest(prompt, _block(prompt)) == _rest(whole, _block(whole))
+
+
+async def test_a_fold_failure_also_omits_the_checklist(monkeypatch, failures):
+    """The fold is shared with ``<evidence_needs>`` (S2b-1b-ii): its failure
+    omits this block and that block's checklist, which becomes its declared
+    line; the rest of the prompt is unchanged, and it is counted once."""
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _block,
+        _prompt,
+    )
+
+    case = await build("R:other_cause")
+    whole, needs = _prompt(case), _build_evidence_needs_block(case)
+    _patch(monkeypatch, "narration_outcome", _raise)
+    omitted = _build_evidence_needs_block(case)
+    assert CHECKLIST_OMITTED in omitted and "Re-verification" not in omitted
+    failures.clear()
+    prompt = _prompt(case)
+    assert _block(prompt) == _OMITTED
+    assert failures == [WritePoint.NARRATION]
+    want = whole.replace(needs, omitted)
+    assert _rest(prompt, _block(prompt)) == _rest(want, _block(whole))
+
+
+async def test_a_needs_view_failure_fails_the_prompt(monkeypatch, failures):
+    """The needs pool is shared too: its failure omits this block in its own
+    build, and propagates out of the prompt build through
+    ``<evidence_needs>``, which read the pool unguarded on ``main``."""
+    from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
+        _prompt,
+    )
+
+    case = await build("R:other_cause")
+    _patch(monkeypatch, "NeedsView", SimpleNamespace(of=_raise))
+    assert build_fix_verification_block(case) == _OMITTED
+    assert failures == [WritePoint.NARRATION]
+    with pytest.raises(RuntimeError, match="probe"):
+        _prompt(case)
 
 
 _STAGES = ["narration_outcome", "_fresh", "render_fix_verification"]
@@ -488,9 +538,9 @@ async def test_a_failed_counter_still_omits_the_block(monkeypatch, where):
     """A metrics error is swallowed where the counter is the only guard (the
     fresh read and the render) as on the fold's path; the build never
     raises."""
-    monkeypatch.setattr(block_module, where, _raise)
+    _patch(monkeypatch, where, _raise)
     monkeypatch.setattr(
-        block_module,
+        fold_module,
         "case_outcome_write_failures_total",
         SimpleNamespace(labels=lambda at: SimpleNamespace(inc=_raise)),
     )
@@ -505,15 +555,15 @@ async def test_one_fold_serves_and_counts_once_per_assembly(
     failure at any stage is counted once."""
     case = await build("R:other_cause")
     calls: list = []
-    real = block_module.narration_outcome
+    real = fold_module.narration_outcome
 
     def fold(c):
         calls.append(c)
         return _raise() if where == "narration_outcome" else real(c)
 
-    monkeypatch.setattr(block_module, "narration_outcome", fold)
+    monkeypatch.setattr(fold_module, "narration_outcome", fold)
     if where != "narration_outcome":
-        monkeypatch.setattr(block_module, where, _raise)
+        _patch(monkeypatch, where, _raise)
     assembly = NarrationFold(case)
     for _ in range(3):
         assert build_fix_verification_block(case, assembly) == _OMITTED
@@ -528,10 +578,10 @@ async def test_each_distinct_failure_is_logged_once(monkeypatch, failures, caplo
     """A ``NeedsView`` that raises on each of an assembly's three builds is
     logged once; a second failure of another class and line is logged too;
     the count is one."""
-    monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
+    monkeypatch.setattr(fold_module, "NeedsView", SimpleNamespace(of=_raise))
     case = await build("N:held_pending")
     assembly = NarrationFold(case)
-    with caplog.at_level("ERROR", logger=block_module.__name__):
+    with caplog.at_level("ERROR", logger=fold_module.__name__):
         for _ in range(3):
             assert build_fix_verification_block(case, assembly) == _OMITTED
         logged = [r for r in caplog.records if "was not rendered" in r.getMessage()]
@@ -552,7 +602,7 @@ async def test_a_block_without_need_lines_never_reads_the_needs(
 ):
     """MITIGATION with only the mitigation dated prints no need line, so a
     ``NeedsView`` that would raise leaves the block as ``main`` shows it."""
-    monkeypatch.setattr(block_module, "NeedsView", SimpleNamespace(of=_raise))
+    monkeypatch.setattr(fold_module, "NeedsView", SimpleNamespace(of=_raise))
     block = build_fix_verification_block(await build(name))
     assert block == ORACLE[name] != ""
     assert failures == []
@@ -579,7 +629,7 @@ async def test_no_fold_where_main_shows_no_block(monkeypatch, failures, name):
     if name == "M:refused":
         # MITIGATION with neither a SOLUTION nor the mitigation dated.
         case.proposed_actions = []
-    monkeypatch.setattr(block_module, "narration_outcome", _raise)
+    monkeypatch.setattr(fold_module, "narration_outcome", _raise)
     assert build_fix_verification_block(case) == ""
     assert failures == []
 

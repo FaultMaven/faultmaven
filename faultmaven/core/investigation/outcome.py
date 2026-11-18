@@ -228,8 +228,8 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     one and stored nowhere; it mints no final verdict (#2811). The turn's
     narration computes it once, at its entry, only when the cycle's write
     failed and a logged code reads the record; the prompt's fix-verification
-    block folds it lazily, at most once per prompt assembly
-    (``NarrationFold``)."""
+    and evidence-needs blocks fold it lazily, at most once per prompt
+    assembly (``NarrationFold``)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 

@@ -23,14 +23,16 @@ hold (#2427, turn 11). It shows, one line each:
 
 It is rendered from the case outcome record by ``narration.fix_verification``
 (#2811 S2b-1a, S2b-1b-i). Where ``main`` showed a block, this call site asks
-the prompt assembly's ``NarrationFold`` for the record (``narration_outcome``,
-folded at most once per assembly), then computes the window verdicts ruling
-Q1 (a) keeps fresh (``FixVerificationFresh``) and the needs pool
-(``NeedsView``) and renders, inside one guard. If any of it raises, the block
-is the one declared line ``OMITTED``; each distinct failure is logged and a
-failure counted once per assembly, on
-``case_outcome_write_failures_total{at="narration"}``, and the rest of the
-prompt is unchanged. The needs pool is read only where the need lines print.
+the prompt assembly's ``NarrationFold`` (``narration_fold``) for the record
+(``narration_outcome``, folded at most once per assembly), then computes the
+window verdicts ruling Q1 (a) keeps fresh (``FixVerificationFresh``) and
+renders, with the needs pool (``NarrationFold.needs``, read at most once per
+assembly and only where the need lines print), inside one guard. If any of it
+raises, the block is the one declared line ``OMITTED``; each distinct failure
+is logged and a failure counted once per assembly, on
+``case_outcome_write_failures_total{at="narration"}``. The fold and the needs
+pool are shared with ``<evidence_needs>`` (S2b-1b-ii), so a fold failure also
+replaces that block's re-verification checklist with its declared line.
 
 Informational: no gate reads it. It cites ids and never repeats the
 re-verification checklist's row texts (``evidence_needs``).
@@ -45,9 +47,6 @@ as the causal graph is, is dropped first under pressure, and pressure is what
 the long post-fix cases that need this block bring.
 """
 
-import logging
-import sys
-import traceback
 from typing import Optional
 
 from faultmaven.core.investigation.cause_assurance import (
@@ -56,9 +55,6 @@ from faultmaven.core.investigation.cause_assurance import (
     fix_windows,
     mitigation_attempt_turn,
     subject_index,
-)
-from faultmaven.core.investigation.lifecycle_metrics import (
-    case_outcome_write_failures_total,
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _mitigation_verify_refusal,
@@ -74,8 +70,7 @@ from faultmaven.core.investigation.narration.fix_verification import (
     content_by_id,
     render_fix_verification,
 )
-from faultmaven.core.investigation.narration.needs import NeedsView
-from faultmaven.core.investigation.outcome import _problem_rows, narration_outcome
+from faultmaven.core.investigation.outcome import _problem_rows
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
 )
@@ -85,12 +80,10 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     FixWindowState,
     InvestigationStage,
-    WritePoint,
 )
 
 from .budget import TokenBudget
-
-logger = logging.getLogger(__name__)
+from .narration_fold import NarrationFold
 
 #: The block's fixed share of the prompt, reserved before any variable
 #: section. Its construction bounds keep it well under this; the cap is the
@@ -98,53 +91,7 @@ logger = logging.getLogger(__name__)
 FIX_VERIFICATION_MAX_TOKENS = 600
 
 _OMITTED_BLOCK = "\n".join([OPEN_TAG, OMITTED, CLOSE_TAG])
-
-
-class NarrationFold:
-    """One prompt assembly's narration fold (#2811 S2b-1a): the record
-    ``narration_outcome`` folds, computed at most once, on the first request,
-    and cached with its failure. ``get_prompt_for_case`` makes one per
-    assembly, so the context it builds up to three times folds once, each
-    distinct failure is logged once, and a failure is counted once
-    (``fail``)."""
-
-    def __init__(self, case: Case) -> None:
-        self._case = case
-        self._outcome: Optional[CaseOutcome] = None
-        self._asked = False
-        self._failed = False
-        self._logged: set = set()
-
-    def outcome(self) -> Optional[CaseOutcome]:
-        """The record, or None when the fold raised."""
-        if not self._asked:
-            self._asked = True
-            try:
-                self._outcome = narration_outcome(self._case)
-            except Exception:  # noqa: BLE001 — only the block is lost
-                self.fail()
-        return self._outcome
-
-    def fail(self) -> None:
-        """Log the exception being handled once per distinct failure (its class
-        and the line that raised it) and count a failure once per assembly; a
-        metrics error is logged and swallowed."""
-        _kind, error, tb = sys.exc_info()
-        raised = traceback.extract_tb(tb)[-1] if tb is not None else None
-        key = (type(error), raised and (raised.filename, raised.lineno))
-        if key not in self._logged:
-            self._logged.add(key)
-            logger.exception(
-                "Case %s: the fix-verification block was not rendered (#2811)",
-                getattr(self._case, "case_id", None),
-            )
-        if self._failed:
-            return
-        self._failed = True
-        try:
-            case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
-        except Exception:  # noqa: BLE001 — the block is omitted either way
-            logger.exception("The narration failure was not counted (#2811)")
+_BLOCK = "<fix_verification> block"
 
 
 def _shown(case: Case) -> bool:
@@ -218,7 +165,7 @@ def build_fix_verification_block(
         return ""
     fold = NarrationFold(case) if fold is None else fold
     try:
-        outcome = fold.outcome()
+        outcome = fold.outcome(_BLOCK)
         if outcome is None:
             return _OMITTED_BLOCK
         subjects = subject_index(case)
@@ -229,10 +176,10 @@ def build_fix_verification_block(
             CaseIdentity.of(case),
             lambda item_id: content_by_id(case, item_id),
             fresh,
-            lambda: NeedsView.of(case),
+            fold.needs,
         )
     except Exception:  # noqa: BLE001 — only this block is lost (#2811)
-        fold.fail()
+        fold.fail(_BLOCK)
         return _OMITTED_BLOCK
     return "" if lines is None else "\n".join(lines)
 
