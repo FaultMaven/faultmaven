@@ -501,19 +501,13 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
 
 # Cap on rendered needs per section to keep token cost bounded. Each
 # rendered need is ~80 chars of header (capped via
-# ``_REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
+# ``narration.needs._REQUEST_TEXT_RENDER_CAP``) + ~80 chars of motivator line.
 # Single-section case (DIAGNOSIS, or MITIGATION/TREATMENT with one of
 # outstanding/re-verification empty): ~600 tokens worst case at 15
 # needs. Both-sections case (MITIGATION/TREATMENT with both populated):
 # up to 30 needs total, ~1200 tokens worst case. Typical cases stay
 # well under either bound because the LLM emits short request_text.
 _EVIDENCE_NEEDS_RENDER_CAP = 15
-
-# Per-need truncation cap for ``request_text``. The model attribute is
-# capped at 500 chars by the schema, but in the rendered block we keep
-# things scannable. The full text is preserved in the DB and surfaces
-# via the EVIDENCE-suggestion side (Phase 6).
-_REQUEST_TEXT_RENDER_CAP = 120
 
 # Priority sort key — HIGH first so the LLM sees the urgent demand
 # without scrolling. Keyed by enum member rather than ``.value`` so a
@@ -524,15 +518,6 @@ _PRIORITY_ORDER: dict[NeedPriority, int] = {
     NeedPriority.MEDIUM: 1,
     NeedPriority.LOW: 2,
 }
-
-
-def _truncate_request_text(text: str) -> str:
-    """Truncate ``request_text`` for rendering only — full text stays in
-    the DB. Adds a single-char ellipsis when truncation actually
-    occurs so the LLM knows the surfaced line is partial."""
-    if len(text) <= _REQUEST_TEXT_RENDER_CAP:
-        return text
-    return text[: _REQUEST_TEXT_RENDER_CAP - 1].rstrip() + "…"
 
 
 def _render_ask_history(need) -> str:

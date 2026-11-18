@@ -91,6 +91,16 @@ class ConfirmationGap(StrEnum):
     """Nothing on record showed the problem, so no re-check can bind to it."""
 
 
+class PendingCheckReason(StrEnum):
+    """Why the held need (``pending_symptom_check``) still holds the
+    resolution (#2811 S2b-1b-i)."""
+
+    UNANSWERED = "unanswered"
+    """Outstanding: nothing after the ask answers it."""
+    FULFILLED_BEFORE_ASK = "fulfilled_before_ask"
+    """FULFILLED, citing only rows from before the ask."""
+
+
 class MitigationRefusalReason(StrEnum):
     """Why ``mitigation_verified`` does not register
     (``mitigation_refusal_reason``, read by ``_mitigation_verify_refusal``)."""
@@ -183,7 +193,7 @@ class ClosureEligibility(StrEnum):
 
 #: Raised by every change that adds or changes a ``CaseOutcome`` field: a
 #: stored record of an older shape is rewritten by the backfill (#2811).
-CURRENT_OUTCOME_SHAPE = 3
+CURRENT_OUTCOME_SHAPE = 4
 
 
 class WritePoint(StrEnum):
@@ -366,7 +376,9 @@ class Demotion(BaseModel):
 
 
 class ResolutionOutcome(BaseModel):
-    """``assess_resolution_readiness`` and the rows a resolution rests on."""
+    """``assess_resolution_readiness`` and the rows a resolution rests on;
+    ``pending_check_need_id`` and ``pending_check_reason`` are
+    ``pending_symptom_check``'s, whatever readiness answered."""
 
     verdict: ResolutionVerdict
     reason: ResolutionReason
@@ -374,7 +386,17 @@ class ResolutionOutcome(BaseModel):
     confirmation_gaps: List[ConfirmationGap] = Field(default_factory=list)
     cause_row_ids: List[str] = Field(default_factory=list)
     problem_row_ids: List[str] = Field(default_factory=list)
-    pending_check_need_id: Optional[str] = None
+    pending_check_need_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The need ``pending_symptom_check`` holds, whatever readiness "
+            "answered (it returns FALSE_ALARM first)"
+        ),
+    )
+    pending_check_reason: Optional[PendingCheckReason] = Field(
+        default=None,
+        description="Why the held need holds, beside its id (shape 4)",
+    )
     declined_stands: bool = False
     off_cause_turn: Optional[int] = Field(
         default=None,

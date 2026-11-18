@@ -2,13 +2,17 @@
 (#2811 S2b-1a, #2615 stage S2).
 
 ``render_fix_verification`` is pure: it reads the record (``CaseOutcome``,
-``narration_outcome``), the case's identity (``CaseIdentity``), an action's
-text by id (``content_by_id``, ruling 5's ``content(id)``) and the window verdicts ruling Q1 (a) keeps read
-fresh until the deciders switch (stage S3), which the call site computes with
-today's deciders and passes in as ``FixVerificationFresh``. It renders every
-line of the block but the outstanding symptom-verification needs, the held
-need's mark and ``DECLINE_STILL_BINDS``, which the call site appends from the
-case until S2b-1b (``context_builder.fix_verification_block``).
+``narration_outcome``), the case's identity (``CaseIdentity``), the text of an
+action or a need by id (``content_by_id``, ruling 5's ``content(id)``), the
+window verdicts ruling Q1 (a) keeps read fresh until the deciders switch
+(stage S3), which the call site computes with today's deciders and passes in
+as ``FixVerificationFresh``, and the needs pool (``NeedsView``, ruling 2 of
+2026-11-17), read only where the need lines print. It renders the whole
+block. The held need, its mark and ``DECLINE_STILL_BINDS`` are the record's
+(``resolution.pending_check_need_id`` and ``pending_check_reason``, written
+from ``pending_symptom_check`` whatever readiness answered, and
+``declined_stands``; S2b-1b-i). A need whose text does not read raises, so
+the call site prints the declared ``OMITTED`` line, never an empty need.
 
 Where it may differ from a fresh read, it prints the record's: an attempt's
 carried ``accepted_in_turn``, and a carried FAILED attempt whose action no
@@ -25,15 +29,21 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     FixWindowState,
     InvestigationStage,
+    NeedPurpose,
+    PendingCheckReason,
     RecheckReason,
+    ResolutionOutcome,
 )
 
+from .needs import NeedsView, _truncate_request_text
 from .rechecks import recheck_text, recorded_why
 
 #: The latest attempts shown.
 MAX_ATTEMPTS = 3
 #: The row ids shown per leg.
 MAX_IDS = 6
+#: The outstanding needs shown.
+MAX_NEEDS = 5
 _DESCRIPTION_CHARS = 80
 
 OPEN_TAG = "<fix_verification>"
@@ -63,11 +73,15 @@ class CaseIdentity(NamedTuple):
 
 
 def content_by_id(case, item_id: str) -> Optional[str]:
-    """The immutable text of a proposed action, by id (ruling 5 of
-    2026-11-15): its description, or None when no action has the id."""
+    """The text an id names (ruling 5 of 2026-11-15): a proposed action's
+    description, or a need's current ``request_text`` (which an update may
+    rewrite); None when nothing has the id."""
     for action in case.proposed_actions or []:
         if action.action_id == item_id:
             return action.description
+    for need in case.evidence_needs or []:
+        if need.need_id == item_id:
+            return need.request_text
     return None
 
 
@@ -113,14 +127,6 @@ class FixVerificationFresh:
     mitigation_verify_refused: bool = True
     """Whether the gate would refuse ``mitigation_verified``: read only where
     its ask prints (a holding relief in MITIGATION), True elsewhere."""
-
-
-class FixVerificationHead(NamedTuple):
-    """The block's lines from its open tag, and whether the call site appends
-    the outstanding needs before the close tag."""
-
-    lines: tuple[str, ...]
-    needs: bool
 
 
 def _ids(ids: list[str]) -> str:
@@ -276,15 +282,73 @@ def _mitigation_lines(outcome: CaseOutcome, fresh) -> list[str]:
     ]
 
 
+#: The held mark's addition while the user's decline of the resolution
+#: stands: the answer alone does not lapse it (``offers.decline_stands``).
+DECLINE_STILL_BINDS = (
+    "; the user's decline of the resolution still binds after it, unless the "
+    "answer is a new problem-bound row showing the problem gone"
+)
+
+
+def _held_mark(resolution: ResolutionOutcome) -> str:
+    """The held need's mark. Under a standing resolve decline it says the
+    decline outlives the answer, so the mark promises no offer the decline
+    would refuse."""
+    why = (
+        ": the rows it cites predate the ask"
+        if resolution.pending_check_reason == PendingCheckReason.FULFILLED_BEFORE_ASK
+        else ""
+    )
+    decline = DECLINE_STILL_BINDS if resolution.declined_stands else ""
+    return f" (holds the resolution offer until answered{why}{decline})"
+
+
+def _need_lines(resolution: ResolutionOutcome, needs: NeedsView, content) -> list[str]:
+    """The outstanding symptom-verification needs the engine still puts to the
+    user; ask-exhausted ones are counted, in ``<evidence_needs>``'s own words,
+    not listed as live asks (#1079). The held need
+    (``resolution.pending_check_need_id``) is listed first and marked,
+    exhausted or FULFILLED on rows from before its ask, so the model is shown
+    which need to dispose of (#1906 D5.2)."""
+    held = resolution.pending_check_need_id
+    listed = [
+        n
+        for n in needs.needs
+        if n.need_id == held
+        or (n.outstanding and n.purpose == NeedPurpose.SYMPTOM_VERIFICATION)
+    ]
+    live = [n for n in listed if n.need_id == held or not n.exhausted]
+    live.sort(key=lambda n: n.need_id != held)
+    stopped = len(listed) - len(live)
+    lines = ["Outstanding symptom-verification needs:"]
+    for n in live[:MAX_NEEDS]:
+        text = content(n.need_id)
+        if text is None:
+            raise LookupError(f"no text reads for need {n.need_id}")
+        mark = _held_mark(resolution) if n.need_id == held else ""
+        lines.append(f"  - [{n.need_id}] {_truncate_request_text(text)}{mark}")
+    if not live:
+        lines = ["Outstanding symptom-verification needs: none"]
+    elif len(live) > MAX_NEEDS:
+        lines.append(f"  …and {len(live) - MAX_NEEDS} more")
+    if stopped:
+        lines.append(
+            f"  ({stopped} the engine has STOPPED surfacing: see <evidence_needs>)"
+        )
+    return lines
+
+
 def render_fix_verification(
     outcome: CaseOutcome,
     identity: CaseIdentity,
     content: Callable[[str], Optional[str]],
     fresh: FixVerificationFresh,
-) -> Optional[FixVerificationHead]:
-    """The block's lines, or None where no block is shown: in TREATMENT, and
-    in MITIGATION once a SOLUTION or the mitigation's attempt is dated; with
-    only the mitigation dated, its lines alone and no needs (#2100)."""
+    needs: Callable[[], NeedsView],
+) -> Optional[tuple[str, ...]]:
+    """The block's lines, its tags included, or None where no block is shown:
+    in TREATMENT, and in MITIGATION once a SOLUTION or the mitigation's
+    attempt is dated; with only the mitigation dated, its lines alone and no
+    needs (#2100). ``needs`` is called only where the need lines print."""
     stage = (
         identity.current_stage if identity.state == CaseState.INVESTIGATING else None
     )
@@ -299,9 +363,13 @@ def render_fix_verification(
     ):
         if not mitigating:
             return None
-        lines = (OPEN_TAG, _MITIGATION_HEADER, *_mitigation_lines(outcome, fresh))
-        return FixVerificationHead(lines, needs=False)
-    lines = (
+        return (
+            OPEN_TAG,
+            _MITIGATION_HEADER,
+            *_mitigation_lines(outcome, fresh),
+            CLOSE_TAG,
+        )
+    return (
         OPEN_TAG,
         _FIX_HEADER,
         *(_mitigation_lines(outcome, fresh) if mitigating else []),
@@ -311,5 +379,6 @@ def render_fix_verification(
             else ["Fix attempts: none recorded"]
         ),
         *_leg_lines(outcome, attempts, fresh),
+        *_need_lines(outcome.resolution, needs(), content),
+        CLOSE_TAG,
     )
-    return FixVerificationHead(lines, needs=True)

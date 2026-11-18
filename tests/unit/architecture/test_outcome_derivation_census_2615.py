@@ -37,7 +37,8 @@ Module level is ``<module>``. Three tables:
   offer record's three writers (``open_offer``, ``answer_offer``,
   ``lapse_offers``), the transitions' two executors, and the entries that
   open, answer or close through them; and the narrators' one accessor of a
-  case's text, ``content_by_id`` (#2811). Each row's note says what that
+  case's text, ``content_by_id`` (#2811: an action's description, a need's
+  request text). Each row's note says what that
   caller opens, answers, closes or reads. An entry referenced other than by a
   call fails, so every way in stays visible here.
 
@@ -177,6 +178,11 @@ DERIVATIONS: dict[str, str] = {
     "off_cause_attempt": _CA,
     "symptom_elimination_rows": _CA,
     "interception_relief": _CA,
+    # #2811 S2b-1b-i: the held need and the resolve decline, which the block's
+    # need lines read off the record (``resolution.pending_check_need_id``,
+    # ``pending_check_reason``, ``declined_stands``).
+    "pending_symptom_check": _CA,
+    "declined_resolve_entry": _TT,
 }
 
 #: Each outcome field read raw, by the module and class that define it.
@@ -202,8 +208,9 @@ ENTRIES: dict[str, str] = {
     "answer_offer": _OFFERS,
     "lapse_offers": _OFFERS,
     # #2811 S2b-1a: not a closure entry. The narrators' one accessor of a
-    # case's immutable text, by id (ruling 5 of 2026-11-15): every caller is
-    # enumerated, so a narrator reading the case through it is seen here.
+    # case's text, by id (ruling 5 of 2026-11-15; a need's request text can
+    # be rewritten, S2b-1b-i): every caller is enumerated, so a narrator
+    # reading the case through it is seen here.
     "content_by_id": _INV + "narration/fix_verification.py",
 }
 
@@ -253,6 +260,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "_resolution_confirmed": 1,
         "latest_fix_window": 1,
         "off_cause_attempt": 1,
+        "pending_symptom_check": 1,
     },
     (_TT, "closure_verdict"): {"assess_closure_readiness": 1},
     # The four closure entries compute the closure on demand (#2636, pin 5).
@@ -264,7 +272,14 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TT, "derive_closure_reason"): {
         "_mitigation_declared_stable": 1,
         "_mitigation_verified": 1,
+        "declined_resolve_entry": 1,
     },
+    # #2811 S2b-1b-i: the resolve decline's readers among the deciders, which
+    # stage S3 switches; ``pending_check_params`` derives the held reason a
+    # second time, for the notices (stage S2b-1c).
+    (_TT, "close_pivots_to_resolve"): {"declined_resolve_entry": 1},
+    (_TT, "pending_check_params"): {"declined_resolve_entry": 1},
+    (_TT, "resolve_reopen_admitted"): {"declined_resolve_entry": 1},
     (_TT, "derive_disposition_eligibility"): {
         "assess_resolution_readiness": 1,
         "closure_verdict": 1,
@@ -309,8 +324,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_resolution_readiness": 1,
         "resolution_record_lines": 1,
     },
+    # #2811 S2b-1b-i: ``pending_symptom_check`` holds the offer (stage S3).
     (_PROPOSALS, "_maybe_propose_deferred_close"): {
         "assess_closure_readiness": 1,
+        "pending_symptom_check": 1,
         "resolution_record_lines": 1,
     },
     (_ME + "terminal_replies.py", "resolution_confirmation_params"): {
@@ -368,6 +385,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TRANSITIONS, "TransitionManager._recheck_resolve_request"): {
         "assess_resolution_readiness": 1
     },
+    # #2811 S2b-1b-i: the declined re-ask's refusal code and the reopen chip,
+    # deciders that stage S3 switches.
+    (_TRANSITIONS, "declined_resolution_reask"): {
+        "declined_resolve_entry": 1,
+        "pending_symptom_check": 1,
+    },
+    (_INV + "offer_projection.py", "_reopen_chip"): {"declined_resolve_entry": 1},
     (_INV + "offer_projection.py", "OfferProjection.disposition_eligibility"): {
         "derive_disposition_eligibility": 1
     },
@@ -388,7 +412,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_resolution"): {
         "assess_resolution_readiness": 1,
         "confirmation_stamp_rows": 1,
+        "declined_resolve_entry": 1,
         "off_cause_attempt": 1,
+        "pending_symptom_check": 1,
         "resolution_record_lines": 1,
         "symptom_elimination_rows": 1,
     },
@@ -410,10 +436,16 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt. The fix-verification block renders from the record
-    # (#2811 S2b-1a, ``narration.fix_verification``): the assembly's one fold,
-    # and the one window list its fresh verdicts (ruling Q1 (a)) and the held
-    # need read, until stage S3.
+    # (#2811 S2b-1a and S2b-1b-i, ``narration.fix_verification``): the
+    # assembly's one fold, and the one window list its fresh verdicts (ruling
+    # Q1 (a)) read, until stage S3; the held need is the record's.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
+    # #2811 S2b-1b-i: the focus block's resolve-decline lines, a prompt site
+    # of stage S2b-1c.
+    (_INV + "prompts/templates/assembly.py", "_resolve_declined_emphasis"): {
+        "declined_resolve_entry": 1,
+        "pending_symptom_check": 1,
+    },
     (_CB + "fix_verification_block.py", "NarrationFold.outcome"): {
         "narration_outcome": 1
     },
@@ -531,8 +563,8 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): (
         {"content_by_id": 1},
         "binds the narration's text accessor to the case for the "
-        "fix-verification renderer, which reads an action's description by "
-        "id (#2811 S2b-1a)",
+        "fix-verification renderer, which reads an action's description and "
+        "a need's request text by id (#2811 S2b-1a, S2b-1b-i)",
     ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl._answer"): (
         {"answer_offer": 1},
@@ -1329,13 +1361,15 @@ def test_a_changed_count_fails_the_census():
     found = _with(
         "def derive_closure_reason(case):\n"
         "    return _mitigation_verified(case) and _mitigation_verified(case)"
-        " or _mitigation_declared_stable(case)\n",
+        " or _mitigation_declared_stable(case) or declined_resolve_entry(case)\n",
         _TT,
     ).derivations
     assert _differences(found, DERIVATION_SITES) == [
         f"{_TT}::derive_closure_reason: declared "
-        "{'_mitigation_declared_stable': 1, '_mitigation_verified': 1}, found "
-        "{'_mitigation_declared_stable': 1, '_mitigation_verified': 2}"
+        "{'_mitigation_declared_stable': 1, '_mitigation_verified': 1, "
+        "'declined_resolve_entry': 1}, found "
+        "{'_mitigation_declared_stable': 1, '_mitigation_verified': 2, "
+        "'declined_resolve_entry': 1}"
     ]
 
 

@@ -63,6 +63,8 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     InvestigationActionType,
     MitigationRecord,
+    NeedState,
+    PendingCheckReason,
     RecheckReason,
     RecheckWhy,
     WritePoint,
@@ -174,6 +176,16 @@ def derived(case) -> dict:
             [e.evidence_id for e in cause],
         ),
         "held_need": held.need_id if held is not None else None,
+        # Shape 4 (#2811 S2b-1b-i): why it holds, as the block's mark read it.
+        "held_reason": (
+            None
+            if held is None
+            else (
+                PendingCheckReason.FULFILLED_BEFORE_ASK
+                if held.state == NeedState.FULFILLED
+                else PendingCheckReason.UNANSWERED
+            )
+        ),
         "declined": declined_resolve_entry(case) is not None,
         "mitigation": (
             None
@@ -243,6 +255,7 @@ def recorded(outcome, case) -> dict:
         "unrechecked": resolution.unrechecked_row_ids,
         "bindable": (outcome.bindable.problem_row_ids, outcome.bindable.cause_row_ids),
         "held_need": resolution.pending_check_need_id,
+        "held_reason": resolution.pending_check_reason,
         "declined": resolution.declined_stands,
         "mitigation": (
             None
@@ -400,6 +413,32 @@ async def _held_check():
     return case
 
 
+async def _held_check_on_a_false_alarm():
+    """The held check FULFILLED on rows from before its ask, then the finding
+    of a false alarm applied with ``invalidate_problem`` directly, past
+    ``invalidation_refusal``, which refuses it on this case while its cause
+    leg stands: the finding supersedes no FULFILLED need, so the check still
+    holds while readiness answers FALSE_ALARM first."""
+    from faultmaven.core.investigation.problem_status import invalidate_problem
+    from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+        _held_case,
+    )
+
+    case = _held_case()
+    need = case.evidence_needs[-1]
+    need.state = NeedState.FULFILLED
+    need.fulfilling_evidence_ids = list(
+        case.problem_verification.verifying_evidence_ids
+    )
+    invalidate_problem(
+        case,
+        evidence_ids=list(case.problem_verification.verifying_evidence_ids),
+        basis="the scrape target was never down",
+    )
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    return case
+
+
 async def _held_check_then_interception():
     """A check asked after the fix holds the resolution, and an interception
     run since, re-checked gone then present; committed as a step-0 exit."""
@@ -511,6 +550,7 @@ FIXTURES = {
     "terminal_qa": (_terminal_qa, set()),
     "told_then_committed": (_told_then_committed, set()),
     "held_check": (_held_check, set()),
+    "held_check_on_a_false_alarm": (_held_check_on_a_false_alarm, set()),
     "held_check_then_interception": (_held_check_then_interception, set()),
     "2609_relapsed_mitigation": (_relapsed_mitigation, {"mitigation.verified"}),
     "2582_cited_failure_re_rooted": (_2582, {"windows"}),
