@@ -40,6 +40,7 @@ KNOWN_DATA_FIELDS = {
     ("DatabaseSettings", "chromadb_evidence_persist_dir"),
     ("EvidenceStorageSettings", "evidence_storage_root"),
     ("ProtectionSettings", "pseudonym_key_path"),
+    ("SecuritySettings", "jwt_secret_file"),
 }
 
 
@@ -141,8 +142,7 @@ def test_the_introspection_finds_every_known_data_field():
     found = {(cls.__name__, name) for cls, name in _data_fields()}
     assert KNOWN_DATA_FIELDS <= found
     assert {attribute for _module, attribute in _module_attributes()} == {
-        "DEFAULT_JWT_SECRET_FILE",
-        "KNOWLEDGE_ROOT",
+        "KNOWLEDGE_ROOT"
     }
     for value in SHIPPED_DATA_DEFAULTS.values():
         assert _is_under_data(value), "the record holds the shipped ./data values"
@@ -225,6 +225,11 @@ def _assert_every_data_default_in_the_session_root() -> list[str]:
                 "protection.pseudonym_key_path",
                 settings.protection.pseudonym_key_path,
             ),
+            (
+                "JWT_SECRET_FILE",
+                "security.jwt_secret_file",
+                settings.security.jwt_secret_file,
+            ),
         ):
             if variable not in skipped:
                 _assert_in_the_session_root(label, value)
@@ -261,7 +266,7 @@ def test_an_emptied_environment_still_resolves_in_the_session_root(environment):
 def test_shipped_data_defaults_restores_the_shipped_layout(
     tmp_path, monkeypatch, shipped_data_defaults
 ):
-    from faultmaven.config.settings import DEFAULT_JWT_SECRET_FILE, get_settings
+    from faultmaven.config.settings import get_settings
     from faultmaven.utils.runbook_id import knowledge_root
 
     monkeypatch.chdir(tmp_path)
@@ -270,7 +275,7 @@ def test_shipped_data_defaults_restores_the_shipped_layout(
     assert settings.database.database_url == (
         "sqlite+aiosqlite:///./data/faultmaven.db"
     )
-    assert DEFAULT_JWT_SECRET_FILE == "data/.jwt_secret"
+    assert settings.security.jwt_secret_file == "data/.jwt_secret"
     assert knowledge_root() == pathlib.Path("data/knowledge")
 
 

@@ -6,9 +6,9 @@ variable in any letter case and takes the last spelling, so a check of the
 exact name read a caller's ``database_url`` as unset and added a
 ``DATABASE_URL`` that won: the run silently tested the root's SQLite file. A
 spelling an ancestor test process left is replaced whichever spelling comes
-last, and ``JWT_SECRET_FILE``, which the product reads by its exact name
-(#2918), is judged by that spelling. The block runs at conftest import, so each
-case imports conftest in a fresh interpreter.
+last. ``JWT_SECRET_FILE`` is a settings field too (#2918), judged by the same
+rule. The block runs at conftest import, so each case imports conftest in a
+fresh interpreter.
 """
 
 from __future__ import annotations
@@ -31,8 +31,10 @@ _PROBE = """
 import json, os
 import tests.conftest
 from faultmaven.config.settings import FaultMavenSettings, env_var_spellings
+settings = FaultMavenSettings()
 print(json.dumps({
-    "url": FaultMavenSettings().database.database_url,
+    "url": settings.database.database_url,
+    "secret_file": settings.security.jwt_secret_file,
     "spellings": env_var_spellings(os.environ, "DATABASE_URL"),
     "root": os.environ["FAULTMAVEN_TEST_DATA_ROOT"],
     "jwt_secret_file": {
@@ -86,22 +88,21 @@ def test_an_inherited_roots_url_is_replaced_in_every_spelling(tmp_path):
 def test_an_ancestors_spelling_is_replaced_beside_a_callers(tmp_path):
     """An ancestor's ``DATABASE_URL`` and ``JWT_SECRET_FILE`` come first and the
     caller's lowercase spellings last: no spelling is left under the ancestor's
-    root, the caller's ``database_url`` is the URL, and ``JWT_SECRET_FILE``,
-    read by its exact name, names this process's root."""
+    root, and each caller's lowercase spelling is the only one left, so it is
+    the setting's value."""
     inherited = str(tmp_path / "ancestor")
     caller_url = f"sqlite+aiosqlite:///{tmp_path}/caller.db"
+    caller_secret_file = str(tmp_path / "caller.jwt")
 
     seen = _conftest_under(
         FAULTMAVEN_TEST_DATA_ROOT=inherited,
         DATABASE_URL=f"sqlite+aiosqlite:///{inherited}/faultmaven.db",
         JWT_SECRET_FILE=os.path.join(inherited, ".jwt_secret"),
         database_url=caller_url,
-        jwt_secret_file=str(tmp_path / "caller.jwt"),
+        jwt_secret_file=caller_secret_file,
     )
 
-    assert not [v for v in seen["jwt_secret_file"].values() if inherited in v]
-    assert seen["jwt_secret_file"]["JWT_SECRET_FILE"] == os.path.join(
-        seen["root"], ".jwt_secret"
-    )
+    assert seen["jwt_secret_file"] == {"jwt_secret_file": caller_secret_file}
+    assert seen["secret_file"] == caller_secret_file
     assert seen["spellings"] == ["database_url"]
     assert seen["url"] == caller_url

@@ -174,17 +174,15 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # is replaced, which is why the root is recorded together with the pid that
 # made it. Each spelling is judged, in any letter case as pydantic-settings
 # binds them: one holding the ancestor's root is dropped wherever it sits, and
-# the variable is set only when no spelling is left (#1835). ``JWT_SECRET_FILE``
-# is the exception: the product reads it by its exact name (#2918), so only that
-# spelling is the caller's, and only that spelling is written.
+# the variable is set only when no spelling is left (#1835).
 #
 # The variables alone do not survive a test that empties or pins the
 # environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
 # ``delenv("DATABASE_URL")`` + ``reset_settings()``): the next settings object
 # falls back to the shipped default, i.e. the shared ``./data``. So
 # ``_default_to_the_test_data_root`` below also makes each per-process path the
-# DEFAULT of its settings field (and of the module attribute, for the two paths
-# that have no field). A test that exercises the shipped cwd-relative layout
+# DEFAULT of its settings field (and of the module attribute, for the one path
+# that has no field). A test that exercises the shipped cwd-relative layout
 # requests ``shipped_data_defaults``, which runs it in ``tmp_path``.
 #
 # The root is read back from the environment, not a module global, because this
@@ -193,10 +191,6 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # import must reuse the first one's root.
 TEST_DATA_ROOT_ENV = "FAULTMAVEN_TEST_DATA_ROOT"
 _TEST_DATA_ROOT_PID_ENV = "FAULTMAVEN_TEST_DATA_ROOT_PID"
-
-
-#: Read by the product under their exact name, not through pydantic-settings.
-_READ_BY_EXACT_NAME = frozenset({"JWT_SECRET_FILE"})
 
 
 def data_paths_under(root: str) -> dict[str, str]:
@@ -228,9 +222,7 @@ if os.environ.get(_TEST_DATA_ROOT_PID_ENV) != str(os.getpid()):
         for _key in env_var_spellings(os.environ, _name):
             if _inherited_root and (_inherited_root + os.sep) in os.environ[_key]:
                 del os.environ[_key]
-        if _name in _READ_BY_EXACT_NAME:
-            os.environ.setdefault(_name, _value)
-        elif not env_var_spellings(os.environ, _name):
+        if not env_var_spellings(os.environ, _name):
             set_env_var(os.environ, _name, _value)
     os.environ[TEST_DATA_ROOT_ENV] = _root
     os.environ[_TEST_DATA_ROOT_PID_ENV] = str(os.getpid())
@@ -1551,7 +1543,7 @@ from faultmaven.infrastructure.security.redaction import DataSanitizer
 
 #: Every ``./data`` default the test session moves: (module, owner, attribute,
 #: variable). ``owner`` is a settings class whose FIELD default moves, or None
-#: for a module attribute read at call time (the two paths with no field).
+#: for a module attribute read at call time (the one path with no field).
 _DATA_DEFAULT_TARGETS = (
     ("faultmaven.config.settings", "DatabaseSettings", "database_url", "DATABASE_URL"),
     (
@@ -1578,7 +1570,12 @@ _DATA_DEFAULT_TARGETS = (
         "pseudonym_key_path",
         "REDACTION_PSEUDONYM_KEY_PATH",
     ),
-    ("faultmaven.config.settings", None, "DEFAULT_JWT_SECRET_FILE", "JWT_SECRET_FILE"),
+    (
+        "faultmaven.config.settings",
+        "SecuritySettings",
+        "jwt_secret_file",
+        "JWT_SECRET_FILE",
+    ),
     ("faultmaven.utils.runbook_id", None, "KNOWLEDGE_ROOT", None),
 )
 

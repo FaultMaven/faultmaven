@@ -1519,11 +1519,6 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-#: Where :func:`resolve_local_jwt_secret` keeps the local secret when
-#: ``JWT_SECRET_FILE`` is unset. Read at call time, so the test session can
-#: point it under its own data root (#1772).
-DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
-
 #: What a JWT secret file that group or others could read or write exposes,
 #: and how to rotate it; the tail of the WARNING
 #: ``prepare_secret_file_for_read`` logs.
@@ -1670,10 +1665,10 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         returns, judging nothing.
       - ``settings.security.jwt_secret_key`` is set (an explicit value always
         wins): it is judged, and the function returns.
-      - Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
-        data/.jwt_secret) or generates a secret, and judges that value before
-        it is published, set or exported. The file is published only when the
-        database is persistent.
+      - Otherwise it reads the secret file
+        (``settings.security.jwt_secret_file``) or generates a secret, and
+        judges that value before it is published, set or exported. The file is
+        published only when the database is persistent.
 
     Judging is :func:`require_signable_hs256_secret`: a value PyJWT will not
     sign with raises :class:`LocalJwtSecretError` (#1806), so a refused value is
@@ -1704,7 +1699,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     """
     if settings.auth.auth_mode is not AuthMode.LOCAL:
         return
-    secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
+    secret_path = Path(settings.security.jwt_secret_file)
     # Truthy, not "not None": an empty secret is no secret to every consumer
     # (``if not secret`` in the token generator), so it is minted over.
     if settings.security.jwt_secret_key:
@@ -1854,13 +1849,24 @@ class SecuritySettings(BaseSettings):
     # HS256 secret for local auth. In local mode get_settings() provides it via
     # resolve_local_jwt_secret() once the settings are built, so a standalone
     # install needs no JWT_SECRET_KEY — set the env var to override. It is
-    # generated and persisted (data/.jwt_secret) only when the database is
+    # generated and persisted (jwt_secret_file) only when the database is
     # persistent; otherwise an existing file is read, or an ephemeral per-process
     # secret is used (#1703). OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
         description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (data/.jwt_secret) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+    )
+    # Where resolve_local_jwt_secret() keeps the local HS256 secret. A field, so
+    # JWT_SECRET_FILE binds as every setting does: any letter case, environment
+    # over .env (#2918). The test session moves its default under its own data
+    # root (#1772).
+    jwt_secret_file: str = Field(
+        default="data/.jwt_secret",
+        description=(
+            "Where local mode persists its generated HS256 secret. Unused when "
+            "JWT_SECRET_KEY is set or in OAuth/RS256 mode."
+        ),
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
     # AuthSettings, and every minting path takes it from there (#888). This half
