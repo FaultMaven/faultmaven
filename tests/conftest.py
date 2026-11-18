@@ -172,7 +172,8 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # caller's choice and is left alone; one an ancestor test process set (the
 # xdist controller, a pytest that runs a pytest) names that process's root and
 # is replaced, which is why the root is recorded together with the pid that
-# made it.
+# made it. Either is read in any letter case, as pydantic-settings binds it
+# (the last spelling wins), and a replacement leaves one spelling (#1835).
 #
 # The variables alone do not survive a test that empties or pins the
 # environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
@@ -212,13 +213,17 @@ if os.environ.get(_TEST_DATA_ROOT_PID_ENV) != str(os.getpid()):
     _root = tempfile.mkdtemp(
         prefix=f"faultmaven-{os.environ.get('PYTEST_XDIST_WORKER') or 'main'}-"
     )
+    # Loads no harness stand-in target (``torch``, ``ctypes``, …): measured, #1835.
+    from faultmaven.config.settings import env_var_spellings, set_env_var
+
     atexit.register(shutil.rmtree, _root, ignore_errors=True)
     for _name, _value in data_paths_under(_root).items():
-        _current = os.environ.get(_name)
+        _spellings = env_var_spellings(os.environ, _name)
+        _current = os.environ[_spellings[-1]] if _spellings else None
         if _current is None or (
             _inherited_root and (_inherited_root + os.sep) in _current
         ):
-            os.environ[_name] = _value
+            set_env_var(os.environ, _name, _value)
     os.environ[TEST_DATA_ROOT_ENV] = _root
     os.environ[_TEST_DATA_ROOT_PID_ENV] = str(os.getpid())
 

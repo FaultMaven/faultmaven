@@ -513,22 +513,23 @@ async def test_the_deployed_app_leaves_both_routes_to_their_receipts():
 async def test_a_duplicate_is_refused_at_the_key_on_postgresql():
     """PostgreSQL's key refuses the duplicate's receipt at its flush, and the
     refusal is classified once the session is back in the pool."""
-    enterprise = f"ent_2433_{uuid4().hex[:8]}"
+    tag = uuid4().hex[:8]
+    enterprise, owner = f"ent_2433_{tag}", f"user-2433-{tag}"
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     token = _current_enterprise_id.set(enterprise)
-    key = KbReceiptKey(enterprise, OWNER, ROUTE_UPLOAD, KEY, "f" * 64)
+    key = KbReceiptKey(enterprise, owner, ROUTE_UPLOAD, KEY, "f" * 64)
     service = _knowledge(factory)
     try:
         async with factory() as session:
             await seed_enterprises(session, [enterprise])
-            await seed_users(session, [OWNER], enterprise_id=enterprise)
+            await seed_users(session, [owner], enterprise_id=enterprise)
         upload = dict(
             content=RUNBOOK_BYTES.decode(),
             title="Redis Evictions",
             document_type="runbook",
             scope="personal",
-            owner_id=OWNER,
+            owner_id=owner,
             receipt_key=key,
         )
 

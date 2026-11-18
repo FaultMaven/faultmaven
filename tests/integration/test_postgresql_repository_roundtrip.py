@@ -269,6 +269,47 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
     assert any(m.get("content") == "how to fix the timeout?" for m in persisted)
 
 
+#: The six columns an uploaded file round-trips: every one set, and the two
+#: optional ones NULL (#2230).
+_ALL_FIELDS = dict(
+    filename="integration_test.log",
+    size_bytes=4096,
+    content_type="text/plain",
+    uploaded_at_turn=3,
+    upload_source="paste",
+    storage_ref="cases/integration.log",
+)
+_NULL_OPTIONAL = {
+    **_ALL_FIELDS,
+    "filename": "pending.log",
+    "content_type": None,
+    "storage_ref": None,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fields", [_ALL_FIELDS, _NULL_OPTIONAL], ids=["all-fields", "null-optional"]
+)
+async def test_uploaded_file_fields_roundtrip(pg_repo, fields):
+    """A file saved with its case loads back with each of the six fields as
+    written, a NULL ``storage_ref`` and ``content_type`` included."""
+    session = pg_repo.db
+    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_enterprises(session, [enterprise_id])
+    await seed_users(session, [user_id])
+    case = _make_case(enterprise_id, user_id)
+    case.uploaded_files.append(
+        UploadedFile(file_id=f"file_{uuid4().hex[:12]}", **fields)
+    )
+
+    await pg_repo.save(case)
+
+    (loaded,) = (await pg_repo.get(case.case_id)).uploaded_files
+    assert {name: getattr(loaded, name) for name in fields} == fields
+
+
 @pytest.mark.asyncio
 async def test_upsert_case_entities_roundtrip(pg_repo):
     """upsert_case_entities() is a standalone path NOT reached by save() — it

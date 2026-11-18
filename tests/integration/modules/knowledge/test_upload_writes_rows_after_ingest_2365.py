@@ -190,13 +190,15 @@ def _knowledge(factory) -> KnowledgeService:
     return service
 
 
-async def _upload(service: KnowledgeService, *, scope="personal", content=None):
+async def _upload(
+    service: KnowledgeService, *, scope="personal", content=None, owner=OWNER
+):
     return await service.upload_document(
         content=content or valid_runbook("Redis Evictions Under Memory Pressure"),
         title="Redis Evictions",
         document_type="runbook",
         scope=scope,
-        owner_id=OWNER,
+        owner_id=owner,
         team_id=TEAM_ID if scope == "team" else None,
     )
 
@@ -211,17 +213,17 @@ async def _rows(factory) -> dict[str, int]:
         }
 
 
-async def _drafts(factory) -> list[dict]:
+async def _drafts(factory, owner=OWNER) -> list[dict]:
     """What ``GET /knowledge/drafts`` lists to the uploader."""
     return await ConversionService(
         sanitizer=regex_only_sanitizer(),
         llm_router=AsyncMock(),
         settings=MagicMock(),
         db_session_factory=factory,
-    ).list_all_drafts(OWNER)
+    ).list_all_drafts(owner)
 
 
-async def _assert_landed(factory, document_id: str) -> None:
+async def _assert_landed(factory, document_id: str, owner=OWNER) -> None:
     """The upload's own rows, read by its ids: on PostgreSQL the database is
     shared with every other ``-m postgres`` test."""
     async with factory() as session:
@@ -237,7 +239,7 @@ async def _assert_landed(factory, document_id: str) -> None:
         item = await session.get(KnowledgeItemModel, document_id)
     assert None not in (upload, item)
     assert (draft.status, draft.knowledge_item_id) == ("verified", document_id)
-    assert draft.id in [d["draft_id"] for d in await _drafts(factory)]
+    assert draft.id in [d["draft_id"] for d in await _drafts(factory, owner)]
 
 
 async def test_an_upload_lands_where_foreign_keys_are_enforced(session_factory):
@@ -538,18 +540,19 @@ def test_the_upload_route_logs_the_class_not_the_text(caplog):
 )
 async def test_an_upload_lands_on_postgresql():
     """PostgreSQL's key is non-deferrable: the draft's INSERT is checked at once."""
-    enterprise = f"ent_2365_{uuid4().hex[:8]}"
+    tag = uuid4().hex[:8]
+    enterprise, owner = f"ent_2365_{tag}", f"user-2365-{tag}"
     engine = create_async_engine(os.environ["DATABASE_URL"])
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     token = _current_enterprise_id.set(enterprise)
     try:
         async with factory() as session:
             await seed_enterprises(session, [enterprise])
-            await seed_users(session, [OWNER], enterprise_id=enterprise)
+            await seed_users(session, [owner], enterprise_id=enterprise)
 
-        result = await _upload(_knowledge(factory))
+        result = await _upload(_knowledge(factory), owner=owner)
 
-        await _assert_landed(factory, result["document_id"])
+        await _assert_landed(factory, result["document_id"], owner)
     finally:
         async with factory() as session:
             for model in (

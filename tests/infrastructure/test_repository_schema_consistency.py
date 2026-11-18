@@ -17,20 +17,15 @@ Tests verify:
 """
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import UploadedFile
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
-)
-from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
-    PostgreSQLHybridCaseRepository,
 )
 
 # ============================================================
@@ -309,139 +304,3 @@ class TestPostgreSQLHybridSchemaConsistency:
         )
 
         assert hasattr(PostgreSQLHybridCaseRepository, "get")
-
-
-# ============================================================
-# Integration Tests (require database)
-# ============================================================
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-class TestDatabaseSchemaIntegration:
-    """Integration tests verifying SQL schema matches Pydantic model"""
-
-    async def test_full_roundtrip_uploaded_file(self, test_db_session):
-        """Test complete INSERT → SELECT roundtrip preserves all fields"""
-
-        if test_db_session is None:
-            pytest.skip("No test database configured")
-
-        repo = PostgreSQLHybridCaseRepository(db=test_db_session)
-
-        case = Case(
-            case_id="case_integration_001",
-            title="Integration Test",
-            description="Roundtrip integration test",
-            user_id="user_integration_001",
-            enterprise_id="org_integration_001",
-            state=CaseState.INQUIRY,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            messages=[],
-            uploaded_files=[
-                UploadedFile(
-                    file_id="file_integration001",
-                    filename="integration_test.log",
-                    size_bytes=4096,
-                    content_type="text/plain",
-                    uploaded_at_turn=1,
-                    uploaded_at=datetime.now(timezone.utc),
-                    upload_source="file_upload",
-                    storage_ref="s3://test-bucket/integration.log",
-                )
-            ],
-        )
-
-        await repo.create(case)
-        retrieved = await repo.get(case.case_id)
-
-        assert len(retrieved.uploaded_files) == 1
-        file = retrieved.uploaded_files[0]
-
-        assert file.file_id == "file_integration001"
-        assert file.filename == "integration_test.log"
-        assert file.size_bytes == 4096
-        assert file.content_type == "text/plain"
-        assert file.uploaded_at_turn == 1
-        assert file.upload_source == "file_upload"
-        assert file.storage_ref == "s3://test-bucket/integration.log"
-
-    async def test_optional_fields_handle_null(self, test_db_session):
-        """Test optional fields (storage_ref, content_type) can be NULL"""
-
-        if test_db_session is None:
-            pytest.skip("No test database configured")
-
-        repo = PostgreSQLHybridCaseRepository(db=test_db_session)
-
-        case = Case(
-            case_id="case_integration_002",
-            title="NULL Fields Test",
-            description="Null-fields integration test",
-            user_id="user_integration_002",
-            enterprise_id="org_integration_002",
-            state=CaseState.INQUIRY,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-            messages=[],
-            uploaded_files=[
-                UploadedFile(
-                    file_id="file_integration002",
-                    filename="pending.log",
-                    size_bytes=1024,
-                    uploaded_at_turn=1,
-                    uploaded_at=datetime.now(timezone.utc),
-                    upload_source="file_upload",
-                    storage_ref=None,
-                    content_type=None,
-                )
-            ],
-        )
-
-        await repo.create(case)
-        retrieved = await repo.get(case.case_id)
-
-        file = retrieved.uploaded_files[0]
-        assert file.storage_ref is None
-        assert file.content_type is None
-
-
-# ============================================================
-# Fixtures
-# ============================================================
-
-
-@pytest.fixture
-async def test_db_session():
-    """Fixture providing test database session (if available)"""
-
-    # Check if test database is configured
-    import os
-
-    db_url = os.getenv("TEST_DATABASE_URL")
-
-    if not db_url:
-        yield None  # Skip integration tests
-        return
-
-    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-    from sqlalchemy.orm import sessionmaker
-
-    engine = create_async_engine(db_url, echo=False)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    try:
-        async with async_session() as session:
-            # Setup: Create tables if needed
-            # (Assumes migrations already run)
-
-            yield session
-
-            # Teardown: Rollback
-            await session.rollback()
-    finally:
-        # Close the pool on this test's loop, however the session ended; an
-        # undisposed engine leaves its pooled connections to be collected after
-        # the loop has closed.
-        await engine.dispose()
