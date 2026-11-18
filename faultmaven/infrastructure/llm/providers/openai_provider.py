@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set
 import aiohttp
 
 from faultmaven.exceptions import LLMErrorCategory, LLMException
+from faultmaven.infrastructure.llm.prompt_cache import split_at_cache_boundary
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -48,6 +49,10 @@ class OpenAIProvider(BaseLLMProvider):
         # deployment of it refuses anything but the default, measured
         # 2026-11-10).
         self._temperature_refused: Set[str] = set()
+        # Effective model ids this endpoint has REFUSED a
+        # ``prompt_cache_breakpoint`` for (an Azure deployment type or model
+        # without breakpoint support answers 400), learned like the two above.
+        self._cache_breakpoint_refused: Set[str] = set()
 
     #: This provider's label: what ``provider_name`` returns, what
     #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
@@ -305,6 +310,43 @@ class OpenAIProvider(BaseLLMProvider):
         + "|".join(re.escape(f) for f in _DEFAULT_REASONING_MODEL_FAMILIES)
         + r")(?:[-.]|$)"
     )
+
+    # Prompt-cache breakpoints (#613's OpenAI half). From GPT-5.6, OpenAI
+    # (Azure included) matches the prompt cache only at message ends and at
+    # explicit breakpoints, never inside a message: "Supported for gpt-5.6
+    # and later models" (Chat Completions reference, prompt_cache_options).
+    # The investigation prompt's durable prefix shares one user message with
+    # this turn's case, so without a breakpoint at CACHE_BOUNDARY the prefix
+    # is never read back across turns. Measured live on Azure gpt-6-luna-1
+    # (2026-11-17): a second turn read 11,116 cached tokens without the
+    # breakpoint (system + tools) and 32,933 with it; one byte changed inside
+    # the prefix fell back to 11,116.
+    _PROMPT_CACHE_BREAKPOINT_FAMILIES = ("gpt-5.6", "gpt-6")
+    _PROMPT_CACHE_BREAKPOINT_RE = re.compile(
+        r"(?:^|/)(?:"
+        + "|".join(re.escape(f) for f in _PROMPT_CACHE_BREAKPOINT_FAMILIES)
+        + r")(?:[-.]|$)"
+    )
+    #: Whether this endpoint takes ``prompt_cache_breakpoint`` at all. A
+    #: gateway subclass whose routed models are not OpenAI's opts out.
+    _SENDS_PROMPT_CACHE_BREAKPOINTS = True
+
+    @classmethod
+    def _marks_cache_boundary(cls, model_name: str) -> bool:
+        """Whether a ``cache_prompt`` request to *model_name* gets a
+        ``prompt_cache_breakpoint`` at ``CACHE_BOUNDARY``."""
+        return cls._SENDS_PROMPT_CACHE_BREAKPOINTS and bool(
+            cls._PROMPT_CACHE_BREAKPOINT_RE.search(model_name.lower())
+        )
+
+    @staticmethod
+    def _is_cache_breakpoint_rejection(error: LLMException) -> bool:
+        """Whether *error* is the endpoint refusing the breakpoint we sent: a
+        permanent rejection whose body names ``prompt_cache_breakpoint``."""
+        return (
+            error.category is LLMErrorCategory.REQUEST_REJECTED
+            and "prompt_cache_breakpoint" in str(error)
+        )
 
     @classmethod
     def _defaults_reasoning(cls, model_name: str) -> bool:
@@ -658,6 +700,9 @@ class OpenAIProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
+        # Translated below into a breakpoint at CACHE_BOUNDARY where the model
+        # takes one; every other OpenAI-family request ignores it.
+        cache_prompt = bool(kwargs.pop("cache_prompt", False))
 
         # GPT-5 / o-series models reject the legacy ``max_tokens`` parameter and
         # require ``max_completion_tokens``; older models keep ``max_tokens``.
@@ -687,9 +732,12 @@ class OpenAIProvider(BaseLLMProvider):
         # decisions below — split call sites with opposite polarity invite the
         # two axes drifting apart when the predicate's scope changes.
         defaults_reasoning = self._defaults_reasoning(effective_model)
+        request_messages = (
+            messages if messages else [{"role": "user", "content": prompt}]
+        )
         payload = {
             "model": effective_model,
-            "messages": messages if messages else [{"role": "user", "content": prompt}],
+            "messages": request_messages,
             token_limit_param: max_tokens,
         }
         # The gpt-5.6 family accepts only the default temperature and 400s on
@@ -774,12 +822,29 @@ class OpenAIProvider(BaseLLMProvider):
         # drops the Anthropic-only caching hint, then merges the rest.
         self._merge_extra_kwargs(payload, kwargs, model=effective_model)
 
+        # The durable prefix's breakpoint. ``unmarked`` keeps the messages as
+        # they were, for the one re-send without it on a refusal.
+        unmarked = None
+        if (
+            cache_prompt
+            and effective_model not in self._cache_breakpoint_refused
+            and self._marks_cache_boundary(effective_model)
+        ):
+            marked = _mark_prompt_cache_breakpoint(request_messages)
+            if marked is not None:
+                unmarked = request_messages
+                payload["messages"] = marked
+
         # A rejection that names the spelling we sent is the endpoint telling
         # us our expectation for this model is wrong. Take its word for it:
         # one in-line re-send under the other name, then remember (#510).
         try:
             return await self._post_chat_completion(headers, payload, effective_model)
         except LLMException as rejected:
+            if unmarked is not None and self._is_cache_breakpoint_rejection(rejected):
+                return await self._omit_cache_breakpoint_and_retry(
+                    headers, payload, effective_model, unmarked, rejected
+                )
             # Same rule for ``temperature``: a refusal naming it means this
             # endpoint serves the model at its default only.
             if "temperature" in payload and self._is_temperature_rejection(rejected):
@@ -799,6 +864,37 @@ class OpenAIProvider(BaseLLMProvider):
                 sent_param=token_limit_param,
                 rejected=rejected,
             )
+
+    async def _omit_cache_breakpoint_and_retry(
+        self,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        effective_model: str,
+        unmarked: List[Dict[str, Any]],
+        rejected: LLMException,
+    ) -> LLMResponse:
+        """Re-send *payload* once without the prompt-cache breakpoint, then
+        remember, under the rules of ``_omit_temperature_and_retry``. The
+        breakpoint only saves cost, so the call must never fail for it. A
+        second failure is raised, chained from the first."""
+        self.logger.warning(
+            f"{self.provider_name} refused 'prompt_cache_breakpoint' on "
+            f"{effective_model} ({rejected}) — re-sending once without it."
+        )
+        payload["messages"] = unmarked
+        try:
+            response = await self._post_chat_completion(
+                headers, payload, effective_model
+            )
+        except LLMException as still_failing:
+            raise still_failing from rejected
+        self._cache_breakpoint_refused.add(effective_model)
+        self.logger.warning(
+            f"{self.provider_name} model {effective_model} takes no "
+            f"prompt_cache_breakpoint — learned for the life of this provider "
+            f"instance; its durable prefix is not cached across turns."
+        )
+        return response
 
     async def _omit_temperature_and_retry(
         self,
@@ -982,8 +1078,10 @@ class OpenAIProvider(BaseLLMProvider):
                             content = "{}"
 
                     # Extract token usage. prompt_tokens is INCLUSIVE of cached
-                    # prompt tokens on OpenAI-family APIs, so subtract to keep
-                    # input_tokens/cache_read_tokens disjoint for cost summing.
+                    # and cache-written prompt tokens on OpenAI-family APIs, so
+                    # subtract both to keep the buckets disjoint for cost
+                    # summing. GPT-5.6+ reports writes (billed 1.25x input) as
+                    # prompt_tokens_details.cache_write_tokens.
                     usage = data.get("usage") or {}
                     prompt_tokens = usage.get("prompt_tokens") or 0
                     output_tokens = usage.get("completion_tokens") or 0
@@ -992,7 +1090,10 @@ class OpenAIProvider(BaseLLMProvider):
                     )
                     prompt_details = usage.get("prompt_tokens_details") or {}
                     cache_read_tokens = prompt_details.get("cached_tokens") or 0
-                    input_tokens = max(prompt_tokens - cache_read_tokens, 0)
+                    cache_write_tokens = prompt_details.get("cache_write_tokens") or 0
+                    input_tokens = max(
+                        prompt_tokens - cache_read_tokens - cache_write_tokens, 0
+                    )
 
                     response_time = self._get_response_time_ms()
 
@@ -1007,6 +1108,7 @@ class OpenAIProvider(BaseLLMProvider):
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
                         prompt_cache_hit=bool(cache_read_tokens > 0),
                         stop_reason=stop_reason,
                     )
@@ -1023,3 +1125,44 @@ class OpenAIProvider(BaseLLMProvider):
             raise LLMException(
                 f"{self.provider_name} connection error: {str(e)}", retryable=True
             )
+
+
+def _mark_prompt_cache_breakpoint(
+    messages: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """*messages* with the first user message split at ``CACHE_BOUNDARY``, or
+    None when there is nothing to mark.
+
+    The first non-system message must be a user message with string content
+    holding the boundary (the investigation prompt: the tool loop's base and
+    the single shot). Its head, ending with the boundary line, carries an
+    explicit ``prompt_cache_breakpoint``; the tail is this turn's case. The
+    request keeps OpenAI's implicit mode, so the end of the latest message is
+    still written, which a later tool-loop iteration reads. A new list is
+    returned: the caller's messages are the tool loop's own.
+    """
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role in ("system", "developer"):
+            continue
+        content = msg.get("content")
+        if role != "user" or not isinstance(content, str):
+            return None
+        split = split_at_cache_boundary(content)
+        if split is None:
+            return None
+        head, tail = split
+        marked = list(messages)
+        marked[i] = {
+            **msg,
+            "content": [
+                {
+                    "type": "text",
+                    "text": head,
+                    "prompt_cache_breakpoint": {"mode": "explicit"},
+                },
+                {"type": "text", "text": tail},
+            ],
+        }
+        return marked
+    return None

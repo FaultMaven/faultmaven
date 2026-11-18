@@ -19,7 +19,7 @@ which are the most common cause of a runaway bill.
 |---|---|---|
 | `llm_cost_usd_total` | `provider`, `model` | Estimated USD spend per **provider API call** (from the price table). The dollar figure to alert on. |
 | `llm_call_tokens_total` | `provider`, `model`, `token_type` | Tokens per API call, split into `input` / `output` / `cache_read` / `cache_write`. Buckets are disjoint. |
-| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | Tokens of every response the investigation engine received from its provider, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, re-issues of a cut or refused body included, and every single-shot call; `later` = later tool-loop iterations). No response-cache hits, no discarded fallback attempts. `path="tool_loop"`, `position="first"` `input` + `cache_write` is what each turn's first call could not read back (Anthropic bills the tail as `cache_write`, because it writes the request to the cache for the next iteration; every other provider reports it as `input`): at best the case, re-sent every turn; on OpenAI GPT-5.6+ also the standing prefix, which shares the case's message ([prompt-assembly §3.3](../../architecture/investigation-engine/prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). A blended hit rate hides it, because later iterations read the earlier ones back. |
+| `llm_investigation_call_tokens_total` | `provider`, `model`, `path`, `position`, `token_type` | Tokens of every response the investigation engine received from its provider, by `path` (`tool_loop` / `single_shot`) and `position` (`first` = a turn's first tool-loop iteration, re-issues of a cut or refused body included, and every single-shot call; `later` = later tool-loop iterations). No response-cache hits, no discarded fallback attempts. `path="tool_loop"`, `position="first"` `input` + `cache_write` is what each turn's first call could not read back (Anthropic and OpenAI GPT-5.6+ bill the tail as `cache_write`, because they write the request to the cache for the next call; other providers report it as `input`): the case, re-sent every turn ([prompt-assembly §3.3](../../architecture/investigation-engine/prompt-assembly-architecture.md#33-durable-prefix-and-the-cache-boundary-613)). A blended hit rate hides it, because later iterations read the earlier ones back. |
 | `llm_provider_calls_total` | `provider`, `model`, `outcome` | API calls by disposition. `outcome=kept` = returned to caller; `outcome=low_confidence` = **billed then discarded** by the fallback chain (pure waste). |
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
 | `llm_usage_unpersisted_calls_total` | `reason` | Billed calls the [usage ledger](#the-usage-ledger) did not persist. **Non-zero ⇒ the ledger under-reports** by exactly this many calls. |
@@ -281,10 +281,15 @@ request offering more than one tool), on the request's last block. The standing
 instructions bill at the reduced cache-read rate across consecutive turns
 inside the TTL; within a turn, each iteration also reads the previous
 iteration's whole request (this turn's case and the tool results so far) back
-from the cache. The **local** provider's llama.cpp transport
-forwards it as llama.cpp's own `cache_prompt` body field, which reuses the KV
-cache for a shared prompt prefix. Every other provider pops the flag
-(OpenAI-family, Gemini and Fireworks cache prompts automatically server-side,
+from the cache. The **OpenAI** provider (Azure included) acts on it for
+gpt-5.6 and gpt-6 models with one `prompt_cache_breakpoint` at the end of the
+durable prefix: those models match the cache only at message ends and explicit
+breakpoints, and they bill a cache write at 1.25x input, reported as
+`cache_write_tokens` (the `cache_write` bucket). The **local** provider's
+llama.cpp transport forwards it as llama.cpp's own `cache_prompt` body field,
+which reuses the KV cache for a shared prompt prefix. Every other provider pops
+the flag (older OpenAI models, Gemini and Fireworks cache prompts automatically
+server-side,
 and the prompt's durable-first layout is what gives them a prefix to reuse;
 the flag must never leak into their request bodies or they 400). Caching is transparent to model output — it changes only how the prefix
 is billed. `cache_read` tokens are visible in `llm_call_tokens_total` and
@@ -316,9 +321,8 @@ landing.
    and a #1770 refusal re-issue (`_omitted` schema) after the first iteration
    with the iteration after it. Read `position="first"` as `input` +
    `cache_write`: what each turn's first call could not read back. On
-   Anthropic most of it is `cache_write` (the request's end is written for
-   the next iteration to read), elsewhere `input`; on OpenAI GPT-5.6+ it
-   includes the standing prefix (see the row above). A turn whose tool loop
+   Anthropic and OpenAI GPT-5.6+ most of it is `cache_write` (the request's
+   end is written for the next call to read), elsewhere `input`. A turn whose tool loop
    fell back to the single-shot path counts a `first` call on both paths; the
    single-shot call caches its standing prefix too, so its `input` is this
    turn's case.

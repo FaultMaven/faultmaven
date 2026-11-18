@@ -14,7 +14,7 @@ import aiohttp
 
 from faultmaven.exceptions import LLMException
 from faultmaven.infrastructure.llm.claude_model_id import parse_claude_model_id
-from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
+from faultmaven.infrastructure.llm.prompt_cache import split_at_cache_boundary
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -1138,14 +1138,12 @@ def _mark_cache_boundary(messages: list) -> None:
     if first.get("role") != "user":
         return
     content = first.get("content")
-    if not isinstance(content, str) or CACHE_BOUNDARY not in content:
+    if not isinstance(content, str):
         return
-    end = content.index(CACHE_BOUNDARY) + len(CACHE_BOUNDARY)
-    if content.startswith("\n", end):
-        end += 1  # the breakpoint closes the boundary LINE, newline included
-    head, tail = content[:end], content[end:]
-    if not tail.strip():
-        return  # Anthropic rejects a blank text block
+    split = split_at_cache_boundary(content)
+    if split is None:
+        return
+    head, tail = split
     messages[0] = {
         **first,
         "content": [

@@ -129,8 +129,8 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # / $0.75 out. Rates as of 2026-11-15 from price trackers that agree
         # with each other and with Microsoft's Foundry announcement on the
         # long tier; override via LLM_PRICING_OVERRIDES if the price list
-        # differs. The write rate is inert today: only the Anthropic provider
-        # reports cache-write tokens.
+        # differs. The OpenAI adapter reads cache writes from
+        # prompt_tokens_details.cache_write_tokens.
         "gpt-6-luna": TokenRates(0.10, 0.50, 0.01, 0.125),
         # gpt-5.4-mini stays a supported non-default (reasoning; #644).
         # Corrected 2026-08-26 against developers.openai.com/api/docs/pricing:
