@@ -129,8 +129,8 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         # / $0.75 out. Rates as of 2026-11-15 from price trackers that agree
         # with each other and with Microsoft's Foundry announcement on the
         # long tier; override via LLM_PRICING_OVERRIDES if the price list
-        # differs. The write rate is inert today: only the Anthropic provider
-        # reports cache-write tokens.
+        # differs. The OpenAI adapter reads cache writes from
+        # prompt_tokens_details.cache_write_tokens.
         "gpt-6-luna": TokenRates(0.10, 0.50, 0.01, 0.125),
         # gpt-5.4-mini stays a supported non-default (reasoning; #644).
         # Corrected 2026-08-26 against developers.openai.com/api/docs/pricing:
@@ -370,10 +370,15 @@ def estimate_cost_usd(
     rates = lookup_rates(provider, model)
     if rates is None:
         return 0.0, False
+    # A row with no published write rate bills a reported write as the
+    # ordinary input it is (no premium), never as free: a provider that
+    # reports writes for such a model (OpenRouter, an older OpenAI model)
+    # must not under-count while still reading as priced.
+    write_rate = rates.cache_write or rates.input
     cost = (
         input_tokens * rates.input
         + output_tokens * rates.output
         + cache_read_tokens * rates.cache_read
-        + cache_write_tokens * rates.cache_write
+        + cache_write_tokens * write_rate
     ) / 1_000_000.0
     return cost, True

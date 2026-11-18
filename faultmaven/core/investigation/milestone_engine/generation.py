@@ -861,8 +861,8 @@ class StructuredOutputGenerator:
             # knobs ``case_id`` (the router's cache key) and ``provider_override``
             # (the router's fallback-chain pick) mean nothing to it and would
             # otherwise land in its request body (#2002), so they are set on
-            # the router path only. ``cache_prompt`` stays on both: Anthropic
-            # and llama.cpp act on it, every other provider discards it.
+            # the router path only. ``cache_prompt`` stays on both: Anthropic,
+            # OpenAI GPT-5.6+ and llama.cpp act on it; the rest discard it.
             direct_provider = self.deps.da_provider is not None
             # No ``prompt``: the loop sends ``messages`` alone. (The router
             # dropped the ``prompt=""`` this used to pass, and the model
@@ -878,8 +878,9 @@ class StructuredOutputGenerator:
                 # retry, the next turn's prefix. Anthropic marks breakpoints
                 # (the end of the request only when it offers more than one
                 # tool, so a schema-only call caches just its prefix, which
-                # the next turn's schema-only call reads); llama.cpp reuses
-                # its KV cache; every other provider pops it.
+                # the next turn's schema-only call reads); OpenAI GPT-5.6+
+                # marks one at the durable prefix's end; llama.cpp reuses its
+                # KV cache; every other provider pops it.
                 cache_prompt=True,
             )
             if direct_provider:

@@ -14,16 +14,20 @@ structured-output providers, the schema instructions the engine appends after
 the prompt. The wording therefore names only what it can promise: that this
 turn's case follows.
 
-Three users read ``CACHE_BOUNDARY``:
+Four users read ``CACHE_BOUNDARY``:
 
 - ``faultmaven.core.investigation.prompts.templates.investigation`` renders it
   on its own line in ``INVESTIGATION_BASE``, as the last line of the durable
   prefix.
-- ``faultmaven.infrastructure.llm.providers.anthropic`` looks for its first
-  occurrence in the first user message of a ``cache_prompt`` request and
-  places an explicit ``cache_control`` breakpoint at the end of its line.
-  Providers with automatic prefix caching (OpenAI, Gemini, Fireworks) need no
-  marker; the stable prefix is enough for them.
+- ``faultmaven.infrastructure.llm.providers.anthropic`` splits the first user
+  message of a ``cache_prompt`` request with :func:`cache_boundary_parts`
+  and places an explicit ``cache_control`` breakpoint at the end of the
+  boundary line.
+- ``faultmaven.infrastructure.llm.providers.openai_provider`` does the same
+  with a ``prompt_cache_breakpoint`` on OpenAI GPT-5.6+ (Azure included),
+  which matches the cache only at message ends and explicit breakpoints, so
+  without one the prefix, sharing a message with the case, is never read
+  back. Gemini and Fireworks cache prefixes with no marker.
 - ``faultmaven.infrastructure.llm.router``, where content capture is on
   (#2616 K0), records an Opik span's prompt input from the boundary on, so the
   truncated telemetry payload shows this turn's case rather than the same
@@ -34,6 +38,45 @@ provider and the router have to read it, and ``infrastructure`` must not
 import ``core``.
 """
 
+from __future__ import annotations
+
 CACHE_BOUNDARY = (
     "=== CURRENT CASE (this turn's state, evidence and conversation follow) ==="
 )
+
+
+def split_at_cache_boundary(content: str) -> tuple[str, str] | None:
+    """``content`` split after its FIRST boundary line, or None.
+
+    The head ends with the boundary line, newline included; the two parts
+    concatenate to ``content``, so the model reads the same prompt. The first
+    occurrence is always the template's: everything above it is static
+    instruction text, which the prefix structure guard keeps free of case data
+    (``test_investigation_prefix_613.py``), so case content quoting the
+    boundary lands in the tail and cannot move the split. None when there is
+    no boundary or nothing but whitespace after it (a blank text part is
+    refused by the APIs, and there would be nothing to cache apart).
+    """
+    if CACHE_BOUNDARY not in content:
+        return None
+    end = content.index(CACHE_BOUNDARY) + len(CACHE_BOUNDARY)
+    if content.startswith("\n", end):
+        end += 1
+    head, tail = content[:end], content[end:]
+    if not tail.strip():
+        return None
+    return head, tail
+
+
+def cache_boundary_parts(content: str, marker: dict) -> list[dict] | None:
+    """*content* as two text parts split at the boundary, the head carrying
+    *marker* (each adapter's breakpoint key), or None when it does not split
+    (see :func:`split_at_cache_boundary`)."""
+    split = split_at_cache_boundary(content)
+    if split is None:
+        return None
+    head, tail = split
+    return [
+        {"type": "text", "text": head, **marker},
+        {"type": "text", "text": tail},
+    ]

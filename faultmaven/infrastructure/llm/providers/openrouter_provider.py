@@ -26,6 +26,10 @@ from .openai_provider import OpenAIProvider
 class OpenRouterProvider(OpenAIProvider):
     """OpenRouter gateway provider (OpenAI-compatible wire protocol)."""
 
+    # The routed model is not necessarily OpenAI's, and no breakpoint has
+    # been measured through this gateway: never send one.
+    _SENDS_PROMPT_CACHE_BREAKPOINTS = False
+
     #: This provider's label: what ``provider_name`` returns, what
     #: ``llm_requests_total`` and ``llm_provider_calls_total`` carry, and what
     #: the model dispatch reads statically for its own reports (#1998).

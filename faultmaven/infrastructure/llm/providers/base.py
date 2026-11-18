@@ -55,8 +55,8 @@ ROUTER_CONSUMED_KWARGS: FrozenSet[str] = frozenset(
 
 # FORWARDED-KNOB: forwarded by the router to the provider's ``_generate()``,
 # which translates or pops them (OpenAI/Gemini translate ``reasoning_intent``,
-# Anthropic acts on ``cache_prompt``, llama.cpp sends ``cache_prompt`` under
-# its own name). They are not request fields in general, so a provider that
+# Anthropic and OpenAI GPT-5.6+ act on ``cache_prompt`` with breakpoints,
+# llama.cpp sends it under its own name). They are not request fields in general, so a provider that
 # does not translate one must not send it.
 FORWARDED_KNOB_KWARGS: FrozenSet[str] = frozenset(
     {

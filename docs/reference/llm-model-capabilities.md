@@ -510,7 +510,19 @@ Probe of an Azure deployment of `gpt-6-luna-2026-09-22`, named `gpt-6-luna-1`, r
 - **Schemas:** strict `json_schema` accepted.
 - **Default reasoning:** reasons when no effort is sent.
 
-Not recorded for it: a context window (no `model_context` entry matches the name, so the window is unknown: the prompt budget is `PROMPT_TARGET_TOKENS` and the context-overflow check is skipped; `MODEL_CONTEXT_WINDOWS` declares one). Its rates are in `pricing.py` under `openai` and `azure` ($0.10 in, $0.50 out, $0.01 cache read, $0.125 cache write per 1M tokens, short-context tier).
+Its context window is in `model_context` (`gpt-6-luna`: 922,000 max input tokens of a 1,050,000 total). Its rates are in `pricing.py` under `openai` and `azure` ($0.10 in, $0.50 out, $0.01 cache read, $0.125 cache write per 1M tokens, short-context tier).
+
+### OpenAI prompt-cache breakpoints (GPT-5.6+)
+
+From GPT-5.6, OpenAI (Azure included) matches the prompt cache only at message ends and at explicit `prompt_cache_breakpoint`s. A `cache_prompt` request to any `gpt-<major>[.<minor>]` id at or above 5.6 (`_PROMPT_CACHE_BREAKPOINT_FLOOR`) gets one at `CACHE_BOUNDARY`; a refusal is re-sent without it and remembered per model; OpenRouter and HuggingFace never send it (`_SENDS_PROMPT_CACHE_BREAKPOINTS`). Probe of the Azure deployment `gpt-6-luna-1`, 2026-11-17, two consecutive investigation turns whose text differs only after the boundary, a fresh nonce per arm:
+
+| Arm | Turn 2 prompt | Cached | Written |
+|---|---|---|---|
+| No breakpoint | 37,022 | 11,116 | 25,780 |
+| Breakpoint at the boundary | 37,023 | 32,933 | 3,964 |
+| Breakpoint, one byte changed in the prefix | 37,024 | 11,116 | 25,782 |
+
+Turn 1 of each arm read nothing and wrote ~36,900. Every uncached token was written, at 1.25x input.
 
 ### HuggingFace
 - Requests use Hugging Face's OpenAI-compatible router (`https://router.huggingface.co/v1`); the serverless `api-inference.huggingface.co` API is retired (#2111)
