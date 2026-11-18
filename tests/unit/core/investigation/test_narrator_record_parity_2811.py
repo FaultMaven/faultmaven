@@ -414,9 +414,11 @@ async def _held_check():
 
 
 async def _held_check_on_a_false_alarm():
-    """The held check FULFILLED on rows from before its ask, then the problem
-    found a false alarm: the finding supersedes no FULFILLED need, so the
-    check still holds while readiness answers FALSE_ALARM first."""
+    """The held check FULFILLED on rows from before its ask, then the finding
+    of a false alarm applied with ``invalidate_problem`` directly, past
+    ``invalidation_refusal``, which refuses it on this case while its cause
+    leg stands: the finding supersedes no FULFILLED need, so the check still
+    holds while readiness answers FALSE_ALARM first."""
     from faultmaven.core.investigation.problem_status import invalidate_problem
     from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
         _held_case,

@@ -376,7 +376,9 @@ class Demotion(BaseModel):
 
 
 class ResolutionOutcome(BaseModel):
-    """``assess_resolution_readiness`` and the rows a resolution rests on."""
+    """``assess_resolution_readiness`` and the rows a resolution rests on;
+    ``pending_check_need_id`` and ``pending_check_reason`` are
+    ``pending_symptom_check``'s, whatever readiness answered."""
 
     verdict: ResolutionVerdict
     reason: ResolutionReason

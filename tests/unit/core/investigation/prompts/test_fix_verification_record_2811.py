@@ -353,10 +353,11 @@ async def test_the_held_need_and_its_reason_are_recorded(name, reason):
 
 
 async def test_a_false_alarm_keeps_the_held_need():
-    """``invalidate_problem`` supersedes the open symptom need; the need
-    FULFILLED on rows from before its ask still holds, and readiness answers
-    FALSE_ALARM before it reads it. The record holds it as ``main``'s block
-    did (the fixture renders as the oracle)."""
+    """``invalidate_problem``, applied directly (``invalidation_refusal``
+    refuses this case while its cause leg stands), supersedes the open symptom
+    need; the need FULFILLED on rows from before its ask still holds, and
+    readiness answers FALSE_ALARM before it reads it. The record holds it as
+    ``main``'s block did (the fixture renders as the oracle)."""
     case = await build("N:invalidated")
     assert case.progress.problem_status == ProblemStatus.INVALIDATED
     superseded, held = case.evidence_needs

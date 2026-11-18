@@ -1149,8 +1149,8 @@ written*, as amended by #2811, ruled 2026-11-15):
   it. The record is folded at most once per prompt assembly
   (`NarrationFold`), and only where the block is shown. A fold, fresh read,
   needs read, unreadable need text or render that raises replaces the block
-  with one declared line; each distinct failure is logged once, and a failure
-  counted once per assembly, on
+  with one declared line; each distinct failure is logged once per assembly,
+  and a failure counted once per assembly, on
   `case_outcome_write_failures_total{at="narration"}`.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound

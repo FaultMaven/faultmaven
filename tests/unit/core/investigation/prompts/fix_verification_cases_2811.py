@@ -285,10 +285,12 @@ NEEDS = {
 
 
 async def _invalidated():
-    """The problem found a false alarm (``invalidate_problem``) while a need
-    FULFILLED on rows from before its ask holds the resolution: the finding
-    supersedes the open symptom need, and the held one stays listed and
-    marked. Readiness answers FALSE_ALARM before it reads the held need."""
+    """The finding of a false alarm applied with ``invalidate_problem``
+    directly, past ``invalidation_refusal``, which refuses it on this case
+    while its cause leg stands; a need FULFILLED on rows from before its ask
+    holds the resolution. The finding supersedes the open symptom need, and
+    the held one stays listed and marked. Readiness answers FALSE_ALARM
+    before it reads the held need."""
     from faultmaven.core.investigation.problem_status import invalidate_problem
 
     case = await _needs("fulfilled", extra=1)

@@ -3,8 +3,8 @@
 
 A need's state is the pool's own stored state, never an outcome fact
 (``EvidenceNeed``), so it is not on the record. A narrator reads it through
-``NeedsView``: typed, holding no text, built once per block from the case the
-record is folded from. Pin 2 exempts it permanently, with its field set
+``NeedsView``: typed, holding no text, built only where the need lines print,
+from the case the record is folded from. Pin 2 exempts it permanently, with its field set
 asserted, and it is not a census row. A need's text is ``content(id)``.
 """
 
