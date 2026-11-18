@@ -22,10 +22,10 @@ import os
 import uuid
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
+    _execute,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -79,20 +79,6 @@ def _old_body() -> str:
     )
 
 
-async def _execute(url: str, *statements: str) -> list:
-    """Run ``statements`` in one transaction; return the last one's rows."""
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            rows: list = []
-            for statement in statements:
-                result = await conn.execute(text(statement))
-                rows = list(result.fetchall()) if result.returns_rows else []
-            return rows
-    finally:
-        await engine.dispose()
-
-
 async def _seed(url: str) -> tuple:
     """Two enterprises, each with three conversion jobs and their convert
     receipts (``_CONVERTS``), and a knowledge item with its upload receipt.
@@ -141,11 +127,6 @@ async def _rows(url: str) -> dict:
         url, f"SELECT {_COLUMNS}, response::text FROM kb_request_receipts"
     )
     return {(row[0], row[1]): (tuple(row[:-1]), row[-1]) for row in rows}
-
-
-async def _revision(url: str) -> str:
-    ((version,),) = await _execute(url, "SELECT version_num FROM alembic_version")
-    return version
 
 
 async def test_the_owner_scrubs_every_enterprises_convert_receipts():

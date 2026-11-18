@@ -90,7 +90,8 @@ class Postgres:
     maintenance_url: str
 
 
-async def _execute(url: str, *statements: str) -> None:
+async def _execute_autocommit(url: str, *statements: str) -> None:
+    """Run ``statements`` each in its own autocommit; return no rows."""
     engine = create_async_engine(url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:
@@ -103,7 +104,7 @@ async def _execute(url: str, *statements: str) -> None:
 async def _create_maintenance_role(db_superuser_url: str, role: str) -> None:
     """``03-create-maintenance-role.sql``'s role, for the ``public`` schema."""
     dbname = make_url(db_superuser_url).database
-    await _execute(
+    await _execute_autocommit(
         db_superuser_url,
         drop_role_sql(role),
         f"CREATE ROLE {role} LOGIN PASSWORD '{_PW}' NOSUPERUSER BYPASSRLS "
@@ -156,7 +157,7 @@ def provisioned_database():
 
     created_runtime_role = not asyncio.run(runtime_role_exists())
     asyncio.run(
-        _execute(
+        _execute_autocommit(
             superuser_url,
             drop_role_sql(owner),
             f"CREATE ROLE {owner} LOGIN PASSWORD '{_PW}' NOSUPERUSER NOBYPASSRLS",
@@ -179,7 +180,7 @@ def provisioned_database():
         )
     finally:
         asyncio.run(
-            _execute(
+            _execute_autocommit(
                 superuser_url,
                 f'DROP DATABASE IF EXISTS "{dbname}" WITH (FORCE)',
                 drop_role_sql(app),
@@ -412,11 +413,13 @@ async def test_an_owner_on_a_forced_table_is_unproven(
     guard sees it, and with that guard forced the second still refuses."""
     if proof_forced:
         monkeypatch.setattr(kb_orphan_sweep, "_ROW_SECURITY_ACTIVE", _PROOF_FORCED)
-    await _execute(pg.owner_url, "ALTER TABLE knowledge_items FORCE ROW LEVEL SECURITY")
+    await _execute_autocommit(
+        pg.owner_url, "ALTER TABLE knowledge_items FORCE ROW LEVEL SECURITY"
+    )
     try:
         result, present, posture = await _sweep(tmp_path, pg.owner_url)
     finally:
-        await _execute(
+        await _execute_autocommit(
             pg.owner_url, "ALTER TABLE knowledge_items NO FORCE ROW LEVEL SECURITY"
         )
 

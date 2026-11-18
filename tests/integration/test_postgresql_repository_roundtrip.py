@@ -66,9 +66,7 @@ from faultmaven.modules.case.domain.owned_models.report import (
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
-from tests.utils import seed_enterprises, seed_users
-
-_FILE_ID = "file_0123456789ab"
+from tests.utils import pg_tenant, seed_users
 
 pytestmark = [
     pytest.mark.integration,
@@ -97,55 +95,30 @@ async def pg_engine():
     await engine.dispose()
 
 
-#: Read before the test and diffed after, so the teardown removes exactly what
-#: the test added and nothing a sibling module owns.
-_ENTERPRISES_HERE = text(
-    "SELECT enterprise_id FROM enterprises WHERE enterprise_id LIKE 'ent\\_%'"
-)
+@pytest.fixture
+async def tenant():
+    """An enterprise of the test's own and an owner anchored in it, deleted with
+    every row the test wrote under it (``pg_tenant``, #2414).
+
+    The test's other users are seeded in that enterprise too, so they go with
+    it. Left behind, they were not a private mess: the two-enterprise probe's
+    residue check greps the ``ent_`` prefix, and a teardown that diffed the
+    enterprise table around the test also took a parallel worker's.
+    """
+    async with pg_tenant(os.environ["DATABASE_URL"], "rt") as tenant:
+        yield tenant
 
 
 @pytest.fixture
-async def pg_repo(pg_engine):
-    """A PostgreSQLHybridCaseRepository on a real PG session, with the
-    case's FK prerequisites (enterprise/org/user) seeded.
-
-    Every test here mints its own ``ent_…`` enterprise, and they used to be
-    left behind. That is not a private mess: the two-enterprise probe's residue
-    check greps exactly that prefix, so this suite's leftovers fail a sibling
-    module. It passed only because ``tests/integration/security/`` sorts before
-    this file and the database was fresh — a green that depends on collection
-    order rather than on the property.
-
-    The teardown diffs the enterprise set around the test and removes what
-    appeared, so it can never reach a row another module owns.
-    """
-    Session = async_sessionmaker(pg_engine, expire_on_commit=False)
-    async with Session() as session:
-        before = set((await session.execute(_ENTERPRISES_HERE)).scalars())
-
-    async with Session() as session:
+async def pg_repo(tenant):
+    """A PostgreSQLHybridCaseRepository on a real PG session, in the test's
+    ``tenant``."""
+    async with tenant.factory() as session:
         # Sanity: the factory-style detection must agree this is PG, or the
         # cast helper would silently emit SQLite-style bare placeholders.
         repo = PostgreSQLHybridCaseRepository(session)
         assert repo._is_pg is True
         yield repo
-
-    async with Session() as session:
-        added = set((await session.execute(_ENTERPRISES_HERE)).scalars()) - before
-        for enterprise_id in added:
-            # Cases first: the child rows cascade from the case, and
-            # ``cases.enterprise_id`` is itself an FK to the row being removed.
-            await session.execute(
-                text("DELETE FROM cases WHERE enterprise_id = :e"), {"e": enterprise_id}
-            )
-            await session.execute(
-                text("DELETE FROM users WHERE enterprise_id = :e"), {"e": enterprise_id}
-            )
-            await session.execute(
-                text("DELETE FROM enterprises WHERE enterprise_id = :e"),
-                {"e": enterprise_id},
-            )
-        await session.commit()
 
 
 def _make_case(enterprise_id: str, user_id: str) -> Case:
@@ -171,16 +144,15 @@ def _make_case(enterprise_id: str, user_id: str) -> Case:
 
 
 @pytest.mark.asyncio
-async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
+async def test_case_save_roundtrip_with_jsonb_columns(pg_repo, tenant):
     """save() executes the cases UPDATE/INSERT (8 JSONB casts) plus
     evidence/uploaded_files/messages inserts (more JSONB casts) on real PG,
     then get() reads them back. The ``:name::jsonb`` bug made every one of
     these writes raise 'syntax error at or near ":"'."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     case = _make_case(enterprise_id, user_id)
     file_id = f"file_{uuid4().hex[:12]}"
@@ -269,17 +241,56 @@ async def test_case_save_roundtrip_with_jsonb_columns(pg_repo):
     assert any(m.get("content") == "how to fix the timeout?" for m in persisted)
 
 
+#: The six columns an uploaded file round-trips: every one set, and the two
+#: optional ones NULL (#2230).
+_ALL_FIELDS = dict(
+    filename="integration_test.log",
+    size_bytes=4096,
+    content_type="text/plain",
+    uploaded_at_turn=3,
+    upload_source="paste",
+    storage_ref="cases/integration.log",
+)
+_NULL_OPTIONAL = {
+    **_ALL_FIELDS,
+    "filename": "pending.log",
+    "content_type": None,
+    "storage_ref": None,
+}
+
+
 @pytest.mark.asyncio
-async def test_upsert_case_entities_roundtrip(pg_repo):
+@pytest.mark.parametrize(
+    "fields", [_ALL_FIELDS, _NULL_OPTIONAL], ids=["all-fields", "null-optional"]
+)
+async def test_uploaded_file_fields_roundtrip(pg_repo, tenant, fields):
+    """A file saved with its case loads back with each of the six fields as
+    written, a NULL ``storage_ref`` and ``content_type`` included."""
+    session = pg_repo.db
+    enterprise_id = tenant.enterprise_id
+    user_id = f"user_{uuid4().hex[:8]}"
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
+    case = _make_case(enterprise_id, user_id)
+    case.uploaded_files.append(
+        UploadedFile(file_id=f"file_{uuid4().hex[:12]}", **fields)
+    )
+
+    await pg_repo.save(case)
+
+    (loaded,) = (await pg_repo.get(case.case_id)).uploaded_files
+    assert {name: getattr(loaded, name) for name in fields} == fields
+
+
+@pytest.mark.asyncio
+async def test_upsert_case_entities_roundtrip(pg_repo, tenant):
     """upsert_case_entities() is a standalone path NOT reached by save() — it
     is the 4th org-id-subquery site, and the one whose enclosing text() was
     newly converted to an f-string. Exercise it directly so the
     AmbiguousParameterError fix (and the f-string conversion) is validated."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     # The entity FK-references an evidence row, so save a case with one first.
     case = _make_case(enterprise_id, user_id)
@@ -338,13 +349,12 @@ async def test_upsert_case_entities_roundtrip(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_add_message_roundtrip(pg_repo):
+async def test_add_message_roundtrip(pg_repo, tenant):
     """add_message() exercises the case_messages metadata JSONB cast."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
@@ -369,7 +379,7 @@ async def test_add_message_roundtrip(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
+async def test_get_returns_messages_interleaved_by_created_at(pg_repo, tenant):
     """get() must return case.messages interleaved by created_at, not grouped by role.
 
     Regression for the Slack/PG transcript bug: aggregating messages with
@@ -381,10 +391,9 @@ async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
     ``ORDER BY created_at``. SQLite never hit this (it already ORDER BYs).
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
@@ -424,7 +433,7 @@ async def test_get_returns_messages_interleaved_by_created_at(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
+async def test_search_by_case_id_and_title_scoped_to_user(pg_repo, tenant):
     """search() finds cases by case_id AND title, scoped to the caller.
 
     Regression: the query used ``SELECT DISTINCT c.case_id, … ORDER BY rank,
@@ -434,11 +443,10 @@ async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
     nothing. Also guards user-scoping: it must happen in SQL, not after LIMIT.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     u1 = f"user_{uuid4().hex[:8]}"
     u2 = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [u1, u2])
+    await seed_users(session, [u1, u2], enterprise_id=enterprise_id)
 
     mine = _make_case(enterprise_id, u1)
     other = _make_case(enterprise_id, u2)
@@ -460,13 +468,12 @@ async def test_search_by_case_id_and_title_scoped_to_user(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_source_roundtrips_and_filters(pg_repo):
+async def test_source_roundtrips_and_filters(pg_repo, tenant):
     """cases.source (ADR-012) persists through save()/get() and filters in list()."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     copilot_case = _make_case(enterprise_id, user_id)  # default source='copilot'
     slack_case = _make_case(enterprise_id, user_id)
@@ -487,15 +494,14 @@ async def test_source_roundtrips_and_filters(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_add_report_roundtrip_with_timestamptz(pg_repo):
+async def test_add_report_roundtrip_with_timestamptz(pg_repo, tenant):
     """add_report() exercises the reports metadata (JSONB) AND
     generated_at/updated_at (TIMESTAMPTZ) casts — the timestamptz arm of the
     same bug class."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
     await pg_repo.save(case)
 
@@ -524,7 +530,7 @@ async def test_add_report_roundtrip_with_timestamptz(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_causal_graph_roundtrip(pg_repo):
+async def test_causal_graph_roundtrip(pg_repo, tenant):
     """Round-trip the causal graph on real PG (the 1d slice): causal_nodes +
     causal_edges (incl. an AND-group) + the causal_node_evidence junction, plus
     the chain-header fields on hypotheses (root_node_id/path) and the node/
@@ -532,18 +538,18 @@ async def test_causal_graph_roundtrip(pg_repo):
     FK ordering (nodes before edges/hypotheses/solutions; node-evidence after
     evidence)."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     case = _make_case(enterprise_id, user_id)
+    file_id = f"file_{uuid4().hex[:12]}"
 
     # Evidence the node-evidence junction can FK to: file-backed, like all
     # submitted evidence, so the file it names is on the case (#1930).
     case.uploaded_files.append(
         UploadedFile(
-            file_id=_FILE_ID,
+            file_id=file_id,
             filename="psql.log",
             size_bytes=64,
             uploaded_at_turn=2,
@@ -557,7 +563,7 @@ async def test_causal_graph_roundtrip(pg_repo):
             primary_purpose="root_cause",
             summary="psql from the migration pod times out connecting to :5432",
             source_type=EvidenceSourceType.LOGS,
-            source_file_id=_FILE_ID,
+            source_file_id=file_id,
             collected_by=user_id,
             collected_at_turn=2,
         )
@@ -681,16 +687,15 @@ async def test_causal_graph_roundtrip(pg_repo):
     assert fs.quadrant == InterventionQuadrant.REMEDIATION
 
 
-async def test_pruned_causal_graph_does_not_resurrect(pg_repo):
+async def test_pruned_causal_graph_does_not_resurrect(pg_repo, tenant):
     """On real PG: a node/edge removed in memory (e.g. a bridge stub GC'd by a
     hypothesis re-root) must be deleted from the DB on save, not survive the
     additive upsert and resurrect on the next load. Covers both a stale node and
     a stale edge whose endpoints both survive (not caught by the FK cascade)."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     case = _make_case(enterprise_id, user_id)
     d = CausalNode(
@@ -754,7 +759,7 @@ async def test_pruned_causal_graph_does_not_resurrect(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
+async def test_list_pagination_and_include_empty_soundness_pg(pg_repo, tenant):
     """PG parity for the case-list pagination contract (cloud path).
 
     Mirrors the SQLite behavioral test: on a REAL PostgreSQL, limit/offset
@@ -765,10 +770,9 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
     parity" claim, verified against the backend cloud runs on).
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     # 4 active (current_turn > 0) + 2 empty (current_turn == 0) = 6 rows.
     for i in range(6):
@@ -813,7 +817,7 @@ async def test_list_pagination_and_include_empty_soundness_pg(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
+async def test_message_authorship_round_trips_on_both_read_paths(pg_repo, tenant):
     """Per-turn authorship survives PostgreSQL (ADR-013 D4; ADR-011 D5).
 
     PostgreSQL reads messages two different ways — `get_messages()` runs a plain
@@ -822,11 +826,10 @@ async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
     by the SQLite suite, so both are asserted here.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     owner_id = f"user_{uuid4().hex[:8]}"
     teammate_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [owner_id, teammate_id])
+    await seed_users(session, [owner_id, teammate_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, owner_id)
     await pg_repo.save(case)
 
@@ -867,7 +870,7 @@ async def test_message_authorship_round_trips_on_both_read_paths(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_message_authorship_is_write_once_but_fillable(pg_repo):
+async def test_message_authorship_is_write_once_but_fillable(pg_repo, tenant):
     """The upsert's COALESCE, asserted on PostgreSQL.
 
     `save()` routes messages through `_upsert_messages` on both backends, and
@@ -875,11 +878,10 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
     cannot speak for this one.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     owner_id = f"user_{uuid4().hex[:8]}"
     teammate_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [owner_id, teammate_id])
+    await seed_users(session, [owner_id, teammate_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, owner_id)
     await pg_repo.save(case)
 
@@ -925,7 +927,7 @@ async def test_message_authorship_is_write_once_but_fillable(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_an_id_less_row_is_completed_not_skipped(pg_repo, pg_engine):
+async def test_an_id_less_row_is_completed_not_skipped(pg_repo, tenant, pg_engine):
     """#1418 on the PRODUCTION backend, not only on SQLite.
 
     ``_upsert_messages`` used to ``continue`` past any row without a
@@ -939,10 +941,9 @@ async def test_an_id_less_row_is_completed_not_skipped(pg_repo, pg_engine):
     (``timestamptz``), not SQLite's text sort, so this half needs its own test.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
 
     case.messages.append(
@@ -993,7 +994,7 @@ async def test_an_id_less_row_is_completed_not_skipped(pg_repo, pg_engine):
 
 
 @pytest.mark.asyncio
-async def test_the_save_refuses_what_it_cannot_know(pg_repo):
+async def test_the_save_refuses_what_it_cannot_know(pg_repo, tenant):
     """The other half of #1418's rule, on PostgreSQL: stamp only what you
     witnessed.
 
@@ -1004,10 +1005,9 @@ async def test_the_save_refuses_what_it_cannot_know(pg_repo):
     the row's index in the list, which anchors then key on.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     base = _make_case(enterprise_id, user_id)
     base.messages.append({"role": "user", "content": "no created_at", "turn_number": 1})
@@ -1027,15 +1027,14 @@ async def test_the_save_refuses_what_it_cannot_know(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_the_save_refuses_a_case_it_could_not_load(pg_repo):
+async def test_the_save_refuses_a_case_it_could_not_load(pg_repo, tenant):
     """#1795: the SQLite save re-validates the whole aggregate before writing,
     and this one did not, so a case holding an invalid nested model was stored
     and then refused by every load. Refused before any write now."""
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     case = _make_case(enterprise_id, user_id)
     # Confirmed and then emptied: ``InquiryData`` refuses that, and has no
@@ -1051,7 +1050,7 @@ async def test_the_save_refuses_a_case_it_could_not_load(pg_repo):
 
 
 @pytest.mark.asyncio
-async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
+async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo, tenant):
     """``search(state=...)`` narrows in SQL, ahead of the LIMIT (#1416).
 
     ``CaseSearchRequest.state`` was declared and published for as long as the
@@ -1067,10 +1066,9 @@ async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
     WHERE clause.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
 
     # Four cases, identically shaped titles so ts_rank ties and ``updated_at``
     # decides the order. States alternate two and two.
@@ -1143,7 +1141,7 @@ async def test_search_state_is_a_where_clause_not_a_post_filter(pg_repo):
 
 @pytest.mark.asyncio
 async def test_message_read_order_agrees_and_defers_ties_to_insertion(
-    pg_repo, pg_engine
+    pg_repo, tenant, pg_engine
 ):
     """The #1428 divergence, on the backend where it was measured.
 
@@ -1163,10 +1161,9 @@ async def test_message_read_order_agrees_and_defers_ties_to_insertion(
     minted id is a uuid4.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
 
     same = "2026-06-13T10:15:30.123456+00:00"
@@ -1212,7 +1209,9 @@ async def test_message_read_order_agrees_and_defers_ties_to_insertion(
 
 
 @pytest.mark.asyncio
-async def test_time_still_dominates_the_turn_number_on_postgres(pg_repo, pg_engine):
+async def test_time_still_dominates_the_turn_number_on_postgres(
+    pg_repo, tenant, pg_engine
+):
     """Positive control on the production backend.
 
     Without it, ordering by ``turn_number`` first would satisfy the
@@ -1221,10 +1220,9 @@ async def test_time_still_dominates_the_turn_number_on_postgres(pg_repo, pg_engi
     text and the two clauses are written separately.
     """
     session = pg_repo.db
-    enterprise_id = f"ent_{uuid4().hex[:8]}"
+    enterprise_id = tenant.enterprise_id
     user_id = f"user_{uuid4().hex[:8]}"
-    await seed_enterprises(session, [enterprise_id])
-    await seed_users(session, [user_id])
+    await seed_users(session, [user_id], enterprise_id=enterprise_id)
     case = _make_case(enterprise_id, user_id)
 
     case.messages.append(

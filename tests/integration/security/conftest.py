@@ -13,8 +13,11 @@ copies are the kind that drift silently: a grant added to one and not the other
 changes what the *other* module proves without failing anything.
 
 The modules that migrate a database of their own — to step a revision down
-and up, or to plant objects no other test may meet — share ``alembic_on`` and
-``database_of_its_own`` for the same reason.
+and up, or to plant objects no other test may meet — share ``alembic_on``,
+``database_of_its_own``, ``_execute`` (statements in one transaction) and
+``_revision`` (the stamped revision) for the same reason (#2876). The definer
+probe's ``_execute_as`` is its own helper: it confines the path and binds the
+enterprise first.
 
 What is deliberately NOT shared: each module keeps its own module-scoped
 environment fixture. The role name has to be unique per module (both create and
@@ -167,6 +170,26 @@ def alembic_on(url: str, command: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+async def _execute(url: str, *statements: str, params: dict | None = None) -> list:
+    """Run ``statements`` in one transaction; return the last one's rows."""
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as conn:
+            rows: list = []
+            for statement in statements:
+                result = await conn.execute(text(statement), params or {})
+                rows = list(result.fetchall()) if result.returns_rows else []
+            return rows
+    finally:
+        await engine.dispose()
+
+
+async def _revision(url: str) -> str:
+    """The revision ``url``'s database is stamped at."""
+    ((version,),) = await _execute(url, "SELECT version_num FROM alembic_version")
+    return version
 
 
 @asynccontextmanager

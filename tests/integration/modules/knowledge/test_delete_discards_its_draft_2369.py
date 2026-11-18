@@ -19,8 +19,8 @@ releases no key.
 
 The SQLite tests run on the #2365 tests' database, which enforces foreign keys
 as the app's engine does, so a discard issued after the ``DELETE`` would match
-nothing. Five run on PostgreSQL: one races a link against the delete, and three
-run a reset, in a database of their own.
+nothing. Six run on PostgreSQL: one races a link against the delete, three run
+a reset, in a database of their own, and one seeds two tenants at once.
 """
 
 from __future__ import annotations
@@ -46,9 +46,6 @@ from faultmaven.infrastructure.persistence.models import (
     CaseModel,
     ConversionDraftModel,
     ConversionJobModel,
-    EnterpriseModel,
-    KnowledgeItemModel,
-    ResourceShareModel,
     UploadedFileModel,
     UserModel,
 )
@@ -84,14 +81,14 @@ from tests.unit.modules.knowledge.test_conversion_service import (
     _case_analysis,
     _make_case_draft,
 )
-from tests.utils import regex_only_sanitizer, seed_enterprises, seed_users
+from tests.utils import pg_tenant, regex_only_sanitizer, seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
 CASE_KEY = "case-2369"
 
 
-def _job(job_id: str, *, kind: str, key: str | None = None) -> list:
+def _job(job_id: str, *, kind: str, key: str | None = None, owner=OWNER) -> list:
     """A conversion job and the source row its key requires."""
     enterprise = _current_enterprise_id.get()
     file_id = f"file_{job_id}"
@@ -101,7 +98,7 @@ def _job(job_id: str, *, kind: str, key: str | None = None) -> list:
         ),
         ConversionJobModel(
             id=job_id,
-            user_id=OWNER,
+            user_id=owner,
             enterprise_id=enterprise,
             scope="personal",
             status="completed",
@@ -135,10 +132,11 @@ async def _add(factory, *rows) -> None:
         await session.commit()
 
 
-async def _publish(factory, knowledge, kind: str) -> tuple[str, str]:
-    """Publish a runbook as ``kind`` does; return its item and draft ids."""
+async def _publish(factory, knowledge, kind: str, owner=OWNER) -> tuple[str, str]:
+    """Publish ``owner``'s runbook as ``kind`` does; return its item and draft
+    ids."""
     if kind == "upload":
-        document_id = (await _upload(knowledge))["document_id"]
+        document_id = (await _upload(knowledge, owner=owner))["document_id"]
         async with factory() as session:
             (draft_id,) = (
                 await session.execute(
@@ -150,7 +148,9 @@ async def _publish(factory, knowledge, kind: str) -> tuple[str, str]:
         return document_id, draft_id
     key = CASE_KEY if kind == "case" else None
     await _add(
-        factory, *_job("conv_2369", kind=kind, key=key), _draft("d", "conv_2369")
+        factory,
+        *_job("conv_2369", kind=kind, key=key, owner=owner),
+        _draft("d", "conv_2369"),
     )
     published = await ConversionService(
         sanitizer=regex_only_sanitizer(),
@@ -158,7 +158,7 @@ async def _publish(factory, knowledge, kind: str) -> tuple[str, str]:
         settings=MagicMock(),
         db_session_factory=factory,
         knowledge_service=knowledge,
-    ).verify_draft("conv_2369", "d", OWNER)
+    ).verify_draft("conv_2369", "d", owner)
     return published.knowledge_item_id, "d"
 
 
@@ -555,51 +555,68 @@ _needs_postgres = pytest.mark.skipif(
 
 @pytest.fixture
 async def pg_factory():
-    """The configured PostgreSQL, with an enterprise of the test's own: the
-    database is shared with every other ``-m postgres`` test."""
-    enterprise = f"ent_2369_{uuid4().hex[:8]}"
+    """The session factory and owner of a ``pg_tenant`` of the test's own, its
+    enterprise the current one."""
+    async with pg_tenant(os.environ["DATABASE_URL"], "2369") as tenant:
+        token = _current_enterprise_id.set(tenant.enterprise_id)
+        try:
+            yield tenant.factory, tenant.owner
+        finally:
+            _current_enterprise_id.reset(token)
+
+
+@pytest.mark.postgres
+@_needs_postgres
+async def test_two_pg_tenants_seed_without_colliding():
+    """Two tests on different xdist workers seed their ``pg_tenant``s at once.
+    Each seeds an owner of its own, anchored in its own enterprise: a shared id
+    met the other's on ``users_pkey``, or, seeded second, was skipped and left
+    in the other's enterprise, whose teardown deleted it. Each teardown then
+    leaves neither row."""
+    both, seeded = asyncio.Barrier(2), []
+
+    async def hold() -> None:
+        try:
+            async with pg_tenant(os.environ["DATABASE_URL"], "2369") as tenant:
+                async with tenant.factory() as session:
+                    row = await session.get(UserModel, tenant.owner)
+                seeded.append((tenant.owner, row.enterprise_id, tenant.enterprise_id))
+                await both.wait()
+        except BaseException:
+            await both.abort()
+            raise
+
+    outcomes = await asyncio.gather(hold(), hold(), return_exceptions=True)
+
+    failures = [o for o in outcomes if isinstance(o, BaseException)]
+    assert not failures, failures
+    assert len({owner for owner, _, _ in seeded}) == 2
+    assert all(anchor == own for _, anchor, own in seeded), seeded
     engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    token = _current_enterprise_id.set(enterprise)
     try:
-        async with factory() as session:
-            await seed_enterprises(session, [enterprise])
-            await seed_users(session, [OWNER], enterprise_id=enterprise)
-        yield factory
-    finally:
-        async with factory() as session:
-            for model in (
-                ResourceShareModel,
-                ConversionDraftModel,
-                ConversionJobModel,
-                UploadedFileModel,
-                KnowledgeItemModel,
-                UserModel,
-            ):
-                await session.execute(
-                    delete(model).where(model.enterprise_id == enterprise)
-                )
-            await session.execute(
-                delete(EnterpriseModel).where(
-                    EnterpriseModel.enterprise_id == enterprise
+        async with engine.connect() as conn:
+            left = await conn.execute(
+                select(UserModel.user_id).where(
+                    UserModel.enterprise_id.in_([own for _, _, own in seeded])
                 )
             )
-            await session.commit()
-        _current_enterprise_id.reset(token)
+            assert left.all() == []
+    finally:
         await engine.dispose()
 
 
 @pytest.mark.postgres
 @_needs_postgres
 async def test_a_deleted_runbooks_draft_is_discarded_on_postgresql(pg_factory):
-    knowledge = _knowledge(pg_factory)
-    item_id, draft_id = await _publish(pg_factory, knowledge, "upload")
+    factory, owner = pg_factory
+    knowledge = _knowledge(factory)
+    item_id, draft_id = await _publish(factory, knowledge, "upload", owner)
 
     await knowledge.delete_document(item_id)
 
-    draft, _ = await _draft_and_key(pg_factory, draft_id)
+    draft, _ = await _draft_and_key(factory, draft_id)
     assert (draft.status, draft.knowledge_item_id) == ("discarded", None)
-    assert draft_id not in [d["draft_id"] for d in await _drafts(pg_factory)]
+    assert draft_id not in [d["draft_id"] for d in await _drafts(factory, owner)]
 
 
 @pytest.mark.postgres
@@ -611,15 +628,17 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
     discard then sees it. Unlocked, the discard missed the draft, the
     ``DELETE`` waited, and the key's ``SET NULL`` left it verified, naming
     nothing."""
-    knowledge = _knowledge(pg_factory)
-    item_id, draft_id = await _publish(pg_factory, knowledge, "upload")
-    job_id = (await _draft_and_key(pg_factory, draft_id))[0].conversion_id
-    await _add(pg_factory, _draft("linked", job_id))
+    factory, owner = pg_factory
+    knowledge = _knowledge(factory)
+    item_id, draft_id = await _publish(factory, knowledge, "upload", owner)
+    job_id = (await _draft_and_key(factory, draft_id))[0].conversion_id
+    linked = f"linked-{uuid4().hex[:8]}"
+    await _add(factory, _draft(linked, job_id))
 
-    async with pg_factory() as linking, pg_factory() as probe:
+    async with factory() as linking, factory() as probe:
         await linking.execute(
             update(ConversionDraftModel)
-            .where(ConversionDraftModel.id == "linked")
+            .where(ConversionDraftModel.id == linked)
             .values(status="verified", knowledge_item_id=item_id)
         )
         linker = (await linking.execute(text("SELECT pg_backend_pid()"))).scalar()
@@ -643,7 +662,7 @@ async def test_a_draft_linked_while_the_delete_runs_is_discarded(pg_factory):
         await linking.commit()
         assert (await deleting)["success"] is True
 
-    draft, _ = await _draft_and_key(pg_factory, "linked")
+    draft, _ = await _draft_and_key(factory, linked)
     assert (draft.status, draft.knowledge_item_id) == ("discarded", None)
 
 
