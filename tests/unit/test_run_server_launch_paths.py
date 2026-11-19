@@ -98,6 +98,7 @@ EXPECTED_UVICORN_KWARGS = {
     "ws": "none",
     "log_config": None,
     "workers": 1,
+    "factory": True,
 }
 
 
@@ -184,8 +185,9 @@ def test_dev_script_never_starts_the_uvicorn_cli():
 #:   in a real boot), the hook leaves the caller's frame alone. A hook cannot be
 #:   removed, so this runs only in the child process;
 #: * ``uvicorn.run`` is replaced by a stub that records the call and then
-#:   imports the app string with uvicorn's own importer, as ``uvicorn.run`` does
-#:   in-process (``reload=False``, one worker) before it serves. Without that
+#:   imports the app string with uvicorn's own importer, and calls it when it is
+#:   a factory, as ``uvicorn.run`` does in-process (``reload=False``, one worker)
+#:   before it serves. Without that
 #:   import a second execution would never happen and the count would prove
 #:   nothing.
 #:
@@ -217,7 +219,9 @@ sys.addaudithook(count_main_py_executions)
 
 
 def import_the_app(app, **kwargs):
-    import_from_string(app)
+    loaded = import_from_string(app)
+    if kwargs.get("factory"):
+        loaded()
 
 
 system_exit = None
@@ -306,7 +310,7 @@ def test_launch_path_reaches_uvicorn_run_with_every_option(path):
         f"`python -m {launch}` ({path}) never reached uvicorn.run "
         "(is the __main__ guard in faultmaven/server.py gone?)"
     )
-    assert record["args"] == ["faultmaven.main:app"]
+    assert record["args"] == ["faultmaven.asgi:create_app"]
     assert record["kwargs"] == EXPECTED_UVICORN_KWARGS
 
 

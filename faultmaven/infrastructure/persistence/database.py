@@ -140,6 +140,11 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         f"Creating async engine for: {url.split('@')[-1] if '@' in url else url}"
     )
 
+    # DATABASE_ECHO sets the engine logger's level, never ``echo=``: that adds
+    # SQLAlchemy's own stdout handler, outside the log chain (#2888).
+    if db_config.database_echo:
+        logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
+
     # Configure engine based on database type. Both hide bound parameters, and
     # PostgreSQL's also drops the server's DETAIL and CONTEXT (#2377): a failed
     # statement's exception text would otherwise carry the row's values, a
@@ -152,7 +157,6 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # fresh DBAPI connection, which is its own implicit liveness check.
         _engine = create_async_engine(
             url,
-            echo=db_config.database_echo,
             hide_parameters=True,
             poolclass=NullPool,
             connect_args={"check_same_thread": False},
@@ -219,7 +223,6 @@ def get_engine(database_url: Optional[str] = None) -> AsyncEngine:
         # silent server never answers. ``pg_connection`` holds the reasoning.
         _engine = create_async_engine(
             url,
-            echo=db_config.database_echo,
             hide_parameters=True,
             pool_pre_ping=True,  # Check connection health before use
             pool_size=db_config.database_pool_size,

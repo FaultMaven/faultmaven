@@ -649,7 +649,7 @@ def run_alembic_migrations() -> bool:
     """Run Alembic migrations using subprocess.
 
     Ensures the database schema is up-to-date by running
-    'alembic upgrade head' in a subprocess.
+    'alembic upgrade head' in a subprocess (``fm-migrate``).
 
     Returns:
         True if migrations ran successfully, False otherwise.
@@ -713,32 +713,28 @@ def run_alembic_migrations() -> bool:
         env = dict(os.environ)
         set_env_var(env, "DATABASE_URL", migration_database_url())
 
+        # ``fm-migrate``, not the alembic CLI, whose ``FAILED:`` print carries
+        # the error's text. Its stderr is inherited: the child's own log chain,
+        # its records and an uncaught exception as class and frames. Its stdout
+        # holds no log line (#2888), so it is counted and dropped.
+        migrate = "faultmaven.cli.migrate"
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            [sys.executable, "-m", migrate, "--config", str(alembic_ini)],
             cwd=str(project_root),
             env=env,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
             timeout=60,  # 60 second timeout
         )
-
+        printed = len(result.stdout or b"")
+        if printed:
+            logger.info("The migration printed %d bytes on stdout, dropped", printed)
         if result.returncode == 0:
             logger.info("✅ Alembic migrations complete")
-            # Log stdout for visibility
-            if result.stdout:
-                logger.debug(f"Migration output: {result.stdout}")
             return True
-        else:
-            # Enhanced error logging
-            logger.error(
-                f"❌ Alembic migration failed with exit code {result.returncode}"
-            )
-            logger.error(f"STDERR: {result.stderr}")
-            if result.stdout:
-                logger.error(f"STDOUT: {result.stdout}")
-            raise RuntimeError(
-                f"Alembic migration failed with exit code {result.returncode}: {result.stderr}"
-            )
+        logger.error("❌ Alembic migration failed with exit code %s", result.returncode)
+        raise RuntimeError(
+            f"Alembic migration failed with exit code {result.returncode}"
+        )
 
     except subprocess.TimeoutExpired:
         logger.error("❌ Alembic migration timed out after 60 seconds")

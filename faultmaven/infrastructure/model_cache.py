@@ -313,6 +313,13 @@ class ModelCache:
                 self.logger.info(f"Loading BGE-M3 model ({triggered_by} load)...")
                 model = model_class(model_key)
                 load_time = time.time() - start_time
+                # transformers, huggingface_hub and torch add handlers of
+                # their own as they load: their records go to the chain.
+                from faultmaven.infrastructure.logging.process_outputs import (
+                    sweep_own_handlers,
+                )
+
+                sweep_own_handlers()
 
                 self._models[model_key] = model
                 self._load_info[model_key] = ModelLoadInfo(

@@ -79,6 +79,9 @@ Exit codes
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
@@ -314,6 +317,7 @@ def _policy_for(new_value, current: "object") -> "object":
 
 def main() -> None:
     """Console entrypoint (``fm-set-turn-cap``)."""
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-set-turn-cap",

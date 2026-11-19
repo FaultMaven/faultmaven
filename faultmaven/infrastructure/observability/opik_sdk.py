@@ -28,6 +28,7 @@ from faultmaven.config.settings import (
     env_var_spellings,
     load_settings_dotenv,
 )
+from faultmaven.infrastructure.logging.process_outputs import strip_own_handlers
 from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.optional_dependency import module_is_usable
 
@@ -112,6 +113,11 @@ class TraceBackend:
 _record = TraceBackend(
     sdk_available=OPIK_AVAILABLE, sentry_reporting=_sentry_reporting()
 )
+
+# opik's own handler, and sentry_sdk's (imported by ``import opik`` and by
+# ``_sentry_reporting``), write outside the log chain; a job or a command
+# imports this module after its last sweep (#2888). After the last import here.
+strip_own_handlers("opik", "sentry_sdk.errors")
 
 
 def backend() -> TraceBackend:

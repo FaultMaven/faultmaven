@@ -557,10 +557,8 @@ async def test_revision_005_refuses_a_function_it_would_otherwise_create():
         version = await _revision(url)
 
     assert result.returncode != 0, "the upgrade created a function it should refuse"
-    assert (
-        "re-creates functions that do not exist: "
-        "public.admin_case_metadata_count(text, text)"
-    ) in result.stderr
+    # The remedy 005 logs; the error itself is class and frames (#2888).
+    assert _load_migration().MISSING_REMEDY in result.stderr, result.stderr[-2000:]
     assert sorted(catalog["functions"]) == sorted(
         set(_DEFINER_FUNCTIONS) - {"admin_case_metadata_count"}
     )

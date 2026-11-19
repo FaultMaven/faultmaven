@@ -117,6 +117,9 @@ rebuild with.
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import shutil
 import sys
@@ -603,6 +606,7 @@ async def reset_kb(
 
 def main() -> None:
     """Console entrypoint (``fm-reset-kb``). Exits with ``reset_kb``'s status."""
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(description=_SUMMARY)
     parser.add_argument(

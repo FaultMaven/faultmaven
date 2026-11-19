@@ -41,7 +41,10 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._database_gate import (
+    require_persistent_configured_url_or_exit,
+    require_persistent_database_or_exit,
+)
 from faultmaven.config.persistent_database import DEFAULT_DATABASE_URL
 
 pytestmark = pytest.mark.unit
@@ -57,6 +60,26 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
 #: database. An entry here is a decision someone must write down, never a way
 #: to quiet this test.
 NEEDS_NO_DATABASE: dict[str, str] = {}
+
+#: Commands that start no event loop, each with its reason: the census's
+#: positive control (it sees a loop start) does not apply to them.
+STARTS_NO_EVENT_LOOP: dict[str, str] = {
+    "fm-migrate": "it calls alembic.command.upgrade, which is synchronous (#2888)",
+}
+
+#: Commands gated on ``DATABASE_URL`` alone, each with its reason: they call
+#: the shared URL gate in place of ``GATE``, under the same census.
+GATED_ON_THE_URL: dict[str, str] = {
+    "fm-migrate": (
+        "alembic's rule (#1704): a setting a migration never reads, or the "
+        "settings' side effects, must not refuse or touch a migration (#2888)"
+    ),
+}
+URL_GATE = "require_persistent_configured_url_or_exit"
+_SHARED_GATES = {
+    GATE: require_persistent_database_or_exit,
+    URL_GATE: require_persistent_configured_url_or_exit,
+}
 
 #: What a command's ``main()`` may call BEFORE the gate: parsing and validating
 #: its own arguments, nothing that reads settings or the database; and the one
@@ -80,6 +103,9 @@ _ARGUMENT_ONLY_CALLS = frozenset(
         # The one exception, first in every entrypoint (#2692): it loads .env
         # and writes the TLS variables into the environment; it opens no store.
         "apply_root_set",
+        # Before it (#2888): the log chain on stderr. It loads .env as
+        # apply_root_set does and reads the log format alone; it opens no store.
+        "install_command_logging",
         # command-local argument helpers
         "_add_apply_flags",  # fm-personal-tenant: adds --dry-run/--apply
         "normalize_domain",  # fm-provision-sso-org: folds --domain
@@ -173,13 +199,13 @@ def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
     raise AssertionError(f"no top-level function {name!r}")
 
 
-def _top_level_gate_lines(body: list[ast.stmt]) -> list[int]:
+def _top_level_gate_lines(body: list[ast.stmt], gate: str = GATE) -> list[int]:
     return [
         stmt.lineno
         for stmt in body
         if isinstance(stmt, ast.Expr)
         and isinstance(stmt.value, ast.Call)
-        and _call_name(stmt.value) == GATE
+        and _call_name(stmt.value) == gate
     ]
 
 
@@ -203,7 +229,9 @@ def _module_source(module_path: str) -> tuple[Path, ast.Module]:
 
 def test_the_census_reads_a_non_empty_declaration():
     assert DECLARED, "no [project.scripts] declared; the census would be vacuous"
-    stale = set(NEEDS_NO_DATABASE) - set(DECLARED)
+    stale = (
+        set(NEEDS_NO_DATABASE) | set(STARTS_NO_EVENT_LOOP) | set(GATED_ON_THE_URL)
+    ) - set(DECLARED)
     assert not stale, f"exemptions for commands that no longer exist: {stale}"
 
 
@@ -214,10 +242,11 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     module_path, _, attr = DECLARED[command].partition(":")
     path, tree = _module_source(module_path)
     entry = _function(tree, attr)
+    gate = URL_GATE if command in GATED_ON_THE_URL else GATE
 
-    gate_lines = _top_level_gate_lines(entry.body)
+    gate_lines = _top_level_gate_lines(entry.body, gate)
     assert gate_lines, (
-        f"{command} ({path.relative_to(REPO_ROOT)}:{attr}) never calls {GATE}() "
+        f"{command} ({path.relative_to(REPO_ROOT)}:{attr}) never calls {gate}() "
         "as a top-level statement of its entrypoint. Call it once, after the "
         "arguments are validated and before the first asyncio.run, so that on "
         "an empty or in-memory DATABASE_URL the command refuses rather than "
@@ -227,11 +256,13 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     loops = _event_loop_lines(entry)
     # Positive control: a loop start this census cannot recognise would read as
     # "none before the gate".
-    assert loops, f"{command}: the census sees no event loop start in {attr}()"
+    assert (
+        loops or command in STARTS_NO_EVENT_LOOP
+    ), f"{command}: the census sees no event loop start in {attr}()"
     early_loops = [line for line in loops if line < first_gate]
     assert not early_loops, (
         f"{command}: an event loop starts at line(s) {early_loops}, before "
-        f"{GATE}() at line {first_gate}"
+        f"{gate}() at line {first_gate}"
     )
     before_gate = sorted(
         {
@@ -244,7 +275,7 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
         (line, name) for line, name in before_gate if name not in _ARGUMENT_ONLY_CALLS
     ]
     assert not unknown, (
-        f"{command}: {attr}() calls {unknown} before {GATE}() at line "
+        f"{command}: {attr}() calls {unknown} before {gate}() at line "
         f"{first_gate}. Only argument parsing and validation, and apply_root_set, "
         "may run first. "
         "Move the gate above the call, or, if it truly cannot reach settings or "
@@ -253,8 +284,8 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
 
     # The name must be the shared gate, not a local function of the same name.
     module = importlib.import_module(module_path)
-    assert getattr(module, GATE) is require_persistent_database_or_exit, (
-        f"{command}: {GATE} in {module_path} is not the shared gate from "
+    assert getattr(module, gate) is _SHARED_GATES[gate], (
+        f"{command}: {gate} in {module_path} is not the shared gate from "
         "faultmaven.cli._database_gate"
     )
 

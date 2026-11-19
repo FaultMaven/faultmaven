@@ -100,6 +100,7 @@ ARGV: dict[str, list[list[str]]] = {
         [*_SSO, "--workos-org-id", "org_01H"],
         [*_SSO, "--workos-org-id", "org_01H", "--enterprise-id", _E],
     ],
+    "fm-migrate": [[]],
     "fm-wipe-deployment": [
         [],
         ["--verify"],

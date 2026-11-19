@@ -37,6 +37,9 @@ In a Kubernetes deployment, run it in the API pod:
         fm-provision-service-account -u slack-agent --token-only
 """
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
@@ -170,6 +173,7 @@ async def provision(
 
 
 def main():
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         description="Mint an OAuth refresh-token credential for a service account",

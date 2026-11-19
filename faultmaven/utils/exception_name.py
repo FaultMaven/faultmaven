@@ -20,17 +20,13 @@ import traceback
 from types import TracebackType
 from typing import Any, Optional, Tuple
 
+from faultmaven._class_name import class_name
 from faultmaven.exceptions import walk_cause_chain
-
-# A plain ASCII identifier. ``str.isidentifier`` is wider (it accepts non-ASCII
-# letters), and a class's ``__name__`` is whatever string its creator chose.
-CLASS_NAME_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
 
 
 def exception_class_name(exc: BaseException) -> str:
     """``exc``'s class name if it is a plain identifier, else ``"Exception"``."""
-    name = type(exc).__name__
-    return name if re.fullmatch(CLASS_NAME_PATTERN, name) else "Exception"
+    return class_name(exc)
 
 
 def exception_class_chain(exc: BaseException) -> str:

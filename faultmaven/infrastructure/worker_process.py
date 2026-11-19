@@ -55,6 +55,9 @@ _PACKAGE_ROOT = Path(faultmaven.__file__).resolve().parents[1]
 
 _PR_SET_PDEATHSIG = 1
 
+#: Bytes per read of a worker's stderr, which is counted and dropped.
+_DRAIN_CHUNK = 1 << 16
+
 
 class WorkerFailed(RuntimeError):
     """The worker broke the frame protocol: its output passed its limit, or it
@@ -340,7 +343,8 @@ async def run(
     """One worker, ``python -m module``, over ``request``: how it ended. A
     ``deadline_seconds`` runs from the start; ``phases`` (a worker served with
     ``result_parts``) bound each step, with ``parts`` and the result raw. Raises
-    ``WorkerNotStarted`` or ``WorkerFailed``, the worker reaped first."""
+    ``WorkerNotStarted`` or ``WorkerFailed``, the worker reaped first. Its
+    stderr is drained and dropped, only its size logged (:func:`_reap`)."""
     # Imported here, not at the top: a worker imports this module and never
     # uses asyncio, which costs a start about 50 ms.
     import asyncio
@@ -357,7 +361,7 @@ async def run(
         request["parts"] = [len(part) for part in raw]
     line = json.dumps(request, ensure_ascii=False).encode("utf-8", "surrogatepass")
     request_bytes = b"".join([line, b"\n", *raw])
-    seen: Dict[str, Any] = {"stage": None, "received": 0}
+    seen: Dict[str, Any] = {"stage": None, "received": 0, "stderr_bytes": 0}
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -365,16 +369,20 @@ async def run(
             module,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=_PACKAGE_ROOT,
             limit=output_limit_bytes,
         )
     except OSError as e:
         raise WorkerNotStarted(f"the worker could not start: {e!r}") from e
+    drain = asyncio.ensure_future(_drain(proc.stderr, seen))
     if phases is not None:
         try:
-            return await _phased(proc, request_bytes, seen, output_limit_bytes, phases)
+            end = await _phased(proc, request_bytes, seen, output_limit_bytes, phases)
+            seen["ended"] = end.result is not None
+            return end
         finally:
-            await _reap(proc)
+            await _reap(proc, drain, seen, module)
     try:
         async with asyncio.timeout(deadline_seconds) as deadline:
             try:
@@ -385,6 +393,7 @@ async def run(
                 pass  # it died before reading; its exit answers below
             result = await _frames(proc, seen, output_limit_bytes)
             if result is not None:
+                seen["ended"] = True
                 return WorkerEnd(result=result, stage=seen["stage"])
             code = await proc.wait()
     except TimeoutError:
@@ -392,20 +401,41 @@ async def run(
             raise
         return WorkerEnd(timed_out=True, stage=seen["stage"])
     finally:
-        await _reap(proc)
+        await _reap(proc, drain, seen, module)
     return WorkerEnd(code=code, stage=seen["stage"])
 
 
-async def _reap(proc: "asyncio.subprocess.Process") -> None:
+async def _drain(stream: "asyncio.StreamReader", seen: Dict[str, Any]) -> None:
+    """Count the worker's stderr, keeping none of it: a library's print or the
+    interpreter's crash text is no log line (principles §7, rule 1; #2898)."""
+    while chunk := await stream.read(_DRAIN_CHUNK):
+        seen["stderr_bytes"] += len(chunk)
+
+
+async def _reap(
+    proc: "asyncio.subprocess.Process",
+    drain: "asyncio.Future",
+    seen: Dict[str, Any],
+    module: str,
+) -> None:
     """Kill the worker and wait until it is reaped, a cancellation meanwhile
-    included, so a caller's slot frees only once it is dead. Its output is read
-    to the end, unread: a wait alone never returns while a full pipe holds the
-    worker's stdout open."""
+    included, so a caller's slot frees only once it is dead. The stderr drain
+    stops first, then the output is read to the end, unread: a wait alone never
+    returns while a full pipe holds the worker open. Then its stderr's size and
+    exit code are logged: at INFO when it ended with its result or exit 0 and
+    wrote some, at WARNING when it ended any other way."""
     import asyncio
 
-    if proc.returncode is None:
+    running = proc.returncode is None
+    if running:
         proc.kill()
-    reaping = asyncio.ensure_future(proc.communicate())
+
+    async def finish() -> None:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        seen["stderr_bytes"] += len((await proc.communicate())[1] or b"")
+
+    reaping = asyncio.ensure_future(finish())
     cancelled: Optional[asyncio.CancelledError] = None
     while not reaping.done():
         try:
@@ -413,6 +443,15 @@ async def _reap(proc: "asyncio.subprocess.Process") -> None:
         except asyncio.CancelledError as e:
             cancelled = e
     reaping.result()
+    abnormal = not seen.get("ended") if running else proc.returncode != 0
+    if abnormal or seen["stderr_bytes"]:
+        logging.getLogger(__name__).log(
+            logging.WARNING if abnormal else logging.INFO,
+            "Worker %s ended (exit %s) with %d bytes on its stderr, dropped",
+            module,
+            proc.returncode,
+            seen["stderr_bytes"],
+        )
     if cancelled is not None:
         raise cancelled
 

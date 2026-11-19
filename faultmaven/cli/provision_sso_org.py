@@ -89,6 +89,9 @@ explicitly, because the pod's environment holds the limited application role:
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
@@ -457,6 +460,7 @@ async def provision(
 
 
 def main() -> None:
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         description="Provision a Cloud tenant and map a WorkOS organization to it",

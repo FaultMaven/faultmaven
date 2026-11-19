@@ -9,7 +9,7 @@ manager (``bootstrap/middleware.py``). ``faultmaven.main`` imports
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from fastapi import FastAPI
@@ -93,7 +93,36 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager for startup and shutdown events."""
+    """Application lifespan manager for startup and shutdown events.
+
+    A startup or shutdown failure is logged here as its class and frames
+    before it propagates: Starlette pastes its ``format_exc()`` into a
+    ``uvicorn.error`` message, of which the chain keeps the first line (#2888).
+    Once started, a handler a library added while starting is stripped
+    (``process_outputs``).
+    """
+    from faultmaven.infrastructure.logging.process_outputs import sweep_own_handlers
+
+    started = False
+    try:
+        async with AsyncExitStack() as stack:
+            try:
+                await stack.enter_async_context(_serve(app))
+            except Exception:
+                logger.critical("API startup failed", exc_info=True)
+                raise
+            started = True
+            sweep_own_handlers()
+            yield
+    except Exception:
+        if started:
+            logger.error("API shutdown failed", exc_info=True)
+        raise
+
+
+@asynccontextmanager
+async def _serve(app: FastAPI):
+    """Startup, then the shutdown once the app stops serving."""
     # Startup
     logger.info("Starting FaultMaven API server...")
 

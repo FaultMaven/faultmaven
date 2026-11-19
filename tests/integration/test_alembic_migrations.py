@@ -1432,7 +1432,11 @@ class TestRunbookSeverityRevision:
 
         result = run_alembic(f"downgrade {PROBLEM_STATUS_REVISION}", database_url)
         assert result.returncode != 0
-        assert "1 conversion_drafts row(s) hold severity 'info'" in result.stderr
+        # The remedy literal 008 logs; the count stays in the raise (#2888).
+        assert (
+            "008 downgrade refused: conversion_drafts rows hold severity 'info'"
+            in result.stderr
+        )
         assert get_current_revision(database_url) == RUNBOOK_SEVERITY_REVISION
 
         conn = self._connect()
@@ -2863,8 +2867,9 @@ class TestRunbookDraftsInTheDatabaseRevision:
         )
 
         assert result.returncode != 0
-        assert "018 refused: 5 live runbook draft(s)" in result.stderr
-        assert str(work) in result.stderr
+        # The remedy literal 018 logs; count and paths stay in the raise (#2888).
+        assert "018 refused: live runbook drafts keep their text only" in result.stderr
+        assert "which does not exist in the working directory" in result.stderr
         assert (
             get_current_revision(database_url) == DROP_INVESTIGATION_SESSIONS_REVISION
         )

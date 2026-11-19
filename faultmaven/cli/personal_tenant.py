@@ -105,6 +105,9 @@ Exit codes
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import asyncio
 import sys
@@ -957,6 +960,7 @@ def _add_apply_flags(parser: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     """Console entrypoint (``fm-personal-tenant``)."""
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-personal-tenant",

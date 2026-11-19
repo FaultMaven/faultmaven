@@ -277,7 +277,8 @@ def test_the_coherence_gate_is_wired_into_the_lifespan():
     # composed unit declared during composition, so the gate passes vacuously on
     # exactly the deployment shape it exists for. The lifespan composes, then
     # starts serving.
-    lifespan = inspect.getsource(lifespan_module.lifespan)
+    # The startup is `_serve`, which `lifespan` wraps to log a failure (#2888).
+    lifespan = inspect.getsource(lifespan_module._serve)
     assert lifespan.index("await compose_application(app") < lifespan.index(
         "await _start_serving(app"
     ), "the gate must inspect a composed app"

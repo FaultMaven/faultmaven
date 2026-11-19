@@ -33,6 +33,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from faultmaven.cli._database_gate import MIGRATION_PRIVILEGE_REMEDY
 from tests.integration.security.conftest import (
     _execute,
     _revision,
@@ -168,7 +169,8 @@ async def test_a_role_the_policy_filters_raises_instead_of_clearing_nothing():
 
             result = alembic_on(role_url, f"upgrade {_REVISION}")
             assert result.returncode != 0, result.stdout[-2000:]
-            assert "row-level security" in result.stderr.lower(), result.stderr[-2000:]
+            # The remedy env.py logs; the error itself is class and frames (#2888).
+            assert MIGRATION_PRIVILEGE_REMEDY in result.stderr, result.stderr[-2000:]
             assert await _refs(su_url) == seeded
             assert await _revision(su_url) == _PARENT_REVISION
         finally:

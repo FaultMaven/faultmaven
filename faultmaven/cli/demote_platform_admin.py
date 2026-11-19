@@ -31,6 +31,9 @@ In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-demote-platform-admin bob
 """
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
@@ -244,6 +247,7 @@ async def demote_from_platform_admin(
 
 def main() -> None:
     """Console entrypoint (``fm-demote-platform-admin``)."""
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-demote-platform-admin",

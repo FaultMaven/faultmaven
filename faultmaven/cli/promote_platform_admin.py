@@ -16,6 +16,9 @@ In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-promote-platform-admin alice
 """
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
@@ -129,6 +132,7 @@ async def promote_to_platform_admin(username: str) -> bool:
 
 def main() -> None:
     """Console entrypoint (``fm-promote-platform-admin``)."""
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-promote-platform-admin",

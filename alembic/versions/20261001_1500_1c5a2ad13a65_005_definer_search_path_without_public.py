@@ -469,6 +469,13 @@ _REQUIRE_EXISTING = (
     "    END IF;\nEND\n$$"
 )
 
+#: What an operator is told when ``_REQUIRE_EXISTING`` refuses.
+MISSING_REMEDY = (
+    "revision 005 re-creates functions that do not exist, and CREATE OR "
+    "REPLACE would create them executable by PUBLIC. Migrate this database "
+    "from revision 001 so that they exist in schema public."
+)
+
 #: Revision 003's grant to the runtime role, re-stated: guarded on the role
 #: existing, as 003's is.
 _GRANT_TO_RUNTIME_ROLE = (
@@ -528,7 +535,14 @@ def upgrade() -> None:
     SQLite has neither."""
     if op.get_context().dialect.name != "postgresql":
         return
-    op.execute(_REQUIRE_EXISTING)
+    try:
+        op.execute(_REQUIRE_EXISTING)
+    except Exception as error:
+        # The refusal's own text names the functions; the remedy is this
+        # literal, on the log chain (#2888).
+        if getattr(getattr(error, "orig", None), "pgcode", None) == "P0001":
+            logging.getLogger("alembic.runtime.migration").error(MISSING_REMEDY)
+        raise
     for name in _FUNCTIONS:
         op.execute(_create(name))
     for name in _READS:

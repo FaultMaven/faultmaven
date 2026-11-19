@@ -88,6 +88,7 @@ from faultmaven.infrastructure.concurrency.teardown import (
     run_teardown,
 )
 from faultmaven.infrastructure.logging.config import install_log_handler
+from faultmaven.infrastructure.logging.process_outputs import install_process_outputs
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
 # Valid JOB_TENANT_SCOPE declarations (see module docstring).
@@ -673,6 +674,9 @@ def main(args: Optional[List[str]] = None) -> int:
     Returns:
         Exit code (0 for success, 1 for failure)
     """
+    # First: an uncaught exception or a warning from here on goes through the
+    # log chain (#2888); setup_logging adds the root's handler once parsed.
+    install_process_outputs()
     # Load .env (#2140) and name the TLS root set (#2692) at function level,
     # not module level, before any client is imported.
     from faultmaven.config.tls_root_set import apply_root_set

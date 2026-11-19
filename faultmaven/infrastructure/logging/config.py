@@ -16,6 +16,11 @@ from typing import Any, Dict, Mapping, Optional, TextIO
 import structlog
 from opentelemetry import trace
 
+from faultmaven.infrastructure.logging.process_outputs import (
+    ChainStreamHandler,
+    install_process_outputs,
+    sweep_own_handlers,
+)
 from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
 from faultmaven.utils.exception_name import (
     exception_class_chain,
@@ -219,7 +224,7 @@ def lift_record_extra(
     return event_dict
 
 
-class LateBindingStreamHandler(logging.StreamHandler):
+class LateBindingStreamHandler(ChainStreamHandler):
     """A StreamHandler that resolves ``sys.stderr`` at emit time.
 
     ``logging.StreamHandler()`` captures ``sys.stderr`` once, when it is
@@ -339,21 +344,7 @@ class FaultMavenLogger:
         handler (a job) gets no second one: the events render through it, the
         same builder, and each line is written once (#2888).
         """
-        # Native structlog loggers: filter + shared processors, then hand the
-        # event to the stdlib ProcessorFormatter instead of rendering here.
-        structlog.configure(
-            processors=[
-                structlog.stdlib.filter_by_level,
-                *_SHARED_PROCESSORS,
-                lift_stdlib_extra,
-                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
-            ],
-            context_class=dict,
-            logger_factory=structlog.stdlib.LoggerFactory(),
-            wrapper_class=structlog.stdlib.BoundLogger,
-            cache_logger_on_first_use=True,
-        )
-
+        configure_structlog_chain()
         formatter = build_log_formatter(
             self.config.LOG_FORMAT, self.config.LOG_HUMAN_READABLE, sys.stderr
         )
@@ -383,6 +374,7 @@ class FaultMavenLogger:
             root_logger.setLevel(configured_level)
 
         self.quiet_noisy_third_party_loggers()
+        install_process_outputs()
 
     @staticmethod
     def quiet_noisy_third_party_loggers() -> None:
@@ -495,6 +487,26 @@ _SHARED_PROCESSORS = (
 )
 
 
+def configure_structlog_chain() -> None:
+    """Native structlog loggers: the level filter and the shared processors,
+    then the event to the root handler's ``ProcessorFormatter``, rendered with
+    its fields. The API's chain and :func:`install_log_handler`'s both call it,
+    so a job's or a command's structlog event is a chain line, not structlog's
+    default ``PrintLogger`` (#2888)."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            *_SHARED_PROCESSORS,
+            lift_stdlib_extra,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+
 def build_log_formatter(
     log_format: str, human_readable: bool, stream: TextIO
 ) -> structlog.stdlib.ProcessorFormatter:
@@ -572,14 +584,18 @@ def install_log_handler(
     unrecognized value is JSON, and warns). No other setting is read, so none
     can refuse a migration or change the line; ``LOG_HUMAN_READABLE`` is not
     read. A ``log_format`` a caller passes (a second install's, from the first)
-    is used as it is, with neither read again.
+    is used as it is, with neither read again. structlog and the process's own
+    outputs go through the chain too (``process_outputs``).
     """
     from faultmaven.config.settings import configured_log_format, load_settings_dotenv
 
-    handler = logging.StreamHandler(stream)
+    handler = ChainStreamHandler(stream)
     handler.setFormatter(build_log_formatter("json", False, stream))
     setattr(handler, _INSTALLED_HANDLER_MARKER, True)
     logging.basicConfig(level=level, handlers=[handler])
+    configure_structlog_chain()
+    install_process_outputs()
+    sweep_own_handlers()
     if log_format is None:
         load_settings_dotenv()
         log_format = configured_log_format()

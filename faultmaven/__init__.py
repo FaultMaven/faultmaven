@@ -29,3 +29,7 @@ if sys.version_info[:3] < MINIMUM_PYTHON:
         "(python/cpython#100061, #106052) and leave secrets in clear. Run "
         "FaultMaven on a newer Python."
     )
+
+from faultmaven._last_resort import install_last_resort  # noqa: E402
+
+install_last_resort()
