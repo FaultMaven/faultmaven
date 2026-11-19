@@ -2669,12 +2669,14 @@ class LoggingSettings(BaseSettings):
 
 
 def configured_log_format() -> str:
-    """``LOG_FORMAT`` alone, read and normalized as ``LoggingSettings`` reads it
-    (``"json"`` unset or unrecognized), validating no other logging setting: the
-    choice of a process that builds no settings, the jobs and alembic (#2888).
-    An unrecognized value warns through logging, so call it once a handler is
-    in place."""
-    value = EnvSettingsSource(LoggingSettings)().get("LOG_FORMAT")
+    """The log format alone, read and normalized as ``LoggingSettings`` reads
+    it: ``LOG_FORMAT``, else the field's own name ``LOG_OUTPUT_FORMAT``
+    (``populate_by_name``), ``"json"`` unset or unrecognized. It validates no
+    other logging setting: the choice of a process that builds no settings, the
+    jobs and alembic (#2888). An unrecognized value warns through logging, so
+    call it once a handler is in place."""
+    found = EnvSettingsSource(LoggingSettings)()
+    value = found.get("LOG_FORMAT", found.get("log_output_format"))
     if value is None:
         return "json"
     return LoggingSettings.normalize_log_output_format(value)

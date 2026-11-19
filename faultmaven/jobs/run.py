@@ -135,8 +135,8 @@ def setup_logging(verbose: bool = False) -> None:
     (``install_log_handler``), at DEBUG when verbose, else INFO.
 
     A job's lines render as the API's do (the same formatter builder, the
-    redactor last), JSON or console by ``LOG_FORMAT`` alone, so a CronJob's
-    lines carry the ``level`` label the collector extracts (#2888).
+    redactor last), JSON or console by the log format setting alone, so a
+    CronJob's lines carry the ``level`` label the collector extracts (#2888).
     """
     install_log_handler(sys.stdout, logging.DEBUG if verbose else logging.INFO)
 

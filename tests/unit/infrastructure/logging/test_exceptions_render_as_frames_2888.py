@@ -225,6 +225,15 @@ class TestAnExceptionField:
         if shape is _Hiding:
             assert marker not in rendered
 
+    def test_a_stdlib_records_exception_message_is_the_message_channel(
+        self, api, marker
+    ):
+        """The stated boundary, not a guarantee (principles §7, rule 4): on the
+        stdlib path the event is ``record.getMessage()``, ``str(e)``, rule 1's
+        message channel (S3, #2889), never a field this chain maps."""
+        logging.getLogger("faultmaven.test").error(chained(marker))
+        assert marker in api.buffer.getvalue()
+
     def test_lines_without_an_exception_render_as_on_main(self):
         """Whole lines, JSON and console, captured on ``main`` at 19ab0e8b8
         (``log_parity_cases_2888`` says how), timestamp normalized."""
@@ -250,14 +259,15 @@ def _render_through(mode: str, value) -> str:
 @pytest.fixture
 def job(monkeypatch, capsys):
     """A job's logging (``jobs.run.setup_logging``) on a root with no handler,
-    ``LOG_FORMAT`` and ``LOG_LEVEL`` from the test's ``env``; returns the
+    the log format and ``LOG_LEVEL`` from the test's ``env``; returns the
     lines it wrote on stdout, checking nothing reached stderr."""
     from faultmaven.config.settings import env_var_spellings
     from faultmaven.jobs.run import setup_logging
 
     monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
-    for name in env_var_spellings(dict(os.environ), "LOG_FORMAT"):
-        monkeypatch.delenv(name)
+    for variable in ("LOG_FORMAT", "LOG_OUTPUT_FORMAT"):
+        for name in env_var_spellings(dict(os.environ), variable):
+            monkeypatch.delenv(name)
     root = logging.getLogger()
     saved = root.handlers[:], root.level
 
@@ -327,6 +337,43 @@ class TestTheJobsLine:
         logging.getLogger("faultmaven.jobs.t").error("failed", exc_info=chained(marker))
         *_, line = [json.loads(row) for row in job.lines()]
         _frames_only(line["frames"], marker)
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LOG_OUTPUT_FORMAT": "console"},
+            {"log_output_format": "console"},
+            {"LOG_FORMAT": "json", "LOG_OUTPUT_FORMAT": "console"},
+            {"LOG_FORMAT": "console", "LOG_OUTPUT_FORMAT": "json"},
+        ],
+        ids=["output-format", "lower-case", "format-wins-json", "format-wins-console"],
+    )
+    def test_the_format_is_read_as_the_apis_settings_read_it(self, job, env):
+        from faultmaven.config.settings import LoggingSettings, configured_log_format
+
+        job.start(**env)
+        expected = LoggingSettings().log_output_format
+        assert configured_log_format() == expected
+        logging.getLogger("faultmaven.jobs.t").info("which")
+        (line,) = job.lines()
+        assert line.startswith("{") is (expected == "json")
+
+    def test_a_malformed_dotenv_line_warns_on_a_chain_line(
+        self, job, monkeypatch, tmp_path
+    ):
+        """The handler is in place before ``.env`` is loaded, so python-dotenv's
+        warning is a JSON line, not ``lastResort``'s text (#2888)."""
+        import dotenv
+        import dotenv.main
+
+        (tmp_path / ".env").write_text("this line does not parse\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("FAULTMAVEN_SKIP_DOTENV")
+        # tests/conftest.py turns the loader off; this test needs the parser.
+        monkeypatch.setattr(dotenv, "dotenv_values", dotenv.main.dotenv_values)
+        job.start(LOG_FORMAT="json")
+        (line,) = [json.loads(row) for row in job.lines()]
+        assert (line["logger"], line["level"]) == ("dotenv.main", "warning")
 
     def test_a_jobs_process_writes_each_line_once(self, job, monkeypatch):
         """The API's ``get_logger`` in a job adds no second root handler: its

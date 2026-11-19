@@ -322,8 +322,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Logs
 
-- `infrastructure/logging/config.py:219-249`, `:357-372`; a job's and alembic's stream:
-  `:555-576`; `user_id`: `:67-71`, `:432-433`.
+- `infrastructure/logging/config.py:222-252`, `:360-375`; a job's and alembic's stream:
+  `:558-588`; `user_id`: `:67-71`, `:435-436`.
 - What a line may hold: [principles §7, "What a log line may hold"](../core-architecture/architectural-design-principles.md#7-observability-by-default),
   with its outputs and redactor tables.
 - Policy: [Logging Policy, Redaction](../../operations/monitoring/logging-policy.md#redaction).
@@ -354,8 +354,8 @@ Each of these was considered and is not a row, for the reason given.
 | `InMemoryTurnLedger` (`infrastructure/protection/tenant_turn_cap.py:315`) | Never composed: the composition wires `SqlTurnLedger` (`container/providers/services.py:403-426`), a relational table |
 | `InMemoryOAuthCodeRepository` (`container/providers/services.py:1051-1055`) | Selected only when no Redis client is passed; the composition passes one (`:1498-1501`) |
 | `SimpleStorageBackend` (`modules/case/domain/services/case_data_ingestion_service.py:1711`) | Composed into the data service (`container/providers/services.py:512`), which stores into it (`case_data_ingestion_service.py:343`, `:532`), but nothing outside the service resolves it: only `app.state.data_service` holds it (`bootstrap/composition.py:579`), and its dependency (`api/v1/dependencies.py:204`) is used by no route |
-| `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:834-841`). It writes no file: a model reaches it as bytes (`:593-602`) |
-| `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:381-389`) |
+| `GlobalConfidenceService` (`infrastructure/observability/confidence_service.py:58`) | Never constructed: nothing sets `container.confidence_service` (`_container_impl.py:646-653`). It writes no file: a model reaches it as bytes (`:593-602`) |
+| `IntelligentCache` (`infrastructure/caching/intelligent_cache.py:314`) | Never constructed: nothing sets `container.intelligent_cache` (`_container_impl.py:382-389`) |
 | APScheduler job stores (`infrastructure/tasks/job_runners.py:89`, `infrastructure/tasks/case_cleanup.py:165`) | In-memory schedule definitions; no tenant data |
 | `faultmaven-kb-index.lock` in the temporary directory (`infrastructure/index_slot.py:83`) | A host-wide lock file; holds no data |
 | The Slack agent's `credentials.db`, `cases.db` and the `faultmaven_slack` database | The Slack agent repository's stores ([Deployment Wipe](../../operations/deployment-wipe.md#the-surfaces)) |

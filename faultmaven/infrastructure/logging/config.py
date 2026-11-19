@@ -114,12 +114,15 @@ def _class_chain_or_value(value: Any) -> Any:
 def exceptions_as_class_chains(
     _logger: Any, _name: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Write an exception passed as a field (``error=e``, ``extra={"e": e}``,
-    the event itself) as its class chain, never its repr, which holds its
-    message (principles §7, rule 4; #2888). It maps top-level values, and the
-    values of an ``extra`` dict one level down, where :func:`_lift_fields`
-    nests a caller's colliding field. Nothing else is walked: under JSON, the
-    renderer's ``default`` names an exception the encoder reaches."""
+    """Write an exception passed as a field (``error=e``, ``extra={"e": e}``, a
+    native structlog event that is itself one) as its class chain, never its
+    repr, which holds its message (principles §7, rule 4; #2888). It maps
+    top-level values, and the values of an ``extra`` dict one level down, where
+    :func:`_lift_fields` nests a caller's colliding field. Nothing else is
+    walked: under JSON, the renderer's ``default`` names an exception the
+    encoder reaches. A stdlib record's event is its message,
+    ``record.getMessage()``: ``str(e)`` for ``logging.getLogger(...).error(e)``,
+    rule 1's message channel (S3, #2889), not a field."""
     for key, value in event_dict.items():
         event_dict[key] = _class_chain_or_value(value)
     nested = event_dict.get("extra")
@@ -552,28 +555,37 @@ def build_log_formatter(
 _INSTALLED_HANDLER_MARKER = "_faultmaven_installed_handler"
 
 
-def install_log_handler(stream: TextIO, level: Optional[int]) -> None:
+def install_log_handler(
+    stream: TextIO, level: Optional[int], log_format: Optional[str] = None
+) -> str:
     """Give the root logger one handler writing ``stream`` through
     :func:`build_log_formatter`, at ``level`` (``None`` keeps the root's),
     unless it already has a handler (``logging.basicConfig``'s rule): the line
     of a process that builds no settings, the maintenance jobs and alembic
-    (#2888).
+    (#2888). Returns the format it chose.
 
-    JSON or console is decided by ``LOG_FORMAT`` alone (``configured_log_format``,
-    the working directory's ``.env`` loaded first, as the app loads it), read
-    once the handler is in place: an unrecognized value is JSON, and its
-    warning is written on a JSON line. No other setting is read, so none can
-    refuse a migration or change the line; ``LOG_HUMAN_READABLE`` is not read.
+    The handler is installed with the JSON formatter first, so what the next
+    steps log is a JSON line, not ``lastResort``'s text: then the working
+    directory's ``.env`` is loaded, as the app loads it (a line python-dotenv
+    cannot parse warns), and the log format is read alone
+    (``configured_log_format``: ``LOG_FORMAT``, else ``LOG_OUTPUT_FORMAT``; an
+    unrecognized value is JSON, and warns). No other setting is read, so none
+    can refuse a migration or change the line; ``LOG_HUMAN_READABLE`` is not
+    read. A ``log_format`` a caller passes (a second install's, from the first)
+    is used as it is, with neither read again.
     """
     from faultmaven.config.settings import configured_log_format, load_settings_dotenv
 
-    load_settings_dotenv()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(build_log_formatter("json", False, stream))
     setattr(handler, _INSTALLED_HANDLER_MARKER, True)
     logging.basicConfig(level=level, handlers=[handler])
-    if configured_log_format() == "console":
+    if log_format is None:
+        load_settings_dotenv()
+        log_format = configured_log_format()
+    if log_format == "console":
         handler.setFormatter(build_log_formatter("console", False, stream))
+    return log_format
 
 
 # Singleton configuration instance
