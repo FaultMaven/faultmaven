@@ -28,6 +28,7 @@ Usage:
     alembic upgrade head
 """
 
+import logging
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -47,6 +48,7 @@ from faultmaven.infrastructure.logging.config import install_log_handler
 log_format = install_log_handler(sys.stderr, None)
 
 from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy.exc import DBAPIError
 
 from alembic import context
 
@@ -77,6 +79,7 @@ if config.config_file_name is not None:
 
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import (
+    MIGRATION_PRIVILEGE_REMEDY,
     exit_refusing,
     require_persistent_database_url_or_exit,
 )
@@ -86,6 +89,10 @@ from faultmaven.infrastructure.persistence.value_free_errors import (
 )
 
 target_metadata = Base.metadata
+
+#: PostgreSQL's SQLSTATE for a refused privilege: a statement row-level security
+#: would filter, under ``row_security = off``, raises it.
+INSUFFICIENT_PRIVILEGE = "42501"
 
 
 def get_database_url(*, require_persistent: bool) -> str:
@@ -214,7 +221,17 @@ def run_migrations_online() -> None:
         )
 
         with context.begin_transaction():
-            context.run_migrations()
+            try:
+                context.run_migrations()
+            except DBAPIError as error:
+                # A refused privilege, row-level security's included: the
+                # server's text names a table, so the remedy is this literal,
+                # on the log chain, beside the error's class and frames (#2888).
+                if getattr(error.orig, "pgcode", None) == INSUFFICIENT_PRIVILEGE:
+                    logging.getLogger("alembic.runtime.migration").error(
+                        MIGRATION_PRIVILEGE_REMEDY
+                    )
+                raise
 
 
 if context.is_offline_mode():

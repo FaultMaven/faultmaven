@@ -16,13 +16,15 @@ In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-promote-platform-admin alice
 """
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
 from faultmaven.bootstrap.data_init import assign_operator_roles
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
-from faultmaven.cli._log_chain import install_command_logging
 from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.exceptions import UserLookupFailed
@@ -130,7 +132,7 @@ async def promote_to_platform_admin(username: str) -> bool:
 
 def main() -> None:
     """Console entrypoint (``fm-promote-platform-admin``)."""
-    install_command_logging()
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-promote-platform-admin",

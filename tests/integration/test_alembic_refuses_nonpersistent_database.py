@@ -158,10 +158,7 @@ def test_offline_sql_on_sqlite_stops_at_018(alembic_copy):
 
     assert result.returncode != 0
     assert REFUSAL not in result.stderr
-    # 018's refusal: its class and frames (principles §7, rule 4; #2888).
-    assert "_018_runbook_drafts_in_the_database.py" in result.stderr, result.stderr[
-        -3000:
-    ]
+    assert "step (b) reads draft files" in result.stderr, result.stderr[-3000:]
     assert "CREATE TABLE" in result.stdout
 
 

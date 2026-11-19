@@ -1,4 +1,4 @@
-"""A uvicorn worker child's import of the app, with ``faultmaven.main`` failing
+"""A uvicorn worker child's load of the app (the factory), with ``faultmaven.main`` failing
 as it is imported: the target of a ``multiprocessing`` spawn, as uvicorn's
 children are. The marker is passed in at run time (``chained_2888`` says why)."""
 
@@ -13,4 +13,6 @@ def import_the_app(marker: str) -> None:
     broken = types.ModuleType("faultmaven.main")
     broken.__getattr__ = refuse
     sys.modules["faultmaven.main"] = broken
-    import faultmaven.asgi  # noqa: F401
+    from faultmaven.asgi import create_app
+
+    create_app()

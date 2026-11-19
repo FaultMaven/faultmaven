@@ -34,6 +34,14 @@ from __future__ import annotations
 import sys
 from typing import NoReturn, Optional
 
+#: What ``alembic/env.py`` logs when a migration statement is refused a
+#: privilege (SQLSTATE 42501), row-level security's included (#2888).
+MIGRATION_PRIVILEGE_REMEDY = (
+    "A migration statement was refused by row-level security or a missing "
+    "privilege: run the migrations as the role that owns the tables, which "
+    "row-level security exempts, not as the application's runtime role."
+)
+
 
 def require_persistent_database_or_exit() -> None:
     """Exit 1 with the boot gate's message unless a persistent database is configured.
@@ -63,6 +71,25 @@ def require_persistent_database_or_exit() -> None:
             raise
         exit_refusing(str(refusal))
     require_persistent_database_url_or_exit(settings.database.database_url)
+
+
+def require_persistent_configured_url_or_exit() -> None:
+    """Exit 1 with the boot gate's message unless ``DATABASE_URL`` names a
+    persistent database, read alone (``configured_database_url``) as
+    ``alembic/env.py`` reads it, never through ``get_settings()``: a setting a
+    migration never reads cannot refuse it, and nothing is written (#1704,
+    #2888). Unset passes: alembic then migrates its default file."""
+    from faultmaven.config.settings import (
+        DatabaseUrlWhitespaceError,
+        configured_database_url,
+    )
+
+    try:
+        url = configured_database_url()
+    except DatabaseUrlWhitespaceError as exc:
+        exit_refusing(str(exc))
+    if url is not None:
+        require_persistent_database_url_or_exit(url)
 
 
 def require_persistent_database_url_or_exit(database_url: Optional[str]) -> None:

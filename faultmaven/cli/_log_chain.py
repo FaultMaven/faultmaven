@@ -1,10 +1,18 @@
-"""An ``fm-*`` command's first statement: its log lines and its process's own
-outputs (an uncaught exception, a warning) through the API's chain on stderr,
-since stdout is the operator's (principles §7; #2888)."""
+"""An ``fm-*`` command's log chain (principles §7; #2888).
+
+Every command module imports this module first, ahead of its own imports, so
+the process's own outputs (an uncaught exception, a warning) go through the
+chain from there on. ``main()``'s first statement, :func:`install_command_logging`,
+then gives the root the chain's handler on stderr, since stdout is the
+operator's."""
 
 import sys
 
-from faultmaven.infrastructure.logging.config import install_log_handler
+from faultmaven.infrastructure.logging.process_outputs import install_process_outputs
+
+install_process_outputs()
+
+from faultmaven.infrastructure.logging.config import install_log_handler  # noqa: E402
 
 
 def install_command_logging() -> None:

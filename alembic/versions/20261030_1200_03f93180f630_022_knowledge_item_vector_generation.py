@@ -52,6 +52,7 @@ Revises: d0eb318ce3e0
 Create Date: 2026-10-30 12:00:00
 """
 
+import logging
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -89,11 +90,14 @@ def _refuse_cascading_rebuild() -> None:
     if op.get_context().as_sql:
         return
     if op.get_bind().execute(text("PRAGMA foreign_keys")).scalar():
-        raise RuntimeError(
+        refusal = (
             "022 rebuilds the knowledge_items table on SQLite and must run "
             "with PRAGMA foreign_keys=OFF: with it on, dropping the old table "
             "runs conversion_drafts' ON DELETE SET NULL."
         )
+        # The remedy, on the log chain (#2888).
+        logging.getLogger("alembic.runtime.migration").error(refusal)
+        raise RuntimeError(refusal)
 
 
 def upgrade() -> None:

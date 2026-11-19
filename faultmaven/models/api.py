@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from faultmaven.utils.exception_name import CLASS_NAME_PATTERN, exception_class_name
+from faultmaven._class_name import CLASS_NAME_PATTERN
+from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import for type annotations (avoid circular imports)

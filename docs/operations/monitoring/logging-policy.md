@@ -100,15 +100,16 @@ reload. "Configures a provider" is answered from the provider registry (any
 registered provider's API key, or `LOCAL_LLM_URL` for the local one), so a
 Gemini-only `.env` is not zero-config (#1984).
 
-`app` is a `module:attr` import string (default `faultmaven.asgi:app`), never an
+`app` is a `module:attr` import string (default `faultmaven.asgi:create_app`, a factory), never an
 object: uvicorn refuses an object when `workers > 1` or `reload` is set, and
 `run_server` raises `ValueError` for anything that is not an import string.
 
 Every launch executes `faultmaven/main.py` exactly once (#1985). The launcher is
 its own module, `faultmaven/server.py`, and imports neither `faultmaven.main` nor
-anything that does: uvicorn imports the `"faultmaven.asgi:app"` string, once, in
-the process that serves requests, and `faultmaven/asgi.py` imports `faultmaven.main`.
-`run_server`'s first statement, and `faultmaven/asgi.py` in each process uvicorn
+anything that does: uvicorn imports the `"faultmaven.asgi:create_app"` string and calls
+it (`factory=True`), once, in the process that serves requests, and `create_app` imports
+`faultmaven.main`.
+`run_server`'s first statement, and `create_app` in each process uvicorn
 starts (a worker or the reloader's child), put the process's own outputs through
 the chain (`install_process_outputs`): uvicorn's own handlers are removed, so a
 launch through the `uvicorn` CLI conforms too, and a child whose import of the

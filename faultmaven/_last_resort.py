@@ -2,9 +2,9 @@
 
 The package's ``__init__`` installs the handler, so every process that imports
 ``faultmaven`` has it, a uvicorn supervisor and a worker child included. This
-module imports the standard library and ``fixed_line`` (standard library
+module imports the standard library and ``_fixed_line`` (standard library
 only), so ``import faultmaven`` stays cheap; the chain is imported on the first
-record that reaches it.
+record that reaches it, outside the handler's lock.
 """
 
 import logging
@@ -12,7 +12,7 @@ import sys
 import threading
 from typing import Any
 
-from faultmaven.utils.fixed_line import write_fixed_line
+from faultmaven._fixed_line import write_fixed_line
 
 _rendering = threading.local()
 
@@ -20,25 +20,38 @@ _rendering = threading.local()
 class LastResortHandler(logging.Handler):
     """Renders a record no handler took through the chain's JSON formatter on
     stderr, at WARNING as the standard library's does. A record logged while it
-    renders, or a render that fails, is a fixed line."""
+    renders, or one it has no formatter for or cannot render, is a fixed line."""
 
     def __init__(self) -> None:
         super().__init__(logging.WARNING)
         self._formatter: Any = None
 
-    def emit(self, record: logging.LogRecord) -> None:
-        if getattr(_rendering, "active", False):
-            write_fixed_line("log record logged while rendering", logger=record.name)
-            return
-        _rendering.active = True
-        try:
-            if self._formatter is None:
+    def handle(self, record: logging.LogRecord) -> Any:
+        # The chain is imported here, before ``Handler.handle`` takes the lock:
+        # an import under it could wait on a module another thread is importing
+        # while that thread waits on this lock.
+        if self._formatter is None and not getattr(_rendering, "active", False):
+            _rendering.active = True
+            try:
                 from faultmaven.infrastructure.logging.config import (
                     build_log_formatter,
                 )
 
                 self._formatter = build_log_formatter("json", False, sys.stderr)
-            sys.stderr.write(self._formatter.format(record) + "\n")
+            except Exception:  # noqa: BLE001 - emit writes the fixed line
+                pass
+            finally:
+                _rendering.active = False
+        return super().handle(record)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        formatter = self._formatter
+        if formatter is None or getattr(_rendering, "active", False):
+            write_fixed_line("log record not rendered", logger=record.name)
+            return
+        _rendering.active = True
+        try:
+            sys.stderr.write(formatter.format(record) + "\n")
             sys.stderr.flush()
         except Exception as error:  # noqa: BLE001
             write_fixed_line("log record not rendered", error, record.name)

@@ -105,6 +105,9 @@ Exit codes
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import asyncio
 import sys
@@ -113,7 +116,6 @@ from typing import Any, Awaitable, Callable
 
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
-from faultmaven.cli._log_chain import install_command_logging
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.config.tls_root_set import apply_root_set
@@ -958,7 +960,7 @@ def _add_apply_flags(parser: argparse.ArgumentParser) -> None:
 
 def main() -> None:
     """Console entrypoint (``fm-personal-tenant``)."""
-    install_command_logging()
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-personal-tenant",

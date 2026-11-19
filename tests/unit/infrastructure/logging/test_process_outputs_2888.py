@@ -16,6 +16,8 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import sqlite3
 import subprocess
 import sys
 import tomllib
@@ -335,6 +337,119 @@ def test_a_startup_failure_logs_frames_and_no_traceback_text(marker):
     lines = _clean(_run(code, marker), marker)
     _framed(lines, "API startup failed")
     assert "Traceback (most recent call last):" in {line["event"] for line in lines}
+
+
+def test_a_shutdown_failure_logs_frames_and_no_traceback_text(marker):
+    code = API + (
+        "import asyncio, uvicorn\nfrom unittest.mock import patch\n"
+        "from fastapi import FastAPI\nfrom uvicorn.lifespan.on import LifespanOn\n"
+        "from faultmaven.bootstrap import lifespan as module\n"
+        "async def nothing(*args, **kwargs):\n    return None\n"
+        "async def refuse(*args, **kwargs):\n    raise RuntimeError(marker)\n"
+        "async def main(lifespan):\n"
+        "    await lifespan.startup()\n    await lifespan.shutdown()\n"
+        "with patch.object(module, 'compose_application', nothing), \\\n"
+        "        patch.object(module, '_start_serving', nothing), \\\n"
+        "        patch.object(module, '_stop_serving', refuse), \\\n"
+        "        patch.object(module.opik_sdk, 'configure'), \\\n"
+        "        patch('faultmaven.bootstrap.configuration_gates.validate_configuration'):\n"
+        "    config = uvicorn.Config(FastAPI(lifespan=module.lifespan), log_config=None)\n"
+        "    config.load()\n"
+        "    asyncio.run(main(LifespanOn(config)))\n"
+    )
+    lines = _clean(_run(code, marker), marker)
+    _framed(lines, "API shutdown failed")
+
+
+@pytest.mark.parametrize("command", sorted(SCRIPTS))
+def test_a_commands_import_installs_the_hooks(command, marker):
+    """Before ``main`` runs, and before the command's own imports finish."""
+    module = SCRIPTS[command].split(":")[0]
+    code = f"import {module}\nraise RuntimeError(marker)\n"
+    _framed(_clean(_run(code, marker), marker), "Uncaught exception")
+
+
+def test_the_jobs_main_installs_the_hooks_first(marker):
+    code = (
+        "import faultmaven.config.tls_root_set as tls\n"
+        "def refuse():\n    raise RuntimeError(marker)\n"
+        "tls.apply_root_set = refuse\n"
+        "from faultmaven.jobs.run import main\nmain(['--list'])\n"
+    )
+    _framed(_clean(_run(code, marker), marker), "Uncaught exception")
+
+
+def test_opiks_own_handlers_go_where_it_is_imported(marker, tmp_path):
+    """A stand-in ``opik`` that adds the handlers the SDK and sentry_sdk add."""
+    (tmp_path / "opik").mkdir()
+    (tmp_path / "opik" / "__init__.py").write_text(
+        "import logging\n"
+        "for name in ('opik', 'sentry_sdk.errors'):\n"
+        "    logging.getLogger(name).addHandler(logging.StreamHandler())\n"
+    )
+    code = JOBS + (
+        "import faultmaven.infrastructure.observability.opik_sdk\n"
+        "print(json.dumps([len(logging.getLogger(n).handlers)\n"
+        "    for n in ('opik', 'sentry_sdk.errors')]))\n"
+    )
+    result = _run(code, marker, PYTHONPATH=f"{tmp_path}{os.pathsep}{ROOT}")
+    assert json.loads(result.stdout.splitlines()[-1]) == [0, 0], result.stderr
+
+
+def test_last_resort_imports_the_chain_outside_its_lock(marker):
+    """An import under the handler's lock can deadlock on another thread's
+    import; and with no chain to import, the record is the fixed line."""
+    code = (
+        "import types\nimport faultmaven\n"
+        "handler = logging.lastResort\n"
+        "def build(*args):\n"
+        "    print(json.dumps(handler.lock._is_owned()))\n"
+        "    raise RuntimeError(marker)\n"
+        "chain = types.ModuleType('faultmaven.infrastructure.logging.config')\n"
+        "chain.build_log_formatter = build\n"
+        "sys.modules[chain.__name__] = chain\n"
+        "logging.getLogger('p').warning('w')\n"
+    )
+    result = _run(code, marker)
+    assert json.loads(result.stdout) is False
+    assert {"event": "log record not rendered", "level": "error", "logger": "p"} in (
+        _clean(result, marker)
+    )
+
+
+@pytest.mark.parametrize("auth_mode", ["oauth", "local"])
+def test_fm_migrate_reads_the_url_alone(auth_mode, marker, tmp_path):
+    """``AUTH_MODE=oauth`` with no keys is a settings refusal the API makes and
+    alembic does not; local mode's settings write ``data/.jwt_secret``."""
+    shutil.copy2(ROOT / "alembic.ini", tmp_path / "alembic.ini")
+    shutil.copytree(
+        ROOT / "alembic",
+        tmp_path / "alembic",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    code = (
+        "sys.argv = ['fm-migrate']\nfrom faultmaven.cli.migrate import main\nmain()\n"
+    )
+    url = f"sqlite+aiosqlite:///{tmp_path / 'fresh.db'}"
+    environment = {
+        k: v
+        for k, v in os.environ.items()
+        if k.upper() not in {"DATABASE_URL", "AUTH_MODE"}
+        and not k.upper().startswith(("JWT_", "OAUTH_"))
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", PRELUDE + code, marker],
+        cwd=tmp_path, capture_output=True, text=True, timeout=300,
+        env={**environment, "PYTHONPATH": str(ROOT), "FAULTMAVEN_SKIP_DOTENV": "1",
+             "DATABASE_URL": url, "AUTH_MODE": auth_mode},
+    )  # fmt: skip
+    assert result.returncode == 0, result.stderr[-3000:]
+    assert (
+        sqlite3.connect(tmp_path / "fresh.db")
+        .execute("SELECT version_num FROM alembic_version")
+        .fetchall()
+    )
+    assert not (tmp_path / "data" / ".jwt_secret").exists()
 
 
 async def _run_worker(marker: str, end: str):

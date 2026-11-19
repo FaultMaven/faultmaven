@@ -28,6 +28,7 @@ from faultmaven.config.settings import (
     env_var_spellings,
     load_settings_dotenv,
 )
+from faultmaven.infrastructure.logging.process_outputs import strip_own_handlers
 from faultmaven.utils.exception_name import exception_class_name
 from faultmaven.utils.optional_dependency import module_is_usable
 
@@ -44,6 +45,9 @@ if not env_var_spellings(os.environ, "OPIK_SENTRY_ENABLE"):
 try:
     import opik
 
+    # Its own handler, and sentry_sdk's, write outside the log chain; a job or
+    # a command imports this module after its last sweep (#2888).
+    strip_own_handlers("opik", "sentry_sdk.errors")
     OPIK_AVAILABLE = module_is_usable(opik)
     if not OPIK_AVAILABLE:
         logger.warning(

@@ -107,6 +107,6 @@ def test_an_operator_command_refuses_a_secret_the_signer_refuses():
 
     detail = _assert_unseen(PEM, completed)
     assert completed.returncode == 1, detail
-    # An uncaught refusal is its class and frames (principles §7, rule 4; #2888).
+    # The remedy literal the refusal logs; the error is class and frames (#2888).
+    assert MESSAGE in completed.stderr, detail
     assert "LocalJwtSecretError:" in completed.stderr, detail
-    assert MESSAGE not in completed.stderr, detail

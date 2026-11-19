@@ -42,7 +42,12 @@ _APP_IMPORT_STRING_RE = re.compile(
 )
 
 
-def run_server(app: str = "faultmaven.asgi:app") -> None:
+#: The core app: a factory, so the process outputs go in before ``faultmaven.main``
+#: is imported, in every process uvicorn starts (#2888).
+CORE_APP = "faultmaven.asgi:create_app"
+
+
+def run_server(app: str = CORE_APP) -> None:
     """Start uvicorn with the configured host, port, workers and keep-alive.
 
     ``app`` is the ASGI application as an import string (``module:attr``),
@@ -61,8 +66,9 @@ def run_server(app: str = "faultmaven.asgi:app") -> None:
     string mounts them twice, #1985).
 
     The process's own outputs go through the log chain first, before anything
-    here can fail (#2888). The default app, ``faultmaven.asgi:app``, does the
-    same in each process uvicorn starts, then imports ``faultmaven.main``.
+    here can fail (#2888). The core app, ``faultmaven.asgi:create_app``, is a
+    factory (``factory=True``, for it alone): it does the same in each process
+    uvicorn starts, then imports ``faultmaven.main``.
 
     Raises:
         ValueError: ``app`` is not a ``module:attr`` import string.
@@ -132,6 +138,7 @@ def run_server(app: str = "faultmaven.asgi:app") -> None:
         # redacting renderer lives. With no config of its own, uvicorn's
         # loggers propagate to root and are rendered like everything else.
         log_config=None,
+        factory=app == CORE_APP,
         **options,
     )
 

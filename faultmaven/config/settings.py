@@ -1587,6 +1587,16 @@ def require_signable_hs256_secret(value: str, source: str, path: Path) -> None:
     except Exception:  # every failure means the signer refuses the value
         pass
     where, advice = _JWT_SECRET_REFUSAL_ADVICE[source]
+    # The remedy, on the log chain, where an uncaught refusal shows its class
+    # and frames alone (#2888): literals, the source a key of the table above.
+    logging.getLogger(__name__).error(
+        "The local JWT secret cannot sign tokens: PyJWT refuses it as an HMAC "
+        "secret (a value that looks like a PEM or SSH key or a JWK, or is not "
+        "UTF-8 text, is refused). Replace it with a random string, from "
+        '`python -c "import secrets; print(secrets.token_urlsafe(48))"`, then '
+        "restart every process.",
+        extra={"secret_source": source},
+    )
     raise LocalJwtSecretError(
         f"The local JWT secret from {where.format(path=path)} cannot sign tokens: "
         "PyJWT refuses it as an HMAC secret (a value that looks like a PEM or SSH "
@@ -4067,7 +4077,15 @@ def get_settings() -> FaultMavenSettings:
             _settings_instance = settings
         except Exception as e:
             from faultmaven.models.exceptions import ConfigurationError
+            from faultmaven.utils.exception_name import exception_class_chain
 
+            # The remedy, on the log chain, where an uncaught refusal shows its
+            # class and frames alone (#2888).
+            logging.getLogger(__name__).error(
+                "Settings initialization failed: correct the setting the "
+                "error's class and frames point to, then start again.",
+                extra={"error": exception_class_chain(e)},
+            )
             raise ConfigurationError(
                 f"Settings initialization failed: {e}",
                 error_code="SETTINGS_INIT_ERROR",

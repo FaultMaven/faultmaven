@@ -18,7 +18,8 @@ import threading
 import warnings
 from typing import Any
 
-from faultmaven.utils.fixed_line import class_name, write_fixed_line
+from faultmaven._class_name import class_name
+from faultmaven._fixed_line import write_fixed_line
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,13 @@ def install_process_outputs() -> None:
     for name in ("uvicorn.error", "asyncio"):
         if _FIRST_LINE not in logging.getLogger(name).filters:
             logging.getLogger(name).addFilter(_FIRST_LINE)
+
+
+def strip_own_handlers(*names: str) -> None:
+    """Strip the named loggers' own handlers, as :func:`sweep_own_handlers`
+    does every logger's: where a library that adds them is imported."""
+    for name in names:
+        _strip(logging.getLogger(name))
 
 
 def sweep_own_handlers() -> None:

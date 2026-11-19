@@ -284,12 +284,14 @@ def _refuse_cascading_rebuild() -> None:
         return
     enforced = op.get_bind().execute(text("PRAGMA foreign_keys")).scalar()
     if enforced:
-        raise RuntimeError(
+        refusal = (
             "007 rebuilds the hypotheses table on SQLite and must run with "
             "PRAGMA foreign_keys=OFF: with it on, dropping the old table runs "
             "the ON DELETE actions of hypothesis_evidence (CASCADE) and "
             "solutions (SET NULL)."
         )
+        _log.error(refusal)  # the remedy, on the log chain (#2888)
+        raise RuntimeError(refusal)
 
 
 def _set_state_constraint(*, check: str, default: str, old_check: str) -> None:

@@ -82,13 +82,15 @@ Exit codes
 
 from __future__ import annotations
 
+# First: the process outputs go through the log chain from here on (#2888).
+from faultmaven.cli import _log_chain  # isort: skip
+
 import argparse
 import sys
 
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
-from faultmaven.cli._log_chain import install_command_logging
 from faultmaven.config.tls_root_set import apply_root_set
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -467,7 +469,7 @@ async def remove_org_member(
 
 def main() -> None:
     """Console entrypoint (``fm-remove-org-member``)."""
-    install_command_logging()
+    _log_chain.install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         prog="fm-remove-org-member",

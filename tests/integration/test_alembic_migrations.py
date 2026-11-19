@@ -1432,9 +1432,11 @@ class TestRunbookSeverityRevision:
 
         result = run_alembic(f"downgrade {PROBLEM_STATUS_REVISION}", database_url)
         assert result.returncode != 0
-        # The refusal is an uncaught exception: its class and frames, no
-        # message (principles §7, rule 4; #2888).
-        assert "_refuse_while_info_rows_exist" in result.stderr
+        # The remedy literal 008 logs; the count stays in the raise (#2888).
+        assert (
+            "008 downgrade refused: conversion_drafts rows hold severity 'info'"
+            in result.stderr
+        )
         assert get_current_revision(database_url) == RUNBOOK_SEVERITY_REVISION
 
         conn = self._connect()
@@ -2865,8 +2867,9 @@ class TestRunbookDraftsInTheDatabaseRevision:
         )
 
         assert result.returncode != 0
-        # Its class and frames, no message (principles §7, rule 4; #2888).
-        assert "_refuse_if_standalone_would_lose_drafts" in result.stderr
+        # The remedy literal 018 logs; count and paths stay in the raise (#2888).
+        assert "018 refused: live runbook drafts keep their text only" in result.stderr
+        assert "which does not exist in the working directory" in result.stderr
         assert (
             get_current_revision(database_url) == DROP_INVESTIGATION_SESSIONS_REVISION
         )
@@ -2970,8 +2973,10 @@ class TestRunbookDraftsInTheDatabaseRevision:
             "sqlite:///offline.db",
         )
         assert result.returncode != 0
-        # Its class and frames, no message (principles §7, rule 4; #2888).
-        assert "_018_runbook_drafts_in_the_database.py" in result.stderr
+        assert (
+            "step (b) reads draft files; standalone migrates online from the app "
+            "root" in result.stderr
+        )
         assert "ALTER TABLE conversion_drafts" not in result.stdout
 
 
@@ -4613,10 +4618,7 @@ class TestHelperScript:
         result = run_helper_script("upgrade --sql", database_url)
 
         assert result.returncode != 0
-        # 018's refusal: its class and frames (principles §7, rule 4; #2888).
-        assert "_018_runbook_drafts_in_the_database.py" in result.stderr, result.stderr[
-            -2000:
-        ]
+        assert "step (b) reads draft files" in result.stderr, result.stderr[-2000:]
         assert "CREATE TABLE cases" in result.stdout
         assert "Running upgrade b5334d07ae6c -> f95a5b3a58eb" in result.stdout
         assert not os.path.exists(TEST_DB) or get_tables(TEST_DB) == []

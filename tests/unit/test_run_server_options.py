@@ -40,7 +40,7 @@ from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
 
-DEFAULT_APP = "faultmaven.asgi:app"
+DEFAULT_APP = "faultmaven.asgi:create_app"
 CLOUD_APP = "faultmaven_cloud.main:app"
 
 
@@ -91,6 +91,8 @@ def test_every_uvicorn_option_is_passed(app, workers, reload):
         "ws": "none",
         "log_config": None,
         "workers": workers,
+        # The core app is a factory (#2888); another app string is not.
+        "factory": (app or DEFAULT_APP) == DEFAULT_APP,
     }
     assert run.call_args.args == (app or DEFAULT_APP,)
     assert run.call_args.kwargs == expected
@@ -285,7 +287,7 @@ def test_fewer_than_one_worker_is_refused_by_the_settings(monkeypatch, workers):
 def test_default_app_is_the_faultmaven_app():
     """The default import string resolves to the real app object."""
     assert _launch().call_args.args == (DEFAULT_APP,)
-    assert import_from_string(DEFAULT_APP) is faultmaven.main.app
+    assert import_from_string(DEFAULT_APP)() is faultmaven.main.app
 
 
 @pytest.mark.parametrize(

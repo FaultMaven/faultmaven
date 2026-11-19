@@ -36,7 +36,7 @@ stderr and nothing on stdout.
 | `fm-wipe-deployment` | Inventory every wipe surface (resolved targets, writes nothing) | [Deployment wipe](./deployment-wipe.md) |
 | `fm-wipe-deployment --verify` | Positively verify a clean slate; exit 5 on residue (#819) | same |
 | `fm-wipe-deployment --wipe --confirm-target faultmaven --yes` | Wipe vectors + object storage + Redis | same |
-| `fm-migrate` | Upgrade the database to head (`alembic upgrade head`) through the log chain: a failure is its class and frames on stderr, exit 1, never alembic's `FAILED:` text (#2888). The startup migration runs it; `--config` names another `alembic.ini` | [Database migrations](../guides/database-migrations.md) |
+| `fm-migrate` | Upgrade the database to head (`alembic upgrade head`) through the log chain: a failure is its class and frames on stderr, exit 1, never alembic's `FAILED:` text (#2888). It refuses a non-persistent `DATABASE_URL`, read alone as alembic reads it. The startup migration runs it; `--config` names another `alembic.ini` | [Database migrations](../guides/database-migrations.md) |
 
 ## Backfilling the case outcome record
 

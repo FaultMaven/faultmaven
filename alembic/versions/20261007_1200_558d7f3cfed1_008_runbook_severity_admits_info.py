@@ -53,6 +53,7 @@ Revises: 497ae8900ae2
 Create Date: 2026-10-07 12:00:00
 """
 
+import logging
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -207,6 +208,14 @@ def _refuse_while_info_rows_exist() -> None:
     if postgresql_dialect:
         bind.execute(text(ROW_SECURITY_RESTORED))
     if count:
+        # The remedy, on the log chain (#2888); the count stays in the raise.
+        logging.getLogger("alembic.runtime.migration").error(
+            "008 downgrade refused: conversion_drafts rows hold severity 'info', "
+            "which the parent revision's CHECK does not admit. Re-grade them or "
+            "clear the column (UPDATE conversion_drafts SET severity = NULL WHERE "
+            "severity = 'info'; the runbook files keep the value), then downgrade "
+            "again."
+        )
         raise RuntimeError(
             f"008 downgrade refused: {count} conversion_drafts row(s) hold "
             "severity 'info', which the parent revision's CHECK does not admit. "

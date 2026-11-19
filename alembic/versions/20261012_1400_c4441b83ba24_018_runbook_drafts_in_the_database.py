@@ -318,6 +318,14 @@ def _refuse_if_standalone_would_lose_drafts() -> None:
         return
     at_risk = op.get_bind().execute(COUNT_LIVE_WITHOUT_PUBLISHED_TEXT).scalar()
     if at_risk:
+        # The remedy, on the log chain (#2888); count and paths stay in the raise.
+        _log.error(
+            "018 refused: live runbook drafts keep their text only in files under "
+            "data/knowledge/, which does not exist in the working directory. The "
+            "migration reads those files relative to where it runs: run it from "
+            "the application root (the app's own startup run does), or discard "
+            "those drafts first. Nothing was changed."
+        )
         raise RuntimeError(
             f"018 refused: {at_risk} live runbook draft(s) keep their text only "
             f"in files under {KNOWLEDGE_DIR}/, which does not exist in the "
@@ -385,10 +393,12 @@ def upgrade() -> None:
     context = op.get_context()
     if context.as_sql:
         if context.dialect.name == "sqlite":
-            raise RuntimeError(
+            refusal = (
                 "018 cannot be rendered with --sql on SQLite: step (b) reads "
                 "draft files; standalone migrates online from the app root"
             )
+            _log.error(refusal)  # the remedy, on the log chain (#2888)
+            raise RuntimeError(refusal)
         op.execute(OFFLINE_WARNING)
     _refuse_if_standalone_would_lose_drafts()
     op.add_column("conversion_drafts", sa.Column("content", sa.Text(), nullable=True))
