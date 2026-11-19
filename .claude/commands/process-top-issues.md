@@ -199,6 +199,9 @@ echo "design checks due, not run: ${due:-none} · run since the last proposal: $
 # ready P0-P2 defects no open PR carries: while any exist, the lanes design leaves take the defect order (Pick)
 hp=$(jq --argjson prs "$prs" "$cls"'[.[] | select(free and ready and has(["class:defect"]) and has(["P0", "P1", "P2"])
   and (refs(.number) | not))] | length' <<<"$open")
+# ready P0-P2 items (defects and design stages) no open PR carries: while any exist, no P3 item takes a lane (Pick)
+hq=$(jq --argjson prs "$prs" "$cls"'[.[] | select(ready and has(["P0", "P1", "P2"]) and (has(["class:defect", "design-stage"]))
+  and (refs(.number) | not))] | length' <<<"$open")
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
   l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
 cu=; cm=; for n in $(jq -r "$cls"'.[] | select(free and has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* condition"))) | .number' <<<"$open"); do
@@ -207,15 +210,16 @@ cu=; cm=; for n in $(jq -r "$cls"'.[] | select(free and has(["pile:blocked"]) an
   [[ "$h" == *": met" ]] && cm+="#$n "; done
 echo "conditions not checked in 14 days: ${cu:-none} · condition met, still blocked: ${cm:-none}"
 # the round this proposal opens: one past the newest result, else unknown (a stop); every third, and the one after
-# a proposal with a Health line beginning `P3 batch owed`, is a P3-batch round (Pick)
+# a proposal with a Health line beginning `P3 batch owed`, is a P3-batch round, unless a ready P0-P2 item exists (Pick)
 rn=$(jq '[.[]? | select(.p | not) | .b | capture("^## Round (?<n>[0-9]+)").n | tonumber] | max // empty | . + 1' <<<"$qc" 2>/dev/null)
 ow=$(jq -r 'map(select(.p)) | last.b // "" | test("(?m)^[-*• ]*P3 batch owed\\b")' <<<"$qc" 2>/dev/null)
-bt=false; [ -n "$rn" ] && { [ $((rn % 3)) -eq 0 ] || { [ $((rn % 3)) -eq 1 ] && [ "$ow" = true ]; }; } && bt=true
+bt=false; [ -n "$rn" ] && [ "$hq" -eq 0 ] && { [ $((rn % 3)) -eq 0 ] || { [ $((rn % 3)) -eq 1 ] && [ "$ow" = true ]; }; } && bt=true
 # the lanes ahead of design: a main red, a flake's fix, the P1 exposure lane; anything but a count reads 0
 case "$xl" in 0|1|2|3|4) ;; *) xl=0;; esac
-dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson bt "$bt" --argjson xl "$xl" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
+dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson hq "$hq" --argjson bt "$bt" --argjson xl "$xl" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
   [.[] | select(has(["design-stage"]) and ready) | {n: .number, r: stage, c: .createdAt,
-    k: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | sort | first // "P3")}] | sort_by(.k, .c) as $all
+    k: ([.labels[].name | select(IN("P0", "P1", "P2", "P3"))] | sort | first // "P3")}
+    | select($hq == 0 or .k != "P3")] | sort_by(.k, .c) as $all
   | [$all[] | select(.r != "?" and ((refs(.n) or refs(.r)) | not))] as $a
   | ($a | group_by(.r) | map({r: .[0].r, k: (map(.k) | min)}) | sort_by(.k)) as $ranked
   | [$all[] | select(.n | tostring | IN($lanes | scan("[0-9]+")))] as $p | ($p | map(.r) | unique) as $pr
@@ -362,10 +366,14 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      - **Next** items follow the lanes' order in every round: design stages first, within the design cap, then the
        defect order while a ready `P0`–`P2` defect exists, else the ordinary order. A P3 batch is never a Next item.
      - **Otherwise,** the lanes design leaves follow the ordinary order.
-     - **The P3 batch** (owner ruling, 2026-11-15): every round whose number is divisible by 3 is a P3-batch round, and
+     - **`P1` and `P2` before `P3`** (owner ruling, 2026-11-19: "making the system sound and robust is [the primary
+       goal] … so P1 and P2 should be resolved before P3"). While any ready `P0`–`P2` item exists (a defect or a
+       design stage that no open PR carries; the health block's `hq`), no `P3` item takes a lane: no round is a
+       P3-batch round, no batch is owed, and no `P3` stage is offered a design lane.
+     - **The P3 batch** (owner ruling, 2026-11-15, bounded by the rule above): every round whose number is divisible by 3 is a P3-batch round, and
        so is the round after one whose proposal has a *Health* line beginning `P3 batch owed`. A debt is owed once and
        does not stack: unpaid, it waits for the next third round. One lane, after a `main red`, a flake's fix and the
-       exposure lane and before design, takes a P3 batch whether or not a ready `P0`–`P2` defect exists. Count each
+       exposure lane and before design, takes a P3 batch. Count each
        ready `P3` issue that is not a batch issue, and each unchecked line of a `P3` batch issue, defects and chores
        alike, leaving out any that takes its own lane (a security boundary or storage), any on a root's `**Blocks:**`
        line, and any on the seam of an open PR, of an open `root-candidate` or of a lane this round picks. The area with
@@ -373,7 +381,8 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        seam in it, the component the fixes touch, and takes the counted items on that seam within the round's size
        limits, planned and reviewed as one item and counted as one. A batch the round cannot run (a migration round, `in
        flight` past a limit, no lane left, or no counted work) is owed to the next round: the proposal's *Health* has
-       one line beginning `P3 batch owed`, with the reason.
+       one line beginning `P3 batch owed`, with the reason. A round that ready `P0`–`P2` items keep from being a
+       P3-batch round owes nothing.
      - **The ordinary order:** `P1`, the aged `P2`s, the other `P2`s, `P3`, oldest first within each, a chore after
        the defects of its priority.
 
