@@ -23,6 +23,7 @@ from faultmaven.modules.case.contracts import (
 from .queries import (
     and_constraints_satisfied,
     deductively_validated,
+    deepened_past_root_ids,
     incoming_and_groups,
 )
 from .support import (
@@ -78,6 +79,9 @@ def derive_node_states(case: Case) -> bool:
       such supports (distinct evidence rows that are not mutual restatements of
       each other), because every causal link is an LLM self-labeled claim and
       one self-certified datum must not conclude a case (#573/#656). A
+      ROOT-typed node a chain was deepened past (``deepened_past_root_ids``)
+      is a rung by its position: the rung bar, outside the restatement guard
+      and the ROOT block metric (#2060). A
       counterfactually CONFIRMED root (engine-stamped ``causal_absence``
       SUPPORTS, gone⇒gone — the M2 top grade, engine-only producer) satisfies
       the ROOT bar outright: confirmation dominates empirical counting, and a
@@ -107,6 +111,7 @@ def derive_node_states(case: Case) -> bool:
     evidence_by_id: dict[str, EvidenceCategory | None] = _evidence_category_map(case)
     restating_roots = _restating_root_ids(case)
     causal_tokens = _causal_evidence_tokens(case)
+    deepened_past = deepened_past_root_ids(case)
 
     changed_any = False
     # Fixpoint: a validated parent can unlock a child's AND-gate. Bound the loop
@@ -134,7 +139,10 @@ def derive_node_states(case: Case) -> bool:
             # while a non-ROOT rung keeps ≥1. The len() pre-check short-circuits
             # the pairwise independence work when the raw count can't reach the
             # bar anyway (independent count ≤ deduped link count).
-            if node.node_type == NodeType.ROOT:
+            stands_as_root = (
+                node.node_type == NodeType.ROOT and node.node_id not in deepened_past
+            )
+            if stands_as_root:
                 causally_grounded = (
                     len(causal_support_ev_ids) >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
                     and _independent_causal_support_count(
@@ -231,7 +239,7 @@ def derive_node_states(case: Case) -> bool:
                 and generic_ok
                 and not causally_grounded
                 and raw_causal_links >= 1
-                and node.node_type == NodeType.ROOT
+                and stands_as_root
             ):
                 reason = _support_block_reason(causal_support_ev_ids, causal_tokens)
                 root_validation_blocked_support_count_total.labels(
@@ -324,11 +332,12 @@ def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
     nodes = case.causal_nodes
     edges = case.causal_edges
     restating_roots = _restating_root_ids(case)
+    deepened_past = deepened_past_root_ids(case)
     changed = False
     for sid in asserted_survivor_ids:
         node = nodes.get(sid)
-        if node is None or node.node_type != NodeType.ROOT:
-            continue  # only a ROOT cause is validated by exclusion
+        if node is None or node.node_type != NodeType.ROOT or sid in deepened_past:
+            continue  # only a ROOT cause is validated by exclusion (#2060)
         if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
             continue  # already settled — assertion does not re-open it
         if sid in restating_roots:

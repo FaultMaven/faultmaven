@@ -453,7 +453,16 @@ generic supports/refutes arithmetic). Links backed by weaker categories
 (e.g. `SYMPTOM_EVIDENCE`) inform the narrative but never validate a node.
 
 **Independent-support bar (ROOT-only).** A non-ROOT rung validates on ≥1
-causally-grounding link. A ROOT — the node that mints a conclusion — requires
+causally-grounding link. So does a ROOT-typed node a chain was deepened past
+(`deepened_past_root_ids`: on a non-retired hypothesis's path, and no
+non-retired hypothesis's root). It keeps its stored type, but its position
+makes it a rung to every reader that asks whether a node is a root: shown as
+`intermediate`, outside the restatement guard, the ROOT block metric and the
+deductive lane, and never a validated, identified or held root, so deepening
+past a validated root drops the grade to NO_ROOT until the new root validates.
+A re-root back onto it (`attach_root`) resets an EMPIRICAL validation to
+CANDIDATE, so it faces the ROOT bar and the guard again in the same turn
+(#2060). A ROOT — the node that mints a conclusion — requires
 `ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN` (= 2) **independent** causally-grounding
 supports: distinct evidence rows whose contents are not mutual restatements of
 each other (`_EVIDENCE_MIRROR_JACCARD` over content tokens of

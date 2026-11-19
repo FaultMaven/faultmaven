@@ -478,13 +478,27 @@ def stance_declared_confident(link) -> bool:
     return confidence >= CAUSAL_STANCE_CONFIDENCE_MIN
 
 
+def deepened_past_roots(case: "Case") -> frozenset:
+    """``causal_graph.queries.deepened_past_root_ids``, read through the graph
+    hook seam (this module cannot import ``causal_graph``): the ROOT-typed
+    nodes a chain was deepened past, rungs to every reader keyed on position
+    (#2060). Empty while the hook is unregistered."""
+    deepened = _graph_hooks().get("deepened_past")
+    return frozenset(deepened(case)) if deepened is not None else frozenset()
+
+
 def _validated_roots(case: "Case") -> list["CausalNode"]:
     """The case's VALIDATED root nodes — the only harvest-relevant unit (§7 never
-    harvests an intermediate rung or a candidate)."""
+    harvests an intermediate rung or a candidate). A root a chain was deepened
+    past is a rung (#2060): the grade drops to NO_ROOT until the new root
+    validates."""
+    deepened = deepened_past_roots(case)
     return [
         n
         for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+        if n.node_type == NodeType.ROOT
+        and n.node_state == NodeState.VALIDATED
+        and n.node_id not in deepened
     ]
 
 
@@ -852,9 +866,15 @@ def cause_pool_empty_reason(case: "Case") -> PoolEmptyReason | None:
 
 def _pool_legs(case: "Case") -> tuple[set, set, set]:
     """``(identified, count-held terminal, fallen)`` roots, as ``_cause_pool``
-    reads them; the count-held leg only when nothing is identified."""
+    reads them; the count-held leg only when nothing is identified. Each leg
+    agrees with the grade on what a root is (#2060)."""
     nodes = getattr(case, "causal_nodes", None) or {}
     engine_ids = _engine_absence_row_ids(case)
+    # A root a chain was deepened past is a rung (#2060): never identified,
+    # and not fallen by the record (it was deepened, and window 0 keeps its
+    # rows through ``deepened_to``). M6's demotion still marks it fallen, so
+    # a kinded window's ``fell`` does not re-scope after a deepening.
+    deepened = deepened_past_roots(case)
     recorded = set(
         getattr(getattr(case, "progress", None), "identified_cause_root_ids", None)
         or ()
@@ -862,14 +882,14 @@ def _pool_legs(case: "Case") -> tuple[set, set, set]:
     identified = {
         node_id
         for node_id, node in nodes.items()
-        if getattr(node, "is_identified_root", False)
+        if getattr(node, "is_identified_root", False) and node_id not in deepened
     }
     fallen = {
         node_id
         for node_id, node in nodes.items()
         if getattr(node, "node_type", None) == NodeType.ROOT
         and (
-            node_id in recorded
+            (node_id in recorded and node_id not in deepened)
             or any(
                 link.stance == EvidenceStance.REFUTES and link.evidence_id in engine_ids
                 for link in node.evidence_links
@@ -2674,6 +2694,7 @@ def register_graph_hooks(
     project_hypothesis_states_from_roots,
     conjuncts_for_chain,
     summarize_restatement_hold,
+    deepened_past_root_ids,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
@@ -2688,6 +2709,9 @@ def register_graph_hooks(
     # cycle causal_graph -> hypothesis_manager -> terminal_transitions ->
     # verification_status. Same seam, same reason as ``project_hyp_states``.
     _GRAPH_HOOKS["restatement_hold"] = summarize_restatement_hold
+    # #2060: the readers here and in ``causal_map`` that ask "is this a root?"
+    # by position (``deepened_past_roots``).
+    _GRAPH_HOOKS["deepened_past"] = deepened_past_root_ids
 
 
 def _graph_hooks() -> dict:

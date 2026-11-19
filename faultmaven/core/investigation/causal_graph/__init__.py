@@ -29,7 +29,11 @@ from faultmaven.core.investigation.cause_assurance import register_graph_hooks
 from .clusters import sole_cluster_origin
 from .derivation import derive_node_states
 from .projection import project_hypothesis_states_from_roots
-from .queries import conjuncts_for_chain, mechanism_for_chain
+from .queries import (
+    conjuncts_for_chain,
+    deepened_past_root_ids,
+    mechanism_for_chain,
+)
 from .support import summarize_restatement_hold, support_count_held_root_ids
 
 # ---------------------------------------------------------------------------
@@ -44,4 +48,5 @@ register_graph_hooks(
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
     conjuncts_for_chain=conjuncts_for_chain,
     summarize_restatement_hold=summarize_restatement_hold,
+    deepened_past_root_ids=deepened_past_root_ids,
 )

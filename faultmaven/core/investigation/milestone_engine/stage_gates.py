@@ -357,6 +357,9 @@ def licence_leg_ids(
       cause pool holds it (#2485), an intermediate as named; none and
       ``in_words`` when it names no node;
     - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
+    from faultmaven.core.investigation.causal_graph.queries import (
+        deepened_past_root_ids,
+    )
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         conclusion_node,
@@ -372,8 +375,11 @@ def licence_leg_ids(
             return [node_id], False
         if named not in nodes:
             return [], True
-        if nodes[named].node_type != NodeType.ROOT or named in set().union(
-            *_cause_pool(case)
+        # A root a chain was deepened past is named as the rung it is (#2060).
+        if (
+            nodes[named].node_type != NodeType.ROOT
+            or named in deepened_past_root_ids(case)
+            or named in set().union(*_cause_pool(case))
         ):
             return [named], False
         return [], False

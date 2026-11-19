@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
+    HypothesisState,
     NodeState,
     NodeType,
 )
@@ -79,6 +80,36 @@ def chain_evidence_links(case: "Case", hyp: "Hypothesis") -> list:
         if node is not None and node.node_type != NodeType.PROBLEM:
             links.extend(node.evidence_links)
     return links
+
+
+def deepened_past_root_ids(case: "Case") -> set[str]:
+    """The ROOT-typed nodes a chain was deepened past (#2060): on the path of
+    a hypothesis the causal-graph block shows (every non-retired one), and no
+    shown hypothesis's root.
+
+    Such a node keeps its stored type (#2036: window 0's relapse and a later
+    re-root back onto it read it), but a cause sits above it now, so its
+    position makes it a rung to every reader that asks "is this a root?": the
+    rung bar, outside the restatement guard and the ROOT block metric, never a
+    validated, identified or held root. A node any shown hypothesis is rooted
+    at stands as a root on every path through it (a re-root may hand an old
+    root to another hypothesis), and an orphan is on no path. The one owner of
+    the fact: the block's label, the bar, the notes and the grade read it."""
+    shown = [
+        h
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h is not None and h.state != HypothesisState.RETIRED
+    ]
+    rooted_at = {h.root_node_id for h in shown if h.root_node_id}
+    nodes = getattr(case, "causal_nodes", None) or {}
+    return {
+        node_id
+        for h in shown
+        for node_id in h.path or ()
+        if node_id not in rooted_at
+        and node_id in nodes
+        and nodes[node_id].node_type == NodeType.ROOT
+    }
 
 
 def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str]:

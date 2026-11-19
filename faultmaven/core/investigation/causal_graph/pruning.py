@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from faultmaven.modules.case.contracts import NodeType
+from faultmaven.modules.case.contracts import NodeState, NodeType, ValidationMethod
 
 from .ingestion import chain_path_to_problem
+from .queries import deepened_past_root_ids
 from .similarity import (
     RESTATEMENT_AMBIGUOUS,
     RESTATEMENT_STRONG,
@@ -85,10 +86,26 @@ def attach_root(
     says a cause sits above that node: clause b fails for it, whatever was
     recorded before, and ``deepened_to`` names the root it was deepened to,
     so a relapse observed on it still fails window 0. A move to another
-    chain says nothing about the old root."""
+    chain says nothing about the old root.
+
+    A re-root onto a node a chain was deepened past (``deepened_past_root_ids``,
+    read before this attach) puts it back to the ROOT bar and the restatement
+    guard in the same turn (#2060): an EMPIRICAL validation, earned as a rung,
+    is reset to CANDIDATE for the turn's recompute to re-derive. A DEDUCTIVE
+    one is kept: the deductive lane stamps only a node standing as a root."""
+    re_rooted = root_id in deepened_past_root_ids(case)
     old_root = hyp.root_node_id
     hyp.root_node_id = root_id
     hyp.path = path
+    node = case.causal_nodes.get(root_id)
+    if (
+        re_rooted
+        and node is not None
+        and node.node_state == NodeState.VALIDATED
+        and node.validation_method == ValidationMethod.EMPIRICAL
+    ):
+        node.node_state = NodeState.CANDIDATE
+        node.validation_method = ValidationMethod.NONE
     if old_root == root_id:
         return
     attached = case.causal_nodes[root_id].metadata

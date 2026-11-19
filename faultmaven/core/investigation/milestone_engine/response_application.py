@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from faultmaven.core.investigation.causal_graph.queries import deepened_past_root_ids
 from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
@@ -409,6 +410,7 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             action.target_ids, action.target_named = [node_id], True
     _record_licences(case, metadata)
     minted = {entry[0] for entry in metadata.get(FIXES_MINTED_KEY) or []}
+    rungs = deepened_past_root_ids(case)
     for action_id in metadata.get(FIXES_ACCEPTED_KEY) or []:
         action = actions.get(action_id)
         if action is None or action.fix_kind is not None:
@@ -418,12 +420,14 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             continue
         same_turn = action_id in minted
         # Only a ROOT the licence names joins the reference: a fix at an
-        # intermediate node is never a remediation.
+        # intermediate node is never a remediation, and a root a chain was
+        # deepened past is a rung (#2060).
         own = {
             node_id
             for node_id in action.licence_ids or ()
             if node_id in case.causal_nodes
             and case.causal_nodes[node_id].node_type == NodeType.ROOT
+            and node_id not in rungs
         }
         if not action.target_named:
             target = _unnamed_target(cause, action, same_turn)

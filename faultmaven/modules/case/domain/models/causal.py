@@ -290,7 +290,9 @@ class CausalNode(BaseModel):
     @property
     def is_identified_root(self) -> bool:
         """This node is an identified ROOT CAUSE: a VALIDATED root its
-        hypothesis marked terminal. The one definition every reader uses."""
+        hypothesis marked terminal. The one definition every reader uses.
+        Node-local: a reader over the case's nodes also drops the roots a
+        chain was deepened past (``deepened_past_root_ids``, #2060)."""
         return (
             self.node_type == NodeType.ROOT
             and self.node_state == NodeState.VALIDATED
