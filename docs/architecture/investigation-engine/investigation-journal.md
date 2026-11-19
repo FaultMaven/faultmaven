@@ -36,7 +36,7 @@ An append-only list of short, structured entries that capture the key decisions,
 1. **Distilled, not verbose.** Each entry is max 200 characters. The journal is a compressed signal, not a conversation transcript.
 2. **Append-only.** Entries are never modified or deleted. The chronological record is the ground truth.
 3. **Agent-generated.** The LLM produces journal entries as part of its structured output, like it produces evidence and hypotheses.
-4. **In every investigating prompt, under a cap.** The journal is a section of every investigating prompt, capped at `PROMPT_JOURNAL_MAX_TOKENS` (~1.5K tokens) and cut under budget pressure (see §Context Builder Integration). At 200 chars per entry and ~1 entry per 2 turns, a 50-turn investigation produces ~25 entries = ~5 KB, so the cap rarely binds.
+4. **In every investigating prompt, under a budget.** The main prompt renders the journal as its own section, capped at `PROMPT_JOURNAL_MAX_TOKENS` (~1.5K tokens) and cut under budget pressure; an allotment of 0 leaves only the dropped-section marker (INV-4). The template-fallback prompt carries a digest instead: at most 12 entries, 120 characters each (`_fallback_journal_digest`). At 200 chars per entry and ~1 entry per 2 turns, a 50-turn investigation produces ~25 entries, about 1.3K tokens with line prefixes, near the cap. Cut rules: §Context Builder Integration.
 5. **Selective, not exhaustive.** Not every turn produces a journal entry. Only turns with significant findings, decisions, or user context.
 
 ### Entry Types
@@ -58,9 +58,8 @@ class JournalEntry(BaseModel):
     
     Captures a distilled insight, decision, or context that the agent
     needs to remember across the entire investigation. Entries are
-    append-only. The prompt renders the journal under a token budget; a cut
-    keeps whole entries, blockers first (``journal_keep_order``), or the
-    newest end as a fragment when no entry fits.
+    append-only. The prompt renders the journal under a token budget; how it
+    is cut: ``prompt-token-budget-allocation.md`` §5.2.
     """
     
     turn: int = Field(
@@ -98,8 +97,8 @@ class Case(BaseModel):
     investigation_journal: List[JournalEntry] = Field(
         default_factory=list,
         description="Structured log of key findings, decisions, and context. "
-        "Append-only. Rendered into the investigation prompt under a token budget; "
-        "a cut keeps whole entries, blockers first, when any fits."
+        "Append-only. Rendered into the investigation prompt under a token budget "
+        "(prompt-token-budget-allocation.md §5.2)."
     )
 ```
 
@@ -164,9 +163,9 @@ an entry — only record what future turns would need to know.
 
 ### Context Builder Integration
 
-In `build_investigation_context()` (`context_builder/assembly.py`), the journal is the third variable section in priority order, after evidence and conversation history and ahead of the working conclusion, KB results and hypotheses. It is placed high because it is compact and critical. Its allotment is capped at `PROMPT_JOURNAL_MAX_TOKENS`. A journal that fits renders whole, one `[T<turn>] <TYPE>: <content>` line per entry in turn order. One that does not is cut by `_cut_journal`: whole entries in `journal_keep_order` (blockers, then decisions, findings and ruled-out entries, then the rest, each newest first), up to the first that does not fit, rendered in turn order after a `[... N entries omitted ...]` line. When no entry fits, the newest end is kept as a fragment. Design: `prompt-token-budget-allocation.md` §5.2.
+In `build_investigation_context()` (`context_builder/assembly.py`), the journal is the third variable section in priority order, after evidence and conversation history and ahead of the working conclusion, KB results and hypotheses. It is placed high because it is compact and critical. Its allotment is capped at `PROMPT_JOURNAL_MAX_TOKENS`. A journal that fits renders whole, one `[T<turn>] <TYPE>: <content>` line per entry in turn order. One that does not is cut by `_cut_journal`: whole entries in `journal_keep_order` (blockers; then `decision`, `finding` and `ruled_out` entries as one tier; then the rest; each tier newest first), up to the first that does not fit, rendered in turn order after a `[... N entries omitted ...]` line. When the first entry in that order does not fit, the newest end of the turn-ordered journal is kept as a fragment instead, even if a smaller, lower-ranked entry would have fitted. Design: `prompt-token-budget-allocation.md` §5.2. (The journal is built after the hypotheses and before the working conclusion; its place in the priority order is what decides its allotment.)
 
-Budget impact: ~5 KB for a 50-turn investigation (25 entries × 200 chars). This is less than a single Tier A evidence structural index (4 KB cap).
+Budget impact: ~5 KB, about 1.3K tokens, for a 50-turn investigation (25 entries × 200 chars plus line prefixes), within `PROMPT_JOURNAL_MAX_TOKENS`.
 
 ---
 

@@ -158,7 +158,8 @@ resolved_budget                         (§3; e.g. 32K, or clamped lower on a sm
 ├─ 4. COMPACT each section to its allotment (select level cheaply, render once, §5.2):
 │        history:  verbatim → graduated → state-summary → oldest-first elision
 │        journal:  whole entries in keep order (blockers, then decision/finding/ruled_out,
-│                  then the rest, each newest first); [... N entries omitted ...] marker
+│                  then the rest, each newest first); [... N entries omitted ...] marker;
+│                  a newest-end fragment if the first in keep order does not fit
 │        evidence: Tier A/B/C/D window over its allotment (full current-turn extract
 │                  here if it fits; the stub is already reserved in step 1)
 │        KB / hypotheses: rank, keep what fits, drop lowest with a marker
@@ -208,7 +209,7 @@ remainder in pass B before journal/entity-highlights get anything. The caps:
 | KB results | `KB_MAX_SOLUTION_CHARS` × top-N |
 | Hypotheses | ranked, small per-item cap × N |
 | Evidence needs | small fixed cap |
-| Journal | strict ~1.5K-token cap, cut by whole entries in keep order (§5.2) — small by design, so the cap rarely binds |
+| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — about 1.3K tokens at 50 turns, so the cap binds on long cases |
 | Entity highlights | already bounded (per-type limit) |
 
 Most are the "upper bounds" the codebase already has; the few currently-unbounded
@@ -237,7 +238,7 @@ budget redistributes automatically):
    is guaranteed by the reserve (the last user+assistant turn, §4), so this
    variable section carries only the deeper history and needs no separate floor.
 3. **Investigation journal** — durable anti-amnesia memory; cut by whole
-   entries in keep order; strictly capped (§5.2). Placed high *on purpose*: it is high-density,
+   entries in keep order, or to a newest-end fragment; strictly capped (§5.2). Placed high *on purpose*: it is high-density,
    low-footprint (~50 tokens/entry; ~1–1.5K for a 50-turn case) and prevents the
    agent from re-treading ruled-out hypotheses and known blockers. Preserving it
    yields far more reasoning value per token than verbose KB runbook text, so it
@@ -274,13 +275,13 @@ Per-section policies:
 - **Investigation journal** — a cut keeps whole entries in `journal_keep_order`
   (`context_builder/assembly.py`; blockers, the other high-signal types, the
   rest, each newest first) up to the first that does not fit, in turn order
-  after a `[... N entries omitted ...]` line; when none fits, its newest end is
-  kept as a fragment (`keep="tail"`). The fallback's digest keeps the same order.
+  after a `[... N entries omitted ...]` line. When the first entry in keep order
+  does not fit, the newest end of the turn-ordered journal is kept as a fragment
+  (`keep="tail"`), even if a smaller, lower-ranked entry would have fitted. The fallback's digest keeps the same order.
   Blockers and the other high-signal types rank first because re-treading dead
   ends and known blockers is exactly what the journal exists to prevent.
-  Strictly capped at ~1.5K tokens — high-density and low-footprint, so the cap
-  binds only on pathologically long cases, and even then the keep-set preserves
-  the anti-amnesia essentials.
+  Strictly capped at ~1.5K tokens; the allotment can be lower when evidence and
+  conversation take the budget first.
 - **Evidence** — the existing Tier A/B/C/D sliding window, drawing from its
   allotment. The current-turn item renders **once**: the reserve (§4) guarantees
   a stub-sized floor for it, and the evidence section **upgrades that same block
