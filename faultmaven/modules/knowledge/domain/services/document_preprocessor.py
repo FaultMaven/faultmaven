@@ -212,9 +212,10 @@ async def _prepare(file_path: Path, content_type: str, principal: str) -> Any:
     """Stages 0-5 in a worker, under a slot: the worker's result, or a
     refusal. No slot within the bound is ``CONVERSION_BUSY``."""
     slots = _preparation_slots()
+    slot_key = worker_process.admission_principal(principal)
     try:
         async with asyncio.timeout(EXTRACTION_TIMEOUT_SECONDS):
-            await slots.acquire(principal)
+            await slots.acquire(*slot_key)
     except TimeoutError:
         logger.warning(
             "conversion of %s: no extraction worker free within %s s",
@@ -230,7 +231,7 @@ async def _prepare(file_path: Path, content_type: str, principal: str) -> Any:
     try:
         return await _run_worker(file_path, content_type)
     finally:
-        slots.release(principal)
+        slots.release(*slot_key)
 
 
 # =============================================================================

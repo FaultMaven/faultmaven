@@ -165,10 +165,17 @@ DELIBERATE_PRE_AUTH_REFUSALS = frozenset(
     }
 )
 
+#: Admission keys: they resolve after the gate they depend on and refuse
+#: nothing themselves (#2852).
+ADMISSION_DEPENDENCIES = frozenset(
+    {"faultmaven.api.v1.auth_dependencies.admission_requester"}
+)
+
 NON_MANDATORY_AUTH_DEPENDENCIES = (
     OPTIONAL_AUTH_DEPENDENCIES
     | SERVICE_PROVIDER_DEPENDENCIES
     | DELIBERATE_PRE_AUTH_REFUSALS
+    | ADMISSION_DEPENDENCIES
 )
 
 

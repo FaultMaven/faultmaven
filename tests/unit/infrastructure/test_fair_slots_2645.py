@@ -164,7 +164,7 @@ def asked(monkeypatch):
     """The principal each ``acquire`` is asked with; the job stops there."""
     seen: list[str] = []
 
-    async def acquire(self, principal: str) -> None:
+    async def acquire(self, principal: str, requester=None) -> None:
         seen.append(principal)
         raise _Asked
 

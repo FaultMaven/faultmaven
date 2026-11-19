@@ -95,6 +95,28 @@ def get_current_actor_user_id() -> Optional[str]:
     return _current_actor_user_id.get()
 
 
+#: ``(account id, requester id)`` a ``slack`` account names, or ``None``
+#: (#2852): set by ``auth_dependencies.admission_requester``, read by
+#: ``worker_process.admission_principal``. Admission order only, never a predicate.
+_admission_requester: ContextVar[Optional[tuple[str, str]]] = ContextVar(
+    "admission_requester", default=None
+)
+
+
+def bind_admission_requester(
+    account_id: Optional[str], requester: Optional[str] = None
+) -> None:
+    """Bind this context's requester for ``account_id``, or unbind with None."""
+    _admission_requester.set(
+        (account_id, requester) if account_id and requester else None
+    )
+
+
+def get_admission_requester() -> Optional[tuple[str, str]]:
+    """Return the bound ``(account id, requester id)``, or ``None``."""
+    return _admission_requester.get()
+
+
 #: What a caller is told when :func:`usable_tenant_id` answers ``None`` on a path
 #: that refuses rather than degrades. It lives beside the predicate so the rule
 #: and its announcement stay together: both the request front door

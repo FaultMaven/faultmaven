@@ -151,6 +151,36 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.6.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` and `PATCH "
+            "/cases/{case_id}/evidence/{evidence_id}/classification` take an "
+            "optional `X-FaultMaven-Requester` header: the person a Slack "
+            "service account asks for, which orders that account's own worker "
+            "jobs only (#2852). MINOR: a new optional header; nothing is "
+            "refused for it."
+        ),
+        body=r"""The value is an opaque id matching `[A-Za-z0-9_-]{16,64}` in
+full (the OpenAPI header schema carries no pattern). From an account whose
+`service_channel` is `slack`, it orders the account's own waiters for a worker
+slot (Principle 14): Tier 1 extraction of the turn's attachment or the
+reclassified file, and the runbook gate of the conversion a resolved turn
+starts when that account created the case. The account is still one principal
+to admission, per pool: it takes a slot while one is free when it holds none,
+and another only while two are free. Among its waiters, the person holding the
+fewest slots of the pool goes first, then the person served least recently,
+then the earliest; each person's own jobs run in order. So on a two-slot pool
+the people of a workspace take turns, one job each: a second person waits for
+the first's running job, not the first's queued batch, and never runs beside
+it; with three or more slots they run side by side.
+
+It grants nothing: authorization, case ownership, queries, stored rows and
+the response are those of the account, with or without it. A malformed value,
+or any value from another account, is ignored with a log and the request is
+admitted as the account: never a 4xx.""",
+    ),
+    ContractChange(
         version="15.5.0",
         level="MINOR",
         title=(

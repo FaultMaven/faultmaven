@@ -12,6 +12,8 @@ Key Dependencies:
 - extract_bearer_token: Clean token extraction from Authorization header
 - get_current_user_optional: Optional user authentication
 - require_authentication: Mandatory user authentication
+- account_service_channel: The integration a service account serves
+- admission_requester: A Slack service account's requester, for admission only
 - require_platform_admin: Mandatory cross-tenant operator role
 - get_current_user_id: Extract just the user ID for service layer
 
@@ -24,16 +26,18 @@ Design Principles:
 """
 
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.api.exception_handlers import revocation_state_unknown_http_exception
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
     UNSCOPED_REQUEST_MSG,
+    bind_admission_requester,
     get_current_enterprise_id,
     set_current_actor_user_id,
     usable_tenant_id,
@@ -45,6 +49,10 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     RevocationStateUnknownError,
     TokenRevocationError,
 )
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    SLACK_SERVICE_CHANNEL,
+)
+from faultmaven.utils.exception_name import exception_class_name
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)
@@ -339,6 +347,74 @@ async def require_authentication(
     # decision and nothing may read it as one — see set_current_actor_user_id.
     set_current_actor_user_id(user.user_id)
     return user
+
+
+class UserServiceUnavailable(RuntimeError):
+    """No user service is composed on ``app.state``."""
+
+
+async def account_service_channel(request: Request, user_id: str) -> Optional[str]:
+    """The integration the account serves (ADR-017 D6), None for a human or no
+    row. ``UserServiceUnavailable`` with no user service; a failed lookup
+    raises as itself, for the caller to weigh."""
+    user_service = getattr(request.app.state, "user_service", None)
+    if user_service is None:
+        raise UserServiceUnavailable("no user service")
+    account = await user_service.get_user(user_id)
+    return getattr(account, "service_channel", None) if account else None
+
+
+_REQUESTER_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")
+_warned_no_user_service = False
+_warned_malformed: set[str] = set()
+
+
+async def admission_requester(
+    request: Request,
+    user: DevUser = Depends(require_authentication),
+    requester: Annotated[
+        Optional[str],
+        Header(
+            alias="X-FaultMaven-Requester",
+            description=(
+                "Optional. An opaque id of the person a Slack service account "
+                "asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission "
+                "within the account only and grants nothing; from any other "
+                "account, or malformed, it is ignored."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Bind a ``slack`` account's requester, for admission order only (#2852);
+    None on every other branch, so no binding outlives its request. A refused
+    id runs as the account, no 4xx, its value never logged."""
+    global _warned_no_user_service
+    bind_admission_requester(None)
+    if requester is None:
+        return
+    if not _REQUESTER_ID.fullmatch(requester):
+        level = logging.DEBUG if user.user_id in _warned_malformed else logging.WARNING
+        _warned_malformed.add(user.user_id)  # once per account per process
+        logger.log(level, "Requester id refused for %s: malformed", user.user_id)
+        return
+    try:
+        channel = await account_service_channel(request, user.user_id)
+    except UserServiceUnavailable:
+        if not _warned_no_user_service:
+            _warned_no_user_service = True
+            logger.warning("Requester ids ignored: no user service")
+        return
+    except Exception as e:
+        logger.warning(
+            "Requester id refused for %s: lookup failed: %s",
+            user.user_id,
+            exception_class_name(e),
+        )
+        return
+    if channel != SLACK_SERVICE_CHANNEL:
+        logger.debug("Requester id ignored for %s: not a slack account", user.user_id)
+        return
+    bind_admission_requester(user.user_id, requester)
 
 
 # Service Layer Dependencies (for clean separation)

@@ -16,7 +16,11 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 
-from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.auth_dependencies import (
+    UserServiceUnavailable,
+    account_service_channel,
+    require_authentication,
+)
 from faultmaven.exceptions import (
     CASE_NOT_DRIVER,
     CASE_NOT_FOUND,
@@ -28,6 +32,7 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.auth.contracts import ISessionService, UserDTO
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.evidence import is_default_case_title
+from faultmaven.utils.exception_name import exception_class_name
 
 logger = logging.getLogger(__name__)
 
@@ -282,12 +287,10 @@ async def _di_get_creator_service_channel(
     Best-effort: falls back to ``None`` if the user service is unavailable or
     the lookup fails, so case creation never depends on it.
     """
-    user_service = getattr(raw_request.app.state, "user_service", None)
-    if user_service is None:
-        return None
     try:
-        user = await user_service.get_user(current_user.user_id)
-        return getattr(user, "service_channel", None) if user else None
+        return await account_service_channel(raw_request, current_user.user_id)
+    except UserServiceUnavailable:
+        return None
     except Exception as e:
         # Don't fail case creation on this — but do NOT swallow silently: a
         # Slack case mislabeled 'copilot' (source is immutable) is otherwise
@@ -296,6 +299,6 @@ async def _di_get_creator_service_channel(
             "Could not resolve service_channel for user %s; case source will "
             "default to 'copilot': %s",
             getattr(current_user, "user_id", "?"),
-            e,
+            exception_class_name(e),
         )
         return None
