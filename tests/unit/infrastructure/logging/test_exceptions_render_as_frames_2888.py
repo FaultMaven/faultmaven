@@ -1,21 +1,22 @@
-"""An exception renders as class names and frames only (#2888, principles §7
-rules 4 and 5): on the API chain, the jobs' line, a worker child's records and
-the sites that pasted traceback text. No exception's message, note or group
-member's message reaches the line.
+"""An exception renders as class names and frames only, through one chain
+(#2888, principles §7 rules 4 and 5): the API process, the jobs (through the
+same formatter builder), a worker child's records and the sites that pasted
+traceback text. No exception's message, note or group member's message reaches
+the line. A line without an exception renders as it did on ``main``.
 
 The marker is built at run time (``chained_2888`` says why).
 """
 
-import collections
 import dataclasses
 import io
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 import types
-from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,63 +29,13 @@ from faultmaven.infrastructure.logging.config import (
     LoggingConfig,
     get_logger,
 )
-from faultmaven.infrastructure.logging.url_redaction import JobLogFormatter
-from tests.unit.infrastructure.logging import chained_2888
+from tests.unit.infrastructure.logging import chained_2888, log_parity_cases_2888
 from tests.unit.infrastructure.logging.chained_2888 import LINKS, chained
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
-JOB_KEYS = {"timestamp", "logger", "level", "event"}
-
-
-@dataclasses.dataclass
-class _Holder:
-    error: object
-
-
-@dataclasses.dataclass
-class _Login:
-    password: str = dataclasses.field(repr=False)
-    error: object = None
-
-
-@dataclasses.dataclass(repr=False)
-class _Session:
-    user: str
-    token: str
-    error: object
-
-    def __repr__(self):
-        return f"_Session(user={self.user!r})"
-
-
-def _deep(error, levels=12):
-    for _ in range(levels):
-        error = [error]
-    return error
-
-
-def _twin(error):
-    """Another exception with ``error``'s class chain."""
-    twin = type(error)()
-    twin.__cause__ = error.__cause__
-    return twin
-
-
-#: Containers an exception field can sit in, each built around ``error``.
-SHAPES = {
-    "nested": lambda e: {"all": [(e,)]},
-    "ordered-dict": lambda e: collections.OrderedDict(e=e),
-    "default-dict": lambda e: collections.defaultdict(list, e=e),
-    "namedtuple": lambda e: collections.namedtuple("Pair", "e n")(e, 1),
-    "deque": lambda e: collections.deque([e]),
-    "dataclass": _Holder,
-    "namespace": lambda e: types.SimpleNamespace(e=e),
-    "dict-key": lambda e: {e: 1},
-    "tuple-key": lambda e: {(e, 1): 1},
-    "keys-of-one-chain": lambda e: {e: 1, _twin(e): 2},
-    "twelve-deep": _deep,
-}
+#: The keys every JSON line carries, the API's and a job's alike.
+LINE_KEYS = {"timestamp", "logger", "level", "event"}
 
 
 @pytest.fixture
@@ -114,19 +65,6 @@ def api(request):
         root.setLevel(saved[1])
         root.handlers[:] = saved[2]
         logging_config._logger_config = saved_singleton
-
-
-@contextmanager
-def _records():
-    """The records the root sees meanwhile."""
-    seen: list = []
-    handler = logging.Handler()
-    handler.emit = seen.append
-    logging.getLogger().addHandler(handler)
-    try:
-        yield seen
-    finally:
-        logging.getLogger().removeHandler(handler)
 
 
 def _frames_only(text: str, marker: str) -> None:
@@ -173,101 +111,186 @@ class TestTheApiChain:
             get_logger("faultmaven.test").error("failed", exc_info=1)
         _api_frames(api, marker)
 
-    @pytest.mark.parametrize("where", ["extra", "top-level", "event", *SHAPES])
-    def test_an_exception_field_is_its_class_chain(self, api, marker, where, capsys):
-        error = chained(marker)
-        if where == "extra":
-            logging.getLogger("faultmaven.test").error("failed", extra={"e": error})
-        elif where == "top-level":
-            get_logger("faultmaven.test").error("failed", e=error)
-        elif where == "event":
-            get_logger("faultmaven.test").error(error)
-        else:
-            get_logger("faultmaven.test").error("failed", e=SHAPES[where](error))
-        output = api.buffer.getvalue()
-        assert marker not in output
-        assert capsys.readouterr().err == ""  # the line rendered
-        if api.mode == "json":
-            line = json.loads(output)
-            if where == "keys-of-one-chain":  # both values kept
-                assert sorted(line["e"].values()) == [1, 2]
-        elif where == "keys-of-one-chain":
-            assert "ExceptionGroup': 1" in output and "ExceptionGroup #2': 2" in output
-        if where != "twelve-deep":
-            assert "RuntimeError <- ExceptionGroup" in output
-        else:  # past the walk's depth, a container is its type name
-            assert "'list'" in output or '"list"' in output
+    @pytest.mark.parametrize("api", ["json"], indirect=True)
+    @pytest.mark.parametrize("exc_info", [1, (), (1, 2), True], ids=repr)
+    def test_a_records_odd_exc_info_renders_or_is_ignored(self, api, marker, exc_info):
+        flag = FaultMavenLogger._ROOT_HANDLER_MARKER
+        root = logging.getLogger()
+        handler = next(h for h in root.handlers if getattr(h, flag, False))
 
-    def test_a_dataclass_field_hidden_from_its_repr_stays_hidden(self, api, marker):
-        secret = secrets.token_hex(8)
-        get_logger("faultmaven.test").error("failed", e=_Login(secret, chained(marker)))
-        output = api.buffer.getvalue()
-        assert secret not in output and marker not in output
-        assert "RuntimeError <- ExceptionGroup" in output
+        def emit():  # to the chain's handler alone: pytest's cannot format it
+            handler.handle(
+                logging.LogRecord(
+                    "faultmaven.test", logging.ERROR, "", 1, "failed", (), exc_info
+                )
+            )
 
-    def test_a_class_with_its_own_repr_renders_through_it(self, api, marker):
-        token = secrets.token_hex(8)
-        get_logger("faultmaven.test").error(
-            "failed", e=_Session("u", token, chained(marker))
-        )
-        output = api.buffer.getvalue()
-        assert token not in output and marker not in output
-        assert "_Session(user='u')" in output
-
-    def test_a_self_reference_ends_and_renders_as_before(self, api, monkeypatch):
-        visits = []
-        walk = logging_config._parts
-        monkeypatch.setattr(
-            logging_config, "_parts", lambda v: visits.append(v) or walk(v)
-        )
-        loop: list = []
-        loop.extend([loop] * 4)
-        get_logger("faultmaven.test").info("plain", v=loop)
-        # Walked once: each revisit is a self-reference, returned as it is.
-        assert sum(v is loop for v in visits) == 1
-        if api.mode == "console":
-            assert f"v={loop!r}" in api.buffer.getvalue()
-
-    @pytest.mark.parametrize(
-        "value",
-        [_deep(1, levels=11), collections.UserString("hello")],
-        ids=["eleven-deep", "user-string"],
-    )
-    def test_a_field_with_no_exception_renders_as_before(self, api, value):
-        get_logger("faultmaven.test").info("plain", v=value)
-        output = api.buffer.getvalue()
-        if api.mode == "json":
-            expected = value if isinstance(value, list) else repr(value)
-            assert json.loads(output)["v"] == expected
-        else:
-            assert f"v={value!r}" in output
+        emit()
+        assert "frames" not in json.loads(api.buffer.getvalue())  # none in flight
+        api.buffer.truncate(0)
+        api.buffer.seek(0)
+        try:
+            raise chained(marker)
+        except RuntimeError:
+            emit()
+        if exc_info:
+            _api_frames(api, marker)
 
     @pytest.mark.parametrize("api", ["json"], indirect=True)
-    def test_a_line_without_an_exception_keeps_its_keys(self, api):
-        get_logger("faultmaven.test").info("plain", count=3)
-        line = json.loads(api.buffer.getvalue())
-        assert set(line) == {"event", "logger", "level", "timestamp", "count"}
+    def test_a_tuples_own_traceback_is_rendered(self, api, marker):
+        error = chained(marker)
+        tb, error.__traceback__ = error.__traceback__, None
+        logging.getLogger("faultmaven.test").error(
+            "failed", exc_info=(RuntimeError, error, tb)
+        )
+        frames = json.loads(api.buffer.getvalue())["frames"]
+        assert frames.startswith("RuntimeError:\n  File ")
+
+    @pytest.mark.parametrize("api", ["json"], indirect=True)
+    def test_a_callers_frames_win_over_exc_info(self, api, marker):
+        logging.getLogger("faultmaven.test").error(
+            "failed", exc_info=chained(marker), extra={"frames": "F:\n"}
+        )
+        assert json.loads(api.buffer.getvalue())["frames"] == "F:\n"
 
 
-def _job_record(message: str, error=None, exc_info=None) -> logging.LogRecord:
-    if error is not None:
-        exc_info = (type(error), error, error.__traceback__)
-    return logging.LogRecord(
-        "faultmaven.jobs.t", logging.ERROR, "", 1, message, (), exc_info
+@dataclasses.dataclass
+class _Holder:
+    error: object
+
+
+class _Hiding(list):
+    def __repr__(self):
+        return "_Hiding(...)"
+
+
+def _emit_field(where: str, error: BaseException) -> None:
+    if where == "extra":
+        logging.getLogger("faultmaven.test").error("failed", extra={"e": error})
+    elif where == "nested-extra":  # the chain nests a colliding key
+        logging.getLogger("faultmaven.test").error("failed", extra={"exception": error})
+    elif where == "top-level":
+        get_logger("faultmaven.test").error("failed", e=error)
+    else:
+        get_logger("faultmaven.test").error(error)
+
+
+class TestAnExceptionField:
+    """Rule 4's boundary for a field: what the chain names by its class chain,
+    and what renders through an object's repr."""
+
+    @pytest.mark.parametrize("where", ["extra", "nested-extra", "top-level", "event"])
+    def test_a_top_level_field_is_its_class_chain(self, api, marker, where, capsys):
+        _emit_field(where, chained(marker))
+        output = api.buffer.getvalue()
+        assert capsys.readouterr().err == ""  # the line rendered
+        assert marker not in output
+        assert "RuntimeError <- ExceptionGroup" in output
+
+    @pytest.mark.parametrize("api", ["json"], indirect=True)
+    @pytest.mark.parametrize(
+        "shape",
+        [list, tuple, lambda e: {"k": e}, _Hiding],
+        ids=["list", "tuple", "dict-value", "list-subclass"],
     )
+    def test_under_json_the_encoder_names_one_in_a_list_tuple_or_dict(
+        self, api, marker, shape
+    ):
+        error = chained(marker)
+        value = shape([error]) if shape in (list, tuple, _Hiding) else shape(error)
+        get_logger("faultmaven.test").error("failed", e=value)
+        output = api.buffer.getvalue()
+        assert marker not in output
+        assert "RuntimeError <- ExceptionGroup" in output
+
+    @pytest.mark.parametrize(
+        "mode, shape",
+        [
+            ("json", lambda e: {e}),
+            ("json", _Holder),
+            ("console", lambda e: [e]),
+            ("console", _Hiding),
+        ],
+        ids=["json-set", "json-dataclass", "console-list", "console-list-subclass"],
+    )
+    def test_anything_else_renders_through_its_repr(self, marker, mode, shape):
+        """The stated boundary, not a guarantee (principles §7, rule 4): an
+        exception the chain does not reach renders as its container's repr
+        renders it, and keeping it off the line is the call site's, rule 1's
+        (S3, #2889). A class with its own ``__repr__`` is not walked."""
+        error = chained(marker)
+        value = _Hiding([error]) if shape is _Hiding else shape(error)
+        rendered = _render_through(mode, value)
+        assert repr(value) in rendered
+        if shape is _Hiding:
+            assert marker not in rendered
+
+    def test_lines_without_an_exception_render_as_on_main(self):
+        """Whole lines, JSON and console, captured on ``main`` at 19ab0e8b8
+        (``log_parity_cases_2888`` says how), timestamp normalized."""
+        oracle = Path(__file__).with_name("log_parity_oracle_2888.json")
+        assert log_parity_cases_2888.render_all() == json.loads(oracle.read_text())
+
+
+def _render_through(mode: str, value) -> str:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging_config.build_log_formatter(mode, False, stream))
+    logger = logging.getLogger("faultmaven.test.boundary")
+    logger.addHandler(handler)
+    logger.propagate = False
+    try:
+        logger.error("failed", extra={"e": value})
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = True
+    return stream.getvalue()
+
+
+@pytest.fixture
+def job(monkeypatch, capsys):
+    """A job's logging (``jobs.run.setup_logging``) on a root with no handler,
+    ``LOG_FORMAT`` and ``LOG_LEVEL`` from the test's ``env``; returns the
+    lines it wrote on stdout, checking nothing reached stderr."""
+    from faultmaven.config.settings import env_var_spellings
+    from faultmaven.jobs.run import setup_logging
+
+    monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
+    for name in env_var_spellings(dict(os.environ), "LOG_FORMAT"):
+        monkeypatch.delenv(name)
+    root = logging.getLogger()
+    saved = root.handlers[:], root.level
+
+    def start(**env):
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        root.handlers[:] = []  # in the call: pytest adds one per phase
+        setup_logging(verbose=False)
+
+    def lines():
+        written = capsys.readouterr()
+        assert written.err == ""  # nothing reached lastResort
+        return written.out.splitlines()
+
+    try:
+        yield types.SimpleNamespace(start=start, lines=lines)
+    finally:
+        root.handlers[:] = saved[0]
+        root.setLevel(saved[1])
 
 
 class TestTheJobsLine:
-    @pytest.mark.parametrize("json_lines", [True, False], ids=["json", "plain"])
-    def test_an_exception_is_frames_only(self, marker, json_lines):
-        record = _job_record("failed", chained(marker))
-        record.exc_text = marker  # a cached traceback is never read
-        line = JobLogFormatter(json_lines).format(record)
-        if json_lines:
-            fields = json.loads(line)
-            assert set(fields) == JOB_KEYS | {"exception"}
-            line = fields["exception"]
-        _frames_only(line, marker)
+    @pytest.mark.parametrize("log_format", ["json", "console"])
+    def test_an_exception_is_frames_only(self, job, marker, log_format):
+        job.start(LOG_FORMAT=log_format)
+        logging.getLogger("faultmaven.jobs.t").error("failed", exc_info=chained(marker))
+        lines = job.lines()
+        if log_format == "json":
+            (line,) = [json.loads(row) for row in lines]
+            _frames_only(line["frames"], marker)
+        else:
+            assert "[faultmaven.jobs.t]" in lines[0]
+            _frames_only("\n".join(lines), marker)
 
     @pytest.mark.parametrize(
         "message",
@@ -275,75 +298,49 @@ class TestTheJobsLine:
         ids=["quote", "backslash", "newline", "injected-field"],
     )
     @pytest.mark.parametrize("with_error", [False, True], ids=["plain", "exc_info"])
-    def test_a_json_line_parses_to_its_fields(self, marker, message, with_error):
-        record = _job_record(message, chained(marker) if with_error else None)
-        fields = json.loads(JobLogFormatter(json_lines=True).format(record))
-        assert set(fields) == JOB_KEYS | ({"exception"} if with_error else set())
-        assert fields["event"] == message
-        assert fields["level"] == "ERROR"
+    def test_a_json_line_parses_to_the_apis_keys(
+        self, job, marker, message, with_error
+    ):
+        job.start(LOG_FORMAT="json")
+        error = chained(marker) if with_error else None
+        logging.getLogger("faultmaven.jobs.t").error(message, exc_info=error)
+        (line,) = [json.loads(row) for row in job.lines()]
+        assert LINE_KEYS <= set(line)
+        assert ("frames" in line) is with_error
+        assert (line["event"], line["level"]) == (message, "error")
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z", line["timestamp"])
 
-    @pytest.mark.parametrize("json_lines", [True, False], ids=["json", "plain"])
-    def test_stack_info_and_frames_follow_the_line(self, json_lines):
-        record = _job_record("failed")
-        record.stack_info, record.frames = "Stack (most recent call last):", "F:\n"
-        line = JobLogFormatter(json_lines).format(record)
-        if json_lines:
-            fields = json.loads(line)
-            assert (fields["stack"], fields["frames"]) == (record.stack_info, "F:\n")
-        else:
-            assert line.endswith(" - failed\nF:\n\nStack (most recent call last):")
-
-    @pytest.mark.parametrize("exc_info", [1, (), (1, 2), True], ids=repr)
-    def test_any_exc_info_renders_or_is_ignored(self, marker, exc_info):
-        record = logging.makeLogRecord({"msg": "failed", "exc_info": exc_info})
-        fields = json.loads(JobLogFormatter(True).format(record))
-        assert "exception" not in fields  # nothing in flight here
-        try:
-            raise chained(marker)
-        except RuntimeError:
-            fields = json.loads(JobLogFormatter(True).format(record))
-        if exc_info:
-            _frames_only(fields["exception"], marker)
-
-    def test_a_tuples_own_traceback_is_rendered(self, marker):
-        error = chained(marker)
-        tb, error.__traceback__ = error.__traceback__, None
-        record = _job_record("failed", exc_info=(RuntimeError, error, tb))
-        frames = json.loads(JobLogFormatter(True).format(record))["exception"]
-        assert frames.startswith("RuntimeError:\n  File ")
+    def test_a_records_extra_fields_are_on_the_line(self, job):
+        job.start(LOG_FORMAT="json")
+        logging.getLogger("faultmaven.jobs.t").info("seeded", extra={"count": 91})
+        (line,) = [json.loads(row) for row in job.lines()]
+        assert line["count"] == 91
 
     @pytest.mark.parametrize(
         "env",
         [{"LOG_FORMAT": "json"}, {"LOG_FORMAT": "bogus"}, {"LOG_LEVEL": "bogus"}],
         ids=["json", "unrecognized-format", "invalid-level"],
     )
-    def test_a_job_writes_json_through_it_on_stdout(
-        self, monkeypatch, capsys, marker, env
-    ):
-        from faultmaven.config.settings import env_var_spellings
-        from faultmaven.jobs.run import setup_logging
+    def test_a_job_writes_json_on_stdout(self, job, marker, env):
+        job.start(**env)
+        assert logging.getLogger().level == logging.INFO
+        logging.getLogger("faultmaven.jobs.t").error("failed", exc_info=chained(marker))
+        *_, line = [json.loads(row) for row in job.lines()]
+        _frames_only(line["frames"], marker)
 
-        monkeypatch.setenv("FAULTMAVEN_SKIP_DOTENV", "1")
-        for name in env_var_spellings(dict(os.environ), "LOG_FORMAT"):
-            monkeypatch.delenv(name)
-        for name, value in env.items():
-            monkeypatch.setenv(name, value)
-        root = logging.getLogger()
-        saved = root.handlers[:], root.level
-        root.handlers[:] = []
-        try:
-            setup_logging(verbose=False)
-            assert root.level == logging.INFO
-            logging.getLogger("faultmaven.jobs.t").error(
-                "failed", exc_info=chained(marker)
-            )
-        finally:
-            root.handlers[:] = saved[0]
-            root.setLevel(saved[1])
-        written = capsys.readouterr()
-        assert written.err == ""  # nothing reached lastResort
-        *_, line = [json.loads(row) for row in written.out.splitlines()]
-        _frames_only(line["exception"], marker)
+    def test_a_jobs_process_writes_each_line_once(self, job, monkeypatch):
+        """The API's ``get_logger`` in a job adds no second root handler: its
+        events render through the job's, on stdout (#2888)."""
+        job.start(LOG_FORMAT="json")
+        monkeypatch.setattr(logging_config, "_logger_config", None)
+        get_logger("faultmaven.jobs.t").info("once", step=1)
+        logging.getLogger("faultmaven.jobs.t").info("twice")
+        lines = [json.loads(row) for row in job.lines()]  # settings may log too
+        lines = [line for line in lines if line["logger"] == "faultmaven.jobs.t"]
+        assert [(line["event"], line.get("step")) for line in lines] == [
+            ("once", 1),
+            ("twice", None),
+        ]
 
 
 async def test_a_workers_records_carry_frames_only(caplog, marker):
@@ -363,17 +360,15 @@ async def test_a_workers_records_carry_frames_only(caplog, marker):
         _frames_only(record.frames, marker)
 
 
-def _fields_hold_frames(api, records, marker: str, event: str) -> None:
-    """The record's exception, as ``frames`` on the API line and ``exception``
-    on the jobs' line. The message is S3's (#2889)."""
+def _line_holds_frames(api, marker: str, event: str) -> None:
+    """The record's exception, as ``frames`` on the line. The message is S3's
+    (#2889)."""
     (line,) = [
         json.loads(row)
         for row in api.buffer.getvalue().splitlines()
         if json.loads(row)["event"].startswith(event)
     ]
     _frames_only(line["frames"], marker)
-    (record,) = [r for r in records if r.getMessage().startswith(event)]
-    _frames_only(json.loads(JobLogFormatter(True).format(record))["exception"], marker)
 
 
 @pytest.mark.parametrize("api", ["json"], indirect=True)
@@ -392,9 +387,8 @@ def test_a_repository_that_fails_to_build_logs_frames(api, marker, monkeypatch):
     broken.__getattr__ = refuse
     module = "faultmaven.infrastructure.persistence.sessionless_team_repository"
     monkeypatch.setitem(sys.modules, module, broken)
-    with _records() as records:
-        assert create_team_repository() is None
-    _fields_hold_frames(api, records, marker, "TeamRepository initialization failed")
+    assert create_team_repository() is None
+    _line_holds_frames(api, marker, "TeamRepository initialization failed")
 
 
 @pytest.mark.parametrize("api", ["json"], indirect=True)
@@ -412,7 +406,6 @@ async def test_the_containers_critical_error_logs_frames(
 
     impl = "faultmaven._container_impl"
     with (
-        _records() as records,
         patch(f"{impl}.get_settings", return_value=settings),
         patch(f"{impl}.register_infrastructure", new=MagicMock(side_effect=nothing)),
         patch(f"{impl}.register_tools"),
@@ -420,6 +413,6 @@ async def test_the_containers_critical_error_logs_frames(
         pytest.raises(RuntimeError),
     ):
         await reset_container.initialize()
-    _fields_hold_frames(api, records, marker, "Critical initialization error")
+    _line_holds_frames(api, marker, "Critical initialization error")
     (line,) = [row for row in api.buffer.getvalue().splitlines() if "Critical" in row]
     assert marker not in line

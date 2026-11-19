@@ -322,7 +322,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Logs
 
-- `infrastructure/logging/config.py:299-329`, `:498-510`; `user_id`: `:71-75`, `:597-598`.
+- `infrastructure/logging/config.py:219-249`, `:357-372`; a job's and alembic's stream:
+  `:555-576`; `user_id`: `:67-71`, `:432-433`.
 - What a line may hold: [principles §7, "What a log line may hold"](../core-architecture/architectural-design-principles.md#7-observability-by-default),
   with its outputs and redactor tables.
 - Policy: [Logging Policy, Redaction](../../operations/monitoring/logging-policy.md#redaction).

@@ -87,7 +87,7 @@ from faultmaven.infrastructure.concurrency.teardown import (
     ContainerRelease,
     run_teardown,
 )
-from faultmaven.infrastructure.logging.url_redaction import install_job_log_handler
+from faultmaven.infrastructure.logging.config import install_log_handler
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
 # Valid JOB_TENANT_SCOPE declarations (see module docstring).
@@ -131,15 +131,14 @@ AVAILABLE_JOBS: Dict[str, str] = {
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Configure logging for CLI execution: the jobs' line on stdout
-    (``install_job_log_handler``), at DEBUG when verbose, else INFO.
+    """Configure logging for CLI execution: the API's chain on stdout
+    (``install_log_handler``), at DEBUG when verbose, else INFO.
 
-    Jobs deliberately do NOT go through FaultMavenLogger: they are short-lived
-    processes whose output the collector reads as-is. They honour the same
-    ``LOG_FORMAT`` the API does, so a CronJob's lines carry the ``level`` label
-    the collector extracts.
+    A job's lines render as the API's do (the same formatter builder, the
+    redactor last), JSON or console by ``LOG_FORMAT`` alone, so a CronJob's
+    lines carry the ``level`` label the collector extracts (#2888).
     """
-    install_job_log_handler(sys.stdout, logging.DEBUG if verbose else logging.INFO)
+    install_log_handler(sys.stdout, logging.DEBUG if verbose else logging.INFO)
 
 
 def list_available_jobs() -> List[Dict[str, str]]:

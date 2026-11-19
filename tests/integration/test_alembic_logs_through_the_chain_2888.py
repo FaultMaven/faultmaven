@@ -1,9 +1,10 @@
-"""Alembic logs through the jobs' line on stderr (#2888, principles §7).
+"""Alembic logs through the API's chain on stderr (#2888, principles §7).
 
-``alembic/env.py`` installs ``JobLogFormatter`` before anything can log and
+``alembic/env.py`` installs ``install_log_handler`` before anything can log and
 again after ``fileConfig`` (whose levels it keeps), so a migration's records
-are serialized like a job's, and an exception renders as class names and frames
-with no message. Stdout, where ``--sql`` writes the script, holds no log line.
+render as the API's and a job's do, and an exception renders as class names
+and frames with no message. Stdout, where ``--sql`` writes the script, holds no
+log line.
 
 The child runs a real offline migration of the first revision through
 alembic's command API, then logs a chained exception whose marker it is handed
@@ -39,7 +40,7 @@ logging.getLogger("alembic.test").error("failed", exc_info=chained(sys.argv[2]))
 
 
 @pytest.mark.parametrize("log_format", ["json", "console"])
-def test_a_migration_logs_the_jobs_line_on_stderr(tmp_path, log_format):
+def test_a_migration_logs_through_the_chain_on_stderr(tmp_path, log_format):
     marker = secrets.token_hex(16)
     env = dict(os.environ)
     set_env_var(env, "DATABASE_URL", f"sqlite:///{tmp_path / 'm.db'}")
@@ -63,9 +64,10 @@ def test_a_migration_logs_the_jobs_line_on_stderr(tmp_path, log_format):
     if log_format == "json":
         records = [json.loads(line) for line in lines]
         assert records[0]["logger"] == "alembic.runtime.migration", detail
-        rendered = records[-1]["exception"]
+        assert records[0]["level"] == "info", detail
+        rendered = records[-1]["frames"]
     else:
-        assert " - alembic.runtime.migration - INFO - " in lines[0], detail
+        assert lines[0].endswith(" [alembic.runtime.migration]"), detail
         rendered = result.stderr
     for link in LINKS:
         assert link in rendered, detail

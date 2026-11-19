@@ -62,6 +62,12 @@ except Exception as e:
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
+- The maintenance jobs (stdout) and alembic (stderr) write the API's line,
+  through the same formatter builder (`install_log_handler`,
+  `faultmaven/infrastructure/logging/config.py`): the API's keys (`timestamp`,
+  ISO in UTC with `Z`; `level`, lowercase; `logger`; `event`) plus the record's
+  fields, and `frames` for an exception. `LOG_FORMAT` alone picks JSON or the
+  console line; `LOG_HUMAN_READABLE` is not read there (#2888).
 
 ## Access logs
 

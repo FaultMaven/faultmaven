@@ -11,7 +11,6 @@ before this rule existed.
 import io
 import json
 import logging
-import sys
 import types
 
 import pytest
@@ -21,10 +20,10 @@ import faultmaven.infrastructure.logging.config as logging_config
 from faultmaven.infrastructure.logging.config import (
     FaultMavenLogger,
     LoggingConfig,
+    build_log_formatter,
     get_logger,
 )
 from faultmaven.infrastructure.logging.url_redaction import (
-    JobLogFormatter,
     redact_credential_headers,
     redact_log_line,
     redact_log_line_bytes,
@@ -117,9 +116,7 @@ def rendered(request, monkeypatch):
     saved = structlog.get_config(), root.level, list(root.handlers)
     if request.param == "console":
         tty = types.SimpleNamespace(isatty=lambda: True)
-        # exc_info: the chain reads the exception in flight (#2888).
-        stand_in = types.SimpleNamespace(stderr=tty, exc_info=sys.exc_info)
-        monkeypatch.setattr(logging_config, "sys", stand_in)
+        monkeypatch.setattr(logging_config, "sys", types.SimpleNamespace(stderr=tty))
     config = LoggingConfig()
     config.LOG_FORMAT, config.LOG_HUMAN_READABLE = request.param, False
     FaultMavenLogger(config).configure_structlog()
@@ -232,13 +229,14 @@ class TestEveryRenderedLine:
 
 
 def _job_line(log_format, message):
-    """``message`` as a job writes it, through the jobs' formatter (#2888)."""
+    """``message`` as a job writes it, through the formatter its handler
+    (``install_log_handler``) builds (#2888)."""
     record = logging.LogRecord("job", logging.ERROR, __file__, 1, message, (), None)
-    return JobLogFormatter(json_lines=log_format == "json").format(record)
+    return build_log_formatter(log_format, False, io.StringIO()).format(record)
 
 
 class TestTheJobsFormatter:
-    @pytest.mark.parametrize("log_format", ["text", "json"])
+    @pytest.mark.parametrize("log_format", ["console", "json"])
     @pytest.mark.parametrize("message", TEXT_POSITIVES)
     def test_each_form_blanks_the_value(self, log_format, message):
         output = _job_line(log_format, message)
@@ -256,7 +254,7 @@ class TestTheJobsFormatter:
     def test_the_json_line(self, message):
         output = _job_line("json", message)
         assert SECRET not in output
-        assert json.loads(output)["level"] == "ERROR"
+        assert json.loads(output)["level"] == "error"
 
 
 class TestJsonLines:

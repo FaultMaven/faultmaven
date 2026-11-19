@@ -2659,7 +2659,7 @@ class LoggingSettings(BaseSettings):
     # Human-readable output (console renderer instead of JSON)
     # An explicit override of the renderer, independent of LOG_FORMAT. It used
     # to be reachable only when LOG_FORMAT held a third value that is not in the
-    # accepted set, i.e. never; see FaultMavenLogger.configure_structlog.
+    # accepted set, i.e. never; see logging/config.py build_log_formatter.
     log_human_readable: bool = Field(default=False)
 
     # populate_by_name: with a validation_alias set, the field name alone

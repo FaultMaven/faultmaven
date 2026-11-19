@@ -44,12 +44,10 @@ a credential header on the same unit is lost with it, which is the safe side.
 """
 
 import json
-import logging
 import re
-from typing import Any, Callable, Optional, TextIO, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from faultmaven.infrastructure.security.secret_patterns import ESCAPE_BOUNDARY
-from faultmaven.utils.exception_name import exception_frames, logged_exception
 
 # Anchored on the literal "://".
 #
@@ -428,64 +426,3 @@ def redacting_renderer(renderer: Callable) -> Callable:
     # and wrapping must not blind it.
     render.__wrapped__ = renderer
     return render
-
-
-class JobLogFormatter(logging.Formatter):
-    """The line every process that is not the API writes: the maintenance jobs
-    and alembic (principles §7, "What a log line may hold"; #2888).
-
-    Under ``LOG_FORMAT=json`` a record is one JSON object, serialized, never
-    pasted into a template: ``timestamp``, ``logger``, ``level``, ``event``;
-    ``exception`` when it carries ``exc_info`` (:func:`logged_exception`'s
-    shapes); ``frames`` when a caller or a worker passed them; ``stack`` with
-    ``stack_info``. Otherwise it is the plain line with those after it. The
-    exception is :func:`exception_frames`, each link's class and frames with no
-    message; a cached ``exc_text`` is never read. :func:`redact_log_line` runs
-    last, on the finished line.
-    """
-
-    def __init__(self, json_lines: bool) -> None:
-        super().__init__()
-        self.json_lines = json_lines
-
-    def format(self, record: logging.LogRecord) -> str:
-        logged = logged_exception(record.exc_info)
-        frames = getattr(record, "frames", None)
-        after = {
-            "exception": exception_frames(*logged).rstrip("\n") if logged else None,
-            "frames": frames if isinstance(frames, str) else None,
-            "stack": record.stack_info,
-        }
-        after = {key: text for key, text in after.items() if text}
-        fields = {
-            "timestamp": self.formatTime(record, self.datefmt),
-            "logger": record.name,
-            "level": record.levelname,
-            "event": record.getMessage(),
-        }
-        if self.json_lines:
-            line = json.dumps({**fields, **after})
-        else:
-            line = "\n".join([" - ".join(fields.values()), *after.values()])
-        return redact_log_line(line)
-
-
-def install_job_log_handler(stream: TextIO, level: Optional[int]) -> None:
-    """Give the root logger one handler writing ``stream`` with
-    :class:`JobLogFormatter`, at ``level`` (``None`` keeps the root's), unless
-    it already has a handler (``logging.basicConfig``'s rule).
-
-    JSON or plain is decided by ``LOG_FORMAT`` alone (``configured_log_format``,
-    the working directory's ``.env`` loaded first, as the app loads it), after
-    the handler is in place: an unrecognized value is JSON,
-    and its warning is written on that JSON line. No other setting is read, so
-    none can refuse a migration or change the line.
-    """
-    from faultmaven.config.settings import configured_log_format, load_settings_dotenv
-
-    load_settings_dotenv()
-    formatter = JobLogFormatter(json_lines=True)
-    handler = logging.StreamHandler(stream)
-    handler.setFormatter(formatter)
-    logging.basicConfig(level=level, handlers=[handler])
-    formatter.json_lines = configured_log_format() == "json"

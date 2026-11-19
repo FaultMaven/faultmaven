@@ -8,14 +8,10 @@ Configuration is read from the unified settings system (faultmaven.config.settin
 at runtime, not at import time.
 """
 
-import dataclasses
 import logging
 import sys
-from collections import UserString
-from collections.abc import Mapping, Sequence
-from collections.abc import Set as AbstractSet
-from types import MappingProxyType, SimpleNamespace
-from typing import Any, Dict, Optional, TextIO, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional, TextIO
 
 import structlog
 from opentelemetry import trace
@@ -109,124 +105,26 @@ def exc_info_as_frames(
     return event_dict
 
 
-#: Levels :func:`_without_exceptions` walks before a container that holds an
-#: exception is written as its type name.
-_FIELD_DEPTH = 10
-
-#: Sequences written as they are, never walked.
-_LEAF_SEQUENCES = (str, bytes, bytearray, range, memoryview, UserString)
-
-
-def _standard_repr(value: Any) -> bool:
-    """Whether ``value``'s ``__repr__`` is a standard library one or the one
-    ``dataclass`` generates: one that shows what the walk writes. A class's own
-    ``__repr__`` chooses what it shows, so its instance is not walked."""
-    owner = next(c for c in type(value).__mro__ if "__repr__" in c.__dict__)
-    wrapped = getattr(owner.__dict__["__repr__"], "__wrapped__", None)
-    code = getattr(wrapped, "__code__", None)
-    return owner.__module__ in ("builtins", "collections", "types") or (
-        dataclasses.is_dataclass(owner)
-        and getattr(code, "co_filename", "") == "<string>"
-    )
-
-
-def _parts(value: Any) -> Optional[Tuple[bool, list]]:
-    """``(True, [(key, value), ...])`` for a mapping-like value with a
-    :func:`_standard_repr` (a ``Mapping``, a dataclass instance's ``repr``
-    fields, a ``SimpleNamespace``'s attributes), ``(False, [item, ...])`` for
-    any other ``Sequence`` or ``Set`` (``deque`` included), else ``None``."""
-    mapping_like = isinstance(value, (Mapping, SimpleNamespace)) or (
-        dataclasses.is_dataclass(value) and not isinstance(value, type)
-    )
-    if mapping_like and not _standard_repr(value):
-        return None
-    if isinstance(value, Mapping):
-        return True, list(value.items())
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        fields = [f for f in dataclasses.fields(value) if f.repr]
-        return True, [(f.name, getattr(value, f.name)) for f in fields]
-    if isinstance(value, SimpleNamespace):
-        return True, list(vars(value).items())
-    if isinstance(value, (Sequence, AbstractSet)) and not isinstance(
-        value, _LEAF_SEQUENCES
-    ):
-        return False, list(value)
-    return None
-
-
-def _holds_exception(value: Any) -> bool:
-    """Whether an exception sits anywhere in ``value``'s walkable parts, each
-    object visited once (kept alive, so its id is not reused); ``True`` past
-    100 levels (a sequence whose items are new sequences), the safe side."""
-    stack, seen = [(value, 0)], {}
-    while stack:
-        item, depth = stack.pop()
-        if isinstance(item, BaseException) or depth > 100:
-            return True
-        parts = _parts(item) if id(item) not in seen else None
-        seen[id(item)] = item
-        for part in parts[1] if parts else ():
-            stack.extend((x, depth + 1) for x in (part if parts[0] else (part,)))
-    return False
-
-
-def _without_exceptions(
-    value: Any, depth: int = 0, path: frozenset = frozenset()
-) -> Any:
-    """``value`` with each exception in it, key or value, replaced by its class
-    chain. ``value`` itself, uncopied, is returned when it holds no exception
-    within ``_FIELD_DEPTH`` + 100 levels, or when it is a container already on
-    the walk's ``path`` (a self-reference); otherwise a ``dict`` (for a
-    mapping-like value) or a ``list`` of the rewritten parts, where a rewritten
-    key that is not a ``str`` is written as one, suffixed ``#2``, ``#3``, ...
-    on a collision. A container ``_FIELD_DEPTH`` levels down that holds one is
-    written as its type name, never its repr."""
+def _class_chain_or_value(value: Any) -> Any:
     if isinstance(value, BaseException):
         return exception_class_chain(value)
-    parts = None if id(value) in path else _parts(value)
-    if parts is None:
-        return value
-    path = path | {id(value)}
-    if depth >= _FIELD_DEPTH:
-        return type(value).__name__ if _holds_exception(value) else value
-    mapping, items = parts
-    if not mapping:
-        rewritten = [_without_exceptions(item, depth + 1, path) for item in items]
-        return value if all(a is b for a, b in zip(rewritten, items)) else rewritten
-    pairs = [
-        (
-            k,
-            _without_exceptions(k, depth + 1, path),
-            _without_exceptions(v, depth + 1, path),
-            v,
-        )
-        for k, v in items
-    ]
-    if all(a is k and b is v for k, a, b, v in pairs):
-        return value
-    kept, written = {k for k, a, _, _ in pairs if a is k}, {}
-    for k, a, b, _ in pairs:
-        if a is not k:
-            a = name = a if isinstance(a, str) else str(a)
-            n = 1
-            while a in written or a in kept:
-                n += 1
-                a = f"{name} #{n}"
-        written[a] = b
-    return written
+    return value
 
 
 def exceptions_as_class_chains(
     _logger: Any, _name: str, event_dict: Dict[str, Any]
 ) -> Dict[str, Any]:
     """Write an exception passed as a field (``error=e``, ``extra={"e": e}``,
-    the event itself, or a key or value inside a container
-    :func:`_without_exceptions` walks) as its class chain, never its repr,
-    which holds its message (principles §7, rule 4; #2888). An exception inside
-    any other object renders through that object's repr. The JSON renderer's
-    ``default`` names an exception it meets by its class chain."""
+    the event itself) as its class chain, never its repr, which holds its
+    message (principles §7, rule 4; #2888). It maps top-level values, and the
+    values of an ``extra`` dict one level down, where :func:`_lift_fields`
+    nests a caller's colliding field. Nothing else is walked: under JSON, the
+    renderer's ``default`` names an exception the encoder reaches."""
     for key, value in event_dict.items():
-        event_dict[key] = _without_exceptions(value)
+        event_dict[key] = _class_chain_or_value(value)
+    nested = event_dict.get("extra")
+    if isinstance(nested, dict):
+        event_dict["extra"] = {k: _class_chain_or_value(v) for k, v in nested.items()}
     return event_dict
 
 
@@ -429,67 +327,21 @@ class FaultMavenLogger:
 
     def configure_structlog(self) -> None:
         """
-        Configure structlog with comprehensive processors.
+        Configure structlog, and the root handler every line renders through.
 
-        Sets up a processor chain that handles:
-        - Log level filtering
-        - Logger name and level addition
-        - Timestamp formatting
-        - Exception information
-        - Request context injection
-        - OpenTelemetry trace context
-        - JSON output formatting
+        Native structlog events run the level filter and the shared processors
+        (``_SHARED_PROCESSORS``), then go to the stdlib root handler, whose
+        formatter (:func:`build_log_formatter`) renders them and plain stdlib
+        records alike. A root that already holds :func:`install_log_handler`'s
+        handler (a job) gets no second one: the events render through it, the
+        same builder, and each line is written once (#2888).
         """
-        # Processors that BUILD the event dict, shared by native structlog logs
-        # AND foreign stdlib LogRecords, so both render identically with their
-        # fields. Rendering itself happens once, in the ProcessorFormatter below.
-        shared_processors = [
-            # Merge structlog contextvars (e.g. request_id bound by
-            # RequestIdMiddleware) — first so later processors can override.
-            structlog.contextvars.merge_contextvars,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            # Interpolate %-style positional args into the event message so
-            # ``logger.info("env=%s", env)`` renders "env=prod", not a raw
-            # "env=%s" plus a dangling positional_args field. No-ops when a log
-            # has no positional args.
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            self.add_request_context,
-            self.add_trace_context,
-        ]
-        # Renderer: JSON for production, human-readable console for dev.
-        #
-        # LOG_HUMAN_READABLE is an override in its own right. It used to be
-        # guarded by ``LOG_FORMAT != "json"``, and since LOG_FORMAT defaults to
-        # "json" and now accepts nothing but json/console, that guard could
-        # never be true: setting LOG_HUMAN_READABLE alone did nothing.
-        #
-        # colors: structlog enables them whenever it is not on Windows —
-        # ``structlog.dev._has_colors`` has no isatty() check — so the console
-        # renderer would write ANSI escapes into a pod's log stream, where they
-        # reach kubectl and the log collector verbatim. Decide from the stream.
-        console = self.config.LOG_FORMAT == "console" or self.config.LOG_HUMAN_READABLE
-        if console:
-            renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
-        else:
-            renderer = structlog.processors.JSONRenderer(default=_json_default)
-
-        # Redact on the RENDERED line rather than on the event dict. Walking
-        # values by type leaked every type it did not handle -- bytes, sets,
-        # dict keys, anything the renderer repr()s such as an exception passed
-        # as error=e, and anything nested past the walk's depth. After
-        # rendering, all of it is text, and one pass covers the message, the
-        # fields, the keys and the traceback alike: URL query strings, and
-        # credential header values (a JSON line on its decoded keys and values).
-        renderer = redacting_renderer(renderer)
-
         # Native structlog loggers: filter + shared processors, then hand the
         # event to the stdlib ProcessorFormatter instead of rendering here.
         structlog.configure(
             processors=[
                 structlog.stdlib.filter_by_level,
-                *shared_processors,
+                *_SHARED_PROCESSORS,
                 lift_stdlib_extra,
                 structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
             ],
@@ -499,29 +351,9 @@ class FaultMavenLogger:
             cache_logger_on_first_use=True,
         )
 
-        # One formatter renders BOTH structlog events and plain stdlib records.
-        # For FOREIGN (stdlib) records — including third-party libs and every
-        # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
-        # runs the shared processors PLUS lift_record_extra, so the ``extra``
-        # fields are merged onto the event dict and actually render (previously
-        # they were silently dropped by ``basicConfig(format="%(message)s")``).
-        formatter = structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=[
-                *shared_processors,
-                lift_record_extra,
-            ],
-            processors=[
-                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.processors.StackInfoRenderer(),
-                # Not format_exc_info: it writes every link's message (#2888).
-                exc_info_as_frames,
-                exceptions_as_class_chains,
-                structlog.processors.UnicodeDecoder(),
-                *([frames_as_console_stack] if console else []),
-                renderer,
-            ],
+        formatter = build_log_formatter(
+            self.config.LOG_FORMAT, self.config.LOG_HUMAN_READABLE, sys.stderr
         )
-
         handler = LateBindingStreamHandler()
         handler.setFormatter(formatter)
         setattr(handler, self._ROOT_HANDLER_MARKER, True)
@@ -534,7 +366,10 @@ class FaultMavenLogger:
         for existing in list(root_logger.handlers):
             if getattr(existing, self._ROOT_HANDLER_MARKER, False):
                 root_logger.removeHandler(existing)
-        root_logger.addHandler(handler)
+        if not any(
+            getattr(h, _INSTALLED_HANDLER_MARKER, False) for h in root_logger.handlers
+        ):
+            root_logger.addHandler(handler)
 
         # Lower the root level to our configured verbosity, but never RAISE it
         # above a level something else (e.g. pytest's caplog.at_level) has
@@ -635,6 +470,110 @@ class FaultMavenLogger:
                 event_dict["span_id"] = format(span_context.span_id, "016x")
 
         return event_dict
+
+
+#: Processors that BUILD the event dict, shared by native structlog logs AND
+#: foreign stdlib LogRecords, so both render identically with their fields.
+#: Rendering itself happens once, in :func:`build_log_formatter`.
+_SHARED_PROCESSORS = (
+    # Merge structlog contextvars (e.g. request_id bound by
+    # RequestIdMiddleware) — first so later processors can override.
+    structlog.contextvars.merge_contextvars,
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.add_log_level,
+    # Interpolate %-style positional args into the event message so
+    # ``logger.info("env=%s", env)`` renders "env=prod", not a raw
+    # "env=%s" plus a dangling positional_args field. No-ops when a log
+    # has no positional args.
+    structlog.stdlib.PositionalArgumentsFormatter(),
+    structlog.processors.TimeStamper(fmt="iso"),
+    FaultMavenLogger.add_request_context,
+    FaultMavenLogger.add_trace_context,
+)
+
+
+def build_log_formatter(
+    log_format: str, human_readable: bool, stream: TextIO
+) -> structlog.stdlib.ProcessorFormatter:
+    """The one formatter every line renders through, structlog events and plain
+    stdlib records alike: the API's root handler, and :func:`install_log_handler`'s
+    for the jobs and alembic (principles §7, rule 5; #2888). It takes no settings
+    object, so a process that builds none can build it from ``LOG_FORMAT``
+    alone. The redactor runs last, on the rendered line.
+    """
+    # Renderer: JSON for production, human-readable console for dev.
+    #
+    # LOG_HUMAN_READABLE is an override in its own right. It used to be
+    # guarded by ``LOG_FORMAT != "json"``, and since LOG_FORMAT defaults to
+    # "json" and now accepts nothing but json/console, that guard could
+    # never be true: setting LOG_HUMAN_READABLE alone did nothing.
+    #
+    # colors: structlog enables them whenever it is not on Windows —
+    # ``structlog.dev._has_colors`` has no isatty() check — so the console
+    # renderer would write ANSI escapes into a pod's log stream, where they
+    # reach kubectl and the log collector verbatim. Decide from the stream.
+    console = log_format == "console" or human_readable
+    if console:
+        renderer = structlog.dev.ConsoleRenderer(colors=stream.isatty())
+    else:
+        renderer = structlog.processors.JSONRenderer(default=_json_default)
+
+    # Redact on the RENDERED line rather than on the event dict. Walking
+    # values by type leaked every type it did not handle -- bytes, sets,
+    # dict keys, anything the renderer repr()s such as an exception passed
+    # as error=e, and anything nested past the walk's depth. After
+    # rendering, all of it is text, and one pass covers the message, the
+    # fields, the keys and the traceback alike: URL query strings, and
+    # credential header values (a JSON line on its decoded keys and values).
+    renderer = redacting_renderer(renderer)
+
+    # For FOREIGN (stdlib) records — including third-party libs and every
+    # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
+    # runs the shared processors PLUS lift_record_extra, so the ``extra``
+    # fields are merged onto the event dict and actually render (previously
+    # they were silently dropped by ``basicConfig(format="%(message)s")``).
+    return structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=[*_SHARED_PROCESSORS, lift_record_extra],
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.StackInfoRenderer(),
+            # Not format_exc_info: it writes every link's message (#2888).
+            exc_info_as_frames,
+            exceptions_as_class_chains,
+            structlog.processors.UnicodeDecoder(),
+            *([frames_as_console_stack] if console else []),
+            renderer,
+        ],
+    )
+
+
+#: Stamped on :func:`install_log_handler`'s handler, so the API chain adds no
+#: second root handler in a process that installed it.
+_INSTALLED_HANDLER_MARKER = "_faultmaven_installed_handler"
+
+
+def install_log_handler(stream: TextIO, level: Optional[int]) -> None:
+    """Give the root logger one handler writing ``stream`` through
+    :func:`build_log_formatter`, at ``level`` (``None`` keeps the root's),
+    unless it already has a handler (``logging.basicConfig``'s rule): the line
+    of a process that builds no settings, the maintenance jobs and alembic
+    (#2888).
+
+    JSON or console is decided by ``LOG_FORMAT`` alone (``configured_log_format``,
+    the working directory's ``.env`` loaded first, as the app loads it), read
+    once the handler is in place: an unrecognized value is JSON, and its
+    warning is written on a JSON line. No other setting is read, so none can
+    refuse a migration or change the line; ``LOG_HUMAN_READABLE`` is not read.
+    """
+    from faultmaven.config.settings import configured_log_format, load_settings_dotenv
+
+    load_settings_dotenv()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(build_log_formatter("json", False, stream))
+    setattr(handler, _INSTALLED_HANDLER_MARKER, True)
+    logging.basicConfig(level=level, handlers=[handler])
+    if configured_log_format() == "console":
+        handler.setFormatter(build_log_formatter("console", False, stream))
 
 
 # Singleton configuration instance

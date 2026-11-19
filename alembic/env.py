@@ -37,13 +37,13 @@ project_root = Path(__file__).parent.parent
 # Add project root to path for model imports
 sys.path.insert(0, str(project_root))
 
-# Log through the jobs' line on stderr, as alembic.ini's levels set, before
+# Log through the API's chain on stderr, as alembic.ini's levels set, before
 # anything below can log (principles §7; #2888). It reads LOG_FORMAT alone.
 # fileConfig, below, removes it with the root's handlers, and it is installed
 # again after it.
-from faultmaven.infrastructure.logging.url_redaction import install_job_log_handler
+from faultmaven.infrastructure.logging.config import install_log_handler
 
-install_job_log_handler(sys.stderr, None)
+install_log_handler(sys.stderr, None)
 
 from sqlalchemy import engine_from_config, pool, text
 
@@ -69,10 +69,10 @@ apply_root_set()
 config = context.config
 
 # Logger levels from alembic.ini, without disabling the loggers the imports
-# above made. The ini names no handler: the root's is the jobs' line again.
+# above made. The ini names no handler: the root's is the chain's again.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
-    install_job_log_handler(sys.stderr, None)
+    install_log_handler(sys.stderr, None)
 
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import (
