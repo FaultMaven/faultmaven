@@ -13,8 +13,10 @@ ARCHITECTURAL PRINCIPLES:
 
 import json
 import logging
+import math
 import os
 import secrets
+from datetime import timedelta
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -1517,11 +1519,6 @@ class CaseSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
-#: Where :func:`resolve_local_jwt_secret` keeps the local secret when
-#: ``JWT_SECRET_FILE`` is unset. Read at call time, so the test session can
-#: point it under its own data root (#1772).
-DEFAULT_JWT_SECRET_FILE = "data/.jwt_secret"
-
 #: What a JWT secret file that group or others could read or write exposes,
 #: and how to rotate it; the tail of the WARNING
 #: ``prepare_secret_file_for_read`` logs.
@@ -1650,8 +1647,9 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
 
     Local auth requires a JWT secret. Rather than make the user set one (or ship a
     shared dev secret — which would let every install forge each other's tokens),
-    generate a unique secret once on first run, persist it to data/.jwt_secret,
-    and reuse it on every later run.
+    generate a unique secret once on first run, persist it to the secret file
+    (``settings.security.jwt_secret_file``, data/.jwt_secret by default), and
+    reuse it on every later run.
 
     Called once from get_settings(), after ``FaultMavenSettings()`` has validated
     and before the instance is published. It decides from that object — the one
@@ -1668,10 +1666,10 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         returns, judging nothing.
       - ``settings.security.jwt_secret_key`` is set (an explicit value always
         wins): it is judged, and the function returns.
-      - Otherwise it reads the secret file (``JWT_SECRET_FILE``, else
-        data/.jwt_secret) or generates a secret, and judges that value before
-        it is published, set or exported. The file is published only when the
-        database is persistent.
+      - Otherwise it reads the secret file
+        (``settings.security.jwt_secret_file``) or generates a secret, and
+        judges that value before it is published, set or exported. The file is
+        published only when the database is persistent.
 
     Judging is :func:`require_signable_hs256_secret`: a value PyJWT will not
     sign with raises :class:`LocalJwtSecretError` (#1806), so a refused value is
@@ -1702,7 +1700,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     """
     if settings.auth.auth_mode is not AuthMode.LOCAL:
         return
-    secret_path = Path(os.environ.get("JWT_SECRET_FILE", DEFAULT_JWT_SECRET_FILE))
+    secret_path = Path(settings.security.jwt_secret_file)
     # Truthy, not "not None": an empty secret is no secret to every consumer
     # (``if not secret`` in the token generator), so it is minted over.
     if settings.security.jwt_secret_key:
@@ -1793,6 +1791,29 @@ MAX_OAUTH_CODE_EXPIRY_SECONDS = 1800
 #: life for up to this window.
 MAX_MINT_BASIS_CARRY_SECONDS = MAX_OAUTH_CODE_EXPIRY_SECONDS
 
+#: How far ahead of the revoker's clock the final watermark stamp is written
+#: (#2050). The deployment's clock-sync assumption: replicas' clocks agree within
+#: this (NTP keeps a cluster's nodes within a few ms). ``revoke_user_tokens``
+#: stamps ``now + allowance`` once its first write has landed, again until a
+#: stamp lands within the allowance of its capture, so a mint whose capture
+#: preceded that landing dies on any replica ahead of the revoker by no more
+#: than the allowance less that stamp's landing time. Kept below an SSO round
+#: trip: a sign-in captured inside it after a revocation is born dead and needs
+#: one more sign-in.
+REVOCATION_CLOCK_ALLOWANCE = timedelta(milliseconds=100)
+
+#: How far ahead of the store's own clock (or of a later new write) a stored
+#: watermark is kept by a lower write (#2050). A final stamp is written at most
+#: the allowance ahead of its revoker's clock, which is within the allowance of
+#: the store's, and only falls behind the store's clock after that; so a stamp
+#: any revocation wrote is at most 2 x allowance ahead, however slowly an
+#: overlapping revocation's first write lands. Rounded up to a whole second. A
+#: stored value further ahead (a clock that stepped forward) is overwritten, so
+#: it cannot renew itself and lock an account out.
+REVOCATION_MONOTONE_WINDOW = timedelta(
+    seconds=math.ceil(2 * REVOCATION_CLOCK_ALLOWANCE.total_seconds())
+)
+
 #: Every env name that has EVER addressed the two token-expiry fields except the
 #: current pair, mapped to the current name that replaces it. Two generations:
 #:
@@ -1829,13 +1850,28 @@ class SecuritySettings(BaseSettings):
     # HS256 secret for local auth. In local mode get_settings() provides it via
     # resolve_local_jwt_secret() once the settings are built, so a standalone
     # install needs no JWT_SECRET_KEY — set the env var to override. It is
-    # generated and persisted (data/.jwt_secret) only when the database is
+    # generated and persisted (jwt_secret_file) only when the database is
     # persistent; otherwise an existing file is read, or an ephemeral per-process
     # secret is used (#1703). OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (data/.jwt_secret) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (JWT_SECRET_FILE, data/.jwt_secret by default) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+    )
+    # Where resolve_local_jwt_secret() keeps the local HS256 secret. A field, so
+    # JWT_SECRET_FILE binds as every setting does: any letter case (the last
+    # spelling wins), environment over .env, and a nested SECURITY JSON over the
+    # flat name (#2918). The test session moves its default under its own data
+    # root (#1772).
+    jwt_secret_file: str = Field(
+        default="data/.jwt_secret",
+        description=(
+            "The local-mode HS256 secret file. With JWT_SECRET_KEY unset it is "
+            "read when it holds a secret, and written when one is generated with "
+            "a persistent database; with JWT_SECRET_KEY set it is only named in "
+            "that key's refusal when the key cannot sign. Unused in OAuth/RS256 "
+            "mode."
+        ),
     )
     # NOTE: token expiry is deliberately NOT declared here. It lives once, on
     # AuthSettings, and every minting path takes it from there (#888). This half
@@ -2781,7 +2817,8 @@ class EmbeddingSettings(BaseSettings):
         "cold-load penalty (see data-preprocessing-design-specification.md §5.7). "
         "Set to [] (via PRELOAD_MODELS='[]'; the value is JSON, and an empty string "
         "fails settings construction) to opt out for faster startup, accepting "
-        "~60–120s first-request latency while the model loads.",
+        "first-request latency while the model loads (about 15 s measured "
+        "in the image at 2 CPUs, longer on a slower core).",
     )
 
     model_config = {"env_prefix": "", "extra": "ignore"}

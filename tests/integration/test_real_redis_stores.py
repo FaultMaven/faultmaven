@@ -47,6 +47,9 @@ from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSp
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    RevocationBasis,
+)
 from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
@@ -55,6 +58,14 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.cloud]
+
+
+def _iat(seconds: int) -> RevocationBasis:
+    return RevocationBasis(seconds, precise=False)
+
+
+def _precise(seconds: float) -> RevocationBasis:
+    return RevocationBasis(seconds, precise=True)
 
 
 def _pairing_check():
@@ -140,29 +151,23 @@ async def test_the_revocation_store_answers_per_token_and_per_user(
     watermark = time.time()
     await store.revoke_user_tokens_before("user-1", watermark, ttl=60)
 
-    assert await store.is_user_revoked("user-1", issued_at=int(watermark) - 1)
-    assert not await store.is_user_revoked("user-1", issued_at=int(watermark) + 1)
-    assert not await store.is_user_revoked("user-2", issued_at=int(watermark) - 1)
+    assert await store.is_user_revoked("user-1", _iat(int(watermark) - 1))
+    assert not await store.is_user_revoked("user-1", _iat(int(watermark) + 1))
+    assert not await store.is_user_revoked("user-2", _iat(int(watermark) - 1))
     assert await store.count_user_watermarks() == 1
 
 
-async def test_the_revocation_store_clears_only_a_watermark_older_than_the_instant(
-    real_redis, namespace
-):
-    """``clear_user_revocation_if_before``: the server-side compare-and-delete."""
+async def test_the_revocation_store_keeps_the_later_watermark(real_redis, namespace):
+    """The monotone user-arm write (#2050), as a real Redis runs its script."""
     store = RedisTokenRevocationStore(
         real_redis, key_prefix=f"{namespace}revoked:token:"
     )
     watermark = time.time()
     await store.revoke_user_tokens_before("user-1", watermark, ttl=60)
+    await store.revoke_user_tokens_before("user-1", watermark - 0.05, ttl=60)
 
-    # The positive control: an instant that is not later leaves it in place.
-    assert await store.clear_user_revocation_if_before("user-1", watermark) is False
-    assert await store.is_user_revoked("user-1", issued_at=int(watermark) - 1)
-
-    assert await store.clear_user_revocation_if_before("user-1", watermark + 1)
-    assert not await store.is_user_revoked("user-1", issued_at=int(watermark) - 1)
-    assert await store.count_user_watermarks() == 0
+    assert await store.is_user_revoked("user-1", _precise(watermark))
+    assert not await store.is_user_revoked("user-1", _precise(watermark + 0.01))
 
 
 async def test_the_rate_limiter_window_script_admits_then_refuses(

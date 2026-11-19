@@ -3,7 +3,8 @@
 
 ``render_fix_verification`` is pure: it reads the record (``CaseOutcome``,
 ``narration_outcome``), the case's identity (``CaseIdentity``), the text of an
-action or a need by id (``content_by_id``, ruling 5's ``content(id)``), the
+action or a need by id (``content_by_id``, ruling 5's ``content(id)``, which
+for this block reads actions and needs only, never an evidence row), the
 window verdicts ruling Q1 (a) keeps read fresh until the deciders switch
 (stage S3), which the call site computes with today's deciders and passes in
 as ``FixVerificationFresh``, and the needs pool (``NeedsView``, ruling 2 of
@@ -16,7 +17,8 @@ the call site prints the declared ``OMITTED`` line, never an empty need.
 
 Where it may differ from a fresh read, it prints the record's: an attempt's
 carried ``accepted_in_turn``, and a carried FAILED attempt whose action no
-longer reads (declared; neither is known to be reachable).
+longer reads (``content`` answers None for it, and its description prints
+empty; declared; neither is known to be reachable).
 """
 
 from dataclasses import dataclass, field
@@ -72,16 +74,34 @@ class CaseIdentity(NamedTuple):
         return cls(case.case_id, case.state, case.current_stage, case.current_turn)
 
 
-def content_by_id(case, item_id: str) -> Optional[str]:
-    """The text an id names (ruling 5 of 2026-11-15): a proposed action's
-    description, or a need's current ``request_text`` (which an update may
-    rewrite); None when nothing has the id."""
+class Content(NamedTuple):
+    """What an id names: its text, and for an evidence row the turn it was
+    established (``collected_at_turn``)."""
+
+    text: str
+    established_turn: Optional[int] = None
+
+
+def content_by_id(case, item_id: str, *, row: bool = False) -> Optional[Content]:
+    """What an id names (ruling 5 of 2026-11-15), by kind: a proposed
+    action's description or a need's current ``request_text`` (which an update
+    may rewrite), looked up in that order; with ``row``, an evidence row's
+    ``summary or extract or ""`` with its established turn (S2b-1b-ii), and
+    only that. None when nothing of that kind has the id."""
+    if row:
+        for evidence in case.evidence or []:
+            if evidence.evidence_id == item_id:
+                return Content(
+                    evidence.summary or evidence.extract or "",
+                    evidence.collected_at_turn,
+                )
+        return None
     for action in case.proposed_actions or []:
         if action.action_id == item_id:
-            return action.description
+            return Content(action.description)
     for need in case.evidence_needs or []:
         if need.need_id == item_id:
-            return need.request_text
+            return Content(need.request_text)
     return None
 
 
@@ -167,7 +187,8 @@ def _attempt_lines(attempts, content, fresh) -> list[str]:
     if len(attempts) > MAX_ATTEMPTS:
         lines.append(f"  …and {len(attempts) - MAX_ATTEMPTS} earlier")
     for a in attempts[-MAX_ATTEMPTS:]:
-        description = " ".join((content(a.action_id) or "").split())
+        found = content(a.action_id)
+        description = " ".join((found.text if found else "").split())
         if len(description) > _DESCRIPTION_CHARS:
             description = description[: _DESCRIPTION_CHARS - 1].rstrip() + "…"
         acted = ", ".join(a.target_ids) or "no node recorded"
@@ -322,11 +343,11 @@ def _need_lines(resolution: ResolutionOutcome, needs: NeedsView, content) -> lis
     stopped = len(listed) - len(live)
     lines = ["Outstanding symptom-verification needs:"]
     for n in live[:MAX_NEEDS]:
-        text = content(n.need_id)
-        if text is None:
+        found = content(n.need_id)
+        if found is None:
             raise LookupError(f"no text reads for need {n.need_id}")
         mark = _held_mark(resolution) if n.need_id == held else ""
-        lines.append(f"  - [{n.need_id}] {_truncate_request_text(text)}{mark}")
+        lines.append(f"  - [{n.need_id}] {_truncate_request_text(found.text)}{mark}")
     if not live:
         lines = ["Outstanding symptom-verification needs: none"]
     elif len(live) > MAX_NEEDS:
@@ -341,7 +362,7 @@ def _need_lines(resolution: ResolutionOutcome, needs: NeedsView, content) -> lis
 def render_fix_verification(
     outcome: CaseOutcome,
     identity: CaseIdentity,
-    content: Callable[[str], Optional[str]],
+    content: Callable[[str], Optional[Content]],
     fresh: FixVerificationFresh,
     needs: Callable[[], NeedsView],
 ) -> Optional[tuple[str, ...]]:

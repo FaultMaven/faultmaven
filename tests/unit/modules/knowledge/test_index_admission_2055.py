@@ -9,8 +9,9 @@ row; verify-batch returns what the rest of its window cannot fit as
 metadata. The boot repair encodes on the same slot.
 
 The REAL services over in-memory SQLite and the real indexer and slot; the
-encode (``embed_texts_sync``), the token count, the cores, the model's residency
-and the slot's clock are doubles, so nothing loads the model.
+encode (``index_slot.encode_in_worker``, the KB slot's worker, #2851), the
+token count, the cores and the slot's clock are doubles, so nothing loads the
+model. Every KB ticket is charged ``WORKER_LOAD_SECONDS``.
 
 Mutation: remove the upload's admission (``ingest_runbook``'s
 ``_index_ticket``): ``TestUpload``'s refusals write the row.
@@ -20,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,11 +41,6 @@ from faultmaven.config.settings import get_settings
 from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure import embedding_guard, index_slot
 from faultmaven.infrastructure.index_slot import index_admission
-from faultmaven.infrastructure.model_cache import (
-    BGE_M3_MODEL_ID,
-    ModelLoadInfo,
-    model_cache,
-)
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -55,7 +50,7 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UploadedFileModel,
 )
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import IndexAdmissionRefused
 from faultmaven.modules.knowledge.api import routes
 from faultmaven.modules.knowledge.api.conversion_routes import (
     router as conversion_router,
@@ -75,9 +70,8 @@ from tests.utils import record_nothing, regex_only_sanitizer
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
-RUNBOOK_TOKENS = 29_746  # 371.825 s warm on 2 cores: fits 600 s alone
-COLD_BAND = 40_000  # 500 s warm: fits 600 s, but not with a 180 s model load
-TOO_LARGE = 48_001  # 600.0125 s warm: fits no 600 s window
+RUNBOOK_TOKENS = 29_746  # 371.825 s warm on 2 cores, 401.825 s with the load
+TOO_LARGE = 45_601  # 570.0125 s warm: past the 600 s line (45,440, #2851)
 ITEM = "kb_0123456789ab"
 _TABLES = (
     KnowledgeItemModel,
@@ -89,7 +83,7 @@ _TABLES = (
 
 
 class Encodes:
-    """``embed_texts_sync``: records each encode and its thread, holding the
+    """The KB slot's encode: records each encode and its thread, holding the
     first ``held`` until released."""
 
     def __init__(self, clock=None, seconds: float = 0.0) -> None:
@@ -101,7 +95,7 @@ class Encodes:
         self._clock, self._seconds = clock, seconds
         self._lock = threading.Lock()
 
-    def __call__(self, texts):
+    def __call__(self, _ticket, texts, _guard_seconds):
         with self._lock:
             self.calls.append((texts[0], threading.current_thread().name))
             self.active += 1
@@ -133,15 +127,14 @@ def clock(monkeypatch):
 
 @pytest.fixture(autouse=True)
 async def world(monkeypatch, clock):
-    """2 cores, the model resident, the encode a double, window 0. Teardown
+    """2 cores, the KB encode a double, window 0. Teardown
     waits for every held encode to settle, then asserts no ticket leaked into
     the process's slots, so a failing test cannot fail the next one's setup."""
     monkeypatch.setattr(
         "faultmaven.infrastructure.model_cache._cgroup_cpu_quota", lambda: 2.0
     )
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: object())
     encodes = Encodes(clock)
-    monkeypatch.setattr(model_cache, "embed_texts_sync", encodes)
+    monkeypatch.setattr(index_slot, "encode_in_worker", encodes)
     tokens = AsyncMock(return_value=RUNBOOK_TOKENS)
     monkeypatch.setattr(embedding_guard, "count_index_tokens", tokens)
     monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 0)
@@ -162,33 +155,9 @@ def window(monkeypatch):
 @pytest.fixture
 def busy():
     """Another runbook's encode held on this server: 371.825 s pending."""
-    held = index_admission.admit_forced(["other"], RUNBOOK_TOKENS)
+    held = index_admission.admit_forced(["other"], RUNBOOK_TOKENS, principal="u9")
     yield held
     held.close()
-
-
-@pytest.fixture
-def cold_model(monkeypatch):
-    """A cold model whose load, on the KB slot, waits for ``release``; with
-    ``fails``, it then records an error, as a failed load does."""
-    state = SimpleNamespace(loads=0, fails=False, release=threading.Event())
-
-    def _load(triggered_by):
-        state.loads += 1
-        state.release.wait(30)
-        if state.fails:
-            model_cache._load_info[BGE_M3_MODEL_ID] = ModelLoadInfo(
-                model_name=BGE_M3_MODEL_ID,
-                loaded_at=datetime.now(timezone.utc),
-                load_time_seconds=0.0,
-                error="OSError",
-            )
-
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: None)
-    monkeypatch.setattr(model_cache, "get_bge_m3_model", _load)
-    monkeypatch.setattr(model_cache, "_load_info", {})
-    yield state
-    state.release.set()
 
 
 @pytest.fixture
@@ -324,7 +293,7 @@ class TestUpload:
 
         assert (refused.value.status_code, refused.value.retry_after_seconds) == (
             503,
-            372,
+            402,
         )
         assert set((await _counts(session_factory)).values()) == {0}
         assert world.encodes.calls == []
@@ -353,6 +322,51 @@ class TestUpload:
             "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
         )
         assert set((await _counts(session_factory)).values()) == {0}
+
+    @pytest.mark.parametrize("over", [0, 1])
+    async def test_an_uncontended_count_leaves_the_413_line_admitted(
+        self, session_factory, world, window, clock, over
+    ):
+        """#2851 delta B2: the line is the window less the load and the
+        count's 2 s allowance (45,440 at 600 s, 2 cores). A count that took
+        1.9 s uncontended leaves the document at the line admitted, and one
+        token over it is 413. On ``fbb129525`` the line was 45,600, so the
+        token over it was admitted, and a band below 45,600 answered busy."""
+        line = index_slot.index_max_tokens(600 - 30 - 2)
+
+        async def counts(_chunks, **_kwargs):
+            clock.now += 1.9
+            return line + over
+
+        world.tokens.side_effect = counts
+
+        if over:
+            with pytest.raises(IndexAdmissionRefused) as refused:
+                await _upload(_knowledge(session_factory))
+            assert refused.value.status_code == 413
+            assert f"at most {line:,} tokens" in refused.value.message
+        else:
+            await _upload(_knowledge(session_factory))
+            assert len(world.encodes.calls) == 1
+
+    async def test_the_token_counts_time_is_spent_from_the_window(
+        self, session_factory, world, window, clock
+    ):
+        """#2851 review: a count that waits ``w`` seconds for a slot leaves the
+        document ``w`` less: 401.8 s of work fits 600 s, not 600 - 200. On
+        ``7c5318825`` the count's time was not charged, and it was admitted."""
+
+        async def waits_then_counts(_chunks, **_kwargs):
+            clock.now += 200.0
+            return RUNBOOK_TOKENS
+
+        world.tokens.side_effect = waits_then_counts
+
+        with pytest.raises(IndexAdmissionRefused) as refused:
+            await _upload(_knowledge(session_factory))
+
+        assert (refused.value.status_code, refused.value.reason) == (503, "busy")
+        assert world.encodes.calls == []
 
     async def test_a_document_inside_the_window_indexes_on_the_slot(
         self, session_factory, world, window
@@ -385,36 +399,18 @@ class TestUpload:
         if refusal == "busy":
             assert response.status_code == 503, response.text
             assert response.headers["x-error-code"] == "KNOWLEDGE_INDEXING_BUSY"
-            assert response.headers["Retry-After"] == "372"
-            assert "retry in about 372 seconds" in response.json()["detail"]
+            assert response.headers["Retry-After"] == "402"
+            assert "retry in about 402 seconds" in response.json()["detail"]
         else:
             assert response.status_code == 413, response.text
             assert response.headers["x-error-code"] == "KNOWLEDGE_DOCUMENT_TOO_LARGE"
             assert "Retry-After" not in response.headers
             assert "Split it" in response.json()["detail"]
 
-    def test_the_route_answers_a_loading_model_with_the_loads_wait(
-        self, world, window, cold_model
-    ):
-        world.tokens.return_value = COLD_BAND
-
-        response = _upload_route()
-
-        assert response.status_code == 503, response.text
-        assert response.headers["x-error-code"] == "KNOWLEDGE_INDEXING_BUSY"
-        assert response.headers["Retry-After"] == "180"
-        assert response.json()["detail"] == (
-            index_slot.refusal("loading", wait=180).message
-        )
-        # The route answers before the load runs: let it finish, then count (#2539).
-        cold_model.release.set()
-        index_slot._KB_EXECUTOR.submit(lambda: None).result(30)
-        assert cold_model.loads == 1
-
     def test_the_route_answers_a_stuck_encode_with_a_fixed_wait(
         self, world, window, clock
     ):
-        stuck = index_admission.admit_forced(["stuck"], 0)
+        stuck = index_admission.admit_forced(["stuck"], 0, principal="u9")
         stuck.guard_seconds = 10.0
         stuck._started()
         clock.now = 11.0
@@ -427,27 +423,6 @@ class TestUpload:
         assert response.headers["x-error-code"] == "KNOWLEDGE_INDEXING_BUSY"
         assert response.headers["Retry-After"] == "60"
         assert response.json()["detail"] == index_slot.refusal("hung", wait=60).message
-
-    def test_a_model_that_failed_to_load_is_unavailable_and_not_loaded_again(
-        self, world, window, cold_model
-    ):
-        """Each route answers ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` as it answers
-        any ``KnowledgeBaseError``; upload's blanket 500 is #2461's."""
-        world.tokens.return_value = COLD_BAND
-        cold_model.fails = True
-        loading = _upload_route()
-        cold_model.release.set()
-        index_slot._KB_EXECUTOR.submit(lambda: None).result(30)
-
-        unavailable = _upload_route()
-
-        assert loading.status_code == 503 and cold_model.loads == 1
-        assert unavailable.status_code == 500, unavailable.text
-        assert "x-error-code" not in unavailable.headers
-        with pytest.raises(KnowledgeBaseError) as refused:
-            index_admission.admit(["c"], COLD_BAND, window_seconds=600)
-        assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
-        assert cold_model.loads == 1 and index_admission.queued() == 0
 
 
 # =============================================================================
@@ -611,7 +586,7 @@ class TestVerify:
         self, session_factory, world, window, clock
     ):
         """Each encode takes its estimate on the slot's clock: the first spends
-        372 of the 600 s, and the second no longer fits."""
+        372 of the 600 s, and the second, with the load, no longer fits."""
         world.encodes._seconds = 372.0
         knowledge = _knowledge(session_factory)
         conversion = _conversion(session_factory, knowledge)
@@ -729,14 +704,14 @@ async def test_the_boot_repair_encodes_on_the_slot_after_an_upload(
 
     upload = asyncio.create_task(_upload(service))
     await asyncio.to_thread(world.encodes.entered.wait, 30)
-    repair = asyncio.create_task(service.reindex_missing_vectors(ITEM))
+    repair = asyncio.create_task(service.reindex_missing_vectors([ITEM]))
     while sum(t._future is not None for t in index_admission._tickets) < 2:
         await asyncio.sleep(0.01)
 
     assert len(world.encodes.calls) == 1, "the repair encoded beside the upload"
     world.encodes.release.set()
     await upload
-    assert await repair > 0
+    assert (await repair)[ITEM] > 0
 
     assert [thread for _, thread in world.encodes.calls] == ["kb-index_0"] * 2
     assert world.encodes.most_active == 1

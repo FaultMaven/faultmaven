@@ -214,7 +214,8 @@ async def test_a_driver_is_deleted_and_the_case_goes_back_to_its_creator(world):
     result, revoked = await _delete(world, world.driver)
 
     assert result["user_id"] == world.driver
-    assert revoked == [world.driver]
+    # Before the delete, and the final stamp after it (#2050).
+    assert revoked == [world.driver, world.driver]
     assert not await _exists(world, world.driver)
     assert tuple(await _row(world)) == (world.creator, None)
 

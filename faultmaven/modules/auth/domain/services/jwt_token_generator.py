@@ -127,11 +127,12 @@ def _mint_instant(state_read_at: datetime) -> datetime:
     state the claims derive from — the user row, the presented refresh token,
     the basis carried by an authorization code or SSO login payload. Stamping
     ``iat`` from it (rather than from mint-time ``now``) is what ties the
-    token to the state it was minted from: a revocation watermark written
-    after those reads began is strictly later than ``state_read_at``, so a
-    mint that straddled the revocation carries ``iat <= watermark`` and dies
-    with it. An ``iat`` of "now" would postdate the watermark and survive it,
-    carrying pre-revocation roles or claims.
+    token to the state it was minted from: the watermark a revocation leaves
+    once its write has landed (``AuthService.revoke_user_tokens``'s final
+    stamp, #2050) is later than a ``state_read_at`` captured before that, so a
+    mint that straddled the revocation carries a basis at or before the
+    watermark and dies with it. An ``iat`` of "now" would postdate the
+    watermark and survive it, carrying pre-revocation roles or claims.
 
     ``iat`` ONLY. ``exp`` is stamped from mint-time ``now`` at each mint site:
     revocation consumes nothing from ``exp``, and deriving it from the basis
@@ -169,6 +170,13 @@ def _mint_instant(state_read_at: datetime) -> datetime:
             "single-use flow may need to restart)"
         )
     return min(state_read_at, now)
+
+
+#: The private claim carrying a token's basis — the instant ``iat`` is stamped
+#: from — at full precision (#2050). ``iat`` is whole seconds, so it cannot say
+#: whether a mint in the same second as a revocation began before or after it;
+#: ``revocation_reason`` compares this instead whenever it is usable.
+REVOCATION_BASIS_CLAIM = "fm_basis"
 
 
 class PasswordResetMint(NamedTuple):
@@ -232,7 +240,8 @@ def _password_reset_claims(
     an id the holder could recognise is one they already had.
 
     ``iat``/``exp`` are integers (not datetimes) because ``revocation_reason``
-    compares ``iat`` against a Unix-timestamp watermark.
+    compares ``iat`` against a Unix-timestamp watermark; ``fm_basis`` is the
+    same instant at full precision, which it compares when usable (#2050).
 
     ``state_read_at`` is required on the decoy path too, and the caller passes
     the SAME captured instant to both: the two paths differ in how long the
@@ -240,10 +249,11 @@ def _password_reset_claims(
     time while a real token is stamped at capture time would let ``iat``
     answer the existence question the decoy refuses (#831). One caveat on the
     record: under a sub-tolerance backward clock step, ``_mint_instant``
-    clamps to each branch's own mint-time ``now``, so the two branches can
-    stamp instants a second apart if the boundary falls inside their
-    post-lookup latency difference — a side channel requiring a mid-request
-    clock step, accepted rather than engineered around.
+    clamps to each branch's own mint-time ``now``, so the two branches stamp
+    instants that differ by their post-lookup latency difference — at full
+    precision in ``fm_basis``, and in ``iat`` when a second boundary falls
+    inside it — a side channel requiring a mid-request clock step, accepted
+    rather than engineered around.
     """
     issued_at = _mint_instant(state_read_at)
     # exp from mint-time now, iat from the basis — see _mint_instant.
@@ -257,6 +267,7 @@ def _password_reset_claims(
         "iss": issuer,
         "aud": audience,
         "iat": int(issued_at.timestamp()),
+        REVOCATION_BASIS_CLAIM: issued_at.timestamp(),
         "exp": int(expire.timestamp()),
         "jti": str(uuid.uuid4()),
     }
@@ -652,11 +663,12 @@ class IJWTTokenGenerator(ABC):
             user: User to generate token for
             state_read_at: Instant captured by the caller BEFORE its first
                 read of any state these claims derive from (the user row, a
-                presented token, an authorization code). ``iat`` and ``exp``
-                are stamped from it, so a mint whose reads straddled a
-                revocation carries ``iat <= watermark`` and dies with it
-                (#831). Required with no default: a mint path that forgets it
-                fails loudly instead of silently reopening the straddle.
+                presented token, an authorization code). ``iat`` and
+                ``fm_basis`` are stamped from it (``exp`` from mint time), so
+                a mint whose reads straddled a revocation carries a basis at or
+                before the watermark and dies with it (#831, #2050). Required
+                with no default: a mint path that forgets it fails loudly
+                instead of silently reopening the straddle.
 
         Returns:
             JWT access token string
@@ -1018,6 +1030,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             ],
             "exp": expires_at,
             "iat": issued_at,
+            REVOCATION_BASIS_CLAIM: issued_at.timestamp(),
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -1104,6 +1117,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "sub": user.user_id,
             "exp": expires_at,
             "iat": issued_at,
+            REVOCATION_BASIS_CLAIM: issued_at.timestamp(),
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -1528,6 +1542,34 @@ async def _claim_token_by_jti(revocation_store, claims: Dict) -> RefreshClaim:
     return outcome
 
 
+class RevocationBasis(NamedTuple):
+    """What the per-user arm compares against a watermark (#2050).
+
+    ``precise``: ``seconds`` is the token's ``fm_basis`` and is covered when
+    ``seconds <= watermark`` at full precision. Otherwise ``seconds`` is the
+    whole-second ``iat`` and is covered when ``iat <= floor(watermark)``.
+    """
+
+    seconds: float
+    precise: bool
+
+
+def _precise_basis(raw, issued_at: int) -> Optional[float]:
+    """``fm_basis`` when usable: a finite non-bool number in ``iat``'s second.
+
+    Anything else falls back to ``iat``, the stricter answer. ``10**400``
+    overflows ``isfinite``, which counts as not finite.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    try:
+        if not math.isfinite(raw):
+            return None
+    except OverflowError:
+        return None
+    return float(raw) if int(raw) == issued_at else None
+
+
 async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
     """Return why a token's claims are revoked, or None if they are not.
 
@@ -1536,19 +1578,21 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
     for the per-token arm):
 
     - ``"token_revoked"`` — this specific jti was revoked.
-    - ``"user_revoked"`` — the user's watermark is at or after this token's
-      ``iat``, i.e. the token predates a bulk per-user revocation (#769).
+    - ``"user_revoked"`` — the token's basis is at or before the user's
+      watermark, i.e. the token predates a bulk per-user revocation (#769).
 
     A token missing ``sub``/``iat`` cannot be matched against a watermark, so
-    only the jti arm applies to it. Comparison is ``iat <= watermark`` rather
-    than ``<``: ``iat`` has whole-second granularity, and honouring a token
+    only the jti arm applies to it. The basis is ``fm_basis`` at full
+    precision when it is usable (``_precise_basis``), compared
+    ``fm_basis <= watermark``; otherwise it is ``iat``, compared
+    ``iat <= floor(watermark)`` — whole seconds, where honouring a token
     minted in the same second as a revocation is the more dangerous of the two
-    rounding errors.
+    rounding errors (#2050).
     """
     jti = payload.get("jti")
     user_id = payload.get("sub")
     raw_iat = payload.get("iat")
-    issued_at = None
+    issued_at = precise = None
     if user_id and raw_iat is not None:
         # Coerced INSIDE a try, and only for the watermark arm. A malformed
         # ``iat`` is a property of the watermark's inputs, not of the jti, and
@@ -1563,16 +1607,22 @@ async def revocation_reason(revocation_store, payload: Dict) -> Optional[str]:
         # a claim that cannot be read: only the jti arm applies.
         try:
             issued_at = int(raw_iat)
+            precise = _precise_basis(payload.get(REVOCATION_BASIS_CLAIM), issued_at)
         except (TypeError, ValueError):
             issued_at = None
+    basis = None
     if issued_at is None:
         user_id = None
+    elif precise is None:
+        basis = RevocationBasis(issued_at, precise=False)
+    else:
+        basis = RevocationBasis(precise, precise=True)
 
     # ONE call, so a store whose reads cost something can answer both arms in
     # one round trip (#828 review). Which answer WINS, and what a missing claim
     # means, stay here: the rule is what must not be duplicated per store.
     token_revoked, user_revoked = await revocation_store.revocation_state(
-        jti, user_id, issued_at
+        jti, user_id, basis
     )
     if token_revoked:
         return "token_revoked"
@@ -1743,6 +1793,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             ],
             "exp": expires_at,  # Expiration time
             "iat": issued_at,  # Issued at
+            REVOCATION_BASIS_CLAIM: issued_at.timestamp(),  # iat, unfloored
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
@@ -1829,6 +1880,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "sub": user.user_id,  # Subject (user ID)
             "exp": expires_at,  # Expiration time
             "iat": issued_at,  # Issued at
+            REVOCATION_BASIS_CLAIM: issued_at.timestamp(),  # iat, unfloored
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
@@ -2364,11 +2416,13 @@ class ITokenRevocationStore(ABC):
       deactivate/delete/role-change flows (#769). Enumerating a user's
       outstanding JTIs is not possible — nothing indexes them — so per-user
       revocation records *when* the revocation happened and rejects every
-      token issued at or before that instant. It needs no bookkeeping at mint
-      time, which is why it covers mint paths added later.
+      token whose basis is at or before that instant (``RevocationBasis``). It
+      needs no bookkeeping at mint time, which is why it covers mint paths
+      added later.
 
       **That coverage is conditional, not absolute:** matching is on ``sub`` +
-      ``iat``, so it holds only while every mint path emits both and keys
+      ``iat`` (and ``fm_basis`` where usable), so it holds only while every
+      mint path emits them and keys
       ``sub`` to the same user_id the watermark is written under. A test pins
       this; the type system does not. A future minter that omits ``iat`` would
       under-revoke silently on the generator ``validate_*`` paths, which —
@@ -2383,8 +2437,9 @@ class ITokenRevocationStore(ABC):
       ``REVOCATION_ENTRY_MARGIN_SECONDS``, capped at
       ``max_revocation_entry_ttl()`` and given in full to a token with no
       ``exp`` (``revocation_entry_ttl``, the one rule for every writer);
-    - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS``,
-      whatever lifetime the user's tokens were minted with
+    - a watermark for that ceiling plus ``MAX_MINT_BASIS_CARRY_SECONDS`` plus
+      ``REVOCATION_CLOCK_ALLOWANCE`` rounded up to a second, whatever lifetime
+      the user's tokens were minted with
       (``AuthService._watermark_ttl_seconds``). Each new watermark for the user
       restarts it.
     """
@@ -2436,27 +2491,34 @@ class ITokenRevocationStore(ABC):
 
     @abstractmethod
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: float, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int, *, sweep: bool = True
     ) -> None:
-        """Set the user's revocation watermark.
+        """Raise the user's revocation watermark to ``revoked_at``.
 
-        Every token for this user issued at or before ``revoked_at`` becomes
-        invalid. Overwrites any earlier watermark — a later revocation is
-        strictly stronger, and the caller has already decided to invalidate
-        everything outstanding.
+        Every token for this user whose basis is at or before ``revoked_at``
+        becomes invalid. A stored watermark above ``revoked_at``, and no more
+        than ``REVOCATION_MONOTONE_WINDOW`` ahead of the later of it and the
+        store's own clock, is kept (#2050 —
+        ``revoke_user_tokens``'s final stamp sits ahead of ``now``, and an
+        overlapping revocation's first write must not lower it). One further
+        ahead, or corrupt, is overwritten, not compared, so a revocation always
+        lands and a far-future value cannot renew itself. Either way the entry
+        takes the new ``ttl``.
 
         Args:
             user_id: User whose tokens are being revoked
             revoked_at: Revocation instant as a Unix timestamp (seconds, and
-                the fraction is significant — ``is_user_revoked`` floors it,
-                but ``clear_user_revocation_if_before`` orders against it)
+                the fraction is significant: a precise basis is compared
+                against it unfloored)
             ttl: Time to live in seconds; must outlive the longest-lived token
                 the deployment issues MEASURED FROM ITS BASIS — the schema
                 CEILING on token lifetime (``MAX_TOKEN_LIFETIME_DAYS``) plus
-                ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat`` (what the
-                watermark compares against) can trail the mint by up to the
-                hand-off artifact's TTL (#831) — or tokens could outlive the
-                watermark that revokes them.
+                ``MAX_MINT_BASIS_CARRY_SECONDS``, since a token's basis (what
+                the watermark compares against) can trail the mint by up to the
+                hand-off artifact's TTL (#831), plus the final stamp's
+                ``REVOCATION_CLOCK_ALLOWANCE`` rounded up to a second, since
+                that stamp sits ahead of its write — or tokens could outlive
+                the watermark that revokes them.
 
                 **The ceiling, NOT the configured lifetime** (#828). Sizing
                 against the current configuration covers every mint path, but
@@ -2468,19 +2530,24 @@ class ITokenRevocationStore(ABC):
                 an implementer sizing storage from the old rule would
                 under-provision by that much. ``AuthService._watermark_ttl_seconds``
                 is the one caller and computes it.
+            sweep: Whether a store with an expiry sweep runs it on this write.
+                ``revoke_user_tokens`` sweeps on its first write only.
         """
         ...
 
     @abstractmethod
-    async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
-        """Check a token's ``iat`` against the user's revocation watermark.
+    async def is_user_revoked(self, user_id: str, basis: "RevocationBasis") -> bool:
+        """Check a token's basis against the user's revocation watermark.
 
         Args:
             user_id: User ID from the token's ``sub`` claim
-            issued_at: Token's ``iat`` claim as a Unix timestamp (seconds)
+            basis: ``fm_basis`` (precise) or ``iat`` (whole seconds), as
+                ``revocation_reason`` resolved it
 
         Returns:
-            True if the user has a watermark at or after ``issued_at``
+            True if the watermark covers the basis: ``basis <= watermark``
+            when precise, ``iat <= floor(watermark)`` otherwise. A stored
+            value that is not a finite number raises ``CorruptRevocationEntry``.
         """
         ...
 
@@ -2489,7 +2556,7 @@ class ITokenRevocationStore(ABC):
         self,
         jti: Optional[str],
         user_id: Optional[str],
-        issued_at: Optional[int],
+        basis: Optional["RevocationBasis"],
     ) -> Tuple[bool, bool]:
         """Both arms' raw answers for one token: ``(token_revoked, user_revoked)``.
 
@@ -2516,63 +2583,6 @@ class ITokenRevocationStore(ABC):
         * a hand-written override — for a store whose reads each cost something.
           ``SqlTokenRevocationStore`` answers in one session and one query,
           because two cost 17.7ms per request against 9.3ms for one (#828).
-        """
-        ...
-
-    @abstractmethod
-    async def clear_user_revocation_if_before(
-        self, user_id: str, instant: float
-    ) -> bool:
-        """Drop the user's watermark, but only if it predates ``instant``.
-
-        For the one event that legitimately supersedes a watermark: the user
-        authenticating afresh. The watermark says "everything issued before
-        instant T is stale", and an authentication whose state reads all began
-        after T is not — so a login must not be governed by it.
-
-        Needed because ``iat`` has whole-second granularity and
-        ``is_user_revoked`` compares ``<=`` (see ``revocation_reason``: of the
-        two rounding errors, honouring a token minted in the same second as a
-        revocation is the more dangerous one). Together those mean a sign-in
-        landing in the same second as a sign-out mints an access *and* a
-        refresh token that are rejected on sight — the login appears to succeed
-        and every request 401s, with no way forward because the refresh token
-        is dead too. Ordinary logout is account-scoped, so that sequence is
-        routine rather than an admin-path curiosity.
-
-        **``instant`` must be the caller's ``state_read_at``**, not ``now``,
-        and the comparison is the whole point. A watermark that predates the
-        first state read was written before this authentication began, and
-        clearing it is what the paragraph above describes. A watermark that
-        does NOT predate it was written *during* the request — the #831
-        straddle: an admin persisting a role or password change and revoking
-        while this login was reading the pre-change user row. That mint is
-        supposed to die, so this leaves it alone. Second granularity cannot
-        tell those two apart, which is why the stored watermark keeps its
-        fraction and this takes a float.
-
-        Callers must have established identity first, and must not call it for
-        an account that is deactivated or deleted. It grants nothing directly —
-        the tokens minted next carry an ``iat`` the watermark would not have
-        covered anyway — so what it decides is whether that user's OTHER
-        outstanding tokens come back.
-
-        Known residual: a watermark from an admin revocation that the user's
-        own later sign-out has already overwritten is indistinguishable from
-        the sign-out's own, so the sequence revoke → user signs out → user
-        signs in revives tokens minted before the admin revocation, for the
-        remainder of their TTL. Deactivation and deletion are unaffected (both
-        block the sign-in); what can revive is stale roles or scopes.
-
-        No-op when no watermark is set, or when it is malformed. Idempotent.
-
-        Args:
-            user_id: User whose watermark is being cleared
-            instant: Unix timestamp, with fraction, that the watermark must
-                strictly predate — the caller's pre-read capture
-
-        Returns:
-            True if a watermark was found and cleared.
         """
         ...
 
@@ -2620,10 +2630,10 @@ class SequentialRevocationState:
         self,
         jti: Optional[str],
         user_id: Optional[str],
-        issued_at: Optional[int],
+        basis: Optional[RevocationBasis],
     ) -> Tuple[bool, bool]:
         if jti and await self.is_revoked(jti):
             return True, False
-        if user_id and issued_at is not None:
-            return False, await self.is_user_revoked(user_id, issued_at)
+        if user_id and basis is not None:
+            return False, await self.is_user_revoked(user_id, basis)
         return False, False

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -1109,8 +1110,9 @@ class TestReconcileVectors:
 async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
     fk_on_ingest_service,
 ):
-    """Repair re-derives an existing row's vectors via the NON-prechunked index
-    path (chunk + BGE-M3) and never touches the SQL row."""
+    """Repair re-derives an existing row's vectors (chunk + BGE-M3, the encode
+    on the KB slot's ticket), writes them through the indexer as the row's
+    own chunks and vectors, and never touches the SQL row."""
     from sqlalchemy import text
 
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -1132,10 +1134,13 @@ async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
     )
     svc._index_document_in_vector_store.reset_mock()
     svc._index_document_in_vector_store.return_value = 4
+    svc._vector_store = MagicMock()
+    embed = AsyncMock(side_effect=lambda texts, **_: [[0.5] * 1024 for _ in texts])
 
-    chunks = await svc.reindex_missing_vectors("kb_repairme")
+    with patch("faultmaven.infrastructure.embedding_guard.embed_texts_or_raise", embed):
+        chunks = await svc.reindex_missing_vectors(["kb_repairme"])
 
-    assert chunks == 4
+    assert chunks == {"kb_repairme": 4}
     svc._index_document_in_vector_store.assert_awaited_once()
     (doc,), kwargs = svc._index_document_in_vector_store.await_args
     # Doc rebuilt from the persisted row, mirroring ingest_runbook's construction.
@@ -1144,8 +1149,10 @@ async def test_reindex_missing_vectors_re_embeds_from_persisted_row(
     assert "Some content to chunk." in doc.content
     assert doc.scope == "global"
     assert doc.tags == ["postgres"]
-    # prechunked=None → the re-embed path, NOT pack passthrough.
-    assert kwargs["prechunked"] is None
+    # The row's own chunks, paired with the vectors the one encode returned.
+    texts = embed.await_args.args[0]
+    assert kwargs["prechunked"] == [(t, [0.5] * 1024) for t in texts]
+    assert embed.await_args.kwargs["ticket"].principal == "system:kb-ingest"
 
     # The SQL row is the source of truth and must be untouched by repair.
     async with factory() as session:
@@ -1162,46 +1169,188 @@ async def test_reindex_missing_vectors_absent_row_is_noop(fk_on_ingest_service):
     """No row for the id → fail-safe 0, and the index path is never called."""
     svc, _ = fk_on_ingest_service
     svc._index_document_in_vector_store.reset_mock()
+    svc._vector_store = MagicMock()
 
-    chunks = await svc.reindex_missing_vectors("kb_doesnotexist")
+    chunks = await svc.reindex_missing_vectors(["kb_doesnotexist"])
 
-    assert chunks == 0
+    assert chunks == {"kb_doesnotexist": 0}
     svc._index_document_in_vector_store.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_a_boots_repair_rows_encode_once_in_the_worker_within_the_budget(
+    fk_on_ingest_service, monkeypatch
+):
+    """#2851: the rows the chunk budget takes encode in ONE KB worker, on one
+    forced ticket of the system principal, so a boot pays one model load; the
+    row that reaches the budget is taken and the rest are deferred (absent).
+    The ticket is never refused, even with a window set, a count past any
+    window and other indexing queued."""
+    from faultmaven.config.settings import get_settings
+    from faultmaven.infrastructure import embedding_guard, index_slot
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, _ = fk_on_ingest_service
+    ids = [f"kb_{c * 12}" for c in "abc"]
+    for item_id in ids:
+        await svc.ingest_runbook(
+            document_id=item_id,
+            title=item_id,
+            content=f"# {item_id}\n\nBody.",
+            enterprise_id="ent-1",
+            scope="global",
+            verified_by=None,
+            verification_level=VerificationLevel.COMMUNITY,
+            record=record_nothing,
+        )
+    svc._index_document_in_vector_store.reset_mock()
+    svc._vector_store = MagicMock()
+    monkeypatch.setattr(svc, "_chunks", lambda content: [content] * 5)
+    encodes = []
+
+    def _encode(ticket, texts, _guard):
+        encodes.append((ticket, list(texts)))
+        return [[0.1] * 1024 for _ in texts]
+
+    monkeypatch.setattr(index_slot, "encode_in_worker", _encode)
+    monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 600)
+    monkeypatch.setattr(
+        embedding_guard, "count_index_tokens", AsyncMock(return_value=10_000_000)
+    )
+    queued = index_slot.index_admission.admit_forced(["other"], 10**6, principal="u")
+    try:
+        counts = await svc.reindex_missing_vectors(ids, max_chunks=6)
+    finally:
+        queued.close()
+
+    assert counts == {ids[0]: 3, ids[1]: 3}
+    [(ticket, texts)] = encodes
+    assert len(texts) == 10 and ticket.principal == "system:kb-ingest"
+    assert svc._index_document_in_vector_store.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_encode_fails_leaves_the_others_repaired(
+    fk_on_ingest_service, monkeypatch
+):
+    """#2851 review: the combined encode fails on one row, so each row then
+    encodes alone and only that row is left for a later boot. On
+    ``7c5318825`` every row the budget took was left unrepaired."""
+    from faultmaven.infrastructure import index_slot
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, _ = fk_on_ingest_service
+    ids = [f"kb_{c * 12}" for c in "def"]
+    for item_id in ids:
+        bad = "BAD" if item_id == ids[1] else ""
+        await svc.ingest_runbook(
+            document_id=item_id,
+            title=item_id,
+            content=f"# {item_id}\n\nBody {bad}.",
+            enterprise_id="ent-1",
+            scope="global",
+            verified_by=None,
+            verification_level=VerificationLevel.COMMUNITY,
+            record=record_nothing,
+        )
+    svc._vector_store = MagicMock()
+
+    def _encode(_ticket, texts, _guard):
+        if any("BAD" in t for t in texts):
+            return None
+        return [[0.1] * 1024 for _ in texts]
+
+    monkeypatch.setattr(index_slot, "encode_in_worker", _encode)
+
+    counts = await svc.reindex_missing_vectors(ids)
+
+    assert counts == {ids[0]: 3, ids[1]: 0, ids[2]: 3}
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_never_loads_costs_three_encodes_and_defers_the_rest(
+    fk_on_ingest_service, monkeypatch
+):
+    """#2851 delta B1: the combined encode fails, then two rows in a row fail
+    alone: that is systemic, so the rows not yet tried are deferred (absent),
+    and the boot pays three encodes, not one a row. On ``fbb129525`` every row
+    encoded alone (six encodes for five rows) and was counted failed."""
+    from faultmaven.infrastructure import index_slot
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        VerificationLevel,
+    )
+
+    svc, _ = fk_on_ingest_service
+    ids = [f"kb_{c * 12}" for c in "ghijk"]
+    for item_id in ids:
+        await svc.ingest_runbook(
+            document_id=item_id,
+            title=item_id,
+            content=f"# {item_id}\n\nBody.",
+            enterprise_id="ent-1",
+            scope="global",
+            verified_by=None,
+            verification_level=VerificationLevel.COMMUNITY,
+            record=record_nothing,
+        )
+    svc._vector_store = MagicMock()
+    encodes = []
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: encodes.append(1)
+    )
+
+    counts = await svc.reindex_missing_vectors(ids)
+
+    assert len(encodes) == 3
+    assert counts == {ids[0]: 0, ids[1]: 0}
+
+
 class TestRepairOrphanedRows:
-    """The bounded startup repair over the orphaned-row set reconcile produces."""
+    """The bounded startup repair over the orphaned-row set reconcile produces.
+    The service repairs the rows in one call (one encode, one worker, #2851):
+    a row it took has its chunk count, a row past the chunk budget is
+    absent."""
 
     @staticmethod
-    def _service(reindex):
+    def _service(counts=None, **mock):
+        async def _reindex(item_ids, *, max_chunks):
+            return {i: counts(i) for i in item_ids if counts(i) is not None}
+
         svc = MagicMock()
-        svc.reindex_missing_vectors = reindex
+        svc.reindex_missing_vectors = (
+            AsyncMock(**mock) if mock else AsyncMock(side_effect=_reindex)
+        )
         return svc
 
     @pytest.mark.asyncio
     async def test_empty_is_noop(self):
-        svc = self._service(AsyncMock(return_value=3))
+        svc = self._service(lambda _i: 3)
         repaired, still = await kb_init._repair_unserved_rows([], svc)
         assert repaired == []
         assert still == []
         svc.reindex_missing_vectors.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_re_embeds_all_orphaned_rows(self):
-        svc = self._service(AsyncMock(return_value=3))
-        repaired, still = await kb_init._repair_unserved_rows(
-            ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
-        )
-        assert repaired == ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"]
+    async def test_re_embeds_all_orphaned_rows_in_one_call(self):
+        svc = self._service(lambda _i: 3)
+        rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"]
+        repaired, still = await kb_init._repair_unserved_rows(rows, svc)
+        assert repaired == rows
         assert still == []
-        assert svc.reindex_missing_vectors.await_count == 2
-        svc.reindex_missing_vectors.assert_awaited_with("kb_bbbbbbbbbbbb")
+        svc.reindex_missing_vectors.assert_awaited_once_with(
+            rows,
+            max_chunks=kb_init.repair_chunk_budget(kb_init.KB_REPAIR_MAX_CHUNKS),
+        )
 
     @pytest.mark.asyncio
     async def test_zero_chunks_leaves_row_orphaned(self):
         """Embedding model unavailable → 0 chunks → fail-safe: NOT repaired,
         left for a later boot rather than reported as healed."""
-        svc = self._service(AsyncMock(return_value=0))
+        svc = self._service(lambda _i: 0)
         repaired, still = await kb_init._repair_unserved_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
@@ -1209,17 +1358,14 @@ class TestRepairOrphanedRows:
     @pytest.mark.asyncio
     async def test_exception_leaves_row_orphaned(self):
         """A repair error (e.g. ChromaDB down) never aborts the boot path."""
-        svc = self._service(AsyncMock(side_effect=RuntimeError("chroma down")))
+        svc = self._service(side_effect=RuntimeError("chroma down"))
         repaired, still = await kb_init._repair_unserved_rows(["kb_aaaaaaaaaaaa"], svc)
         assert repaired == []
         assert still == ["kb_aaaaaaaaaaaa"]
 
     @pytest.mark.asyncio
     async def test_mixed_success_and_failure(self):
-        async def _reindex(item_id):
-            return 3 if item_id == "kb_aaaaaaaaaaaa" else 0
-
-        svc = self._service(AsyncMock(side_effect=_reindex))
+        svc = self._service(lambda i: 3 if i == "kb_aaaaaaaaaaaa" else 0)
         repaired, still = await kb_init._repair_unserved_rows(
             ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb"], svc
         )
@@ -1230,7 +1376,7 @@ class TestRepairOrphanedRows:
     async def test_over_cap_repairs_nothing(self):
         """A mass orphan (bulk vector loss) is NOT the crash recovery this pass
         handles — repair nothing (fast boot preserved), leave all warned."""
-        svc = self._service(AsyncMock(return_value=1))
+        svc = self._service(lambda _i: 1)
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS + 1)]
         repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == []
@@ -1239,33 +1385,33 @@ class TestRepairOrphanedRows:
 
     @pytest.mark.asyncio
     async def test_at_row_cap_still_repairs_within_chunk_budget(self):
-        """Exactly at the row cap is targeted recovery, not a bulk anomaly — all
-        repair when the total chunk work stays under the per-boot budget (1 chunk
-        each here so KB_REPAIR_MAX_ROWS rows < KB_REPAIR_MAX_CHUNKS)."""
+        """Exactly at the row cap is targeted recovery, not a bulk anomaly."""
         assert kb_init.KB_REPAIR_MAX_ROWS <= kb_init.KB_REPAIR_MAX_CHUNKS
-        svc = self._service(AsyncMock(return_value=1))
+        svc = self._service(lambda _i: 1)
         rows = [f"kb_{i:012x}" for i in range(kb_init.KB_REPAIR_MAX_ROWS)]
         repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == rows
         assert still == []
 
     @pytest.mark.asyncio
-    async def test_chunk_budget_defers_remaining_rows(self):
-        """The per-boot chunk budget bounds embedding WORK (not just row count):
-        once spent, remaining rows are deferred to the next boot, not embedded on
-        the startup path. Here the first row alone spends the whole budget."""
-        svc = self._service(AsyncMock(return_value=kb_init.KB_REPAIR_MAX_CHUNKS))
+    async def test_rows_past_the_chunk_budget_are_deferred(self, caplog):
+        """The rows the service did not take (past the budget) stay unserved,
+        logged as deferred to the next boot, not embedded on the startup
+        path."""
+        svc = self._service(lambda i: 60 if i == "kb_aaaaaaaaaaaa" else None)
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_unserved_rows(rows, svc)
+        with caplog.at_level(logging.WARNING, logger=kb_init.__name__):
+            repaired, still = await kb_init._repair_unserved_rows(rows, svc)
         assert repaired == ["kb_aaaaaaaaaaaa"]
         assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        # The deferred rows are never embedded this boot.
-        assert svc.reindex_missing_vectors.await_count == 1
+        assert any(
+            "deferring 2 unserved row(s)" in r.getMessage() for r in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_honors_explicit_max_rows(self):
         """The row cap is a parameter (deployment-configurable), not hardcoded."""
-        svc = self._service(AsyncMock(return_value=1))
+        svc = self._service(lambda _i: 1)
         rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
         repaired, still = await kb_init._repair_unserved_rows(rows, svc, max_rows=2)
         assert repaired == []  # 3 > cap 2 → bulk-loss, repair nothing
@@ -1273,16 +1419,25 @@ class TestRepairOrphanedRows:
         svc.reindex_missing_vectors.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_honors_explicit_max_chunks(self):
+    async def test_passes_the_explicit_chunk_budget(self):
         """The chunk budget is a parameter (deployment-configurable)."""
-        svc = self._service(AsyncMock(return_value=5))
-        rows = ["kb_aaaaaaaaaaaa", "kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
-        repaired, still = await kb_init._repair_unserved_rows(
-            rows, svc, max_rows=10, max_chunks=5
+        svc = self._service(lambda _i: 5)
+        rows = ["kb_aaaaaaaaaaaa"]
+        await kb_init._repair_unserved_rows(rows, svc, max_rows=10, max_chunks=50)
+        svc.reindex_missing_vectors.assert_awaited_once_with(
+            rows, max_chunks=kb_init.repair_chunk_budget(50)
         )
-        # First row embeds 5 chunks (== budget) → the rest defer.
-        assert repaired == ["kb_aaaaaaaaaaaa"]
-        assert still == ["kb_bbbbbbbbbbbb", "kb_cccccccccccc"]
+
+    @pytest.mark.parametrize("budget,left", [(60, 55), (5, 1)])
+    def test_the_budget_counts_the_worker_load_in_chunks(self, budget, left):
+        """#2851: the load (30 s) in chunks of the measured mean (488 tokens,
+        6.1 s at 2 cores) is 5; at least one chunk is left, so a boot repairs.
+        On ``7c5318825`` the whole budget went to chunks."""
+        with patch(
+            "faultmaven.infrastructure.model_cache._cgroup_cpu_quota",
+            return_value=2.0,
+        ):
+            assert kb_init.repair_chunk_budget(budget) == left
 
     def test_resolve_repair_bounds_reads_settings(self):
         """_resolve_repair_bounds pulls the deployment-configured bounds."""
@@ -1333,9 +1488,9 @@ class TestCrossStoreRepairSeam:
     async def test_orphaned_row_is_detected_then_repaired(self):
         reindexed: list[str] = []
 
-        async def _reindex(item_id):
-            reindexed.append(item_id)
-            return 3
+        async def _reindex(item_ids, *, max_chunks):
+            reindexed.extend(item_ids)
+            return {item_id: 3 for item_id in item_ids}
 
         async def _list():
             # Only 'a' has vectors; 'b's Chroma write crashed mid-ingest.

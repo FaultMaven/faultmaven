@@ -1118,9 +1118,10 @@ written*, as amended by #2811, ruled 2026-11-15):
 - **Computed on demand for narration** (`narration_outcome`): folded in memory
   over the stored record, stored nowhere, minting nothing. The turn's
   narration folds it once, at its entry, when the cycle's write failed and a
-  logged code reads the record; the `<fix_verification>` block folds it
-  lazily, at most once per prompt assembly (`NarrationFold`), and only where
-  the block is shown.
+  logged code reads the record; the prompt folds it lazily, at most once per
+  prompt assembly (`NarrationFold`), only where the `<fix_verification>`
+  block is shown or the `<evidence_needs>` checklist is asked (an
+  INVESTIGATING case in MITIGATION or TREATMENT).
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
@@ -1132,26 +1133,41 @@ written*, as amended by #2811, ruled 2026-11-15):
 - **The narrators read by id.** The record holds codes and ids, never display
   text (`cause.recheck`'s `RecheckReason`, with each reason's parameters as
   typed fields, rendered by `narration.rechecks`). A narrator fetches the
-  text an id names through one accessor with no predicate, `content(id)`, with
+  text an id names through one accessor with no predicate but its kind,
+  `content(id)` (an action or a need; with `row=True`, an evidence row), with
   the selected ids the record holds for it (stage S2b). The first is the
   `<fix_verification>` block (S2b-1a and S2b-1b-i, `narration.fix_verification`),
   rendered from the record, the identity fields, `content(id)`
   (`content_by_id`: a proposed action's description, a need's current
-  request text), the window verdicts ruling Q1 (a) keeps fresh until S3
+  request text; never a row), the window verdicts ruling Q1 (a) keeps fresh until S3
   (`FixVerificationFresh`) and the needs pool (`narration.needs.NeedsView`).
   A need's state is the pool's own, never an outcome fact (ruled 2026-11-17),
-  so the narrators read it through that one typed, text-free view, and only
-  where the need lines print; the held need, why it holds
+  so the narrators read it through that one typed, text-free view, read at
+  most once per prompt assembly; the held need, why it holds
   (`resolution.pending_check_reason`: unanswered, or FULFILLED only on rows
   from before the ask) and a standing resolve decline are the record's. The
   held need is `pending_symptom_check`'s, written whatever readiness
   answered, so a false-alarm finding (which readiness answers first) keeps
-  it. The record is folded at most once per prompt assembly
-  (`NarrationFold`), and only where the block is shown. A fold, fresh read,
-  needs read, unreadable need text or render that raises replaces the block
-  with one declared line; each distinct failure is logged once per assembly,
-  and a failure counted once per assembly, on
-  `case_outcome_write_failures_total{at="narration"}`.
+  it. The second is the `<evidence_needs>` block (S2b-1b-ii,
+  `narration.evidence_needs`): its need sections render from the needs view
+  and `content(id)` alone; its re-verification checklist from the record's
+  `bindable` rows, `content(id, row=True)` (a row's text and established
+  turn), the
+  record's dated attempts for its heading and, where no row verified the
+  problem, every symptom row read fresh (`EvidenceNeedsFresh`). The record and
+  the needs view are each read at most once per prompt assembly and shared by
+  both blocks (`NarrationFold`, `NarrationFold.needs`). A fold, fresh read,
+  unreadable need text or render that raises replaces the
+  `<fix_verification>` block with one declared line; a fold, fresh read or
+  unreadable row text replaces the checklist with its own
+  (`CHECKLIST_OMITTED`), even where no row would have shown, and leaves the
+  need sections whole. Each block that renders an omission logs each
+  distinct failure once per assembly, naming itself (a failed fold, read by
+  both, is logged by both), and a failure is counted once per assembly, on
+  `case_outcome_write_failures_total{at="narration"}`. A needs-view failure
+  is no omission: it propagates out of the prompt build through
+  `<evidence_needs>`, which reads the pool first and unguarded, as the
+  block's pool read did before.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is

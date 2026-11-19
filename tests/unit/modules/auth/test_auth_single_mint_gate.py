@@ -730,8 +730,9 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
     revocation watermark, so deleting a compromised account left it usable
     longer than merely disabling it.
 
-    Order is asserted, not just the call: revoking after a successful delete
-    would be unrecoverable if the revoke then failed.
+    Order is asserted, not just the call: revoking only after a successful
+    delete would be unrecoverable if the revoke then failed. The second revoke
+    is the post-delete stamp (#2050).
     """
     from types import SimpleNamespace
     from unittest.mock import MagicMock
@@ -773,7 +774,7 @@ async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
         )
 
     assert result["user_id"] == "user_123"
-    assert order == ["revoke", "delete"], order
+    assert order == ["revoke", "delete", "revoke"], order
 
 
 @pytest.mark.unit

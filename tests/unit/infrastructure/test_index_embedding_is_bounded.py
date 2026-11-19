@@ -14,15 +14,12 @@ twice the measured estimate, ``tokens x 25 core-ms / cores``. It is still
 proportional and uncapped: a ceiling tighter than what a large document costs
 would make that document permanently un-editable. There is no opt-out.
 
-The token count uses a tokenizer of its own, never the resident model's, whose
-truncation state a concurrent encode flips (a count doubled in the review's
-reproduction), one count at a time, and pins the thread knobs before its import
-brings torch. The cores, counts and model are patched; no test loads the
-tokenizer.
+The token count runs in a worker of its own (#2851,
+``test_kb_encode_runs_in_a_killable_worker_2851.py``). The cores, counts and
+encodes are patched; no test loads the tokenizer or the model.
 """
 
 import asyncio
-import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -32,11 +29,9 @@ import pytest
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure import embedding_guard, index_slot
-from faultmaven.infrastructure import model_cache as model_cache_module
 from faultmaven.infrastructure.embedding_guard import (
     EMBED_TIMEOUT_SECONDS,
     batch_embed_timeout,
-    count_index_tokens,
     embed_texts_or_raise,
 )
 from faultmaven.infrastructure.index_slot import (
@@ -44,7 +39,7 @@ from faultmaven.infrastructure.index_slot import (
     index_cores,
     index_estimate_seconds,
 )
-from faultmaven.infrastructure.model_cache import BGE_M3_MAX_SEQ_LENGTH, model_cache
+from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -55,6 +50,7 @@ pytestmark = [pytest.mark.unit]
 _QUOTA = "faultmaven.infrastructure.model_cache._cgroup_cpu_quota"
 #: The round-49 probe's runbook (#2055): 61 chunks, 29,746 tokens, 373 s.
 RUNBOOK_TOKENS, RUNBOOK_CHUNKS, RUNBOOK_SECONDS = 29_746, 61, 373.0
+USER = "user-1"
 
 
 @pytest.fixture
@@ -86,24 +82,15 @@ async def hang():
         release.wait(30)
         return None
 
-    yield SimpleNamespace(encode=_encode, entered=entered)
+    yield SimpleNamespace(
+        encode=_encode,
+        in_worker=lambda _ticket, texts, _guard: _encode(texts),
+        entered=entered,
+    )
     release.set()
     for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
         # Bounded: a slot left blocked fails the teardown, not the run.
         await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 30)
-
-
-@pytest.fixture
-def own_tokenizer(monkeypatch):
-    """``AutoTokenizer.from_pretrained`` as a stand-in, and no cached one."""
-    loaded = MagicMock(return_value={"input_ids": [[0] * 7, [0] * 5]})
-    loader = MagicMock(return_value=loaded)
-    transformers = SimpleNamespace(
-        AutoTokenizer=SimpleNamespace(from_pretrained=loader)
-    )
-    monkeypatch.setitem(sys.modules, "transformers", transformers)
-    monkeypatch.setattr(model_cache, "_tokenizer", None)
-    return SimpleNamespace(tokenizer=loaded, loader=loader)
 
 
 # ---------------------------------------------------------------------------
@@ -146,79 +133,6 @@ def test_the_cores_are_the_quota_else_the_node_capped_at_four(quota, cpus, cores
 # ---------------------------------------------------------------------------
 # The count
 # ---------------------------------------------------------------------------
-
-
-async def test_the_count_uses_a_tokenizer_of_its_own_never_the_resident_models(
-    own_tokenizer, monkeypatch
-):
-    resident = MagicMock()
-    resident.tokenizer.side_effect = AssertionError("the model's tokenizer")
-    monkeypatch.setattr(model_cache, "peek_bge_m3_model", lambda: resident)
-
-    assert await count_index_tokens(["a b c", "d e"]) == 12
-    assert await count_index_tokens(["a b c", "d e"]) == 12
-
-    resident.tokenizer.assert_not_called()
-    own_tokenizer.loader.assert_called_once_with("BAAI/bge-m3", local_files_only=True)
-    own_tokenizer.tokenizer.assert_called_with(
-        ["a b c", "d e"],
-        add_special_tokens=True,
-        truncation=True,
-        max_length=BGE_M3_MAX_SEQ_LENGTH,
-    )
-
-
-async def test_two_counts_never_enter_the_tokenizer_at_once(own_tokenizer):
-    entered, release, second = threading.Event(), threading.Event(), threading.Event()
-    calls = []
-
-    def _tokenize(texts, **_):
-        calls.append(texts)
-        (second if len(calls) > 1 else entered).set()
-        if len(calls) == 1:
-            release.wait(30)
-        return {"input_ids": [[0, 0] for _ in texts]}
-
-    own_tokenizer.tokenizer.side_effect = _tokenize
-    first = asyncio.create_task(count_index_tokens(["a"]))
-    await asyncio.to_thread(entered.wait, 30)
-    later = asyncio.create_task(count_index_tokens(["b"]))
-
-    # Without the lock the second count enters well within this.
-    entered_beside = await asyncio.to_thread(second.wait, 0.3)
-    release.set()
-
-    assert (await first, await later) == (2, 2)
-    assert not entered_beside
-
-
-def test_the_thread_knobs_are_pinned_before_transformers_is_imported(monkeypatch):
-    order = []
-
-    class _Transformers:
-        @property
-        def AutoTokenizer(self):  # noqa: N802 - the import's name
-            order.append("import")
-            return SimpleNamespace(from_pretrained=lambda *_a, **_k: "tokenizer")
-
-    monkeypatch.setitem(sys.modules, "transformers", _Transformers())
-    monkeypatch.setattr(model_cache, "_tokenizer", None)
-    monkeypatch.setattr(
-        model_cache_module, "pin_thread_env", lambda: order.append("pin")
-    )
-
-    assert model_cache.get_bge_m3_tokenizer() == "tokenizer"
-    assert order == ["pin", "import"]
-
-
-@pytest.mark.parametrize(
-    "loaded",
-    [None, MagicMock(side_effect=RuntimeError("broken")), MagicMock()],
-    ids=["no-tokenizer", "tokenizer-raises", "not-a-count"],
-)
-async def test_no_usable_tokenizer_counts_nothing(loaded):
-    with patch.object(model_cache, "get_bge_m3_tokenizer", return_value=loaded):
-        assert await count_index_tokens(["a", "b"]) is None
 
 
 async def test_without_a_tokenizer_the_guard_bounds_by_bytes(
@@ -353,10 +267,10 @@ async def test_the_indexing_path_is_bounded_by_default(
 async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod(
     tokens_counted_as, hang, monkeypatch
 ):
-    """#953: ``kb_init``'s per-boot chunk budget is checked BETWEEN rows, so
-    only a bound on the call stops a non-returning load hanging the lifespan.
-    The repair submits its encode to the KB indexing slot, and returns 0 when
-    the bound fires, whether the encode had started or not."""
+    """#953: ``kb_init``'s per-boot chunk budget bounds the work a boot
+    starts, so only a bound on the call stops a non-returning load hanging the
+    lifespan. The repair submits its encode to the KB indexing slot, and
+    returns 0 for the row when the bound fires."""
     service = _service()
     row = MagicMock(
         item_id="doc-1",
@@ -379,7 +293,7 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod(
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
-    monkeypatch.setattr(model_cache, "embed_texts_sync", hang.encode)
+    monkeypatch.setattr(index_slot, "encode_in_worker", hang.in_worker)
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
     submitted = []
     real_run = index_slot.IndexTicket.run
@@ -389,8 +303,8 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod(
         return real_run(ticket, texts, **kwargs)
 
     with tokens_counted_as(0), patch.object(index_slot.IndexTicket, "run", _run):
-        chunks = await service.reindex_missing_vectors("doc-1")
+        chunks = await service.reindex_missing_vectors(["doc-1"])
 
     assert submitted == [index_slot.index_admission], "the repair never submitted"
-    assert chunks == 0, "a timed-out repair must degrade, not claim success"
+    assert chunks == {"doc-1": 0}, "a timed-out repair must degrade, not claim success"
     assert service._vector_store.add_documents.await_count == 0

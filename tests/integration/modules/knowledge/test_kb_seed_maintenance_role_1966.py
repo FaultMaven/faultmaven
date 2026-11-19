@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import text
@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.kb_pack import KbPack
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure import embedding_guard, index_slot
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -182,6 +183,18 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             try:
                 with (
                     patch.object(kb_init, "_stamp_pack_hash", spy_stamp),
+                    # The repair's encode runs in its worker, and the guard's
+                    # token count in its own (#2851): doubles here.
+                    patch.object(
+                        index_slot,
+                        "encode_in_worker",
+                        lambda _t, texts, _g: [[0.0]] * len(texts),
+                    ),
+                    patch.object(
+                        embedding_guard,
+                        "count_index_tokens",
+                        AsyncMock(return_value=0),
+                    ),
                     caplog.at_level(logging.WARNING),
                 ):
                     result = await kb_init.bootstrap_kb(

@@ -172,15 +172,17 @@ if network_guard.GUARD is not None and os.environ.get(_PRESIDIO_PID_ENV) != str(
 # caller's choice and is left alone; one an ancestor test process set (the
 # xdist controller, a pytest that runs a pytest) names that process's root and
 # is replaced, which is why the root is recorded together with the pid that
-# made it.
+# made it. Each spelling is judged, in any letter case as pydantic-settings
+# binds them: one holding the ancestor's root is dropped wherever it sits, and
+# the variable is set only when no spelling is left (#1835).
 #
 # The variables alone do not survive a test that empties or pins the
 # environment (``patch.dict(os.environ, ..., clear=True)``, ``_served_under``,
 # ``delenv("DATABASE_URL")`` + ``reset_settings()``): the next settings object
 # falls back to the shipped default, i.e. the shared ``./data``. So
 # ``_default_to_the_test_data_root`` below also makes each per-process path the
-# DEFAULT of its settings field (and of the module attribute, for the two paths
-# that have no field). A test that exercises the shipped cwd-relative layout
+# DEFAULT of its settings field (and of the module attribute, for the one path
+# that has no field). A test that exercises the shipped cwd-relative layout
 # requests ``shipped_data_defaults``, which runs it in ``tmp_path``.
 #
 # The root is read back from the environment, not a module global, because this
@@ -212,13 +214,16 @@ if os.environ.get(_TEST_DATA_ROOT_PID_ENV) != str(os.getpid()):
     _root = tempfile.mkdtemp(
         prefix=f"faultmaven-{os.environ.get('PYTEST_XDIST_WORKER') or 'main'}-"
     )
+    # Loads no harness stand-in target (``torch``, ``ctypes``, …): measured, #1835.
+    from faultmaven.config.settings import env_var_spellings, set_env_var
+
     atexit.register(shutil.rmtree, _root, ignore_errors=True)
     for _name, _value in data_paths_under(_root).items():
-        _current = os.environ.get(_name)
-        if _current is None or (
-            _inherited_root and (_inherited_root + os.sep) in _current
-        ):
-            os.environ[_name] = _value
+        for _key in env_var_spellings(os.environ, _name):
+            if _inherited_root and (_inherited_root + os.sep) in os.environ[_key]:
+                del os.environ[_key]
+        if not env_var_spellings(os.environ, _name):
+            set_env_var(os.environ, _name, _value)
     os.environ[TEST_DATA_ROOT_ENV] = _root
     os.environ[_TEST_DATA_ROOT_PID_ENV] = str(os.getpid())
 
@@ -827,6 +832,49 @@ def _own_kb_index_host_lock(_kb_index_lock_dir, monkeypatch):
 
     path = _kb_index_lock_dir / f"{next(_KB_INDEX_LOCK_IDS)}.lock"
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(path))
+
+
+#: The model workers no test spawns for real (#2851): ``REAL_MODEL_WORKERS``.
+REAL_MODEL_WORKERS = frozenset(
+    {
+        "faultmaven.infrastructure.encode_worker",
+        "faultmaven.infrastructure.token_count_worker",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_model_worker(monkeypatch):
+    """No test spawns the real encode or token-count worker (#2851).
+
+    Either would load BGE-M3, or its tokenizer, from a snapshot present on one
+    machine and absent on another. A spawn of either is refused as a worker
+    that could not start, so a token count is unavailable as it is without a
+    snapshot; a spawn of the encode worker also fails the test, even when the
+    code under test swallowed the refusal: a test of a KB encode serves a stub
+    in its place (``index_slot._ENCODE_WORKER``) or replaces
+    ``index_slot.encode_in_worker``. ``test_model_workers_on_the_real_model``
+    lifts this, behind the snapshot, by restoring ``REAL_RUN``.
+    """
+    from faultmaven.infrastructure import worker_process
+
+    real_run = worker_process.run
+    spawned: list = []
+
+    async def guarded(module, *args, **kwargs):
+        if module in REAL_MODEL_WORKERS:
+            spawned.append(module)
+            raise worker_process.WorkerNotStarted(f"{module} is not spawned in tests")
+        return await real_run(module, *args, **kwargs)
+
+    guarded.REAL_RUN = real_run
+    monkeypatch.setattr(worker_process, "run", guarded)
+    yield
+    encodes = [m for m in spawned if m.endswith(".encode_worker")]
+    assert not encodes, (
+        "an un-stubbed path spawned the real encode worker: serve a stub in "
+        "its place, or replace index_slot.encode_in_worker"
+    )
 
 
 # Session-level fixture to clear .env variables that may have been loaded before tests started
@@ -1495,7 +1543,7 @@ from faultmaven.infrastructure.security.redaction import DataSanitizer
 
 #: Every ``./data`` default the test session moves: (module, owner, attribute,
 #: variable). ``owner`` is a settings class whose FIELD default moves, or None
-#: for a module attribute read at call time (the two paths with no field).
+#: for a module attribute read at call time (the one path with no field).
 _DATA_DEFAULT_TARGETS = (
     ("faultmaven.config.settings", "DatabaseSettings", "database_url", "DATABASE_URL"),
     (
@@ -1522,7 +1570,12 @@ _DATA_DEFAULT_TARGETS = (
         "pseudonym_key_path",
         "REDACTION_PSEUDONYM_KEY_PATH",
     ),
-    ("faultmaven.config.settings", None, "DEFAULT_JWT_SECRET_FILE", "JWT_SECRET_FILE"),
+    (
+        "faultmaven.config.settings",
+        "SecuritySettings",
+        "jwt_secret_file",
+        "JWT_SECRET_FILE",
+    ),
     ("faultmaven.utils.runbook_id", None, "KNOWLEDGE_ROOT", None),
 )
 
@@ -1866,16 +1919,18 @@ def shipped_data_defaults(monkeypatch, tmp_path):
     on purpose). Changes into ``tmp_path`` first, so the shipped defaults land
     there and never in the checkout, which is what this session's data root
     exists to prevent (#1772); a test may still ``chdir`` elsewhere. Unsets the
-    variables too, so the defaults are what settings resolve, and restores this
-    process's paths afterwards.
+    variables too, in every letter case, so the defaults are what settings
+    resolve, and restores this process's paths afterwards.
     """
     from faultmaven.config.settings import reset_settings
+    from tests.utils import delenv_every_spelling
 
     monkeypatch.chdir(tmp_path)
     root = os.environ[TEST_DATA_ROOT_ENV]
-    for _module, _owner, _attribute, variable in _DATA_DEFAULT_TARGETS:
-        if variable is not None:
-            monkeypatch.delenv(variable, raising=False)
+    delenv_every_spelling(
+        monkeypatch,
+        *(target[3] for target in _DATA_DEFAULT_TARGETS if target[3] is not None),
+    )
     for target, shipped in SHIPPED_DATA_DEFAULTS.items():
         _set_data_default(*target, shipped)
     reset_settings()

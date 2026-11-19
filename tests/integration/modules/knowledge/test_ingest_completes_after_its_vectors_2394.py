@@ -37,6 +37,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
 )
 from faultmaven.bootstrap.kb_pack import PackChunk, PackRunbook
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -78,6 +79,16 @@ from tests.runbook_samples import valid_runbook
 from tests.utils import seed_enterprises, seed_users
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
+
+
+@pytest.fixture(autouse=True)
+def _kb_encode(monkeypatch):
+    """The KB encode's worker (#2851): the repair's one encode returns a
+    vector a text; the indexer that writes them is each test's double."""
+    monkeypatch.setattr(
+        index_slot, "encode_in_worker", lambda _t, texts, _g: [[0.0]] * len(texts)
+    )
+
 
 THIS_CHUNKS = ["this-0", "this-1", "this-2"]
 
@@ -341,7 +352,7 @@ async def test_an_insert_that_commits_after_its_cleanup_is_never_listed_or_repai
     assert await _rows(session_factory) == {**NOTHING, "knowledge_items": 1}
     assert await _visible(session_factory) == HIDDEN
     assert await _repair(service, session_factory) == ([], [])
-    assert await service.reindex_missing_vectors(DOC_ID) == 0
+    assert await service.reindex_missing_vectors([DOC_ID]) == {DOC_ID: 0}
     assert store.chunks == {}
     assert await _complete(session_factory) is False
 
@@ -431,7 +442,7 @@ async def test_an_incomplete_row_is_read_and_deleted_but_never_edited_or_reindex
         )
         is None
     )
-    assert await service.reindex_missing_vectors(DOC_ID) == 0
+    assert await service.reindex_missing_vectors([DOC_ID]) == {DOC_ID: 0}
     service._index_document_in_vector_store.assert_not_awaited()
     assert (await service.get_document(DOC_ID))["title"] == "Stray"
 

@@ -556,8 +556,8 @@ async def index_admission_refused_handler(
     **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE``: the document alone cannot fit;
     the detail is the refusal's own sentence, written for the person who sent
     it (its size and the limit). **503** ``KNOWLEDGE_INDEXING_BUSY`` +
-    ``Retry-After``: the indexing queued ahead, the model loading, or an encode
-    stuck past its time bound is the obstacle. The 503 is rebuilt by the same
+    ``Retry-After``: the indexing queued ahead, or an encode stuck past its
+    time bound, is the obstacle. The 503 is rebuilt by the same
     sentence builder (``index_slot.refusal``) for the refusal's reason, its
     wait read from the queue at response time, so nothing the exception
     carries reaches a 5xx (#1400).
@@ -577,11 +577,7 @@ async def index_admission_refused_handler(
     else:
         from faultmaven.api.dependencies import indexing_busy_refusal
 
-        busy = indexing_busy_refusal(
-            "loading"
-            if exc.reason == "loading"
-            else ("hung" if exc.reason == "hung" else "busy")
-        )
+        busy = indexing_busy_refusal("hung" if exc.reason == "hung" else "busy")
         answer = HTTPException(
             status_code=503,
             detail=busy.message,

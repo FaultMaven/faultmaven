@@ -75,6 +75,7 @@ def local_env(monkeypatch, tmp_path):
         "DATABASE",
         "JWT_SECRET_KEY",
         "JWT_SECRET_FILE",
+        "SECURITY",
         "AUTH_MODE",
         "OAUTH_ENABLED",
     )

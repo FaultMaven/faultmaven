@@ -34,6 +34,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
+    _execute,
+    _revision,
     alembic_on,
     create_limited_role,
     database_of_its_own,
@@ -64,20 +66,6 @@ _UPDATE = (
     "AND case_id IS NULL "
     "AND storage_ref IS NOT NULL"
 )
-
-
-async def _execute(url: str, *statements: str) -> list:
-    """Run ``statements`` in one transaction; return the last one's rows."""
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            rows: list = []
-            for statement in statements:
-                result = await conn.execute(text(statement))
-                rows = list(result.fetchall()) if result.returns_rows else []
-            return rows
-    finally:
-        await engine.dispose()
 
 
 async def _seed(url: str) -> dict:
@@ -115,11 +103,6 @@ async def _seed(url: str) -> dict:
 
 async def _refs(url: str) -> dict:
     return dict(await _execute(url, "SELECT file_id, storage_ref FROM uploaded_files"))
-
-
-async def _revision(url: str) -> str:
-    ((version,),) = await _execute(url, "SELECT version_num FROM alembic_version")
-    return version
 
 
 async def test_the_owner_clears_the_paths_in_every_enterprise():

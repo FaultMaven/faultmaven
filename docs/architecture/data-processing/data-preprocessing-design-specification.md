@@ -1117,14 +1117,14 @@ PRELOAD_MODELS='["BAAI/bge-m3"]'         # Warm BGE-M3 during lifespan startup
 
 #### 5.7.1 Embedding Model Preload
 
-The BGE-M3 weights (~1 GB) are expensive to load — typical CPU load time is 60–120 s, dominated by weight download on first boot and PyTorch initialization on subsequent boots. If the first load happens on the request hot path, it monopolizes the thread pool and blocks the turn until the model is ready.
+The BGE-M3 weights (~2 GB on disk) are expensive to load — about 15 s measured in the image at 2 CPUs (#2851), mostly one core of PyTorch initialization, so longer on a slower core; a first boot without the baked-in snapshot also downloads them. If the first load happens on the request hot path, it monopolizes the thread pool and blocks the turn until the model is ready.
 
 `EmbeddingSettings.preload_models` defaults to `["BAAI/bge-m3"]` so the model is loaded during lifespan startup (`main.py`), before the server accepts traffic. The trade-off:
 
 | Setting | First-request latency | Cold-boot latency | When to use |
 | ------- | --------------------- | ----------------- | ----------- |
-| `PRELOAD_MODELS='["BAAI/bge-m3"]'` (default) | Normal | +60–120 s one-time | Production, shared servers, anything user-facing |
-| `PRELOAD_MODELS=[]` (opt-out) | +60–120 s on first embedding call | Fast | Ephemeral dev containers, tests, rapid iteration |
+| `PRELOAD_MODELS='["BAAI/bge-m3"]'` (default) | Normal | +~15 s one-time | Production, shared servers, anything user-facing |
+| `PRELOAD_MODELS=[]` (opt-out) | +~15 s on first embedding call | Fast | Ephemeral dev containers, tests, rapid iteration |
 
 Preload is best-effort: failures are logged as warnings and the system falls back to lazy loading. Preload status is observable via `model_cache.get_model_load_info("BAAI/bge-m3")`.
 

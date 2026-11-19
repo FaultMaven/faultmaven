@@ -101,10 +101,9 @@ class IndexAdmissionRefused(FaultMavenError):
     **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` (``reason`` ``too_large``): the
     document alone cannot fit, so no retry can; ``message`` gives its size and
     the limit, written for the person who sent it. **503**
-    ``KNOWLEDGE_INDEXING_BUSY``: the indexing queued ahead (``busy``), the
-    model still loading (``loading``) or an encode stuck past its time bound
-    (``hung``) is the obstacle, and a retry after ``retry_after_seconds`` may
-    fit. Not a ``KnowledgeBaseError``, so no arm that answers an indexing
+    ``KNOWLEDGE_INDEXING_BUSY``: the indexing queued ahead (``busy``) or an
+    encode stuck past its time bound (``hung``) is the obstacle, and a retry
+    after ``retry_after_seconds`` may fit. Not a ``KnowledgeBaseError``, so no arm that answers an indexing
     failure answers this. Built by ``index_slot.refusal``.
     """
 

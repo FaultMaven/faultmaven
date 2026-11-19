@@ -122,7 +122,8 @@ async def test_an_account_that_created_nothing_is_deleted_after_its_revocation()
         "message": "User 'doomed' deleted successfully",
         "user_id": "user_123",
     }
-    assert world.calls == ["count", "revoke", "delete"]
+    # Revoked again after the delete (#2050): the final stamp.
+    assert world.calls == ["count", "revoke", "delete", "revoke"]
 
 
 @pytest.mark.parametrize("unbound", ["no user service", "no case module bound"])

@@ -23,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.integration.security.conftest import (
+    _execute,
     alembic_on,
     database_of_its_own,
     drop_role_sql,
@@ -44,20 +45,6 @@ _REVISION = "c4441b83ba24"  # pragma: allowlist secret
 #: ``017_drop_investigation_sessions``, the revision 018 parents onto.
 _PARENT_REVISION = "f95a5b3a58eb"  # pragma: allowlist secret
 _PW = "fm_drafts_probe_pw"  # pragma: allowlist secret
-
-
-async def _execute(url: str, *statements: str, params: dict | None = None) -> list:
-    """Run ``statements`` in one transaction; return the last one's rows."""
-    engine = create_async_engine(url)
-    try:
-        async with engine.begin() as conn:
-            rows: list = []
-            for statement in statements:
-                result = await conn.execute(text(statement), params or {})
-                rows = list(result.fetchall()) if result.returns_rows else []
-            return rows
-    finally:
-        await engine.dispose()
 
 
 async def _seed(url: str) -> list[str]:
