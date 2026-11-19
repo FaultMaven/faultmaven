@@ -204,6 +204,41 @@ async def test_a_cancelled_waiter_releases_nothing_it_does_not_hold():
     assert pool.slots._granted == {} and pool.slots._free == 2
 
 
+async def test_within_an_account_the_requester_holding_fewest_goes_first():
+    """On 3 slots X and Y each hold one; when Y's ends, Y's next job goes
+    before X's, though X was granted longer ago."""
+    pool = _Pool(3)
+    for job, requester in enumerate("XYXY"):
+        pool.submit(job, "S", requester)
+        await _settle()
+    pool.slots.release("S", "Y")
+    pool.running["S"] = [r for r in pool.running["S"] if r[1] != "Y"]
+    await _settle()
+    assert pool.order() == "X Y Y"
+
+
+async def test_a_cancelled_waiter_that_leaves_its_account_idle_drops_its_stamps():
+    """r1 ran, then A's only waiter is cancelled while B runs: A is idle, so
+    its stamps go, and r1, not granted since, is served before r3."""
+    pool = _Pool(1)
+    for job, (account, requester) in enumerate([("A", "r1"), ("B", "b"), ("A", "r2")]):
+        pool.submit(job, account, requester)
+        await _settle()
+    pool.finish("A")
+    await _settle()
+    pool.tasks[2].cancel()
+    await _settle()
+    assert "A" not in pool.slots._granted
+    pool.submit(3, "A", "r1")
+    await _settle()
+    pool.submit(4, "A", "r3")
+    await _settle()
+    pool.finish("B")
+    await _settle()
+    assert pool.order() == "r1 b r1"
+    assert set(pool.slots._granted["A"]) == {"r1"}
+
+
 async def test_two_slots_serve_a_second_person_next_never_beside_the_first():
     pool = _Pool(2)
     pool.submit(0, "slack", "u1")
