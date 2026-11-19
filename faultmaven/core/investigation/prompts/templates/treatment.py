@@ -2,6 +2,7 @@ from .blocks import _AMBIGUITY_FIRST_RULE
 from .diagnosis import (
     _EVIDENCE_NEEDS_LIFECYCLE_BLOCK,
     _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM,
+    _UNRUNNABLE_CHECK_BLOCK,
 )
 from .tool_text import GivenTools, has
 
@@ -253,6 +254,9 @@ The process:
    Do NOT classify it as an absence category — absence rows record a CONFIRMED fix
    (the cause verifiably gone), not diagnostic data feeding a new hypothesis.
 
+"""
+        + _UNRUNNABLE_CHECK_BLOCK
+        + """
 4. **New Hypothesis & Solution** — Once you have new evidence:
    - Refute the disproven hypothesis: set state=REFUTED with refutation_reason
      citing the failed fix as the disproof ("fix targeting [mechanism] had no effect,

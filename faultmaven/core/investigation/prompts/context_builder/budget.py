@@ -46,6 +46,10 @@ HISTORY_VERBATIM_TURNS = 3
 HISTORY_SUMMARY_MAX_TURNS = 7
 # Agent response character count before smart-truncation kicks in
 HISTORY_AGENT_TRUNCATE_THRESHOLD = 600
+# The newest reply in the window is never smart-truncated: its middle holds what
+# the last turn found (a check that cannot run, #2101). Past this it keeps its
+# head and tail.
+LATEST_REPLY_MAX_CHARS = 4000
 
 # =============================================================================
 # State Summary Configuration

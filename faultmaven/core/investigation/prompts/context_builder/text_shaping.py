@@ -9,7 +9,7 @@ from faultmaven.core.preprocessing.evidence_metadata import (
     EvidenceMetadata,
 )
 
-from .budget import HISTORY_AGENT_TRUNCATE_THRESHOLD
+from .budget import HISTORY_AGENT_TRUNCATE_THRESHOLD, LATEST_REPLY_MAX_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +394,18 @@ def _smart_truncate_agent_response(
     if first != response:
         return f"{first}\n\n{_TRUNCATION_MARKER}\n\n{last}"
     return response
+
+
+def _cap_latest_reply(response: str, max_chars: int = LATEST_REPLY_MAX_CHARS) -> str:
+    """The newest reply whole; past ``max_chars``, its head and tail around the
+    marker, ``max_chars`` in all (#2101)."""
+    if len(response) <= max_chars:
+        return response
+    # Each trim may add "..." (3 chars) past its allowance.
+    room = max_chars - len(_TRUNCATION_MARKER) - 4 - 6
+    first = _trim_to_sentence(response, room // 2)
+    last = _trim_to_sentence_end(response, room - room // 2)
+    return f"{first}\n\n{_TRUNCATION_MARKER}\n\n{last}"
 
 
 def _trim_to_sentence(text: str, max_chars: int) -> str:

@@ -264,6 +264,12 @@ Per-section policies:
   (§4); levels chosen by estimate, highest-fidelity-that-fits: older turns
   summarized → compact state-summary → state-summary with oldest turns elided.
   Turn count may survive only as a cheap pre-filter hint, never as the authority.
+  In the graduated history's RECENT TURNS, older assistant replies keep their
+  first and last paragraphs (`HISTORY_AGENT_TRUNCATE_THRESHOLD`), but the
+  newest renders whole, cut only past `LATEST_REPLY_MAX_CHARS` (4,000 chars)
+  to its head and tail: its middle holds what the last turn found (fm#2101).
+  That keeps a fact one turn away, not a durable one, which is the journal's
+  job (`evidence-needs-design.md` §9.8).
 - **Investigation journal** — never tail-truncate (that drops the *newest*
   entries). Keep the oldest anchor entry, the most recent N, and all high-signal
   types (`decision`, `finding`, `ruled_out`, `blocker`); elide the middle with a

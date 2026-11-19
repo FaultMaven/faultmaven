@@ -18,7 +18,7 @@ from .budget import (
     STATE_SUMMARY_MAX_HYPOTHESES,
 )
 from .narration_fold import NarrationFold
-from .text_shaping import _smart_truncate_agent_response
+from .text_shaping import _cap_latest_reply, _smart_truncate_agent_response
 
 _STATE_SUMMARY = "state summary"
 
@@ -374,7 +374,8 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
     """Build graduated conversation history: recent turns verbatim, older summarized.
 
     Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated
-    agent responses. Older turns: one-line summaries from TurnProgress metadata.
+    agent responses, the newest whole up to LATEST_REPLY_MAX_CHARS. Older turns:
+    one-line summaries from TurnProgress metadata.
 
     Falls back to verbatim-only if turn_history is unavailable.
     """
@@ -440,9 +441,19 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
         result += "\n"
 
     # --- RECENT TURNS (verbatim with smart agent truncation) ---
+    # The newest reply renders whole, up to its cap (#2101).
+    latest_reply = max(
+        (
+            i
+            for i, m in enumerate(messages)
+            if m.get("turn_number") in recent_turn_nums
+            and m.get("role", "").upper() == "ASSISTANT"
+        ),
+        default=None,
+    )
     result += "RECENT TURNS:\n"
     current_turn_num = None
-    for msg in messages:
+    for index, msg in enumerate(messages):
         turn_num = msg.get("turn_number")
         if turn_num not in recent_turn_nums:
             continue
@@ -469,7 +480,11 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
             continue
 
         if role == "ASSISTANT":
-            content = _smart_truncate_agent_response(content)
+            content = (
+                _cap_latest_reply(content)
+                if index == latest_reply
+                else _smart_truncate_agent_response(content)
+            )
 
         result += f"{role}: {content}\n"
 

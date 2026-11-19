@@ -1098,6 +1098,25 @@ Rule-2 / compliance signal moved to offline eval/CI. That is still true,
 and it is why enforcement lives at the suggestion seam in the engine
 rather than in a post-generation validator.
 
+### 9.8 An Environment Limit Is a Journal Blocker (fm#2101)
+
+A check the case's evidence shows cannot run here (`jcmd` absent from a
+minimal JRE image, an admission policy denying a debug container) is an
+environment limit, not a need: no need records it, and a RUN card never
+reaches the pool. Its one carrier is a journal entry of type `blocker`
+naming the check and the reason, written on the turn the failure is seen.
+The journal renders on every turn, past the state-summary threshold too,
+and under budget pressure keeps its newest entries, so the limit stays in
+front of the model. History is never its carrier, for the reason §9.7 gives:
+older turns keep 200 characters of the reply, and every recent reply but the
+newest loses its middle paragraphs.
+
+The DIAGNOSIS and TREATMENT instructions state the rule
+(`_UNRUNNABLE_CHECK_BLOCK`): record the blocker on that turn, and never
+request a check a journal blocker names, nor offer it as a fallback, unless
+later evidence shows the limit changed. Whether the model complies can only
+be shown by a recorded run; the engine does not enforce it.
+
 ---
 
 ## 10. Risks and Mitigations
