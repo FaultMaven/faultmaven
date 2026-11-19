@@ -42,8 +42,9 @@ database does not have. A schema change is a new revision.
 fingerprints each revision's code (comments, docstrings and formatting left
 out) against `alembic/revision_fingerprints.txt` and fails when one moves. Only
 an edit that cannot change the schema any database ends with — a fix to a
-statement that could not run at all — records a new fingerprint, and its PR
-says why no database is affected.
+statement that could not run at all, or logging added beside a refusal that
+raises as before — records a new fingerprint, and its PR says why no database
+is affected.
 
 ### Who runs the migrations
 
