@@ -1,8 +1,10 @@
 from typing import Any, Optional
 
+from faultmaven.core.investigation.narration.prompt_state import progress_indicators
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseState,
     is_server_written_assistant_row,
     is_server_written_user_row,
     server_note_of,
@@ -15,10 +17,27 @@ from .budget import (
     STATE_SUMMARY_MAX_EVIDENCE_DIGESTS,
     STATE_SUMMARY_MAX_HYPOTHESES,
 )
+from .narration_fold import NarrationFold
 from .text_shaping import _smart_truncate_agent_response
 
+_STATE_SUMMARY = "state summary"
 
-def _build_state_summary(case: Case) -> str:
+
+def _verified(case: Case, fold: NarrationFold) -> str:
+    """The state summary's ``Verified:`` value: "symptom" when the record
+    shows ``symptom_verified``, else "none" (#2811 S2b-1c-i). INQUIRY reads no
+    record: a problem is verified only once investigated. If the record
+    cannot be read, "unknown"; the failure is logged and counted once per
+    assembly (``NarrationFold``)."""
+    if case.state == CaseState.INQUIRY:
+        return "none"
+    outcome = fold.outcome(_STATE_SUMMARY)
+    if outcome is None:
+        return "unknown"
+    return "symptom" if "symptom_verified" in progress_indicators(outcome) else "none"
+
+
+def _build_state_summary(case: Case, fold: Optional[NarrationFold] = None) -> str:
     """
     Build compact state summary for long conversations (Gap #8: Section 11.5).
 
@@ -26,6 +45,7 @@ def _build_state_summary(case: Case) -> str:
 
     Args:
         case: Current case
+        fold: The prompt assembly's record (a fresh one without it)
 
     Returns:
         Formatted state summary
@@ -42,14 +62,8 @@ def _build_state_summary(case: Case) -> str:
     elif case.state.value in ["resolved", "closed"]:
         stage = case.state.value.upper()
 
-    # Verification status
-    verified_items = []
-    if case.progress:
-        p = case.progress
-        if p.symptom_verified:
-            verified_items.append("symptom")
-
-    verified = ", ".join(verified_items) if verified_items else "none"
+    # Verification status, from the record
+    verified = _verified(case, NarrationFold(case) if fold is None else fold)
 
     # Active hypotheses — every one (bounded), each with its id, so the agent
     # retains awareness of competing theories when the full hypothesis block is
@@ -495,7 +509,10 @@ def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
 
 
 def _build_compact_history(
-    case: Case, user_message_safe: str, fence: PromptFence
+    case: Case,
+    user_message_safe: str,
+    fence: PromptFence,
+    fold: Optional[NarrationFold] = None,
 ) -> str:
     """State-summary + previous-turn + current-turn (the low-fidelity history).
 
@@ -509,8 +526,11 @@ def _build_compact_history(
     Fenced under the assembly's token like the other fidelity (#1256): the
     state summary carries ``case.description`` and hypothesis statements, and
     ``<current_turn>`` carries the user's message verbatim.
+
+    ``fold`` is the prompt assembly's record, for the state summary's
+    ``Verified:`` line (a fresh one without it).
     """
-    recent_history = _build_state_summary(case)
+    recent_history = _build_state_summary(case, fold)
     if case.turn_history:
         last_turn = case.turn_history[-1]
         recent_history += "\n\n<previous_turn>\n"

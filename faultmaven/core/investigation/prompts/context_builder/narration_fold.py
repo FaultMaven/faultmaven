@@ -1,37 +1,110 @@
-"""One prompt assembly's narration inputs (#2811 S2b-1a, S2b-1b-ii): the
-record ``narration_outcome`` folds and the needs pool's view, each computed
-at most once and shared by the ``<fix_verification>`` and ``<evidence_needs>``
-blocks."""
+"""One prompt assembly's narration inputs (#2811 S2b-1a, S2b-1b-ii,
+S2b-1c-i): the record ``narration_outcome`` folds, the needs pool's view, the
+prompt state's fresh inputs (``PromptStateFresh``) and the two fresh reads
+printed beside the record (the symptom's currency note, ``fix_confirmed``),
+each computed at most once and shared by every block that reads them:
+``<fix_verification>``, ``<evidence_needs>``, the milestone status, the
+exclusion rule, the focus emphasis, the state summary, and the fallback
+prompt the assembly may return instead."""
 
 import logging
 import sys
 import traceback
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
 from faultmaven.core.investigation.narration.needs import NeedsView
+from faultmaven.core.investigation.narration.prompt_state import PromptStateFresh
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import Case, CaseOutcome, WritePoint
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
+
+def _stored_mitigation_verified(case: Case) -> bool:
+    """``mitigation.verified`` as stored, read fresh (ruling Q1 (a))."""
+    mitigation = case.progress.mitigation
+    return bool(mitigation is not None and mitigation.verified)
+
+
+def _symptom_stale(case: Case) -> bool:
+    """The symptom's observation window sits away from the present. False
+    for UNDATED: an unknown observation time gives nothing to anchor to."""
+    from faultmaven.core.investigation.symptom_currency import (
+        SymptomCurrency,
+        assess_symptom_currency,
+    )
+
+    return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _false_alarm_declined_at(case: Case) -> Optional[int]:
+    from faultmaven.core.investigation.problem_status import (
+        false_alarm_close_declined_at,
+    )
+
+    return false_alarm_close_declined_at(case)
+
+
+def _resolve_decline_turn(case: Case) -> Optional[int]:
+    """The turn of the standing resolve decline, the one the reopen chip
+    names (stage S2b-2 moves the offers)."""
+    from faultmaven.core.investigation.terminal_transitions import (
+        declined_resolve_entry,
+    )
+
+    entry = declined_resolve_entry(case)
+    return entry.at_turn if entry is not None else None
+
+
+def _currency_note(case: Case) -> str:
+    """The currency note on ``- symptom_verified`` (``_symptom_currency_note``,
+    declared fresh since S2b-1a: it reads the wall clock)."""
+    from .evidence import _symptom_currency_note
+
+    return _symptom_currency_note(case, "symptom_verified")
+
+
+def _fix_confirmed(case: Case) -> bool:
+    """The latest decided fix window SUCCEEDED (ruling Q1 (a) keeps it fresh
+    until stage S3)."""
+    from .causal_graph_block import fix_confirmed
+
+    return fix_confirmed(case)
+
+
+def _reopen_chip(case: Case) -> bool:
+    """The reply carries the reopen chip, as the projection builds it."""
+    from faultmaven.core.investigation.offer_projection import project_offers
+
+    return project_offers(case).reopen_chip is not None
+
 
 class NarrationFold:
     """One prompt assembly's narration fold: the record, computed at most
-    once, on the first request, and cached with its failure; and the needs
-    pool's view (``needs``), computed once and cached, a raise not cached.
-    ``get_prompt_for_case`` makes one per assembly, so the context it builds
-    up to three times folds once and reads the pool once; each block that
-    renders an omission logs each distinct failure once, naming itself, and a
-    failure is counted once per assembly (``fail``)."""
+    once, on the first request, and cached with its failure; the needs
+    pool's view (``needs``), computed once and cached, a raise not cached;
+    and the fresh inputs (``fresh``, ``currency_note``, ``fix_confirmed``),
+    each read on its first request and cached with its failure.
+    ``get_prompt_for_case`` makes one per assembly and hands it to the
+    fallback prompt it may return instead, so the context it builds up to
+    three times, and every candidate fallback render, fold once and read the
+    pool once; ``get_fallback_prompt_for_case`` called alone makes one per
+    call. Each block that renders an omission logs each distinct failure
+    once, naming itself, and a failure is counted once per assembly
+    (``fail``)."""
 
     def __init__(self, case: Case) -> None:
         self._case = case
         self._outcome: Optional[CaseOutcome] = None
         self._error: Optional[BaseException] = None
         self._needs: Optional[NeedsView] = None
+        self._fresh: Optional[PromptStateFresh] = None
+        self._read: dict = {}
         self._asked = False
         self._failed = False
         self._logged: set = set()
@@ -56,6 +129,45 @@ class NarrationFold:
         if self._needs is None:
             self._needs = NeedsView.of(self._case)
         return self._needs
+
+    def fresh(self) -> PromptStateFresh:
+        """The prompt state's fresh inputs (#2811 S2b-1c-i). Each reads the
+        case only when a selector asks for it, where ``main`` read it, and at
+        most once per assembly; a raise is kept and raised to every asker,
+        whose block renders its omission (``fail``)."""
+        if self._fresh is None:
+            self._fresh = PromptStateFresh(
+                mitigation_verified=self._once(_stored_mitigation_verified),
+                symptom_stale=self._once(_symptom_stale),
+                false_alarm_declined_at=self._once(_false_alarm_declined_at),
+                resolve_decline_turn=self._once(_resolve_decline_turn),
+                reopen_chip=self._once(_reopen_chip),
+            )
+        return self._fresh
+
+    def currency_note(self) -> str:
+        """The currency note, read where ``- symptom_verified`` prints. A
+        raise propagates, as on ``main``."""
+        return self._once(_currency_note)()
+
+    def fix_confirmed(self) -> bool:
+        """``fix_confirmed``, read where the exclusion reminder is decided. A
+        raise propagates, as on ``main``."""
+        return self._once(_fix_confirmed)()
+
+    def _once(self, read: Callable[[Case], _T]) -> Callable[[], _T]:
+        def ask() -> _T:
+            if read not in self._read:
+                try:
+                    self._read[read] = (read(self._case), None)
+                except Exception as error:  # noqa: BLE001 — its asker omits
+                    self._read[read] = (None, error)
+            value, error = self._read[read]
+            if error is not None:
+                raise error
+            return value
+
+        return ask
 
     def fail(self, block: str, error: Optional[BaseException] = None) -> None:
         """Log ``error`` (the exception being handled without it) once per

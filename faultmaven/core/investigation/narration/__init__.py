@@ -11,7 +11,11 @@ the cycle's record, B1c's and B1d's render the facts their deciders read
 (#2636). ``fix_verification`` renders the prompt's ``<fix_verification>``
 block from the record (#2811 S2b-1a), its need lines from the needs pool's
 typed view (``needs.NeedsView``, S2b-1b-i); ``evidence_needs`` renders the
-``<evidence_needs>`` block from that view and the record (S2b-1b-ii). The
+``<evidence_needs>`` block from that view and the record (S2b-1b-ii);
+``prompt_state`` selects the prompt's milestone status, exclusion rule,
+focus emphasis and state summary's verified line, and the fallback prompt's
+milestones and resolution, from the record (S2b-1c-i), whose texts stay with
+their templates. The
 ``.importlinter`` contract "Narrators render the outcome, never derive it"
 forbids imports of ``cause_assurance``, ``causal_graph.disconfirmation`` and
 ``terminal_transitions`` from this package, direct or through other modules,

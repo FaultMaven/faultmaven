@@ -109,6 +109,7 @@ from tests.unit.core.investigation.fix_turns_2039 import (
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.narrated import narrated
+from tests.unit.core.investigation.prompt_state_reads import zone_emphasis
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _FILE_ID,
     _identified_case,
@@ -2019,7 +2020,7 @@ async def test_every_prompt_site_that_registers_a_fix_names_the_ref():
             "COMPLIANCE DETECTION",
             "NOT compliance",
         ),
-        _get_diagnosis_focus_emphasis(case.progress, case),
+        zone_emphasis(case),
         _between(INVESTIGATION_BASE, "milestone_justifications:", "uncertainties:"),
         _between(SCHEMA_INSTRUCTIONS, "- milestones:", "- outcome:"),
     ):

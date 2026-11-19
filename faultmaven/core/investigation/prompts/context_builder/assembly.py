@@ -14,6 +14,11 @@ from faultmaven.core.investigation.kb_question import (
     render_kb_lookup_block,
     take_over_pushed,
 )
+from faultmaven.core.investigation.narration.prompt_state import (
+    MILESTONES_OMITTED,
+    MilestoneStatus,
+    milestone_status,
+)
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     render_fenced,
@@ -32,7 +37,6 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     InvestigationStage,
 )
-from faultmaven.modules.case.domain.models.progress import CauseState
 
 from .budget import (
     _SECTION_DROPPED_MARKER,
@@ -52,7 +56,6 @@ from .entity_highlights import EntityHighlightGroup, _render_entity_highlights
 from .evidence import (
     _build_evidence_context,
     _render_problem_context,
-    _symptom_currency_note,
 )
 from .evidence_needs import _build_evidence_needs_block
 from .fix_verification_block import (
@@ -586,6 +589,60 @@ def _whole_notices(
     return body
 
 
+_MILESTONE_STATUS = "milestone status"
+
+
+def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
+    """The stage-gate and progress-indicator tags for ``status``;
+    ``symptom_note`` qualifies ``- symptom_verified`` with its currency.
+
+    The stage is declared once, by the identity block (``CURRENT_STAGE:
+    {enum}``). It used to be repeated here under a display name, so the
+    model was told the stage was ``DIAGNOSIS`` and then, lower down, that it
+    was ``Investigating`` — one tag name, two vocabularies, reading as
+    self-contradiction. The identity block is a reserved section and is never
+    trimmed, so dropping this loses no stage information on any path (#1075).
+    """
+    gates = list(status.gates)
+    if status.mitigation_disposition:
+        # What the mitigation carries that is not an observation (#2100).
+        gates.append(f"mitigation_disposition: {status.mitigation_disposition}")
+    lines = ""
+    if gates:
+        lines += "<stage_gate_milestones>\n"
+        for gate in gates:
+            lines += f"- {gate}\n"
+        lines += "</stage_gate_milestones>\n"
+    if not status.indicators:
+        return lines + "<progress_indicators>None yet</progress_indicators>"
+    lines += "<progress_indicators>\n"
+    for indicator in status.indicators:
+        note = symptom_note if indicator == "symptom_verified" else ""
+        lines += f"- {indicator}{note}\n"
+    return lines + "</progress_indicators>"
+
+
+def _milestone_status_section(fold: NarrationFold) -> str:
+    """The milestone status of an INVESTIGATING case, from the record's
+    ``milestones_shown`` and disposition and, read fresh, the stored
+    ``mitigation.verified`` (ruling Q1 (a)) and the symptom's currency note
+    (``NarrationFold.currency_note``). If the record or the fresh verdict
+    cannot be read, both tags are the one declared line
+    ``MILESTONES_OMITTED``; the failure is logged and counted once per
+    assembly (``NarrationFold``). The currency note is read outside that
+    guard, as on ``main``: a raise there fails the build."""
+    try:
+        outcome = fold.outcome(_MILESTONE_STATUS)
+        status = None if outcome is None else milestone_status(outcome, fold.fresh())
+    except Exception:  # noqa: BLE001 — only these lines are lost (#2811)
+        fold.fail(_MILESTONE_STATUS)
+        status = None
+    if status is None:
+        return MILESTONES_OMITTED
+    note = fold.currency_note() if "symptom_verified" in status.indicators else ""
+    return _milestone_lines(status, note)
+
+
 def build_investigation_context(
     case: Case,
     user_message: str,
@@ -615,10 +672,12 @@ def build_investigation_context(
     ``kb_lookup`` is this turn's knowledge-base question lookup
     (``milestone_engine/kb_question.py``), rendered as ``ctx["kb_lookup"]``.
 
-    ``narration_fold`` is the prompt assembly's record and needs pool for the
-    ``<fix_verification>`` and ``<evidence_needs>`` blocks (#2811 S2b-1a,
-    S2b-1b-ii): one per assembly, so a context built again at a tighter
-    budget folds and reads the pool once; a fresh one per build without it.
+    ``narration_fold`` is the prompt assembly's record, needs pool and fresh
+    inputs for the ``<fix_verification>`` and ``<evidence_needs>`` blocks,
+    the milestone status, the exclusion rule and the state summary (#2811
+    S2b-1a, S2b-1b-ii, S2b-1c-i): one per assembly, so a context built again
+    at a tighter budget folds and reads each once; a fresh one per build
+    without it.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -706,53 +765,13 @@ def build_investigation_context(
         identity += f"CURRENT_STAGE: {case.current_stage.value.upper()}\n"
     identity += "</case_identity>"
 
-    # 3. Milestone Status (separated into stage-gate and progress indicators)
+    # 3. Milestone Status (separated into stage-gate and progress indicators),
+    # selected from the case outcome record (#2811 S2b-1c-i).
+    if narration_fold is None:
+        narration_fold = NarrationFold(case)
     milestones_str = ""
     if case.state == CaseState.INVESTIGATING:
-        p = case.progress
-
-        # Stage-gate milestones (drive transitions). Post-redesign the
-        # mitigation gates live on the mitigation record, not progress
-        # booleans; derive the same telemetry symbols from it.
-        _stab = p.mitigation
-        stage_gates = {
-            "mitigation_accepted": bool(_stab is not None and _stab.accepted),
-            "mitigation_verified": bool(_stab is not None and _stab.verified),
-            "solution_accepted": p.solution_accepted,
-            "solution_verified": p.solution_verified,
-        }
-        active_gates = [k for k, v in stage_gates.items() if v]
-        if _stab is not None and _stab.disposition:
-            # What the mitigation carries that is not an observation (#2100).
-            active_gates.append(f"mitigation_disposition: {_stab.disposition}")
-
-        # Progress indicators (LLM context)
-        indicators = {
-            "symptom_verified": p.symptom_verified,
-            "root_cause_identified": p.cause_state == CauseState.IDENTIFIED,
-            "solution_proposed": p.solution_proposed,
-        }
-        active_indicators = [k for k, v in indicators.items() if v]
-
-        # The stage is declared once, by the identity block above
-        # (``CURRENT_STAGE: {enum}``). It used to be repeated here under a
-        # display name, so the model was told the stage was ``DIAGNOSIS`` and
-        # then, lower down, that it was ``Investigating`` — one tag name, two
-        # vocabularies, reading as self-contradiction. The identity block is a
-        # reserved section and is never trimmed, so dropping this loses no
-        # stage information on any path (#1075).
-        if active_gates:
-            milestones_str += "<stage_gate_milestones>\n"
-            for g in active_gates:
-                milestones_str += f"- {g}\n"
-            milestones_str += "</stage_gate_milestones>\n"
-        if active_indicators:
-            milestones_str += "<progress_indicators>\n"
-            for ind in active_indicators:
-                milestones_str += f"- {ind}{_symptom_currency_note(case, ind)}\n"
-            milestones_str += "</progress_indicators>"
-        else:
-            milestones_str += "<progress_indicators>None yet</progress_indicators>"
+        milestones_str = _milestone_status_section(narration_fold)
 
     # 4. Evidence Context (Sliding Window)
     # Three-tier system: Tier A (recent data with structural index),
@@ -818,7 +837,7 @@ def build_investigation_context(
         # rungs of the ladder invisibly. Built once and shared in that case, so
         # a re-mint re-renders it once rather than twice.
         _fenced["conversation_floor"] = _build_compact_history(
-            case, user_message_safe, fence
+            case, user_message_safe, fence, narration_fold
         )
         _fenced["conversation_full"] = (
             _fenced["conversation_floor"]
@@ -1006,7 +1025,7 @@ def build_investigation_context(
     feedback_str = system_feedback_block(
         case, max_tokens=_system_feedback_cap(), count=budget.count
     )
-    exclusions_str = exclusions_reminder(case)
+    exclusions_str = exclusions_reminder(case, narration_fold)
 
     # 9. Stage-Specific Context Loading (Gap #10: Section 11.4)
     # Optimize context by condensing hypothesis details during stages where
@@ -1125,8 +1144,6 @@ def build_investigation_context(
     # Evidence-needs Phase 4 — demand-side pool block. Empty string when
     # the pool has no visible needs for this stage (progressive
     # activation; design §10.6).
-    if narration_fold is None:
-        narration_fold = NarrationFold(case)
     evidence_needs_str = _build_evidence_needs_block(case, narration_fold)
     # The fix, its legs and the open asks (#1906 D7): MITIGATION and TREATMENT.
     fix_verification_str = build_fix_verification_block(case, narration_fold)

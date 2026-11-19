@@ -568,7 +568,7 @@ Stage instructions are injected as `{adaptive_instructions}` in `INVESTIGATION_B
 
 Post-redesign there is **no path fork**. `_select_diagnosis_block(case)` returns a
 single block — `rca_diagnosis_block(given)` plus the chain-emission block — and
-`_get_diagnosis_focus_emphasis(case.progress, case)` renders beside it as
+`_get_diagnosis_focus_emphasis(zone)` (the zone the record selects, #2811) renders beside it as
 `{focus_emphasis}`, at the top of the prompt's per-turn tail (#613). The hypothesis-creation mandate
 (`_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK`) lives inside `rca_diagnosis_block(given)` and is
 always present; the agent applies it **iff the cause is uncertain**
