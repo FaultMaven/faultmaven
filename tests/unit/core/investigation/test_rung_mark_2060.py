@@ -1033,6 +1033,31 @@ def test_the_exclusion_notice_is_not_given_for_a_survivor_the_final_recompute_va
     assert not [n for n in metadata.get("system_notices", []) if _X in n]
 
 
+def test_no_exclusion_notice_for_a_survivor_validated_before_it_was_deepened_past():
+    """Turn N stamps X DEDUCTIVE as a root. Turn N+1 deepens past X and the
+    model names X in deductive_validations again: the lane leaves a validated
+    survivor alone, so no notice says it skipped X for being a rung."""
+    case, x, hyp = _case()
+    _excluded_sibling(case)
+    first: dict = {}
+    _recompute_assessment_state(case, exclusion_survivors={_X}, metadata=first)
+    _recompute_assessment_state(
+        case, exclusion_survivors={_X}, metadata=first, final=True
+    )
+    assert (x.node_state, x.validation_method) == (
+        NodeState.VALIDATED,
+        ValidationMethod.DEDUCTIVE,
+    )
+    _deepen_to_y(case, hyp, 7)
+    metadata: dict = {}
+    _recompute_assessment_state(case, exclusion_survivors={_X}, metadata=metadata)
+    _recompute_assessment_state(
+        case, exclusion_survivors={_X}, metadata=metadata, final=True
+    )
+    assert x.node_state == NodeState.VALIDATED
+    assert not [n for n in metadata.get("system_notices", []) if _X in n]
+
+
 def test_a_hypothesis_whose_path_has_no_root_yet_is_headed_by_its_first_node():
     """A standing hypothesis with a path and no root node: its path's first
     node is its head, a root to the bar and the label, never a rung."""

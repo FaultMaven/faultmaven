@@ -385,10 +385,14 @@ def deepened_exclusion_survivors(
 ) -> list[tuple[str, str]]:
     """The asserted survivors ``validate_by_exclusion`` skips because a chain
     was deepened past them (#2060), each as ``(survivor, root above it)``: the
-    head of a standing hypothesis whose path runs through it."""
+    head of a standing hypothesis whose path runs through it. Only a survivor
+    still unvalidated: one already VALIDATED (by an earlier stamp, say) is
+    left alone by the lane anyway, so nothing was skipped for being a rung."""
     deepened = deepened_past_root_ids(case)
     skipped = []
     for sid in sorted(set(asserted_survivor_ids) & deepened):
+        if case.causal_nodes[sid].node_state == NodeState.VALIDATED:
+            continue
         above = sorted(
             head
             for h in case.hypotheses.values()
