@@ -34,6 +34,8 @@ from faultmaven.modules.case.contracts import (
     TemporalState,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.prompt_state_reads import zone_emphasis
 
 _FILE_ID = "file_0123456789ab"
 
@@ -247,12 +249,8 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
     with nothing to say about WHERE to look. It must now name the window — and
     must not imply a non-firing problem is not worth investigating."""
 
-    from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
-    )
-
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=2))])
-    text = _get_diagnosis_focus_emphasis(case.progress, case)
+    text = zone_emphasis(case)
     assert "anchor to the symptom's window" in text.lower()
     assert "ABSOLUTE timestamps" in text
     assert "not counter-evidence" in text
@@ -261,24 +259,28 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
 
 
 def test_zone2_emphasis_is_unchanged_when_current():
-    from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
-    )
-
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(minutes=1))])
-    text = _get_diagnosis_focus_emphasis(case.progress, case)
+    text = zone_emphasis(case)
     assert "Symptoms are confirmed" in text
 
 
-def test_progress_only_callers_keep_working():
-    """The optional ``case`` parameter must not change existing call sites."""
+@pytest.mark.parametrize(
+    "age, anchored", [(timedelta(hours=9), True), (timedelta(minutes=1), False)]
+)
+def test_the_prompt_anchors_zone_2_only_on_a_stale_symptom(age, anchored):
+    """End to end through the record path (#2811 S2b-1c-i): the zone the
+    record selects and the currency read fresh reach the prompt
+    ``get_prompt_for_case`` builds. A symptom seen nine hours ago anchors
+    the window; one seen a minute ago gets the unanchored Zone-2 text."""
 
     from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
+        get_prompt_for_case,
     )
 
-    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=9))])
-    assert "Symptoms are confirmed" in _get_diagnosis_focus_emphasis(case.progress)
+    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - age)])
+    prompt = get_prompt_for_case(case, "status", given_tools=DEFAULT_GIVEN)
+    assert ("anchor to the symptom's window" in prompt) is anchored
+    assert ("Symptoms are confirmed. When evaluating" in prompt) is not anchored
 
 
 # -- closure reasons: every close must say WHY, never merely when -------------
@@ -614,12 +616,8 @@ class TestReviewFindingsResidual:
         than treat the question as settled. Every currency surface is gated on
         symptom_verified, so suppressing it there kept them all dormant."""
 
-        from faultmaven.core.investigation.prompts.templates.assembly import (
-            _get_diagnosis_focus_emphasis,
-        )
-
         case = _case(verified=False)
-        text = _get_diagnosis_focus_emphasis(case.progress, case)
+        text = zone_emphasis(case)
         assert "DOES verify it" in text
         assert "while it EXISTS" in text
         assert "absolute timestamps" in text

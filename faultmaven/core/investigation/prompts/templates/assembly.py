@@ -9,7 +9,15 @@ from faultmaven.core.investigation.narration.notices import (
     RESOLVE_DECLINED_RULE,
     resolve_declined_actions,
 )
-from faultmaven.core.investigation.problem_status import false_alarm_close_declined_at
+from faultmaven.core.investigation.narration.prompt_state import (
+    PROGRESS_OMITTED,
+    FocusSelection,
+    FocusZone,
+    HoldKind,
+    ProblemHold,
+    ResolveDeclined,
+    focus_selection,
+)
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
@@ -22,11 +30,8 @@ from faultmaven.core.investigation.prompts.context_builder.narration_fold import
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
-    InvestigationProgress,
     InvestigationStage,
-    ProblemStatus,
 )
-from faultmaven.modules.case.domain.models.progress import CauseState
 
 from .blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
@@ -68,25 +73,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # BUILDER FUNCTIONS
 # =============================================================================
-
-
-def _symptom_verification_is_stale(case) -> bool:
-    """Whether the symptom's observation window sits away from the present.
-
-    Thin adapter over ``symptom_currency`` so the emphasis text has one reason
-    to change. False when no case is supplied (the ``progress``-only callers),
-    and false for UNDATED — an unknown observation time gives nothing to anchor
-    to, so a window directive built on it would name no window while firing on
-    the ordinary case of evidence with no timestamps to parse.
-    """
-    if case is None:
-        return False
-    from faultmaven.core.investigation.symptom_currency import (
-        SymptomCurrency,
-        assess_symptom_currency,
-    )
-
-    return assess_symptom_currency(case) == SymptomCurrency.STALE
 
 
 def _false_alarm_declined_line(turn: int) -> str:
@@ -135,44 +121,38 @@ RESOLVE_DECLINED_THIS_TURN_LINE = (
 )
 
 
-def _resolve_declined_emphasis(case) -> str:
+def _resolve_declined_emphasis(declined: Optional[ResolveDeclined]) -> str:
     """``RESOLVE_DECLINED_LINE`` while the user's decline of the resolution
-    stands (``terminal_transitions.declined_resolve_entry``), else "", and
+    stands (``prompt_state.resolve_declined``, the record's
+    ``resolution.declined_stands``), else "", and
     ``RESOLVE_DECLINED_THIS_TURN_LINE`` after it when that decline was given
-    on the current turn (#2223). One read decides both lines, so they cannot
-    disagree. Appended to the focus block on every stage and processing mode,
-    never replacing it.
+    on the current turn (#2223). One selection decides both lines, so they
+    cannot disagree. Appended to the focus block on every stage and processing
+    mode, never replacing it.
 
     ``RESOLVE_DECLINED_ACTIONS`` (point the user at "Mark it resolved" and
     "Close without resolving") follows the line only when the projection builds
     those chips (``project_offers(case).reopen_chip``, #2472): no offer open,
     the problem not on hold. While a check the model asked for after the fix
-    holds the case it points at "Close without resolving" only
-    (``resolve_declined_actions``, #1906 D5.2). The prompt predicts the reply's chips from the
-    case as the turn starts. Three same-turn events can remove them after the
-    prompt has pointed at them: a revision the model proposes (the problem goes
-    on hold), a disqualification that ends the resolve decline's entry (the
-    closure verdict leaves SUGGEST_RESOLVE), and a false-alarm finding (the
-    problem goes on hold)."""
-    from faultmaven.core.investigation.cause_assurance import pending_symptom_check
-    from faultmaven.core.investigation.offer_projection import project_offers
-    from faultmaven.core.investigation.terminal_transitions import (
-        declined_resolve_entry,
-    )
-
-    entry = declined_resolve_entry(case)
-    if entry is None:
+    holds the case (the record's ``resolution.pending_check_need_id``) it
+    points at "Close without resolving" only (``resolve_declined_actions``,
+    #1906 D5.2). The prompt predicts the reply's chips from the case as the
+    turn starts. Three same-turn events can remove them after the prompt has
+    pointed at them: a revision the model proposes (the problem goes on hold),
+    a disqualification that ends the resolve decline's entry (the closure
+    verdict leaves SUGGEST_RESOLVE), and a false-alarm finding (the problem
+    goes on hold)."""
+    if declined is None:
         return ""
     line = RESOLVE_DECLINED_LINE
-    if project_offers(case).reopen_chip is not None:
-        held = pending_symptom_check(case) is not None
-        line = f"{line} {resolve_declined_actions(held)}"
-    if entry.at_turn == case.current_turn:
+    if declined.actions:
+        line = f"{line} {resolve_declined_actions(declined.held)}"
+    if declined.this_turn:
         return f"\n{line}\n{RESOLVE_DECLINED_THIS_TURN_LINE}\n"
     return f"\n{line}\n"
 
 
-def _problem_hold_emphasis(case) -> str:
+def _problem_hold_emphasis(hold: Optional[ProblemHold]) -> str:
     """The focus block for a case whose problem statement itself is in
     question, or "" when none is. Rendered as ``{focus_emphasis}`` on EVERY
     stage, not only DIAGNOSIS (#1889): a false alarm found while a fix was
@@ -185,9 +165,12 @@ def _problem_hold_emphasis(case) -> str:
       The engine offered the close; the model proposes a transition only when
       the user directs it, the rule every stage carries for a close. Once the
       user declined it, the block says so and when.
+
+    ``hold`` is the record's (``prompt_state.problem_hold``).
     """
-    status = case.progress.problem_status
-    if status == ProblemStatus.REVISION_PENDING:
+    if hold is None:
+        return ""
+    if hold.kind == HoldKind.REVISION:
         return """
 **INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**
 The evidence showed a different problem than the one the user confirmed, and
@@ -196,13 +179,12 @@ below your reply). Answer what they asked. Cause work you send now is held and
 applied when they confirm; if they correct the revision, send a better
 revised_problem_statement. Do not propose a transition until they answer.
 """
-    if status == ProblemStatus.INVALIDATED:
-        declined_at = false_alarm_close_declined_at(case)
+    if hold.kind == HoldKind.FALSE_ALARM:
         closing = (
             "The engine has offered the user the close. Propose a transition "
             "only when the user directs it."
-            if declined_at is None
-            else _false_alarm_declined_line(declined_at)
+            if hold.declined_at is None
+            else _false_alarm_declined_line(hold.declined_at)
         )
         return f"""
 **INVESTIGATION PROGRESS: Reported problem not present (false alarm)**
@@ -218,16 +200,12 @@ mitigations are not accepted. Two things move the case:
     return ""
 
 
-def _verifying_rows_missing_emphasis(case) -> str:
+def _verifying_rows_missing_emphasis(missing: bool) -> str:
     """One line while the problem is verified but no row is on record as having
     shown it (#1906, ruled 2026-11-03): no post-fix re-check can bind to the
-    problem until one is cited. Appended to the focus block on every stage."""
-    pv = case.problem_verification
-    if (
-        case.progress.problem_status != ProblemStatus.VERIFIED
-        or pv is None
-        or getattr(pv, "verifying_evidence_ids", None)
-    ):
+    problem until one is cited. Appended to the focus block on every stage.
+    ``missing`` is the record's (``prompt_state.verifying_rows_missing``)."""
+    if not missing:
         return ""
     return (
         "\nNo row is on record as what showed the problem: cite the "
@@ -237,8 +215,8 @@ def _verifying_rows_missing_emphasis(case) -> str:
     )
 
 
-def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
-    """Compute focus zone from progress milestones (Framework §8.5).
+def _get_diagnosis_focus_emphasis(zone: FocusZone) -> str:
+    """The focus emphasis of a diagnosing case's zone (Framework §8.5).
 
     Returns a contextual status signal rendered as ``{focus_emphasis}`` at the
     top of the prompt's per-turn tail, right after ``CACHE_BOUNDARY`` (#613),
@@ -249,22 +227,24 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
     awaiting re-confirmation, a false alarm) render from
     ``_problem_hold_emphasis`` on every stage, above this dispatch.
 
-    Four states based on progress milestone state:
-    - Zone 1: symptom_verified=False — a three-way verdict: verified, revised
-      (inaccurate statement) or invalidated (false alarm)
-    - Zone 2: symptom_verified=True, cause_state != IDENTIFIED — root cause analysis
-    - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
-    - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
-      hold that yields to root-cause analysis on new evidence/dispute (INV-33)
-
-    ``case`` is optional so existing ``progress``-only callers keep working
-    unchanged; when supplied, Zone 2 additionally names the symptom's
-    observation window. Without it the zone says "Symptoms are confirmed" and
-    nothing about WHERE to look, so evidence requests drift to the present —
-    the failure mode in which an investigation queries the last 30 minutes for
-    a symptom observed two hours earlier.
+    ``zone`` is the record's (``prompt_state.focus_zone``), from the
+    milestones it shows:
+    - Zone 1 (VERIFY): symptom_verified not shown — a three-way verdict:
+      verified, revised (inaccurate statement) or invalidated (false alarm)
+    - Zone 2 (CAUSE): symptom_verified, root_cause_identified not shown — root
+      cause analysis; CAUSE_STALE when the symptom's last observation is
+      stale (read fresh), which names its observation window. Without it the
+      zone says "Symptoms are confirmed" and nothing about WHERE to look, so
+      evidence requests drift to the present — the failure mode in which an
+      investigation queries the last 30 minutes for a symptom observed two
+      hours earlier.
+    - Zone 3 (SOLUTION): root_cause_identified, solution_proposed not shown —
+      propose fix
+    - Zone 3 pending (PENDING): solution_proposed — awaiting execution,
+      NON-suppressive hold that yields to root-cause analysis on new
+      evidence/dispute (INV-33)
     """
-    if not progress.symptom_verified:
+    if zone == FocusZone.VERIFY:
         return """
 **INVESTIGATION PROGRESS: Symptom verification pending**
 No symptoms have been formally confirmed. Check the data against the confirmed
@@ -296,10 +276,8 @@ explicitly when you verify: it becomes the window every later evidence request
 targets, and requests must name absolute timestamps rather than relative ones,
 which silently drift to the present.
 """
-    elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
-        stale = _symptom_verification_is_stale(case)
-        if stale:
-            return """
+    elif zone == FocusZone.CAUSE_STALE:
+        return """
 **INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
 The symptom was observed some time ago (see the observation time on
 symptom_verified below). That period, not the present, is where this
@@ -323,6 +301,7 @@ Retract symptom_verified only if the symptom CLAIM itself turns out to be
 wrong — misread data, the wrong system, an artefact — not because the problem
 is not occurring at this moment.
 """
+    elif zone == FocusZone.CAUSE:
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
@@ -340,9 +319,7 @@ confirm, or problem_invalidated if it was never present. (The problem merely
 not occurring right now is NOT that: an existing problem is investigable
 whether or not it is currently firing.)
 """
-    elif (
-        progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
-    ):
+    elif zone == FocusZone.SOLUTION:
         return """
 **INVESTIGATION PROGRESS: Solution needed**
 Root cause is identified. A concrete, executable fix with specific commands
@@ -361,14 +338,56 @@ proposal never forecloses a live diagnostic thread.
 """
 
 
+_FOCUS = "focus emphasis"
+
+
+def _focus_lines(selection: FocusSelection) -> str:
+    """The focus emphasis's text for ``selection``: the hold, else the zone;
+    the resolve decline; the verifying rows missing."""
+    focus = _problem_hold_emphasis(selection.hold)
+    if selection.zone is not None:
+        focus = _get_diagnosis_focus_emphasis(selection.zone)
+    focus += _resolve_declined_emphasis(selection.resolve_declined)
+    return focus + _verifying_rows_missing_emphasis(selection.verifying_rows_missing)
+
+
+def _focus_emphasis(
+    fold: NarrationFold, current_turn: int, *, steered: bool, zoned: bool
+) -> str:
+    """The focus emphasis, selected from the prompt assembly's record and its
+    fresh inputs (``prompt_state.focus_selection``, #2811 S2b-1c-i). If the
+    record or a fresh input the selection asks for cannot be read, the whole
+    emphasis is the one declared line ``PROGRESS_OMITTED``, in place of the
+    hold, the zone, the resolve decline and the verifying-rows lines; the
+    failure is logged and counted once per assembly (``NarrationFold``), and
+    the prompt is built. Only the selection is guarded: a fault in the text
+    raises, as on ``main``."""
+    try:
+        outcome = fold.outcome(_FOCUS)
+        selection = (
+            None
+            if outcome is None
+            else focus_selection(
+                outcome, fold.fresh(), current_turn, steered=steered, zoned=zoned
+            )
+        )
+    except Exception:  # noqa: BLE001 — only the emphasis is lost (#2811)
+        fold.fail(_FOCUS)
+        selection = None
+    if selection is None:
+        return f"\n{PROGRESS_OMITTED}\n"
+    return _focus_lines(selection)
+
+
 def _select_diagnosis_block(case: Case, given: GivenTools) -> str:
     """The RCA diagnosis block for a diagnosing turn, naming only the tools
     ``given``.
 
     Diagnosis has no path fork (redesign R5): hypothesis formulation and
     evidence-needs run as a single opportunistic flow. Stage guidance is
-    selected by the assessment variables (``symptom_verified`` /
-    ``cause_state`` / ``solution_proposed``) via
+    selected from the indicators the case outcome record shows
+    (``symptom_verified`` / ``root_cause_identified`` / ``solution_proposed``,
+    ``prompt_state.focus_zone``) and rendered by
     ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice.
     ``rca_diagnosis_block`` carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
@@ -485,9 +504,10 @@ def get_prompt_for_case(
     prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
-    # One narration fold per assembly (#2811 S2b-1a, S2b-1b-ii): the ctx below
-    # is built up to three times, and its two blocks fold and read the needs
-    # pool once.
+    # One narration fold per assembly (#2811 S2b-1a, S2b-1b-ii, S2b-1c-i): the
+    # ctx below is built up to three times, and the fallback the backstop may
+    # return instead renders several candidates; every block of all of
+    # them folds and reads the needs pool once.
     narration_fold = NarrationFold(case)
 
     def _build_ctx(section_budget: Optional[int]) -> dict:
@@ -554,30 +574,29 @@ def get_prompt_for_case(
             # problem hold renders on every stage (#1889); the zone emphasis
             # only on DIAGNOSIS; a standing resolve decline is appended on
             # every stage (#1895) and every processing mode (#2223). A
-            # knowledge_query or agent_meta turn carries nothing else.
-            focus_emphasis = ""
+            # knowledge_query or agent_meta turn carries nothing else. Its
+            # lines are selected from the case outcome record
+            # (``_focus_emphasis``, #2811 S2b-1c-i).
+            steered = processing_mode != "knowledge_query" and not is_agent_meta
             if processing_mode == "knowledge_query":
                 adaptive_instr = knowledge_query_instructions(given_tools)
             elif is_agent_meta:
                 adaptive_instr = AGENT_META_INSTRUCTIONS
+            # Dispatch to stage instructions (derived display stage)
+            elif stage == InvestigationStage.DIAGNOSIS:
+                adaptive_instr = _select_diagnosis_block(case, given_tools)
+            elif stage == InvestigationStage.MITIGATION:
+                adaptive_instr = mitigation_instructions(given_tools)
+            elif stage == InvestigationStage.TREATMENT:
+                adaptive_instr = treatment_instructions(given_tools)
             else:
-                focus_emphasis = _problem_hold_emphasis(case)
-                # Dispatch to stage instructions (derived display stage)
-                if stage == InvestigationStage.DIAGNOSIS:
-                    adaptive_instr = _select_diagnosis_block(case, given_tools)
-                    if not focus_emphasis:
-                        focus_emphasis = _get_diagnosis_focus_emphasis(
-                            case.progress, case
-                        )
-                elif stage == InvestigationStage.MITIGATION:
-                    adaptive_instr = mitigation_instructions(given_tools)
-                elif stage == InvestigationStage.TREATMENT:
-                    adaptive_instr = treatment_instructions(given_tools)
-                else:
-                    adaptive_instr = rca_diagnosis_block(given_tools)
-            focus_emphasis += _resolve_declined_emphasis(case)
-            if processing_mode != "knowledge_query" and not is_agent_meta:
-                focus_emphasis += _verifying_rows_missing_emphasis(case)
+                adaptive_instr = rca_diagnosis_block(given_tools)
+            focus_emphasis = _focus_emphasis(
+                narration_fold,
+                case.current_turn,
+                steered=steered,
+                zoned=steered and stage == InvestigationStage.DIAGNOSIS,
+            )
 
             # Add stage to context for schema reference
             ctx["stage"] = stage.value if stage else "diagnosis"
@@ -650,6 +669,7 @@ def get_prompt_for_case(
         given_tools,
         target_tokens=target_tokens,
         kb_lookup=kb_lookup,
+        narration_fold=narration_fold,
     )
     if kb_rendered is not None and prompt != rendered.get("prompt"):
         # The overflow/starvation backstop returned the minimal fallback in
@@ -669,6 +689,7 @@ def _budgeted_prompt(
     given_tools: GivenTools,
     target_tokens: Optional[int] = None,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> str:
     """Whole-prompt token-budget accountant + overflow/starvation backstop.
 
@@ -724,6 +745,7 @@ def _budgeted_prompt(
         model_name,
         given_tools,
         kb_lookup=kb_lookup,
+        narration_fold=narration_fold,
     )
 
 
@@ -754,11 +776,15 @@ def _assemble_allocated(
     model_name,
     given_tools,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> str:
     """Allocator assembly: template-aware section budget + backstop (§4/§6/§7).
 
     A fallback either arm returns is rendered for ``given_tools``, the set the
     assembled prompt was built for: it replaces that prompt on the same call.
+    It reads the assembly's record (``narration_fold``), so one assembly
+    folds once, and a fold failure is counted once, whichever prompt it
+    returns.
     """
     target = resolved.prompt_target
     ceiling = resolved.prompt_budget  # None when window unknown
@@ -806,6 +832,7 @@ def _assemble_allocated(
             given_tools=given_tools,
             max_tokens=fallback_budget,
             kb_lookup=kb_lookup,
+            narration_fold=narration_fold,
         )
         logger.warning(
             "prompt_starvation_fallback",
@@ -849,6 +876,7 @@ def _assemble_allocated(
                 given_tools=given_tools,
                 max_tokens=fallback_budget,
                 kb_lookup=kb_lookup,
+                narration_fold=narration_fold,
             )
             logger.warning(
                 "prompt_overflow_fallback",

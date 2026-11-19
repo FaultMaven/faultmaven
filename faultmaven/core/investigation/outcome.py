@@ -227,9 +227,12 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     """The record for the moment narrated, folded in memory over the stored
     one and stored nowhere; it mints no final verdict (#2811). The turn's
     narration computes it once, at its entry, only when the cycle's write
-    failed and a logged code reads the record; the prompt's fix-verification
-    and evidence-needs blocks fold it lazily, at most once per prompt
-    assembly (``NarrationFold``)."""
+    failed and a logged code reads the record; the prompt folds it lazily,
+    once per prompt assembly (``NarrationFold``), for every block that prints
+    an outcome line from it: the fix-verification and evidence-needs blocks,
+    the milestone status, the exclusion rule, the focus emphasis, the state
+    summary, and the fallback prompt the assembly may return instead (which,
+    called alone, folds once per call)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 

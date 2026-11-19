@@ -1,0 +1,28 @@
+{
+  "console": {
+    "bytes value": "<timestamp> [info     ] bytes                          [faultmaven.parity] payload=\u0000ab\ufffd",
+    "colliding level": "<timestamp> [info     ] collide                        [faultmaven.parity.std] extra={'level': 'top'}",
+    "colliding user_id": "<timestamp> [info     ] collide                        [faultmaven.parity.std] agent_phase=phase-1 claimed_case_id=case-1 claimed_session_id=sess-1 correlation_id=corr-1 extra={'user_id': 'other'} n=1 user_id=user-1",
+    "native extra": "<timestamp> [info     ] native extra                   [faultmaven.parity] job_id=7",
+    "native keywords": "<timestamp> [info     ] native                         [faultmaven.parity] count=3 name=x",
+    "native positional": "<timestamp> [info     ] env=prod                       [faultmaven.parity]",
+    "recording span": "<timestamp> [info     ] in a span                      [faultmaven.parity.std] span_id=1234567890abcdef trace_id=1234567890abcdef1234567890abcdef",
+    "request context": "<timestamp> [info     ] in a request                   [faultmaven.parity] agent_phase=phase-1 claimed_case_id=case-1 claimed_session_id=sess-1 correlation_id=corr-1 step=2 user_id=user-1",
+    "stack_info": "<timestamp> [info     ] with a stack                   [faultmaven.parity.std]\nStack (most recent call last):\n  File \"__init__.py\", in format\n    return fmt.format(record)",
+    "stdlib extra": "<timestamp> [warning  ] stdlib extra                   [faultmaven.parity.std] job_id=7",
+    "stdlib positional": "<timestamp> [info     ] env=prod n=3                   [faultmaven.parity.std]"
+  },
+  "json": {
+    "bytes value": "{\"payload\": \"\\u0000ab\\ufffd\", \"event\": \"bytes\", \"logger\": \"faultmaven.parity\", \"level\": \"info\", \"timestamp\": \"<timestamp>\"}",
+    "colliding level": "{\"event\": \"collide\", \"logger\": \"faultmaven.parity.std\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"extra\": {\"level\": \"top\"}}",
+    "colliding user_id": "{\"event\": \"collide\", \"logger\": \"faultmaven.parity.std\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"correlation_id\": \"corr-1\", \"claimed_session_id\": \"sess-1\", \"user_id\": \"user-1\", \"claimed_case_id\": \"case-1\", \"agent_phase\": \"phase-1\", \"n\": 1, \"extra\": {\"user_id\": \"other\"}}",
+    "native extra": "{\"event\": \"native extra\", \"logger\": \"faultmaven.parity\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"job_id\": 7}",
+    "native keywords": "{\"count\": 3, \"name\": \"x\", \"event\": \"native\", \"logger\": \"faultmaven.parity\", \"level\": \"info\", \"timestamp\": \"<timestamp>\"}",
+    "native positional": "{\"event\": \"env=prod\", \"logger\": \"faultmaven.parity\", \"level\": \"info\", \"timestamp\": \"<timestamp>\"}",
+    "recording span": "{\"event\": \"in a span\", \"logger\": \"faultmaven.parity.std\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"trace_id\": \"1234567890abcdef1234567890abcdef\", \"span_id\": \"1234567890abcdef\"}",
+    "request context": "{\"step\": 2, \"event\": \"in a request\", \"logger\": \"faultmaven.parity\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"correlation_id\": \"corr-1\", \"claimed_session_id\": \"sess-1\", \"user_id\": \"user-1\", \"claimed_case_id\": \"case-1\", \"agent_phase\": \"phase-1\"}",
+    "stack_info": "{\"event\": \"with a stack\", \"logger\": \"faultmaven.parity.std\", \"level\": \"info\", \"timestamp\": \"<timestamp>\", \"stack\": \"Stack (most recent call last):\\n  File \\\"__init__.py\\\", in format\\n    return fmt.format(record)\"}",
+    "stdlib extra": "{\"event\": \"stdlib extra\", \"logger\": \"faultmaven.parity.std\", \"level\": \"warning\", \"timestamp\": \"<timestamp>\", \"job_id\": 7}",
+    "stdlib positional": "{\"event\": \"env=prod n=3\", \"logger\": \"faultmaven.parity.std\", \"level\": \"info\", \"timestamp\": \"<timestamp>\"}"
+  }
+}

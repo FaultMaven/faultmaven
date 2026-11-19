@@ -44,7 +44,6 @@ a credential header on the same unit is lost with it, which is the safe side.
 """
 
 import json
-import logging
 import re
 from typing import Any, Callable, Optional, Tuple
 
@@ -408,9 +407,10 @@ def redact_log_line_bytes(data: bytes) -> bytes:
 def redacting_renderer(renderer: Callable) -> Callable:
     """Wrap a structlog renderer so its output passes `redact_log_line`.
 
-    Applied to whichever renderer ``configure_structlog`` selects, so the rule
-    holds for JSON and console output alike, and for foreign stdlib records as
-    well as native structlog events — they converge on the same formatter.
+    Applied to whichever renderer ``build_log_formatter`` selects, for the API,
+    the jobs and alembic alike, so the rule holds for JSON and console output,
+    and for foreign stdlib records as well as native structlog events — they
+    converge on the same formatter.
     """
 
     def render(logger, method_name, event_dict):
@@ -427,16 +427,3 @@ def redacting_renderer(renderer: Callable) -> Callable:
     # and wrapping must not blind it.
     render.__wrapped__ = renderer
     return render
-
-
-class RedactingFormatter(logging.Formatter):
-    """A stdlib formatter that redacts its own output.
-
-    For log paths that deliberately do not use structlog — the maintenance
-    jobs configure plain ``logging.basicConfig`` so their output stays a
-    process's own stdout — the rule has to hold there too, or the exception
-    from a failing job is exactly the record that carries a DSN.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        return redact_log_line(super().format(record))

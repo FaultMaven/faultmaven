@@ -24,6 +24,7 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 from faultmaven.core.investigation.milestone_engine.transition_turns import (
     FALSE_ALARM_HOLD_REPLY,
 )
+from faultmaven.core.investigation.narration.prompt_state import problem_hold
 from faultmaven.core.investigation.problem_status import (
     edit_statement,
     false_alarm_close_declined_at,
@@ -50,6 +51,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from tests.case_builders import with_declined_offer
+from tests.unit.core.investigation.prompt_state_reads import selections
 from tests.unit.core.investigation.test_every_card_names_its_offer_1812 import (
     _investigating,
 )
@@ -543,7 +545,7 @@ def _invalidated_case():
 
 class TestTheHoldBlock:
     def test_it_no_longer_steers_toward_the_close(self):
-        block = _problem_hold_emphasis(_invalidated_case())
+        block = _problem_hold_emphasis(problem_hold(*selections(_invalidated_case())))
         assert "Reported problem not present" in block
         assert "right outcome is closing" not in block
         assert "only when the user directs it" in block
@@ -553,7 +555,7 @@ class TestTheHoldBlock:
         case = _invalidated_case()
         case.current_turn = 6
         with_declined_offer(case, kind="close", basis="false_alarm")
-        block = _problem_hold_emphasis(case)
+        block = _problem_hold_emphasis(problem_hold(*selections(case)))
         assert "The user declined closing on this finding at turn 6" in block
         # Conditional, never a flat ban: a model that obeyed a ban would never
         # propose, and a user who later asks would get no close card.
