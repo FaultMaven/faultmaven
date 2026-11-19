@@ -17,6 +17,11 @@ import structlog
 from opentelemetry import trace
 
 from faultmaven.infrastructure.logging.url_redaction import redacting_renderer
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_frames,
+    logged_exception,
+)
 
 # Third-party loggers whose DEBUG output is per-operation tracing rather than
 # signal, each with the level it is pinned at. Raising our own verbosity to
@@ -48,10 +53,12 @@ NOISY_THIRD_PARTY_LOGGERS: Mapping[str, int] = MappingProxyType(
 )
 
 
-# Event keys the formatter's later steps read or write: format_exc_info and
-# StackInfoRenderer take exc_info / stack_info as directives and write
-# exception / stack; ProcessorFormatter writes the _record / _from_structlog
-# meta keys.
+# Event keys the formatter's later steps read or write: exc_info_as_frames and
+# StackInfoRenderer take exc_info / stack_info as directives (exc_info_as_frames
+# writes frames, StackInfoRenderer stack); the console renderer renders an
+# exception key; ProcessorFormatter writes the _record / _from_structlog meta
+# keys. ``frames`` is not one: a caller's own (``log_error``, the policy's
+# ``extra={"frames": ...}``) is lifted and wins over exc_info_as_frames'.
 _FORMATTER_KEYS = frozenset(
     {"exc_info", "stack_info", "exception", "stack", "_record", "_from_structlog"}
 )
@@ -84,6 +91,53 @@ def frames_as_console_stack(
         del event_dict["frames"]
         event_dict["stack"] = frames if stack is None else f"{stack}\n{frames}"
     return event_dict
+
+
+def exc_info_as_frames(
+    _logger: Any, _name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Render an ``exc_info`` (:func:`logged_exception`'s shapes) as ``frames``:
+    :func:`exception_frames`, each link's class and frames with no message
+    (principles §7, rule 4; #2888). A ``frames`` the caller gave is kept."""
+    logged = logged_exception(event_dict.pop("exc_info", None))
+    if logged is not None and "frames" not in event_dict:
+        event_dict["frames"] = exception_frames(*logged)
+    return event_dict
+
+
+def _class_chain_or_value(value: Any) -> Any:
+    if isinstance(value, BaseException):
+        return exception_class_chain(value)
+    return value
+
+
+def exceptions_as_class_chains(
+    _logger: Any, _name: str, event_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Write an exception passed as a field (``error=e``, ``extra={"e": e}``, a
+    native structlog event that is itself one) as its class chain, never its
+    repr, which holds its message (principles §7, rule 4; #2888). It maps
+    top-level values, and the values of an ``extra`` dict one level down, where
+    :func:`_lift_fields` nests a caller's colliding field. Nothing else is
+    walked: under JSON, the renderer's ``default`` names an exception the
+    encoder reaches. A stdlib record's event is its message,
+    ``record.getMessage()``: ``str(e)`` for ``logging.getLogger(...).error(e)``,
+    rule 1's message channel (S3, #2889), not a field."""
+    for key, value in event_dict.items():
+        event_dict[key] = _class_chain_or_value(value)
+    nested = event_dict.get("extra")
+    if isinstance(nested, dict):
+        event_dict["extra"] = {k: _class_chain_or_value(v) for k, v in nested.items()}
+    return event_dict
+
+
+def _json_default(value: Any) -> Any:
+    """The JSON renderer's fallback: an exception's class chain, else what
+    structlog's own fallback writes (``__structlog__()``, else the repr)."""
+    if isinstance(value, BaseException):
+        return exception_class_chain(value)
+    structlog_form = getattr(value, "__structlog__", None)
+    return structlog_form() if callable(structlog_form) else repr(value)
 
 
 def _lift_fields(event_dict: Dict[str, Any], fields: Dict[str, Any]) -> None:
@@ -276,67 +330,21 @@ class FaultMavenLogger:
 
     def configure_structlog(self) -> None:
         """
-        Configure structlog with comprehensive processors.
+        Configure structlog, and the root handler every line renders through.
 
-        Sets up a processor chain that handles:
-        - Log level filtering
-        - Logger name and level addition
-        - Timestamp formatting
-        - Exception information
-        - Request context injection
-        - OpenTelemetry trace context
-        - JSON output formatting
+        Native structlog events run the level filter and the shared processors
+        (``_SHARED_PROCESSORS``), then go to the stdlib root handler, whose
+        formatter (:func:`build_log_formatter`) renders them and plain stdlib
+        records alike. A root that already holds :func:`install_log_handler`'s
+        handler (a job) gets no second one: the events render through it, the
+        same builder, and each line is written once (#2888).
         """
-        # Processors that BUILD the event dict, shared by native structlog logs
-        # AND foreign stdlib LogRecords, so both render identically with their
-        # fields. Rendering itself happens once, in the ProcessorFormatter below.
-        shared_processors = [
-            # Merge structlog contextvars (e.g. request_id bound by
-            # RequestIdMiddleware) — first so later processors can override.
-            structlog.contextvars.merge_contextvars,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            # Interpolate %-style positional args into the event message so
-            # ``logger.info("env=%s", env)`` renders "env=prod", not a raw
-            # "env=%s" plus a dangling positional_args field. No-ops when a log
-            # has no positional args.
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            self.add_request_context,
-            self.add_trace_context,
-        ]
-        # Renderer: JSON for production, human-readable console for dev.
-        #
-        # LOG_HUMAN_READABLE is an override in its own right. It used to be
-        # guarded by ``LOG_FORMAT != "json"``, and since LOG_FORMAT defaults to
-        # "json" and now accepts nothing but json/console, that guard could
-        # never be true: setting LOG_HUMAN_READABLE alone did nothing.
-        #
-        # colors: structlog enables them whenever it is not on Windows —
-        # ``structlog.dev._has_colors`` has no isatty() check — so the console
-        # renderer would write ANSI escapes into a pod's log stream, where they
-        # reach kubectl and the log collector verbatim. Decide from the stream.
-        console = self.config.LOG_FORMAT == "console" or self.config.LOG_HUMAN_READABLE
-        if console:
-            renderer = structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())
-        else:
-            renderer = structlog.processors.JSONRenderer()
-
-        # Redact on the RENDERED line rather than on the event dict. Walking
-        # values by type leaked every type it did not handle -- bytes, sets,
-        # dict keys, anything the renderer repr()s such as an exception passed
-        # as error=e, and anything nested past the walk's depth. After
-        # rendering, all of it is text, and one pass covers the message, the
-        # fields, the keys and the traceback alike: URL query strings, and
-        # credential header values (a JSON line on its decoded keys and values).
-        renderer = redacting_renderer(renderer)
-
         # Native structlog loggers: filter + shared processors, then hand the
         # event to the stdlib ProcessorFormatter instead of rendering here.
         structlog.configure(
             processors=[
                 structlog.stdlib.filter_by_level,
-                *shared_processors,
+                *_SHARED_PROCESSORS,
                 lift_stdlib_extra,
                 structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
             ],
@@ -346,27 +354,9 @@ class FaultMavenLogger:
             cache_logger_on_first_use=True,
         )
 
-        # One formatter renders BOTH structlog events and plain stdlib records.
-        # For FOREIGN (stdlib) records — including third-party libs and every
-        # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
-        # runs the shared processors PLUS lift_record_extra, so the ``extra``
-        # fields are merged onto the event dict and actually render (previously
-        # they were silently dropped by ``basicConfig(format="%(message)s")``).
-        formatter = structlog.stdlib.ProcessorFormatter(
-            foreign_pre_chain=[
-                *shared_processors,
-                lift_record_extra,
-            ],
-            processors=[
-                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-                structlog.processors.StackInfoRenderer(),
-                structlog.processors.format_exc_info,
-                structlog.processors.UnicodeDecoder(),
-                *([frames_as_console_stack] if console else []),
-                renderer,
-            ],
+        formatter = build_log_formatter(
+            self.config.LOG_FORMAT, self.config.LOG_HUMAN_READABLE, sys.stderr
         )
-
         handler = LateBindingStreamHandler()
         handler.setFormatter(formatter)
         setattr(handler, self._ROOT_HANDLER_MARKER, True)
@@ -379,7 +369,10 @@ class FaultMavenLogger:
         for existing in list(root_logger.handlers):
             if getattr(existing, self._ROOT_HANDLER_MARKER, False):
                 root_logger.removeHandler(existing)
-        root_logger.addHandler(handler)
+        if not any(
+            getattr(h, _INSTALLED_HANDLER_MARKER, False) for h in root_logger.handlers
+        ):
+            root_logger.addHandler(handler)
 
         # Lower the root level to our configured verbosity, but never RAISE it
         # above a level something else (e.g. pytest's caplog.at_level) has
@@ -480,6 +473,119 @@ class FaultMavenLogger:
                 event_dict["span_id"] = format(span_context.span_id, "016x")
 
         return event_dict
+
+
+#: Processors that BUILD the event dict, shared by native structlog logs AND
+#: foreign stdlib LogRecords, so both render identically with their fields.
+#: Rendering itself happens once, in :func:`build_log_formatter`.
+_SHARED_PROCESSORS = (
+    # Merge structlog contextvars (e.g. request_id bound by
+    # RequestIdMiddleware) — first so later processors can override.
+    structlog.contextvars.merge_contextvars,
+    structlog.stdlib.add_logger_name,
+    structlog.stdlib.add_log_level,
+    # Interpolate %-style positional args into the event message so
+    # ``logger.info("env=%s", env)`` renders "env=prod", not a raw
+    # "env=%s" plus a dangling positional_args field. No-ops when a log
+    # has no positional args.
+    structlog.stdlib.PositionalArgumentsFormatter(),
+    structlog.processors.TimeStamper(fmt="iso"),
+    FaultMavenLogger.add_request_context,
+    FaultMavenLogger.add_trace_context,
+)
+
+
+def build_log_formatter(
+    log_format: str, human_readable: bool, stream: TextIO
+) -> structlog.stdlib.ProcessorFormatter:
+    """The one formatter every line renders through, structlog events and plain
+    stdlib records alike: the API's root handler, and :func:`install_log_handler`'s
+    for the jobs and alembic (principles §7, rule 5; #2888). It takes no settings
+    object, so a process that builds none can build it from ``LOG_FORMAT``
+    alone. The redactor runs last, on the rendered line.
+    """
+    # Renderer: JSON for production, human-readable console for dev.
+    #
+    # LOG_HUMAN_READABLE is an override in its own right. It used to be
+    # guarded by ``LOG_FORMAT != "json"``, and since LOG_FORMAT defaults to
+    # "json" and now accepts nothing but json/console, that guard could
+    # never be true: setting LOG_HUMAN_READABLE alone did nothing.
+    #
+    # colors: structlog enables them whenever it is not on Windows —
+    # ``structlog.dev._has_colors`` has no isatty() check — so the console
+    # renderer would write ANSI escapes into a pod's log stream, where they
+    # reach kubectl and the log collector verbatim. Decide from the stream.
+    console = log_format == "console" or human_readable
+    if console:
+        renderer = structlog.dev.ConsoleRenderer(colors=stream.isatty())
+    else:
+        renderer = structlog.processors.JSONRenderer(default=_json_default)
+
+    # Redact on the RENDERED line rather than on the event dict. Walking
+    # values by type leaked every type it did not handle -- bytes, sets,
+    # dict keys, anything the renderer repr()s such as an exception passed
+    # as error=e, and anything nested past the walk's depth. After
+    # rendering, all of it is text, and one pass covers the message, the
+    # fields, the keys and the traceback alike: URL query strings, and
+    # credential header values (a JSON line on its decoded keys and values).
+    renderer = redacting_renderer(renderer)
+
+    # For FOREIGN (stdlib) records — including third-party libs and every
+    # ``logger.info(msg, extra={...})`` call in this codebase — the pre-chain
+    # runs the shared processors PLUS lift_record_extra, so the ``extra``
+    # fields are merged onto the event dict and actually render (previously
+    # they were silently dropped by ``basicConfig(format="%(message)s")``).
+    return structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=[*_SHARED_PROCESSORS, lift_record_extra],
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.StackInfoRenderer(),
+            # Not format_exc_info: it writes every link's message (#2888).
+            exc_info_as_frames,
+            exceptions_as_class_chains,
+            structlog.processors.UnicodeDecoder(),
+            *([frames_as_console_stack] if console else []),
+            renderer,
+        ],
+    )
+
+
+#: Stamped on :func:`install_log_handler`'s handler, so the API chain adds no
+#: second root handler in a process that installed it.
+_INSTALLED_HANDLER_MARKER = "_faultmaven_installed_handler"
+
+
+def install_log_handler(
+    stream: TextIO, level: Optional[int], log_format: Optional[str] = None
+) -> str:
+    """Give the root logger one handler writing ``stream`` through
+    :func:`build_log_formatter`, at ``level`` (``None`` keeps the root's),
+    unless it already has a handler (``logging.basicConfig``'s rule): the line
+    of a process that builds no settings, the maintenance jobs and alembic
+    (#2888). Returns the format it chose.
+
+    The handler is installed with the JSON formatter first, so what the next
+    steps log is a JSON line, not ``lastResort``'s text: then the working
+    directory's ``.env`` is loaded, as the app loads it (a line python-dotenv
+    cannot parse warns), and the log format is read alone
+    (``configured_log_format``: ``LOG_FORMAT``, else ``LOG_OUTPUT_FORMAT``; an
+    unrecognized value is JSON, and warns). No other setting is read, so none
+    can refuse a migration or change the line; ``LOG_HUMAN_READABLE`` is not
+    read. A ``log_format`` a caller passes (a second install's, from the first)
+    is used as it is, with neither read again.
+    """
+    from faultmaven.config.settings import configured_log_format, load_settings_dotenv
+
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(build_log_formatter("json", False, stream))
+    setattr(handler, _INSTALLED_HANDLER_MARKER, True)
+    logging.basicConfig(level=level, handlers=[handler])
+    if log_format is None:
+        load_settings_dotenv()
+        log_format = configured_log_format()
+    if log_format == "console":
+        handler.setFormatter(build_log_formatter("console", False, stream))
+    return log_format
 
 
 # Singleton configuration instance

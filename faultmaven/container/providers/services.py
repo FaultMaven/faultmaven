@@ -594,10 +594,9 @@ def create_organization_repository() -> Any | None:
         logger.debug("OrganizationRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"OrganizationRepository initialization failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning(
+            f"OrganizationRepository initialization failed: {e}", exc_info=True
+        )
         return None
 
 
@@ -691,10 +690,9 @@ def create_enterprise_repository() -> Any | None:
         logger.debug("EnterpriseRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"EnterpriseRepository initialization failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning(
+            f"EnterpriseRepository initialization failed: {e}", exc_info=True
+        )
         return None
 
 
@@ -716,10 +714,7 @@ def create_team_repository() -> Any | None:
         logger.debug("TeamRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"TeamRepository initialization failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning(f"TeamRepository initialization failed: {e}", exc_info=True)
         return None
 
 
@@ -809,10 +804,7 @@ def create_share_repository() -> Any | None:
         logger.debug("ShareRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"ShareRepository initialization failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning(f"ShareRepository initialization failed: {e}", exc_info=True)
         return None
 
 
@@ -1001,10 +993,7 @@ def create_tenant_provider(
         # workers, not just the web lifespan that also runs the coherence gate).
         raise
     except Exception as e:
-        logger.warning(f"TenantProvider initialization failed: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.warning(f"TenantProvider initialization failed: {e}", exc_info=True)
         return None
 
 

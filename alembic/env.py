@@ -32,14 +32,23 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from sqlalchemy import engine_from_config, pool, text
-
-from alembic import context
-
 project_root = Path(__file__).parent.parent
 
 # Add project root to path for model imports
 sys.path.insert(0, str(project_root))
+
+# Log through the API's chain on stderr, as alembic.ini's levels set, before
+# anything below can log (principles §7; #2888). It reads the log format alone
+# (LOG_FORMAT, else LOG_OUTPUT_FORMAT).
+# fileConfig, below, removes it with the root's handlers, and it is installed
+# again after it, with the format chosen here.
+from faultmaven.infrastructure.logging.config import install_log_handler
+
+log_format = install_log_handler(sys.stderr, None)
+
+from sqlalchemy import engine_from_config, pool, text
+
+from alembic import context
 
 from faultmaven.config.settings import (
     DatabaseUrlWhitespaceError,
@@ -60,9 +69,11 @@ apply_root_set()
 # Alembic Config object
 config = context.config
 
-# Logging from alembic.ini, without disabling the loggers the imports above made.
+# Logger levels from alembic.ini, without disabling the loggers the imports
+# above made. The ini names no handler: the root's is the chain's again.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
+    install_log_handler(sys.stderr, None, log_format)
 
 # Target metadata for autogenerate - import from models
 from faultmaven.cli._database_gate import (

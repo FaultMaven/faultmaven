@@ -24,10 +24,10 @@ import faultmaven.infrastructure.logging.config as logging_config
 from faultmaven.infrastructure.logging.config import (
     FaultMavenLogger,
     LoggingConfig,
+    build_log_formatter,
     get_logger,
 )
 from faultmaven.infrastructure.logging.url_redaction import (
-    RedactingFormatter,
     redact_urls,
     redact_urls_bytes,
     redacting_renderer,
@@ -399,14 +399,16 @@ class TestNothingWrittenLeaks:
 
 
 @pytest.mark.unit
-class TestRedactingFormatter:
-    """The maintenance jobs configure plain stdlib logging, not structlog."""
+class TestTheJobsFormatter:
+    """The maintenance jobs and alembic log through the API's formatter builder
+    (``install_log_handler``; #2888)."""
 
-    def test_it_redacts_its_own_output(self):
+    @pytest.mark.parametrize("log_format", ["json", "console"])
+    def test_it_redacts_its_own_output(self, log_format):
         record = logging.LogRecord(
             "job", logging.ERROR, __file__, 1, "connect failed: %s", (URL,), None
         )
-        formatted = RedactingFormatter("%(message)s").format(record)
+        formatted = build_log_formatter(log_format, False, io.StringIO()).format(record)
         assert CANARY not in formatted
         assert "g.com/search" in formatted
 
@@ -414,7 +416,8 @@ class TestRedactingFormatter:
         record = logging.LogRecord(
             "job", logging.INFO, __file__, 1, "seeded %d runbooks", (91,), None
         )
-        assert RedactingFormatter("%(message)s").format(record) == "seeded 91 runbooks"
+        line = build_log_formatter("json", False, io.StringIO()).format(record)
+        assert json.loads(line)["event"] == "seeded 91 runbooks"
 
 
 @pytest.mark.unit

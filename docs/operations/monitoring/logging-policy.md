@@ -12,7 +12,8 @@ What an error line may hold is [principles §7's rule, "What a log line may hold
 
 - **Name the exception by its class chain,** `exception_class_chain(e)` (`faultmaven/utils/exception_name.py`), never `{e}`, `str(e)` or `%r`. A first-party exception adds its `error_code`.
 - **Pass the frames as a field,** `exception_frames(e)` from the same module, where the stack matters. It holds each link's class and frames, never a message.
-- **Do not use `exc_info=True` or `logger.exception()`** for any exception until S2 (#2888): today the rendered traceback carries every exception's message, case content included. S2 renders it as frames (#2862, ruled by #2886).
+- **`exc_info=True` and `logger.exception()` render frames,** each link's class and frames with no message, note or group member's message, on the outputs the chain covers: the API, the jobs, alembic and a worker's forwarded records (#2888). The message you write is still yours to keep free of the exception's text.
+- **Do not use `exc_info=True` or `logger.exception()` in a process the chain does not configure** (the outputs that read "No stage yet: #2898" in [principles §7's outputs table](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default)): there `logging.lastResort` still renders the full traceback, every message included, until S2b (#2888).
 - **Name content by its identifier and length,** at every level, DEBUG included.
 
 ### Examples
@@ -62,6 +63,13 @@ except Exception as e:
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
+- The maintenance jobs (stdout) and alembic (stderr) write the API's line,
+  through the same formatter builder (`install_log_handler`,
+  `faultmaven/infrastructure/logging/config.py`): the API's keys (`timestamp`,
+  ISO in UTC with `Z`; `level`, lowercase; `logger`; `event`) plus the record's
+  fields, and `frames` for an exception. The log format alone (`LOG_FORMAT`,
+  else `LOG_OUTPUT_FORMAT`, as the API reads it) picks JSON or the console
+  line; `LOG_HUMAN_READABLE` is not read there (#2888).
 
 ## Access logs
 
