@@ -354,12 +354,14 @@ def licence_leg_ids(
     - ``"chain"``: those roots still on the graph;
     - ``"rcc"``: the conclusion's standing hypothesis root
       (``conclusion_node``); else the node it names: a ROOT only when the
-      cause pool holds it (#2485), an intermediate as named; none and
-      ``in_words`` when it names no node;
+      cause pool holds it (#2485), an intermediate, or a root a chain was
+      deepened past, as named (#2060); none and ``in_words`` when it names no
+      node;
     - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         conclusion_node,
+        deepened_past_root_ids,
     )
 
     nodes = case.causal_nodes or {}
@@ -372,8 +374,10 @@ def licence_leg_ids(
             return [node_id], False
         if named not in nodes:
             return [], True
-        if nodes[named].node_type != NodeType.ROOT or named in set().union(
-            *_cause_pool(case)
+        if (
+            nodes[named].node_type != NodeType.ROOT
+            or named in deepened_past_root_ids(case)
+            or named in set().union(*_cause_pool(case))
         ):
             return [named], False
         return [], False
@@ -396,10 +400,12 @@ def fix_cause(case: Case) -> FixCause:
       when ``root_ids`` is empty;
     - ``in_words``: the conclusion licensing it names its cause in words only;
     - ``held``: a revised statement awaits re-confirmation, so the cause work
-      staged in its hold is not in this pool."""
+      staged in its hold is not in this pool;
+    - ``deepened_ids``: the roots a chain was deepened past (#2060)."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         _pool_legs,
+        deepened_past_root_ids,
         licensed_roots,
     )
 
@@ -407,11 +413,13 @@ def fix_cause(case: Case) -> FixCause:
     identified, held, _fallen = _pool_legs(case)
     reference = set(confirmation | window | hypotheses)
     on_hold = pending_revision(case) is not None
+    deepened = tuple(sorted(deepened_past_root_ids(case)))
     if identified or held:
         return FixCause(
             root_ids=sorted(identified or held),
             reference_ids=sorted(reference),
             held=on_hold,
+            deepened_ids=deepened,
         )
     reference |= licensed_roots(case)
     leg = solution_licence_leg(case)
@@ -421,6 +429,7 @@ def fix_cause(case: Case) -> FixCause:
         reference_ids=sorted(reference),
         in_words=in_words,
         held=on_hold,
+        deepened_ids=deepened,
     )
 
 

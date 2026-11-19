@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from faultmaven.core.investigation.cause_assurance import (
     CAUSAL_STANCE_CONFIDENCE_MIN,
     counterfactual_link_decisive,
+    deepened_past_root_ids,
     root_counterfactually_confirmed,
     stance_declared_confident,
 )
@@ -234,6 +235,19 @@ BLOCK_REASON_RESTATEMENT = "restates_frame"  # would validate but for the guard
 _COUNT_HELD_REASONS = frozenset({BLOCK_REASON_COUNT, BLOCK_REASON_MIRROR})
 
 
+def _unsettled_root(node: CausalNode, deepened: set[str]) -> bool:
+    """A ROOT-typed node standing as a root (not in ``deepened``,
+    ``deepened_past_root_ids``) that is neither REFUTED nor validated as a
+    root: a node validated as a rung awaits the derive's judgment as a root
+    (#2060)."""
+    return (
+        node.node_type == NodeType.ROOT
+        and node.node_id not in deepened
+        and node.node_state != NodeState.REFUTED
+        and (node.node_state != NodeState.VALIDATED or node.validated_as_rung)
+    )
+
+
 def root_support_block_reasons(case: Case) -> dict[str, str]:
     """Per-ROOT classification of WHY the §7.1 causal-grounding bar holds an
     otherwise-eligible root (net-supporting, AND-gate satisfied, not
@@ -241,7 +255,8 @@ def root_support_block_reasons(case: Case) -> dict[str, str]:
     ``count`` / ``mirror_collapse`` / ``hedged_only``. Roots blocked by
     anything else (restatement, refutation, AND-gate, no causal link at all)
     are absent — their recovery is a different story the §7.1 machinery does
-    not own."""
+    not own. So is a root a chain was deepened past, a rung held to the rung
+    bar; a root validated as a rung is not yet settled (#2060)."""
     reasons: dict[str, str] = {}
     nodes = case.causal_nodes
     if not nodes:
@@ -249,19 +264,14 @@ def root_support_block_reasons(case: Case) -> dict[str, str]:
     # Cheap eligibility pre-scan before the three corpus builds below: the
     # common late-investigation state (every ROOT already settled) must not
     # pay a full tokenization sweep per prompt build for an empty answer.
-    if not any(
-        n.node_type == NodeType.ROOT
-        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
-        for n in nodes.values()
-    ):
+    deepened = deepened_past_root_ids(case)
+    if not any(_unsettled_root(n, deepened) for n in nodes.values()):
         return reasons
     evidence_by_id = _evidence_category_map(case)
     tokens = _causal_evidence_tokens(case)
-    restating = _restating_root_ids(case)
+    restating = _restating_root_ids(case, deepened)
     for node in nodes.values():
-        if node.node_type != NodeType.ROOT or node.node_id in restating:
-            continue
-        if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
+        if not _unsettled_root(node, deepened) or node.node_id in restating:
             continue
         (
             supports,
@@ -347,14 +357,13 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     # Same cheap eligibility pre-scan as ``root_support_block_reasons``, for the
     # same reason: the common late-investigation state (every ROOT already
     # settled) must not pay a tokenization sweep per prompt build for an empty
-    # answer. Without it this cost ~15x on a settled 40-root graph.
-    if not any(
-        n.node_type == NodeType.ROOT
-        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
-        for n in nodes.values()
-    ):
+    # answer. Without it this cost ~15x on a settled 40-root graph. A root a
+    # chain was deepened past is outside the guard; one validated as a rung
+    # is not yet settled (#2060).
+    deepened = deepened_past_root_ids(case)
+    if not any(_unsettled_root(n, deepened) for n in nodes.values()):
         return set()
-    restating = _restating_root_ids(case)
+    restating = _restating_root_ids(case, deepened)
     if not restating:
         return set()
     evidence_by_id = _evidence_category_map(case)
@@ -362,7 +371,7 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     held: set[str] = set()
     for node_id in restating:
         node = nodes.get(node_id)
-        if node is None or node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
+        if node is None or not _unsettled_root(node, deepened):
             continue
         (
             supports,
@@ -401,7 +410,8 @@ class RestatementHold(NamedTuple):
       and refusing the carve-out there would re-report it as an evidence
       deficiency.
 
-      Only ``REFUTED`` puts a root to rest for this purpose. A ``VALIDATED``
+      Only ``REFUTED`` puts a root to rest for this purpose; a root a chain
+      was deepened past is a rung and is not counted (#2060). A ``VALIDATED``
       root is emphatically NOT settled-and-irrelevant: it means the case HAS a
       promoted cause, so the hold on some sibling is not what governs the case
       at all, and any consumer claiming "a cause was supported but never stated
@@ -440,11 +450,15 @@ def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
     # exactly what must make ``is_sole_root_block`` False (see the docstring).
     # ``restatement_held_root_ids`` excludes both VALIDATED and REFUTED, so
     # ``held`` is a subset of this and the comparison reads "is anything else
-    # unresolved, or promoted".
+    # unresolved, or promoted". A root a chain was deepened past is a rung,
+    # not a root the case left unresolved (#2060).
+    deepened = deepened_past_root_ids(case)
     unresolved = {
         n.node_id
         for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state != NodeState.REFUTED
+        if n.node_type == NodeType.ROOT
+        and n.node_state != NodeState.REFUTED
+        and n.node_id not in deepened
     }
     anchors, _hyp_token_sets = _frame_components(case)
     involves_siblings = False
@@ -501,12 +515,15 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     whether ONE sibling accounts for ALL of it — which a disjunct cannot do for
     a disjunction.
 
-    ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase).
-    Known limits (§7.1): the check is lexical — synonym paraphrases and
+    ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase), so
+    a root a chain was deepened past, a rung by its position, is outside it
+    (#2060). Known limits (§7.1): the check is lexical — synonym paraphrases and
     filler-padded restatements read as novel and pass; the guard is one layer
     of the #656 layered defense.
     """
     if node.node_type != NodeType.ROOT or not node.statement:
+        return False
+    if node.node_id in deepened_past_root_ids(case):
         return False
     statement_tokens = _content_tokens(node.statement)
     if not statement_tokens:
@@ -637,16 +654,22 @@ def _node_restates(
     return True
 
 
-def _restating_root_ids(case: Case) -> set:
+def _restating_root_ids(case: Case, deepened: set[str]) -> set:
     """Batch form of ``root_restates_case_frame`` for ``derive_node_states``:
     statements, anchors, and hypotheses are immutable within one derive call,
-    so tokenize the frame components once and test each ROOT against them."""
+    so tokenize the frame components once and test each ROOT against them.
+    ``deepened`` is the caller's ``deepened_past_root_ids``: those nodes are
+    rungs, outside the guard (#2060)."""
     anchors, hyp_token_sets = _frame_components(case)
     if not anchors and not hyp_token_sets:
         return set()
     restating: set = set()
     for node in case.causal_nodes.values():
-        if node.node_type != NodeType.ROOT or not node.statement:
+        if (
+            node.node_type != NodeType.ROOT
+            or not node.statement
+            or node.node_id in deepened
+        ):
             continue
         statement_tokens = _content_tokens(node.statement)
         if not statement_tokens:

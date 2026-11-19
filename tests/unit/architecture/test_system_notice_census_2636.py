@@ -67,6 +67,11 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
         "finding in step 2c or propose a revision): converts in a later B1 "
         "sub-stage",
     ),
+    (_ME + "cause_state.py", "_recompute_assessment_state"): (
+        1,
+        "a deductive_validations survivor a chain was deepened past (#2060): "
+        + _EMISSION,
+    ),
     (_HU, "_apply_hypothesis_action_intent"): (3, _EMISSION),
     (_HU, "_apply_hypothesis_updates"): (1, _EMISSION),
     (_HU, "_apply_deferred_likelihood_updates"): (1, "a likelihood cap: " + _ORDER),

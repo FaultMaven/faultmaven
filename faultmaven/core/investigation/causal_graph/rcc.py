@@ -6,6 +6,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     ENGINE_EVIDENCE_AUTHOR,
     MECHANISTIC_RCC_LIKELIHOOD,
+    STANDING_HYP_STATES,
     root_counterfactually_confirmed,
     stance_declared_confident,
 )
@@ -29,7 +30,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .clusters import mece_contested_root_ids
-from .projection import _STANDING_HYP_STATES, _standing_hypotheses
+from .projection import _standing_hypotheses
 from .queries import (
     chain_evidence_links,
     conjuncts_for_chain,
@@ -134,7 +135,7 @@ def _representative_cause_hypothesis(case: Case) -> Hypothesis | None:
         return None
     return max(
         on_cause,
-        key=lambda h: (h.state in _STANDING_HYP_STATES, h.initial_likelihood),
+        key=lambda h: (h.state in STANDING_HYP_STATES, h.initial_likelihood),
     )
 
 
@@ -511,7 +512,7 @@ def retract_stale_engine_rcc(case: Case, contested_ids: set | None = None) -> bo
     prior = case.hypotheses.get(getattr(rcc, "validated_hypothesis_id", None) or "")
     if (
         prior
-        and prior.state in _STANDING_HYP_STATES
+        and prior.state in STANDING_HYP_STATES
         and is_chain_root_identified(prior, case.causal_nodes)
     ):
         if contested_ids is None:

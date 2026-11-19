@@ -170,10 +170,12 @@ CONFIRMED_RCC_LIKELIHOOD_FLOOR = 0.9
 # filtered.
 CAUSAL_STANCE_CONFIDENCE_MIN = 0.6
 
-# Hypothesis states that keep a chain's root a STANDING cause (mirrors
-# ``causal_graph._STANDING_HYP_STATES`` — kept literal here to avoid the
-# import cycle; the two must not drift).
-_STANDING_HYP_STATES = (HypothesisState.ACTIVE, HypothesisState.VALIDATED)
+# The hypothesis states that keep a chain's root a STANDING cause: a REFUTED,
+# RETIRED or INCONCLUSIVE hypothesis is not one, so a stale root under it must
+# not keep grounding the case. The one definition; every reader imports it.
+STANDING_HYP_STATES: frozenset[HypothesisState] = frozenset(
+    {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
+)
 
 
 logger = logging.getLogger(__name__)
@@ -478,13 +480,54 @@ def stance_declared_confident(link) -> bool:
     return confidence >= CAUSAL_STANCE_CONFIDENCE_MIN
 
 
+def deepened_past_root_ids(case: "Case") -> set[str]:
+    """The ROOT-typed nodes a chain was deepened past (#2060): on the path of a
+    standing hypothesis, and the root of none.
+
+    Such a node keeps its stored type (#2036: window 0 and a later re-root back
+    onto it read it), but a cause sits above it, so it is a rung to every
+    reader that asks whether a node is a root: the rung bar, outside the
+    restatement guard, never a validated or identified root. A node any
+    standing hypothesis is rooted at stands as a root on every path through
+    it; a node on no standing path is an orphan, a root. Only standing
+    hypotheses confer position, so refuting and retiring one move it alike."""
+    standing = [
+        h
+        for h in (getattr(case, "hypotheses", None) or {}).values()
+        if h is not None and h.state in STANDING_HYP_STATES
+    ]
+    rooted_at = {h.root_node_id for h in standing if h.root_node_id}
+    nodes = getattr(case, "causal_nodes", None) or {}
+    return {
+        node_id
+        for h in standing
+        for node_id in h.path or ()
+        if node_id not in rooted_at
+        and node_id in nodes
+        and nodes[node_id].node_type == NodeType.ROOT
+    }
+
+
+def stands_as_validated_root(node: "CausalNode", deepened: "set[str]") -> bool:
+    """A validated root to every reader that asks: ROOT-typed, VALIDATED, not
+    validated as a rung (``CausalNode.validated_as_rung``) and not deepened
+    past (``deepened`` is ``deepened_past_root_ids``), #2060."""
+    return (
+        node.node_type == NodeType.ROOT
+        and node.node_state == NodeState.VALIDATED
+        and not node.validated_as_rung
+        and node.node_id not in deepened
+    )
+
+
 def _validated_roots(case: "Case") -> list["CausalNode"]:
     """The case's VALIDATED root nodes — the only harvest-relevant unit (§7 never
-    harvests an intermediate rung or a candidate)."""
+    harvests an intermediate rung or a candidate). A root a chain was deepened
+    past, or one validated as a rung, is none (#2060): deepening past the
+    validated root drops the grade to NO_ROOT until the new root validates."""
+    deepened = deepened_past_root_ids(case)
     return [
-        n
-        for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+        n for n in case.causal_nodes.values() if stands_as_validated_root(n, deepened)
     ]
 
 
@@ -814,7 +857,7 @@ def _fallen_leg(case: "Case", fallen: set) -> tuple[frozenset, PoolEmptyReason |
         return frozenset(), None
     if any(
         h is not None
-        and h.state in _STANDING_HYP_STATES
+        and h.state in STANDING_HYP_STATES
         and h.root_node_id
         and h.root_node_id not in fallen
         for h in (getattr(case, "hypotheses", None) or {}).values()
@@ -852,9 +895,13 @@ def cause_pool_empty_reason(case: "Case") -> PoolEmptyReason | None:
 
 def _pool_legs(case: "Case") -> tuple[set, set, set]:
     """``(identified, count-held terminal, fallen)`` roots, as ``_cause_pool``
-    reads them; the count-held leg only when nothing is identified."""
+    reads them; the count-held leg only when nothing is identified. A root a
+    chain was deepened past is never identified (#2060). The fallen leg reads
+    the stored type: a deepening must not drop a window's FAILED reading of a
+    root the case recorded (#2042), so it can name a validated rung."""
     nodes = getattr(case, "causal_nodes", None) or {}
     engine_ids = _engine_absence_row_ids(case)
+    deepened = deepened_past_root_ids(case)
     recorded = set(
         getattr(getattr(case, "progress", None), "identified_cause_root_ids", None)
         or ()
@@ -862,7 +909,7 @@ def _pool_legs(case: "Case") -> tuple[set, set, set]:
     identified = {
         node_id
         for node_id, node in nodes.items()
-        if getattr(node, "is_identified_root", False)
+        if getattr(node, "is_identified_root", False) and node_id not in deepened
     }
     fallen = {
         node_id
@@ -899,7 +946,7 @@ def conclusion_node(
     roots = {
         h.hypothesis_id: h.root_node_id
         for h in (getattr(case, "hypotheses", None) or {}).values()
-        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id in nodes
+        if h is not None and h.state in STANDING_HYP_STATES and h.root_node_id in nodes
     }
     if hypothesis_id in roots:
         return roots[hypothesis_id]
@@ -916,7 +963,7 @@ def licensed_roots(case: "Case") -> frozenset:
         h.root_node_id
         for h in (getattr(case, "hypotheses", None) or {}).values()
         if h is not None
-        and h.state in _STANDING_HYP_STATES
+        and h.state in STANDING_HYP_STATES
         and h.root_node_id in nodes
         and nodes[h.root_node_id].node_type == NodeType.ROOT
     )
@@ -1360,7 +1407,7 @@ def _cause_posited_turn(case: "Case") -> int:
     standing = {
         h.hypothesis_id: nodes[h.root_node_id]
         for h in hypotheses.values()
-        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id in nodes
+        if h is not None and h.state in STANDING_HYP_STATES and h.root_node_id in nodes
     }
     pool = [n for n in standing.values() if n.is_identified_root]
     if not pool:
@@ -2812,7 +2859,7 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     standing_root_ids = {
         h.root_node_id
         for h in case.hypotheses.values()
-        if h is not None and h.state in _STANDING_HYP_STATES and h.root_node_id
+        if h is not None and h.state in STANDING_HYP_STATES and h.root_node_id
     }
     targets = [n for n in candidate_roots if n.node_id in standing_root_ids]
     if not targets:
@@ -3002,7 +3049,7 @@ def _mint_confirmed_mirror(
             h
             for h in case.hypotheses.values()
             if h is not None
-            and h.state in _STANDING_HYP_STATES
+            and h.state in STANDING_HYP_STATES
             and h.root_node_id == root.node_id
         ),
         None,

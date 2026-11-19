@@ -82,8 +82,8 @@ def _failed_attempts(windows) -> int:
 # ``likelihood < 0.3`` (``check_state_transition``) before it could ever land
 # REFUTED, so a spent theory that used to be counted here as REFUTED now lands
 # RETIRED. Counting RETIRED keeps the exhaustion/anchoring tallies whole. Kept
-# module-local (like ``causal_graph._STANDING_HYP_STATES``) and single-sourced so
-# every consumer shares one definition. NOT the deadlock signal, which is
+# module-local and single-sourced (as ``cause_assurance.STANDING_HYP_STATES`` is)
+# so every consumer shares one definition. NOT the deadlock signal, which is
 # specifically "all still INCONCLUSIVE" (untouched).
 _SPENT_HYP_STATES = (
     HypothesisState.REFUTED,

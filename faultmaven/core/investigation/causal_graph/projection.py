@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
+from faultmaven.core.investigation.cause_assurance import STANDING_HYP_STATES
 from faultmaven.modules.case.contracts import HypothesisState, NodeState
 
 from .queries import is_chain_root_identified, is_chain_root_validated
@@ -10,18 +11,9 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 
-# A hypothesis is a STANDING cause only while ACTIVE or VALIDATED — a REFUTED,
-# RETIRED (abandoned/decayed) or INCONCLUSIVE one is not, so a stale root under
-# it must not keep grounding the case. One definition, used by every
-# chain-mode cause_state query below.
-_STANDING_HYP_STATES = {HypothesisState.ACTIVE, HypothesisState.VALIDATED}
-
-
 def _standing_hypotheses(case: Case):
-    """Yield the case's standing-cause hypotheses (ACTIVE/VALIDATED)."""
-    return (
-        h for h in case.hypotheses.values() if h and h.state in _STANDING_HYP_STATES
-    )
+    """Yield the case's standing-cause hypotheses (``STANDING_HYP_STATES``)."""
+    return (h for h in case.hypotheses.values() if h and h.state in STANDING_HYP_STATES)
 
 
 def any_chain_root_validated(case: Case) -> bool:
@@ -151,10 +143,11 @@ def project_hypothesis_states_from_roots(case: Case) -> HypothesisProjection:
         # Only ACTIVE/VALIDATED are projection targets — INCONCLUSIVE, REFUTED
         # and RETIRED are owned by other lifecycle paths and must never be
         # overwritten here (the REFUTED no-clobber rule).
-        if hyp.state not in (HypothesisState.ACTIVE, HypothesisState.VALIDATED):
+        if hyp.state not in STANDING_HYP_STATES:
             continue
-        root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-        root_validated = root is not None and root.node_state == NodeState.VALIDATED
+        # A root validated as a rung is not validated until the derive judges
+        # it as a root (#2060).
+        root_validated = is_chain_root_validated(hyp, case.causal_nodes)
         if root_validated and hyp.state != HypothesisState.VALIDATED:
             hyp.state = HypothesisState.VALIDATED
             newly_validated.append(hyp.hypothesis_id)
