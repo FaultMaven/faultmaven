@@ -327,11 +327,12 @@ class _WriteMarker:
     ``call_external`` may run a write wrapper more than once. An attempt whose
     write lands and whose response is lost raises, and its marker can fail on
     the same broken transport; the retry then finds nothing left to write and
-    returns success. So the marker belongs to the call, not to one attempt: an
-    attempt calls :meth:`reached` before its write call, and every attempt,
-    one that found nothing to write included, ends in :meth:`settle` through
-    :meth:`attempts`. While a write was reached and the token has not moved
-    since, ``settle`` moves it; once it has moved, later attempts leave it.
+    returns success. So the marker belongs to the call: an attempt calls
+    :meth:`reached` before its write call, and every attempt, one that found
+    nothing to write included, ends in :meth:`settle` (:meth:`attempts`).
+    While a write was reached and the token has not moved since, ``settle``
+    moves it. Later attempts leave it unless they reach a write again, as a
+    retried ``add_documents`` always does (it cannot know its write landed).
     Attempts run one after another, never together.
     """
 

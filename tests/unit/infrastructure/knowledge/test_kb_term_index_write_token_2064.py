@@ -334,6 +334,34 @@ async def test_a_retry_that_finds_the_delete_landed_still_moves_the_marker(
     assert _token(tmp_path) not in (None, before)
 
 
+async def test_a_call_that_never_reaches_a_write_leaves_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker is owed only once a write was reached. A no-op delete whose
+    first attempt fails before any write, and whose retry matches nothing,
+    moves no token and calls no ``modify``."""
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+    before = _token(tmp_path)
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.base_client.asyncio.sleep", AsyncMock()
+    )
+    monkeypatch.setattr(Collection, "get", _first_call(Collection.get, lands=False))
+    modified: List[int] = []
+    modify = Collection.modify
+
+    def _counted(self: Collection, *args: Any, **kwargs: Any) -> Any:
+        modified.append(1)
+        return modify(self, *args, **kwargs)
+
+    monkeypatch.setattr(Collection, "modify", _counted)
+
+    assert await store.delete_documents_by_parent_id("absent", retries=1) == 0
+
+    assert modified == []
+    assert _token(tmp_path) == before
+
+
 async def test_a_write_on_the_http_arms_executor_moves_the_token(
     tmp_path: Path,
 ) -> None:
