@@ -601,7 +601,8 @@ class Case(BaseModel):
     investigation_journal: List[JournalEntry] = Field(
         default_factory=list,
         description="Append-only log of key findings, decisions, and context. "
-        "Always included in full in LLM context."
+        "Rendered into the investigation prompt under a token budget, "
+        "which keeps blockers first when it cuts."
     )
 
     # ============================================================
@@ -1263,8 +1264,9 @@ class JournalEntry(BaseModel):
     """A single append-only entry in the investigation journal.
 
     Captures a distilled insight, decision, or context the agent needs
-    to remember across the entire investigation. Always included in the
-    LLM context.
+    to remember across the entire investigation. The prompt renders the
+    journal under a token budget; a cut keeps whole entries, blockers first
+    (``journal_keep_order``).
     """
 
     turn: int
