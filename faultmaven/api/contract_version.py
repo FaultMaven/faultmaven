@@ -151,6 +151,28 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.6.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` and `PATCH "
+            "/cases/{case_id}/evidence/{evidence_id}/classification` take an "
+            "optional `X-FaultMaven-Requester` header: the person a Slack "
+            "service account asks for, keying worker admission only (#2852). "
+            "MINOR: a new optional header; nothing is refused for it."
+        ),
+        body=r"""The value is an opaque id matching `[A-Za-z0-9_-]{16,64}` in
+full (the OpenAPI header schema carries no pattern). From an account whose
+`service_channel` is `slack`, the request's worker jobs (Tier 1 extraction,
+and the runbook gate, document preparation and KB token counts of the
+conversion a turn starts) are admitted under `<account>:<requester>`, so two
+people of one workspace hold separate slots (Principle 14).
+
+It grants nothing: authorization, case ownership, queries, stored rows and
+the response are those of the account, with or without it. A malformed value,
+or any value from another account, is ignored with a log and the request is
+admitted as the account: never a 4xx.""",
+    ),
+    ContractChange(
         version="15.5.0",
         level="MINOR",
         title=(

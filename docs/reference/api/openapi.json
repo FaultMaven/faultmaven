@@ -7935,7 +7935,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.5.0"
+    "version": "15.6.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11873,6 +11873,24 @@
               "title": "Evidence Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+            "in": "header",
+            "name": "X-FaultMaven-Requester",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+              "title": "X-Faultmaven-Requester"
+            }
           }
         ],
         "requestBody": {
@@ -12676,6 +12694,24 @@
               ],
               "description": "Optional. Identifies this turn across retries: a retry under the same key returns the committed turn instead of running it again. Stable per turn (the client's message id), new for every new turn.",
               "title": "Idempotency-Key"
+            }
+          },
+          {
+            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+            "in": "header",
+            "name": "X-FaultMaven-Requester",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+              "title": "X-Faultmaven-Requester"
             }
           }
         ],

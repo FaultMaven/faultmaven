@@ -35,7 +35,10 @@ from faultmaven.api.exception_handlers import (
     database_unavailable_http_exception,
     llm_service_error_http_exception,
 )
-from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.auth_dependencies import (
+    admission_requester,
+    require_authentication,
+)
 from faultmaven.api.v1.dependencies import (
     get_evidence_reclassifier,
     get_investigation_service,
@@ -561,7 +564,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     "/{case_id}/turns",
     response_model=TurnResponse,
     responses=_TURN_RESPONSES,
-    dependencies=[Depends(require_authentication)],
+    # The requester a Slack service account names keys worker admission only
+    # (Principle 14, #2852): an attachment's Tier 1 and the conversion it starts.
+    dependencies=[Depends(require_authentication), Depends(admission_requester)],
 )
 @trace("api_submit_turn")
 async def submit_turn(
@@ -1237,8 +1242,9 @@ async def submit_case_query_gone(case_id: str):
     responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
     # Route-level, ahead of every provider (#1494's shape): the handler also
     # resolves the case service now (ADR-020 D2), and an anonymous caller must
-    # be refused before any collaborator resolves.
-    dependencies=[Depends(require_authentication)],
+    # be refused before any collaborator resolves. The requester keys the
+    # reprocessing's Tier 1 admission only (#2852).
+    dependencies=[Depends(require_authentication), Depends(admission_requester)],
 )
 @trace("api_reclassify_evidence")
 async def reclassify_evidence(

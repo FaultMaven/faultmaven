@@ -12,6 +12,7 @@ Key Dependencies:
 - extract_bearer_token: Clean token extraction from Authorization header
 - get_current_user_optional: Optional user authentication
 - require_authentication: Mandatory user authentication
+- admission_requester: A Slack service account's requester, for admission only
 - require_platform_admin: Mandatory cross-tenant operator role
 - get_current_user_id: Extract just the user ID for service layer
 
@@ -24,16 +25,18 @@ Design Principles:
 """
 
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.api.exception_handlers import revocation_state_unknown_http_exception
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
     UNSCOPED_REQUEST_MSG,
+    bind_admission_requester,
     get_current_enterprise_id,
     set_current_actor_user_id,
     usable_tenant_id,
@@ -44,6 +47,9 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
     RevocationStateUnknownError,
     TokenRevocationError,
+)
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    SLACK_SERVICE_CHANNEL,
 )
 
 # Initialize logger and security scheme
@@ -339,6 +345,57 @@ async def require_authentication(
     # decision and nothing may read it as one — see set_current_actor_user_id.
     set_current_actor_user_id(user.user_id)
     return user
+
+
+_REQUESTER_ID = re.compile(r"[A-Za-z0-9_-]{16,64}")
+_warned_no_user_service = False
+
+
+async def admission_requester(
+    request: Request,
+    user: DevUser = Depends(require_authentication),
+    requester: Annotated[
+        Optional[str],
+        Header(
+            alias="X-FaultMaven-Requester",
+            description=(
+                "Optional. An opaque id of the person a Slack service account "
+                "asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission "
+                "only and grants nothing; from any other account, or malformed, "
+                "it is ignored."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Bind the requester a ``slack`` service account names, for admission to
+    worker slots only (Principle 14, #2852). Every request that declares this
+    binds, None included, so no binding outlives its request. A refused id
+    leaves the request admitted as the account, with no 4xx; its value is
+    never logged."""
+    global _warned_no_user_service
+    bind_admission_requester(None)
+    if requester is None:
+        return
+    if not _REQUESTER_ID.fullmatch(requester):
+        logger.warning("Requester id refused for %s: malformed", user.user_id)
+        return
+    user_service = getattr(request.app.state, "user_service", None)
+    if user_service is None:
+        if not _warned_no_user_service:
+            _warned_no_user_service = True
+            logger.warning("Requester ids ignored: no user service")
+        return
+    try:
+        account = await user_service.get_user(user.user_id)
+    except Exception as e:
+        logger.warning(
+            "Requester id refused for %s: lookup failed: %s", user.user_id, e
+        )
+        return
+    if getattr(account, "service_channel", None) != SLACK_SERVICE_CHANNEL:
+        logger.debug("Requester id ignored for %s: not a slack account", user.user_id)
+        return
+    bind_admission_requester(user.user_id, requester)
 
 
 # Service Layer Dependencies (for clean separation)

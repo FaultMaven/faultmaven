@@ -148,6 +148,21 @@ class FairSlots:
                 return
 
 
+def admission_principal(principal: str) -> str:
+    """The key ``principal`` is admitted to ``FairSlots`` under: the account's
+    ``<account>:<requester>`` when this context bound one for it, else
+    ``principal`` itself.
+
+    It keys admission only: it never reaches an authorization check, a query,
+    an ownership field or a stored row (#2852)."""
+    from faultmaven.config.tenant_context import get_admission_requester
+
+    bound = get_admission_requester()
+    if bound is not None and bound[0] == principal:
+        return f"{principal}:{bound[1]}"
+    return principal
+
+
 def loop_slots(held: Optional[tuple], count: int) -> tuple:
     """``held`` if made on the running loop, else ``(loop, FairSlots(count))``."""
     import asyncio

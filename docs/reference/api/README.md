@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.5.0
+**Version:** 15.6.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2147,6 +2147,7 @@ Error responses (dispatched by ``api/exception_handlers.py``):
 
 - `case_id` (path, required)
 - `evidence_id` (path, required)
+- `X-FaultMaven-Requester` (header, optional) — Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.
 
 **Request body** (required):
 
@@ -2548,6 +2549,7 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 
 - `case_id` (path, required)
 - `Idempotency-Key` (header, optional) — Optional. Identifies this turn across retries: a retry under the same key returns the committed turn instead of running it again. Stable per turn (the client's message id), new for every new turn.
+- `X-FaultMaven-Requester` (header, optional) — Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.
 
 **Request body** (optional):
 
