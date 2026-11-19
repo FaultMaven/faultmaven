@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
+from typing import Any, Callable, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 import chromadb
 import pytest
@@ -25,6 +25,7 @@ from chromadb.api.models.Collection import Collection
 from chromadb.config import Settings as ChromaSettings
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
     KB_WRITE_TOKEN_KEY,
@@ -259,3 +260,104 @@ async def test_an_index_read_under_the_pre_write_token_is_rebuilt(
 
     assert second is not first, "an index built under the pre-write token was kept"
     assert second is not None and second.document_frequency("omega") == 1
+
+
+def _first_call(real: Callable[..., Any], *, lands: bool) -> Callable[..., Any]:
+    """``real``, except that its first call raises: after it ran when ``lands``,
+    before it ran otherwise. A lost response, or a refused request."""
+    calls: List[int] = []
+
+    def _patched(self: Collection, *args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) > 1:
+            return real(self, *args, **kwargs)
+        if lands:
+            real(self, *args, **kwargs)
+        raise RuntimeError("connection dropped")
+
+    return _patched
+
+
+@pytest.fixture
+def lost_write_and_marker(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """Armed: the next ``name`` write lands and its response is lost, and the
+    next marker fails on the same broken transport. Retries do not wait."""
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.base_client.asyncio.sleep", AsyncMock()
+    )
+
+    def _arm(name: str) -> None:
+        for method, lands in ((name, True), ("modify", False)):
+            real = getattr(Collection, method)
+            monkeypatch.setattr(Collection, method, _first_call(real, lands=lands))
+
+    return _arm
+
+
+async def test_a_retry_that_finds_the_restamp_landed_still_moves_the_marker(
+    tmp_path: Path, lost_write_and_marker: Callable[[str], None]
+) -> None:
+    """The marker belongs to the call, not to one attempt. The retry finds no
+    chunk left to restamp and returns success, and it still moves the token."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    await _add(
+        a, [_doc("p1", "alpha disk full", 0.1), _doc("p2", "beta disk full", 0.2)]
+    )
+    built = await a._term_stats_for(KB_COLLECTION)
+    assert built is not None and built.document_frequency("alpha") == 1
+    lost_write_and_marker("update")
+
+    restamped = await b.restamp_chunk_ids(
+        ["p1_chunk_0"], "ent-1", where={"enterprise_id": STANDALONE_ENTERPRISE_ID}
+    )
+
+    assert restamped == ["p1_chunk_0"]
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None and stats.document_frequency("alpha") == 0
+
+
+async def test_a_retry_that_finds_the_delete_landed_still_moves_the_marker(
+    tmp_path: Path, lost_write_and_marker: Callable[[str], None]
+) -> None:
+    """The same for a delete. A delete changes the size, which alone makes
+    another store rebuild, so this pins the token the retry must move."""
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(
+        store, [_doc("p1", "alpha disk full", 0.1), _doc("p2", "beta disk full", 0.2)]
+    )
+    before = _token(tmp_path)
+    lost_write_and_marker("delete")
+
+    assert await store.delete_documents_by_parent_id("p1", retries=1) == 0
+
+    assert _token(tmp_path) not in (None, before)
+
+
+async def test_a_write_on_the_http_arms_executor_moves_the_token(
+    tmp_path: Path,
+) -> None:
+    """On the HTTP arm the write wrapper, and so the marker, runs in the
+    chroma-http executor rather than on the loop thread (#2056)."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    b.blocking_executor = CHROMA_EXECUTOR
+    await _add(a, [_doc("p1", "alpha disk full", 0.1)])
+    assert await a._term_stats_for(KB_COLLECTION) is not None
+    loop_thread = threading.current_thread()
+    marked_on: List[threading.Thread] = []
+    mark = b._mark_written
+
+    def _observed(*args: Any) -> Any:
+        marked_on.append(threading.current_thread())
+        return mark(*args)
+
+    b._mark_written = _observed  # type: ignore[method-assign]
+
+    await _replace(b, "p1", "omega disk full")
+
+    assert marked_on and all(t is not loop_thread for t in marked_on)
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None
+    assert stats.document_frequency("omega") == 1
+    assert stats.document_frequency("alpha") == 0

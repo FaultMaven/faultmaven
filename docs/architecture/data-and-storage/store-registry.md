@@ -58,7 +58,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Relational tables** | SQLite (standalone) or PostgreSQL, one database | per table: customer content, derived data, operational metadata | case · conversion · document · user · enterprise | stamped on every tenant-scoped row (`enterprise_id`, the RLS key) | the module that owns the table | inside: a turn's rows commit once; other writes commit in their own request |
 | **Usage ledger** (`llm_usage_daily`, `llm_turn_spend`) | the same database | operational metadata: token counts and estimated cost | enterprise (daily rows) · case (turn rows) | stamped on the row | `infrastructure/llm/usage_ledger.py` | outside: its own transaction, awaited at the end of `process_turn`; it records spend that happened, and fails open |
 | **Case evidence vectors** (`case_{case_id}`) | ChromaDB, the evidence instance | customer content: chunks of evidence text, with embeddings | case | derived through the case row (the collection is named by case id; chunks carry `case_id`, no `enterprise_id`) | `core/preprocessing/vector_storage.py`, through the agent's `vectorize_file` tool | outside: does not depend on the turn's commit; chunk ids are keyed by evidence id, and a lost `vectorized` flag is retried by a later turn |
-| **KB vectors** (`faultmaven_kb`) | ChromaDB, the KB instance | customer content: runbook chunks, with embeddings | document | stamped on chunk metadata (`enterprise_id`, refused on write when absent since #1168); a chunk written earlier carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777) | the knowledge module's `KnowledgeService`, through `KnowledgeVectorStore`, the collection's only writer | not written by turns |
+| **KB vectors** (`faultmaven_kb`) | ChromaDB, the KB instance | customer content: runbook chunks, with embeddings; operational metadata: the collection's write token (`fm_kb_write_token`, a random value every write moves so every store's term index sees it, #2064) | document | stamped on chunk metadata (`enterprise_id`, refused on write when absent since #1168); a chunk written earlier carries it once an operator runs the `kb_vector_enterprise_backfill` job (#1777) | the knowledge module's `KnowledgeService`, through `KnowledgeVectorStore`, the collection's only writer | not written by turns |
 | **Evidence objects** | `data/evidence/` (filesystem) or S3 | customer content: uploaded file bytes, and a `.meta.json` sidecar per object (the filesystem backend adds a `.meta`) | case | stamped in the key: `{enterprise_id}/{case_id}/{date}/{uuid}_{filename}` | the evidence module's `FileStorageService` | outside: stored at the turn's intake, before its commit; the sidecar is marked linked only after the commit |
 | **Redis `session:`, `sessions:user:`, `client_index:`** (auth sessions) | Redis | operational metadata: the session record and its indexes | user | derived through the user row | the auth module's `RedisSessionStore` | not written by turns |
 | **Redis `session:case_seq:`** (case number counters) | Redis | operational metadata: a counter | user | derived through the user row | the case module's `CaseService`, through the session store | not written by turns |
@@ -178,6 +178,11 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Tenant and writer: `infrastructure/knowledge/knowledge_vector_store.py:1480-1488`;
   `modules/knowledge/domain/services/knowledge_service.py:1145`; the backfill:
   `jobs/kb_vector_enterprise_backfill.py:1-8` (a dry run unless `--no-dry-run`).
+- Write token: collection metadata key `fm_kb_write_token`, written by
+  `KnowledgeVectorStore._mark_written` after every write the store makes and read
+  by the term-index lookup (`KnowledgeVectorStore._corpus_term_stats`). It holds no
+  tenant data and ends with the collection: the deployment wipe deletes the
+  collection (`cli/wipe_deployment.py:721`).
 - Delete: `modules/knowledge/domain/services/knowledge_service.py:599-640`, `:747-751`;
   `bootstrap/kb_orphan_sweep.py:1-18`; `bootstrap/kb_init.py:713`.
 

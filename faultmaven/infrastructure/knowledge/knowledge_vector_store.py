@@ -51,7 +51,7 @@ import threading
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from chromadb.errors import NotFoundError
 
@@ -321,6 +321,49 @@ class CorpusTermStats:
         return self.document_frequency(term) <= IDENTIFIER_DF_RATIO * self.n_chunks
 
 
+class _WriteMarker:
+    """One write call's duty to move the write token, across every attempt (#2064).
+
+    ``call_external`` may run a write wrapper more than once. An attempt whose
+    write lands and whose response is lost raises, and its marker can fail on
+    the same broken transport; the retry then finds nothing left to write and
+    returns success. So the marker belongs to the call, not to one attempt: an
+    attempt calls :meth:`reached` before its write call, and every attempt,
+    one that found nothing to write included, ends in :meth:`settle` through
+    :meth:`attempts`. While a write was reached and the token has not moved
+    since, ``settle`` moves it; once it has moved, later attempts leave it.
+    Attempts run one after another, never together.
+    """
+
+    __slots__ = ("_store", "_collection_name", "_pending")
+
+    def __init__(self, store: "KnowledgeVectorStore", collection_name: str) -> None:
+        self._store = store
+        self._collection_name = collection_name
+        # The collection a write was reached on, until its token moves.
+        self._pending: Any = None
+
+    def reached(self, collection: Any) -> None:
+        self._pending = collection
+
+    def settle(self) -> None:
+        if self._pending is not None and self._store._mark_written(
+            self._pending, self._collection_name
+        ):
+            self._pending = None
+
+    def attempts(self, wrapper: Callable[[], Any]) -> Callable[[], Any]:
+        """``wrapper`` with :meth:`settle` in its ``finally``."""
+
+        def _attempt() -> Any:
+            try:
+                return wrapper()
+            finally:
+                self.settle()
+
+        return _attempt
+
+
 class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     """Vector store for the unified KB collection (faultmaven_kb).
 
@@ -384,9 +427,10 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         Called before AND after every write that adds or deletes chunks. The
         signature (size, write token) sees a write made through any store once
-        :meth:`_mark_written` has moved the token; the generation covers this
-        store's own writes from the moment they land, and a build that races
-        one in this process. Before, from the caller: a cached
+        :meth:`_mark_written` has moved the token, which the write call keeps
+        trying across its attempts (:class:`_WriteMarker`); the generation
+        covers this store's own writes from the moment they land, and a build
+        that races one in this process. Before, from the caller: a cached
         index is never read across the write. After, in the write wrapper's
         own ``finally``, on the thread that made the write: a build that
         started after the first call but read the documents before the write
@@ -400,39 +444,48 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             )
             self._term_stats.pop(collection_name, None)
 
-    def _mark_written(self, collection: Any, collection_name: str) -> None:
+    def _mark_written(self, collection: Any, collection_name: str) -> bool:
         """Move the collection's write token, so every store sees this write (#2064).
 
-        Runs in each write wrapper's ``finally``, beside the after-write
-        :meth:`_invalidate_term_stats`, so it runs whether the write returned
-        or raised part-way. The metadata is read fresh from the client and
-        the token merged in: ``modify`` replaces the whole dict, and a
-        ``Collection`` fetched earlier holds stale metadata. Precondition: the
-        collection declares no ``hnsw:*`` key, which ``modify`` refuses to
-        change (none does; see ``vector_similarity``).
+        Returns whether the token moved. Reached through :class:`_WriteMarker`
+        at the end of every attempt of a write call once a write was reached,
+        until it succeeds: whether the attempt's write returned or raised
+        part-way, and in a retry that found the write already landed. The
+        metadata is read fresh from the client and the token merged in:
+        ``modify`` replaces the whole dict, and a ``Collection`` fetched
+        earlier holds stale metadata. Precondition: the collection declares no
+        ``hnsw:space`` key, the one key ``modify`` refuses to change (none
+        does; see ``vector_similarity``).
 
         Ordering: the token moves AFTER the write lands, and a lookup reads it
-        BEFORE it reads the documents. A build that read a write's documents
-        under the token from before that write is replaced on the next lookup.
+        BEFORE it reads the documents. The next lookup that STARTS a build
+        after the token moved rebuilds, and a build that read a write's
+        documents under the token from before that write is replaced then. A
+        search that joins a build already in flight from before the write may
+        be served that build's index once; the next lookup does not reuse it.
         A random token, not a counter: two writers incrementing one counter
         could both write the same value.
 
         Never raises: ranking is not a correctness dependency, so a failed
-        marker write is logged and the write's own outcome stands. Residual:
-        a failed marker write, a process killed between its write and its
-        marker, or a writer running an image without this leaves other stores
-        on their index until the size or the token next changes.
+        marker write is logged and the write's own outcome stands. Residual: a
+        marker that fails in every attempt of its call, a process killed
+        between its write and its marker, a writer running an image without
+        this, or a writer that bypasses this store (an external tool writing
+        the collection directly) leaves other stores on their index until the
+        size or the token next changes.
         """
         try:
             current = self.client.get_collection(name=collection_name).metadata
             merged = dict(current or {})
             merged[KB_WRITE_TOKEN_KEY] = uuid.uuid4().hex
             collection.modify(metadata=merged)
+            return True
         except Exception as e:  # noqa: BLE001
             self.logger.warning(
                 f"KB write token not moved for '{collection_name}': {e} — other "
                 f"stores keep their term index until the collection next changes"
             )
+            return False
 
     async def _term_stats_for(self, collection_name: str) -> Optional[CorpusTermStats]:
         """The term index for a collection, with one lookup in flight at a time.
@@ -503,6 +556,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         try:
             collection = self._get_or_create_collection(collection_name)
             size = int(collection.count())
+            # getattr, not .metadata: a real Collection always has it, and a
+            # test double without it must still get an index (size alone).
             token = (getattr(collection, "metadata", None) or {}).get(
                 KB_WRITE_TOKEN_KEY
             )
@@ -524,7 +579,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             # documents read are the platform-stamped global ones: coarser than
             # the thing it guards, so a change in another tier also invalidates
             # it. Every write through any store moves the token, so a same-size
-            # write by another replica or process is seen too (#2064). A
+            # write by another replica or process is seen too, by the next
+            # lookup that starts a build (#2064; residuals: _mark_written). A
             # collection with no token yet (None) is guarded by its size alone
             # until its first write.
             payload = collection.get(where=_GLOBAL_TIER, include=["documents"])
@@ -1566,6 +1622,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 f"before the external-call machinery sees it."
             ) from e
 
+        # One per call, shared by its attempts (see _WriteMarker).
+        marker = _WriteMarker(self, collection_name)
+
         def _add_wrapper():
             collection = self._get_or_create_collection(collection_name)
 
@@ -1586,14 +1645,15 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
+            marker.reached(collection)
             try:
                 collection.add(**add_kwargs)
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats), here or in another store (_mark_written).
+                # _invalidate_term_stats). The token other stores read moves
+                # in marker.attempts, once this attempt ends.
                 self._invalidate_term_stats(collection_name)
-                self._mark_written(collection, collection_name)
 
             self.logger.info(
                 f"Added {len(documents)} documents to KB collection "
@@ -1613,7 +1673,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         await self.call_external(
             operation_name="add_documents",
-            call_func=_add_wrapper,
+            call_func=marker.attempts(_add_wrapper),
             # A write: awaited to its end, so its caller never compensates
             # for a write still landing (#2056).
             timeout=None,
@@ -1669,6 +1729,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         Returns the number of chunks deleted (0 if the parent has no chunks).
         """
 
+        marker = _WriteMarker(self, collection_name)
+
         def _delete_wrapper() -> int:
             collection = self._get_or_create_collection(collection_name)
             results = collection.get(
@@ -1678,14 +1740,15 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             chunk_ids = results.get("ids", [])
             if not chunk_ids:
                 return 0
+            marker.reached(collection)
             try:
                 collection.delete(ids=chunk_ids)
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats), here or in another store (_mark_written).
+                # _invalidate_term_stats). The token other stores read moves
+                # in marker.attempts, once this attempt ends.
                 self._invalidate_term_stats(collection_name)
-                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(chunk_ids)} chunks for parent "
                 f"{parent_document_id} from KB collection '{collection_name}'"
@@ -1696,7 +1759,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         return await self.call_external(
             operation_name="delete_documents_by_parent_id",
-            call_func=_delete_wrapper,
+            call_func=marker.attempts(_delete_wrapper),
             # A write: awaited to its end, so its caller never compensates
             # for a write still landing (#2056).
             timeout=None,
@@ -1740,6 +1803,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             ]
         }
 
+        marker = _WriteMarker(self, collection_name)
+
         def _delete_wrapper() -> List[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
@@ -1748,12 +1813,12 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             matched = list(collection.get(where=where, include=[]).get("ids") or [])
             if not matched:
                 return []
+            marker.reached(collection)
             try:
                 collection.delete(ids=matched, where=where)
             finally:
                 # As the other deletes do (see _invalidate_term_stats).
                 self._invalidate_term_stats(collection_name)
-                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(matched)} chunk(s) of generation {generation} of "
                 f"{parent_document_id} from KB collection '{collection_name}'"
@@ -1764,7 +1829,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         return await self.call_external(
             operation_name="delete_generation",
-            call_func=_delete_wrapper,
+            call_func=marker.attempts(_delete_wrapper),
             # A write: awaited to its end (#2056).
             timeout=None,
             retries=1,
@@ -1943,6 +2008,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             return []
         stamped = {"enterprise_id": enterprise_id}
 
+        marker = _WriteMarker(self, collection_name)
+
         def _restamp_wrapper() -> List[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
@@ -1952,12 +2019,12 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 collection.get(ids=ids, where=where, include=[]).get("ids") or []
             )
             if matched:
+                marker.reached(collection)
                 try:
                     collection.update(ids=matched, metadatas=[stamped] * len(matched))
                 finally:
                     # As the delete does (see _invalidate_term_stats).
                     self._invalidate_term_stats(collection_name)
-                    self._mark_written(collection, collection_name)
                 self.logger.info(
                     f"Restamped {len(matched)} observed chunk(s) in KB collection "
                     f"'{collection_name}' with enterprise_id={enterprise_id}"
@@ -1970,7 +2037,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         return await self.call_external(
             operation_name="restamp_chunk_ids",
-            call_func=_restamp_wrapper,
+            call_func=marker.attempts(_restamp_wrapper),
             # A write: awaited to its end, like the delete (#2056).
             timeout=None,
             retries=2,
@@ -1988,6 +2055,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         if not ids:
             return []
 
+        marker = _WriteMarker(self, collection_name)
+
         def _delete_wrapper() -> List[str]:
             try:
                 collection = self.client.get_collection(name=collection_name)
@@ -1999,14 +2068,15 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             )
             if not matched:
                 return []
+            marker.reached(collection)
             try:
                 collection.delete(ids=matched, **scope)
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats), here or in another store (_mark_written).
+                # _invalidate_term_stats). The token other stores read moves
+                # in marker.attempts, once this attempt ends.
                 self._invalidate_term_stats(collection_name)
-                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(matched)} observed chunk(s) from KB collection "
                 f"'{collection_name}'"
@@ -2017,7 +2087,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
 
         return await self.call_external(
             operation_name=operation_name,
-            call_func=_delete_wrapper,
+            call_func=marker.attempts(_delete_wrapper),
             # A write: awaited to its end, so its caller never compensates
             # for a write still landing (#2056).
             timeout=None,
