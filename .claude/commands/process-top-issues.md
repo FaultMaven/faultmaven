@@ -358,8 +358,7 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
        (owner ruling, 2026-11-15: "Design cap 2 that round"). In any other round, while any ready `P0`–`P2` defect
        exists, it is `3 - xl`, so one lane keeps the defect order (owner ruling, 2026-11-15: "Reserve it: design cap
        2"); with none, it is `4 - xl` (owner ruling, 2026-11-13). It is never below 0. The
-       health block offers one lane per root with a ready stage, up to the design cap (the second run's `lanes` lists the **Next** stages too), ranked by the stages' priority (a
-       stage carries its root's); within a priority the proposal follows the owner's last approved order. Design lanes are offered down to the number
+       health block offers one lane per root with a ready stage, up to the design cap (the second run's `lanes` lists the **Next** stages too), ranked by the stages' priority (its own label, else its root's); within a priority the proposal follows the owner's last approved order. Design lanes are offered down to the number
        the round's agent-count limit admits, highest-ranked roots first, and the proposal says which root waited.
      - **A root's second stage** takes a lane only after every offered root has one, within the design cap, and only when the
        two stages are independent: on different seams, neither's pins needing the other's merge, and neither the docs
