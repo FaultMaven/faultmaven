@@ -159,7 +159,7 @@ resolved_budget                         (§3; e.g. 32K, or clamped lower on a sm
 │        history:  verbatim → graduated → state-summary → oldest-first elision
 │        journal:  whole entries in keep order (blockers, then decision/finding/ruled_out,
 │                  then the rest, each newest first); [... N entries omitted ...] marker;
-│                  a newest-end fragment if the first in keep order does not fit
+│                  a newest-end fragment when no whole entry is kept
 │        evidence: Tier A/B/C/D window over its allotment (full current-turn extract
 │                  here if it fits; the stub is already reserved in step 1)
 │        KB / hypotheses: rank, keep what fits, drop lowest with a marker
@@ -209,7 +209,7 @@ remainder in pass B before journal/entity-highlights get anything. The caps:
 | KB results | `KB_MAX_SOLUTION_CHARS` × top-N |
 | Hypotheses | ranked, small per-item cap × N |
 | Evidence needs | small fixed cap |
-| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — about 1.3K tokens at 50 turns, so the cap binds on long cases |
+| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — about 1.4K tokens at 50 turns, so the cap binds past about 55 turns or on denser entries |
 | Entity highlights | already bounded (per-type limit) |
 
 Most are the "upper bounds" the codebase already has; the few currently-unbounded
@@ -275,9 +275,12 @@ Per-section policies:
 - **Investigation journal** — a cut keeps whole entries in `journal_keep_order`
   (`context_builder/assembly.py`; blockers, the other high-signal types, the
   rest, each newest first) up to the first that does not fit, in turn order
-  after a `[... N entries omitted ...]` line. When the first entry in keep order
-  does not fit, the newest end of the turn-ordered journal is kept as a fragment
-  (`keep="tail"`), even if a smaller, lower-ranked entry would have fitted. The fallback's digest keeps the same order.
+  after a `[... N entries omitted ...]` line. The cut keeps no whole entry when
+  the first in keep order does not fit (even if a smaller, lower-ranked entry
+  would have), or when the recount of the full render pops every entry; the
+  newest end of the turn-ordered journal is then kept as a fragment
+  (`keep="tail"`). An allotment too small for any fragment leaves only a
+  marker (INV-4). The fallback's digest keeps the same order.
   Blockers and the other high-signal types rank first because re-treading dead
   ends and known blockers is exactly what the journal exists to prevent.
   Strictly capped at ~1.5K tokens; the allotment can be lower when evidence and
