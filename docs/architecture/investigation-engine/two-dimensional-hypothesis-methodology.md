@@ -453,7 +453,39 @@ generic supports/refutes arithmetic). Links backed by weaker categories
 (e.g. `SYMPTOM_EVIDENCE`) inform the narrative but never validate a node.
 
 **Independent-support bar (ROOT-only).** A non-ROOT rung validates on ≥1
-causally-grounding link. A ROOT — the node that mints a conclusion — requires
+causally-grounding link, and so does a ROOT-typed node a chain was deepened
+past: on the path of a standing hypothesis and the head (its root, else its
+path's first node) of none (`cause_assurance.deepened_past_root_ids`, #2060).
+It keeps its stored type (#2036), but it is a rung to the readers that decide
+by position: the bar, the restatement guard and its hold, the block's label
+and notes, the grade, the cause pool's identified leg, the report map and the
+licence's own arm of a fix. Only standing hypotheses confer that position.
+These readers keep the stored type by design:
+
+- the window's row binding (INV-30), so window 0 keeps observing a cause past
+  a deepening (#2501);
+- the cause pool's fallen leg, so a deepening never drops a FAILED reading
+  (#2042);
+- chain emission's root refs: a ref naming the node is how a hypothesis
+  re-roots onto it;
+- a conclusion's licence leg naming the node (`licence_leg_ids`): once its
+  chain stops standing the node is an orphan root, and a conclusion naming an
+  orphan licenses no remediation of it (#2485);
+- the problem statement's revision refusal: a statement that is a cause stays
+  one when the chain above it stops standing;
+- `confirmation_stamp_rows`: only the resolution finalizer stamps, and a
+  RESOLVED case is never deepened again;
+- `licensed_roots` and `mece_contested_root_ids`, which read the roots of
+  standing hypotheses, and a standing hypothesis's root is never deepened
+  past.
+
+A node
+that enters VALIDATED while deepened past is marked `validated_as_rung`: it
+has faced neither the ROOT bar nor the restatement guard, so no reader counts
+it as a validated or identified root, and once it stands as a root again (a
+re-root, or its chain stops standing) the derive judges it as one; validating
+standing as a root clears the mark, as does leaving VALIDATED. A ROOT — the
+node that mints a conclusion — requires
 `ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN` (= 2) **independent** causally-grounding
 supports: distinct evidence rows whose contents are not mutual restatements of
 each other (`_EVIDENCE_MIRROR_JACCARD` over content tokens of

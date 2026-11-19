@@ -44,7 +44,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .projection import _standing_hypotheses
-from .queries import _state, chain_evidence_links
+from .queries import _state, chain_evidence_links, is_chain_root_validated
 from .rcc import (
     _hypothesis_disconfirmed,
     _representative_cause_hypothesis,
@@ -193,8 +193,9 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     a refutation may stand on without a linked row (#1911): the treatment
     prompt records no evidence row for a failed fix.
 
-    All of: the hypothesis is still standing and its root VALIDATED (the cause
-    the case identifies, not the representative proxy's guess); the latest fix
+    All of: the hypothesis is still standing and its root VALIDATED, not as a
+    rung (the cause the case identifies, not the representative proxy's
+    guess, #2060); the latest fix
     window with a verdict FAILED by persistence (``FixWindow.disconfirms_cause``:
     the cause observed removed after the fix, then the problem observed
     persisting, with no problem-gone row in between — a newer fix still waiting
@@ -212,7 +213,11 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     candidate, not this one. The persistence row is bound too: it names a row that showed the problem,
     so a probe's own failure is not "the problem is back" (#2039)."""
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    if root is None or hyp.state.is_terminal or root.node_state != NodeState.VALIDATED:
+    if (
+        root is None
+        or hyp.state.is_terminal
+        or not is_chain_root_validated(hyp, case.causal_nodes)
+    ):
         return None
     window = latest_decided_fix_window(case)
     if window is None or not window.disconfirms_cause:

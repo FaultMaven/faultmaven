@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
-    evidence_category_map as _evidence_category_map,
+    STANDING_HYP_STATES,
+    deepened_past_root_ids,
+    root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.cause_assurance import (
-    root_counterfactually_confirmed,
+    evidence_category_map as _evidence_category_map,
 )
 from faultmaven.core.investigation.lifecycle_metrics import (
     root_validation_blocked_restatement_total,
@@ -78,6 +80,13 @@ def derive_node_states(case: Case) -> bool:
       such supports (distinct evidence rows that are not mutual restatements of
       each other), because every causal link is an LLM self-labeled claim and
       one self-certified datum must not conclude a case (#573/#656). A
+      ROOT-typed node a chain was deepened past (``deepened_past_root_ids``)
+      is a rung by its position: the rung bar, outside the restatement guard
+      and the ROOT block metric (#2060). Entering VALIDATED that way marks it
+      ``validated_as_rung``: it has not faced the guard, so once it stands as
+      a root again the guard's entry exemption does not cover it, and this
+      derive judges it as a root; validating as a root clears the mark, as
+      does leaving VALIDATED. A
       counterfactually CONFIRMED root (engine-stamped ``causal_absence``
       SUPPORTS, gone⇒gone — the M2 top grade, engine-only producer) satisfies
       the ROOT bar outright: confirmation dominates empirical counting, and a
@@ -105,7 +114,8 @@ def derive_node_states(case: Case) -> bool:
     nodes = case.causal_nodes
     edges = case.causal_edges
     evidence_by_id: dict[str, EvidenceCategory | None] = _evidence_category_map(case)
-    restating_roots = _restating_root_ids(case)
+    deepened = deepened_past_root_ids(case)
+    restating_roots = _restating_root_ids(case, deepened)
     causal_tokens = _causal_evidence_tokens(case)
 
     changed_any = False
@@ -133,8 +143,12 @@ def derive_node_states(case: Case) -> bool:
             # — or a counterfactual confirmation, which dominates counting —
             # while a non-ROOT rung keeps ≥1. The len() pre-check short-circuits
             # the pairwise independence work when the raw count can't reach the
-            # bar anyway (independent count ≤ deduped link count).
-            if node.node_type == NodeType.ROOT:
+            # bar anyway (independent count ≤ deduped link count). A root a
+            # chain was deepened past is a rung by its position (#2060).
+            stands_as_root = (
+                node.node_type == NodeType.ROOT and node.node_id not in deepened
+            )
+            if stands_as_root:
                 causally_grounded = (
                     len(causal_support_ev_ids) >= ROOT_INDEPENDENT_CAUSAL_SUPPORT_MIN
                     and _independent_causal_support_count(
@@ -160,7 +174,10 @@ def derive_node_states(case: Case) -> bool:
                 continue  # owned by the deductive lane — never demote here
             elif would_validate and (
                 node.node_id not in restating_roots
-                or node.node_state == NodeState.VALIDATED
+                or (
+                    node.node_state == NodeState.VALIDATED
+                    and not node.validated_as_rung
+                )
             ):
                 # The restatement guard is an ENTRY bar: it blocks the
                 # transition INTO VALIDATED, but a root that already validated
@@ -171,6 +188,8 @@ def derive_node_states(case: Case) -> bool:
                 # mint path. Pre-guard persisted conclusions are therefore
                 # grandfathered — deliberately: closed cases never recompute
                 # anyway, and their confidence is the grade-cap work on #656.
+                # A node validated as a rung never faced the guard, so it is
+                # not exempt (#2060).
                 target_state = NodeState.VALIDATED
             elif would_validate:
                 # §7.1 restatement guard: supported and gate-satisfied, but the
@@ -198,6 +217,11 @@ def derive_node_states(case: Case) -> bool:
             if counterfactual_refutes >= 1 and node.belief != 0.0:
                 node.belief = 0.0
 
+            # Validating standing as a root, the node has now faced the ROOT bar
+            # and the guard; cleared before the no-change short-circuit, so a
+            # node that stays VALIDATED is cleared too (#2060).
+            if target_state == NodeState.VALIDATED and stands_as_root:
+                node.record_validated_as_rung(False)
             if target_state == node.node_state:
                 continue
 
@@ -231,7 +255,7 @@ def derive_node_states(case: Case) -> bool:
                 and generic_ok
                 and not causally_grounded
                 and raw_causal_links >= 1
-                and node.node_type == NodeType.ROOT
+                and stands_as_root
             ):
                 reason = _support_block_reason(causal_support_ev_ids, causal_tokens)
                 root_validation_blocked_support_count_total.labels(
@@ -242,7 +266,14 @@ def derive_node_states(case: Case) -> bool:
             # validators run on reload via CausalNode(**...)): M4 validated ⇒
             # method != NONE; M1 validated ROOT ⇒ actionable; REFUTED ⇔
             # refutation_reason present (and a reason is illegal on any other
-            # state, so it is cleared when leaving REFUTED).
+            # state, so it is cleared when leaving REFUTED). The rung mark is
+            # set on an entry into VALIDATED while deepened past and cleared on
+            # any exit (#2060).
+            node.record_validated_as_rung(
+                target_state == NodeState.VALIDATED
+                and node.node_type == NodeType.ROOT
+                and not stands_as_root
+            )
             if target_state == NodeState.VALIDATED:
                 node.validation_method = ValidationMethod.EMPIRICAL
                 node.refutation_reason = None
@@ -318,16 +349,21 @@ def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
     without ever stating a mechanism — stamping it would conclude "the problem
     causes itself". The survivor stays un-stamped and the investigation stays
     open until the LLM states what the surviving cause actually IS.
+
+    Only a node standing as a root is validated by exclusion: one a chain was
+    deepened past is a rung (#2060, ``deepened_exclusion_survivors`` names
+    them for the model).
     """
     if not asserted_survivor_ids:
         return False
     nodes = case.causal_nodes
     edges = case.causal_edges
-    restating_roots = _restating_root_ids(case)
+    deepened = deepened_past_root_ids(case)
+    restating_roots = _restating_root_ids(case, deepened)
     changed = False
     for sid in asserted_survivor_ids:
         node = nodes.get(sid)
-        if node is None or node.node_type != NodeType.ROOT:
+        if node is None or node.node_type != NodeType.ROOT or sid in deepened:
             continue  # only a ROOT cause is validated by exclusion
         if node.node_state in (NodeState.VALIDATED, NodeState.REFUTED):
             continue  # already settled — assertion does not re-open it
@@ -342,3 +378,29 @@ def validate_by_exclusion(case: Case, asserted_survivor_ids: set[str]) -> bool:
                 changed = True
                 break
     return changed
+
+
+def deepened_exclusion_survivors(
+    case: Case, asserted_survivor_ids: set[str] | frozenset[str]
+) -> list[tuple[str, str]]:
+    """The asserted survivors ``validate_by_exclusion`` skips because a chain
+    was deepened past them (#2060), each as ``(survivor, root above it)``: the
+    head of a standing hypothesis whose path runs through it. Only a survivor
+    still unvalidated: one already VALIDATED (by an earlier stamp, say) is
+    left alone by the lane anyway, so nothing was skipped for being a rung."""
+    deepened = deepened_past_root_ids(case)
+    skipped = []
+    for sid in sorted(set(asserted_survivor_ids) & deepened):
+        if case.causal_nodes[sid].node_state == NodeState.VALIDATED:
+            continue
+        above = sorted(
+            head
+            for h in case.hypotheses.values()
+            if h is not None
+            and h.state in STANDING_HYP_STATES
+            and sid in (h.path or ())
+            and (head := h.root_node_id or h.path[0]) != sid
+        )
+        if above:
+            skipped.append((sid, above[0]))
+    return skipped

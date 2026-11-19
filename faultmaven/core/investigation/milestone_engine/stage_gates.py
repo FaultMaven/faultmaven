@@ -355,7 +355,10 @@ def licence_leg_ids(
     - ``"rcc"``: the conclusion's standing hypothesis root
       (``conclusion_node``); else the node it names: a ROOT only when the
       cause pool holds it (#2485), an intermediate as named; none and
-      ``in_words`` when it names no node;
+      ``in_words`` when it names no node. The stored type decides here, so a
+      root a chain was deepened past is never licensed as a named rung: once
+      its chain stops standing it is an orphan root, and a conclusion naming
+      an orphan licenses no remediation of it (#2485, #2060);
     - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
@@ -396,10 +399,12 @@ def fix_cause(case: Case) -> FixCause:
       when ``root_ids`` is empty;
     - ``in_words``: the conclusion licensing it names its cause in words only;
     - ``held``: a revised statement awaits re-confirmation, so the cause work
-      staged in its hold is not in this pool."""
+      staged in its hold is not in this pool;
+    - ``deepened_ids``: the roots a chain was deepened past (#2060)."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         _pool_legs,
+        deepened_past_root_ids,
         licensed_roots,
     )
 
@@ -407,11 +412,13 @@ def fix_cause(case: Case) -> FixCause:
     identified, held, _fallen = _pool_legs(case)
     reference = set(confirmation | window | hypotheses)
     on_hold = pending_revision(case) is not None
+    deepened = tuple(sorted(deepened_past_root_ids(case)))
     if identified or held:
         return FixCause(
             root_ids=sorted(identified or held),
             reference_ids=sorted(reference),
             held=on_hold,
+            deepened_ids=deepened,
         )
     reference |= licensed_roots(case)
     leg = solution_licence_leg(case)
@@ -421,6 +428,7 @@ def fix_cause(case: Case) -> FixCause:
         reference_ids=sorted(reference),
         in_words=in_words,
         held=on_hold,
+        deepened_ids=deepened,
     )
 
 

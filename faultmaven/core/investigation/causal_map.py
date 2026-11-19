@@ -33,7 +33,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Optional
 
-from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
+from faultmaven.core.investigation.cause_assurance import (
+    deepened_past_root_ids,
+    grade_cause_assurance,
+    stands_as_validated_root,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     causal_map_suppressed_contradiction_total,
 )
@@ -186,13 +190,13 @@ def render_causal_map(case: "Case") -> Optional[str]:
     if len(kept_edges) < MIN_EDGES:
         return None
     # The section claims to show how the established cause produced the
-    # problem — if no validated root sits on a chain into D, it cannot.
+    # problem — if no validated root sits on a chain into D, it cannot. A
+    # validated rung is no established cause (#2060).
     validated_ids = {
         n.node_id for n in kept_nodes if n.node_state == NodeState.VALIDATED
     }
-    if not any(
-        n.node_type == NodeType.ROOT and n.node_id in validated_ids for n in kept_nodes
-    ):
+    deepened = deepened_past_root_ids(case)
+    if not any(stands_as_validated_root(n, deepened) for n in kept_nodes):
         return None
     # Self-contradiction valve (fm#1091). The hypothesis axis and the node axis
     # are derived separately and normally agree — a hypothesis reads VALIDATED

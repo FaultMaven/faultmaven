@@ -3,6 +3,7 @@ from typing import Any
 
 from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
 from faultmaven.core.investigation.causal_graph.derivation import (
+    deepened_exclusion_survivors,
     derive_node_states,
     validate_by_exclusion,
 )
@@ -45,6 +46,7 @@ from faultmaven.core.investigation.working_conclusion_generator import (
 from faultmaven.modules.case.contracts import Case, CauseState
 
 from .stage_gates import (
+    _add_system_feedback,
     _flag_absence_inside_a_failed_fix_window,
     _flag_unbound_post_fix_rows,
     _refresh_working_conclusion,
@@ -536,6 +538,20 @@ def _recompute_assessment_state(
     newly_validated = _recompute_cause_state_from_chain(
         case, exclusion_survivors=exclusion_survivors, count=not final
     )
+    # Say why proof by exclusion skipped a survivor a chain was deepened past
+    # (#2060): once per turn, on the final recompute, read from its graph.
+    # Housekeeping between step 1 and the final recompute can retire the
+    # deepening hypothesis, and the final pass then stamps the survivor; one
+    # still deepened past then is one the lane did not stamp.
+    if metadata is not None and final:
+        for survivor, above in deepened_exclusion_survivors(case, exclusion_survivors):
+            _add_system_feedback(
+                metadata,
+                f"SYSTEM: deductive_validations named {survivor}, which a chain "
+                f"was deepened past: {above} sits above it, so it is a rung, and "
+                "proof by exclusion validates only a root. Assert the root above "
+                "it, or re-root onto it.",
+            )
     # The cause_state rising edge, recorded as this turn's milestone (#1284).
     # ``record_turn`` models the per-turn list as a before/after diff of
     # ``case.progress`` (lifecycle §3.2), and cause identification is a progress

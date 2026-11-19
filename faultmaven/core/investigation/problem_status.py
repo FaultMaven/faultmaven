@@ -259,13 +259,16 @@ def revision_refusal(
                 "it restates a cause hypothesis; the problem statement describes "
                 "what is observed, never why"
             )
+    # Every ROOT-typed node, a root a chain was deepened past included: the
+    # graph showed it as a rung, which the wording says, but a statement that
+    # is a cause stays one when that chain stops standing (#2060).
     for node in case.causal_nodes.values():
         if node.node_type == NodeType.ROOT and hypothesis_statements_duplicate(
             text, node.statement
         ):
             return (
-                "it restates a root cause; the problem statement describes what "
-                "is observed, never why"
+                "it restates a cause on the graph; the problem statement "
+                "describes what is observed, never why"
             )
     if revision_declined(case, wording_key):
         return "the user already declined this wording"

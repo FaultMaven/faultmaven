@@ -193,6 +193,15 @@ class FixCause(BaseModel):
             "record."
         ),
     )
+    deepened_ids: Optional[tuple[str, ...]] = Field(
+        default=None,
+        description=(
+            "The roots a chain was deepened past at the start of the turn "
+            "(#2060): rungs, so a ROOT a fix's own licence names among them "
+            "makes it no remediation. None on a record from before they were "
+            "recorded, read as none."
+        ),
+    )
 
 
 #: Bounds on a turn's ``system_notices`` (#2499): at most this many notices,

@@ -383,7 +383,9 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
        D2.3. Unnamed, it takes ``_unnamed_target``, where
        "proposed in its run turn" means minted in this apply. A remediation
        when its targets meet that record's ``reference_ids`` or a ROOT its
-       own licence names (an intermediate one never), else an interception;
+       own licence names (an intermediate one never, nor a root a chain was
+       deepened past by that record's ``deepened_ids``, #2060; a record
+       from before them names none), else an interception;
        a target id no longer on the graph is then dropped, the kind kept.
        With no target and a licence naming its cause in words only:
        unkinded, and the model is asked for the cause's node (ruling 2).
@@ -418,12 +420,14 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
             continue
         same_turn = action_id in minted
         # Only a ROOT the licence names joins the reference: a fix at an
-        # intermediate node is never a remediation.
+        # intermediate node is never a remediation, and a root a chain was
+        # deepened past when the run turn started is a rung (#2060).
         own = {
             node_id
             for node_id in action.licence_ids or ()
             if node_id in case.causal_nodes
             and case.causal_nodes[node_id].node_type == NodeType.ROOT
+            and node_id not in (cause.deepened_ids or ())
         }
         if not action.target_named:
             target = _unnamed_target(cause, action, same_turn)

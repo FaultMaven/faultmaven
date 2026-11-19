@@ -288,12 +288,31 @@ class CausalNode(BaseModel):
         return verdict if isinstance(verdict, bool) else None
 
     @property
+    def validated_as_rung(self) -> bool:
+        """This node entered VALIDATED while a chain was deepened past it, on
+        the rung bar and outside the restatement guard (#2060). Written only by
+        ``derive_node_states``; cleared when it leaves VALIDATED or validates
+        standing as a root. Until then it is no validated or identified root."""
+        return self.metadata.get("validated_as_rung") is True
+
+    def record_validated_as_rung(self, marked: bool) -> None:
+        """Set or clear the ``validated_as_rung`` mark."""
+        if marked:
+            self.metadata["validated_as_rung"] = True
+        else:
+            self.metadata.pop("validated_as_rung", None)
+
+    @property
     def is_identified_root(self) -> bool:
         """This node is an identified ROOT CAUSE: a VALIDATED root its
-        hypothesis marked terminal. The one definition every reader uses."""
+        hypothesis marked terminal, and not validated as a rung. The one
+        definition every reader uses. Node-local: a reader over the case's
+        nodes also drops a root a chain was deepened past
+        (``cause_assurance.deepened_past_root_ids``)."""
         return (
             self.node_type == NodeType.ROOT
             and self.node_state == NodeState.VALIDATED
+            and not self.validated_as_rung
             and self.root_terminal is True
         )
 

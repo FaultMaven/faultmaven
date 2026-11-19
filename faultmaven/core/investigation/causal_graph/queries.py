@@ -232,11 +232,15 @@ def is_chain_root_validated(
     """A chain (hypothesis) grounds ``cause_state=IDENTIFIED`` only when its
     ROOT node exists and is VALIDATED (methodology §9.2). The root is the top of
     the ``root -> ... -> D`` path; M3 requires it to be set before validation.
+    A root validated as a rung (``CausalNode.validated_as_rung``) is not, until
+    the derive judges it as a root (#2060).
     """
     root_id = hypothesis.root_node_id
     if not root_id:
         return False
-    return _state(root_id, nodes) == NodeState.VALIDATED
+    return _state(root_id, nodes) == NodeState.VALIDATED and not (
+        nodes[root_id].validated_as_rung
+    )
 
 
 def is_chain_root_identified(

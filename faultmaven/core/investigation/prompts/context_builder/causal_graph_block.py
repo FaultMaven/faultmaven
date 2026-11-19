@@ -15,6 +15,7 @@ from faultmaven.core.investigation.causal_graph.support import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
+    deepened_past_root_ids,
     latest_decided_fix_window,
 )
 from faultmaven.core.investigation.narration.prompt_state import cause_work_rule
@@ -437,6 +438,13 @@ def _build_causal_graph_block(case: Case) -> str:
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
         note = "".join(_RECOVERY_NOTES.get(r, "") for r in reasons.get(n.node_id, ()))
         shown = node_type or n.node_type.value
+        # A node validated as a rung, shown as a root before the derive judges
+        # it as one, is not a validated root (#2060).
+        state = (
+            NodeState.INCONCLUSIVE
+            if shown == "root" and n.validated_as_rung
+            else n.node_state
+        )
         # D6's floor: a verdict cites rows recorded since a hypothesis first
         # attached to the root. A root never attached has no floor yet.
         attached = {"root_first_attached_turn", "root_attached_turn"} & set(n.metadata)
@@ -447,13 +455,18 @@ def _build_causal_graph_block(case: Case) -> str:
         )
         return (
             f"{indent}{n.node_id} [{shown}/"
-            f"{n.node_state.value}] {_one_line(n.statement)}{posited}{note}"
+            f"{state.value}] {_one_line(n.statement)}{posited}{note}"
         )
 
     on_path: set[str] = set()
-    # A node some hypothesis shown here is rooted at stays a root on every path
-    # through it: a re-root may hand an old root to another hypothesis.
-    shown_roots = {h.root_node_id for h in active_h if h.root_node_id}
+    # A root a chain was deepened past keeps its stored type (the cluster-origin
+    # machinery and a later re-root back onto it read it), but it has a cause
+    # above it now, so it is a rung (#2036). The label, the bar, the notes and
+    # the grade read one predicate over the STANDING hypotheses (#2060): a node
+    # one of them is headed by (its root, else its path's first node) stays a
+    # root on every path through it, and the ROOT-typed nodes on a refuted or
+    # inconclusive chain show as roots.
+    below_the_root = deepened_past_root_ids(case)
     lines = [
         "<causal_graph>",
         "Chains built so far (D = the problem). REFERENCE these cn_... ids when "
@@ -486,12 +499,8 @@ def _build_causal_graph_block(case: Case) -> str:
             if n is None or n.node_type.value == "problem":
                 continue
             on_path.add(nid)
-            # A root this chain was deepened past keeps its stored type (the
-            # cluster-origin machinery and a later re-root back onto it read
-            # it), but it has a cause above it now, so it is a rung (#2036).
-            below_the_root = n.node_type.value == "root" and nid not in shown_roots
             lines.append(
-                _node_line("    ", n, "intermediate" if below_the_root else None)
+                _node_line("    ", n, "intermediate" if nid in below_the_root else None)
             )
         if h.state.value == "refuted" and h.refutation_reason:
             lines.append(f"    Refuted because: {_one_line(h.refutation_reason)}")
