@@ -95,61 +95,103 @@ class WorkerEnd:
 
 
 class FairSlots:
-    """Slots under Principle 14's admission rule (#2645): a principal (the user)
-    holding none takes one while one is free, one holding some only while two
-    are free. Waiters are served fewest-held first, then earliest, as the rule
-    admits them. A waiter granted then cancelled releases its grant. Releasing
-    for a principal that holds none raises ``ValueError`` and changes nothing,
-    as ``asyncio.BoundedSemaphore`` refuses a release past its count."""
+    """Slots under Principle 14's admission rule (#2645): an account holding
+    none takes one while one is free, one holding some only while two are free.
+    A freed slot goes to the account holding the fewest, earliest place first,
+    as the rule admits it. Within it (#2852): the waiter whose requester holds
+    the fewest; then the requester granted least recently since the account was
+    last idle, one not granted since first; then the earliest. The grant takes
+    the account's earliest place, so accounts rank as without requesters. A
+    cancelled grant is released. Releasing a key that holds none raises
+    ``ValueError`` and changes nothing."""
 
     def __init__(self, count: int) -> None:
-        self._free, self._held = count, Counter()
-        self._waiting: list = []  # [order, principal, future]
+        self._free, self._held, self._by_key = count, Counter(), Counter()
+        self._waiting: list = []  # [arrival, (account, requester), future, place]
+        self._granted: Dict[str, Dict[Optional[str], int]] = {}  # since idle
         self._order = itertools.count()
 
     def locked(self) -> bool:
         """No slot free, or someone waits."""
         return self._free == 0 or bool(self._waiting)
 
-    async def acquire(self, principal: str) -> None:
+    async def acquire(self, account: str, requester: Optional[str] = None) -> None:
         import asyncio
 
-        waiter = (
-            next(self._order),
-            principal,
-            asyncio.get_running_loop().create_future(),
-        )
+        arrival = next(self._order)
+        future = asyncio.get_running_loop().create_future()
+        waiter = [arrival, (account, requester), future, arrival]
         self._waiting.append(waiter)
         self._grant()
         try:
-            await waiter[2]
+            await future
         except BaseException:
             if waiter in self._waiting:
                 self._waiting.remove(waiter)
-            elif not waiter[2].cancelled():
-                self.release(principal)
+                self._forget_if_idle(account)
+            elif not future.cancelled():
+                self.release(account, requester)
             raise
 
-    def release(self, principal: str) -> None:
-        if not self._held[principal]:
-            raise ValueError(f"FairSlots released for {principal!r}, which holds none")
-        self._held[principal] -= 1
-        self._held += Counter()  # drops a principal holding none
+    def release(self, account: str, requester: Optional[str] = None) -> None:
+        key = (account, requester)
+        if not self._by_key[key]:
+            raise ValueError(f"FairSlots released for {key!r}, which holds none")
+        self._by_key[key] -= 1
+        self._held[account] -= 1
+        self._by_key += Counter()  # drops a key holding none
+        self._held += Counter()
         self._free += 1
+        self._forget_if_idle(account)
         self._grant()
+
+    def _forget_if_idle(self, account: str) -> None:
+        if not self._held[account] and all(w[1][0] != account for w in self._waiting):
+            self._granted.pop(account, None)
 
     def _grant(self) -> None:
         while True:
             live = [w for w in self._waiting if not w[2].done()]
-            for waiter in sorted(live, key=lambda w: (self._held[w[1]], w[0])):
-                if self._free >= (2 if self._held[waiter[1]] else 1):
+            place: Dict[str, int] = {}
+            for w in live:
+                place[w[1][0]] = min(place.get(w[1][0], w[3]), w[3])
+            for account in sorted(place, key=lambda a: (self._held[a], place[a])):
+                if self._free >= (2 if self._held[account] else 1):
+                    mine = [w for w in live if w[1][0] == account]
+                    granted = self._granted.setdefault(account, {})
+                    waiter = min(
+                        mine,
+                        key=lambda w: (
+                            self._by_key[w[1]],
+                            granted.get(w[1][1], -1),
+                            w[0],
+                        ),
+                    )
+                    earliest = min(mine, key=lambda w: w[3])
+                    earliest[3], waiter[3] = waiter[3], earliest[3]
                     self._waiting.remove(waiter)
                     self._free -= 1
-                    self._held[waiter[1]] += 1
+                    self._held[account] += 1
+                    self._by_key[waiter[1]] += 1
+                    granted[waiter[1][1]] = next(self._order)
                     waiter[2].set_result(None)
                     break
             else:
                 return
+
+
+def admission_principal(principal: str) -> tuple[str, Optional[str]]:
+    """``principal``'s ``FairSlots`` key: ``(principal, requester)`` when this
+    context bound one for that account, so its requester takes turns with the
+    account's others, else ``(principal, None)``; never one joined string, as a
+    principal may hold a colon. Admission only: never an authorization check, a
+    query, an ownership field or a stored row (#2852)."""
+    from faultmaven.config.tenant_context import get_admission_requester
+
+    bound = get_admission_requester()
+    if bound is not None and bound[0] == principal:
+        return principal, bound[1]
+    return principal, None
 
 
 def loop_slots(held: Optional[tuple], count: int) -> tuple:
