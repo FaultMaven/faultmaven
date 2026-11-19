@@ -589,6 +589,25 @@ async def test_a_reason_without_a_rendering_renders_its_value_counted(
     assert any("fallback resolution" in r.getMessage() for r in caplog.records)
 
 
+async def test_a_reason_outside_the_enum_renders_its_value_counted(
+    monkeypatch, failures
+):
+    """A record loaded without validation can hold a closure reason that is
+    no ``ClosureReason`` (the docstring of ``_fallback_body`` names it): it
+    renders as its value, counted once, and never raises."""
+    case = await build("terminal_qa")
+    with frozen():
+        record = narration_outcome(case)
+    bogus = record.model_copy(
+        update={"closure": record.closure.model_copy(update={"reason": "bogus_reason"})}
+    )
+    monkeypatch.setattr(fold_module, "narration_outcome", lambda _case: bogus)
+    with frozen():
+        prompt = fallback_module.get_fallback_prompt_for_case(case, "status")
+    assert "RESOLUTION: bogus_reason" in prompt
+    assert failures == [WritePoint.NARRATION]
+
+
 # ---------------------------------------------------------------------------
 # The zone, selected from the record (the selection half of the focus
 # emphasis's tests that passed a bare ``InvestigationProgress``)

@@ -768,8 +768,10 @@ def _fallback_resolution(fold: NarrationFold) -> str:
     "Solution verified", else the closure reason's model rendering, else
     "Closed"; ``RESOLUTION_OMITTED`` when the record cannot be read, never
     "Closed", which a RESOLVED case is not. A closure reason with no model
-    rendering (``CLOSURE_MODEL_TEXT``) renders as its value, logged and
-    counted as a narration failure; it never raises (#2615 pin 6)."""
+    rendering (``CLOSURE_MODEL_TEXT``), a member the map lacks or a value a
+    record loaded without validation holds, renders as its value (``str``),
+    logged and counted as a narration failure; it never raises (#2615 pin
+    6)."""
     outcome = fold.outcome(_RESOLUTION)
     if outcome is None:
         return RESOLUTION_OMITTED
@@ -780,11 +782,9 @@ def _fallback_resolution(fold: NarrationFold) -> str:
         return "Closed"
     text = closure_model_text(resolution.closure)
     if text is None:
-        fold.fail(
-            _RESOLUTION,
-            LookupError(f"no model rendering for {resolution.closure.value!r}"),
-        )
-        return resolution.closure.value
+        value = str(resolution.closure)
+        fold.fail(_RESOLUTION, LookupError(f"no model rendering for {value!r}"))
+        return value
     return text
 
 

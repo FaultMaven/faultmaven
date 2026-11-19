@@ -897,15 +897,17 @@ def focus_zone(outcome: CaseOutcome, fresh: PromptStateFresh) -> FocusZone:
 
 #### Injection Point
 
-The focus zone is injected immediately after the stage header, before the standard capabilities list:
+The focus zone renders at the top of the prompt's per-turn tail, right after `CACHE_BOUNDARY` (the `=== CURRENT CASE ... ===` line of `INVESTIGATION_BASE`), not inside the stage instructions, which close the cached prefix (#613):
 
 ```text
-**CURRENT STAGE: DIAGNOSIS** (Understand, Diagnose, Propose)
-{focus_zone_emphasis}                          ← injected here
-**YOUR NATURAL FLOW** (no sub-stages — follow the evidence):
-1. Verify Symptoms ...
-2. Diagnose Root Cause ...
-3. Propose Action ...
+YOUR TASK:
+{adaptive_instructions}                        ← the stage instructions (cached prefix)
+
+=== CURRENT CASE (this turn's state, evidence and conversation follow) ===
+{focus_emphasis}                               ← rendered here
+STATE: INVESTIGATING
+{identity}
+...
 ```
 
 #### Why This Works
