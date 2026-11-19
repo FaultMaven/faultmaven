@@ -1277,7 +1277,7 @@ class JournalEntry(BaseModel):
     hypothesis_id: Optional[str] = None
 ```
 
-Stored on `Case.investigation_journal` (append-only list) and persisted in the metadata JSONB blob. Always included in full in the LLM context as an `<investigation_journal>` XML block.
+Stored on `Case.investigation_journal` (append-only list) and persisted in the metadata JSONB blob. Included in every investigating prompt as an `<investigation_journal>` XML block; under budget pressure it is cut by whole entries, blockers first, up to the first that does not fit (fm#2101; `evidence-needs-design.md` §9.8).
 
 See **[Investigation Journal](./investigation-journal.md)** for the canonical design: entry-type taxonomy with examples, creation rules, LLM-context injection format, and the Phase 2/3 implementation plan.
 

@@ -97,6 +97,16 @@ investigation. You see it in <evidence_needs>; you mutate it via
   have, stating the boundary and what it leaves unproven. Asking a
   third time for something the user has already declined does not make
   it available; it stalls the investigation on data that is not coming.
+- **A check that cannot run here is a journal blocker.** When
+  output the user shared shows a check cannot run in their environment
+  (its tool is missing, access is denied), record it that turn in
+  `journal_entries` with `entry_type: "blocker"`, naming the check and
+  the reason — also when you raise `missing_critical_data`. When no
+  source still available can supply a `causal_verification` need's
+  data, set `obtainability=unobtainable` on that need. Never request a
+  check a journal blocker names, nor offer it as a fallback, unless
+  later evidence shows the limit changed: ask for a source still
+  available.
 """
 
 

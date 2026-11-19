@@ -18,7 +18,7 @@ from .budget import (
     STATE_SUMMARY_MAX_HYPOTHESES,
 )
 from .narration_fold import NarrationFold
-from .text_shaping import _smart_truncate_agent_response
+from .text_shaping import _cap_latest_reply, _smart_truncate_agent_response
 
 _STATE_SUMMARY = "state summary"
 
@@ -370,11 +370,14 @@ def _aside_turns(messages: list) -> set:
     }
 
 
-def _build_graduated_history(case: Case, fence: PromptFence) -> str:
+def _build_graduated_history(
+    case: Case, fence: PromptFence, latest_whole: bool = True
+) -> str:
     """Build graduated conversation history: recent turns verbatim, older summarized.
 
     Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated
-    agent responses. Older turns: one-line summaries from TurnProgress metadata.
+    agent responses, but the newest whole to LATEST_REPLY_MAX_CHARS if ``latest_whole``.
+    Older turns: one-line summaries from TurnProgress metadata.
 
     Falls back to verbatim-only if turn_history is unavailable.
     """
@@ -441,6 +444,8 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
 
     # --- RECENT TURNS (verbatim with smart agent truncation) ---
     result += "RECENT TURNS:\n"
+    parts: list[str] = []
+    replies: list[int] = []  # the parts quoted as ``ASSISTANT: <text>``
     current_turn_num = None
     for msg in messages:
         turn_num = msg.get("turn_number")
@@ -454,26 +459,27 @@ def _build_graduated_history(case: Case, fence: PromptFence) -> str:
 
         if turn_num != current_turn_num:
             if current_turn_num is not None:
-                result += "\n"
-            result += f"TURN {turn_num}:\n"
+                parts.append("\n")
+            parts.append(f"TURN {turn_num}:\n")
             current_turn_num = turn_num
             if turn_num in asides:
                 # One line for the whole turn (#1329): the poem is not
                 # investigation context, and quoting it invites the model to
                 # pick the tangent back up.
-                result += f"{ASIDE_LINE}\n"
+                parts.append(f"{ASIDE_LINE}\n")
         if turn_num in asides:
             continue
         if is_server_written_assistant_row(msg):
-            result += f"{_no_answer_lines(server_note_of(msg))}\n"  # #1451, #1665
+            parts.append(f"{_no_answer_lines(server_note_of(msg))}\n")  # #1451, #1665
             continue
-
         if role == "ASSISTANT":
-            content = _smart_truncate_agent_response(content)
-
-        result += f"{role}: {content}\n"
-
-    return _fence_conversation(result, fence)
+            replies.append(len(parts))
+        parts.append(content if role == "ASSISTANT" else f"{role}: {content}\n")
+    for slot in replies:  # shaped once the loop has chosen the quoted rows
+        whole = latest_whole and slot == replies[-1]
+        shape = _cap_latest_reply if whole else _smart_truncate_agent_response
+        parts[slot] = f"ASSISTANT: {shape(parts[slot])}\n"
+    return _fence_conversation(result + "".join(parts), fence)
 
 
 def _build_verbatim_history(messages: list, fence: PromptFence) -> str:

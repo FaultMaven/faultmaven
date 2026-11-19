@@ -152,6 +152,50 @@ def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
     return f"{opening}\n{terminate_dangling(kept)}\n{closing}"
 
 
+_KEEP_RANK = {"blocker": 0, "decision": 1, "finding": 1, "ruled_out": 1}
+
+
+def journal_keep_order(journal: list) -> list:
+    """Newest first within rank: blockers, other high-signal types, the rest."""
+    newest_first = sorted(journal, key=lambda e: -e.turn)
+    return sorted(newest_first, key=lambda e: _KEEP_RANK.get(e.entry_type, 2))
+
+
+def _blocker_room(journal: list, cap: int, budget: "TokenBudget") -> int:
+    blockers = [e for e in journal if _KEEP_RANK.get(e.entry_type) == 0]
+    return min(cap, budget.count(_render_journal(blockers, 1)))
+
+
+def _journal_line(e) -> str:
+    return f"[T{e.turn}] {e.entry_type.upper()}: {e.content}\n"
+
+
+def _render_journal(entries: list, omitted: int = 0) -> str:
+    if not entries:
+        return ""
+    lines = "".join(_journal_line(e) for e in sorted(entries, key=lambda e: e.turn))
+    elided = f"[... {omitted} entries omitted ...]\n" if omitted else ""
+    return f"<investigation_journal>\n{elided}{lines}</investigation_journal>"
+
+
+def _cut_journal(journal: list, alloc: int, budget: "TokenBudget") -> str:
+    """Entries in keep order up to the first that does not fit; "" if none."""
+    room = alloc - budget.count(_render_journal(journal[:1], len(journal)))
+    room += budget.count(_journal_line(journal[0]))
+    kept: list = []
+    for entry in journal_keep_order(journal):
+        room -= budget.count(_journal_line(entry))
+        if room < 0:
+            break
+        kept.append(entry)
+    # Line counts are near-additive; the whole is what must fit.
+    while (
+        kept and budget.count(_render_journal(kept, len(journal) - len(kept))) > alloc
+    ):
+        kept.pop()
+    return _render_journal(kept, len(journal) - len(kept))
+
+
 def _allocate_sections(
     *,
     budget: "TokenBudget",
@@ -179,6 +223,7 @@ def _allocate_sections(
     fix_verification_str: str = "",
     # reserved: bounded by construction (kb_question.py)
     kb_lookup_str: str = "",
+    trimmed_history: str = "",  # its newest reply smart-truncated (#2101)
 ) -> Dict[str, str]:
     """Priority-greedy allocation of ``budget`` across the prompt sections.
 
@@ -248,12 +293,13 @@ def _allocate_sections(
     section_budget = max(0, budget.limit_tokens - reserve_tokens)
 
     # --- 2. Section sizes, measured ONCE and reused (no re-tokenization) ---
-    # Conversation has two fidelities: the fuller graduated history, and the
-    # compact one (which ALWAYS carries the latest turn). Both are sized here;
-    # the renderer in pass B picks the largest that fits its allotment and, when
-    # it must truncate, keeps the TAIL so the most-recent turns survive.
+    # Conversation has three fidelities, all sized here: graduated, graduated with
+    # its newest reply smart-truncated, and compact (always has the latest turn);
+    # pass B picks the largest that fits (the first only with room left for the
+    # journal's blockers) and, when it must truncate, keeps the TAIL (newest turns).
     graduated_tokens = budget.count(graduated_history)
     compact_tokens = budget.count(compact_history)
+    trimmed_tokens = budget.count(trimmed_history) if trimmed_history else 0
     evidence_cap = int(section_budget * evidence_fraction)
     evidence_tokens = budget.count(evidence_str) if evidence_str else 0
     # Evidence floor: guarantee room for at least the current-turn render so
@@ -343,8 +389,15 @@ def _allocate_sections(
             # must be cut, keep the TAIL (latest turns are at the end).
             if alloc <= 0:
                 rendered = ""
-            elif alloc >= graduated_tokens:
+            elif alloc >= graduated_tokens and (
+                # The whole newest reply only if the journal's blockers still fit.
+                not trimmed_history
+                or remaining + alloc - graduated_tokens
+                >= _blocker_room(case.investigation_journal or [], journal_cap, budget)
+            ):
                 rendered = graduated_history
+            elif trimmed_history and alloc >= trimmed_tokens:
+                rendered = trimmed_history
             elif alloc >= compact_tokens:
                 rendered = compact_history
             else:
@@ -353,6 +406,10 @@ def _allocate_sections(
             rendered = ""
         elif size <= alloc:
             rendered = text
+        elif key == "investigation_journal" and (
+            cut := _cut_journal(case.investigation_journal, alloc, budget)
+        ):
+            rendered = cut
         else:
             # The journal is recency-ordered (oldest anchors first, newest last)
             # and is anti-amnesia memory: under hard truncation keep the TAIL so
@@ -803,7 +860,7 @@ def build_investigation_context(
     # provably absent from every caller-controlled string in the prompt rather
     # than from one block's own.
     #
-    # BOTH conversation fidelities are rendered here, because the allocator
+    # EVERY conversation fidelity is rendered here, because the allocator
     # picks between them by budget AFTER the fence has been verified; a
     # fidelity rendered outside the fence would be the one channel the corpus
     # never saw.
@@ -828,7 +885,7 @@ def build_investigation_context(
             given_tools=given_tools,
             fence=fence,
         )
-        # Conversation history — two fidelities, both fenced. ``floor`` is the
+        # Conversation history — its fidelities, all fenced. ``floor`` is the
         # compact one, which always carries the latest turn; ``full`` is the
         # graduated transcript, or the SAME compact string once the case is
         # long enough to have switched to the state summary. Named for what
@@ -844,6 +901,8 @@ def build_investigation_context(
             if use_state_summary
             else _build_graduated_history(case, fence)
         )
+        trimmed = not use_state_summary and _build_graduated_history(case, fence, False)
+        _fenced["conversation_trimmed"] = trimmed or ""
         _fenced["user_message"] = (
             fence.element("user_message", capped_user) if capped_user else ""
         )
@@ -867,14 +926,7 @@ def build_investigation_context(
 
     # 5a. Investigation Journal (durable long-term memory)
     # Compact, append-only record of key findings, decisions, and context.
-    # Always included in full — ~5 KB for a 50-turn investigation.
-    journal_str = ""
-    if case.investigation_journal:
-        journal_str = "<investigation_journal>\n"
-        for entry in case.investigation_journal:
-            tag = entry.entry_type.upper()
-            journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
-        journal_str += "</investigation_journal>"
+    journal_str = _render_journal(case.investigation_journal or [])
 
     # 5b. Working Conclusion (durable case-level understanding)
     # Persists across turns even after evidence structural indexes are evicted
@@ -1170,6 +1222,7 @@ def build_investigation_context(
         evidence_str=evidence_str,
         graduated_history=recent_history,
         compact_history=compact_history,
+        trimmed_history=_fenced["conversation_trimmed"],
         journal_str=journal_str,
         conclusion_str=conclusion_str,
         kb_str=kb_str,

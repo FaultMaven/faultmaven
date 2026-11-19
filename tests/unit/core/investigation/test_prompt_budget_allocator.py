@@ -300,9 +300,9 @@ def test_allocator_journal_truncation_keeps_newest_not_oldest():
     )
     journal = ctx["investigation_journal"]
     assert journal, "journal must survive"
-    assert "truncated" in journal.lower(), "expected the section to be truncated"
-    # The newest entry (60) survives (keep='tail'); the oldest (1) is dropped —
-    # the OLD keep='head' bug would invert this (keep 1, drop 60).
+    assert "entries omitted" in journal, "expected the section to be cut"
+    # The newest entry (60) survives (newest first, #2101); the oldest (1) is
+    # dropped — the OLD keep='head' bug would invert this (keep 1, drop 60).
     assert "finding number 60" in journal
     assert "finding number 1 " not in journal
 

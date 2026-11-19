@@ -1098,6 +1098,34 @@ Rule-2 / compliance signal moved to offline eval/CI. That is still true,
 and it is why enforcement lives at the suggestion seam in the engine
 rather than in a post-generation validator.
 
+### 9.8 An Environment Limit Is a Journal Blocker (fm#2101)
+
+A check the case's evidence shows cannot run here (`jcmd` absent from a
+minimal JRE image, an admission policy denying a debug container) is an
+environment limit. Its carrier is a journal entry of type `blocker`, naming
+the check and the reason, written on the turn the failure is seen, also when
+`missing_critical_data` (a one-turn signal) is raised. When no source still
+available can supply a `causal_verification` need's data, that need is set
+`obtainability=unobtainable` (`insufficient-evidence-handling.md` §5.3). A RUN
+card never reaches the pool, so the journal entry is the limit's one carrier;
+history never is, for the reason §9.7 gives.
+
+What the prompt guarantees: the journal renders in every investigating prompt
+and in the fallback (at most 12 entries there). Under budget pressure:
+- the newest reply renders whole only when the room left after it holds the
+  journal's blockers (up to the journal cap); else the history drops to the rung
+  below (that reply smart-truncated, or the compact form);
+- a cut keeps whole entries in `journal_keep_order` (blockers, the other
+  high-signal types, the rest, each newest first) and stops at the first that
+  does not fit, so a blocker too large to fit drops every older one;
+- when not one entry fits, the cut keeps the journal's newest end as a fragment,
+  and an allotment too small for any of it renders the bare `[...]` marker.
+
+The evidence-needs lifecycle rules (DIAGNOSIS, MITIGATION, TREATMENT) state the
+rule: record the blocker on that turn; never request a check a journal blocker
+names, nor offer it as a fallback, unless later evidence shows the limit
+changed. Only a recorded run shows compliance; the engine does not enforce it.
+
 ---
 
 ## 10. Risks and Mitigations
