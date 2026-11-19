@@ -12,6 +12,7 @@ from faultmaven.core.investigation.narration.prompt_state import (
     terminal_resolution,
 )
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
+    journal_keep_order,
     system_feedback_block,
 )
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
@@ -256,34 +257,13 @@ def _fallback_journal_digest(
 ) -> str:
     """Compact journal digest for the fallback — anti-amnesia memory.
 
-    Keeps high-signal entry types (decision/finding/ruled_out/blocker) plus the
-    most recent entries, so the agent does not re-tread dead ends even in the
-    degraded fallback. Empty when there is no journal.
+    Keeps the first ``max_entries`` in ``journal_keep_order`` (blockers, then
+    the other high-signal types, then the rest, each newest first), the order
+    the main prompt's journal cut keeps, shown chronologically. Empty when
+    there is no journal.
     """
     journal = getattr(case, "investigation_journal", None) or []
-    if not journal:
-        return ""
-    high_signal = {"decision", "finding", "ruled_out", "blocker"}
-    seen_ids: set[int] = set()
-    kept: list = []
-
-    def _add(entry) -> bool:
-        if len(kept) >= max_entries or id(entry) in seen_ids:
-            return False
-        seen_ids.add(id(entry))
-        kept.append(entry)
-        return True
-
-    # Prefer the most-recent HIGH-SIGNAL entries, then fill with the most-recent
-    # overall — both newest-first so, when capped, the NEWEST survive (the digest
-    # exists to prevent re-treading the latest dead ends, not the earliest).
-    for e in reversed(journal):
-        if (e.entry_type or "").lower() in high_signal:
-            _add(e)
-    for e in reversed(journal):
-        _add(e)
-    # Display chronologically.
-    kept = sorted(kept, key=lambda e: e.turn)
+    kept = sorted(journal_keep_order(journal)[:max_entries], key=lambda e: e.turn)
     lines = [
         f"[T{e.turn}] {(e.entry_type or '').upper()}: {e.content[:entry_chars]}"
         for e in kept

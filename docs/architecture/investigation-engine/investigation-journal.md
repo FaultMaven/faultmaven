@@ -29,7 +29,7 @@ The existing durable artifacts (evidence summaries, hypothesis state, working co
 
 ## The Solution: Investigation Journal
 
-An append-only list of short, structured entries that capture the key decisions, findings, user context, and ruled-out paths at each significant turn. The journal is always included in full in the LLM prompt — it's a compact representation of the agent's accumulated knowledge that the LLM can access every turn without the context builder having to choose what to drop.
+An append-only list of short, structured entries that capture the key decisions, findings, user context, and ruled-out paths at each significant turn. The journal is included in every investigating prompt — a compact representation of the agent's accumulated knowledge that the LLM can access every turn. Under budget pressure it is cut by whole entries, blockers first (`journal_keep_order`, fm#2101).
 
 ### Design Principles
 

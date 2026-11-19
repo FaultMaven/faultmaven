@@ -164,9 +164,10 @@ issue is about. The kb_qa wrapper instructs the model to place the answer into
 `agent_response` and preserve its diagnostic steps rather than collapse them.
 That `agent_response` **is** persisted as a case message, and
 `_build_graduated_history` replays the last `HISTORY_VERBATIM_TURNS` (3) turns
-verbatim — smart-truncating any agent response over
-`HISTORY_AGENT_TRUNCATE_THRESHOLD` (600 chars) — before collapsing older turns
-to one-line summaries.
+verbatim — smart-truncating every agent response over
+`HISTORY_AGENT_TRUNCATE_THRESHOLD` (600 chars) but the newest, which is cut
+only past `LATEST_REPLY_MAX_CHARS` (4,000; fm#2101) — before collapsing older
+turns to one-line summaries.
 
 So KB content does recur across turns, through the **assistant** message rather
 than the tool message, over a bounded window that decays as history graduates.
@@ -224,13 +225,14 @@ does not.
 
 **The measurement gap above narrowed. It did not close the way a first pass
 suggested.** The recurring half — `agent_response` length and its share of
-persisted history — has three regimes, not one, and only the third is bounded:
+persisted history — has four regimes, not one, and only the last two are bounded:
 
 | when | path | copy-through cost |
 |---|---|---|
 | case has ≤ `HISTORY_VERBATIM_TURNS` (3) turns | `_build_verbatim_history` | **full length, no truncation call at all** |
 | response ≤ `HISTORY_AGENT_TRUNCATE_THRESHOLD` (600) | `_smart_truncate_agent_response` returns it unchanged | **identity** |
-| response > 600 on the graduated path | first + marker + last, trimmed | **bounded, ~≤900** |
+| response > 600 on the graduated path, not the newest | first + marker + last, trimmed | **bounded, ~≤900** |
+| newest response on the graduated path (fm#2101) | whole; past 4,000, head + marker + tail | **bounded, ≤4,000** |
 
 `_build_verbatim_history` (`context_builder/history.py`) appends
 `f"{role}: {content}\n"` with no truncation of any kind, so a KB answer relayed

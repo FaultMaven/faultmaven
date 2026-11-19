@@ -38,8 +38,9 @@ issue is about. The kb_qa wrapper instructs the model to place the answer into
 procedures — do NOT collapse it into a single sentence". That ``agent_response``
 IS persisted as a case message, and ``_build_graduated_history`` replays the
 last ``HISTORY_VERBATIM_TURNS`` (3) turns verbatim before collapsing older ones
-to one-line summaries — itself smart-truncating any agent response over
-``HISTORY_AGENT_TRUNCATE_THRESHOLD`` (600 chars).
+to one-line summaries — itself smart-truncating every agent response over
+``HISTORY_AGENT_TRUNCATE_THRESHOLD`` (600 chars) but the newest, which is cut
+only past ``LATEST_REPLY_MAX_CHARS`` (4,000).
 
 So KB content does recur across turns, through the assistant message rather
 than the tool message, over a bounded window that decays as history graduates.

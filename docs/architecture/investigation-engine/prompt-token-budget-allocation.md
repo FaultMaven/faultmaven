@@ -68,7 +68,7 @@ Two precise reconciliation failures:
 |---|---|---|
 | History: verbatim vs summarized | `HISTORY_VERBATIM_TURNS=3` / `HISTORY_SUMMARY_MAX_TURNS=7` (turns) | ❌ |
 | History → compact state summary | `current_turn > STATE_SUMMARY_TURN_THRESHOLD (15)` (turns) | ❌ |
-| Agent-response truncation | `HISTORY_AGENT_TRUNCATE_THRESHOLD=600` (fixed chars) | ❌ |
+| Agent-response truncation | `HISTORY_AGENT_TRUNCATE_THRESHOLD=600`, the newest reply `LATEST_REPLY_MAX_CHARS=4000` (fixed chars) | ❌ |
 | State-summary evidence digest | `8 × 180` (fixed chars) | ❌ |
 | Evidence sliding window | `0.6 × target × 4` chars | ⚠️ yes, but double-budgeted + char-based |
 | Investigation journal | none — "always in full", unbounded | ❌ (latent overflow on long cases) |
@@ -266,15 +266,21 @@ Per-section policies:
   Turn count may survive only as a cheap pre-filter hint, never as the authority.
   In the graduated history's RECENT TURNS, older assistant replies keep their
   first and last paragraphs (`HISTORY_AGENT_TRUNCATE_THRESHOLD`), but the
-  newest renders whole, cut only past `LATEST_REPLY_MAX_CHARS` (4,000 chars)
-  to its head and tail: its middle holds what the last turn found (fm#2101).
-  That keeps a fact one turn away, not a durable one, which is the journal's
-  job (`evidence-needs-design.md` §9.8).
+  newest quoted reply renders whole, cut only past `LATEST_REPLY_MAX_CHARS`
+  (4,000 chars) to its head and tail: its middle holds what the last turn
+  found (fm#2101). When that form does not fit, the same history with the
+  newest reply smart-truncated is tried before the compact one. That keeps a
+  fact one turn away, not a durable one, which is the journal's job
+  (`evidence-needs-design.md` §9.8).
 - **Investigation journal** — never tail-truncate (that drops the *newest*
   entries). Keep the oldest anchor entry, the most recent N, and all high-signal
   types (`decision`, `finding`, `ruled_out`, `blocker`); elide the middle with a
   `[… N entries …]` marker. (`ruled_out`/`blocker` are kept because re-treading
   dead ends and known blockers is exactly what the journal exists to prevent.)
+  *As built* (fm#2101), a cut keeps whole entries in `journal_keep_order`
+  (`context_builder/assembly.py`): blockers, then the other high-signal types,
+  then the rest, each newest first, shown in turn order after a
+  `[... N entries omitted ...]` line. The fallback's digest keeps the same order.
   Strictly capped at ~1.5K tokens — high-density and low-footprint, so the cap
   binds only on pathologically long cases, and even then the keep-set preserves
   the anti-amnesia essentials.

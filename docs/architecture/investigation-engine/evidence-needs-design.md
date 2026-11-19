@@ -1102,17 +1102,23 @@ rather than in a post-generation validator.
 
 A check the case's evidence shows cannot run here (`jcmd` absent from a
 minimal JRE image, an admission policy denying a debug container) is an
-environment limit, not a need: no need records it, and a RUN card never
-reaches the pool. Its one carrier is a journal entry of type `blocker`
-naming the check and the reason, written on the turn the failure is seen.
-The journal renders on every turn, past the state-summary threshold too,
-and under budget pressure keeps its newest entries, so the limit stays in
-front of the model. History is never its carrier, for the reason §9.7 gives:
-older turns keep 200 characters of the reply, and every recent reply but the
-newest loses its middle paragraphs.
+environment limit. Its carrier is a journal entry of type `blocker`, naming
+the check and the reason, written on the turn the failure is seen, also when
+`missing_critical_data` (a one-turn signal) is raised. A need the check
+would have served is also marked `obtainability=unobtainable`
+(`insufficient-evidence-handling.md` §5.3). A RUN card never reaches the
+pool, so the journal entry is the one carrier every such limit has. History
+is never its carrier, for the reason §9.7 gives.
 
-The DIAGNOSIS and TREATMENT instructions state the rule
-(`_UNRUNNABLE_CHECK_BLOCK`): record the blocker on that turn, and never
+What the prompt guarantees: the journal is a section of every investigating
+prompt and of the fallback. When the budget cuts it, the cut keeps whole
+entries in `journal_keep_order`, blockers first, then the other high-signal
+types, then the rest, each newest first. A blocker is dropped only when the
+allotment cannot hold every blocker (the newest are kept), and the fallback
+keeps at most 12 entries.
+
+The evidence-needs lifecycle rules, which DIAGNOSIS, MITIGATION and
+TREATMENT render, state the rule: record the blocker on that turn, and never
 request a check a journal blocker names, nor offer it as a fallback, unless
 later evidence shows the limit changed. Whether the model complies can only
 be shown by a recorded run; the engine does not enforce it.

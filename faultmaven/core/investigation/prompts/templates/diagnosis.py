@@ -97,6 +97,15 @@ investigation. You see it in <evidence_needs>; you mutate it via
   have, stating the boundary and what it leaves unproven. Asking a
   third time for something the user has already declined does not make
   it available; it stalls the investigation on data that is not coming.
+- **A check that cannot run here is a journal blocker.** When
+  output the user shared shows a check cannot run in their environment
+  (its tool is missing, access is denied), record it that turn in
+  `journal_entries` with `entry_type: "blocker"`, naming the check and
+  the reason — also when you raise `missing_critical_data` — and set
+  `obtainability=unobtainable` on any need it backs. Never request a
+  check a journal blocker names, nor offer it as a fallback, unless
+  later evidence shows the limit changed: ask for a source still
+  available.
 """
 
 
@@ -173,15 +182,6 @@ confirm the symptom (or cause) it captured is no longer present.
   the user cannot run the check, SUPERSEDE the need and give the reason.
 - If the original signature REAPPEARS, the fix did not hold —
   surface that as a new finding rather than declaring success.
-"""
-
-# A check the case showed cannot run lives in the journal, not in history (#2101).
-_UNRUNNABLE_CHECK_BLOCK = """\
-   **A check that cannot run here** (its tool is missing, or access is denied
-   in the output the user shared): on that turn, record it in journal_entries
-   with entry_type "blocker", naming the check and the reason. Never request a
-   check a journal blocker names, nor offer it as a fallback, unless later
-   evidence shows the limit changed: ask for a source still available.
 """
 
 _URGENCY_RECOGNITION_BLOCK = """\
@@ -762,9 +762,6 @@ evidence directly. You may do several in one turn if the evidence supports it.
      eligible for hypothesis linking.
    A deployment is a trigger. The changed `max_connections` value is a candidate root cause.
 
-"""
-        + _UNRUNNABLE_CHECK_BLOCK
-        + """
    **When change event search finds nothing — ask specifically:**
    "Were there any deployments, config changes, or infrastructure updates around
    [timeline window]? If so, what changed?"
