@@ -75,10 +75,9 @@ PREPARATION_SLOTS = 2
 #: text shapes, the costliest is secret-dense lines (``password=hunter22``):
 #: 204, 348 and 632 MiB at 5, 10 and 20 MB, which is 64 MiB plus 28.4 MiB a MB.
 #: The limit is 128 MiB plus 64 MiB a MB, twice the base and 2.25 times the
-#: slope: 768 MiB at the default 10 MB, 2.2 times the costliest there. Two of
-#: them, 1.5 GiB, beside a 1.5 GiB API process pass a 2 GiB pod limit, so the
-#: worker volunteers for the OOM killer (``preparation_worker``): it is killed
-#: before the API is.
+#: slope: 768 MiB at the default 10 MB, 2.2 times the costliest there. The
+#: worker raises its ``oom_score_adj``, which picks it first only where the
+#: container's OOM is not grouped (Principle 14, "Container memory").
 PREPARATION_MEMORY_BASE_MIB = 128
 PREPARATION_MEMORY_MIB_PER_UPLOAD_MB = 64
 
