@@ -157,7 +157,7 @@ loses no round; the last it prints, the open one, is the Queue you post to:
 
 ## 2. Propose
 
-**The health block** runs first, and again before posting with `lanes` and `xl` set; the proposal opens with its output,
+**The health block** runs first, and again before posting with `lanes`, `xl` and `held` set; the proposal opens with its output,
 verbatim. A stop, fixed before posting: any `unclassified` or `multi`; an `open by area` count of `none` or `multi`;
 a `condition met, still blocked` item; a design check
 due while fewer than two ran since the last proposal; when the round dispatches, fewer roots picked than offered, or
@@ -169,7 +169,7 @@ round finishes, settles or asks instead. Labels not yet in use read as empty. Th
 repo:
 
 ```bash
-R=FaultMaven/faultmaven; lanes="<the lead issue of each lane and each **Next** item you pick>"; xl="<the lanes this round gives a main red, a flake's fix and the P1 exposure lane>"; now=$(date -u +%s)
+R=FaultMaven/faultmaven; lanes="<the lead issue of each lane and each **Next** item you pick>"; xl="<the lanes this round gives a main red, a flake's fix and the P1 exposure lane>"; held="<the ready P0–P2 items no lane can take this round (on an open PR's or a root-candidate's seam) and those sharing a picked lane>"; now=$(date -u +%s)
 ago() { date -u -d "@$((now - $1 * 86400))" +%FT%TZ; }; lines() { gh api "repos/$R/issues/$1/comments" --paginate --jq '.[] | "\(.created_at) \(.body | split("\n")[0])"'; }
 # the newest two Queues, oldest first, so a rotated Queue still reads the round, the last proposal and the earlier counts
 q=$(gh issue list -R $R --label tracking --state all --search 'Queue in:title' --limit 100 --json number,title \
@@ -199,18 +199,18 @@ due=; ran=0; for n in $(jq -r "$cls"'.[] | select(has(["root-candidate"])) | .nu
 echo "design checks due, not run: ${due:-none} · run since the last proposal: $ran"
 # ready P0-P2 defects no open PR carries (hp): while any exist, the lanes design leaves take the defect order. And the
 # ready P0-P2 work a lane can take (hq): those defects, the ready P0-P2 chores, and one per root with a ready P0-P2
-# stage (a stage carries its root's priority) and no stage PR open; less what this round's lanes pick (hl). While hl
+# stage (its own label, else its root's) and no stage PR open; less what this round's lanes pick and what it holds (hl). While hl
 # is above 0, no P3 item leads a lane (Pick)
-read -r hp hq hl <<<"$(jq -r --argjson prs "$prs" --arg lanes "$lanes" "$cls"'. as $o | def p02: IN("P0", "P1", "P2");
-  def rk: . as $s | (pk | select(. != "")) // ([$o[] | select((.number | tostring) == ($s | stage)) | pk][0] // "P3");
-  ($lanes | [scan("[0-9]+")]) as $l
+read -r hp hq hl <<<"$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --arg held "$held" "$cls"'. as $o | def p02: IN("P0", "P1", "P2");
+  def rk: . as $s | (pk | select(. != "")) // ([$o[] | select((.number | tostring) == ($s | stage)) | pk | select(. != "")][0] // "P3");
+  ($lanes + " " + $held | [scan("[0-9]+")]) as $l
   | [.[] | select(free and ready and has(["class:defect", "class:chore"]) and (pk | p02) and (refs(.number) | not))] as $d
   | [.[] | select(has(["design-stage"]) and ready and stage != "?" and (rk | p02) and (refs(.number) | not)
       and (refs(stage) | not)) | {n: (.number | tostring), r: stage}] as $s
   | ($d | map(select(has(["class:defect"]))) | length) as $hp | (($d | length) + ($s | map(.r) | unique | length)) as $hq
   | (($d | map(select(.number | tostring | IN($l[]))) | length) + ($s | map(select(.n | IN($l[])) | .r) | unique | length)) as $pick
   | "\($hp) \($hq) \([$hq - $pick, 0] | max)"' <<<"$open")"
-[ -n "$hl" ] || { echo "ready P0–P2 counts: unreadable (a stop)"; hp=0; hq=0; hl=0; }
+[ -n "$hl" ] || { echo "ready P0–P2 counts: unreadable (a stop)"; hp=0; hq=1; hl=1; }
 echo "ready P0–P2 work a lane can take: $hq, left after this round's lanes: $hl (P3 leads no lane while above 0)"
 u=$(for n in $(jq -r "$cls"'.[] | select(has(["pile:blocked"]) and (.body | test("\\*\\*Blocked on:\\*\\* an owner ruling"))) | .number' <<<"$open"); do
   l=$(lines "$n"); grep -q ' ## Pulled' <<<"$l" && printf '#%s ' "$n"; done); np=$(wc -w <<<"$u"); na=$(jq length <<<"$prs")
@@ -228,7 +228,7 @@ bt=false; [ -n "$rn" ] && [ "$hl" -eq 0 ] && { [ $((rn % 3)) -eq 0 ] || { [ $((r
 case "$xl" in 0|1|2|3|4) ;; *) xl=0;; esac
 dl=$(jq -r --argjson prs "$prs" --arg lanes "$lanes" --argjson hp "$hp" --argjson hl "$hl" --argjson bt "$bt" --argjson xl "$xl" --argjson lim "$([ "$na" -gt 7 ] || [ "$np" -gt 3 ] && echo true || echo false)" "$cls"'
   . as $o | [.[] | select(has(["design-stage"]) and ready) | . as $s | {n: .number, r: stage, c: .createdAt,
-    k: ((pk | select(. != "")) // ([$o[] | select((.number | tostring) == ($s | stage)) | pk][0] // "P3"))}]
+    k: ((pk | select(. != "")) // ([$o[] | select((.number | tostring) == ($s | stage)) | pk | select(. != "")][0] // "P3"))}]
   | sort_by(.k, .c) as $all
   | [$all[] | select(.r != "?" and ((refs(.n) or refs(.r)) | not) and ($hl == 0 or .k != "P3"))] as $a
   | ($a | group_by(.r) | map({r: .[0].r, k: (map(.k) | min)}) | sort_by(.k)) as $ranked
@@ -380,8 +380,9 @@ echo "since the last proposal: merged $(jq length <<<"$mp") · PRs opened $(gh p
      - **`P1` and `P2` before `P3`** (owner ruling, 2026-11-19: "making the system sound and robust is [the primary
        goal] … so P1 and P2 should be resolved before P3"). A `P3` item leads only a lane no ready `P0`–`P2` item can
        take. While any is left unpicked (the health block's `hl`: the ready `P0`–`P2` defects and chores no open PR
-       carries, and one per root with a ready `P0`–`P2` stage and no stage PR open, less what this round's lanes pick;
-       one on an open PR's or a `root-candidate`'s seam, which no lane can take, is subtracted by hand and named),
+       carries, and one per root with a ready `P0`–`P2` stage (its own label, else its root's) and no stage PR open,
+       less what this round's lanes pick and what the block's `held` input names: each item on an open PR's or a
+       `root-candidate`'s seam, which no lane can take, and each sharing a picked lane, listed in the proposal),
        no round is a P3-batch round, no batch is owed, no `P3` stage is
        offered a design lane, and neither the `slot` line, the ordinary order nor a **Next** item reaches `P3`. A `P3`
        item on a picked lane's seam still shares that lane. This suspends the P3-batch ruling below while `hl` is above
