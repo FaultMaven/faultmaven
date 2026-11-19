@@ -83,7 +83,7 @@ PENDING_CHECK_DECLINE_CLAUSE = (
 )
 
 
-#: The held check's status, by why it holds (``pending_check_reason``): one
+#: The held check's status, by why it holds (``held_check_reason``): one
 #: entry per ``PendingCheckReason`` member, ``{named}`` the need.
 PENDING_CHECK_STATUS: dict[PendingCheckReason, str] = {
     PendingCheckReason.UNANSWERED: "the check you asked for is still pending ({named})",

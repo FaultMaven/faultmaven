@@ -1,6 +1,6 @@
 """The held reason has one derivation (#2811 S2b-1c-ii, #2615 stage S2).
 
-Why a held check holds (``pending_check_reason``) is derived once, in
+Why a held check holds (``held_check_reason``) is derived once, in
 ``cause_assurance``, and both the record (``resolution.pending_check_reason``)
 and the PENDING_CHECK decision (``pending_check_params``) read it. The notice
 renders byte for byte as on ``main`` (``pending_check_oracle_2811.json``,
@@ -17,22 +17,35 @@ from pathlib import Path
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
-    pending_check_reason,
+    held_check_reason,
     pending_symptom_check,
 )
-from faultmaven.core.investigation.milestone_engine.turn_narration import _conflicts
-from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
+from faultmaven.core.investigation.milestone_engine.turn_narration import (
+    NARRATION_CONFLICTS_KEY,
+    OUTCOME_WRITTEN_KEY,
+    _conflicts,
+    narrate_turn,
+)
+from faultmaven.core.investigation.narration.codes import (
+    DECISIONS_KEY,
+    NoticeCode,
+    OfferCode,
+)
 from faultmaven.core.investigation.narration.notices import (
     PENDING_CHECK_STATUS,
     pending_check_feedback,
     render_notice,
 )
-from faultmaven.core.investigation.outcome import narration_outcome
+from faultmaven.core.investigation.outcome import (
+    narration_outcome,
+    record_case_outcome,
+)
 from faultmaven.core.investigation.terminal_transitions import pending_check_params
 from faultmaven.modules.case.contracts import (
     NeedState,
     PendingCheckReason,
     ResolutionReason,
+    WritePoint,
 )
 from tests.unit.core.investigation import golden_cases_2636 as golden
 
@@ -88,7 +101,7 @@ def test_the_notice_renders_as_main_did(held, proposed, declined):
 def test_the_held_reason_is_the_checks_state(state, reason):
     need = golden._held().evidence_needs[-1]
     need.state = state
-    assert pending_check_reason(need) == reason
+    assert held_check_reason(need) == reason
 
 
 @pytest.mark.parametrize("declined", [False, True])
@@ -155,6 +168,49 @@ def test_other_codes_count_each_field_as_on_main(held):
         }
     ]
     assert _conflicts(log, outcome) == [f"narration.{OfferCode.BACKSTOP_RESOLVE}"] * 2
+
+
+# ---------------------------------------------------------------------------
+# The real path: step 2 refuses the model's ``resolved`` on a held check and
+# logs its pending check and its needs-info request (one decision, two codes);
+# the cycle's record is stored, then edited, and the turn narrated.
+# ---------------------------------------------------------------------------
+
+
+def _narrated_step_2(**resolution) -> list:
+    """The narration's conflicts on a stored record whose resolution states
+    ``resolution`` in place of what the cycle decided."""
+    case, metadata = golden._models_proposal(golden._held(), "resolved")
+    codes = [e["code"] for e in metadata[DECISIONS_KEY]]
+    assert {NoticeCode.PENDING_CHECK, OfferCode.RESOLUTION_NEEDS_INFO} <= set(codes)
+    (decided,) = [
+        e["params"]
+        for e in metadata[DECISIONS_KEY]
+        if e["code"] == NoticeCode.PENDING_CHECK
+    ]
+    assert decided["pending_check_reason"] == PendingCheckReason.UNANSWERED
+    metadata[OUTCOME_WRITTEN_KEY] = record_case_outcome(case, at=WritePoint.CYCLE)
+    for field, value in resolution.items():
+        setattr(case.progress.outcome.resolution, field, value)
+    narrate_turn(case, metadata)
+    return metadata.get(NARRATION_CONFLICTS_KEY, [])
+
+
+def test_step_2s_held_reason_the_stored_record_does_not_state_counts_once():
+    """The record keeps the reason and states another held reason."""
+    assert _narrated_step_2(
+        pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK
+    ) == [f"narration.{NoticeCode.PENDING_CHECK}"]
+
+
+def test_step_2s_reason_the_stored_record_does_not_state_counts_once():
+    """The record states another reason and a held reason that differs from
+    the decision's too: the held reason refines the reason (``REFINES``), so
+    the decision counts one conflict, not two."""
+    assert _narrated_step_2(
+        reason=ResolutionReason.CONFIRMED,
+        pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
+    ) == [f"narration.{NoticeCode.PENDING_CHECK}"]
 
 
 @pytest.mark.parametrize("reason", list(PendingCheckReason))
