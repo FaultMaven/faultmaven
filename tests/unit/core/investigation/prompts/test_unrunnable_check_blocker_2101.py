@@ -142,21 +142,51 @@ def _context(case, max_tokens: int) -> dict:
     )
 
 
-def test_a_long_newest_reply_does_not_push_the_history_to_compact():
-    """Five turns, a 3,500-char newest reply, a tight budget: the graduated
-    form with that reply whole does not fit, and the one with it
-    smart-truncated (what ``main`` rendered) does."""
+def _five_turns():
+    """Turn 5 of a case whose newest reply runs to 3,500 chars."""
     case = _investigating(turn=5)
     rows = []
     for turn in range(1, 5):
         rows.append(_row(turn, "user", f"user line for turn {turn} " + "paste " * 40))
         older = " ".join(f"Sentence {k} of turn {turn}." for k in range(1, 40))
         newest = "Opening. " + "Detail here. " * 90 + "\n\n" + _LIMIT + "\n\n"
-        newest = (newest + "More analysis. " * 120)[:3500]
+        newest = (newest + "More analysis. " * 400)[:3500]
         rows.append(_row(turn, "assistant", newest if turn == 4 else older))
     case.messages = [*rows, _row(5, "user", "what next?")]
+    return case
 
-    assert "RECENT TURNS:" in _context(case, max_tokens=1200)["conversation_history"]
+
+def test_a_long_newest_reply_does_not_push_the_history_to_compact():
+    """A tight budget: the graduated form with the newest reply whole does
+    not fit, and the one with it smart-truncated (``main``'s) does."""
+    history = _context(_five_turns(), max_tokens=1200)["conversation_history"]
+    assert "RECENT TURNS:" in history
+
+
+def test_a_whole_newest_reply_never_costs_the_journal_a_blocker():
+    """Below the state-summary threshold, at a budget where ``main`` keeps
+    every blocker line, the whole newest reply does not take their room."""
+    case = _five_turns()
+    blockers = [
+        JournalEntry(
+            turn=t, entry_type="blocker", content=f"B{t} jcmd missing " + "z" * 150
+        )
+        for t in (2, 9, 11)
+    ]
+    findings = [
+        JournalEntry(
+            turn=t,
+            entry_type="finding",
+            content=f"finding {t}: " + "metaspace grows " * 10,
+        )
+        for t in range(3, 9)
+    ]
+    case.investigation_journal = sorted([*blockers, *findings], key=lambda e: e.turn)
+
+    journal = _context(case, max_tokens=1600)["investigation_journal"]
+
+    for entry in blockers:
+        assert f"BLOCKER: {entry.content}\n" in journal
 
 
 def test_a_cut_journal_keeps_an_older_blocker():
@@ -200,7 +230,10 @@ def test_every_stage_that_asks_for_checks_carries_the_rule(stage, given):
     # Named as the schema spells it, so the model can write it.
     assert '`journal_entries` with `entry_type: "blocker"`' in flat
     assert "also when you raise `missing_critical_data`" in flat
-    assert "set `obtainability=unobtainable` on any need it backs" in flat
+    assert (
+        "When no source still available can supply a `causal_verification` "
+        "need's data, set `obtainability=unobtainable` on that need" in flat
+    )
 
 
 def test_inquiry_does_not_carry_it():

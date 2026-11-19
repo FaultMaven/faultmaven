@@ -1104,18 +1104,21 @@ A check the case's evidence shows cannot run here (`jcmd` absent from a
 minimal JRE image, an admission policy denying a debug container) is an
 environment limit. Its carrier is a journal entry of type `blocker`, naming
 the check and the reason, written on the turn the failure is seen, also when
-`missing_critical_data` (a one-turn signal) is raised. A need the check
-would have served is also marked `obtainability=unobtainable`
-(`insufficient-evidence-handling.md` §5.3). A RUN card never reaches the
-pool, so the journal entry is the one carrier every such limit has. History
-is never its carrier, for the reason §9.7 gives.
+`missing_critical_data` (a one-turn signal) is raised. When no source still
+available can supply a `causal_verification` need's data, that need is set
+`obtainability=unobtainable` (`insufficient-evidence-handling.md` §5.3). A RUN
+card never reaches the pool, so the journal entry is the limit's one carrier;
+history never is, for the reason §9.7 gives.
 
-What the prompt guarantees: the journal is a section of every investigating
-prompt and of the fallback. When the budget cuts it, the cut keeps whole
-entries in `journal_keep_order`, blockers first, then the other high-signal
-types, then the rest, each newest first. A blocker is dropped only when the
-allotment cannot hold every blocker (the newest are kept), and the fallback
-keeps at most 12 entries.
+What the prompt guarantees: the journal renders in every investigating prompt
+and in the fallback (at most 12 entries there). Under budget pressure:
+- the newest reply renders whole only when the room left after it holds the
+  journal's blockers (up to the journal cap); else it is smart-truncated;
+- a cut keeps whole entries in `journal_keep_order` (blockers, the other
+  high-signal types, the rest, each newest first) and stops at the first that
+  does not fit, so a blocker too large to fit drops every older one;
+- when not one entry fits, the tail truncation keeps a fragment, and an
+  allotment of 0 renders the bare `[...]` marker.
 
 The evidence-needs lifecycle rules, which DIAGNOSIS, MITIGATION and
 TREATMENT render, state the rule: record the blocker on that turn, and never

@@ -370,9 +370,7 @@ def _aside_turns(messages: list) -> set:
     }
 
 
-def _build_graduated_history(
-    case: Case, fence: PromptFence, latest_whole: bool = True
-) -> str:
+def _build_graduated_history(case: Case, fence: PromptFence, latest_whole=True) -> str:
     """Build graduated conversation history: recent turns verbatim, older summarized.
 
     Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated
@@ -475,10 +473,7 @@ def _build_graduated_history(
         if role == "ASSISTANT":
             replies.append(len(parts))
         parts.append(content if role == "ASSISTANT" else f"{role}: {content}\n")
-
-    # Shaped once the loop has decided which rows are quoted replies, so the
-    # newest is the newest the model reads, never a placeholder or an aside.
-    for slot in replies:
+    for slot in replies:  # shaped once the loop has chosen the quoted rows
         whole = latest_whole and slot == replies[-1]
         shape = _cap_latest_reply if whole else _smart_truncate_agent_response
         parts[slot] = f"ASSISTANT: {shape(parts[slot])}\n"
