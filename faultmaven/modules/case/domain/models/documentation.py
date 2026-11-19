@@ -231,7 +231,8 @@ class JournalEntry(BaseModel):
 
     Captures a distilled insight, decision, or context that the agent
     needs to remember across the entire investigation. Entries are
-    append-only and always included in the LLM context.
+    append-only. The prompt renders the journal under a token budget; how it
+    is cut: ``prompt-token-budget-allocation.md`` §5.2.
     """
 
     turn: int = Field(description="Turn number when this entry was created")

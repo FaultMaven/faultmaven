@@ -157,8 +157,9 @@ resolved_budget                         (§3; e.g. 32K, or clamped lower on a sm
 │
 ├─ 4. COMPACT each section to its allotment (select level cheaply, render once, §5.2):
 │        history:  verbatim → graduated → state-summary → oldest-first elision
-│        journal:  keep oldest anchor + newest + {decision,finding,ruled_out,blocker};
-│                  elide the middle with a [… N entries …] marker
+│        journal:  whole entries in keep order (blockers, then decision/finding/ruled_out,
+│                  then the rest, each newest first); [... N entries omitted ...] marker;
+│                  a newest-end fragment when no whole entry is kept
 │        evidence: Tier A/B/C/D window over its allotment (full current-turn extract
 │                  here if it fits; the stub is already reserved in step 1)
 │        KB / hypotheses: rank, keep what fits, drop lowest with a marker
@@ -208,7 +209,7 @@ remainder in pass B before journal/entity-highlights get anything. The caps:
 | KB results | `KB_MAX_SOLUTION_CHARS` × top-N |
 | Hypotheses | ranked, small per-item cap × N |
 | Evidence needs | small fixed cap |
-| Journal | strict ~1.5K-token cap via its middle-out keep-set (§5.2) — small by design, so the cap rarely binds |
+| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — the cap can bind on long or identifier-dense journals |
 | Entity highlights | already bounded (per-type limit) |
 
 Most are the "upper bounds" the codebase already has; the few currently-unbounded
@@ -236,8 +237,8 @@ budget redistributes automatically):
 2. **Older conversation** — turns *beyond* the reserved last exchange. Continuity
    is guaranteed by the reserve (the last user+assistant turn, §4), so this
    variable section carries only the deeper history and needs no separate floor.
-3. **Investigation journal** — durable anti-amnesia memory; compacts middle-out;
-   strictly capped (§5.2). Placed high *on purpose*: it is high-density,
+3. **Investigation journal** — durable anti-amnesia memory; cut by whole
+   entries in keep order, or to a newest-end fragment; strictly capped (§5.2). Placed high *on purpose*: it is high-density,
    low-footprint (~50 tokens/entry; ~1–1.5K for a 50-turn case) and prevents the
    agent from re-treading ruled-out hypotheses and known blockers. Preserving it
    yields far more reasoning value per token than verbose KB runbook text, so it
@@ -271,19 +272,21 @@ Per-section policies:
   would leave too little room for the journal's blockers, the history with the
   newest reply smart-truncated is tried before the compact one. Durable facts
   are the journal's job (`evidence-needs-design.md` §9.8).
-- **Investigation journal** — never tail-truncate (that drops the *newest*
-  entries). Keep the oldest anchor entry, the most recent N, and all high-signal
-  types (`decision`, `finding`, `ruled_out`, `blocker`); elide the middle with a
-  `[… N entries …]` marker. (`ruled_out`/`blocker` are kept because re-treading
-  dead ends and known blockers is exactly what the journal exists to prevent.)
-  *As built* (fm#2101), a cut keeps whole entries in `journal_keep_order`
+- **Investigation journal** — a cut keeps whole entries in `journal_keep_order`
   (`context_builder/assembly.py`; blockers, the other high-signal types, the
   rest, each newest first) up to the first that does not fit, in turn order
-  after a `[... N entries omitted ...]` line; when none fits, its newest end is
-  kept as a fragment (`keep="tail"`). The fallback's digest keeps the same order.
-  Strictly capped at ~1.5K tokens — high-density and low-footprint, so the cap
-  binds only on pathologically long cases, and even then the keep-set preserves
-  the anti-amnesia essentials.
+  after a `[... N entries omitted ...]` line. The cut keeps no whole entry when
+  the first in keep order does not fit (even if a smaller, lower-ranked entry
+  would have), or when the recount of the full render pops every entry; the
+  newest end of the turn-ordered journal is then kept as a fragment
+  (`keep="tail"`). An allotment too small for any fragment leaves only a
+  marker (INV-4). Blockers and the other high-signal types rank first because
+  re-treading dead ends and known blockers is exactly what the journal exists
+  to prevent. Strictly capped at ~1.5K tokens; the allotment can be lower when
+  evidence and conversation take the budget first. The fallback prompt's digest
+  (`_fallback_journal_digest`) is not under that cap: it keeps the same order,
+  at most 12 entries, each cut to the fallback's per-entry cap (120 characters
+  by default, less when the fallback shrinks to fit its budget).
 - **Evidence** — the existing Tier A/B/C/D sliding window, drawing from its
   allotment. The current-turn item renders **once**: the reserve (§4) guarantees
   a stub-sized floor for it, and the evidence section **upgrades that same block

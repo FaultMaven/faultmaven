@@ -470,7 +470,8 @@ class Case(BaseModel):
     investigation_journal: List[JournalEntry] = Field(
         default_factory=list,
         description="Structured log of key findings, decisions, and context. "
-        "Append-only. Always included in full in LLM context.",
+        "Append-only. Rendered into the investigation prompt under a token budget "
+        "(prompt-token-budget-allocation.md §5.2).",
     )
 
     # ============================================================

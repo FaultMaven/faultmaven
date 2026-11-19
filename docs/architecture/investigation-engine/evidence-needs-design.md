@@ -1118,7 +1118,7 @@ and in the fallback (at most 12 entries there). Under budget pressure:
 - a cut keeps whole entries in `journal_keep_order` (blockers, the other
   high-signal types, the rest, each newest first) and stops at the first that
   does not fit, so a blocker too large to fit drops every older one;
-- when not one entry fits, the cut keeps the journal's newest end as a fragment,
+- when the cut keeps no whole entry, the journal's newest end is kept as a fragment,
   and an allotment too small for any of it renders the bare `[...]` marker.
 
 The evidence-needs lifecycle rules (DIAGNOSIS, MITIGATION, TREATMENT) state the
