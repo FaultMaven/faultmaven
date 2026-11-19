@@ -98,7 +98,8 @@ TIER1_TRANSFER_SECONDS_PER_MB = 0.2
 #: ``RLIMIT_AS``. At the 10 MB limit a worker starts at 23 MiB, and the most
 #: any reached within the deadline is 620 MiB (source code, killed while still
 #: growing; error reports finish at 278 MiB). Four times the start and the growth
-#: a MB: 2,496 MiB at 10 MB. The worker is the OOM killer's first choice.
+#: a MB: 2,496 MiB at 10 MB. The worker raises its ``oom_score_adj``, which
+#: picks it first only where the container's OOM is not grouped (Principle 14).
 TIER1_MEMORY_BASE_MIB = 96
 TIER1_MEMORY_MIB_PER_MB = 240
 
