@@ -1,0 +1,391 @@
+"""The KB term index sees a same-size write made by another store (#2064).
+
+The cached index was keyed on the collection's size, so a same-size replace,
+or a restamp that moves a chunk out of the platform tier, made by another
+replica or by the ``kb_seed`` process was never seen. Every write now moves a
+write token in the collection's metadata, and the index is keyed on
+``(size, token)``.
+
+Two ``PersistentClient``s on one ``tmp_path`` stand in for two processes. In
+one process they share one chromadb System, so what they stand in for is two
+store caches over one collection, which is the state the defect lives in.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock
+
+import chromadb
+import pytest
+from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings as ChromaSettings
+
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.infrastructure.chroma_client import CHROMA_EXECUTOR
+from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+    KB_COLLECTION,
+    KB_WRITE_TOKEN_KEY,
+    KnowledgeVectorStore,
+)
+from tests.chroma_clients import closed_at_teardown
+
+pytestmark = [pytest.mark.unit]
+
+
+def _client(tmp_path: Path) -> Any:
+    return closed_at_teardown(
+        chromadb.PersistentClient(
+            path=str(tmp_path / "chroma"),
+            settings=ChromaSettings(
+                anonymized_telemetry=False,
+                allow_reset=False,
+                environment="",
+                is_persistent=True,
+            ),
+        )
+    )
+
+
+def _doc(parent: str, text: str, embedding: float) -> Dict[str, Any]:
+    return {
+        "id": f"{parent}_chunk_0",
+        "content": text,
+        "metadata": {
+            "scope": "global",
+            "enterprise_id": STANDALONE_ENTERPRISE_ID,
+            "parent_document_id": parent,
+        },
+        "embedding": [embedding, 0.5, 0.25],
+    }
+
+
+async def _add(store: KnowledgeVectorStore, docs: List[Dict[str, Any]]) -> None:
+    await store.add_documents(docs, embeddings=[d.pop("embedding") for d in docs])
+
+
+async def _replace(store: KnowledgeVectorStore, parent: str, text: str) -> None:
+    """A same-size replace: one chunk deleted, one added."""
+    await store.delete_documents_by_parent_id(parent)
+    await _add(store, [_doc(parent, text, 0.9)])
+
+
+def _metadata(tmp_path: Path) -> Optional[Dict[str, Any]]:
+    return _client(tmp_path).get_collection(KB_COLLECTION).metadata
+
+
+def _token(tmp_path: Path) -> Any:
+    return (_metadata(tmp_path) or {}).get(KB_WRITE_TOKEN_KEY)
+
+
+async def test_a_same_size_replace_by_another_store_is_seen(tmp_path: Path) -> None:
+    """The regression. The two clients share one System, standing in for the
+    caches of two stores, another replica's or the ``kb_seed`` process's."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    await _add(a, [_doc("p1", "alpha disk full", 0.1)])
+    built = await a._term_stats_for(KB_COLLECTION)
+    assert built is not None and built.document_frequency("alpha") == 1
+
+    await _replace(b, "p1", "omega disk full")
+
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None
+    assert stats.document_frequency("omega") == 1
+    assert stats.document_frequency("alpha") == 0
+
+
+async def test_a_restamp_out_of_the_platform_tier_by_another_store_is_seen(
+    tmp_path: Path,
+) -> None:
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    await _add(
+        a, [_doc("p1", "alpha disk full", 0.1), _doc("p2", "beta disk full", 0.2)]
+    )
+    built = await a._term_stats_for(KB_COLLECTION)
+    assert built is not None and built.document_frequency("alpha") == 1
+
+    restamped = await b.restamp_chunk_ids(
+        ["p1_chunk_0"], "ent-1", where={"enterprise_id": STANDALONE_ENTERPRISE_ID}
+    )
+    assert restamped == ["p1_chunk_0"]
+
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None
+    assert stats.n_chunks == 1
+    assert stats.document_frequency("alpha") == 0
+
+
+async def test_a_failed_marker_write_never_fails_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = KnowledgeVectorStore(_client(tmp_path))
+    warnings = MagicMock(wraps=store.logger.warning)
+    monkeypatch.setattr(store.logger, "warning", warnings)
+    monkeypatch.setattr(
+        Collection, "modify", MagicMock(side_effect=RuntimeError("modify refused"))
+    )
+
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+
+    rows = _client(tmp_path).get_collection(KB_COLLECTION).get(include=[])
+    assert rows["ids"] == ["p1_chunk_0"]
+    assert warnings.call_count == 1
+    assert KB_COLLECTION in str(warnings.call_args)
+    assert _token(tmp_path) is None
+
+
+async def test_a_write_keeps_the_collections_other_metadata(tmp_path: Path) -> None:
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+    first = _metadata(tmp_path)
+    await _replace(store, "p1", "omega disk full")
+
+    metadata = _metadata(tmp_path)
+    assert metadata is not None
+    assert metadata["type"] == "knowledge_base"
+    assert metadata["created_at"] == first["created_at"]
+    assert metadata[KB_WRITE_TOKEN_KEY] not in (None, first[KB_WRITE_TOKEN_KEY])
+
+
+class _Counting:
+    """Records each ChromaDB call made through a client or a collection it returned."""
+
+    def __init__(self, target: Any, calls: List[str]) -> None:
+        self._target = target
+        self._calls = calls
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._target, name)
+        if not callable(attr):
+            return attr
+
+        def _call(*args: Any, **kwargs: Any) -> Any:
+            self._calls.append(name)
+            result = attr(*args, **kwargs)
+            return (
+                _Counting(result, self._calls)
+                if name.endswith("collection")
+                else result
+            )
+
+        return _call
+
+
+async def test_an_unchanged_collection_costs_the_lookup_no_extra_call(
+    tmp_path: Path,
+) -> None:
+    calls: List[str] = []
+    store = KnowledgeVectorStore(_Counting(_client(tmp_path), calls))
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+    first = await store._term_stats_for(KB_COLLECTION)
+
+    calls.clear()
+    second = await store._term_stats_for(KB_COLLECTION)
+
+    assert second is first
+    assert calls == ["get_or_create_collection", "count"]
+
+
+async def test_a_write_that_raises_part_way_still_moves_the_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+    before = _token(tmp_path)
+    delete = Collection.delete
+
+    def _delete_then_raise(self: Collection, *args: Any, **kwargs: Any) -> None:
+        delete(self, *args, **kwargs)
+        raise RuntimeError("connection dropped after the delete landed")
+
+    monkeypatch.setattr(Collection, "delete", _delete_then_raise)
+
+    with pytest.raises(RuntimeError):
+        await store.delete_documents_by_parent_id("p1", retries=0)
+
+    assert _token(tmp_path) not in (None, before)
+
+
+async def test_a_collection_with_no_metadata_gets_a_token_on_its_first_write(
+    tmp_path: Path,
+) -> None:
+    _client(tmp_path).get_or_create_collection(KB_COLLECTION)
+    assert _metadata(tmp_path) is None
+    store = KnowledgeVectorStore(_client(tmp_path))
+    assert await store._term_stats_for(KB_COLLECTION) is None, "empty tier"
+
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+
+    assert _token(tmp_path) is not None
+    stats = await store._term_stats_for(KB_COLLECTION)
+    assert stats is not None and stats.document_frequency("alpha") == 1
+
+
+async def test_an_index_read_under_the_pre_write_token_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lookup reads the token before the documents. Another store's write
+    landing between the two leaves an index built from the write's documents
+    under the token from before it, and the next lookup replaces it."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    await _add(a, [_doc("p1", "alpha disk full", 0.1)])
+    fetch = a._get_or_create_collection
+    interleaved: List[bool] = []
+
+    def _fetch_then_let_b_write(collection_name: str) -> Any:
+        collection = fetch(collection_name)
+        if not interleaved:
+            interleaved.append(True)
+            # B on its own thread and loop, as another process would be.
+            writer = threading.Thread(
+                target=asyncio.run, args=(_replace(b, "p1", "omega disk full"),)
+            )
+            writer.start()
+            writer.join()
+        return collection
+
+    monkeypatch.setattr(a, "_get_or_create_collection", _fetch_then_let_b_write)
+
+    first = await a._term_stats_for(KB_COLLECTION)
+    assert interleaved and first is not None
+    assert first.document_frequency("omega") == 1, "built from the write's documents"
+
+    second = await a._term_stats_for(KB_COLLECTION)
+
+    assert second is not first, "an index built under the pre-write token was kept"
+    assert second is not None and second.document_frequency("omega") == 1
+
+
+def _first_call(real: Callable[..., Any], *, lands: bool) -> Callable[..., Any]:
+    """``real``, except that its first call raises: after it ran when ``lands``,
+    before it ran otherwise. A lost response, or a refused request."""
+    calls: List[int] = []
+
+    def _patched(self: Collection, *args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) > 1:
+            return real(self, *args, **kwargs)
+        if lands:
+            real(self, *args, **kwargs)
+        raise RuntimeError("connection dropped")
+
+    return _patched
+
+
+@pytest.fixture
+def lost_write_and_marker(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """Armed: the next ``name`` write lands and its response is lost, and the
+    next marker fails on the same broken transport. Retries do not wait."""
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.base_client.asyncio.sleep", AsyncMock()
+    )
+
+    def _arm(name: str) -> None:
+        for method, lands in ((name, True), ("modify", False)):
+            real = getattr(Collection, method)
+            monkeypatch.setattr(Collection, method, _first_call(real, lands=lands))
+
+    return _arm
+
+
+async def test_a_retry_that_finds_the_restamp_landed_still_moves_the_marker(
+    tmp_path: Path, lost_write_and_marker: Callable[[str], None]
+) -> None:
+    """The marker belongs to the call, not to one attempt. The retry finds no
+    chunk left to restamp and returns success, and it still moves the token."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    await _add(
+        a, [_doc("p1", "alpha disk full", 0.1), _doc("p2", "beta disk full", 0.2)]
+    )
+    built = await a._term_stats_for(KB_COLLECTION)
+    assert built is not None and built.document_frequency("alpha") == 1
+    lost_write_and_marker("update")
+
+    restamped = await b.restamp_chunk_ids(
+        ["p1_chunk_0"], "ent-1", where={"enterprise_id": STANDALONE_ENTERPRISE_ID}
+    )
+
+    assert restamped == ["p1_chunk_0"]
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None and stats.document_frequency("alpha") == 0
+
+
+async def test_a_retry_that_finds_the_delete_landed_still_moves_the_marker(
+    tmp_path: Path, lost_write_and_marker: Callable[[str], None]
+) -> None:
+    """The same for a delete. A delete changes the size, which alone makes
+    another store rebuild, so this pins the token the retry must move."""
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(
+        store, [_doc("p1", "alpha disk full", 0.1), _doc("p2", "beta disk full", 0.2)]
+    )
+    before = _token(tmp_path)
+    lost_write_and_marker("delete")
+
+    assert await store.delete_documents_by_parent_id("p1", retries=1) == 0
+
+    assert _token(tmp_path) not in (None, before)
+
+
+async def test_a_call_that_never_reaches_a_write_leaves_the_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker is owed only once a write was reached. A no-op delete whose
+    first attempt fails before any write, and whose retry matches nothing,
+    moves no token and calls no ``modify``."""
+    store = KnowledgeVectorStore(_client(tmp_path))
+    await _add(store, [_doc("p1", "alpha disk full", 0.1)])
+    before = _token(tmp_path)
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.base_client.asyncio.sleep", AsyncMock()
+    )
+    monkeypatch.setattr(Collection, "get", _first_call(Collection.get, lands=False))
+    modified: List[int] = []
+    modify = Collection.modify
+
+    def _counted(self: Collection, *args: Any, **kwargs: Any) -> Any:
+        modified.append(1)
+        return modify(self, *args, **kwargs)
+
+    monkeypatch.setattr(Collection, "modify", _counted)
+
+    assert await store.delete_documents_by_parent_id("absent", retries=1) == 0
+
+    assert modified == []
+    assert _token(tmp_path) == before
+
+
+async def test_a_write_on_the_http_arms_executor_moves_the_token(
+    tmp_path: Path,
+) -> None:
+    """On the HTTP arm the write wrapper, and so the marker, runs in the
+    chroma-http executor rather than on the loop thread (#2056)."""
+    a = KnowledgeVectorStore(_client(tmp_path))
+    b = KnowledgeVectorStore(_client(tmp_path))
+    b.blocking_executor = CHROMA_EXECUTOR
+    await _add(a, [_doc("p1", "alpha disk full", 0.1)])
+    assert await a._term_stats_for(KB_COLLECTION) is not None
+    loop_thread = threading.current_thread()
+    marked_on: List[threading.Thread] = []
+    mark = b._mark_written
+
+    def _observed(*args: Any) -> Any:
+        marked_on.append(threading.current_thread())
+        return mark(*args)
+
+    b._mark_written = _observed  # type: ignore[method-assign]
+
+    await _replace(b, "p1", "omega disk full")
+
+    assert marked_on and all(t is not loop_thread for t in marked_on)
+    stats = await a._term_stats_for(KB_COLLECTION)
+    assert stats is not None
+    assert stats.document_frequency("omega") == 1
+    assert stats.document_frequency("alpha") == 0
