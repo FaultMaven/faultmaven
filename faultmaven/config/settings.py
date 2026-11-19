@@ -2659,13 +2659,27 @@ class LoggingSettings(BaseSettings):
     # Human-readable output (console renderer instead of JSON)
     # An explicit override of the renderer, independent of LOG_FORMAT. It used
     # to be reachable only when LOG_FORMAT held a third value that is not in the
-    # accepted set, i.e. never; see FaultMavenLogger.configure_structlog.
+    # accepted set, i.e. never; see logging/config.py build_log_formatter.
     log_human_readable: bool = Field(default=False)
 
     # populate_by_name: with a validation_alias set, the field name alone
     # would be swallowed by extra="ignore" and silently take the default —
     # LoggingSettings(log_output_format="console") returned "json".
     model_config = {"env_prefix": "", "extra": "ignore", "populate_by_name": True}
+
+
+def configured_log_format() -> str:
+    """The log format alone, read and normalized as ``LoggingSettings`` reads
+    it: ``LOG_FORMAT``, else the field's own name ``LOG_OUTPUT_FORMAT``
+    (``populate_by_name``), ``"json"`` unset or unrecognized. It validates no
+    other logging setting: the choice of a process that builds no settings, the
+    jobs and alembic (#2888). An unrecognized value warns through logging, so
+    call it once a handler is in place."""
+    found = EnvSettingsSource(LoggingSettings)()
+    value = found.get("LOG_FORMAT", found.get("log_output_format"))
+    if value is None:
+        return "json"
+    return LoggingSettings.normalize_log_output_format(value)
 
 
 class UploadSettings(BaseSettings):

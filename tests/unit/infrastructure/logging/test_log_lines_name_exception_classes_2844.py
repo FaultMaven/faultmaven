@@ -126,7 +126,8 @@ def _named(rendered, chain, old_way):
 
 
 def _old_structlog(exc):
-    return lambda: get_logger("faultmaven.control").error("old", error=exc)
+    # In the message: an exception field is its class chain since #2888.
+    return lambda: get_logger("faultmaven.control").error("old %r", exc)
 
 
 def _old_stdlib(exc):

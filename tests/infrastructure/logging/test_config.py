@@ -197,6 +197,7 @@ class TestFaultMavenLogger:
         record = json.loads(buf.getvalue().strip())
         assert record["note"] == "kept"
         assert "exception" not in record, "the caller's exc_info rendered a traceback"
+        assert "frames" not in record, "the caller's exc_info rendered frames"
         assert record["extra"] == {"exc_info": True, "exception": "caller data"}
 
     def _rendered(self, emit, config=None) -> str:

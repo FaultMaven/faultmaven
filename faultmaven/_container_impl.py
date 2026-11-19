@@ -262,9 +262,7 @@ class DIContainer(BaseDIContainer):
                 self._initialized = True
                 self._holds.take()
             else:
-                import traceback
-
-                logger.error(f"Critical initialization error: {traceback.format_exc()}")
+                logger.error("Critical initialization error", exc_info=True)
 
                 # Under pytest the lenient path costs more than it buys: the
                 # container returns normally with `_initialized` still False,
