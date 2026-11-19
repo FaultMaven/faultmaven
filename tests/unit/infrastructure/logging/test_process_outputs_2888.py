@@ -535,3 +535,24 @@ def test_a_failing_migration_reaches_no_parent_output(
     assert marker not in str(raised.value) + out + err + caplog.text
     assert "exit code 1" in str(raised.value)
     _framed(_lines(err), "Uncaught exception", f"{error}:")
+
+
+def test_a_settings_failure_raises_configuration_error_and_logs_the_remedy(
+    monkeypatch, caplog
+):
+    """A failure before ``get_settings`` builds anything (here the dotenv load)
+    is the ``ConfigurationError`` it always was, its remedy logged first."""
+    from faultmaven.config import settings as settings_module
+    from faultmaven.models.exceptions import ConfigurationError
+
+    def refuse():
+        raise RuntimeError("the dotenv load failed")
+
+    monkeypatch.setattr(settings_module, "_settings_instance", None)
+    monkeypatch.setattr(settings_module, "load_settings_dotenv", refuse)
+    caplog.set_level(logging.ERROR, logger=settings_module.__name__)
+    with pytest.raises(ConfigurationError):
+        settings_module.get_settings()
+    (record,) = [r for r in caplog.records if r.name == settings_module.__name__]
+    assert record.getMessage().startswith("Settings initialization failed: correct")
+    assert record.error == "RuntimeError"

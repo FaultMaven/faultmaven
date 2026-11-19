@@ -45,9 +45,6 @@ if not env_var_spellings(os.environ, "OPIK_SENTRY_ENABLE"):
 try:
     import opik
 
-    # Its own handler, and sentry_sdk's, write outside the log chain; a job or
-    # a command imports this module after its last sweep (#2888).
-    strip_own_handlers("opik", "sentry_sdk.errors")
     OPIK_AVAILABLE = module_is_usable(opik)
     if not OPIK_AVAILABLE:
         logger.warning(
@@ -116,6 +113,11 @@ class TraceBackend:
 _record = TraceBackend(
     sdk_available=OPIK_AVAILABLE, sentry_reporting=_sentry_reporting()
 )
+
+# opik's own handler, and sentry_sdk's (imported by ``import opik`` and by
+# ``_sentry_reporting``), write outside the log chain; a job or a command
+# imports this module after its last sweep (#2888). After the last import here.
+strip_own_handlers("opik", "sentry_sdk.errors")
 
 
 def backend() -> TraceBackend:

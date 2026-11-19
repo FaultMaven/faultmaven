@@ -4051,13 +4051,9 @@ def get_settings() -> FaultMavenSettings:
             # Validate preset requirements (e.g., API keys for selected provider)
             preset_errors = validate_preset_requirements()
             if preset_errors:
-                import logging
-
                 logger = logging.getLogger(__name__)
                 for error in preset_errors:
                     logger.warning(f"Preset configuration warning: {error}")
-
-            import logging
 
             logger = logging.getLogger(__name__)
             preset_name = get_current_preset_name()

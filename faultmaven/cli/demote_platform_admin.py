@@ -14,7 +14,6 @@ yet; it becomes a real privilege residue the moment they do, and by then the
 grant is old enough that nobody remembers where it came from.
 
 It now removes everything a promotion adds (``OPERATOR_GRANTED_ROLES``, derived
-
 from the same constant the grant uses so the two cannot drift again), leaving
 the base ``user`` marker so the account stays usable.
 
