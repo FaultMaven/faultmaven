@@ -1,0 +1,464 @@
+{
+ "2582_cited_failure_re_rooted": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "2595_unkinded_failure_rebound": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "2609_relapsed_mitigation": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n- mitigation_verified\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "D:carried_turn": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "D:closure": {
+  "exclusions": "",
+  "focus": null,
+  "focus_knowledge_query": null,
+  "milestones": ""
+ },
+ "D:gone_action": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "D:omitted": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:checklist_overflow": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:diagnosis": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:exhausted_only": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:exhausted_overflow": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:fallback": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:only_carried": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:only_gone": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:render_cap": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:row_text": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:surface_rotation": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "E:verifying_names_no_row": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "M:no_rows": {
+  "exclusions": "",
+  "focus": "\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "M:not_rechecked": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "M:refused": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**\nThe evidence showed a different problem than the one the user confirmed, and\nthe revised statement is waiting for their answer (the engine shows it to them\nbelow your reply). Answer what they asked. Cause work you send now is held and\napplied when they confirm; if they correct the revision, send a better\nrevised_problem_statement. Do not propose a transition until they answer.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>None yet</progress_indicators>"
+ },
+ "M:relieved": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "M:seen_again": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "M:with_fix": {
+  "exclusions": "",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:held_exhausted": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:held_fulfilled": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:held_fulfilled_declined": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "focus_knowledge_query": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:held_pending": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:held_pending_declined": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "focus_knowledge_query": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:invalidated": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**\nThe evidence showed the reported symptom was not present where and when it was\nreported. There is nothing to diagnose or fix, and hypotheses, solutions and\nmitigations are not accepted. Two things move the case:\n- New evidence of a DIFFERENT problem: send it with revised_problem_statement\n  (describing what is observed) for the user to confirm.\n- The user disputes the finding with new information: set\n  invalidation_withdrawn with withdrawal_basis, and verification starts again.\nThe engine has offered the user the close. Propose a transition only when the user directs it.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>None yet</progress_indicators>"
+ },
+ "N:long_request": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:more_than_five": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "N:none_stopped": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "P:current": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — symptom last observed 2026-11-18T23:55:00+00:00\n</progress_indicators>"
+ },
+ "P:declined_earlier": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n",
+  "focus_knowledge_query": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "P:declined_offer_open": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved.\n",
+  "focus_knowledge_query": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved.\n",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "P:disposition": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- mitigation_accepted\n- mitigation_disposition: declared_stable\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "P:false_alarm_declined": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**\nThe evidence showed the reported symptom was not present where and when it was\nreported. There is nothing to diagnose or fix, and hypotheses, solutions and\nmitigations are not accepted. Two things move the case:\n- New evidence of a DIFFERENT problem: send it with revised_problem_statement\n  (describing what is observed) for the user to confirm.\n- The user disputes the finding with new information: set\n  invalidation_withdrawn with withdrawal_basis, and verification starts again.\nThe user declined closing on this finding at turn 6; the case holds on their answer. Propose a close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>None yet</progress_indicators>"
+ },
+ "P:inquiry": {
+  "exclusions": "",
+  "focus": null,
+  "focus_knowledge_query": null,
+  "milestones": ""
+ },
+ "P:revision_hypotheses": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Revised problem statement awaiting confirmation**\nThe evidence showed a different problem than the one the user confirmed, and\nthe revised statement is waiting for their answer (the engine shows it to them\nbelow your reply). Answer what they asked. Cause work you send now is held and\napplied when they confirm; if they correct the revision, send a better\nrevised_problem_statement. Do not propose a transition until they answer.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>None yet</progress_indicators>"
+ },
+ "P:solution_verified": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\nSay \"ruled out\" only of a cause refuted on record.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Symptom verification pending**\nNo symptoms have been formally confirmed. Check the data against the confirmed\nproblem statement and reach one of three verdicts:\n- It shows the stated symptom → symptom_verified, with the symptom_evidence,\n  citing its ids in symptom_verification_evidence_ids.\n- It shows a real problem the statement describes INACCURATELY — a different\n  symptom, component, scope or time, such that the statement would misdirect\n  the investigation → verification_updates.revised_problem_statement, citing\n  the symptom_evidence. Describe what is observed, never its cause. Added\n  precision alone is not a revision.\n- It shows the reported symptom was NEVER present where and when it was\n  reported (a false alarm) → verification_updates.problem_invalidated, citing\n  symptom_absence_evidence from that window.\nThe problem not happening right now is NOT a false alarm, and missing data is\nneither a revision nor a false alarm — ask for the data.\n\nCause work waits for it: hypotheses, causal chains and root-cause conclusions\nare not accepted until the symptom is verified. When the data that verifies it\nalso shows the cause, verify and form the hypotheses in the same response.\n\nData showing the problem at an earlier time DOES verify it — a problem is worth\ninvestigating while it EXISTS (evidence still collectible, root cause\nunidentified, solution unknown), whether or not it is firing right now. Do not\nwithhold symptom_verified because the evidence is not from this minute.\n\nWhat the observation time governs is WHERE the investigation looks. State it\nexplicitly when you verify: it becomes the window every later evidence request\ntargets, and requests must name absolute timestamps rather than relative ones,\nwhich silently drift to the present.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n- solution_verified\n</stage_gate_milestones>\n<progress_indicators>None yet</progress_indicators>"
+ },
+ "P:stale": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**\nThe symptom was observed some time ago (see the observation time on\nsymptom_verified below). That period, not the present, is where this\ninvestigation looks.\n\nThis does NOT mean the problem is stale or not worth pursuing — a problem is\nworth investigating while it EXISTS: evidence still collectible, root cause\nunidentified, solution unknown. Whether it happens to be firing right now\nchanges how you work it, not whether you do.\n\nIt does mean two things about evidence:\n  1. Scope every request to the symptom's window using ABSOLUTE timestamps.\n     Relative windows silently drift to the present — asking for `--since=30m`\n     about a symptom seen two hours ago inspects a period the problem was never\n     claimed to be in.\n  2. A clean current-state reading is not counter-evidence. It looks at a\n     different window and says nothing about what happened in the symptom's.\n     Do not treat it as refuting the symptom, and do not retract on it.\n\nRetract symptom_verified only if the symptom CLAIM itself turns out to be\nwrong — misread data, the wrong system, an artefact — not because the problem\nis not occurring at this moment.\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — symptom last observed 2026-11-18T22:00:00+00:00. THAT is the investigation window; now is a different one. Scope evidence requests to it (name absolute timestamps rather than relative windows like --since=30m), and do not read a clean current-state reading as counter-evidence — it looks at a period the symptom was never claimed to be in\n</progress_indicators>"
+ },
+ "P:unverified_hypotheses": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\nSay \"ruled out\" only of a cause refuted on record.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Symptom verification pending**\nNo symptoms have been formally confirmed. Check the data against the confirmed\nproblem statement and reach one of three verdicts:\n- It shows the stated symptom → symptom_verified, with the symptom_evidence,\n  citing its ids in symptom_verification_evidence_ids.\n- It shows a real problem the statement describes INACCURATELY — a different\n  symptom, component, scope or time, such that the statement would misdirect\n  the investigation → verification_updates.revised_problem_statement, citing\n  the symptom_evidence. Describe what is observed, never its cause. Added\n  precision alone is not a revision.\n- It shows the reported symptom was NEVER present where and when it was\n  reported (a false alarm) → verification_updates.problem_invalidated, citing\n  symptom_absence_evidence from that window.\nThe problem not happening right now is NOT a false alarm, and missing data is\nneither a revision nor a false alarm — ask for the data.\n\nCause work waits for it: hypotheses, causal chains and root-cause conclusions\nare not accepted until the symptom is verified. When the data that verifies it\nalso shows the cause, verify and form the hypotheses in the same response.\n\nData showing the problem at an earlier time DOES verify it — a problem is worth\ninvestigating while it EXISTS (evidence still collectible, root cause\nunidentified, solution unknown), whether or not it is firing right now. Do not\nwithhold symptom_verified because the evidence is not from this minute.\n\nWhat the observation time governs is WHERE the investigation looks. State it\nexplicitly when you verify: it becomes the window every later evidence request\ntargets, and requests must name absolute timestamps rather than relative ones,\nwhich silently drift to the present.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>None yet</progress_indicators>"
+ },
+ "R:before_the_failed_fix": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "R:fix_failed": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**\nA fix has been proposed and is awaiting execution. If the user reports executing\nit, set solution_accepted=True with accepted_action_ref naming its ACTION_ID\n(<pending_action>), and infer the transition to TREATMENT.\nThis hold is NOT a freeze. If the user's reply instead brings new evidence,\nquestions the fix, or points at a different cause, resume root-cause analysis on\nthat signal — investigate it rather than repeating the standby. A pending\nproposal never forecloses a live diagnostic thread.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n- solution_proposed\n</progress_indicators>"
+ },
+ "R:fix_failed_newer": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**\nA fix has been proposed and is awaiting execution. If the user reports executing\nit, set solution_accepted=True with accepted_action_ref naming its ACTION_ID\n(<pending_action>), and infer the transition to TREATMENT.\nThis hold is NOT a freeze. If the user's reply instead brings new evidence,\nquestions the fix, or points at a different cause, resume root-cause analysis on\nthat signal — investigate it rather than repeating the standby. A pending\nproposal never forecloses a live diagnostic thread.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n- solution_proposed\n</progress_indicators>"
+ },
+ "R:held_open": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "R:latest_failed": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n- solution_proposed\n</progress_indicators>"
+ },
+ "R:no_longer_identified": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n- solution_proposed\n</progress_indicators>"
+ },
+ "R:off_cause_attempt": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "R:other_cause": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "R:posited_later": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "R:uncited_cited": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "R:uncited_no_citation": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "R:uncited_no_root": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: hyp_000000001927 (each refuted by evidence). No other alternative is excluded on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- solution_proposed\n</progress_indicators>"
+ },
+ "R:window_zero_failed": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Solution needed**\nRoot cause is identified. A concrete, executable fix with specific commands\nadvances the investigation to Treatment.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "R:window_zero_failed_newer": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Solution needed**\nRoot cause is identified. A concrete, executable fix with specific commands\nadvances the investigation to Treatment.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "T:four_fixes": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:gone_outside_window": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "T:interception_only": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:interception_seen_gone": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:no_dated_fix": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:other_cause_disconfirmation": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:outside_window": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:past_the_bounds": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:predates_failed_fix": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:repeated_why": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "T:uncited_no_root": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: hyp_000000001927 (each refuted by evidence). No other alternative is excluded on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- solution_proposed\n</progress_indicators>"
+ },
+ "gate_one": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Symptom verification pending**\nNo symptoms have been formally confirmed. Check the data against the confirmed\nproblem statement and reach one of three verdicts:\n- It shows the stated symptom → symptom_verified, with the symptom_evidence,\n  citing its ids in symptom_verification_evidence_ids.\n- It shows a real problem the statement describes INACCURATELY — a different\n  symptom, component, scope or time, such that the statement would misdirect\n  the investigation → verification_updates.revised_problem_statement, citing\n  the symptom_evidence. Describe what is observed, never its cause. Added\n  precision alone is not a revision.\n- It shows the reported symptom was NEVER present where and when it was\n  reported (a false alarm) → verification_updates.problem_invalidated, citing\n  symptom_absence_evidence from that window.\nThe problem not happening right now is NOT a false alarm, and missing data is\nneither a revision nor a false alarm — ask for the data.\n\nCause work waits for it: hypotheses, causal chains and root-cause conclusions\nare not accepted until the symptom is verified. When the data that verifies it\nalso shows the cause, verify and form the hypotheses in the same response.\n\nData showing the problem at an earlier time DOES verify it — a problem is worth\ninvestigating while it EXISTS (evidence still collectible, root cause\nunidentified, solution unknown), whether or not it is firing right now. Do not\nwithhold symptom_verified because the evidence is not from this minute.\n\nWhat the observation time governs is WHERE the investigation looks. State it\nexplicitly when you verify: it becomes the window every later evidence request\ntargets, and requests must name absolute timestamps rather than relative ones,\nwhich silently drift to the present.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>None yet</progress_indicators>"
+ },
+ "held_check": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "held_check_on_a_false_alarm": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Reported problem not present (false alarm)**\nThe evidence showed the reported symptom was not present where and when it was\nreported. There is nothing to diagnose or fix, and hypotheses, solutions and\nmitigations are not accepted. Two things move the case:\n- New evidence of a DIFFERENT problem: send it with revised_problem_statement\n  (describing what is observed) for the user to confirm.\n- The user disputes the finding with new information: set\n  invalidation_withdrawn with withdrawal_basis, and verification starts again.\nThe engine has offered the user the close. Propose a transition only when the user directs it.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>None yet</progress_indicators>"
+ },
+ "held_check_then_interception": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "hypothesis_action": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Solution needed**\nRoot cause is identified. A concrete, executable fix with specific commands\nadvances the investigation to Treatment.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n</progress_indicators>"
+ },
+ "menu_close": {
+  "exclusions": "",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+  "focus_knowledge_query": "",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "offer_answered_at_0b": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Of any other alternative, say it was not what caused this problem, never that it is absent.\n</exclusions_on_record>\n\n",
+  "focus": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "focus_knowledge_query": "\n**THE USER DECLINED MARKING THIS CASE RESOLVED.** It stays open on their answer. Do not propose resolved on the evidence already on record. If the user reports a NEW verification that the fix held, record it (the cause gone as causal_absence_evidence, the problem gone as symptom_absence_evidence) and propose resolved in the same turn. A request is not a verification: never record a confirmation row from a request. Do not narrate the case as resolved. A user who changes their mind without a new verification uses the engine's 'Mark it resolved' action: point them to it. A user who wants to close the case instead uses the engine's 'Close without resolving' action: point them to it.\n**THE USER HAS JUST DECLINED MARKING THIS CASE RESOLVED.** The case record already holds the confirmation the offer rested on (the cause shown removed, the reported problem seen gone after the fix); do not record the cause or the problem as gone again this turn. Ask what they still need to see before calling it resolved, or what makes them doubt the fix, and name the one check that would settle it (for example the fix mechanism's own state, a schedule's last run, or a window with no recurrence). If their message itself reports the state of their system, follow the chat-data rules: request that output with `system_state_report.request`, not in your reply.\n",
+  "milestones": "<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n</progress_indicators>"
+ },
+ "terminal_qa": {
+  "exclusions": "",
+  "focus": null,
+  "focus_knowledge_query": null,
+  "milestones": ""
+ },
+ "told_then_committed": {
+  "exclusions": "<exclusions_on_record>\nRuled out on record: nothing. No alternative cause is excluded by evidence on record.\nSay \"ruled out\" only of a cause refuted on record. Any other alternative is not excluded: name the check that would settle it, or record the exclusion this turn (link the row that excludes it with stance REFUTES and set state=REFUTED).\n</exclusions_on_record>\n\n",
+  "focus": "",
+  "focus_knowledge_query": "",
+  "milestones": "<stage_gate_milestones>\n- solution_accepted\n</stage_gate_milestones>\n<progress_indicators>\n- symptom_verified — the symptom evidence carries no observation time you can rely on, so how recently the problem was seen is UNKNOWN (not confirmed recent). Other items may carry their own observation times; those date the item, not the symptom\n- root_cause_identified\n- solution_proposed\n</progress_indicators>"
+ }
+}

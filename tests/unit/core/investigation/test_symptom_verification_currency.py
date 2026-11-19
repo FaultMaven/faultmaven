@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from faultmaven.core.investigation.narration.prompt_state import FocusZone
 from faultmaven.core.investigation.symptom_currency import (
     STALE_AFTER,
     SymptomCurrency,
@@ -34,6 +35,7 @@ from faultmaven.modules.case.contracts import (
     TemporalState,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.prompt_state_reads import zone_emphasis
 
 _FILE_ID = "file_0123456789ab"
 
@@ -247,12 +249,8 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
     with nothing to say about WHERE to look. It must now name the window — and
     must not imply a non-firing problem is not worth investigating."""
 
-    from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
-    )
-
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=2))])
-    text = _get_diagnosis_focus_emphasis(case.progress, case)
+    text = zone_emphasis(case)
     assert "anchor to the symptom's window" in text.lower()
     assert "ABSOLUTE timestamps" in text
     assert "not counter-evidence" in text
@@ -261,24 +259,23 @@ def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
 
 
 def test_zone2_emphasis_is_unchanged_when_current():
-    from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
-    )
-
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(minutes=1))])
-    text = _get_diagnosis_focus_emphasis(case.progress, case)
+    text = zone_emphasis(case)
     assert "Symptoms are confirmed" in text
 
 
-def test_progress_only_callers_keep_working():
-    """The optional ``case`` parameter must not change existing call sites."""
+def test_the_unanchored_zone_2_names_no_window():
+    """Zone 2 with no stale observation (the ``progress``-only callers' text
+    before #2811 S2b-1c-i) says the symptoms are confirmed and names no
+    window."""
 
     from faultmaven.core.investigation.prompts.templates.assembly import (
         _get_diagnosis_focus_emphasis,
     )
 
-    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=9))])
-    assert "Symptoms are confirmed" in _get_diagnosis_focus_emphasis(case.progress)
+    text = _get_diagnosis_focus_emphasis(FocusZone.CAUSE)
+    assert "Symptoms are confirmed" in text
+    assert "anchor to the symptom's window" not in text
 
 
 # -- closure reasons: every close must say WHY, never merely when -------------
@@ -614,12 +611,8 @@ class TestReviewFindingsResidual:
         than treat the question as settled. Every currency surface is gated on
         symptom_verified, so suppressing it there kept them all dormant."""
 
-        from faultmaven.core.investigation.prompts.templates.assembly import (
-            _get_diagnosis_focus_emphasis,
-        )
-
         case = _case(verified=False)
-        text = _get_diagnosis_focus_emphasis(case.progress, case)
+        text = zone_emphasis(case)
         assert "DOES verify it" in text
         assert "while it EXISTS" in text
         assert "absolute timestamps" in text

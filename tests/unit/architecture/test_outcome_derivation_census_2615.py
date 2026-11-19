@@ -67,7 +67,10 @@ alias assigned from a watched name counts through its right-hand side.
 Not counted:
 
 * ``problem_status``, ``cause_state`` and ``mitigation.disposition``: progress
-  inputs the record reads from (#2615, *The record*);
+  inputs the record reads from (#2615, *The record*). Under ``prompts/``,
+  ``PROMPT_PROGRESS_READS`` watches ``problem_status``, ``cause_state``,
+  ``symptom_verified`` and ``solution_proposed`` per function (#2811
+  S2b-1c-i): a prompt line reads them off the record;
 * a read through ``builtins.getattr``, ``operator.attrgetter`` or
   ``object.__getattribute__``, or by a class pattern
   (``case Case(closure_reason=r)``): none exists today;
@@ -189,6 +192,13 @@ DERIVATIONS: dict[str, str] = {
     # ``SubjectIndex.bindable_rows`` (``_METHODS``).
     "fix_application_turn": _CA,
     "bindable_rows": _CA,
+    # #2811 S2b-1c-i: whether the problem takes cause work, which the
+    # exclusion rule now reads off the record (``problem.status``), and the
+    # false-alarm close declined, a fresh input of the focus emphasis until
+    # stage S2b-2 moves the offers.
+    "cause_work_accepted": _PROBLEM,
+    "cause_work_staged": _PROBLEM,
+    "false_alarm_close_declined_at": _PROBLEM,
 }
 
 #: The watched names that are methods, by the class that defines each.
@@ -201,6 +211,32 @@ FIELDS: dict[str, tuple[str, str]] = {
     "resolution_complete": (_PROGRESS, "InvestigationProgress"),
     "verified": (_PROGRESS, "MitigationRecord"),
     "closure_reason": (_CASE + "domain/models/case.py", "Case"),
+}
+
+#: The progress inputs the record reads from (``problem.status``,
+#: ``milestones_shown``), watched where the prompt is built (#2811 S2b-1c-i):
+#: ``FIELDS`` leaves them out package-wide, so a prompt line that read one raw
+#: would be seen by nothing.
+PROGRESS_INPUTS = (
+    "symptom_verified",
+    "problem_status",
+    "cause_state",
+    "solution_proposed",
+)
+_PROMPTS = _INV + "prompts/"
+
+#: (path, qualname) -> {input: attribute reads}, under ``prompts/``: the
+#: prompt sites that still read a progress input raw, each until the stage
+#: that switches it.
+PROMPT_PROGRESS_READS: dict[tuple[str, str], dict[str, int]] = {
+    # #2811 S2b-1c-ii: the state summary's verified line and the fallback
+    # body's milestones.
+    (_CB + "history.py", "_build_state_summary"): {"symptom_verified": 1},
+    (_PROMPTS + "templates/fallback.py", "_fallback_body"): {
+        "cause_state": 1,
+        "solution_proposed": 1,
+        "symptom_verified": 1,
+    },
 }
 
 #: The offer record's writers, the transitions' executors, the entries that
@@ -414,6 +450,25 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "pending_symptom_check": 1,
     },
     (_INV + "offer_projection.py", "_reopen_chip"): {"declined_resolve_entry": 1},
+    # #2811 S2b-1c-i: the cause-work gates and the false-alarm decline's
+    # refusal and reply, deciders that stage S3 switches.
+    (_ME + "chain_emission.py", "_apply_chain_emission"): {
+        "cause_work_accepted": 1,
+        "cause_work_staged": 1,
+    },
+    (_ME + "response_application.py", "ResponseApplier._apply_cause_claims"): {
+        "cause_work_accepted": 1
+    },
+    (
+        _ME + "response_application.py",
+        "ResponseApplier._apply_investigation_updates",
+    ): {"cause_work_accepted": 1, "cause_work_staged": 1},
+    (_ME + "response_application.py", "_reclassify_premature_causal_absence"): {
+        "cause_work_accepted": 1,
+        "cause_work_staged": 1,
+    },
+    (_TRANSITION_TURNS, "_decline_bare_reply"): {"false_alarm_close_declined_at": 1},
+    (_TRANSITIONS, "declined_close_reask"): {"false_alarm_close_declined_at": 1},
     (_INV + "offer_projection.py", "OfferProjection.disposition_eligibility"): {
         "derive_disposition_eligibility": 1
     },
@@ -462,11 +517,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # assembly's one fold, and the one window list its fresh verdicts (ruling
     # Q1 (a)) read, until stage S3; the held need is the record's.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
-    # #2811 S2b-1b-i: the focus block's resolve-decline lines, a prompt site
-    # of stage S2b-1c.
-    (_INV + "prompts/templates/assembly.py", "_resolve_declined_emphasis"): {
-        "declined_resolve_entry": 1,
-        "pending_symptom_check": 1,
+    # #2811 S2b-1c-i: the focus emphasis selects its lines from the record;
+    # the resolve decline's turn and the false-alarm close declined are fresh
+    # inputs (``PromptStateFresh``) until stage S2b-2 moves the offers.
+    (_CB + "narration_fold.py", "_resolve_decline_turn"): {"declined_resolve_entry": 1},
+    (_CB + "narration_fold.py", "_false_alarm_declined_at"): {
+        "false_alarm_close_declined_at": 1
     },
     (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
@@ -515,10 +571,9 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"verified": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
-    (_CB + "assembly.py", "build_investigation_context"): {
-        "solution_verified": 1,
-        "verified": 1,
-    },
+    # #2811 S2b-1c-i: the milestone status reads the record; the stored
+    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3.
+    (_CB + "narration_fold.py", "_stored_mitigation_verified"): {"verified": 1},
     (_INV + "prompts/templates/fallback.py", "_fallback_body"): {
         "closure_reason": 1,
         "solution_verified": 1,
@@ -799,6 +854,48 @@ def _locals_of(function: ast.AST) -> frozenset[str]:
     return frozenset(stored - bound_otherwise)
 
 
+def _scope_of(node: ast.AST, parents: dict) -> str:
+    """The qualname of the function or class enclosing ``node``."""
+    names = []
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+    return ".".join(reversed(names)) or "<module>"
+
+
+def _constant_getattr(node: ast.AST) -> str | None:
+    """The name ``getattr(x, "name")`` reads, or None."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    ):
+        return node.args[1].value
+    return None
+
+
+def collect_progress_reads(tree: ast.AST, path: str) -> dict[tuple[str, str], Counter]:
+    """Each attribute Load of a ``PROGRESS_INPUTS`` name in ``tree``, and each
+    builtin ``getattr`` of one by a constant name, by enclosing function."""
+    parents = {
+        child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)
+    }
+    found: dict[tuple[str, str], Counter] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            name = node.attr
+        else:
+            name = _constant_getattr(node)
+        if name in PROGRESS_INPUTS:
+            key = (path, _scope_of(node, parents))
+            found.setdefault(key, Counter())[name] += 1
+    return found
+
+
 def collect(tree: ast.AST, path: str) -> Sites:
     """The sites in ``tree``, the module at ``path``.
 
@@ -815,12 +912,7 @@ def collect(tree: ast.AST, path: str) -> Sites:
     locals_memo: dict[ast.AST, frozenset[str]] = {}
 
     def scope_of(node: ast.AST) -> str:
-        names = []
-        while node in parents:
-            node = parents[node]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                names.append(node.name)
-        return ".".join(reversed(names)) or "<module>"
+        return _scope_of(node, parents)
 
     def is_local(node: ast.Name) -> bool:
         # The nearest enclosing scope decides. Only a load in a function's
@@ -860,17 +952,10 @@ def collect(tree: ast.AST, path: str) -> Sites:
             if is_local(node):
                 continue
             name, attribute = node.id, False
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
-        ):
+        elif _constant_getattr(node) is not None:
             # ``getattr(x, "name")`` reads what ``x.name`` reads; it is never
             # a call of that name.
-            name, attribute = node.args[1].value, True
+            name, attribute = _constant_getattr(node), True
         else:
             continue
         key = (path, scope_of(node))
@@ -903,6 +988,18 @@ def _scan() -> tuple[Sites, int]:
         sites.uncalled_entries.extend(found.uncalled_entries)
         sites.aliased_imports.extend(found.aliased_imports)
     return sites, files
+
+
+@lru_cache(maxsize=1)
+def _scan_prompts() -> tuple[dict[tuple[str, str], Counter], int]:
+    found: dict[tuple[str, str], Counter] = {}
+    files = 0
+    for path in sorted((_ROOT / _PROMPTS).rglob("*.py")):
+        files += 1
+        found.update(
+            collect_progress_reads(parse_file(path), path.relative_to(_ROOT).as_posix())
+        )
+    return found, files
 
 
 def _render(counts: dict) -> str:
@@ -1021,6 +1118,36 @@ def test_every_raw_field_read_is_declared():
         + "\n"
         + _HELP.format(table="FIELD_READS")
     )
+
+
+def test_every_raw_progress_read_in_the_prompt_is_declared():
+    """Pin 3 where the prompt is built (#2811 S2b-1c-i): a prompt line reads
+    whether the problem is verified, its cause identified or a solution
+    proposed off the record, never raw, but where declared."""
+    found, files = _scan_prompts()
+    assert files > 20, f"scanned {files} files under {_PROMPTS}"
+    problems = _differences(found, PROMPT_PROGRESS_READS)
+    assert not problems, (
+        "a progress input the record holds is read raw in the prompt where "
+        "the census does not say:\n  "
+        + "\n  ".join(problems)
+        + "\nRead it off the record (narration.prompt_state), or declare the "
+        "site in PROMPT_PROGRESS_READS with the #2615 stage that moves it."
+    )
+
+
+@pytest.mark.parametrize("name", PROGRESS_INPUTS)
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(case):\n    return case.progress.{name}",
+        "def f(p):\n    return getattr(p, '{name}', None)",
+    ],
+)
+def test_the_prompt_watch_matches_each_input(name, source):
+    """A positive control per name and shape."""
+    tree = ast.parse(source.format(name=name))
+    assert collect_progress_reads(tree, "m.py") == {("m.py", "f"): Counter({name: 1})}
 
 
 def test_every_closure_entry_caller_is_declared():

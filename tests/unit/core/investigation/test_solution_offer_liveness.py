@@ -86,6 +86,7 @@ from faultmaven.modules.case.domain.models.solution import (
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import mitigated
 from tests.unit.core.investigation.narrated import narrated
+from tests.unit.core.investigation.prompt_state_reads import zone_emphasis
 
 _FILE_ID = "file_0123456789ab"
 
@@ -470,7 +471,7 @@ class TestZoneFrameFollowsDerivation:
         p.problem_status = ProblemStatus.VERIFIED
         p.cause_state = CauseState.CANDIDATES
         p.solution_proposed = False
-        emphasis = _get_diagnosis_focus_emphasis(p)
+        emphasis = zone_emphasis(case)
         assert "Root cause analysis" in emphasis
         assert "awaiting execution" not in emphasis
 
@@ -483,7 +484,7 @@ class TestZoneFrameFollowsDerivation:
         p.problem_status = ProblemStatus.VERIFIED
         p.cause_state = CauseState.IDENTIFIED
         p.solution_proposed = True
-        assert "awaiting execution" in _get_diagnosis_focus_emphasis(p)
+        assert "awaiting execution" in zone_emphasis(case)
 
 
 # ---------------------------------------------------------------------------

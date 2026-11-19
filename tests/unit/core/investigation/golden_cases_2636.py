@@ -92,6 +92,7 @@ from faultmaven.core.investigation.milestone_engine.terminal_proposals import (
 from faultmaven.core.investigation.milestone_engine.transitions import (
     declined_resolution_reask,
 )
+from faultmaven.core.investigation.narration.prompt_state import resolve_declined
 from faultmaven.core.investigation.problem_status import invalidate_problem
 from faultmaven.core.investigation.prompts.templates.assembly import (
     _resolve_declined_emphasis,
@@ -144,6 +145,7 @@ from tests.unit.core.investigation import (
 )
 from tests.unit.core.investigation.bound_rows import _row, bound_row
 from tests.unit.core.investigation.narrated import narrated
+from tests.unit.core.investigation.prompt_state_reads import selections
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _bare_case,
     _cause_leg_only,
@@ -357,7 +359,9 @@ def _reask(case):
 def _declined_texts(case) -> dict:
     return {
         "reask": _reask(case),
-        "prompt_line": _resolve_declined_emphasis(case),
+        "prompt_line": _resolve_declined_emphasis(
+            resolve_declined(*selections(case), case.current_turn)
+        ),
     }
 
 

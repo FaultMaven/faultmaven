@@ -30,6 +30,7 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
 )
+from faultmaven.core.investigation.narration.prompt_state import FocusZone
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
@@ -83,24 +84,18 @@ def _diagnostic(
 
 
 class TestZonePendingEmphasis:
-    def _pending_progress(self):
-        # symptom verified, cause identified, solution pending → the else branch.
-        from faultmaven.modules.case.domain.models.progress import InvestigationProgress
-
-        p = InvestigationProgress()
-        p.problem_status = ProblemStatus.VERIFIED
-        p.cause_state = CauseState.IDENTIFIED
-        p.solution_proposed = True
-        return p
+    """The pending zone's text; the record's selection of the zone (symptom
+    verified, cause identified, solution proposed) is pinned in
+    ``test_prompt_state_record_2811.test_the_zone_is_the_records_milestones``."""
 
     def test_pending_emphasis_drops_absolutist_prohibition(self):
-        text = _get_diagnosis_focus_emphasis(self._pending_progress())
+        text = _get_diagnosis_focus_emphasis(FocusZone.PENDING)
         # The suppressive frame that stranded the #656 diagnostic thread is gone.
         assert "Do not request further evidence" not in text
         assert "introduce alternative proposals" not in text
 
     def test_pending_emphasis_names_the_diagnostic_exit(self):
-        text = _get_diagnosis_focus_emphasis(self._pending_progress())
+        text = _get_diagnosis_focus_emphasis(FocusZone.PENDING)
         low = text.lower()
         assert "not a freeze" in low
         assert "resume root-cause analysis" in low

@@ -17,11 +17,10 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     latest_decided_fix_window,
 )
-from faultmaven.core.investigation.problem_status import (
-    cause_work_accepted,
-    cause_work_staged,
-)
+from faultmaven.core.investigation.narration.prompt_state import cause_work_rule
 from faultmaven.modules.case.contracts import Case, CaseState, NodeState, NodeType
+
+from .narration_fold import NarrationFold
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +112,12 @@ def exclusion_record(
     return "\n".join(lines)
 
 
-def exclusions_reminder_parts(case: Case) -> tuple[str, str] | None:
+_EXCLUSION_RULE = "exclusion rule"
+
+
+def exclusions_reminder_parts(
+    case: Case, fold: NarrationFold | None = None
+) -> tuple[str, str] | None:
     """The record and the rule to restate beside the user's message (#1911),
     or None.
 
@@ -130,7 +134,14 @@ def exclusions_reminder_parts(case: Case) -> tuple[str, str] | None:
     problem; asking for checks would pull against the resolve turn); while the
     problem does not take cause work (a false-alarm hold, an unverified
     problem) it is left out, because a refutation would be refused; otherwise
-    it is: name the check, or record the exclusion."""
+    it is: name the check, or record the exclusion.
+
+    Whether the problem takes cause work is the record's (``problem.status``,
+    #2811 S2b-1c-i), read from ``fold`` (the prompt assembly's; a fresh one
+    without it) only where that half is decided: past a confirmed fix and a
+    record with nothing to speak of, it is not read. If it cannot be read,
+    the action half is left out, as on an unverified problem, and the failure
+    is logged and counted once per assembly (``NarrationFold``)."""
     if case.state != CaseState.INVESTIGATING:
         return None
     confirmed = fix_confirmed(case)
@@ -145,7 +156,7 @@ def exclusions_reminder_parts(case: Case) -> tuple[str, str] | None:
             " Of any other alternative, say it was not what caused this "
             "problem, never that it is absent."
         )
-    elif cause_work_accepted(case) or cause_work_staged(case):
+    elif _takes_cause_work(case, fold):
         rule += (
             " Any other alternative is not excluded: name the check that would "
             "settle it, or record the exclusion this turn (link the row that "
@@ -154,10 +165,15 @@ def exclusions_reminder_parts(case: Case) -> tuple[str, str] | None:
     return record, rule
 
 
-def exclusions_reminder(case: Case) -> str:
+def _takes_cause_work(case: Case, fold: NarrationFold | None) -> bool:
+    outcome = (NarrationFold(case) if fold is None else fold).outcome(_EXCLUSION_RULE)
+    return outcome is not None and cause_work_rule(outcome)
+
+
+def exclusions_reminder(case: Case, fold: NarrationFold | None = None) -> str:
     """The reminder as the main prompt renders it: an engine-authored tag in
     the per-turn tail, its own reserved section (``{exclusions}``)."""
-    parts = exclusions_reminder_parts(case)
+    parts = exclusions_reminder_parts(case, fold)
     if parts is None:
         return ""
     record, rule = parts

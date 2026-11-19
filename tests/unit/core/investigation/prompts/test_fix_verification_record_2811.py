@@ -514,16 +514,28 @@ async def test_a_failure_omits_only_the_block(monkeypatch, failures, where):
 
 
 async def test_a_fold_failure_also_omits_the_checklist(monkeypatch, failures):
-    """The fold is shared with ``<evidence_needs>`` (S2b-1b-ii): its failure
-    omits this block and that block's checklist, which becomes its declared
-    line; the rest of the prompt is unchanged, and it is counted once."""
+    """The fold is shared with ``<evidence_needs>`` (S2b-1b-ii) and the
+    prompt-state lines (S2b-1c-i): its failure omits this block, that block's
+    checklist, the milestone status and the focus emphasis, each its declared
+    line, and the exclusion rule's action half; the rest of the prompt is
+    unchanged, and it is counted once."""
+    from faultmaven.core.investigation.narration.prompt_state import (
+        MILESTONES_OMITTED,
+        PROGRESS_OMITTED,
+    )
+    from tests.unit.core.investigation.prompts.prompt_state_cases_2811 import render
     from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
         _block,
         _prompt,
     )
+    from tests.unit.core.investigation.prompts.test_prompt_state_record_2811 import (
+        _ACTION_HALF,
+    )
 
     case = await build("R:other_cause")
     whole, needs = _prompt(case), _build_evidence_needs_block(case)
+    places = render(case)
+    assert places["focus"] == "" and _ACTION_HALF in places["exclusions"], "premise"
     _patch(monkeypatch, "narration_outcome", _raise)
     omitted = _build_evidence_needs_block(case)
     assert CHECKLIST_OMITTED in omitted and "Re-verification" not in omitted
@@ -531,7 +543,15 @@ async def test_a_fold_failure_also_omits_the_checklist(monkeypatch, failures):
     prompt = _prompt(case)
     assert _block(prompt) == _OMITTED
     assert failures == [WritePoint.NARRATION]
-    want = whole.replace(needs, omitted)
+    want = (
+        whole.replace(needs, omitted)
+        .replace(places["milestones"], MILESTONES_OMITTED)
+        .replace(_ACTION_HALF, "")
+        .replace(
+            "===\n\nSTATE: INVESTIGATING",
+            f"===\n\n{PROGRESS_OMITTED}\n\nSTATE: INVESTIGATING",
+        )
+    )
     assert _rest(prompt, _block(prompt)) == _rest(want, _block(whole))
 
 
