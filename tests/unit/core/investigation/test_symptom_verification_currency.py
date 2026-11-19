@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from faultmaven.core.investigation.narration.prompt_state import FocusZone
 from faultmaven.core.investigation.symptom_currency import (
     STALE_AFTER,
     SymptomCurrency,
@@ -35,6 +34,7 @@ from faultmaven.modules.case.contracts import (
     TemporalState,
 )
 from tests.case_builders import investigating_case
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 from tests.unit.core.investigation.prompt_state_reads import zone_emphasis
 
 _FILE_ID = "file_0123456789ab"
@@ -264,18 +264,23 @@ def test_zone2_emphasis_is_unchanged_when_current():
     assert "Symptoms are confirmed" in text
 
 
-def test_the_unanchored_zone_2_names_no_window():
-    """Zone 2 with no stale observation (the ``progress``-only callers' text
-    before #2811 S2b-1c-i) says the symptoms are confirmed and names no
-    window."""
+@pytest.mark.parametrize(
+    "age, anchored", [(timedelta(hours=9), True), (timedelta(minutes=1), False)]
+)
+def test_the_prompt_anchors_zone_2_only_on_a_stale_symptom(age, anchored):
+    """End to end through the record path (#2811 S2b-1c-i): the zone the
+    record selects and the currency read fresh reach the prompt
+    ``get_prompt_for_case`` builds. A symptom seen nine hours ago anchors
+    the window; one seen a minute ago gets the unanchored Zone-2 text."""
 
     from faultmaven.core.investigation.prompts.templates.assembly import (
-        _get_diagnosis_focus_emphasis,
+        get_prompt_for_case,
     )
 
-    text = _get_diagnosis_focus_emphasis(FocusZone.CAUSE)
-    assert "Symptoms are confirmed" in text
-    assert "anchor to the symptom's window" not in text
+    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - age)])
+    prompt = get_prompt_for_case(case, "status", given_tools=DEFAULT_GIVEN)
+    assert ("anchor to the symptom's window" in prompt) is anchored
+    assert ("Symptoms are confirmed. When evaluating" in prompt) is not anchored
 
 
 # -- closure reasons: every close must say WHY, never merely when -------------

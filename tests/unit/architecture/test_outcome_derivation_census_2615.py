@@ -214,30 +214,24 @@ FIELDS: dict[str, tuple[str, str]] = {
 }
 
 #: The progress inputs the record reads from (``problem.status``,
-#: ``milestones_shown``), watched where the prompt is built (#2811 S2b-1c-i):
-#: ``FIELDS`` leaves them out package-wide, so a prompt line that read one raw
-#: would be seen by nothing.
+#: ``milestones_shown``, ``mitigation.disposition``), watched where the
+#: prompt is built (#2811 S2b-1c-i): ``FIELDS`` leaves them out package-wide,
+#: so a prompt line that read one raw would be seen by nothing.
 PROGRESS_INPUTS = (
     "symptom_verified",
     "problem_status",
     "cause_state",
     "solution_proposed",
+    "solution_accepted",
+    "disposition",
 )
 _PROMPTS = _INV + "prompts/"
 
 #: (path, qualname) -> {input: attribute reads}, under ``prompts/``: the
 #: prompt sites that still read a progress input raw, each until the stage
-#: that switches it.
-PROMPT_PROGRESS_READS: dict[tuple[str, str], dict[str, int]] = {
-    # #2811 S2b-1c-ii: the state summary's verified line and the fallback
-    # body's milestones.
-    (_CB + "history.py", "_build_state_summary"): {"symptom_verified": 1},
-    (_PROMPTS + "templates/fallback.py", "_fallback_body"): {
-        "cause_state": 1,
-        "solution_proposed": 1,
-        "symptom_verified": 1,
-    },
-}
+#: that switches it. None since S2b-1c-i.
+PROMPT_PROGRESS_READS: dict[tuple[str, str], dict[str, int]] = {}
+
 
 #: The offer record's writers, the transitions' executors, the entries that
 #: open, answer or close through them (#2615, *Closure on demand*), and the
@@ -325,7 +319,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # #2811 S2b-1b-i: the resolve decline's readers among the deciders, which
     # stage S3 switches; ``pending_check_params`` derives the held reason a
-    # second time, for the notices (stage S2b-1c).
+    # second time, for the notices (stage S2b-1c-ii).
     (_TT, "close_pivots_to_resolve"): {"declined_resolve_entry": 1},
     (_TT, "pending_check_params"): {"declined_resolve_entry": 1},
     (_TT, "resolve_reopen_admitted"): {"declined_resolve_entry": 1},
@@ -574,10 +568,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     # #2811 S2b-1c-i: the milestone status reads the record; the stored
     # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3.
     (_CB + "narration_fold.py", "_stored_mitigation_verified"): {"verified": 1},
-    (_INV + "prompts/templates/fallback.py", "_fallback_body"): {
-        "closure_reason": 1,
-        "solution_verified": 1,
-    },
     (_VALIDATOR, "StateValidator._validate_milestone_ordering"): {
         "solution_verified": 2,
         "verified": 1,

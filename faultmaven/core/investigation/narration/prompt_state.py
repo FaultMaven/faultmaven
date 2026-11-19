@@ -1,13 +1,16 @@
-"""The prompt's milestone status, exclusion rule and focus selection, read
-from the case outcome record (#2811 S2b-1c-i, #2615 stage S2).
+"""The prompt's milestone status, exclusion rule, focus selection, the
+fallback prompt's milestones and resolution and the state summary's verified
+line, read from the case outcome record (#2811 S2b-1c-i, #2615 stage S2).
 
 Each selector is pure: it reads the record (``CaseOutcome``,
 ``narration_outcome``), the case's identity where it needs the turn, and the
 inputs read fresh beside it (``PromptStateFresh``), and returns a typed
 value. The prompt's texts stay with their templates
-(``prompts/templates/assembly.py``, ``prompts/context_builder/assembly.py``):
+(``prompts/templates/assembly.py``, ``prompts/templates/fallback.py``,
+``prompts/context_builder/assembly.py``, ``prompts/context_builder/history.py``):
 what moves here is the choice of which text applies, which is the
-outcome-bearing decision.
+outcome-bearing decision. The one exception is the closure reason's model
+rendering (pin 6's model half, ruling Q2 (a)), which is the value itself.
 
 The fresh inputs are what the record does not hold: ``mitigation.verified``
 (ruling Q1 (a) keeps it fresh until stage S3; the record drops it after a
@@ -22,16 +25,25 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable, NamedTuple, Optional
 
-from faultmaven.modules.case.contracts import CaseOutcome, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    CaseOutcome,
+    ClosureReason,
+    ProblemStatus,
+)
 
 #: The milestone status's one line when the record or a fresh input could not
-#: be read this turn, in place of both of its tags.
+#: be read this turn, in place of both of its tags; and the fallback prompt's
+#: milestones.
 MILESTONES_OMITTED = "The milestone state could not be read this turn."
 
 #: The focus emphasis's one line when the record or a fresh input could not
 #: be read this turn, in place of the problem hold, the zone, the resolve
 #: decline and the verifying-rows lines.
 PROGRESS_OMITTED = "The case's progress could not be read this turn."
+
+#: The fallback prompt's resolution line when the record could not be read
+#: this turn, in place of "Solution verified", the closure reason or "Closed".
+RESOLUTION_OMITTED = "The case's resolution could not be read this turn."
 
 #: The stage gates, in the order the prompt lists them.
 GATES = (
@@ -66,9 +78,16 @@ class MilestoneStatus(NamedTuple):
     """The stage gates and progress indicators the prompt lists, by name."""
 
     gates: tuple[str, ...]
-    disposition: Optional[str]
+    mitigation_disposition: Optional[str]
     """The accepted mitigation's disposition, listed after the gates."""
     indicators: tuple[str, ...]
+
+
+def progress_indicators(outcome: CaseOutcome) -> tuple[str, ...]:
+    """The progress indicators the record shows (``milestones_shown``), in
+    the prompt's order."""
+    shown = set(outcome.milestones_shown)
+    return tuple(i for i in INDICATORS if i in shown)
 
 
 def milestone_status(outcome: CaseOutcome, fresh: PromptStateFresh) -> MilestoneStatus:
@@ -81,8 +100,10 @@ def milestone_status(outcome: CaseOutcome, fresh: PromptStateFresh) -> Milestone
     mitigation = outcome.mitigation
     return MilestoneStatus(
         gates=gates,
-        disposition=mitigation.disposition if mitigation is not None else None,
-        indicators=tuple(i for i in INDICATORS if i in shown),
+        mitigation_disposition=(
+            mitigation.disposition if mitigation is not None else None
+        ),
+        indicators=progress_indicators(outcome),
     )
 
 
@@ -184,3 +205,73 @@ def verifying_rows_missing(outcome: CaseOutcome) -> bool:
         outcome.problem.status == ProblemStatus.VERIFIED
         and not outcome.problem.verifying_row_ids
     )
+
+
+class FocusSelection(NamedTuple):
+    """Which focus-emphasis lines apply, each None or False when none does."""
+
+    hold: Optional[ProblemHold]
+    zone: Optional[FocusZone]
+    """Selected only where no hold is."""
+    resolve_declined: Optional[ResolveDeclined]
+    verifying_rows_missing: bool
+
+
+def focus_selection(
+    outcome: CaseOutcome,
+    fresh: PromptStateFresh,
+    current_turn: int,
+    *,
+    steered: bool,
+    zoned: bool,
+) -> FocusSelection:
+    """The focus emphasis's lines: on a ``steered`` turn (no knowledge_query
+    or agent_meta mode) the problem hold, else, where ``zoned`` (DIAGNOSIS),
+    the zone; the standing resolve decline on every turn; on a steered turn,
+    the verifying rows missing. Each fresh input is asked only where its line
+    is decided, in this order."""
+    hold = problem_hold(outcome, fresh) if steered else None
+    zone = focus_zone(outcome, fresh) if zoned and hold is None else None
+    return FocusSelection(
+        hold=hold,
+        zone=zone,
+        resolve_declined=resolve_declined(outcome, fresh, current_turn),
+        verifying_rows_missing=steered and verifying_rows_missing(outcome),
+    )
+
+
+class TerminalResolution(NamedTuple):
+    """What a terminal case's resolution line states."""
+
+    solution_confirmed: bool
+    """The record shows ``solution_verified``."""
+    closure: Optional[ClosureReason]
+    """The record's closure reason (``closure.reason``)."""
+
+
+def terminal_resolution(outcome: CaseOutcome) -> TerminalResolution:
+    return TerminalResolution(
+        solution_confirmed="solution_verified" in outcome.milestones_shown,
+        closure=outcome.closure.reason,
+    )
+
+
+#: Each closure reason as the prompt renders it to the model (#2615 pin 6,
+#: its model half, as ruling Q2 (a) reads it): the value it printed before
+#: the record, unchanged.
+CLOSURE_MODEL_TEXT: dict[ClosureReason, str] = {
+    ClosureReason.INQUIRY_ONLY: "inquiry_only",
+    ClosureReason.CLOSED_FALSE_ALARM: "closed_false_alarm",
+    ClosureReason.RESOLUTION_DECLINED: "resolution_declined",
+    ClosureReason.SOLUTION_DEFERRED: "solution_deferred",
+    ClosureReason.CLOSED_RCA_INFEASIBLE: "closed_rca_infeasible",
+    ClosureReason.MITIGATION_SUFFICIENT: "mitigation_sufficient",
+    ClosureReason.CLOSED_RESTATEMENT_HELD: "closed_restatement_held",
+    ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: "closed_insufficient_evidence",
+}
+
+
+def closure_model_text(reason: ClosureReason) -> Optional[str]:
+    """``reason``'s model rendering, or None for a member the map lacks, which
+    the caller renders as its value and counts."""
+    return CLOSURE_MODEL_TEXT.get(reason)

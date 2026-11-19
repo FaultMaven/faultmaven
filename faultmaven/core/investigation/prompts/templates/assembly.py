@@ -11,15 +11,12 @@ from faultmaven.core.investigation.narration.notices import (
 )
 from faultmaven.core.investigation.narration.prompt_state import (
     PROGRESS_OMITTED,
+    FocusSelection,
     FocusZone,
     HoldKind,
     ProblemHold,
-    PromptStateFresh,
     ResolveDeclined,
-    focus_zone,
-    problem_hold,
-    resolve_declined,
-    verifying_rows_missing,
+    focus_selection,
 )
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
@@ -32,7 +29,6 @@ from faultmaven.core.investigation.prompts.context_builder.narration_fold import
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseOutcome,
     CaseState,
     InvestigationStage,
 )
@@ -345,48 +341,42 @@ proposal never forecloses a live diagnostic thread.
 _FOCUS = "focus emphasis"
 
 
-def _focus_lines(
-    outcome: CaseOutcome,
-    fresh: PromptStateFresh,
-    current_turn: int,
-    *,
-    steered: bool,
-    zoned: bool,
-) -> str:
-    """The focus emphasis, selected from the record and the fresh inputs
-    (#2811 S2b-1c-i): on a ``steered`` turn (no knowledge_query or agent_meta
-    mode) the problem hold, else, where ``zoned`` (DIAGNOSIS), the zone; the
-    standing resolve decline on every turn; then, on a steered turn, the
-    verifying rows missing. Each fresh input is asked only where its line is
-    decided."""
-    focus = ""
-    if steered:
-        focus = _problem_hold_emphasis(problem_hold(outcome, fresh))
-        if zoned and not focus:
-            focus = _get_diagnosis_focus_emphasis(focus_zone(outcome, fresh))
-    focus += _resolve_declined_emphasis(resolve_declined(outcome, fresh, current_turn))
-    if steered:
-        focus += _verifying_rows_missing_emphasis(verifying_rows_missing(outcome))
-    return focus
+def _focus_lines(selection: FocusSelection) -> str:
+    """The focus emphasis's text for ``selection``: the hold, else the zone;
+    the resolve decline; the verifying rows missing."""
+    focus = _problem_hold_emphasis(selection.hold)
+    if selection.zone is not None:
+        focus = _get_diagnosis_focus_emphasis(selection.zone)
+    focus += _resolve_declined_emphasis(selection.resolve_declined)
+    return focus + _verifying_rows_missing_emphasis(selection.verifying_rows_missing)
 
 
 def _focus_emphasis(
     fold: NarrationFold, current_turn: int, *, steered: bool, zoned: bool
 ) -> str:
-    """``_focus_lines`` from the prompt assembly's record. If the record or a
-    fresh input it asks for cannot be read, the whole emphasis is the one
-    declared line ``PROGRESS_OMITTED``, in place of the hold, the zone, the
-    resolve decline and the verifying-rows lines; the failure is logged and
-    counted once per assembly (``NarrationFold``), and the prompt is built."""
+    """The focus emphasis, selected from the prompt assembly's record and its
+    fresh inputs (``prompt_state.focus_selection``, #2811 S2b-1c-i). If the
+    record or a fresh input the selection asks for cannot be read, the whole
+    emphasis is the one declared line ``PROGRESS_OMITTED``, in place of the
+    hold, the zone, the resolve decline and the verifying-rows lines; the
+    failure is logged and counted once per assembly (``NarrationFold``), and
+    the prompt is built. Only the selection is guarded: a fault in the text
+    raises, as on ``main``."""
     try:
         outcome = fold.outcome(_FOCUS)
-        if outcome is not None:
-            return _focus_lines(
+        selection = (
+            None
+            if outcome is None
+            else focus_selection(
                 outcome, fold.fresh(), current_turn, steered=steered, zoned=zoned
             )
+        )
     except Exception:  # noqa: BLE001 — only the emphasis is lost (#2811)
         fold.fail(_FOCUS)
-    return f"\n{PROGRESS_OMITTED}\n"
+        selection = None
+    if selection is None:
+        return f"\n{PROGRESS_OMITTED}\n"
+    return _focus_lines(selection)
 
 
 def _select_diagnosis_block(case: Case, given: GivenTools) -> str:
@@ -395,8 +385,9 @@ def _select_diagnosis_block(case: Case, given: GivenTools) -> str:
 
     Diagnosis has no path fork (redesign R5): hypothesis formulation and
     evidence-needs run as a single opportunistic flow. Stage guidance is
-    selected by the assessment variables (``symptom_verified`` /
-    ``cause_state`` / ``solution_proposed``) via
+    selected from the indicators the case outcome record shows
+    (``symptom_verified`` / ``root_cause_identified`` / ``solution_proposed``,
+    ``prompt_state.focus_zone``) and rendered by
     ``_get_diagnosis_focus_emphasis`` — not by a prospective path choice.
     ``rca_diagnosis_block`` carries the hypothesis-evidence ordering mandate
     (``_HYPOTHESIS_EVIDENCE_ORDERING_BLOCK``), then the chain-emission block
@@ -513,9 +504,10 @@ def get_prompt_for_case(
     prompt (``get_fallback_prompt_for_case``). Every overflow event is logged.
     """
 
-    # One narration fold per assembly (#2811 S2b-1a, S2b-1b-ii): the ctx below
-    # is built up to three times, and its two blocks fold and read the needs
-    # pool once.
+    # One narration fold per assembly (#2811 S2b-1a, S2b-1b-ii, S2b-1c-i): the
+    # ctx below is built up to three times, and the fallback the backstop may
+    # return instead renders several candidates; every block of all of
+    # them folds and reads the needs pool once.
     narration_fold = NarrationFold(case)
 
     def _build_ctx(section_budget: Optional[int]) -> dict:
@@ -677,6 +669,7 @@ def get_prompt_for_case(
         given_tools,
         target_tokens=target_tokens,
         kb_lookup=kb_lookup,
+        narration_fold=narration_fold,
     )
     if kb_rendered is not None and prompt != rendered.get("prompt"):
         # The overflow/starvation backstop returned the minimal fallback in
@@ -696,6 +689,7 @@ def _budgeted_prompt(
     given_tools: GivenTools,
     target_tokens: Optional[int] = None,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> str:
     """Whole-prompt token-budget accountant + overflow/starvation backstop.
 
@@ -751,6 +745,7 @@ def _budgeted_prompt(
         model_name,
         given_tools,
         kb_lookup=kb_lookup,
+        narration_fold=narration_fold,
     )
 
 
@@ -781,11 +776,15 @@ def _assemble_allocated(
     model_name,
     given_tools,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> str:
     """Allocator assembly: template-aware section budget + backstop (§4/§6/§7).
 
     A fallback either arm returns is rendered for ``given_tools``, the set the
     assembled prompt was built for: it replaces that prompt on the same call.
+    It reads the assembly's record (``narration_fold``), so one assembly
+    folds once, and a fold failure is counted once, whichever prompt it
+    returns.
     """
     target = resolved.prompt_target
     ceiling = resolved.prompt_budget  # None when window unknown
@@ -833,6 +832,7 @@ def _assemble_allocated(
             given_tools=given_tools,
             max_tokens=fallback_budget,
             kb_lookup=kb_lookup,
+            narration_fold=narration_fold,
         )
         logger.warning(
             "prompt_starvation_fallback",
@@ -876,6 +876,7 @@ def _assemble_allocated(
                 given_tools=given_tools,
                 max_tokens=fallback_budget,
                 kb_lookup=kb_lookup,
+                narration_fold=narration_fold,
             )
             logger.warning(
                 "prompt_overflow_fallback",

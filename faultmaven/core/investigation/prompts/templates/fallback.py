@@ -4,6 +4,13 @@ import logging
 from typing import Optional
 
 from faultmaven.core.investigation.kb_question import KbLookup, kb_lookup_verdict
+from faultmaven.core.investigation.narration.prompt_state import (
+    MILESTONES_OMITTED,
+    RESOLUTION_OMITTED,
+    closure_model_text,
+    progress_indicators,
+    terminal_resolution,
+)
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     system_feedback_block,
 )
@@ -15,13 +22,15 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _file_backed_attr,
     _label_attr,
 )
+from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
+    NarrationFold,
+)
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     mint_token,
     render_fenced,
 )
 from faultmaven.modules.case.contracts import Case, CaseState
-from faultmaven.modules.case.domain.models.progress import CauseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
 from .tool_text import NO_TOOLS, GivenTools, has, tools_line
@@ -421,6 +430,7 @@ def get_fallback_prompt_for_case(
     given_tools: GivenTools = NO_TOOLS,
     max_tokens: Optional[int] = None,
     kb_lookup: Optional[KbLookup] = None,
+    narration_fold: Optional[NarrationFold] = None,
 ) -> str:
     """Build simplified fallback prompt for token limit or error recovery.
 
@@ -432,6 +442,12 @@ def get_fallback_prompt_for_case(
     ``orchestration-capabilities.md``), carried as its verdict
     (:func:`kb_lookup_verdict`): the user asked about the knowledge base, and
     the reply has to report the answer even from this prompt.
+
+    ``narration_fold`` is the record its milestones, exclusion rule and
+    resolution read (#2811 S2b-1c-i): the prompt assembly's, when the
+    backstop returns this prompt in place of the assembled one, so the
+    assembly folds once and counts a failure once; a fresh one per call
+    without it (the #662 retry). Never one per candidate render.
 
     Fenced as one assembly (#1242). The mint lives HERE rather than at
     ``get_prompt_for_case`` level because this function has a second caller —
@@ -463,6 +479,7 @@ def get_fallback_prompt_for_case(
     is still addressable (INV-1).
     """
     budget = _FALLBACK_MAX_TOKENS if max_tokens is None else max_tokens
+    fold = NarrationFold(case) if narration_fold is None else narration_fold
     # One token for every candidate render. The fence appears in every
     # delimiter, and a random token's own token count varies from mint to mint,
     # so a fresh token per candidate made the sizes the solver compares
@@ -476,7 +493,7 @@ def get_fallback_prompt_for_case(
         tokens = iter((solve_token,))
         return render_fenced(
             lambda fence: _fallback_body(
-                case, user_message, fence, caps, given_tools, kb_lookup
+                case, user_message, fence, caps, given_tools, fold, kb_lookup
             ),
             token_source=lambda: next(tokens, None) or mint_token(),
         )
@@ -512,6 +529,7 @@ def _fallback_body(
     fence: PromptFence,
     caps: _FallbackCaps,
     given: GivenTools,
+    fold: NarrationFold,
     kb_lookup: Optional[KbLookup] = None,
 ) -> str:
     """One fence's worth of fallback prompt — see :func:`get_fallback_prompt_for_case`.
@@ -550,12 +568,11 @@ def _fallback_body(
       that is nonetheless not PROVABLY bracket-free. It joins the collision
       corpus and gets the terminator, but no delimiters: fencing would tell
       the model this is material it did not write, which for engine-derived
-      text is false. ``closure_reason`` is the case in point. It is a
-      ``ClosureReason``, so a validated case carries only the enum's values,
-      but the line renders the attribute as it stands, not ``.value`` of a
-      member as ``STATE:`` does, and a copy made without validation
-      (``model_copy(update=...)``) can hold any string there; so it stays
-      guarded. The previous turn's
+      text is false. The resolution line is the case in point. Its closure
+      reason is the record's (#2811 S2b-1c-i), rendered through
+      ``CLOSURE_MODEL_TEXT``, but a member the map lacks renders as its
+      value, and a record loaded without validation can hold any string
+      there; so it stays guarded. The previous turn's
       ``system_feedback`` is guarded for the same reason (#1688): the engine
       writes it, but it can quote model text such as a hypothesis statement.
       Fencing it would also be wrong in a second way: the fence rule tells the
@@ -563,9 +580,10 @@ def _fallback_body(
       the engine's correction to the model.
 
     Left bare, deliberately: ``STATE:``/``STAGE:`` (enum values),
-    ``MILESTONES COMPLETED:`` (a join over string literals written in this
-    function). Those are provably bracket-free — not "trusted", *constructed
-    here* — so there is nothing for a terminator to close.
+    ``MILESTONES COMPLETED:`` (a join over the indicator names
+    ``prompt_state.INDICATORS`` holds, or its declared omission line). Those
+    are provably bracket-free — not "trusted", *constructed in code* — so
+    there is nothing for a terminator to close.
     """
 
     #: Element names actually emitted, in prompt order. The trust rule names
@@ -652,13 +670,6 @@ def _fallback_body(
         # fallback — two names for one fact, surfacing exactly when a turn
         # has already degraded (#1075).
         stage = case.current_stage.value.upper()
-        milestones = []
-        if case.progress.symptom_verified:
-            milestones.append("symptom_verified")
-        if case.progress.cause_state == CauseState.IDENTIFIED:
-            milestones.append("root_cause_identified")
-        if case.progress.solution_proposed:
-            milestones.append("solution_proposed")
 
         hypotheses = []
         # Ids travel with the statements here as on the primary path: this
@@ -706,7 +717,7 @@ def _fallback_body(
         # bare heading like the others here, not a tag: this prompt's trust
         # rule reads an unfenced tag as quoted data.
         feedback_block = _notices()
-        parts = exclusions_reminder_parts(case)
+        parts = exclusions_reminder_parts(case, fold)
         if parts is not None:
             feedback_block += "EXCLUSIONS ON RECORD: " + " ".join(parts) + "\n\n"
         user_block = _user(user_message)
@@ -716,7 +727,7 @@ def _fallback_body(
             fence_preamble=_fallback_preamble(fence, rendered),
             stage=stage,
             problem_summary=problem_block,
-            milestones_summary=", ".join(milestones) if milestones else "None yet",
+            milestones_summary=_fallback_milestones(fold),
             hypotheses_summary=hypotheses_block,
             journal_digest=journal_block,
             current_turn_evidence=stub_block,
@@ -726,11 +737,7 @@ def _fallback_body(
         )
 
     else:  # TERMINAL
-        resolution = (
-            "Solution verified"
-            if case.progress.solution_verified
-            else case.closure_reason or "Closed"
-        )
+        resolution = _fallback_resolution(fold)
         user_block = _user(user_message)
         return FALLBACK_TERMINAL_TEMPLATE.format(
             tools_this_turn=tools_line(given),
@@ -741,6 +748,44 @@ def _fallback_body(
             kb_lookup=kb_lookup_block,
             user_message=user_block,
         )
+
+
+_MILESTONES = "fallback milestones"
+_RESOLUTION = "fallback resolution"
+
+
+def _fallback_milestones(fold: NarrationFold) -> str:
+    """The progress indicators the record shows (#2811 S2b-1c-i), or
+    ``MILESTONES_OMITTED`` when it cannot be read."""
+    outcome = fold.outcome(_MILESTONES)
+    if outcome is None:
+        return MILESTONES_OMITTED
+    return ", ".join(progress_indicators(outcome)) or "None yet"
+
+
+def _fallback_resolution(fold: NarrationFold) -> str:
+    """A terminal case's resolution, from the record (#2811 S2b-1c-i):
+    "Solution verified", else the closure reason's model rendering, else
+    "Closed"; ``RESOLUTION_OMITTED`` when the record cannot be read, never
+    "Closed", which a RESOLVED case is not. A closure reason with no model
+    rendering (``CLOSURE_MODEL_TEXT``) renders as its value, logged and
+    counted as a narration failure; it never raises (#2615 pin 6)."""
+    outcome = fold.outcome(_RESOLUTION)
+    if outcome is None:
+        return RESOLUTION_OMITTED
+    resolution = terminal_resolution(outcome)
+    if resolution.solution_confirmed:
+        return "Solution verified"
+    if resolution.closure is None:
+        return "Closed"
+    text = closure_model_text(resolution.closure)
+    if text is None:
+        fold.fail(
+            _RESOLUTION,
+            LookupError(f"no model rendering for {resolution.closure.value!r}"),
+        )
+        return resolution.closure.value
+    return text
 
 
 def _fallback_preamble(fence: PromptFence, rendered: list[str]) -> str:

@@ -1,5 +1,5 @@
-"""The prompt's milestone status, exclusion rule and focus emphasis: their
-fixture corpus (#2811 S2b-1c-i).
+"""The prompt's milestone status, exclusion rule, focus emphasis, state
+summary and fallback prompt: their fixture corpus (#2811 S2b-1c-i).
 
 The ``<evidence_needs>`` corpus (``evidence_needs_cases_2811.CASES``, 67
 fixtures), plus one per line none of them renders: an INQUIRY case (none of
@@ -9,14 +9,17 @@ currency note and Zone 2's two variants); a false alarm whose close was
 declined; a standing resolve decline given on an earlier turn, with the
 reopen chip and with an offer open (no chip); and the exclusion rule on an
 unverified problem (no action half) and on a revision pending (cause work
-staged). Every added fixture is hand-built: none makes a claim that a turn
-reaches it.
+staged); and the fallback prompt's resolution line on a closed case of each
+closure reason and on a resolved one with and without the solution verified.
+Every added fixture is hand-built: none makes a claim that a turn reaches it.
 
-``render_all`` renders each through ``main``'s entry point,
-``get_prompt_for_case``: the context's ``milestones`` and ``exclusions``
-sections, and the ``focus_emphasis`` the template is given, with no
-processing mode and as a ``knowledge_query`` turn (which carries only the
-resolve-decline lines). Its output on ``main`` is
+``render_all`` renders each through ``main``'s entry points:
+``get_prompt_for_case`` for the context's ``milestones`` and ``exclusions``
+sections, the state summary it builds, and the ``focus_emphasis`` the
+template is given, with no processing mode and as a ``knowledge_query`` turn
+(which carries only the resolve-decline lines); and
+``get_fallback_prompt_for_case`` for its milestones, exclusions and
+resolution lines. Its output on ``main`` is
 ``prompt_state_oracle_2811.json``, captured at 19ab0e8b8 by running
 ``render_all`` with this file copied into a ``git archive`` extract of that
 commit, never typed by hand. The clock is frozen at ``NOW`` while a fixture
@@ -33,6 +36,7 @@ from freezegun import freeze_time
 
 from faultmaven.modules.case.contracts import (
     CaseState,
+    ClosureReason,
     InvestigationStage,
     MitigationRecord,
     ProblemStatus,
@@ -138,6 +142,28 @@ async def _revision_with_hypotheses():
     return case
 
 
+async def _terminal(reason=None, *, verified=None):
+    """The parity corpus's closed case with no terminal write folded (its
+    record is read off the case, ``outcome._closure``): closed for
+    ``reason``, or, with ``verified`` given, resolved with the solution
+    verified or not."""
+    case = await parity._terminal_qa()
+    case.progress.outcome = None
+    if verified is None:
+        case.closure_reason = reason
+        return case
+    case = case.model_copy(
+        update={
+            "state": CaseState.RESOLVED,
+            "closure_reason": None,
+            "resolved_at": case.closed_at,
+        }
+    )
+    case.progress.solution_accepted = verified
+    case.progress.solution_verified = verified
+    return case
+
+
 #: The fixtures this corpus adds, one per line no fixture above shows.
 ADDED = {
     "P:inquiry": _inquiry,
@@ -150,6 +176,12 @@ ADDED = {
     "P:declined_offer_open": lambda: _declined_earlier(offer_open=True),
     "P:unverified_hypotheses": lambda: _hypotheses(ProblemStatus.UNVERIFIED),
     "P:revision_hypotheses": _revision_with_hypotheses,
+    **{
+        f"P:closed_{reason.value}": (lambda r=reason: _terminal(r))
+        for reason in ClosureReason
+    },
+    "P:resolved": lambda: _terminal(verified=False),
+    "P:resolved_verified": lambda: _terminal(verified=True),
 }
 
 #: Every fixture, by name: the ``<evidence_needs>`` corpus, then the added ones.
@@ -169,14 +201,25 @@ async def build(name: str):
         return await CASES[name]()
 
 
+#: The fallback prompt's lines a record selects (#2811 S2b-1c-i).
+FALLBACK_LINES = ("MILESTONES COMPLETED:", "EXCLUSIONS ON RECORD:", "RESOLUTION:")
+
+
 def render(case) -> dict:
-    """What ``get_prompt_for_case`` puts in the three places, by mode: the
-    ``milestones`` and ``exclusions`` sections of the context it builds (the
-    last build, with no processing mode), and the ``focus_emphasis`` the
-    INVESTIGATING template is given (None where it renders another
-    template)."""
+    """What ``get_prompt_for_case`` puts in its places, by mode: the
+    ``milestones`` and ``exclusions`` sections of the context it builds and
+    the state summary (the last build, with no processing mode), and the
+    ``focus_emphasis`` the INVESTIGATING template is given (None where it
+    renders another template); and the ``FALLBACK_LINES`` of
+    ``get_fallback_prompt_for_case``."""
+    from faultmaven.core.investigation.prompts.context_builder import (
+        history as history_module,
+    )
     from faultmaven.core.investigation.prompts.templates import (
         assembly as templates,
+    )
+    from faultmaven.core.investigation.prompts.templates import (
+        fallback as fallback_module,
     )
 
     seen: dict = {}
@@ -197,10 +240,17 @@ def render(case) -> dict:
             seen["focus"] = fields["focus_emphasis"]
             return real_base.format(**fields)
 
+    real_summary = history_module._build_state_summary
+
+    def summary(*args, **kwargs):
+        seen["state_summary"] = real_summary(*args, **kwargs)
+        return seen["state_summary"]
+
     out: dict = {}
     with (
         patch.object(templates, "build_investigation_context", ctx),
         patch.object(templates, "INVESTIGATION_BASE", _Base()),
+        patch.object(history_module, "_build_state_summary", summary),
         frozen(),
     ):
         for key, mode in MODES.items():
@@ -211,7 +261,14 @@ def render(case) -> dict:
             if mode is None:
                 out["milestones"] = seen["milestones"]
                 out["exclusions"] = seen["exclusions"]
+                out["state_summary"] = seen["state_summary"]
             out[key] = seen.get("focus")
+        fallback = fallback_module.get_fallback_prompt_for_case(
+            case, "status", given_tools=DEFAULT_GIVEN
+        )
+    out["fallback"] = "\n".join(
+        line for line in fallback.splitlines() if line.startswith(FALLBACK_LINES)
+    )
     return out
 
 

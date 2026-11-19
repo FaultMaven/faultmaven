@@ -879,50 +879,21 @@ Within the DIAGNOSIS stage, progress milestones determine a **focus zone** — a
 
 #### Focus Zone Computation
 
-```python
-def _get_diagnosis_focus_emphasis(progress: InvestigationProgress) -> str:
-    """Compute focus zone from progress milestones.
+The zone is selected from the case outcome record, not from the progress flags (#2811 S2b-1c-i): `narration/prompt_state.py`'s `focus_zone` reads the indicators the record shows (`milestones_shown`) and, in Zone 2 only, whether the symptom's last observation is stale, an input read fresh beside the record (`PromptStateFresh.symptom_stale`).
 
-    Returns a priority signal rendered as {focus_emphasis}, at the top of the
-    prompt's per-turn tail (#613).
-    The LLM still has all DIAGNOSIS capabilities — this guides emphasis only.
-    """
-    if not progress.symptom_verified:
-        return """
-**CURRENT FOCUS: VERIFY THE PROBLEM**
-Your primary goal this turn is to gather logs, confirm symptoms, and
-establish the scope and timeline. Ask the user for the specific evidence
-needed to prove the problem exists.
-"""
-    elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
-        return """
-**CURRENT FOCUS: ROOT CAUSE ANALYSIS**
-The problem is verified. Your primary goal this turn is to form and test
-hypotheses. Look at the causal evidence, form a theory, and actively seek
-the data needed to prove or disprove it.
-"""
-    elif progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed:
-        return """
-**CURRENT FOCUS: PROPOSE A SOLUTION**
-You have identified the root cause. Your primary goal this turn is to
-formulate a concrete, executable fix. Provide specific commands for the
-user to run so the investigation can transition to Treatment.
-"""
-    else:
-        # solution_proposed=True (Zone-3-pending). A NON-suppressive hold, not a
-        # freeze (INV-33). It names the diagnostic exit rather than forbidding
-        # further evidence — the absolutist "do not request further evidence"
-        # frame stranded the #656 diagnostic thread.
-        return """
-**INVESTIGATION PROGRESS: Solution proposal issued — awaiting execution**
-A fix has been proposed and is awaiting execution. If the user reports
-executing it, set solution_accepted=True with accepted_action_ref naming its
-ACTION_ID (<pending_action>), and infer the transition to TREATMENT. This hold is NOT a freeze: if the user's reply instead brings new
-evidence, questions the fix, or points at a different cause, resume root-cause
-analysis on that signal. A pending proposal never forecloses a live diagnostic
-thread.
-"""
+```python
+def focus_zone(outcome: CaseOutcome, fresh: PromptStateFresh) -> FocusZone:
+    shown = set(outcome.milestones_shown)
+    if "symptom_verified" not in shown:
+        return FocusZone.VERIFY          # Zone 1
+    if "root_cause_identified" not in shown:
+        return FocusZone.CAUSE_STALE if fresh.symptom_stale() else FocusZone.CAUSE  # Zone 2
+    if "solution_proposed" not in shown:
+        return FocusZone.SOLUTION        # Zone 3
+    return FocusZone.PENDING             # Zone 3 pending
 ```
+
+`templates/assembly.py`'s `_get_diagnosis_focus_emphasis(zone)` takes only the zone and returns its text. The texts are documented once, in [Prompt Assembly Architecture §3.2](./prompt-assembly-architecture.md#32-adaptive-instructions). Zone 3 pending is a NON-suppressive hold, not a freeze (INV-33): it names the diagnostic exit rather than forbidding further evidence.
 
 #### Injection Point
 

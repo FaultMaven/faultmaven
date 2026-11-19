@@ -56,7 +56,6 @@ from .entity_highlights import EntityHighlightGroup, _render_entity_highlights
 from .evidence import (
     _build_evidence_context,
     _render_problem_context,
-    _symptom_currency_note,
 )
 from .evidence_needs import _build_evidence_needs_block
 from .fix_verification_block import (
@@ -605,9 +604,9 @@ def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
     trimmed, so dropping this loses no stage information on any path (#1075).
     """
     gates = list(status.gates)
-    if status.disposition:
+    if status.mitigation_disposition:
         # What the mitigation carries that is not an observation (#2100).
-        gates.append(f"mitigation_disposition: {status.disposition}")
+        gates.append(f"mitigation_disposition: {status.mitigation_disposition}")
     lines = ""
     if gates:
         lines += "<stage_gate_milestones>\n"
@@ -623,26 +622,24 @@ def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
     return lines + "</progress_indicators>"
 
 
-def _milestone_status_section(case: Case, fold: NarrationFold) -> str:
+def _milestone_status_section(fold: NarrationFold) -> str:
     """The milestone status of an INVESTIGATING case, from the record's
     ``milestones_shown`` and disposition and, read fresh, the stored
     ``mitigation.verified`` (ruling Q1 (a)) and the symptom's currency note
-    (``_symptom_currency_note``). If the record or the fresh verdict cannot be
-    read, both tags are the one declared line ``MILESTONES_OMITTED``; the
-    failure is logged and counted once per assembly (``NarrationFold``)."""
+    (``NarrationFold.currency_note``). If the record or the fresh verdict
+    cannot be read, both tags are the one declared line
+    ``MILESTONES_OMITTED``; the failure is logged and counted once per
+    assembly (``NarrationFold``). The currency note is read outside that
+    guard, as on ``main``: a raise there fails the build."""
     try:
         outcome = fold.outcome(_MILESTONE_STATUS)
-        if outcome is None:
-            return MILESTONES_OMITTED
-        status = milestone_status(outcome, fold.fresh())
+        status = None if outcome is None else milestone_status(outcome, fold.fresh())
     except Exception:  # noqa: BLE001 — only these lines are lost (#2811)
         fold.fail(_MILESTONE_STATUS)
+        status = None
+    if status is None:
         return MILESTONES_OMITTED
-    note = (
-        _symptom_currency_note(case, "symptom_verified")
-        if "symptom_verified" in status.indicators
-        else ""
-    )
+    note = fold.currency_note() if "symptom_verified" in status.indicators else ""
     return _milestone_lines(status, note)
 
 
@@ -677,9 +674,10 @@ def build_investigation_context(
 
     ``narration_fold`` is the prompt assembly's record, needs pool and fresh
     inputs for the ``<fix_verification>`` and ``<evidence_needs>`` blocks,
-    the milestone status and the exclusion rule (#2811 S2b-1a, S2b-1b-ii,
-    S2b-1c-i): one per assembly, so a context built again at a tighter budget
-    folds and reads each once; a fresh one per build without it.
+    the milestone status, the exclusion rule and the state summary (#2811
+    S2b-1a, S2b-1b-ii, S2b-1c-i): one per assembly, so a context built again
+    at a tighter budget folds and reads each once; a fresh one per build
+    without it.
 
     **One fence token per assembly (#1228, widened in #1256).**
     ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
@@ -773,7 +771,7 @@ def build_investigation_context(
         narration_fold = NarrationFold(case)
     milestones_str = ""
     if case.state == CaseState.INVESTIGATING:
-        milestones_str = _milestone_status_section(case, narration_fold)
+        milestones_str = _milestone_status_section(narration_fold)
 
     # 4. Evidence Context (Sliding Window)
     # Three-tier system: Tier A (recent data with structural index),
@@ -839,7 +837,7 @@ def build_investigation_context(
         # rungs of the ladder invisibly. Built once and shared in that case, so
         # a re-mint re-renders it once rather than twice.
         _fenced["conversation_floor"] = _build_compact_history(
-            case, user_message_safe, fence
+            case, user_message_safe, fence, narration_fold
         )
         _fenced["conversation_full"] = (
             _fenced["conversation_floor"]

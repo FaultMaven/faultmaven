@@ -305,6 +305,7 @@ async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
         f"Case {case.case_id}: the exclusion rule was not rendered (#2811)",
         f"Case {case.case_id}: the focus emphasis was not rendered (#2811)",
         f"Case {case.case_id}: the milestone status was not rendered (#2811)",
+        f"Case {case.case_id}: the state summary was not rendered (#2811)",
     ]
     assert failures == [WritePoint.NARRATION]
 

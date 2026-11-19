@@ -30,7 +30,7 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     _apply_stage_gate_side_effects,
 )
-from faultmaven.core.investigation.narration.prompt_state import FocusZone
+from faultmaven.core.investigation.narration.prompt_state import FocusZone, focus_zone
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     build_investigation_context,
 )
@@ -49,6 +49,7 @@ from faultmaven.modules.case.domain.models.solution import (
     ProposedAction,
 )
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.prompt_state_reads import selections, zone_emphasis
 
 # Reuse the INV-32 liveness fixtures (same call site, same established-cause
 # license construction).
@@ -84,9 +85,19 @@ def _diagnostic(
 
 
 class TestZonePendingEmphasis:
-    """The pending zone's text; the record's selection of the zone (symptom
-    verified, cause identified, solution proposed) is pinned in
-    ``test_prompt_state_record_2811.test_the_zone_is_the_records_milestones``."""
+    """The pending zone: a real pending case selects it through the record,
+    and its text names the exit."""
+
+    def test_a_pending_case_selects_the_pending_zone(self):
+        """A real case with a solution proposed on an identified cause: the
+        record selects Zone 3 pending, and its emphasis is the pending text."""
+        case = _make_case(established=False)
+        p = case.progress
+        p.problem_status = ProblemStatus.VERIFIED
+        p.cause_state = CauseState.IDENTIFIED
+        p.solution_proposed = True
+        assert focus_zone(*selections(case)) == FocusZone.PENDING
+        assert zone_emphasis(case) == _get_diagnosis_focus_emphasis(FocusZone.PENDING)
 
     def test_pending_emphasis_drops_absolutist_prohibition(self):
         text = _get_diagnosis_focus_emphasis(FocusZone.PENDING)

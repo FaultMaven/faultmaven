@@ -1,9 +1,11 @@
 """One prompt assembly's narration inputs (#2811 S2b-1a, S2b-1b-ii,
-S2b-1c-i): the record ``narration_outcome`` folds, the needs pool's view and
-the prompt state's fresh inputs (``PromptStateFresh``), each computed at most
-once and shared by every block that reads them: ``<fix_verification>``,
-``<evidence_needs>``, the milestone status, the exclusion rule and the focus
-emphasis."""
+S2b-1c-i): the record ``narration_outcome`` folds, the needs pool's view, the
+prompt state's fresh inputs (``PromptStateFresh``) and the two fresh reads
+printed beside the record (the symptom's currency note, ``fix_confirmed``),
+each computed at most once and shared by every block that reads them:
+``<fix_verification>``, ``<evidence_needs>``, the milestone status, the
+exclusion rule, the focus emphasis, the state summary, and the fallback
+prompt the assembly may return instead."""
 
 import logging
 import sys
@@ -59,6 +61,22 @@ def _resolve_decline_turn(case: Case) -> Optional[int]:
     return entry.at_turn if entry is not None else None
 
 
+def _currency_note(case: Case) -> str:
+    """The currency note on ``- symptom_verified`` (``_symptom_currency_note``,
+    declared fresh since S2b-1a: it reads the wall clock)."""
+    from .evidence import _symptom_currency_note
+
+    return _symptom_currency_note(case, "symptom_verified")
+
+
+def _fix_confirmed(case: Case) -> bool:
+    """The latest decided fix window SUCCEEDED (ruling Q1 (a) keeps it fresh
+    until stage S3)."""
+    from .causal_graph_block import fix_confirmed
+
+    return fix_confirmed(case)
+
+
 def _reopen_chip(case: Case) -> bool:
     """The reply carries the reopen chip, as the projection builds it."""
     from faultmaven.core.investigation.offer_projection import project_offers
@@ -70,12 +88,15 @@ class NarrationFold:
     """One prompt assembly's narration fold: the record, computed at most
     once, on the first request, and cached with its failure; the needs
     pool's view (``needs``), computed once and cached, a raise not cached;
-    and the prompt state's fresh inputs (``fresh``), each read on its first
-    request and cached with its failure.
-    ``get_prompt_for_case`` makes one per assembly, so the context it builds
-    up to three times folds once and reads the pool once; each block that
-    renders an omission logs each distinct failure once, naming itself, and a
-    failure is counted once per assembly (``fail``)."""
+    and the fresh inputs (``fresh``, ``currency_note``, ``fix_confirmed``),
+    each read on its first request and cached with its failure.
+    ``get_prompt_for_case`` makes one per assembly and hands it to the
+    fallback prompt it may return instead, so the context it builds up to
+    three times, and every candidate fallback render, fold once and read the
+    pool once; ``get_fallback_prompt_for_case`` called alone makes one per
+    call. Each block that renders an omission logs each distinct failure
+    once, naming itself, and a failure is counted once per assembly
+    (``fail``)."""
 
     def __init__(self, case: Case) -> None:
         self._case = case
@@ -123,6 +144,16 @@ class NarrationFold:
                 reopen_chip=self._once(_reopen_chip),
             )
         return self._fresh
+
+    def currency_note(self) -> str:
+        """The currency note, read where ``- symptom_verified`` prints. A
+        raise propagates, as on ``main``."""
+        return self._once(_currency_note)()
+
+    def fix_confirmed(self) -> bool:
+        """``fix_confirmed``, read where the exclusion reminder is decided. A
+        raise propagates, as on ``main``."""
+        return self._once(_fix_confirmed)()
 
     def _once(self, read: Callable[[Case], _T]) -> Callable[[], _T]:
         def ask() -> _T:

@@ -571,9 +571,11 @@ def _symptom_signature_step(given: GivenTools) -> str:
 # _RCA_DIAGNOSIS_BLOCK — the single DIAGNOSIS-stage block in the unified
 # opportunistic flow. Full hypothesis-driven diagnostic flow, built by
 # composing the shared sub-blocks above with RCA-specific content inline.
-# Stage emphasis (Zone 1/2/3) comes from _get_diagnosis_focus_emphasis, based
-# on cause_state — there is no longer a prospective path fork. It renders in
-# the prompt's per-turn tail as {focus_emphasis}, not in this block (#613).
+# Stage emphasis (Zone 1/2/3) comes from _get_diagnosis_focus_emphasis, for
+# the zone the case outcome record selects (prompt_state.focus_zone: the
+# indicators it shows, #2811) — there is no longer a prospective path fork. It
+# renders in the prompt's per-turn tail as {focus_emphasis}, not in this block
+# (#613).
 # =============================================================================
 def rca_diagnosis_block(given: GivenTools) -> str:
     """The DIAGNOSIS stage instructions, naming only the tools ``given``."""

@@ -141,10 +141,14 @@ def exclusions_reminder_parts(
     without it) only where that half is decided: past a confirmed fix and a
     record with nothing to speak of, it is not read. If it cannot be read,
     the action half is left out, as on an unverified problem, and the failure
-    is logged and counted once per assembly (``NarrationFold``)."""
+    is logged and counted once per assembly (``NarrationFold``). Whether the
+    fix is confirmed is read fresh from the same fold (``fix_confirmed``,
+    ruling Q1 (a)); the record of exclusions is case content, read from
+    ``case.hypotheses``."""
     if case.state != CaseState.INVESTIGATING:
         return None
-    confirmed = fix_confirmed(case)
+    fold = NarrationFold(case) if fold is None else fold
+    confirmed = fold.fix_confirmed()
     record = exclusion_record(
         case, list_refuted=False, confirmed=confirmed, counterfactual=False
     )
@@ -156,7 +160,7 @@ def exclusions_reminder_parts(
             " Of any other alternative, say it was not what caused this "
             "problem, never that it is absent."
         )
-    elif _takes_cause_work(case, fold):
+    elif _takes_cause_work(fold):
         rule += (
             " Any other alternative is not excluded: name the check that would "
             "settle it, or record the exclusion this turn (link the row that "
@@ -165,8 +169,8 @@ def exclusions_reminder_parts(
     return record, rule
 
 
-def _takes_cause_work(case: Case, fold: NarrationFold | None) -> bool:
-    outcome = (NarrationFold(case) if fold is None else fold).outcome(_EXCLUSION_RULE)
+def _takes_cause_work(fold: NarrationFold) -> bool:
+    outcome = fold.outcome(_EXCLUSION_RULE)
     return outcome is not None and cause_work_rule(outcome)
 
 
