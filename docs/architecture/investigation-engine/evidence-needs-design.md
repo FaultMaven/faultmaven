@@ -1113,18 +1113,18 @@ history never is, for the reason §9.7 gives.
 What the prompt guarantees: the journal renders in every investigating prompt
 and in the fallback (at most 12 entries there). Under budget pressure:
 - the newest reply renders whole only when the room left after it holds the
-  journal's blockers (up to the journal cap); else it is smart-truncated;
+  journal's blockers (up to the journal cap); else the history drops to the rung
+  below (that reply smart-truncated, or the compact form);
 - a cut keeps whole entries in `journal_keep_order` (blockers, the other
   high-signal types, the rest, each newest first) and stops at the first that
   does not fit, so a blocker too large to fit drops every older one;
-- when not one entry fits, the tail truncation keeps a fragment, and an
-  allotment of 0 renders the bare `[...]` marker.
+- when not one entry fits, the cut keeps the journal's newest end as a fragment,
+  and an allotment too small for any of it renders the bare `[...]` marker.
 
-The evidence-needs lifecycle rules, which DIAGNOSIS, MITIGATION and
-TREATMENT render, state the rule: record the blocker on that turn, and never
-request a check a journal blocker names, nor offer it as a fallback, unless
-later evidence shows the limit changed. Whether the model complies can only
-be shown by a recorded run; the engine does not enforce it.
+The evidence-needs lifecycle rules (DIAGNOSIS, MITIGATION, TREATMENT) state the
+rule: record the blocker on that turn; never request a check a journal blocker
+names, nor offer it as a fallback, unless later evidence shows the limit
+changed. Only a recorded run shows compliance; the engine does not enforce it.
 
 ---
 

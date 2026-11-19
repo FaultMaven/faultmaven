@@ -370,7 +370,9 @@ def _aside_turns(messages: list) -> set:
     }
 
 
-def _build_graduated_history(case: Case, fence: PromptFence, latest_whole=True) -> str:
+def _build_graduated_history(
+    case: Case, fence: PromptFence, latest_whole: bool = True
+) -> str:
     """Build graduated conversation history: recent turns verbatim, older summarized.
 
     Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated

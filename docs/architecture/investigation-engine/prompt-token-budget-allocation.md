@@ -267,11 +267,10 @@ Per-section policies:
   In the graduated history's RECENT TURNS, older assistant replies keep their
   first and last paragraphs (`HISTORY_AGENT_TRUNCATE_THRESHOLD`), but the
   newest quoted reply renders whole, cut only past `LATEST_REPLY_MAX_CHARS`
-  (4,000 chars) to its head and tail: its middle holds what the last turn
-  found (fm#2101). When that form does not fit, or would leave too little room
-  for the journal's blockers, the history with the newest reply smart-truncated
-  is tried before the compact one. That keeps a fact one turn away, not a
-  durable one, which is the journal's job (`evidence-needs-design.md` §9.8).
+  (4,000) to its head and tail (fm#2101). When that form does not fit, or
+  would leave too little room for the journal's blockers, the history with the
+  newest reply smart-truncated is tried before the compact one. Durable facts
+  are the journal's job (`evidence-needs-design.md` §9.8).
 - **Investigation journal** — never tail-truncate (that drops the *newest*
   entries). Keep the oldest anchor entry, the most recent N, and all high-signal
   types (`decision`, `finding`, `ruled_out`, `blocker`); elide the middle with a
@@ -280,8 +279,8 @@ Per-section policies:
   *As built* (fm#2101), a cut keeps whole entries in `journal_keep_order`
   (`context_builder/assembly.py`; blockers, the other high-signal types, the
   rest, each newest first) up to the first that does not fit, in turn order
-  after a `[... N entries omitted ...]` line; when none fits, the tail cut
-  above keeps a fragment. The fallback's digest keeps the same order.
+  after a `[... N entries omitted ...]` line; when none fits, its newest end is
+  kept as a fragment (`keep="tail"`). The fallback's digest keeps the same order.
   Strictly capped at ~1.5K tokens — high-density and low-footprint, so the cap
   binds only on pathologically long cases, and even then the keep-set preserves
   the anti-amnesia essentials.

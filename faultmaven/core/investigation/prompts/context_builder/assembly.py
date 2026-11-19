@@ -188,6 +188,7 @@ def _cut_journal(journal: list, alloc: int, budget: "TokenBudget") -> str:
         if room < 0:
             break
         kept.append(entry)
+    # Line counts are near-additive; the whole is what must fit.
     while (
         kept and budget.count(_render_journal(kept, len(journal) - len(kept))) > alloc
     ):
