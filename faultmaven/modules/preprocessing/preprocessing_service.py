@@ -1398,7 +1398,7 @@ class PreprocessingService:
         slot_key = worker_process.admission_principal(principal)
         try:
             async with asyncio.timeout(TIER1_SLOT_WAIT_SECONDS):
-                await slots.acquire(slot_key)
+                await slots.acquire(*slot_key)
         except TimeoutError:
             logger.warning(
                 f"Tier 1 extraction found no slot free within "
@@ -1440,7 +1440,7 @@ class PreprocessingService:
             )
             return preview(error_fallback=True, error=str(e)[:200])
         finally:
-            slots.release(slot_key)
+            slots.release(*slot_key)
         return _keep_unparsed_content(
             ExtractionResult(
                 method=extractor.strategy_name,

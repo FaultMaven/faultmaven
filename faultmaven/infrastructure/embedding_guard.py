@@ -166,7 +166,7 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
     slot_key = worker_process.admission_principal(principal)
     try:
         async with asyncio.timeout(TOKEN_COUNT_HANG_SECONDS):
-            await slots.acquire(slot_key)
+            await slots.acquire(*slot_key)
     except TimeoutError:
         logger.warning("BGE-M3 token count found no slot free")
         return None
@@ -184,7 +184,7 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
         logger.warning("BGE-M3 token count did not answer: %s", e)
         return None
     finally:
-        slots.release(slot_key)
+        slots.release(*slot_key)
     if end.result is None:
         logger.warning(
             "BGE-M3 token count did not answer: ended in %s, exit %s, timed out %s",

@@ -95,13 +95,9 @@ def get_current_actor_user_id() -> Optional[str]:
     return _current_actor_user_id.get()
 
 
-#: The person a ``slack`` service account names for this request, as
-#: ``(account id, requester id)``, or ``None`` (#2852). Set by
-#: ``api/v1/auth_dependencies.admission_requester`` on every request that
-#: declares it, ``None`` included, and copied into every task the request
-#: spawns. Its one reader is ``worker_process.admission_principal``.
-#:
-#: **Admission, never a predicate**: it keys worker slots and nothing else.
+#: ``(account id, requester id)`` a ``slack`` account names, or ``None``
+#: (#2852): set by ``auth_dependencies.admission_requester``, read by
+#: ``worker_process.admission_principal``. Admission order only, never a predicate.
 _admission_requester: ContextVar[Optional[tuple[str, str]]] = ContextVar(
     "admission_requester", default=None
 )

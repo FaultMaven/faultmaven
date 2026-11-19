@@ -205,7 +205,7 @@ async def _run(
     slot_key = worker_process.admission_principal(principal)
     try:
         async with asyncio.timeout(slot_wait or GATE_SLOT_WAIT_SECONDS):
-            await slots.acquire(slot_key)
+            await slots.acquire(*slot_key)
     except TimeoutError:
         logger.warning("runbook checks %s found no slot free", names)
         raise GateBusy() from None
@@ -239,7 +239,7 @@ async def _run(
         logger.error("runbook checks %s did not answer: %s", names, e)
         raise GateUnavailable() from e
     finally:
-        slots.release(slot_key)
+        slots.release(*slot_key)
 
 
 def _enforce(answer: Dict[str, Any]) -> None:

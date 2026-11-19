@@ -95,28 +95,28 @@ class WorkerEnd:
 
 
 class FairSlots:
-    """Slots under Principle 14's admission rule (#2645): a principal (the user)
-    holding none takes one while one is free, one holding some only while two
-    are free. Waiters are served fewest-held first, then earliest, as the rule
-    admits them. A waiter granted then cancelled releases its grant. Releasing
-    for a principal that holds none raises ``ValueError`` and changes nothing,
-    as ``asyncio.BoundedSemaphore`` refuses a release past its count."""
+    """Slots under Principle 14's admission rule (#2645): an account holding
+    none takes one while one is free, one holding some only while two are free.
+    A freed slot goes to the account holding the fewest, earliest waiter first,
+    as the rule admits it; within it, to the waiter whose requester holds the
+    fewest, then the earliest (#2852). A cancelled grant is released. Releasing
+    a key that holds none raises ``ValueError`` and changes nothing."""
 
     def __init__(self, count: int) -> None:
-        self._free, self._held = count, Counter()
-        self._waiting: list = []  # [order, principal, future]
+        self._free, self._held, self._by_key = count, Counter(), Counter()
+        self._waiting: list = []  # [order, (account, requester), future]
         self._order = itertools.count()
 
     def locked(self) -> bool:
         """No slot free, or someone waits."""
         return self._free == 0 or bool(self._waiting)
 
-    async def acquire(self, principal: str) -> None:
+    async def acquire(self, account: str, requester: Optional[str] = None) -> None:
         import asyncio
 
         waiter = (
             next(self._order),
-            principal,
+            (account, requester),
             asyncio.get_running_loop().create_future(),
         )
         self._waiting.append(waiter)
@@ -127,44 +127,53 @@ class FairSlots:
             if waiter in self._waiting:
                 self._waiting.remove(waiter)
             elif not waiter[2].cancelled():
-                self.release(principal)
+                self.release(account, requester)
             raise
 
-    def release(self, principal: str) -> None:
-        if not self._held[principal]:
-            raise ValueError(f"FairSlots released for {principal!r}, which holds none")
-        self._held[principal] -= 1
-        self._held += Counter()  # drops a principal holding none
+    def release(self, account: str, requester: Optional[str] = None) -> None:
+        key = (account, requester)
+        if not self._by_key[key]:
+            raise ValueError(f"FairSlots released for {key!r}, which holds none")
+        self._by_key[key] -= 1
+        self._held[account] -= 1
+        self._by_key += Counter()  # drops a key holding none
+        self._held += Counter()
         self._free += 1
         self._grant()
 
     def _grant(self) -> None:
         while True:
             live = [w for w in self._waiting if not w[2].done()]
-            for waiter in sorted(live, key=lambda w: (self._held[w[1]], w[0])):
-                if self._free >= (2 if self._held[waiter[1]] else 1):
+            first: Dict[str, int] = {}
+            for order, (account, _), _ in live:
+                first.setdefault(account, order)
+            for account in sorted(first, key=lambda a: (self._held[a], first[a])):
+                if self._free >= (2 if self._held[account] else 1):
+                    waiter = min(
+                        (w for w in live if w[1][0] == account),
+                        key=lambda w: (self._by_key[w[1]], w[0]),
+                    )
                     self._waiting.remove(waiter)
                     self._free -= 1
-                    self._held[waiter[1]] += 1
+                    self._held[account] += 1
+                    self._by_key[waiter[1]] += 1
                     waiter[2].set_result(None)
                     break
             else:
                 return
 
 
-def admission_principal(principal: str) -> str:
-    """The key ``principal`` is admitted to ``FairSlots`` under: the account's
-    ``<account>:<requester>`` when this context bound one for it, else
-    ``principal`` itself.
-
-    It keys admission only: it never reaches an authorization check, a query,
-    an ownership field or a stored row (#2852)."""
+def admission_principal(principal: str) -> tuple[str, Optional[str]]:
+    """``principal``'s ``FairSlots`` key: ``(principal, requester)`` when this
+    context bound one for that account, else ``(principal, None)``; never one
+    joined string, as a principal may hold a colon. Admission only: never an
+    authorization check, a query, an ownership field or a stored row (#2852)."""
     from faultmaven.config.tenant_context import get_admission_requester
 
     bound = get_admission_requester()
     if bound is not None and bound[0] == principal:
-        return f"{principal}:{bound[1]}"
-    return principal
+        return principal, bound[1]
+    return principal, None
 
 
 def loop_slots(held: Optional[tuple], count: int) -> tuple:

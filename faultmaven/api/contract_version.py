@@ -157,15 +157,21 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "`POST /cases/{case_id}/turns` and `PATCH "
             "/cases/{case_id}/evidence/{evidence_id}/classification` take an "
             "optional `X-FaultMaven-Requester` header: the person a Slack "
-            "service account asks for, keying worker admission only (#2852). "
-            "MINOR: a new optional header; nothing is refused for it."
+            "service account asks for, which orders that account's own worker "
+            "jobs only (#2852). MINOR: a new optional header; nothing is "
+            "refused for it."
         ),
         body=r"""The value is an opaque id matching `[A-Za-z0-9_-]{16,64}` in
 full (the OpenAPI header schema carries no pattern). From an account whose
-`service_channel` is `slack`, the request's worker jobs (Tier 1 extraction,
-and the runbook gate, document preparation and KB token counts of the
-conversion a turn starts) are admitted under `<account>:<requester>`, so two
-people of one workspace hold separate slots (Principle 14).
+`service_channel` is `slack`, it orders the account's own waiters for a worker
+slot (Principle 14): Tier 1 extraction of the turn's attachment or the
+reclassified file, and the runbook gate of the conversion a resolved turn
+starts when that account created the case. The account is still one principal
+to admission, per pool: it takes a slot while one is free when it holds none,
+and another only while two are free. Among its waiters, the person holding the
+fewest slots of the pool goes first, then the earliest. So on a two-slot pool
+a second person waits for the first's running job, never beside it; with three
+or more slots they run side by side.
 
 It grants nothing: authorization, case ownership, queries, stored rows and
 the response are those of the account, with or without it. A malformed value,

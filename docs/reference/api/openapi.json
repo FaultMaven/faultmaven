@@ -11875,7 +11875,7 @@
             }
           },
           {
-            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission within the account only and grants nothing; from any other account, or malformed, it is ignored.",
             "in": "header",
             "name": "X-FaultMaven-Requester",
             "required": false,
@@ -11888,7 +11888,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission within the account only and grants nothing; from any other account, or malformed, it is ignored.",
               "title": "X-Faultmaven-Requester"
             }
           }
@@ -12697,7 +12697,7 @@
             }
           },
           {
-            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+            "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission within the account only and grants nothing; from any other account, or malformed, it is ignored.",
             "in": "header",
             "name": "X-FaultMaven-Requester",
             "required": false,
@@ -12710,7 +12710,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission only and grants nothing; from any other account, or malformed, it is ignored.",
+              "description": "Optional. An opaque id of the person a Slack service account asks for, 16-64 of `A-Za-z0-9_-`. It orders worker admission within the account only and grants nothing; from any other account, or malformed, it is ignored.",
               "title": "X-Faultmaven-Requester"
             }
           }

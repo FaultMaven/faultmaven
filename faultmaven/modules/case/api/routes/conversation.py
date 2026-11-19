@@ -564,8 +564,8 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     "/{case_id}/turns",
     response_model=TurnResponse,
     responses=_TURN_RESPONSES,
-    # The requester a Slack service account names keys worker admission only
-    # (Principle 14, #2852): an attachment's Tier 1 and the conversion it starts.
+    # A Slack account's requester orders its worker admission only (#2852): an
+    # attachment's Tier 1, and the gate of the conversion a resolved turn starts.
     dependencies=[Depends(require_authentication), Depends(admission_requester)],
 )
 @trace("api_submit_turn")
@@ -1242,7 +1242,7 @@ async def submit_case_query_gone(case_id: str):
     responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
     # Route-level, ahead of every provider (#1494's shape): the handler also
     # resolves the case service now (ADR-020 D2), and an anonymous caller must
-    # be refused before any collaborator resolves. The requester keys the
+    # be refused before any collaborator resolves. The requester orders the
     # reprocessing's Tier 1 admission only (#2852).
     dependencies=[Depends(require_authentication), Depends(admission_requester)],
 )
