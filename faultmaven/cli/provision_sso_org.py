@@ -94,6 +94,7 @@ import sys
 
 from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._log_chain import install_command_logging
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -457,6 +458,7 @@ async def provision(
 
 
 def main() -> None:
+    install_command_logging()
     apply_root_set()
     parser = argparse.ArgumentParser(
         description="Provision a Cloud tenant and map a WorkOS organization to it",

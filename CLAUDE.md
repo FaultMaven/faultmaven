@@ -47,6 +47,8 @@ faultmaven/
 │                           # imported, never run: its one `__main__` guard (first statement) refuses `-m faultmaven.main`
 ├── server.py               # The launcher (`python -m faultmaven.server`) and `run_server`, the one home of the uvicorn options;
 │                           # imports nothing that imports main.py, so every launch executes main.py exactly once (#1985)
+├── asgi.py                 # uvicorn's import string (`faultmaven.asgi:app`) in every serving process: the log chain's
+│                           # process outputs first, then main.py; a failed import is frames and exit 1 (#2888)
 ├── api/                    # Shared middleware (middleware/), v1/auth_dependencies.py (require_authentication), exception handlers, admin routes (routes/)
 ├── modules/                # Feature modules — the primary code organisation
 │   ├── auth/ case/ knowledge/                  # VERTICAL MODULES: own tables, contracts.py, infrastructure/

@@ -40,7 +40,7 @@ from faultmaven.server import run_server
 
 pytestmark = pytest.mark.unit
 
-DEFAULT_APP = "faultmaven.main:app"
+DEFAULT_APP = "faultmaven.asgi:app"
 CLOUD_APP = "faultmaven_cloud.main:app"
 
 

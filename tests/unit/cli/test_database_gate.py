@@ -58,6 +58,12 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
 #: to quiet this test.
 NEEDS_NO_DATABASE: dict[str, str] = {}
 
+#: Commands that start no event loop, each with its reason: the census's
+#: positive control (it sees a loop start) does not apply to them.
+STARTS_NO_EVENT_LOOP: dict[str, str] = {
+    "fm-migrate": "it calls alembic.command.upgrade, which is synchronous (#2888)",
+}
+
 #: What a command's ``main()`` may call BEFORE the gate: parsing and validating
 #: its own arguments, nothing that reads settings or the database; and the one
 #: exception, ``apply_root_set``, below. Measured on
@@ -80,6 +86,9 @@ _ARGUMENT_ONLY_CALLS = frozenset(
         # The one exception, first in every entrypoint (#2692): it loads .env
         # and writes the TLS variables into the environment; it opens no store.
         "apply_root_set",
+        # Before it (#2888): the log chain on stderr. It loads .env as
+        # apply_root_set does and reads the log format alone; it opens no store.
+        "install_command_logging",
         # command-local argument helpers
         "_add_apply_flags",  # fm-personal-tenant: adds --dry-run/--apply
         "normalize_domain",  # fm-provision-sso-org: folds --domain
@@ -203,7 +212,7 @@ def _module_source(module_path: str) -> tuple[Path, ast.Module]:
 
 def test_the_census_reads_a_non_empty_declaration():
     assert DECLARED, "no [project.scripts] declared; the census would be vacuous"
-    stale = set(NEEDS_NO_DATABASE) - set(DECLARED)
+    stale = (set(NEEDS_NO_DATABASE) | set(STARTS_NO_EVENT_LOOP)) - set(DECLARED)
     assert not stale, f"exemptions for commands that no longer exist: {stale}"
 
 
@@ -227,7 +236,9 @@ def test_every_declared_command_gates_before_it_runs_anything(command):
     loops = _event_loop_lines(entry)
     # Positive control: a loop start this census cannot recognise would read as
     # "none before the gate".
-    assert loops, f"{command}: the census sees no event loop start in {attr}()"
+    assert (
+        loops or command in STARTS_NO_EVENT_LOOP
+    ), f"{command}: the census sees no event loop start in {attr}()"
     early_loops = [line for line in loops if line < first_gate]
     assert not early_loops, (
         f"{command}: an event loop starts at line(s) {early_loops}, before "

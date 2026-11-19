@@ -42,7 +42,7 @@ _APP_IMPORT_STRING_RE = re.compile(
 )
 
 
-def run_server(app: str = "faultmaven.main:app") -> None:
+def run_server(app: str = "faultmaven.asgi:app") -> None:
     """Start uvicorn with the configured host, port, workers and keep-alive.
 
     ``app`` is the ASGI application as an import string (``module:attr``),
@@ -60,10 +60,21 @@ def run_server(app: str = "faultmaven.main:app") -> None:
     routers at import, so a ``__main__`` run followed by uvicorn's import of the
     string mounts them twice, #1985).
 
+    The process's own outputs go through the log chain first, before anything
+    here can fail (#2888). The default app, ``faultmaven.asgi:app``, does the
+    same in each process uvicorn starts, then imports ``faultmaven.main``.
+
     Raises:
         ValueError: ``app`` is not a ``module:attr`` import string.
     """
-    # First, before uvicorn imports the app: aiohttp builds its verified
+    from faultmaven.infrastructure.logging.process_outputs import (
+        install_process_outputs,
+        sweep_own_handlers,
+    )
+
+    install_process_outputs()
+    sweep_own_handlers()
+    # Then, before uvicorn imports the app: aiohttp builds its verified
     # context when it is imported (#2692).
     from faultmaven.config.tls_root_set import apply_root_set
 

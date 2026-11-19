@@ -306,7 +306,7 @@ def test_launch_path_reaches_uvicorn_run_with_every_option(path):
         f"`python -m {launch}` ({path}) never reached uvicorn.run "
         "(is the __main__ guard in faultmaven/server.py gone?)"
     )
-    assert record["args"] == ["faultmaven.main:app"]
+    assert record["args"] == ["faultmaven.asgi:app"]
     assert record["kwargs"] == EXPECTED_UVICORN_KWARGS
 
 

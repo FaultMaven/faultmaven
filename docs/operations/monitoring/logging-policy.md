@@ -12,8 +12,8 @@ What an error line may hold is [principles §7's rule, "What a log line may hold
 
 - **Name the exception by its class chain,** `exception_class_chain(e)` (`faultmaven/utils/exception_name.py`), never `{e}`, `str(e)` or `%r`. A first-party exception adds its `error_code`.
 - **Pass the frames as a field,** `exception_frames(e)` from the same module, where the stack matters. It holds each link's class and frames, never a message.
-- **`exc_info=True` and `logger.exception()` render frames,** each link's class and frames with no message, note or group member's message, on the outputs the chain covers: the API, the jobs, alembic and a worker's forwarded records (#2888). The message you write is still yours to keep free of the exception's text.
-- **Do not use `exc_info=True` or `logger.exception()` in a process the chain does not configure** (the outputs that read "No stage yet: #2898" in [principles §7's outputs table](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default)): there `logging.lastResort` still renders the full traceback, every message included, until S2b (#2888).
+- **`exc_info=True` and `logger.exception()` render frames,** each link's class and frames with no message, note or group member's message, in every process this repository launches: the API and its uvicorn supervisor, the jobs, alembic and `fm-migrate`, the `fm-*` commands, a worker's forwarded records, and a record logged before any of them configures logging (`logging.lastResort`, #2888). The message you write is still yours to keep free of the exception's text.
+- **An uncaught exception, a warning and a worker child's stderr are handled for you** ([principles §7's outputs table](../../architecture/core-architecture/architectural-design-principles.md#7-observability-by-default)): an uncaught exception is one record of its class and frames, a warning its class, file and line, and a worker child's stderr is dropped with only its size logged. Do not print to stderr instead of logging.
 - **Name content by its identifier and length,** at every level, DEBUG included.
 
 ### Examples
@@ -63,7 +63,7 @@ except Exception as e:
 - `request_id` (from the `X-Request-ID` header, or generated) is bound into
   structlog contextvars by `RequestIdMiddleware` for the duration of each
   request — every log line emitted while handling a request carries it.
-- The maintenance jobs (stdout) and alembic (stderr) write the API's line,
+- The maintenance jobs (stdout), alembic and the `fm-*` commands (stderr) write the API's line,
   through the same formatter builder (`install_log_handler`,
   `faultmaven/infrastructure/logging/config.py`): the API's keys (`timestamp`,
   ISO in UTC with `Z`; `level`, lowercase; `logger`; `event`) plus the record's
@@ -100,15 +100,20 @@ reload. "Configures a provider" is answered from the provider registry (any
 registered provider's API key, or `LOCAL_LLM_URL` for the local one), so a
 Gemini-only `.env` is not zero-config (#1984).
 
-`app` is a `module:attr` import string (default `faultmaven.main:app`), never an
+`app` is a `module:attr` import string (default `faultmaven.asgi:app`), never an
 object: uvicorn refuses an object when `workers > 1` or `reload` is set, and
 `run_server` raises `ValueError` for anything that is not an import string.
 
 Every launch executes `faultmaven/main.py` exactly once (#1985). The launcher is
 its own module, `faultmaven/server.py`, and imports neither `faultmaven.main` nor
-anything that does: uvicorn imports the `"faultmaven.main:app"` string, once, in
-the process that serves requests. `python -m faultmaven.main` is not a launch
-path: it ran `main.py` as `__main__` and then again for uvicorn's import, so every
+anything that does: uvicorn imports the `"faultmaven.asgi:app"` string, once, in
+the process that serves requests, and `faultmaven/asgi.py` imports `faultmaven.main`.
+`run_server`'s first statement, and `faultmaven/asgi.py` in each process uvicorn
+starts (a worker or the reloader's child), put the process's own outputs through
+the chain (`install_process_outputs`): uvicorn's own handlers are removed, so a
+launch through the `uvicorn` CLI conforms too, and a child whose import of the
+app fails logs its class and frames and exits 1, with no traceback text.
+`python -m faultmaven.main` is not a launch path: it ran `main.py` as `__main__` and then again for uvicorn's import, so every
 import-time side effect ran twice (duplicate import-time logs,
 `starlette.requests.Request.form` wrapped twice, Prometheus scrape hooks
 registered twice) and the served app was not the `__main__` one. It now refuses:
