@@ -8,6 +8,7 @@ from faultmaven.core.investigation.cause_assurance import (
     deepened_past_root_ids,
     root_counterfactually_confirmed,
     stance_declared_confident,
+    stands_as_validated_root,
 )
 from faultmaven.core.investigation.cause_assurance import (
     cached_content_tokens as _cached_content_tokens,
@@ -237,14 +238,14 @@ _COUNT_HELD_REASONS = frozenset({BLOCK_REASON_COUNT, BLOCK_REASON_MIRROR})
 
 def _unsettled_root(node: CausalNode, deepened: set[str]) -> bool:
     """A ROOT-typed node standing as a root (not in ``deepened``,
-    ``deepened_past_root_ids``) that is neither REFUTED nor validated as a
-    root: a node validated as a rung awaits the derive's judgment as a root
-    (#2060)."""
+    ``deepened_past_root_ids``) that is neither REFUTED nor a validated root
+    (``stands_as_validated_root``): a node validated as a rung awaits the
+    derive's judgment as a root (#2060)."""
     return (
         node.node_type == NodeType.ROOT
         and node.node_id not in deepened
         and node.node_state != NodeState.REFUTED
-        and (node.node_state != NodeState.VALIDATED or node.validated_as_rung)
+        and not stands_as_validated_root(node, deepened)
     )
 
 
@@ -448,8 +449,9 @@ def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
     # Cheap and tokenization-free: every ROOT the case has NOT put to rest.
     # REFUTED only — a VALIDATED root is a promoted cause, and its presence is
     # exactly what must make ``is_sole_root_block`` False (see the docstring).
-    # ``restatement_held_root_ids`` excludes both VALIDATED and REFUTED, so
-    # ``held`` is a subset of this and the comparison reads "is anything else
+    # ``restatement_held_root_ids`` excludes REFUTED roots and validated ones
+    # (a node validated as a rung is not one, so it can be held), so ``held``
+    # is a subset of this and the comparison reads "is anything else
     # unresolved, or promoted". A root a chain was deepened past is a rung,
     # not a root the case left unresolved (#2060).
     deepened = deepened_past_root_ids(case)

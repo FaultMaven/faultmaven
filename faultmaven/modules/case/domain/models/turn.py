@@ -165,9 +165,9 @@ class FixCause(BaseModel):
         description=(
             "With no root_ids, the cause M5's own leg licenses then: the root "
             "of the conclusion's standing hypothesis, else the node the "
-            "conclusion names (a ROOT only when licensed; an intermediate, or "
-            "a root a chain was deepened past, as named), or the root of the "
-            "hypothesis leading at M5's bar; else none."
+            "conclusion names (a ROOT only when licensed; an intermediate as "
+            "named), or the root of the hypothesis leading at M5's bar; else "
+            "none."
         ),
     )
     reference_ids: tuple[str, ...] = Field(
@@ -199,7 +199,7 @@ class FixCause(BaseModel):
             "The roots a chain was deepened past at the start of the turn "
             "(#2060): rungs, so a ROOT a fix's own licence names among them "
             "makes it no remediation. None on a record from before they were "
-            "recorded: a fix run then is not kinded from it."
+            "recorded, read as none."
         ),
     )
 

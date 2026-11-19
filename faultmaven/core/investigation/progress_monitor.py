@@ -81,10 +81,10 @@ def _failed_attempts(windows) -> int:
 # REFUTED transition means a decaying disproven theory now retires at
 # ``likelihood < 0.3`` (``check_state_transition``) before it could ever land
 # REFUTED, so a spent theory that used to be counted here as REFUTED now lands
-# RETIRED. Counting RETIRED keeps the exhaustion/anchoring tallies whole. Kept
-# module-local and single-sourced (as ``cause_assurance.STANDING_HYP_STATES`` is)
-# so every consumer shares one definition. NOT the deadlock signal, which is
-# specifically "all still INCONCLUSIVE" (untouched).
+# RETIRED. Counting RETIRED keeps the exhaustion/anchoring tallies whole.
+# Single-sourced here so every consumer shares one definition, as the standing
+# states are in ``cause_assurance.STANDING_HYP_STATES``. NOT the deadlock
+# signal, which is specifically "all still INCONCLUSIVE" (untouched).
 _SPENT_HYP_STATES = (
     HypothesisState.REFUTED,
     HypothesisState.INCONCLUSIVE,

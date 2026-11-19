@@ -432,8 +432,8 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
                     named = case.hypotheses.get(vhid)
                     # Only a STANDING hypothesis (``STANDING_HYP_STATES``) may
                     # label the resolved root cause. A named hypothesis since
-                    # REFUTED/RETIRED (or a not-yet-active CAPTURED one) is not
-                    # a cause and must not supply the UI category.
+                    # REFUTED, RETIRED or INCONCLUSIVE is not a standing cause
+                    # and must not supply the UI category.
                     from faultmaven.core.investigation.cause_assurance import (
                         STANDING_HYP_STATES,
                     )

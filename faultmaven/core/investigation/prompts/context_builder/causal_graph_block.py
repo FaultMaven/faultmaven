@@ -463,8 +463,9 @@ def _build_causal_graph_block(case: Case) -> str:
     # machinery and a later re-root back onto it read it), but it has a cause
     # above it now, so it is a rung (#2036). The label, the bar, the notes and
     # the grade read one predicate over the STANDING hypotheses (#2060): a node
-    # one of them is rooted at stays a root on every path through it, and the
-    # ROOT-typed nodes on a refuted or inconclusive chain show as roots.
+    # one of them is headed by (its root, else its path's first node) stays a
+    # root on every path through it, and the ROOT-typed nodes on a refuted or
+    # inconclusive chain show as roots.
     below_the_root = deepened_past_root_ids(case)
     lines = [
         "<causal_graph>",

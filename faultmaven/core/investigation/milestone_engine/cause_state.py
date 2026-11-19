@@ -539,8 +539,11 @@ def _recompute_assessment_state(
         case, exclusion_survivors=exclusion_survivors, count=not final
     )
     # Say why proof by exclusion skipped a survivor a chain was deepened past
-    # (#2060): once per turn, so not on the final recompute.
-    if metadata is not None and not final:
+    # (#2060): once per turn, on the final recompute, read from its graph.
+    # Housekeeping between step 1 and the final recompute can retire the
+    # deepening hypothesis, and the final pass then stamps the survivor; one
+    # still deepened past then is one the lane did not stamp.
+    if metadata is not None and final:
         for survivor, above in deepened_exclusion_survivors(case, exclusion_survivors):
             _add_system_feedback(
                 metadata,

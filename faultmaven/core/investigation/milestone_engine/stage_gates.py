@@ -354,14 +354,15 @@ def licence_leg_ids(
     - ``"chain"``: those roots still on the graph;
     - ``"rcc"``: the conclusion's standing hypothesis root
       (``conclusion_node``); else the node it names: a ROOT only when the
-      cause pool holds it (#2485), an intermediate, or a root a chain was
-      deepened past, as named (#2060); none and ``in_words`` when it names no
-      node;
+      cause pool holds it (#2485), an intermediate as named; none and
+      ``in_words`` when it names no node. The stored type decides here, so a
+      root a chain was deepened past is never licensed as a named rung: once
+      its chain stops standing it is an orphan root, and a conclusion naming
+      an orphan licenses no remediation of it (#2485, #2060);
     - ``"working_conclusion"``: the hypothesis's root, none when unrooted."""
     from faultmaven.core.investigation.cause_assurance import (
         _cause_pool,
         conclusion_node,
-        deepened_past_root_ids,
     )
 
     nodes = case.causal_nodes or {}
@@ -374,10 +375,8 @@ def licence_leg_ids(
             return [node_id], False
         if named not in nodes:
             return [], True
-        if (
-            nodes[named].node_type != NodeType.ROOT
-            or named in deepened_past_root_ids(case)
-            or named in set().union(*_cause_pool(case))
+        if nodes[named].node_type != NodeType.ROOT or named in set().union(
+            *_cause_pool(case)
         ):
             return [named], False
         return [], False

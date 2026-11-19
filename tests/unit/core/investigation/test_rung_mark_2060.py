@@ -19,13 +19,14 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.core.investigation.causal_graph.derivation import derive_node_states
+from faultmaven.core.investigation.causal_graph.disconfirmation import failed_fix_of
 from faultmaven.core.investigation.causal_graph.projection import (
     project_hypothesis_states_from_roots,
 )
 from faultmaven.core.investigation.causal_graph.pruning import attach_root
-from faultmaven.core.investigation.causal_graph.support import root_restates_case_frame
 from faultmaven.core.investigation.causal_map import render_causal_map
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
@@ -35,11 +36,25 @@ from faultmaven.core.investigation.cause_assurance import (
     _validated_roots,
     fix_windows,
     grade_cause_assurance,
+    latest_decided_fix_window,
+)
+from faultmaven.core.investigation.hypothesis_manager import (
+    STAGNATION_HORIZON_ITERATIONS,
+    HypothesisManager,
 )
 from faultmaven.core.investigation.milestone_engine.cause_state import (
     _recompute_assessment_state,
 )
+from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_action_intent,
+)
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    FIX_CAUSE_AT_START_KEY,
+    _settle_fix_attempts,
+)
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    FIXES_ACCEPTED_KEY,
+    fix_cause,
     licence_leg_ids,
 )
 from faultmaven.core.investigation.problem_status import revision_refusal
@@ -49,8 +64,10 @@ from faultmaven.core.investigation.prompts.context_builder.causal_graph_block im
 from faultmaven.core.investigation.schemas import (
     CausalNodeToAdd,
     HypothesisUpdate,
+    MilestoneUpdates,
     NodeEvidenceLinkToAdd,
 )
+from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.contracts import (
     CausalEdge,
     CausalNode,
@@ -63,10 +80,15 @@ from faultmaven.modules.case.contracts import (
     HypothesisCategory,
     HypothesisGenerationMode,
     HypothesisState,
+    InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
     NodeType,
+    ProposedAction,
     ValidationMethod,
+)
+from faultmaven.modules.case.infrastructure.sqlite_case_repository.repository import (
+    SQLiteCaseRepository,
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID
@@ -75,6 +97,7 @@ from tests.unit.core.investigation.test_fix_targets_2036 import (
     _attempts,
     _deepen,
     _fix,
+    _intermediate,
     _ran,
 )
 from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
@@ -83,6 +106,9 @@ from tests.unit.core.investigation.test_fix_verification_subjects_1906 import (
     _PRESENT,
     _SUPPORT,
     _obs,
+)
+from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+    _failed_fix as _m6_failed_fix,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _identified_case,
@@ -208,6 +234,49 @@ def _settle(case) -> None:
     project_hypothesis_states_from_roots(case)
 
 
+_MANAGER = HypothesisManager()
+
+
+def _stop_standing(case, hyp, end: HypothesisState) -> None:
+    """``hyp`` leaves standing through its lifecycle writer: a refutation on a
+    refuting row (``refute_hypothesis``), the user's retire
+    (``_apply_hypothesis_action_intent``), or the soft transition at the end
+    of a stagnation arc in the gray zone (``check_state_transition``)."""
+    if end == HypothesisState.REFUTED:
+        row = _evidence(f"rules-out-{hyp.hypothesis_id}")
+        case.evidence.append(row)
+        _MANAGER.refute_hypothesis(
+            hyp, case.current_turn, [row.evidence_id], "the config push never happened"
+        )
+    elif end == HypothesisState.RETIRED:
+        _apply_hypothesis_action_intent(
+            _MANAGER,
+            case,
+            {"hypothesis_id": hyp.hypothesis_id, "action": "retire"},
+            "set that one aside",
+            {},
+        )
+    else:
+        hyp.likelihood = 0.4
+        hyp.iterations_without_progress = STAGNATION_HORIZON_ITERATIONS
+        _MANAGER.check_state_transition(hyp, case.current_turn)
+    assert hyp.state == end
+
+
+def _refute(case, node: CausalNode, label: str) -> None:
+    """A confident refuting row on ``node``; the next derive refutes it."""
+    case.evidence.append(_evidence(label))
+    node.evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=_eid(label),
+            stance=EvidenceStance.REFUTES,
+            reasoning="rules the node out",
+            linked_at_turn=2,
+            stance_confidence=1.0,
+        )
+    )
+
+
 def _line(block: str, node_id: str) -> str:
     return next(line for line in block.splitlines() if node_id in line)
 
@@ -307,8 +376,6 @@ def test_a_root_identified_for_a_rival_is_identified_by_no_reader_once_deepened_
     """X is H2's identified root while H1's chain runs through it. H2
     retires: X is deepened past, still VALIDATED with a True verdict, and no
     cause pool or fix record counts it as the identified cause."""
-    from faultmaven.core.investigation.milestone_engine.stage_gates import fix_cause
-
     case, x, hyp = _case()
     rival = _second(case)
     attach_root(case, rival, _X, [_X, _D], 2)
@@ -317,7 +384,7 @@ def test_a_root_identified_for_a_rival_is_identified_by_no_reader_once_deepened_
     x.record_root_terminal(True, [_eid("x1")], 3)
     _settle(case)
     assert _pool_legs(case)[0] == {_X}  # H2's identified root
-    rival.state = HypothesisState.RETIRED
+    _stop_standing(case, rival, HypothesisState.RETIRED)
     _settle(case)
     assert x.node_state == NodeState.VALIDATED and x.root_terminal is True
     assert _pool_legs(case)[0] == set()
@@ -338,13 +405,11 @@ def test_a_rung_validated_restating_node_is_no_root_once_its_chain_stops_standin
     The hypothesis that deepened past it stops standing, so X stands as a
     root. Before any derive no reader counts it; the derive then holds it."""
     case, x, hyp = _rung_validated_restating_x()
-    assert not root_restates_case_frame(x, case)  # a rung paraphrases freely
-    y = case.causal_nodes[_Y]
-    y.node_state, y.refutation_reason = NodeState.REFUTED, "the push never happened"
-    hyp.state = end
-    if end == HypothesisState.REFUTED:
-        hyp.refutation_reason = "the config push never happened"
-    assert root_restates_case_frame(x, case)
+    _refute(case, case.causal_nodes[_Y], "y-ruled-out")
+    _settle(case)
+    assert case.causal_nodes[_Y].node_state == NodeState.REFUTED
+    assert x.node_state == NodeState.VALIDATED
+    _stop_standing(case, hyp, end)
     # No derive in between: a turn that retires without a recompute. X is the
     # one root not settled, and the next prompt says what holds it.
     assert _validated_roots(case) == []
@@ -368,10 +433,9 @@ def test_refuting_and_retiring_the_deepening_hypothesis_grade_alike(end):
     _deepen_to_y(case, hyp)
     _settle(case)
     assert grade_cause_assurance(case) == _NO_ROOT
-    y = case.causal_nodes[_Y]
-    y.node_state, y.refutation_reason = NodeState.REFUTED, "the push never happened"
-    hyp.state = end
-    hyp.refutation_reason = "the push never happened"
+    _refute(case, case.causal_nodes[_Y], "y-ruled-out")
+    _settle(case)
+    _stop_standing(case, hyp, end)
     _settle(case)
     assert x.node_state == NodeState.VALIDATED
     assert grade_cause_assurance(case) == _MECHANISTIC
@@ -478,24 +542,36 @@ def test_a_rung_validated_on_one_support_whose_chain_retires_is_noted_at_once():
     case, x, hyp = _case()
     _deepen_to_y(case, hyp)
     _supports(x, case, "x1")
+    _refute(case, case.causal_nodes[_Y], "y-ruled-out")
     _settle(case)
-    y = case.causal_nodes[_Y]
-    y.node_state, y.refutation_reason = NodeState.REFUTED, "the push never happened"
-    hyp.state = HypothesisState.RETIRED
+    _stop_standing(case, hyp, HypothesisState.RETIRED)
     line = _line(_build_causal_graph_block(case), _X)
     assert "[root/inconclusive]" in line and "SECOND INDEPENDENT" in line
 
 
-def test_the_mark_survives_a_save_and_reload():
-    """A marked node, round-tripped as the repositories store it, still
+@pytest.fixture
+async def sqlite_repository():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        yield SQLiteCaseRepository(session)
+    await engine.dispose()
+
+
+async def test_the_mark_survives_a_save_and_reload(sqlite_repository):
+    """A marked node saved and loaded through the SQLite repository still
     re-earns the root bar once its chain stops standing."""
-    case, x, hyp = _rung_validated_restating_x()
-    reloaded = CausalNode(**x.model_dump())
-    case.causal_nodes[_X] = reloaded
-    hyp.state = HypothesisState.RETIRED
-    assert grade_cause_assurance(case) == _NO_ROOT
-    _settle(case)
-    assert reloaded.node_state == NodeState.INCONCLUSIVE
+    case, _x, _hyp = _rung_validated_restating_x()
+    await sqlite_repository.save(case)
+    reloaded = await sqlite_repository.get(case.case_id)
+    x, hyp = reloaded.causal_nodes[_X], reloaded.hypotheses[_HYP]
+    assert x.node_state == NodeState.VALIDATED
+    _stop_standing(reloaded, hyp, HypothesisState.RETIRED)
+    assert grade_cause_assurance(reloaded) == _NO_ROOT
+    _settle(reloaded)
+    assert x.node_state == NodeState.INCONCLUSIVE
 
 
 # ---------------------------------------------------------------------------
@@ -623,9 +699,7 @@ def test_a_node_below_the_root_of_a_chain_that_no_longer_stands_renders_as_a_roo
     case, x, hyp = _case()
     _supports(x, case, "x1")
     _deepen_to_y(case, hyp)
-    hyp.state = end
-    if end == HypothesisState.REFUTED:
-        hyp.refutation_reason = "the config push never happened"
+    _stop_standing(case, hyp, end)
     _settle(case)
     block = _build_causal_graph_block(case)
     assert "[root/inconclusive]" in _line(block, _X)
@@ -641,8 +715,7 @@ def test_a_refuted_hypothesis_root_a_standing_chain_runs_through_is_a_rung():
     case, x, hyp = _case()
     rival = _second(case)
     attach_root(case, rival, _Y, [_Y, _X, _D], 6)
-    hyp.state = HypothesisState.REFUTED
-    hyp.refutation_reason = "ruled out"
+    _stop_standing(case, hyp, HypothesisState.REFUTED)
     _supports(x, case, "x1")
     _settle(case)
     block = _build_causal_graph_block(case)
@@ -656,17 +729,43 @@ def test_a_refuted_hypothesis_root_a_standing_chain_runs_through_is_a_rung():
 
 
 # ---------------------------------------------------------------------------
-# Row 24: a conclusion naming a deepened-past node names a rung
+# Row 24: a conclusion's licence leg keeps the stored type (#2485)
 # ---------------------------------------------------------------------------
 
 
-def test_a_conclusion_naming_a_deepened_past_root_licenses_it_as_the_rung_it_is():
+@pytest.mark.parametrize("end", [HypothesisState.RETIRED, HypothesisState.REFUTED])
+def test_a_conclusion_naming_a_deepened_past_root_licenses_no_remediation_of_it(end):
+    """A conclusion names X while a chain is deepened past it; the fix is
+    licensed then. The deepening hypothesis then stops standing, so X is an
+    orphan root, and a fix run at it is an interception: a conclusion naming
+    an orphan root licenses no remediation of it (#2485)."""
     case, x, hyp = _case()
     _supports(x, case, "x1", "x2")
     _settle(case)
     _deepen_to_y(case, hyp)
     _settle(case)
-    assert licence_leg_ids(case, "rcc", (None, _X)) == ([_X], False)
+    licence, _in_words = licence_leg_ids(case, "rcc", (None, _X))
+    _refute(case, case.causal_nodes[_Y], "y-ruled-out")
+    _settle(case)
+    _stop_standing(case, hyp, end)
+    _settle(case)
+    fix = ProposedAction(
+        case_id=case.case_id,
+        action_type=InvestigationActionType.SOLUTION,
+        description="drain the pool",
+        proposed_in_turn=5,
+        accepted_in_turn=case.current_turn,
+        state="accepted",
+        target_ids=[_X],
+        target_named=True,
+        licence_ids=list(licence),
+    )
+    case.proposed_actions.append(fix)
+    _settle_fix_attempts(
+        case,
+        {FIX_CAUSE_AT_START_KEY: fix_cause(case), FIXES_ACCEPTED_KEY: [fix.action_id]},
+    )
+    assert (fix.fix_kind, fix.target_ids) == (FIX_INTERCEPTION, [_X])
 
 
 # ---------------------------------------------------------------------------
@@ -861,3 +960,111 @@ async def test_a_re_root_onto_a_rung_validated_node_with_a_verdict_identifies_no
     assert grade_cause_assurance(case) == _NO_ROOT
     assert all(e.collected_by == "llm" for e in case.evidence)
     assert [a.licence_ids for a in case.proposed_actions if a.licence_ids] == [[_X]]
+
+
+def _backdated(action_id: str) -> MilestoneUpdates:
+    return MilestoneUpdates(
+        solution_accepted=True,
+        accepted_action_ref=action_id,
+        accepted_fix_reported_in="previous_message",
+    )
+
+
+@pytest.mark.parametrize("named_at_rung", [False, True])
+async def test_a_fix_backdated_onto_a_record_without_deepened_ids_is_kinded_as_on_main(
+    named_at_rung,
+):
+    """A turn record written before ``deepened_ids`` existed reads as none
+    deepened past: a fix backdated onto it is kinded exactly as one onto a
+    current record (r2930 p_legacy), never left unkinded, which would read it
+    as a remediation."""
+
+    async def kinded(legacy: bool):
+        case, a, _hyp = _identified_case()
+        eng = _engine()
+        ref = None
+        if named_at_rung:
+            ref = _intermediate(case)
+            case.causal_edges.append(
+                CausalEdge(cause_node_id=a.node_id, effect_node_id=ref)
+            )
+        await _record(
+            eng, case, 6, solutions_to_add=[_fix("restart the checkout pods", ref)]
+        )
+        await _record(eng, case, 7)
+        if legacy:
+            record = case.turn_history[-1]
+            case.turn_history[-1] = record.model_copy(
+                update={
+                    "cause_at_start": record.cause_at_start.model_copy(
+                        update={"deepened_ids": None}
+                    )
+                }
+            )
+        await _record(
+            eng, case, 8, milestones=_backdated(case.proposed_actions[0].action_id)
+        )
+        (fix,) = _attempts(case)
+        return fix.accepted_in_turn, fix.fix_kind, fix.target_ids
+
+    current = await kinded(legacy=False)
+    assert await kinded(legacy=True) == current
+    assert current[1] == (FIX_INTERCEPTION if named_at_rung else FIX_REMEDIATION)
+
+
+def test_the_exclusion_notice_is_not_given_for_a_survivor_the_final_recompute_validates():
+    """r2930 p_excl: step 1 skips X, deepened past; housekeeping then retires
+    the deepening hypothesis, and the final recompute validates X by
+    exclusion. No notice says X was skipped."""
+    case, x, hyp = _case()
+    _excluded_sibling(case)
+    _deepen_to_y(case, hyp)
+    metadata: dict = {}
+    _recompute_assessment_state(case, exclusion_survivors={_X}, metadata=metadata)
+    assert x.node_state != NodeState.VALIDATED
+    _stop_standing(case, hyp, HypothesisState.RETIRED)
+    _recompute_assessment_state(
+        case, exclusion_survivors={_X}, metadata=metadata, final=True
+    )
+    assert (x.node_state, x.validation_method) == (
+        NodeState.VALIDATED,
+        ValidationMethod.DEDUCTIVE,
+    )
+    assert not [n for n in metadata.get("system_notices", []) if _X in n]
+
+
+def test_a_hypothesis_whose_path_has_no_root_yet_is_headed_by_its_first_node():
+    """A standing hypothesis with a path and no root node: its path's first
+    node is its head, a root to the bar and the label, never a rung."""
+    case, x, hyp = _case()
+    hyp.root_node_id = None
+    _supports(x, case, "x1")
+    _settle(case)
+    assert x.node_state == NodeState.INCONCLUSIVE
+    assert "SECOND INDEPENDENT" in _line(_build_causal_graph_block(case), _X)
+
+
+def test_m6_reads_no_failed_fix_of_a_root_validated_as_a_rung():
+    """M6's record arm (``failed_fix_of``) on a hypothesis re-rooted onto a
+    node validated as a rung, before the derive judges it as a root: the
+    latest fix window failed and binds the node, yet nothing is read as a
+    failed fix of an identified cause."""
+    case, a, hyp = _identified_case()
+    problem = next(
+        n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+    above = _node(_Y, "a chart upgrade switched pgbouncer to session mode")
+    case.causal_nodes[_Y] = above
+    case.causal_edges.append(CausalEdge(cause_node_id=_Y, effect_node_id=a.node_id))
+    attach_root(case, hyp, _Y, [_Y, a.node_id, problem.node_id], 6)
+    _refute(case, a, "a-ruled-out-1")
+    _refute(case, a, "a-ruled-out-2")
+    _settle(case)  # a support/refute tie: A leaves VALIDATED
+    _supports(a, case, "a-again")
+    _settle(case)  # A re-enters VALIDATED as a rung
+    attach_root(case, hyp, a.node_id, [a.node_id, problem.node_id], 7)
+    _m6_failed_fix(case)
+    case.current_turn = 9
+    assert a.node_state == NodeState.VALIDATED
+    assert latest_decided_fix_window(case).state == FIX_FAILED
+    assert failed_fix_of(case, hyp) is None

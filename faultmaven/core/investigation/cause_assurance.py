@@ -482,21 +482,24 @@ def stance_declared_confident(link) -> bool:
 
 def deepened_past_root_ids(case: "Case") -> set[str]:
     """The ROOT-typed nodes a chain was deepened past (#2060): on the path of a
-    standing hypothesis, and the root of none.
+    standing hypothesis, and the head of none. A hypothesis's head is its root,
+    else, while it has none, its path's first node.
 
     Such a node keeps its stored type (#2036: window 0 and a later re-root back
     onto it read it), but a cause sits above it, so it is a rung to every
-    reader that asks whether a node is a root: the rung bar, outside the
-    restatement guard, never a validated or identified root. A node any
-    standing hypothesis is rooted at stands as a root on every path through
-    it; a node on no standing path is an orphan, a root. Only standing
-    hypotheses confer position, so refuting and retiring one move it alike."""
+    reader that decides by position: the rung bar, outside the restatement
+    guard, never a validated or identified root. A node any standing
+    hypothesis is headed by stands as a root on every path through it; a node
+    on no standing path is an orphan, a root. Only standing hypotheses confer
+    position, so refuting and retiring one move it alike."""
     standing = [
         h
         for h in (getattr(case, "hypotheses", None) or {}).values()
         if h is not None and h.state in STANDING_HYP_STATES
     ]
-    rooted_at = {h.root_node_id for h in standing if h.root_node_id}
+    # A hypothesis's head is its root; a path with no root yet has its first
+    # node as its head.
+    rooted_at = {h.root_node_id or (h.path or [None])[0] for h in standing}
     nodes = getattr(case, "causal_nodes", None) or {}
     return {
         node_id
