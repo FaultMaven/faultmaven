@@ -1,9 +1,12 @@
-"""Admission with a bound requester (#2852, Principle 14; ruling 2026-11-19).
+"""Admission with a bound requester (#2852, Principle 14; the rulings of
+2026-11-19).
 
 ``admission_principal`` keys the bound account's jobs ``(account, requester)``
 and every other job ``(principal, None)``. ``FairSlots`` applies ``main``'s
-rule to the account, per pool, and lets requesters reorder only that account's
-own waiters. Each of the four ``FairSlots`` users acquires and releases one key.
+rule to the account, per pool, and its requesters take turns among that
+account's own waiters: fewest held, then least recently granted since the
+account was idle, then earliest, a grant taking the account's earliest place.
+Each of the four ``FairSlots`` users acquires and releases one key.
 """
 
 from __future__ import annotations
@@ -72,8 +75,11 @@ class _Pool:
     def __init__(self, count: int) -> None:
         self.slots, self.grants, self.running = FairSlots(count), [], {}
         self.tasks: list = []
+        self.who: dict = {}
 
     def submit(self, job: int, account: str, requester) -> None:
+        self.who[job] = requester
+
         async def run() -> None:
             await self.slots.acquire(account, requester)
             self.grants.append((account, job))
@@ -81,10 +87,14 @@ class _Pool:
 
         self.tasks.append(asyncio.create_task(run()))
 
-    def finish(self, account: str) -> None:
+    def finish(self, account: str):
         if self.running.get(account):
             _, requester = self.running[account].pop(0)
             self.slots.release(account, requester)
+            return requester
+
+    def order(self) -> str:
+        return " ".join(self.who[job] for _, job in self.grants)
 
     def concurrent(self, account: str) -> list:
         return [r for _, r in self.running.get(account, [])]
@@ -129,6 +139,69 @@ async def test_requesters_only_permute_an_accounts_own_grants(count):
         permuted |= with_ids != without
     if count > 2:
         assert permuted, "no schedule exercised the requester order"
+
+
+async def test_the_account_takes_its_earliest_place_on_a_cross_account_tie():
+    """The schedule the ruling's probe found at the previous head: X granted a
+    later requester and kept its earliest place, so it took Y's grant."""
+    grants = {}
+    for with_ids in (True, False):
+        pool = _Pool(4)
+        for job, (account, requester) in enumerate(
+            [("X", "a"), ("X", "a"), ("Y", "y"), ("X", "a"), ("Y", "y"), ("X", "b")]
+        ):
+            pool.submit(job, account, requester if with_ids else None)
+            await _settle()
+        for _ in range(2):
+            pool.finish("X")
+            await _settle()
+        grants[with_ids] = [account for account, _ in pool.grants]
+    assert grants[True] == grants[False] == ["X", "X", "Y", "X", "Y"]
+
+
+async def test_two_slots_take_turns_one_job_each():
+    """The ruling's 2-slot consequence: A x4, B x2, C x1 queued on one account."""
+    pool = _Pool(2)
+    for job, requester in enumerate("AAAABBC"):
+        pool.submit(job, "slack", requester)
+    await _settle()
+    while pool.running.get("slack"):
+        pool.finish("slack")
+        await _settle()
+    assert pool.order() == "A B C A B A A"
+    assert pool.slots._granted == {}, "the stamps outlived the account's idle"
+
+
+async def test_two_one_job_requesters_never_starve_a_queued_batch():
+    pool, job = _Pool(2), 0
+    for requester in ["B"] * 5 + ["A1", "A2"]:
+        pool.submit(job, "slack", requester)
+        job += 1
+    await _settle()
+    for _ in range(14):
+        done = pool.finish("slack")
+        await _settle()
+        if done != "B":  # a one-job-at-a-time requester sends its next job
+            pool.submit(job, "slack", done)
+            job += 1
+            await _settle()
+    assert pool.order().split()[:15] == ["B", "A1", "A2"] * 5
+
+
+async def test_a_cancelled_waiter_releases_nothing_it_does_not_hold():
+    pool = _Pool(2)
+    for job, requester in enumerate(["u1", "u1", "u2"]):
+        pool.submit(job, "slack", requester)
+        await _settle()
+    pool.finish("slack")  # u2 is served, taking the account's earliest place
+    await _settle()
+    assert pool.order() == "u1 u2"
+    pool.tasks[1].cancel()  # u1's waiting job
+    await _settle()
+    assert dict(pool.slots._by_key) == {("slack", "u2"): 1}
+    assert not pool.slots._waiting and "slack" in pool.slots._granted
+    pool.finish("slack")
+    assert pool.slots._granted == {} and pool.slots._free == 2
 
 
 async def test_two_slots_serve_a_second_person_next_never_beside_the_first():

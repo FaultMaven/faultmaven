@@ -169,9 +169,11 @@ reclassified file, and the runbook gate of the conversion a resolved turn
 starts when that account created the case. The account is still one principal
 to admission, per pool: it takes a slot while one is free when it holds none,
 and another only while two are free. Among its waiters, the person holding the
-fewest slots of the pool goes first, then the earliest. So on a two-slot pool
-a second person waits for the first's running job, never beside it; with three
-or more slots they run side by side.
+fewest slots of the pool goes first, then the person served least recently,
+then the earliest; each person's own jobs run in order. So on a two-slot pool
+the people of a workspace take turns, one job each: a second person waits for
+the first's running job, not the first's queued batch, and never runs beside
+it; with three or more slots they run side by side.
 
 It grants nothing: authorization, case ownership, queries, stored rows and
 the response are those of the account, with or without it. A malformed value,
