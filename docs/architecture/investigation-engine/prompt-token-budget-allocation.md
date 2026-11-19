@@ -209,7 +209,7 @@ remainder in pass B before journal/entity-highlights get anything. The caps:
 | KB results | `KB_MAX_SOLUTION_CHARS` × top-N |
 | Hypotheses | ranked, small per-item cap × N |
 | Evidence needs | small fixed cap |
-| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — about 1.4K tokens at 50 turns, so the cap binds past about 55 turns or on denser entries |
+| Journal | strict ~1.5K-token cap, cut by whole entries in keep order, or to a newest-end fragment (§5.2) — the cap can bind on long or identifier-dense journals |
 | Entity highlights | already bounded (per-type limit) |
 
 Most are the "upper bounds" the codebase already has; the few currently-unbounded
@@ -280,11 +280,13 @@ Per-section policies:
   would have), or when the recount of the full render pops every entry; the
   newest end of the turn-ordered journal is then kept as a fragment
   (`keep="tail"`). An allotment too small for any fragment leaves only a
-  marker (INV-4). The fallback's digest keeps the same order.
-  Blockers and the other high-signal types rank first because re-treading dead
-  ends and known blockers is exactly what the journal exists to prevent.
-  Strictly capped at ~1.5K tokens; the allotment can be lower when evidence and
-  conversation take the budget first.
+  marker (INV-4). Blockers and the other high-signal types rank first because
+  re-treading dead ends and known blockers is exactly what the journal exists
+  to prevent. Strictly capped at ~1.5K tokens; the allotment can be lower when
+  evidence and conversation take the budget first. The fallback prompt's digest
+  (`_fallback_journal_digest`) is not under that cap: it keeps the same order,
+  at most 12 entries, each cut to the fallback's per-entry cap (120 characters
+  by default, less when the fallback shrinks to fit its budget).
 - **Evidence** — the existing Tier A/B/C/D sliding window, drawing from its
   allotment. The current-turn item renders **once**: the reserve (§4) guarantees
   a stub-sized floor for it, and the evidence section **upgrades that same block

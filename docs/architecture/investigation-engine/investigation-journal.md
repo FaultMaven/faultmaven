@@ -165,7 +165,7 @@ an entry — only record what future turns would need to know.
 
 In `build_investigation_context()` (`context_builder/assembly.py`), the journal is the third variable section in priority order, after evidence and conversation history and ahead of the working conclusion, KB results and hypotheses. It is placed high because it is compact and critical. Its allotment is capped at `PROMPT_JOURNAL_MAX_TOKENS`. A journal that fits renders whole, one `[T<turn>] <TYPE>: <content>` line per entry in turn order. One that does not is cut by `_cut_journal`: whole entries in `journal_keep_order` (blockers; then `decision`, `finding` and `ruled_out` entries as one tier; then the rest; each tier newest first), up to the first that does not fit, rendered in turn order after a `[... N entries omitted ...]` line. When the cut keeps no whole entry, the newest end of the turn-ordered journal is kept as a fragment instead. Design, with the exact conditions: `prompt-token-budget-allocation.md` §5.2.
 
-Budget impact: about 1.4K tokens for a 50-turn investigation (25 entries × 200 chars, plus line prefixes and the wrapper); the cap: `prompt-token-budget-allocation.md` §5.1.
+Budget impact: a 50-turn investigation produces about 25 entries of up to 200 characters, which can reach the cap on identifier-dense content; the cap: `prompt-token-budget-allocation.md` §5.1.
 
 ---
 
