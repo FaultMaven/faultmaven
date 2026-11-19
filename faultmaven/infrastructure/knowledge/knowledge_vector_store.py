@@ -48,6 +48,7 @@ import logging
 import math
 import re
 import threading
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -144,6 +145,11 @@ _METADATA_SCORE_MIN = min(_STATUS_WEIGHTS.values())
 
 # Collection name that requires scope filtering
 KB_COLLECTION = "faultmaven_kb"
+
+# The collection-metadata key every write moves to a fresh random value, so a
+# write made through any store, in any process, changes the term index's
+# signature even when it leaves the size unchanged (#2064).
+KB_WRITE_TOKEN_KEY = "fm_kb_write_token"
 
 # The one tier whose CONTENT any principal may read. Platform-curated, and
 # readable by every tenant by construction (migration 033's per-command RLS
@@ -354,7 +360,8 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         # outside #2056's scope. An HTTP client built outside the door is
         # refused here.
         self.blocking_executor = blocking_executor_for(client)
-        # Per-collection term index, rebuilt when the collection's size changes.
+        # Per-collection term index, rebuilt when the collection's size or its
+        # write token changes (#2064).
         # Never a correctness dependency: a miss degrades ranking to the
         # pre-IDF blend, it does not fail a search.
         self._term_stats: Dict[str, CorpusTermStats] = {}
@@ -376,9 +383,10 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         """Drop the cached term index for a collection, and bump its generation.
 
         Called before AND after every write that adds or deletes chunks. The
-        size signature would catch an add and a delete of different sizes on
-        its own, but not a same-size replace, and a replace is exactly what
-        re-ingesting an edited runbook does. Before, from the caller: a cached
+        signature (size, write token) sees a write made through any store once
+        :meth:`_mark_written` has moved the token; the generation covers this
+        store's own writes from the moment they land, and a build that races
+        one in this process. Before, from the caller: a cached
         index is never read across the write. After, in the write wrapper's
         own ``finally``, on the thread that made the write: a build that
         started after the first call but read the documents before the write
@@ -391,6 +399,40 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 self._term_stats_generation.get(collection_name, 0) + 1
             )
             self._term_stats.pop(collection_name, None)
+
+    def _mark_written(self, collection: Any, collection_name: str) -> None:
+        """Move the collection's write token, so every store sees this write (#2064).
+
+        Runs in each write wrapper's ``finally``, beside the after-write
+        :meth:`_invalidate_term_stats`, so it runs whether the write returned
+        or raised part-way. The metadata is read fresh from the client and
+        the token merged in: ``modify`` replaces the whole dict, and a
+        ``Collection`` fetched earlier holds stale metadata. Precondition: the
+        collection declares no ``hnsw:*`` key, which ``modify`` refuses to
+        change (none does; see ``vector_similarity``).
+
+        Ordering: the token moves AFTER the write lands, and a lookup reads it
+        BEFORE it reads the documents. A build that read a write's documents
+        under the token from before that write is replaced on the next lookup.
+        A random token, not a counter: two writers incrementing one counter
+        could both write the same value.
+
+        Never raises: ranking is not a correctness dependency, so a failed
+        marker write is logged and the write's own outcome stands. Residual:
+        a failed marker write, a process killed between its write and its
+        marker, or a writer running an image without this leaves other stores
+        on their index until the size or the token next changes.
+        """
+        try:
+            current = self.client.get_collection(name=collection_name).metadata
+            merged = dict(current or {})
+            merged[KB_WRITE_TOKEN_KEY] = uuid.uuid4().hex
+            collection.modify(metadata=merged)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                f"KB write token not moved for '{collection_name}': {e} — other "
+                f"stores keep their term index until the collection next changes"
+            )
 
     async def _term_stats_for(self, collection_name: str) -> Optional[CorpusTermStats]:
         """The term index for a collection, with one lookup in flight at a time.
@@ -438,8 +480,11 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         :meth:`_term_stats_for`. That runs it through ``run_blocking``, so on
         the ``HttpClient`` arm its ChromaDB reads and the tokenizing of the
         whole global tier happen in the chroma-http executor, off the event
-        loop (#2056), with one lookup per collection in flight. A write that
-        lands while it reads bumps the collection's generation (see
+        loop (#2056), with one lookup per collection in flight. The cached
+        index is keyed on (size, write token), the token read from the
+        collection object this lookup fetches, before the documents (see
+        :meth:`_mark_written`). A write through this store that lands while
+        it reads bumps the collection's generation (see
         :meth:`_invalidate_term_stats`), and the index it then built is
         returned to its callers but not stored. Deliberately OUTSIDE
         ``call_external``, beside the query embedding, for the same reason it
@@ -458,9 +503,13 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
         try:
             collection = self._get_or_create_collection(collection_name)
             size = int(collection.count())
+            token = (getattr(collection, "metadata", None) or {}).get(
+                KB_WRITE_TOKEN_KEY
+            )
+            signature = (size, token)
 
             cached = self._term_stats.get(collection_name)
-            if cached is not None and cached.signature == size:
+            if cached is not None and cached.signature == signature:
                 return cached
 
             if size > MAX_TERM_INDEX_CHUNKS:
@@ -471,15 +520,16 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 )
                 return None
 
-            # Signature is the WHOLE collection's size, while the documents read
-            # are the platform-stamped global ones: coarser than the thing it guards, so a change
-            # in another tier also invalidates it. It cannot see a SAME-SIZE
-            # change made by another replica or process: that index is served
-            # until the size next changes (#2064). A same-size replace through
-            # THIS store bumps the generation instead, which is what catches it.
+            # Signature is the WHOLE collection's (size, write token), while the
+            # documents read are the platform-stamped global ones: coarser than
+            # the thing it guards, so a change in another tier also invalidates
+            # it. Every write through any store moves the token, so a same-size
+            # write by another replica or process is seen too (#2064). A
+            # collection with no token yet (None) is guarded by its size alone
+            # until its first write.
             payload = collection.get(where=_GLOBAL_TIER, include=["documents"])
             documents = payload.get("documents") or []
-            stats = CorpusTermStats(documents=documents, signature=size)
+            stats = CorpusTermStats(documents=documents, signature=signature)
             if stats.n_chunks == 0:
                 # An EMPTY global tier is not a corpus with no rare words — it
                 # is the absence of statistics, and the difference is not
@@ -1541,8 +1591,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats).
+                # _invalidate_term_stats), here or in another store (_mark_written).
                 self._invalidate_term_stats(collection_name)
+                self._mark_written(collection, collection_name)
 
             self.logger.info(
                 f"Added {len(documents)} documents to KB collection "
@@ -1632,8 +1683,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats).
+                # _invalidate_term_stats), here or in another store (_mark_written).
                 self._invalidate_term_stats(collection_name)
+                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(chunk_ids)} chunks for parent "
                 f"{parent_document_id} from KB collection '{collection_name}'"
@@ -1701,6 +1753,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             finally:
                 # As the other deletes do (see _invalidate_term_stats).
                 self._invalidate_term_stats(collection_name)
+                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(matched)} chunk(s) of generation {generation} of "
                 f"{parent_document_id} from KB collection '{collection_name}'"
@@ -1904,6 +1957,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 finally:
                     # As the delete does (see _invalidate_term_stats).
                     self._invalidate_term_stats(collection_name)
+                    self._mark_written(collection, collection_name)
                 self.logger.info(
                     f"Restamped {len(matched)} observed chunk(s) in KB collection "
                     f"'{collection_name}' with enterprise_id={enterprise_id}"
@@ -1950,8 +2004,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             finally:
                 # After the write lands, in its own thread: whatever becomes of the
                 # caller's await, no build that read before it is cached (see
-                # _invalidate_term_stats).
+                # _invalidate_term_stats), here or in another store (_mark_written).
                 self._invalidate_term_stats(collection_name)
+                self._mark_written(collection, collection_name)
             self.logger.info(
                 f"Deleted {len(matched)} observed chunk(s) from KB collection "
                 f"'{collection_name}'"
