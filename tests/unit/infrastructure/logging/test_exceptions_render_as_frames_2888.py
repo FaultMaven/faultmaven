@@ -362,18 +362,27 @@ class TestTheJobsLine:
         self, job, monkeypatch, tmp_path
     ):
         """The handler is in place before ``.env`` is loaded, so python-dotenv's
-        warning is a JSON line, not ``lastResort``'s text (#2888)."""
+        warning is a JSON line, not ``lastResort``'s text; the format is read
+        after the load, so the file's ``LOG_FORMAT`` picks the lines that
+        follow (#2888)."""
         import dotenv
         import dotenv.main
 
-        (tmp_path / ".env").write_text("this line does not parse\n")
+        (tmp_path / ".env").write_text("this line does not parse\nLOG_FORMAT=console\n")
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("FAULTMAVEN_SKIP_DOTENV")
+        # Recorded as unset, so teardown removes the LOG_FORMAT the load sets.
+        monkeypatch.setenv("LOG_FORMAT", "json")
+        monkeypatch.delenv("LOG_FORMAT")
         # tests/conftest.py turns the loader off; this test needs the parser.
         monkeypatch.setattr(dotenv, "dotenv_values", dotenv.main.dotenv_values)
-        job.start(LOG_FORMAT="json")
-        (line,) = [json.loads(row) for row in job.lines()]
-        assert (line["logger"], line["level"]) == ("dotenv.main", "warning")
+        job.start()
+        logging.getLogger("faultmaven.jobs.t").info("after the load")
+        warning, after = job.lines()
+        assert json.loads(warning)["logger"] == "dotenv.main"
+        assert json.loads(warning)["level"] == "warning"
+        assert after.endswith(" [faultmaven.jobs.t]")
+        assert "after the load" in after
 
     def test_a_jobs_process_writes_each_line_once(self, job, monkeypatch):
         """The API's ``get_logger`` in a job adds no second root handler: its
