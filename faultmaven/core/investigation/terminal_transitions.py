@@ -47,6 +47,7 @@ from faultmaven.core.investigation.cause_assurance import (
     has_problem_definition,
     has_resolution_confirmation,
     has_root_cause_record,
+    held_check_reason,
     latest_fix_window,
     mitigation_holds,
     mitigation_observation,
@@ -99,7 +100,6 @@ from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     EvidenceNeed,
     InvestigationActionType,
-    NeedState,
     OfferAnswer,
     OfferBasis,
     OfferKind,
@@ -797,7 +797,8 @@ def declined_resolve_entry(
 def pending_check_params(case: Case, check: EvidenceNeed, *, proposed: bool) -> dict:
     """The params of a ``PENDING_CHECK`` code while the model's own check holds
     the resolution (#1906 D5.2), for the backstop's hold and step 2's refusal:
-    the check's state and whether a resolve decline stands
+    why the check holds (``held_check_reason``, the record's one
+    derivation) and whether a resolve decline stands
     (``declined_resolve_entry``), as decided here (#2636, A4), and the
     resolution reason it holds. Rendered by
     ``narration.notices.pending_check_feedback``."""
@@ -805,7 +806,7 @@ def pending_check_params(case: Case, check: EvidenceNeed, *, proposed: bool) -> 
         "reason": ResolutionReason.PENDING_CHECK,
         "need_id": check.need_id,
         "request_text": check.request_text,
-        "fulfilled": check.state == NeedState.FULFILLED,
+        "pending_check_reason": held_check_reason(check),
         "proposed": proposed,
         "declined_stands": declined_resolve_entry(case) is not None,
     }

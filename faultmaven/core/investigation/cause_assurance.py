@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     NodeState,
     NodeType,
     NoWindowKind,
+    PendingCheckReason,
     PoolEmptyReason,
     ProblemStatus,
     RecheckReason,
@@ -2453,6 +2454,21 @@ def pending_symptom_check(
             continue
         held.append((asked, need))
     return min(held, key=lambda pair: pair[0])[1] if held else None
+
+
+def held_check_reason(check: "EvidenceNeed") -> PendingCheckReason:
+    """Why the held check holds: FULFILLED_BEFORE_ASK when it is FULFILLED,
+    else UNANSWERED. The one derivation the record
+    (``resolution.pending_check_reason``) and the PENDING_CHECK decision
+    (``pending_check_params``) share (#2811).
+
+    Precondition: ``check`` is the held need ``pending_symptom_check``
+    returns. Only then does FULFILLED mean that the need cites only rows from
+    before its ask (ruling 3 of 2026-11-17); this function reads the state
+    alone and checks nothing else."""
+    if check.state == NeedState.FULFILLED:
+        return PendingCheckReason.FULFILLED_BEFORE_ASK
+    return PendingCheckReason.UNANSWERED
 
 
 def resolution_confirmation_rows(case: "Case") -> list:

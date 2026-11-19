@@ -1,0 +1,26 @@
+{
+  "fulfilled|proposed=False|declined_stands=False": [
+    "RESOLUTION HELD: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+  ],
+  "fulfilled|proposed=False|declined_stands=True": [
+    "RESOLUTION HELD: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ],
+  "fulfilled|proposed=True|declined_stands=False": [
+    "RESOLVED NOT PROPOSED: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Propose resolved once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+  ],
+  "fulfilled|proposed=True|declined_stands=True": [
+    "RESOLVED NOT PROPOSED: the check you asked for ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP) is marked FULFILLED, but the rows you cited predate the ask. Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ],
+  "unanswered|proposed=False|declined_stands=False": [
+    "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). The resolution is offered once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+  ],
+  "unanswered|proposed=False|declined_stands=True": [
+    "RESOLUTION HELD: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ],
+  "unanswered|proposed=True|declined_stands=False": [
+    "RESOLVED NOT PROPOSED: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Propose resolved once an answer showing the problem gone is on record: record the row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason."
+  ],
+  "unanswered|proposed=True|declined_stands=True": [
+    "RESOLVED NOT PROPOSED: the check you asked for is still pending ([eneed_00000000c0c0] Prometheus targets page showing job=billing UP). Record its answer as a row and mark the need FULFILLED citing it. If the user cannot run the check, SUPERSEDE the need with the reason. The user declined the resolution. Once an answer showing the problem gone is on record, a new problem-bound row showing it lapses that decline; if that answer is on any other row, the decline still binds, and the user re-opens the resolution with 'Mark it resolved'."
+  ]
+}

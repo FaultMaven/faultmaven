@@ -67,6 +67,7 @@ from faultmaven.core.investigation.cause_assurance import (
     cause_recheck_status,
     confirmation_stamp_rows,
     fix_windows,
+    held_check_reason,
     interception_relief,
     latest_disconfirmation_turn,
     mitigation_observation,
@@ -114,8 +115,6 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     InvestigationActionType,
     MitigationOutcome,
-    NeedState,
-    PendingCheckReason,
     ProblemOutcome,
     RecheckReason,
     ResolutionOutcome,
@@ -630,11 +629,7 @@ def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:
     # holds only on rows from before its ask. Read whatever readiness
     # answered, which returns before it on a false alarm.
     check = pending_symptom_check(case, subjects=subjects, windows=windows)
-    reason = None
-    if check is not None:
-        reason = PendingCheckReason.UNANSWERED
-        if check.state == NeedState.FULFILLED:
-            reason = PendingCheckReason.FULFILLED_BEFORE_ASK
+    reason = held_check_reason(check) if check is not None else None
     # The verifying rows no problem-leg row re-checks: read only once the
     # cause leg stands, as the fix-verification block prints them.
     named = {getattr(e, "rechecks_evidence_id", None) for e in problem_rows}

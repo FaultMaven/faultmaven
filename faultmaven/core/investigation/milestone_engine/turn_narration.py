@@ -29,6 +29,7 @@ from faultmaven.core.investigation.narration.codes import (
     DECIDED_PARAMS,
     DECISIONS_KEY,
     PROSE_KEYS,
+    REFINES,
     NoticeCode,
     OfferCode,
 )
@@ -118,21 +119,30 @@ def _agrees(field: str, decided: Any, recorded: Any) -> bool:
     return decided == recorded
 
 
+def _decided_as_recorded(params: dict, outcome: CaseOutcome, field: str) -> bool:
+    return _agrees(field, params[DECIDED_PARAMS[field]], _recorded(outcome, field))
+
+
 def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
     """The conflict labels (``narration.<code>``) of each field a decision was
     decided from (``DECIDED_FROM``) that the stored record does not state as
     decided: the resolution's reason, the closure verdict, the problem's
-    status, or whether a cause is identified. One decision logged under two
-    codes (step 2's pending check and its needs-info request) is one
-    conflict. Counted only after the turn commits (#2689). The decision's text
-    is rendered either way (A4); stage S3 switches the deciders to the
-    record."""
+    status, whether a cause is identified, or why a held check holds. One
+    decision logged under two codes (step 2's pending check and its
+    needs-info request) is one conflict, and a field that refines another
+    (``REFINES``) is compared only where its parent agrees, so a decision
+    counts it at most once. Counted only after the turn commits (#2689). The
+    decision's text is rendered either way (A4); stage S3 switches the
+    deciders to the record."""
     counted = set()
     found = []
     for entry in log:
         params = entry["params"]
         fields = DECIDED_FROM.get((entry["code"], params.get("composer")), ())
         for field in fields:
+            parent = REFINES.get(field)
+            if parent in fields and not _decided_as_recorded(params, outcome, parent):
+                continue
             decided = params[DECIDED_PARAMS[field]]
             recorded = _recorded(outcome, field)
             if _agrees(field, decided, recorded) or (field, decided) in counted:

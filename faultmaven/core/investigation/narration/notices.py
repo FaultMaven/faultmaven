@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from faultmaven.modules.case.contracts import (
     CaseOutcome,
     MitigationRefusalReason,
+    PendingCheckReason,
     ProblemStatus,
 )
 
@@ -82,11 +83,22 @@ PENDING_CHECK_DECLINE_CLAUSE = (
 )
 
 
+#: The held check's status, by why it holds (``held_check_reason``): one
+#: entry per ``PendingCheckReason`` member, ``{named}`` the need.
+PENDING_CHECK_STATUS: dict[PendingCheckReason, str] = {
+    PendingCheckReason.UNANSWERED: "the check you asked for is still pending ({named})",
+    PendingCheckReason.FULFILLED_BEFORE_ASK: (
+        "the check you asked for ({named}) is marked FULFILLED, but the "
+        "rows you cited predate the ask"
+    ),
+}
+
+
 def pending_check_feedback(
     need_id: str,
     request_text: str,
     *,
-    fulfilled: bool,
+    pending_check_reason: PendingCheckReason,
     proposed: bool,
     declined_stands: bool,
 ) -> str:
@@ -94,20 +106,14 @@ def pending_check_feedback(
     (#1906 D5.2), naming both ways out: the answer on record, or the need
     superseded. ``proposed``: its ``resolved`` was refused (ruling 3); else
     the backstop held the offer. A held FULFILLED need cites only rows from
-    turns before the ask (``pending_symptom_check``), and the feedback says
-    so, with a decline or without. While a resolve decline stands
-    (``declined_stands``), the answer does not by itself bring the resolution
-    back, so the feedback promises no offer or proposal and says what does
-    (``PENDING_CHECK_DECLINE_CLAUSE``). What it promises is scoped to an
-    answer showing the problem gone."""
+    turns before the ask (``PendingCheckReason.FULFILLED_BEFORE_ASK``), and
+    the feedback says so, with a decline or without. While a resolve decline
+    stands (``declined_stands``), the answer does not by itself bring the
+    resolution back, so the feedback promises no offer or proposal and says
+    what does (``PENDING_CHECK_DECLINE_CLAUSE``). What it promises is scoped
+    to an answer showing the problem gone."""
     named = f"[{need_id}] {request_text}"
-    if fulfilled:
-        status = (
-            f"the check you asked for ({named}) is marked FULFILLED, but the "
-            "rows you cited predate the ask"
-        )
-    else:
-        status = f"the check you asked for is still pending ({named})"
+    status = PENDING_CHECK_STATUS[pending_check_reason].format(named=named)
     lead = "RESOLVED NOT PROPOSED" if proposed else "RESOLUTION HELD"
     exits = (
         "mark the need FULFILLED citing it. If the user cannot run the check, "
@@ -520,7 +526,7 @@ def _pending_check(params: dict, outcome, log) -> list:
         pending_check_feedback(
             params["need_id"],
             params["request_text"],
-            fulfilled=params["fulfilled"],
+            pending_check_reason=params["pending_check_reason"],
             proposed=params["proposed"],
             declined_stands=params["declined_stands"],
         )
