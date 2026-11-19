@@ -36,7 +36,7 @@ An append-only list of short, structured entries that capture the key decisions,
 1. **Distilled, not verbose.** Each entry is max 200 characters. The journal is a compressed signal, not a conversation transcript.
 2. **Append-only.** Entries are never modified or deleted. The chronological record is the ground truth.
 3. **Agent-generated.** The LLM produces journal entries as part of its structured output, like it produces evidence and hypotheses.
-4. **Always in context.** The context builder includes the full journal in every prompt. At 200 chars per entry and ~1 entry per 2 turns, a 50-turn investigation produces ~25 entries = ~5 KB. Well within budget.
+4. **In every investigating prompt, under a cap.** The journal is a section of every investigating prompt, capped at `PROMPT_JOURNAL_MAX_TOKENS` (~1.5K tokens) and cut under budget pressure (see §Context Builder Integration). At 200 chars per entry and ~1 entry per 2 turns, a 50-turn investigation produces ~25 entries = ~5 KB, so the cap rarely binds.
 5. **Selective, not exhaustive.** Not every turn produces a journal entry. Only turns with significant findings, decisions, or user context.
 
 ### Entry Types
@@ -59,7 +59,8 @@ class JournalEntry(BaseModel):
     Captures a distilled insight, decision, or context that the agent
     needs to remember across the entire investigation. Entries are
     append-only. The prompt renders the journal under a token budget; a cut
-    keeps whole entries, blockers first (``journal_keep_order``).
+    keeps whole entries, blockers first (``journal_keep_order``), or the
+    newest end as a fragment when no entry fits.
     """
     
     turn: int = Field(
@@ -97,8 +98,8 @@ class Case(BaseModel):
     investigation_journal: List[JournalEntry] = Field(
         default_factory=list,
         description="Structured log of key findings, decisions, and context. "
-        "Append-only. Rendered into the investigation prompt under a token budget, "
-        "which keeps blockers first when it cuts."
+        "Append-only. Rendered into the investigation prompt under a token budget; "
+        "a cut keeps whole entries, blockers first, when any fits."
     )
 ```
 
@@ -163,18 +164,7 @@ an entry — only record what future turns would need to know.
 
 ### Context Builder Integration
 
-In `build_investigation_context()`, the journal is added as a new section between hypotheses and working conclusion — high in the priority order because it's compact and critical:
-
-```python
-# 5b. Investigation Journal (durable long-term memory)
-journal_str = ""
-if case.investigation_journal:
-    journal_str = "<investigation_journal>\n"
-    for entry in case.investigation_journal:
-        tag = entry.entry_type.upper()
-        journal_str += f"[T{entry.turn}] {tag}: {entry.content}\n"
-    journal_str += "</investigation_journal>"
-```
+In `build_investigation_context()` (`context_builder/assembly.py`), the journal is the third variable section in priority order, after evidence and conversation history and ahead of the working conclusion, KB results and hypotheses. It is placed high because it is compact and critical. Its allotment is capped at `PROMPT_JOURNAL_MAX_TOKENS`. A journal that fits renders whole, one `[T<turn>] <TYPE>: <content>` line per entry in turn order. One that does not is cut by `_cut_journal`: whole entries in `journal_keep_order` (blockers, then decisions, findings and ruled-out entries, then the rest, each newest first), up to the first that does not fit, rendered in turn order after a `[... N entries omitted ...]` line. When no entry fits, the newest end is kept as a fragment. Design: `prompt-token-budget-allocation.md` §5.2.
 
 Budget impact: ~5 KB for a 50-turn investigation (25 entries × 200 chars). This is less than a single Tier A evidence structural index (4 KB cap).
 

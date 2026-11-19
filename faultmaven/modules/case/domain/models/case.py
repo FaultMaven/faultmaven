@@ -470,8 +470,8 @@ class Case(BaseModel):
     investigation_journal: List[JournalEntry] = Field(
         default_factory=list,
         description="Structured log of key findings, decisions, and context. "
-        "Append-only. Rendered into the investigation prompt under a token budget, "
-        "which keeps blockers first when it cuts.",
+        "Append-only. Rendered into the investigation prompt under a token budget; "
+        "a cut keeps whole entries, blockers first, when any fits.",
     )
 
     # ============================================================

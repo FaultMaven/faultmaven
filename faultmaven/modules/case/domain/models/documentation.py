@@ -232,7 +232,8 @@ class JournalEntry(BaseModel):
     Captures a distilled insight, decision, or context that the agent
     needs to remember across the entire investigation. Entries are
     append-only. The prompt renders the journal under a token budget; a cut
-    keeps whole entries, blockers first (``journal_keep_order``).
+    keeps whole entries, blockers first (``journal_keep_order``), or the
+    newest end as a fragment when no entry fits.
     """
 
     turn: int = Field(description="Turn number when this entry was created")
