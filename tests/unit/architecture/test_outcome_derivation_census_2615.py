@@ -199,6 +199,9 @@ DERIVATIONS: dict[str, str] = {
     "cause_work_accepted": _PROBLEM,
     "cause_work_staged": _PROBLEM,
     "false_alarm_close_declined_at": _PROBLEM,
+    # #2811 S2b-1c-ii: why the held check holds, the record's one derivation,
+    # which the PENDING_CHECK decision's params share.
+    "pending_check_reason": _CA,
 }
 
 #: The watched names that are methods, by the class that defines each.
@@ -318,10 +321,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "declined_resolve_entry": 1,
     },
     # #2811 S2b-1b-i: the resolve decline's readers among the deciders, which
-    # stage S3 switches; ``pending_check_params`` derives the held reason a
-    # second time, for the notices (stage S2b-1c-ii).
+    # stage S3 switches. S2b-1c-ii: ``pending_check_params`` reads the held
+    # reason through the record's one derivation (``pending_check_reason``).
     (_TT, "close_pivots_to_resolve"): {"declined_resolve_entry": 1},
-    (_TT, "pending_check_params"): {"declined_resolve_entry": 1},
+    (_TT, "pending_check_params"): {
+        "declined_resolve_entry": 1,
+        "pending_check_reason": 1,
+    },
     (_TT, "resolve_reopen_admitted"): {"declined_resolve_entry": 1},
     (_TT, "derive_disposition_eligibility"): {
         "assess_resolution_readiness": 1,
@@ -485,6 +491,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "confirmation_stamp_rows": 1,
         "declined_resolve_entry": 1,
         "off_cause_attempt": 1,
+        "pending_check_reason": 1,
         "pending_symptom_check": 1,
         "resolution_record_lines": 1,
         "symptom_elimination_rows": 1,
@@ -521,6 +528,14 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
         "fix_windows": 1
+    },
+    # Not the derivation: two loads that share its name (S2b-1c-ii). The
+    # block's held mark reads the record's field
+    # (``resolution.pending_check_reason``), and the PENDING_CHECK notice
+    # reads its parameter, the decision's param.
+    (_INV + "narration/fix_verification.py", "_held_mark"): {"pending_check_reason": 1},
+    (_INV + "narration/notices.py", "pending_check_feedback"): {
+        "pending_check_reason": 1
     },
     # The API, the knowledge harvest and the report.
     (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},

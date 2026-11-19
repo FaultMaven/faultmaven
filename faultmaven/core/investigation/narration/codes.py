@@ -106,7 +106,10 @@ PROSE_KEYS = {
 #: decision's params under ``DECIDED_PARAMS[field]``. After a stored record,
 #: ``turn_narration`` counts each field the record does not state as decided.
 DECIDED_FROM: dict[tuple[str, Optional[str]], tuple[str, ...]] = {
-    (NoticeCode.PENDING_CHECK, None): ("resolution.reason",),
+    (NoticeCode.PENDING_CHECK, None): (
+        "resolution.reason",
+        "resolution.pending_check_reason",
+    ),
     (OfferCode.RCA_INFEASIBLE_CLOSE, None): ("closure.eligibility",),
     (OfferCode.DEFERRED_RESOLVE, None): (
         "closure.eligibility",
@@ -141,7 +144,13 @@ DECIDED_PARAMS = {
     "closure.eligibility": "verdict",
     "cause.identification_leg": "identification_leg",
     "problem.status": "problem_status",
+    "resolution.pending_check_reason": "pending_check_reason",
 }
+
+#: A field that refines another: meaningful only while its parent is as
+#: decided, so compared only when the decision's parent agrees with the
+#: record. One disagreement then counts once per decision (#2811).
+REFINES = {"resolution.pending_check_reason": "resolution.reason"}
 
 #: Codes that write no notice: other renderers read them.
 CONTEXT_ONLY = frozenset(
