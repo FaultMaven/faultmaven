@@ -16,12 +16,13 @@ Exit codes
 | 0 | dry run counted, or the delete left nothing before the cutoff and no
       error text in the project |
 | 1 | refused: no trace backend, content capture requested, no such project,
-      ``--confirm-project`` missing or not the project; or a failure before any
-      delete went out, or a 4xx answer, which a re-run would meet again |
+      ``--confirm-project`` missing or not the project; or a failure when
+      nothing was deleted, or a 4xx other than 408/429: read the error before
+      running it again |
 | 2 | argparse usage error, a ``--before`` without a UTC offset among them |
 | 3 | re-run needed: traces or spans before the cutoff remain after the wait, or
-      the backend failed, other than with a 4xx, after a delete went out. A
-      re-run is safe |
+      the backend failed after a delete may have gone out, other than with a
+      4xx besides 408/429. A re-run is safe |
 | 4 | done, but traces or spans with error text remain in the project: the
       cutoff is earlier than the last process that wrote content |
 """

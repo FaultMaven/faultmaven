@@ -122,15 +122,16 @@ def test_a_failure_after_a_delete_went_out_exits_3_unless_4xx(run, error, code):
     assert run(DELETE, store)[0] == code
 
 
-def test_a_failure_before_any_delete_exits_1(run):
+@pytest.mark.parametrize("call", ["get_traces_by_project", "delete_traces"])
+def test_a_failure_exits_1_before_any_delete_and_3_once_one_may_be_out(run, call):
     store = _Backend(traces={"t1": OLD})
 
     def refused(**_):
         raise RuntimeError("down")
 
-    store.rest_client.traces.delete_traces = refused
+    setattr(store.rest_client.traces, call, refused)
 
-    assert run(DELETE, store)[0] == 1
+    assert run(DELETE, store)[0] == (3 if call == "delete_traces" else 1)
 
 
 def test_a_project_the_backend_does_not_have_exits_1_with_no_counts(run):

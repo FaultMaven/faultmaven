@@ -86,10 +86,11 @@ behind by a changed URL, workspace or project (#2581).
    filter asks for a non-empty input. Only step 1 rules those out.
 4. Record the counts in the deployment's change record.
 
-Exit 1 is a refusal, a project the backend does not have, or a failure a
-re-run would meet again (before any delete, or a 4xx); 3, run it again: it
-is idempotent, and the backend deletes spans after it answers; 4, error text
-remains, so the cutoff is too early. Deleted rows are no longer served by the backend, but
+Exit 1 is a refusal, a project the backend does not have, or a failure when
+nothing was deleted or with a 4xx other than 408 or 429: read the error before
+running it again. Exit 3: run it again; it is idempotent, and the backend
+deletes spans after it answers. Exit 4: error text remains, so the cutoff is
+too early. Deleted rows are no longer served by the backend, but
 ClickHouse keeps them in its parts until a merge, and in backups: deleting the
 Opik project is the complete alternative.
 

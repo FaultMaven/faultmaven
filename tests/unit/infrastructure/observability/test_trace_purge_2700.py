@@ -297,8 +297,14 @@ class TestTheDelete:
 
     @pytest.mark.parametrize(
         "error, rerun",
-        [(_Status(503), True), (RuntimeError(), True), (_Status(403), False)],
-        ids=["5xx", "no-status", "4xx"],
+        [
+            (_Status(503), True),
+            (RuntimeError(), True),
+            (_Status(429), True),
+            (_Status(408), True),
+            (_Status(403), False),
+        ],
+        ids=["5xx", "no-status", "rate-limited", "request-timeout", "4xx"],
     )
     def test_a_failure_after_a_delete_went_out_asks_for_a_rerun_unless_4xx(
         self, error, rerun
@@ -320,12 +326,36 @@ class TestTheDelete:
 
     def test_a_failure_before_any_delete_asks_for_no_rerun(self):
         backend = _Backend(traces=_old_traces(1))
-        backend.rest_client.traces.delete_traces = lambda **_: _raise(_Status(503))
+        backend.rest_client.traces.get_traces_by_project = lambda **_: _raise(
+            _Status(503)
+        )
 
         with pytest.raises(ServiceException) as raised:
             _purge(backend)
 
         assert raised.value.details == {"rerun": False}
+
+    def test_a_first_delete_that_times_out_may_have_gone_out(self):
+        backend = _Backend(traces=_old_traces(1))
+        backend.rest_client.traces.delete_traces = lambda **_: _raise(TimeoutError())
+
+        with pytest.raises(ServiceException) as raised:
+            _purge(backend)
+
+        assert raised.value.details == {"rerun": True}
+
+    def test_a_trace_id_first_sent_while_waiting_is_counted(self):
+        """An orphan span hidden behind spans the backend has not deleted yet
+        is first sent by the wait's re-send."""
+        backend = _Backend(
+            traces=_old_traces(1), spans=[("t00000", OLD)] * 2000 + [("orphan", OLD)]
+        )
+
+        result = _purge(backend)
+
+        assert result.after == TraceCount(0, 0)
+        assert result.sent == 2
+        assert {i for chunk in backend.deleted for i in chunk} == {"t00000", "orphan"}
 
 
 def _raise(error):

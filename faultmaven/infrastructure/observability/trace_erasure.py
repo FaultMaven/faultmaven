@@ -263,17 +263,19 @@ class _Project:
         filter_string: str,
         read: Callable[[Callable[..., Any], str], List[str]],
         sent: Optional[set] = None,
+        resend: bool = False,
     ) -> Optional[int]:
         """Delete, in chunks, the traces ``read`` finds by the traces' ids and
         the spans' trace ids: a dropped trace batch leaves a content span on an
         untagged trace, which the spans find. Every id comes from a read of this
-        project. Skips the ids in ``sent`` and adds each chunk the backend
-        took. The ids sent, or None for no project."""
+        project. Adds each chunk to ``sent`` before sending it, and skips the
+        ids already there unless ``resend``. The ids sent, or None for no
+        project."""
         found = self.read_each(filter_string, read)
         if found is None:
             return None
         ids = list(dict.fromkeys(i for rows in found for i in rows))
-        if sent is not None:
+        if sent is not None and not resend:
             ids = [i for i in ids if i not in sent]
         options = self.options
         if self.project_id is not None:
@@ -282,9 +284,9 @@ class _Project:
             options = {**options, "additional_body_parameters": body}
         for start in range(0, len(ids), TRACE_DELETE_CHUNK_SIZE):
             chunk = ids[start : start + TRACE_DELETE_CHUNK_SIZE]
-            self.rest.traces.delete_traces(ids=chunk, request_options=options)
             if sent is not None:
                 sent.update(chunk)
+            self.rest.traces.delete_traces(ids=chunk, request_options=options)
         return len(ids)
 
 
@@ -335,7 +337,8 @@ def purge_traces_before(
     again for the trace ids of spans still there. Nothing is sent from this
     process's queue: a command records no trace. Running it again deletes
     nothing it already deleted. A failure raises with ``details["rerun"]``:
-    True once a delete went out and the backend's answer was not a 4xx.
+    True once a delete may have gone out, unless the answer was a 4xx other
+    than 408 or 429.
     """
     if cutoff.utcoffset() is None:
         raise ValueError("the cutoff needs a UTC offset: without one it is no instant")
@@ -378,13 +381,14 @@ def purge_traces_before(
                 break
             if poll:
                 # What one wait did not clear: send their trace ids again.
-                target.read_and_delete(before_cutoff, one_page)
+                target.read_and_delete(before_cutoff, one_page, sent, resend=True)
             sleep(PURGE_SETTLE_SECONDS)
             after = count(before_cutoff)
         error_text = count("error_info is_not_empty")
     except Exception as exc:
         status = getattr(exc, "status_code", None)
-        rerun = bool(sent) and not (isinstance(status, int) and 400 <= status < 500)
+        final = isinstance(status, int) and 400 <= status < 500
+        rerun = bool(sent) and not (final and status not in (408, 429))
         # An SDK error is named by class only: its text carries the backend's body.
         refusal = exc if isinstance(exc, ServiceException) else None
         refusal = refusal or _refused(owner, exception_class_name(exc))
