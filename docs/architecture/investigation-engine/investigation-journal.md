@@ -34,10 +34,11 @@ An append-only list of short, structured entries that capture the key decisions,
 ### Design Principles
 
 1. **Distilled, not verbose.** Each entry is max 200 characters. The journal is a compressed signal, not a conversation transcript.
-2. **Append-only.** Entries are never modified or deleted. The chronological record is the ground truth.
+2. **Append-only.** Entries are never modified or deleted once appended. The chronological record is the ground truth.
 3. **Agent-generated.** The LLM produces journal entries as part of its structured output, like it produces evidence and hypotheses.
 4. **In every investigating prompt, under a budget.** The main prompt renders the journal as its own section, capped at `PROMPT_JOURNAL_MAX_TOKENS` and cut under budget pressure; the template-fallback prompt carries a shorter digest (`_fallback_journal_digest`). How each is cut: `prompt-token-budget-allocation.md` §5.2.
 5. **Selective, not exhaustive.** Not every turn produces a journal entry. Only turns with significant findings, decisions, or user context.
+6. **An entry naming a hypothesis is cause work.** The journal outlives the turn (it is stored in the case row's metadata blob), so it never records cause work that did not stand. While a revised statement awaits re-confirmation, an entry with a `hypothesis_id` is staged with the turn's other cause work: replayed, dated at its own turn, when the user confirms, and dropped with it on a decline. An entry naming a hypothesis the case does not hold once the turn's updates are applied (one the gate refused) is dropped and logged, never appended. Entries naming no hypothesis (a blocker, a decision, user context) apply on their own turn as before (`response_application.py`, step 6).
 
 ### Entry Types
 

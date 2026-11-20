@@ -450,6 +450,38 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         action.target_ids = [t for t in action.target_ids if t in case.causal_nodes]
 
 
+def _hypothesis_journal_entries(updates: Any) -> list[Any]:
+    """The journal entries that name a hypothesis: cause work (step 2d)."""
+    return [
+        je for je in getattr(updates, "journal_entries", None) or [] if je.hypothesis_id
+    ]
+
+
+def _drop_journal_entries_on_absent_hypotheses(case: Case, start: int) -> None:
+    """Drop the entries this apply added that name a hypothesis the case does
+    not hold (one the gate refused): the journal outlives the turn, and an
+    entry must not record cause work that never stood."""
+    added = case.investigation_journal[start:]
+    kept = []
+    for je in added:
+        if not je.hypothesis_id or je.hypothesis_id in case.hypotheses:
+            kept.append(je)
+        else:
+            logger.info(
+                "Case %s: journal entry dropped, hypothesis %s not on the case",
+                case.case_id,
+                je.hypothesis_id,
+            )
+    case.investigation_journal[start:] = kept
+    if added:
+        logger.info(
+            "Case %s: added %d journal entries (total: %d)",
+            case.case_id,
+            len(kept),
+            len(case.investigation_journal),
+        )
+
+
 #: The state-update fields that are cause work. While a revised statement
 #: awaits the user's re-confirmation they are staged on it rather than applied
 #: (``problem_status.cause_work_staged``), and replayed through this same apply
@@ -1115,6 +1147,11 @@ class ResponseApplier:
         ]
         if refutations:
             subset["hypotheses_to_update"] = refutations
+        # A journal entry naming a hypothesis is part of that cause work: held
+        # with it, replayed on confirmation, dropped with it on a decline.
+        named = _hypothesis_journal_entries(updates)
+        if named:
+            subset["journal_entries"] = [je.model_dump(mode="json") for je in named]
         # The same fix re-sent on a later hold turn is staged once.
         if "solutions_to_add" in subset:
             staged_before = {
@@ -1940,20 +1977,20 @@ class ResponseApplier:
                 ),
             )
 
-        # 6. Journal Entries (append-only investigation memory)
-        if hasattr(updates, "journal_entries") and updates.journal_entries:
-            for je_item in updates.journal_entries:
-                entry = JournalEntry(
-                    turn=case.current_turn,
+        # 6. Journal Entries (append-only investigation memory). One naming a
+        # hypothesis was held at step 2d while the cause work is staged.
+        journal_at_start = len(case.investigation_journal)
+        for je_item in getattr(updates, "journal_entries", None) or []:
+            if staging and je_item.hypothesis_id:
+                continue
+            case.investigation_journal.append(
+                JournalEntry(
+                    turn=emission_turn(case, metadata),
                     entry_type=je_item.entry_type,
                     content=je_item.content[:200],
                     evidence_id=je_item.evidence_id,
                     hypothesis_id=je_item.hypothesis_id,
                 )
-                case.investigation_journal.append(entry)
-            logger.info(
-                f"Case {case.case_id}: added {len(updates.journal_entries)} journal entries "
-                f"(total: {len(case.investigation_journal)})"
             )
 
         # Populate the causal graph from the LLM's emitted chain (lazy backward
@@ -1969,6 +2006,7 @@ class ResponseApplier:
         # the LLM as a one-turn nudge (T2a) to re-root it or declare it
         # separate, rather than guessing.
         _nudge_ambiguous_orphan_chains(case, metadata)
+        _drop_journal_entries_on_absent_hypotheses(case, journal_at_start)
         # One note for everything refused this turn (cause_work.py).
         report_refused_cause_work(metadata)
 

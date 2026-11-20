@@ -3,30 +3,37 @@ repositories run, SQLite in ``test_case_field_roundtrip.py`` and PostgreSQL in
 ``tests/integration/test_postgresql_repository_roundtrip.py``.
 
 Each repository lists the fields it persists by hand, in its writer
-(``_case_record_params``) and its reader (``_row_to_case``). That enumeration
-lost ``last_suggestions`` (#914), PostgreSQL's ``message_count`` and the
-investigation journal (#2945), each silently: the field kept its value for the
-rest of the request and came back empty on the next one. So the guard walks
-``Case.model_fields``, not a list of its own: a new field fails it until it is
-persisted or exempted here.
+(``_case_record_params``, and the UPDATE's own SET list) and its reader
+(``_row_to_case``). That enumeration lost ``last_suggestions`` (#914),
+PostgreSQL's ``message_count`` and the investigation journal (#2945), each
+silently: the field kept its value for the rest of the request and came back
+empty on the next one. So the guard walks ``Case.model_fields``, not a list of
+its own: a new field fails it until it is persisted or exempted here.
 
-Scope: every top-level ``Case`` field, compared whole after ``repo.get()`` on a
-fresh session, so every member of the cases row's JSON columns (the metadata
-blob's entries, and ``inquiry`` / ``progress`` / ... compared as whole values)
-is compared too. A child-table collection (hypotheses, solutions, uploaded
-files, the action history) is compared whole for the one row a fixture gives
-it, but the guard does not set every column of a child row: the child tables
-have their own hand-enumerated writers, pinned by their own tests.
+The path is production's: a case is created with only its identity (the
+INSERT), loaded, given the fixture's values and saved again (the versioned
+UPDATE every turn takes), then loaded on a fresh session with ``repo.get()``.
+Each field is compared with a deep copy of the fixture taken before the save,
+so a save that clears a field in memory cannot hide its loss.
 
-Exempt fields (``EXEMPT``) are not skipped unless their class says so: a
-save-stamped one must load as what the save stamped, a normalized one as its
-normalized value, and one loaded outside ``_row_to_case`` is its own table's.
+Scope: every top-level ``Case`` field, compared whole, so every member of the
+cases row's JSON columns (the metadata blob's entries, and ``inquiry`` /
+``progress`` / ... compared as whole values) is compared too. A child-table
+collection (files, evidence, needs, the causal graph, hypotheses, solutions,
+messages, the action history) is compared whole for the one or two rows a
+fixture gives it, but the guard does not set every column of a child row: the
+child tables have their own hand-enumerated writers, pinned by their own tests.
+
+Exempt fields (``EXEMPT``) are not skipped: a save-stamped one must load as
+what the save stamped, a normalized one as its normalized value.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from pydantic import TypeAdapter
 
@@ -35,12 +42,18 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
     CaseState,
+    CausalEdge,
+    CausalNode,
     ChatDataOffer,
     ClosureReason,
     ConfidenceLevel,
     DocumentationData,
     EscalationState,
     EscalationType,
+    Evidence,
+    EvidenceCategory,
+    EvidenceNeed,
+    EvidenceSourceType,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
@@ -49,6 +62,8 @@ from faultmaven.modules.case.contracts import (
     InvestigationProgress,
     InvestigationStrategy,
     JournalEntry,
+    NeedPurpose,
+    NodeType,
     OfferRecord,
     ProblemStatus,
     ProblemVerification,
@@ -63,62 +78,32 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
 )
 
-#: The fields a save itself writes. Each is asserted against what the save
-#: stamped, never skipped.
+#: The fields a save itself writes (``CaseRepository.SAVE_STAMPED_FIELDS``).
+#: Each must load as the value the saved case was stamped with.
 SAVE_STAMPED = "save-stamped"
-#: Stored as a normalized value. Each is asserted against that value.
-NORMALIZED = "insert-only or normalized"
-#: A child table read by its own loader, not by ``_row_to_case``'s row: out of
-#: the guard's scope (see the module docstring).
-LOADED_OUTSIDE = "loaded outside _row_to_case"
+#: Stored as a normalized value. Each must load as that value.
+NORMALIZED = "normalized"
 
-#: Field -> (class, reason). The reason names the code that writes or loads it.
+#: Field -> (class, reason). The reason names the code that writes it.
 EXEMPT: Dict[str, Tuple[str, str]] = {
-    "version": (SAVE_STAMPED, "bumped by the versioned UPDATE (SAVE_STAMPED_FIELDS)"),
-    "updated_at": (SAVE_STAMPED, "set to now by save() (SAVE_STAMPED_FIELDS)"),
-    "disposition_eligibility": (
-        SAVE_STAMPED,
-        "derived by CaseRepository.prepare_for_save (SAVE_STAMPED_FIELDS)",
-    ),
-    "offer_record": (
-        SAVE_STAMPED,
-        "lapsed by CaseRepository.prepare_for_save (SAVE_STAMPED_FIELDS)",
-    ),
-    "last_activity_at": (
-        SAVE_STAMPED,
-        "the save's own now(), bound by _upsert_case_record (saving.py)",
-    ),
-    "driver_id": (
-        NORMALIZED,
-        "written by the INSERT only; its one later writer is case_driver_sql",
-    ),
+    "version": (SAVE_STAMPED, "bumped by the versioned UPDATE"),
+    "updated_at": (SAVE_STAMPED, "set to now by save()"),
+    "last_activity_at": (SAVE_STAMPED, "set to now by _upsert_case_record"),
+    "disposition_eligibility": (SAVE_STAMPED, "derived by prepare_for_save"),
+    "offer_record": (SAVE_STAMPED, "lapsed by prepare_for_save"),
     "current_turn": (
         NORMALIZED,
         "stored as Case.effective_current_turn (_case_record_params)",
     ),
-    "message_count": (
-        NORMALIZED,
-        "PostgreSQL's metadata filter drops 0; the reader defaults it to 0",
-    ),
-    "evidence": (LOADED_OUTSIDE, "_load_evidence_for_case"),
-    "evidence_needs": (LOADED_OUTSIDE, "_load_evidence_needs_for_case"),
-    "causal_nodes": (LOADED_OUTSIDE, "_load_causal_graph_for_case"),
-    "causal_edges": (LOADED_OUTSIDE, "_load_causal_graph_for_case"),
-    "messages": (
-        LOADED_OUTSIDE,
-        "the case_messages rows (_upsert_messages, _load_messages)",
-    ),
 }
 
-#: What each exempt field must load as, from the case after its save returned.
-_EXPECTED: Dict[str, Callable[[Case, Case], Any]] = {
-    "version": lambda saved, fixture: saved.version,
-    "updated_at": lambda saved, fixture: saved.updated_at,
-    "disposition_eligibility": lambda saved, fixture: saved.disposition_eligibility,
-    "offer_record": lambda saved, fixture: saved.offer_record,
-    "driver_id": lambda saved, fixture: fixture.driver_id,
-    "current_turn": lambda saved, fixture: saved.effective_current_turn,
-    "message_count": lambda saved, fixture: saved.message_count,
+#: Child rows whose ``updated_at`` column the save stamps with now (the needs
+#: and causal-node upserts): compared without that one column.
+_ROW_STAMPED = ("evidence_needs", "causal_nodes")
+
+#: What a normalized field must load as, from the fixture before its save.
+_NORMALIZED: Dict[str, Callable[[Case], Any]] = {
+    "current_turn": lambda before: before.effective_current_turn,
 }
 
 _ANY: TypeAdapter[Any] = TypeAdapter(Any)
@@ -128,7 +113,14 @@ _T0 = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
 def _investigating(
     enterprise_id: str, organization_id: str, user_id: str, driver_id: str
 ) -> Case:
-    """Every field the cases row carries, set to a non-default value."""
+    """Every field set to a non-default value, a row in each child table."""
+    case_id, file_id = f"case_{uuid4().hex[:12]}", f"file_{uuid4().hex[:12]}"
+    problem = CausalNode(
+        statement="Checkout times out", node_type=NodeType.PROBLEM, generated_at_turn=0
+    )
+    root = CausalNode(
+        statement="pool too small", node_type=NodeType.ROOT, generated_at_turn=2
+    )
     turns = [
         TurnProgress(
             turn_number=n,
@@ -141,6 +133,7 @@ def _investigating(
         for n in (1, 2, 3)
     ]
     return Case(
+        case_id=case_id,
         user_id=user_id,
         driver_id=driver_id,
         enterprise_id=enterprise_id,
@@ -185,12 +178,52 @@ def _investigating(
         ),
         uploaded_files=[
             UploadedFile(
+                file_id=file_id,
                 filename="app.log",
                 size_bytes=2048,
                 uploaded_at_turn=1,
                 uploaded_at=_T0,
                 uploaded_by=user_id,
             )
+        ],
+        evidence=[
+            Evidence(
+                category=EvidenceCategory.SYMPTOM_EVIDENCE,
+                primary_purpose="symptom_verified",
+                summary="p99 above 5s",
+                source_type=EvidenceSourceType.LOGS,
+                source_file_id=file_id,
+                collected_by=user_id,
+                collected_at=_T0,
+                collected_at_turn=1,
+            )
+        ],
+        evidence_needs=[
+            EvidenceNeed(
+                case_id=case_id,
+                purpose=NeedPurpose.CAUSAL_VERIFICATION,
+                request_text="the pool settings",
+                rationale="is the pool capped",
+                created_at_turn=2,
+                created_at=_T0,
+                updated_at=_T0,
+            )
+        ],
+        causal_nodes={problem.node_id: problem, root.node_id: root},
+        causal_edges=[
+            CausalEdge(cause_node_id=root.node_id, effect_node_id=problem.node_id)
+        ],
+        messages=[
+            {
+                "message_id": f"msg_{uuid4().hex[:12]}",
+                "turn_number": 1,
+                "role": "user",
+                "content": "checkout is slow",
+                "created_at": _T0.isoformat(),
+                "metadata": {},
+                "token_count": None,
+                "author_id": user_id,
+            }
         ],
         hypotheses={
             h.hypothesis_id: h
@@ -272,25 +305,28 @@ def roundtrip_fixtures(
         Case(
             state=CaseState.RESOLVED, resolved_at=_T0 + timedelta(hours=1), **terminal
         ),
+        # No turn history, so ``current_turn`` is read from its own column: a
+        # load that lost it cannot be re-derived from the history.
         Case(
             state=CaseState.CLOSED,
             closure_reason=ClosureReason.SOLUTION_DEFERRED,
+            current_turn=4,
             **terminal,
         ),
     ]
 
 
 def assert_fixtures_cover_every_field(fixtures: List[Case]) -> None:
-    """Every field the guard compares whole, and every normalized one, holds a
-    non-default value in some fixture, so a new field fails here until a fixture
-    sets it or it is exempted. A save-stamped field is set by the save itself."""
+    """Every field but a save-stamped one holds a non-default value in some
+    fixture, so a new field fails here until a fixture sets it or it is
+    exempted. A save-stamped field is set by the save itself."""
     stale = set(EXEMPT) - set(Case.model_fields)
     assert not stale, f"EXEMPT names fields Case no longer has: {stale}"
     unset = [
         name
         for name, info in Case.model_fields.items()
         if not info.is_required()
-        and EXEMPT.get(name, (None,))[0] not in (SAVE_STAMPED, LOADED_OUTSIDE)
+        and EXEMPT.get(name, (None,))[0] != SAVE_STAMPED
         and all(
             _jsonable(getattr(f, name))
             == _jsonable(info.get_default(call_default_factory=True))
@@ -300,39 +336,64 @@ def assert_fixtures_cover_every_field(fixtures: List[Case]) -> None:
     assert not unset, f"no round-trip fixture sets {unset}: set it or exempt it"
 
 
+def _created(fixture: Case) -> Case:
+    """The case as ``create_case`` inserts it: its identity, nothing else."""
+    identity = ("case_id", "user_id", "driver_id", "enterprise_id")
+    return Case(
+        **{name: getattr(fixture, name) for name in identity},
+        organization_id=fixture.organization_id,
+        source=fixture.source,
+        title=fixture.title,
+        created_at=fixture.created_at,
+    )
+
+
 async def assert_every_field_round_trips(
     save: Callable[[Case], Awaitable[Case]],
     get_fresh: Callable[[str], Awaitable[Optional[Case]]],
     fixtures: List[Case],
 ) -> None:
-    """Save each fixture, load it on a fresh session, compare field by field."""
+    """Insert each fixture's identity, then write its values by the versioned
+    UPDATE, load it on a fresh session and compare field by field."""
     assert_fixtures_cover_every_field(fixtures)
     for fixture in fixtures:
-        before = datetime.now(UTC)
-        saved = await save(fixture.model_copy(deep=True))
-        after = datetime.now(UTC)
+        created = await get_fresh((await save(_created(fixture))).case_id)
+        assert created is not None
+        before = fixture.model_copy(deep=True)
+        values = fixture.model_copy(deep=True)
+        case = created.model_copy(
+            update={n: getattr(values, n) for n in Case.model_fields if n != "version"}
+        )
+        saved = await save(case)
+        assert saved.version == 2, "the second save is the versioned UPDATE"
         loaded = await get_fresh(saved.case_id)
         assert loaded is not None
         lost = []
         for name in Case.model_fields:
             kind = EXEMPT.get(name, (None,))[0]
-            if kind == LOADED_OUTSIDE:
-                continue
-            if name == "last_activity_at":
-                if not before <= loaded.last_activity_at <= after:
-                    lost.append(name)
-                continue
-            if kind is not None:
-                expected = _EXPECTED[name](saved, fixture)
-                got = getattr(loaded, name)
+            if kind == SAVE_STAMPED:
+                expected = getattr(saved, name)
+            elif kind == NORMALIZED:
+                expected = _NORMALIZED[name](before)
             else:
-                expected, got = getattr(saved, name), getattr(loaded, name)
-            if _jsonable(expected) != _jsonable(got):
+                expected = getattr(before, name)
+            if _rows(name, expected) != _rows(name, getattr(loaded, name)):
                 lost.append(name)
         assert (
             not lost
-        ), f"{saved.state.value} case: {lost} did not survive save and get"
+        ), f"{before.state.value} case: {lost} did not survive save and get"
 
 
 def _jsonable(value: Any) -> Any:
     return _ANY.dump_python(value, mode="json")
+
+
+def _rows(name: str, value: Any) -> Any:
+    dumped = _jsonable(value)
+    if name not in _ROW_STAMPED:
+        return dumped
+    rows = dumped.values() if isinstance(dumped, dict) else dumped
+    return sorted(
+        (json.dumps({k: v for k, v in r.items() if k != "updated_at"}, sort_keys=True))
+        for r in rows
+    )

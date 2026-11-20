@@ -49,6 +49,9 @@ async def _upsert_case_record(db, case: Case) -> None:
     (``_case_record_params`` lists its members).
     """
     last_activity_at = datetime.now(UTC)
+    # Stamped on the case as well (SAVE_STAMPED_FIELDS), so the saved case
+    # carries what the row holds.
+    case.last_activity_at = last_activity_at
     params = _case_record_params(case, last_activity_at)
 
     # Step 1: attempt UPDATE with version check.

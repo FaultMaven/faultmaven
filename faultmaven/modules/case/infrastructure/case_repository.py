@@ -235,14 +235,15 @@ class CaseRepository(ABC):
     #: that fails puts them back (``restore_save_stamps``), so the object is
     #: what it was before the call and a re-save of it is not refused as stale
     #: over a version the database never took. Restored by reference, which is
-    #: sound because ``prepare_for_save`` assigns new values and edits none in
-    #: place (the offer record is frozen). Left as stamped, on purpose: the
+    #: sound because every stamp assigns a new value and edits none in place
+    #: (the offer record is frozen). Left as stamped, on purpose: the
     #: message rows ``normalise_message_row`` completes (ids and timestamps a
     #: re-save reuses, see ``ICaseRepository.save``) and the turn-sequence
     #: repair ``reconcile_turn_sequence`` makes, both idempotent.
     SAVE_STAMPED_FIELDS = (
         "version",
         "updated_at",
+        "last_activity_at",
         "disposition_eligibility",
         "offer_record",
     )
