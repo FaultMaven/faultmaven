@@ -17,6 +17,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 from faultmaven.core.preprocessing.vector_storage import chunk_structural_index
 from faultmaven.utils.token_estimation import (
     _MAX_ENCODE_RUN,
+    _cuts,
     _get_tiktoken_encoder,
     estimate_tokens,
 )
@@ -146,3 +147,22 @@ def test_a_cut_never_parts_a_surrogate_pair():
     assert _get_tiktoken_encoder("gpt-4").decode(ids) == text.encode(
         "utf-16", "surrogatepass"
     ).decode("utf-16")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "-------\x1c" * 40_000,
+        "".join(random.Random(3).choices(string.punctuation + "\x1c\x1f", k=320_000)),
+    ],
+    ids=["record-separated-dashes", "punctuation-and-separators"],
+)
+def test_a_record_separator_does_not_end_a_run(text):
+    """Python's ``\\s`` takes U+001C-U+001F; tiktoken reads them as
+    punctuation, so a run they break for Python is one span for tiktoken."""
+    encoder = _get_tiktoken_encoder("gpt-4")
+    assert list(_cuts(text)), "no cut: tiktoken would take the text whole"
+
+    ids = encoder.encode(text)
+
+    assert encoder.decode(ids) == text

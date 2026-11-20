@@ -54,10 +54,16 @@ if not TIKTOKEN_AVAILABLE:
 #: 3.1 s and ``ab`` repeated 3.4 s, all blocking, and 1,000,000 spaces raised
 #: "Max stack size exceeded". A longer run is encoded in pieces of this length.
 _MAX_ENCODE_RUN = 1024
+#: Whitespace as tiktoken's pre-tokenizer reads it: Unicode White_Space, not
+#: Python's ``\s``, which also takes U+001C-U+001F (record separators that
+#: tiktoken reads as punctuation).
+_WS = r"\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
 #: A run of non-whitespace or whitespace longer than ``_MAX_ENCODE_RUN``,
 #: matched only from the run's first character, so a scan takes linear time.
 _LONG_RUN = re.compile(
-    r"(?<!\S)\S{%d,}|(?<!\s)\s{%d,}" % (_MAX_ENCODE_RUN + 1, _MAX_ENCODE_RUN + 1)
+    r"(?<![^{ws}])[^{ws}]{{{n},}}|(?<![{ws}])[{ws}]{{{n},}}".format(
+        ws=_WS, n=_MAX_ENCODE_RUN + 1
+    )
 )
 
 
@@ -81,9 +87,9 @@ class PlainEncoder:
     of an encoding always concatenate back to its text.
 
     A run of non-whitespace or of whitespace longer than ``_MAX_ENCODE_RUN``
-    is cut into pieces of at most that length, each piece and the text between
-    encoded on its own; the ids still decode to the text. Text without such a
-    run is encoded in one call, its ids unchanged.
+    is cut every ``_MAX_ENCODE_RUN`` characters, and each segment between
+    consecutive cuts is encoded in one call; the ids still decode to the text.
+    Text without such a run is encoded in one call, its ids unchanged.
     """
 
     __slots__ = ("_encoding",)
