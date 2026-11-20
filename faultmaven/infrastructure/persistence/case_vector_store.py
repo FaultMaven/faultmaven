@@ -111,8 +111,9 @@ class CaseVectorStore(BaseExternalClient):
     ) -> None:
         """Add documents to case-specific collection.
 
-        The chunks already stored for any ``evidence_id`` the documents carry
-        are deleted first, so the documents become that evidence's only chunks.
+        The documents are upserted, then the chunks stored for any
+        ``evidence_id`` they carry and not among them are deleted, so the
+        documents become that evidence's only chunks.
 
         Args:
             case_id: Case identifier.
@@ -146,21 +147,24 @@ class CaseVectorStore(BaseExternalClient):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
-            # A re-index replaces the evidence's chunks: add() keeps an
-            # existing id's old text, so a re-chunked file would keep its old
-            # chunks beside the new ones (#2936).
-            evidence_ids = sorted(
-                {md["evidence_id"] for md in sanitized_metadatas if "evidence_id" in md}
-            )
-            if evidence_ids:
-                collection.delete(where={"evidence_id": {"$in": evidence_ids}})
             # Where this runs is the client's call: an HttpClient runs it in
             # the chroma-http executor, off the loop, bounded per phase by its
             # client timeout (#2056); a local PersistentClient keeps it on the
             # loop thread as before. The heavy per-turn embedding is already
             # offloaded upstream (vector_storage.py pre-computes and passes
-            # `embeddings`), so add() here just stores vectors.
-            collection.add(**add_kwargs)
+            # `embeddings`), so upsert() here just stores vectors.
+            collection.upsert(**add_kwargs)
+            # A re-index replaces the evidence's chunks: the new ones are
+            # written first, then only its ids outside the new set are
+            # deleted, so a failed write leaves the old chunks in place and
+            # a shorter re-index leaves no stale ones (#2936).
+            for evidence_id in {
+                md["evidence_id"] for md in sanitized_metadatas if "evidence_id" in md
+            }:
+                stored = collection.get(where={"evidence_id": evidence_id}, include=[])
+                stale = sorted(set(stored["ids"]) - set(ids))
+                if stale:
+                    collection.delete(ids=stale)
 
             self.logger.info(
                 f"Added {len(documents)} documents to case {case_id}",

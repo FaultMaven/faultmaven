@@ -12,6 +12,7 @@ Design Reference:
     docs/architecture/data-processing/data-preprocessing-design-specification.md Section 5
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -106,61 +107,133 @@ def _get_last_n_tokens(text: str, n_tokens: int) -> str:
     return text[-char_count:]
 
 
-def _fits(text: str, max_tokens: int) -> bool:
-    """Whether *text* is within *max_tokens*, as kept and as emitted (stripped)."""
-    if _estimate_tokens(text) > max_tokens:
-        return False
+def _count(text: str, max_tokens: int) -> Optional[int]:
+    """*text*'s tokens when it is within *max_tokens* as kept and as emitted
+    (stripped), else None."""
+    tokens = _estimate_tokens(text)
+    if tokens > max_tokens:
+        return None
     stripped = text.strip()
-    return stripped == text or _estimate_tokens(stripped) <= max_tokens
+    if stripped != text and _estimate_tokens(stripped) > max_tokens:
+        return None
+    return tokens
 
 
-def _cut_line(line: str, max_tokens: int, window: int) -> List[str]:
-    """*line* whole when it fits, else consecutive pieces of at most *window* tokens.
+def _cut_line(line: str, max_tokens: int, window: int) -> List[Tuple[str, int]]:
+    """*line* whole when it fits, else consecutive pieces of at most *window*
+    tokens, each with its token count.
 
     The pieces concatenate back to *line*. Cuts fall on character boundaries,
     and each piece is measured once built and shrunk until it fits; a single
     character is never cut, so it is the one piece that can exceed *window*.
     """
     encoding = _encoding()
-    ids = encoding.encode(line) if encoding is not None else []
+    if encoding is None:
+        tokens = _count(line, max_tokens)
+        if tokens is not None:
+            return [(line, tokens)]
+        step = window * 4
+        pieces = [line[i : i + step] for i in range(0, len(line), step)]
+        return [(piece, len(piece) // 4) for piece in pieces]
+    ids = encoding.encode(line)
     stripped = line.strip()
-    if (len(ids) if encoding is not None else len(line) // 4) <= max_tokens and (
+    if len(ids) <= max_tokens and (
         stripped == line or _estimate_tokens(stripped) <= max_tokens
     ):
-        return [line]
-    if encoding is None:
-        step = window * 4
-        return [line[i : i + step] for i in range(0, len(line), step)]
+        return [(line, len(ids))]
     starts = _char_offsets(encoding, ids) + [len(line)]
-    pieces: List[str] = []
+    pieces: List[Tuple[str, int]] = []
     pos = i = 0
     while pos < len(line):
         j = min(i + window, len(ids))
         while starts[j] <= pos:
             j += 1
-        while starts[j - 1] > pos and not _fits(line[pos : starts[j]], window):
+        while (tokens := _count(line[pos : starts[j]], window)) is None and starts[
+            j - 1
+        ] > pos:
             j -= 1
-        pieces.append(line[pos : starts[j]])
+        piece = line[pos : starts[j]]
+        pieces.append((piece, _estimate_tokens(piece) if tokens is None else tokens))
         pos, i = starts[j], j
     return pieces
 
 
-def _units(section: str, max_tokens: int, window: int) -> Iterator[Tuple[str, str]]:
-    """Yield ``(separator, unit)`` pairs that rebuild *section*, each unit fitting.
+def _units(
+    section: str, max_tokens: int, window: int
+) -> Iterator[Tuple[str, str, int]]:
+    """Yield ``(separator, unit, tokens)`` that rebuild *section*, each unit fitting.
 
     Paragraphs (``\\n\\n``); a paragraph over *max_tokens* as its lines
     (``\\n``); a line over *max_tokens* as ``_cut_line``'s pieces, joined by
-    nothing.
+    nothing. Each unit is encoded once.
     """
     for p, paragraph in enumerate(section.split("\n\n")):
         paragraph_separator = "\n\n" if p else ""
-        if _fits(paragraph, max_tokens):
-            yield paragraph_separator, paragraph
+        tokens = _count(paragraph, max_tokens)
+        if tokens is not None:
+            yield paragraph_separator, paragraph, tokens
             continue
         for n, line in enumerate(paragraph.split("\n")):
             line_separator = "\n" if n else paragraph_separator
-            for k, piece in enumerate(_cut_line(line, max_tokens, window)):
-                yield (line_separator if k == 0 else ""), piece
+            for k, (piece, tokens) in enumerate(_cut_line(line, max_tokens, window)):
+                yield (line_separator if k == 0 else ""), piece, tokens
+
+
+def _accumulate(
+    units: List[Tuple[str, str, int]], max_tokens: int, overlap_tokens: int
+) -> List[str]:
+    """The chunk texts of one oversize section's units.
+
+    A unit is taken on ``bound``, the buffer's last exact count plus each unit
+    and separator taken since, plus one a join; only near the limit is the
+    joined text encoded, since re-encoding the buffer for every unit made
+    short lines quadratic. A buffer is measured exactly before it is emitted,
+    and units it took past the limit are given back. A buffer holding nothing
+    but whitespace past its seeded overlap is not emitted.
+    """
+    separator_tokens = {sep: _estimate_tokens(sep) for sep in ("", "\n", "\n\n")}
+    texts: List[str] = []
+    parts: List[str] = []  # the buffer, as the strings joined into it
+    bound = overlap_chars = i = 0
+    while i < len(units) or parts:
+        if i < len(units):
+            separator, unit, tokens = units[i]
+            if not parts:
+                parts, bound, overlap_chars = [unit], tokens, 0
+                i += 1
+                continue
+            step = separator_tokens[separator] + tokens + 1
+            exact = (
+                bound + step
+                if bound + step <= max_tokens
+                else _count("".join(parts) + separator + unit, max_tokens)
+            )
+            if exact is not None:
+                parts.append(separator + unit)
+                bound, i = exact, i + 1
+                continue
+        buffer = "".join(parts)
+        while len(parts) > 1 and _count(buffer, max_tokens) is None:
+            parts.pop()
+            i -= 1
+            buffer = "".join(parts)
+        if buffer[overlap_chars:].strip():
+            texts.append(buffer.strip())
+        parts = []
+        if i < len(units):
+            separator, unit, tokens = units[i]
+            overlap = _get_last_n_tokens(buffer, overlap_tokens)
+            exact = _count(overlap + separator + unit, max_tokens)
+            if exact is not None:
+                parts, bound, overlap_chars = (
+                    [overlap + separator + unit],
+                    exact,
+                    len(overlap),
+                )
+            else:
+                parts, bound, overlap_chars = [unit], tokens, 0
+            i += 1
+    return texts
 
 
 def chunk_structural_index(
@@ -180,14 +253,16 @@ def chunk_structural_index(
     4. Never split mid-line, unless the line alone exceeds max_chunk_tokens:
        then it is cut into pieces of max_chunk_tokens - overlap_tokens
 
-    No chunk exceeds max_chunk_tokens, measured on the text emitted (#2936).
-    Each chunk carries metadata for retrieval context.
+    No chunk exceeds max_chunk_tokens, measured on the text emitted, and none
+    is only whitespace past its overlap (#2936). Each chunk carries metadata
+    for retrieval context.
 
     Args:
         structural_index: The full Tier 1 structural index text
-        max_chunk_tokens: Maximum tokens per chunk (default 500 ~ 2000 chars)
+        max_chunk_tokens: Maximum tokens per chunk (default 500 ~ 2000 chars);
+            at least 16 (the settings refuse less)
         overlap_tokens: Overlap between chunks (default 50 ~ 200 chars);
-            less than max_chunk_tokens
+            at most half of max_chunk_tokens
 
     Returns:
         List of Chunk objects with text and metadata
@@ -227,29 +302,11 @@ def chunk_structural_index(
         # Section too large: accumulate its units, seeding each next buffer
         # with the last ~overlap_tokens of the one emitted, when that fits.
         window = max(1, max_chunk_tokens - overlap_tokens)
-        buffer = ""
-
-        for separator, unit in _units(part, max_chunk_tokens, window):
-            candidate = (buffer + separator + unit) if buffer else unit
-            if buffer and not _fits(candidate, max_chunk_tokens):
-                chunks.append(
-                    Chunk(
-                        text=buffer.strip(),
-                        metadata={"section": current_section_name},
-                    )
-                )
-                seeded = _get_last_n_tokens(buffer, overlap_tokens) + separator + unit
-                buffer = seeded if _fits(seeded, max_chunk_tokens) else unit
-            else:
-                buffer = candidate
-
-        if buffer.strip():
-            chunks.append(
-                Chunk(
-                    text=buffer.strip(),
-                    metadata={"section": current_section_name},
-                )
-            )
+        units = list(_units(part, max_chunk_tokens, window))
+        chunks.extend(
+            Chunk(text=text, metadata={"section": current_section_name})
+            for text in _accumulate(units, max_chunk_tokens, overlap_tokens)
+        )
 
     return chunks
 
@@ -338,8 +395,10 @@ async def store_in_vector_db_background(
             overlap_tokens = settings.database.vector_chunk_overlap_tokens
 
     try:
-        # 1. Chunk the structural index
-        chunks = chunk_structural_index(
+        # 1. Chunk the structural index, off the loop: it encodes every unit
+        # (§5.6.3's rule for the encoder holds for the chunker too).
+        chunks = await asyncio.to_thread(
+            chunk_structural_index,
             structural_index,
             max_chunk_tokens=max_chunk_tokens,
             overlap_tokens=overlap_tokens,

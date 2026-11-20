@@ -1153,6 +1153,7 @@ A formula over the container's limit is reported, never refused at startup ([rul
 |---|---|---|
 | `faultmaven/api/routes/admin_config.py` | The trace SDK's status for `GET /admin/config/status`: a read of its SQLite message store (#2629) | I/O |
 | `faultmaven/cli/personal_tenant.py` | The identity provider's organization calls | I/O |
+| `faultmaven/core/preprocessing/vector_storage.py` | Chunking a stored structural index (at most `MAX_STORED_EXTRACT_CHARS`) for `vectorize_file`: tiktoken's encodes and the split around them (#2936) | Native code that releases the lock for the encodes; the split around them Pending: #2596 |
 | `faultmaven/infrastructure/base_client.py` | A blocking client's calls (the ChromaDB HTTP client) | I/O |
 | `faultmaven/infrastructure/health/component_monitor.py` | Health probes | I/O |
 | `faultmaven/infrastructure/index_slot.py` | A KB indexing encode's wait: the host lock, then its `encode_worker` (#2851); an evidence encode, in this process | I/O for the KB encode; the evidence encode Pending: #2596 (#2905) |

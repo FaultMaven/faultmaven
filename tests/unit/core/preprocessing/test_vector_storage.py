@@ -356,7 +356,7 @@ class TestEveryChunkFits:
     @pytest.mark.parametrize("line", [_BLOB, _MULTIBYTE], ids=["base64", "multibyte"])
     def test_an_over_long_line_is_cut_and_its_pieces_rebuild_it(self, line):
         assert _estimate_tokens(line) > 1500
-        pieces = _cut_line(line, 500, 450)
+        pieces = [piece for piece, _ in _cut_line(line, 500, 450)]
         assert "".join(pieces) == line
         assert max(_estimate_tokens(p) for p in pieces) <= 450
         assert not any("\ufffd" in p for p in pieces)
@@ -374,7 +374,7 @@ class TestEveryChunkFits:
 
     def test_a_line_within_the_limit_is_never_cut(self):
         line = "x" * 300
-        assert _cut_line(line, 500, 450) == [line]
+        assert _cut_line(line, 500, 450) == [(line, _estimate_tokens(line))]
 
     def test_the_overlap_is_dropped_when_it_would_not_fit(self):
         """Two paragraphs of nearly the limit: seeding the second with the
@@ -405,4 +405,41 @@ class TestEveryChunkFits:
         chunks = chunk_structural_index(text, max_chunk_tokens=500, overlap_tokens=50)
 
         assert max(len(c.text) // 4 for c in chunks) <= 500
-        assert "".join(_cut_line(_BLOB, 500, 450)) == _BLOB
+        assert "".join(piece for piece, _ in _cut_line(_BLOB, 500, 450)) == _BLOB
+
+    @pytest.mark.parametrize("overlap", [0, 50])
+    def test_no_chunk_is_only_whitespace_past_its_overlap(self, overlap):
+        """A whitespace-only line overflows the buffer: the next buffer is the
+        overlap plus whitespace, and was emitted as an empty chunk (overlap 0)
+        or a repeat of the previous chunk's tail (overlap 50)."""
+        blob = "".join(f"MIIE{i:05d}Qx+/aZ9kLwPq3==" for i in range(100))
+        text = "x\n" + " ".join(f"tok{i}" for i in range(249)) + "\n   \n" + blob
+
+        chunks = chunk_structural_index(
+            text, max_chunk_tokens=500, overlap_tokens=overlap
+        )
+
+        assert max(_estimate_tokens(c.text) for c in chunks) <= 500
+        assert all(c.text for c in chunks)
+        for before, after in zip(chunks, chunks[1:]):
+            assert after.text not in before.text
+
+    async def test_the_chunker_runs_off_the_event_loop(self, monkeypatch):
+        threads = []
+        chunk = vector_storage.chunk_structural_index
+
+        def recording(*args, **kwargs):
+            threads.append(threading.current_thread())
+            return chunk(*args, **kwargs)
+
+        monkeypatch.setattr(vector_storage, "chunk_structural_index", recording)
+        await store_in_vector_db_background(
+            case_id="c",
+            evidence_id="e",
+            structural_index="",
+            data_type=UnifiedDataType.LOGS,
+            metadata={},
+            case_vector_store=AsyncMock(),
+        )
+
+        assert threads and threads[0] is not threading.main_thread()
