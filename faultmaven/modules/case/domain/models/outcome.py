@@ -193,7 +193,7 @@ class ClosureEligibility(StrEnum):
 
 #: Raised by every change that adds or changes a ``CaseOutcome`` field: a
 #: stored record of an older shape is rewritten by the backfill (#2811).
-CURRENT_OUTCOME_SHAPE = 4
+CURRENT_OUTCOME_SHAPE = 5
 
 
 class WritePoint(StrEnum):
@@ -244,6 +244,19 @@ class CauseOutcome(BaseModel):
     )
     fallen_root_ids: List[str] = Field(default_factory=list)
     held_open_root_ids: List[str] = Field(default_factory=list)
+    contested_root_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "The validated, mutually-exclusive roots that contest "
+            "identification (``mece_contested_root_ids``, #2811 S2b-2a), "
+            "derived fresh at the write like ``held_open_root_ids``. "
+            "``pool_empty_reason``'s IDENTIFICATION_CONTESTED is instead the "
+            "cause recompute's verdict, read from the stored flag "
+            "(``progress.cause_identification_contested``): after a "
+            "pre-prompt hypothesis intent (retire or refute), which runs no "
+            "recompute, the two can disagree"
+        ),
+    )
     confirmation_root_ids: List[str] = Field(
         default_factory=list, description="The confirmation pool"
     )
@@ -252,7 +265,15 @@ class CauseOutcome(BaseModel):
         description="Root id -> the rows its terminal verdict cites",
     )
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
-        default=None, description="Why the confirmation pool is empty"
+        default=None,
+        description=(
+            "Why the confirmation pool is empty. HELD_OPEN and "
+            "IDENTIFICATION_CONTESTED are the cause recompute's verdicts, "
+            "read from the stored flags; ``held_open_root_ids`` and "
+            "``contested_root_ids`` are derived fresh at the write, so after "
+            "a pre-prompt hypothesis intent (retire or refute) they can "
+            "disagree"
+        ),
     )
     identification_leg: Optional[Literal["chain", "rcc", "working_conclusion"]] = Field(
         default=None,

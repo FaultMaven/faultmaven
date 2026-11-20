@@ -4,8 +4,9 @@ prompt state's fresh inputs (``PromptStateFresh``) and the two fresh reads
 printed beside the record (the symptom's currency note, ``fix_confirmed``),
 each computed at most once and shared by every block that reads them:
 ``<fix_verification>``, ``<evidence_needs>``, the milestone status, the
-exclusion rule, the focus emphasis, the state summary, and the fallback
-prompt the assembly may return instead."""
+exclusion rule, the focus emphasis, the state summary, the causal graph's
+recovery notes and the working conclusion's contest NOTE (S2b-2a), and the
+fallback prompt the assembly may return instead."""
 
 import logging
 import sys
@@ -119,7 +120,7 @@ class NarrationFold:
             except Exception as error:  # noqa: BLE001 — only what reads it is lost
                 self._error = error
         if self._error is not None:
-            self.fail(block, self._error)
+            self.fail(block, self._error, record=True)
         return self._outcome
 
     def needs(self) -> NeedsView:
@@ -169,11 +170,17 @@ class NarrationFold:
 
         return ask
 
-    def fail(self, block: str, error: Optional[BaseException] = None) -> None:
+    def fail(
+        self, block: str, error: Optional[BaseException] = None, *, record: bool = False
+    ) -> None:
         """Log ``error`` (the exception being handled without it) once per
         block and distinct failure (its class and the line that raised it),
         naming ``block``, and count a failure once per assembly; a metrics
-        error is logged and swallowed."""
+        error is logged and swallowed. A ``record`` failure (the fold raised)
+        is logged as the record not read for ``block``, any other as the
+        block not rendered. The record line claims nothing about display:
+        the causal graph block and the working conclusion's contest NOTE
+        (S2b-2a) are built whether or not the template shows them."""
         error = sys.exc_info()[1] if error is None else error
         tb = getattr(error, "__traceback__", None)
         raised = traceback.extract_tb(tb)[-1] if tb is not None else None
@@ -181,7 +188,11 @@ class NarrationFold:
         if key not in self._logged:
             self._logged.add(key)
             logger.error(
-                "Case %s: the %s was not rendered (#2811)",
+                (
+                    "Case %s: the record could not be read for the %s (#2811)"
+                    if record
+                    else "Case %s: the %s was not rendered (#2811)"
+                ),
                 getattr(self._case, "case_id", None),
                 block,
                 exc_info=error,

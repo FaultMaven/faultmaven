@@ -68,9 +68,8 @@ Not counted:
 
 * ``problem_status``, ``cause_state`` and ``mitigation.disposition``: progress
   inputs the record reads from (#2615, *The record*). Under ``prompts/``,
-  ``PROMPT_PROGRESS_READS`` watches ``problem_status``, ``cause_state``,
-  ``symptom_verified`` and ``solution_proposed`` per function (#2811
-  S2b-1c-i): a prompt line reads them off the record;
+  ``PROMPT_PROGRESS_READS`` watches each name in ``PROGRESS_INPUTS`` per
+  function (#2811 S2b-1c-i): a prompt line reads them off the record;
 * a read through ``builtins.getattr``, ``operator.attrgetter`` or
   ``object.__getattribute__``, or by a class pattern
   (``case Case(closure_reason=r)``): none exists today;
@@ -202,6 +201,11 @@ DERIVATIONS: dict[str, str] = {
     # #2811 S2b-1c-ii: why the held check holds, the record's one derivation,
     # which the PENDING_CHECK decision's params share.
     "held_check_reason": _CA,
+    # #2811 S2b-2a: the held-open and MECE-contested roots, which the graph
+    # block's recovery notes and the working conclusion's NOTE read off the
+    # record (``cause.held_open_root_ids``, ``cause.contested_root_ids``).
+    "held_open_root_ids": _INV + "causal_graph/projection.py",
+    "mece_contested_root_ids": _INV + "causal_graph/clusters.py",
 }
 
 #: The watched names that are methods, by the class that defines each.
@@ -227,6 +231,9 @@ PROGRESS_INPUTS = (
     "solution_proposed",
     "solution_accepted",
     "disposition",
+    # #2811 S2b-2a: the working conclusion's NOTE reads the record's
+    # ``cause.contested_root_ids`` in its place.
+    "cause_identification_contested",
 )
 _PROMPTS = _INV + "prompts/"
 
@@ -476,7 +483,14 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_PROBLEM, "invalidation_refusal"): {"fix_windows": 1},
     # The case outcome record (#2636, stage S1): the one place every outcome
     # is computed for the record, and its write point.
-    (_OUTCOME, "_cause"): {"_pool_legs": 1, "cause_pool_empty_reason": 1},
+    # #2811 S2b-2a: the held-open and contested roots, derived fresh at the
+    # write.
+    (_OUTCOME, "_cause"): {
+        "_pool_legs": 1,
+        "cause_pool_empty_reason": 1,
+        "held_open_root_ids": 1,
+        "mece_contested_root_ids": 1,
+    },
     (_OUTCOME, "_closure"): {"derive_closure_reason": 1},
     (_OUTCOME, "_closure_of"): {"closure_verdict": 1, "mitigation_closure_line": 1},
     (_OUTCOME, "_mitigation"): {
@@ -511,6 +525,19 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome._apply"): {
         "compute_case_outcome": 1
     },
+    # #2811 S2b-2a: the deciders of the cause's identification, which write
+    # ``cause_identification_contested`` and ``_held_open`` (the recompute)
+    # and keep or refuse the engine's conclusion mirror (stage S3).
+    (_ME + "cause_state.py", "_recompute_cause_state_from_chain"): {
+        "held_open_root_ids": 1,
+        "mece_contested_root_ids": 1,
+    },
+    (_INV + "causal_graph/rcc.py", "retract_stale_engine_rcc"): {
+        "mece_contested_root_ids": 1
+    },
+    (_INV + "causal_graph/rcc.py", "synthesize_rcc_from_validated_root"): {
+        "mece_contested_root_ids": 1
+    },
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt. The fix-verification block renders from the record
@@ -526,6 +553,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "false_alarm_close_declined_at": 1
     },
     (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
+    # #2811 S2b-2a: not the predicate but the record's field of the same
+    # name, ``outcome.cause.held_open_root_ids``, which a census of names
+    # cannot tell apart; ``test_contest_record_2811``'s record-wins tests
+    # guard that the block reads the record.
+    (_CB + "causal_graph_block.py", "_root_recovery_reasons"): {
+        "held_open_root_ids": 1
+    },
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
         "fix_windows": 1
     },

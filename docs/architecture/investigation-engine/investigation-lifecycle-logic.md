@@ -1119,15 +1119,18 @@ written*, as amended by #2811, ruled 2026-11-15):
   over the stored record, stored nowhere, minting nothing. The turn's
   narration folds it once, at its entry, when the cycle's write failed and a
   logged code reads the record; the prompt folds it lazily, at most once per
-  prompt assembly (`NarrationFold`), only where the `<fix_verification>`
-  block is shown or the `<evidence_needs>` checklist is asked (an
-  INVESTIGATING case in MITIGATION or TREATMENT).
+  prompt assembly (`NarrationFold`), where a block that reads it is built.
+  The causal graph block (built when the case has a non-retired hypothesis
+  or a causal node) and the working conclusion's contest NOTE (built when
+  it has a working conclusion) fold on every assembly that builds them,
+  whether or not the template shows them.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
   the 1 -> 2 step marks the finals shape 1 held; 2 -> 3, which adds
   `resolution.off_cause_turn` and `resolution.unrechecked_row_ids`, and
-  3 -> 4, which adds `resolution.pending_check_reason`, are the identity), and
+  3 -> 4, which adds `resolution.pending_check_reason`, and 4 -> 5, which
+  adds `cause.contested_root_ids`, are the identity), and
   `fm-backfill-case-outcome` rewrites it, so the backfill runs after each
   shape change, not once (amending #2615 Q6). A re-shape mints nothing.
 - **The narrators read by id.** The record holds codes and ids, never display

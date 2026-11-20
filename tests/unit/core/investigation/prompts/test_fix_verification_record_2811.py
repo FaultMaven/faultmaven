@@ -719,24 +719,34 @@ async def test_an_assembly_that_rebuilds_the_context_folds_once():
 # ---------------------------------------------------------------------------
 
 
-def _stored(case, shape: int, *dropped: str) -> CaseOutcome:
-    """The case's record as a shape-``shape`` writer stored it, without the
-    resolution fields later shapes add."""
-    stored = compute_case_outcome(None, case, at=WritePoint.CYCLE)
-    return CaseOutcome.model_validate(
-        {
-            **stored.model_dump(mode="json"),
-            "shape": shape,
-            "resolution": stored.resolution.model_dump(
-                mode="json", exclude=set(dropped)
-            ),
-        }
-    )
+#: Each shape from 3, by the (section, field) pairs it added.
+_ADDED_BY_SHAPE = {
+    3: (("resolution", "off_cause_turn"), ("resolution", "unrechecked_row_ids")),
+    4: (("resolution", "pending_check_reason"),),
+    5: (("cause", "contested_root_ids"),),
+}
+
+
+def _stored(case, shape: int) -> CaseOutcome:
+    """The case's record as a shape-``shape`` writer stored it: without any
+    field a later shape added."""
+    raw = compute_case_outcome(None, case, at=WritePoint.CYCLE).model_dump(mode="json")
+    raw["shape"] = shape
+    for later, fields in _ADDED_BY_SHAPE.items():
+        for section, field in fields if later > shape else ():
+            raw[section].pop(field)
+    return CaseOutcome.model_validate(raw)
+
+
+def test_the_dropped_fields_are_every_field_a_shape_added():
+    """A shape the table does not name would build a record no writer
+    stored."""
+    assert set(_ADDED_BY_SHAPE) == set(range(3, CURRENT_OUTCOME_SHAPE + 1))
 
 
 async def test_a_shape_2_record_upgrades_through_the_identity_steps(monkeypatch):
     case = await build("R:other_cause")
-    old = _stored(case, 2, "off_cause_turn", "unrechecked_row_ids")
+    old = _stored(case, 2)
     assert old.resolution.unrechecked_row_ids == [], "premise: loads with defaults"
     folded = compute_case_outcome(old, case, at=WritePoint.COMMIT)
     assert folded.shape == CURRENT_OUTCOME_SHAPE
@@ -749,14 +759,14 @@ async def test_a_shape_2_record_upgrades_through_the_identity_steps(monkeypatch)
 
 async def test_a_shape_3_record_upgrades_to_4(monkeypatch):
     """Shape 4 adds ``pending_check_reason``: a shape-3 record loads with its
-    default and folds to shape 4 with the reason; without ``_shape_4`` the
-    upgrade raises."""
+    default and folds to the current shape with the reason; without
+    ``_shape_4`` the upgrade raises. (Shape 5's step: #2811 S2b-2a,
+    ``test_contest_record_2811``.)"""
     case = await build("N:held_fulfilled")
-    old = _stored(case, 3, "pending_check_reason")
-    assert CURRENT_OUTCOME_SHAPE == 4
+    old = _stored(case, 3)
     assert old.resolution.pending_check_reason is None, "premise: the default"
     folded = compute_case_outcome(old, case, at=WritePoint.COMMIT)
-    assert folded.shape == 4
+    assert folded.shape == CURRENT_OUTCOME_SHAPE
     assert (
         folded.resolution.pending_check_reason
         == PendingCheckReason.FULFILLED_BEFORE_ASK
