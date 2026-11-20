@@ -12,8 +12,9 @@ pod; locally after `pip install -e .`).
 kubectl exec -it deploy/faultmaven-api -- fm-provision-sso-org --name ...
 ```
 
-Every command acts on the deployment's database, so every command refuses to
-run without a persistent one (#1659). An empty `DATABASE_URL`, `:memory:`, an
+Every command but `fm-purge-traces`, which reaches only the trace backend,
+acts on the deployment's database, so each refuses to run without a persistent
+one (#1659). An empty `DATABASE_URL`, `:memory:`, an
 in-memory SQLite URL or a value that does not parse as a database URL makes it
 exit 1 before it reads or writes anything. It prints the API's boot refusal on
 stderr and nothing on stdout.
@@ -37,6 +38,7 @@ stderr and nothing on stdout.
 | `fm-wipe-deployment --verify` | Positively verify a clean slate; exit 5 on residue (#819) | same |
 | `fm-wipe-deployment --wipe --confirm-target faultmaven --yes` | Wipe vectors + object storage + Redis | same |
 | `fm-migrate` | Upgrade the database to head (`alembic upgrade head`) through the log chain: a failure is its class and frames on stderr, exit 1, never alembic's `FAILED:` text (#2888). It refuses a non-persistent `DATABASE_URL`, read alone as alembic reads it. The startup migration runs it; `--config` names another `alembic.ini` | [Database migrations](../guides/database-migrations.md) |
+| `fm-purge-traces --before <time>` / `--delete --confirm-project <project>` | Count, then delete, the traces and spans that started before a cutoff in the configured trace project: the content written before #2698 (#2700). Exit 3: run it again; 4: the cutoff is too early | [Case deletion](./case-deletion.md#purging-the-traces-written-before-2698) |
 
 ## Backfilling the case outcome record
 

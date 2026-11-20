@@ -191,16 +191,18 @@ def content_capture_refusal(obs: Any) -> Optional[str]:
     """Why ``obs`` may not capture content, or None when it asks for none.
 
     #2616 K0: the trace store holds prompts and responses only under a verified
-    retention bound (K3), and none is verified yet, so a request is always
-    refused. K3 adds the verification here. The field is a pydantic bool: only
-    ``True`` is a request, and settings without the field ask for nothing.
+    retention bound, and none can be verified through the trace backend's API
+    (#2700's run), so a request is always refused. A verified TTL on the
+    backend's trace tables is the only route back (#2616). The field is a
+    pydantic bool: only ``True`` is a request, and settings without the field
+    ask for nothing.
     """
     if getattr(obs, "opik_capture_content", False) is not True:
         return None
     return (
         "OPIK_CAPTURE_CONTENT=true is refused: recording prompts, responses and "
         "exception text in the trace store needs a verified retention bound for "
-        "it, and none exists yet (#2616 K3). Unset OPIK_CAPTURE_CONTENT."
+        "it, and none exists yet (#2616). Unset OPIK_CAPTURE_CONTENT."
     )
 
 
@@ -407,9 +409,8 @@ def track(**options: Any) -> Callable:
     So the SDK wraps a guard that catches ``Exception``, holds it in a per-call
     slot, writes its class to the span and returns None; the outer function
     re-raises the same object. A ``BaseException`` that is not an ``Exception``
-    (a cancellation) carries no provider text and passes through. Unconditional
-    while content capture is refused; K3 decides whether text returns with
-    capture on (#2616). Generators are refused: the SDK records their errors on
+    (a cancellation) carries no provider text and passes through. Unconditional,
+    capture on or off (#2616 K0-1). Generators are refused: the SDK records their errors on
     a path the guard does not cover. Decoration builds no client.
 
     While the record captures no content (read at decoration), the SDK's own

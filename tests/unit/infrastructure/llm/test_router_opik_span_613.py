@@ -7,8 +7,9 @@ the start it would record only the static head on every call, and never the
 case id, the state, the evidence or the user's message. So an input holding the
 boundary is recorded from the boundary on and flagged ``prompt_prefix_elided``;
 anything else is recorded as before. The input is recorded only where the
-record captures content, which no configure allows today (#2616 K0): those
-tests patch the record, keeping the view for K3.
+record captures content, which no configure allows (#2616 K0): those tests
+patch the record, keeping the view for a capture that a verified bound
+re-admits (#2616).
 
 Driven through ``LLMRouter.route`` with a real Anthropic provider and only the
 HTTP layer mocked, because the span is written there, from the SANITIZED prompt
