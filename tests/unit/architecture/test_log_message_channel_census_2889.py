@@ -37,9 +37,10 @@ assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
 from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
 (``failure = task.exception()``) or a ``gather(..., return_exceptions=True)``.
-A ``for`` loop's targets are exceptions over a group's ``.exceptions`` or such
-a ``gather``, and texts over any other read of those names (``e.args``,
-``str(e).splitlines()``).
+A ``for`` loop's targets are exceptions when the iterable itself (past
+``await``, ``enumerate`` and ``zip``) is a tracked exception's ``.exceptions``
+or such a ``gather``, and texts over any other read of those names
+(``e.args``, ``str(e).splitlines()``, ``str(results[0]).splitlines()``).
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
 ``type(e)``, ``len(result.stderr)``, ...); an attribute in :data:`SAFE_ATTRS`
@@ -60,7 +61,9 @@ through two names (``a = str(e); b = a``), a container, or a parameter typed
 ``str`` (``error: str`` holding a caller's ``str(e)``); the worker child's
 ``failure`` frame, whose text arrives as data; a payload that is not an
 exception or a subprocess's output (a response body); an exit whose code is a
-bare name holding text the census does not track (``sys.exit(msg)``). The
+bare name, an attribute, or a call other than ``str``/``format``/``repr``,
+holding text the census does not otherwise track (``sys.exit(msg)``,
+``sys.exit(self.message)``, ``sys.exit("\\n".join(problems))``). The
 allowlist counts sites per file, so switching one site and adding another in
 the same file leaves the count, and the guard, unchanged. **Over-counts**: an
 alias is any name assigned from an exception, so one holding a flag or a count
@@ -335,15 +338,18 @@ def _bound(targets) -> set:
     }
 
 
-def _iterates_exceptions(iterable: ast.AST, gathered: set) -> bool:
-    """A loop over a group's ``.exceptions`` or a
-    ``gather(..., return_exceptions=True)`` result, inline or by a name it was
-    assigned to, binds exceptions."""
-    return any(
-        (isinstance(sub, ast.Attribute) and sub.attr == "exceptions")
-        or _is_gather_of_exceptions(sub)
-        or (isinstance(sub, ast.Name) and sub.id in gathered)
-        for sub in ast.walk(iterable)
+def _iterates_exceptions(it: ast.AST, exceptions: FrozenSet[str], gathered: set):
+    """The iterable itself, past ``await`` and ``enumerate``/``zip``, is a tracked
+    exception's ``.exceptions``, a ``gather(..., return_exceptions=True)``, or a
+    name assigned one: its loop binds exceptions."""
+    if isinstance(it, ast.Await):
+        return _iterates_exceptions(it.value, exceptions, gathered)
+    if isinstance(it, ast.Call) and _callee(it) in ("enumerate", "zip"):
+        return any(_iterates_exceptions(a, exceptions, gathered) for a in it.args)
+    if isinstance(it, ast.Attribute) and it.attr == "exceptions":
+        return isinstance(it.value, ast.Name) and it.value.id in exceptions
+    return _is_gather_of_exceptions(it) or (
+        isinstance(it, ast.Name) and it.id in gathered
     )
 
 
@@ -374,7 +380,7 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
                 elif _reads(child.value, here.all).name_hit:
                     texts.update(bound)
             if loops and isinstance(child, (ast.For, ast.AsyncFor)):
-                if _iterates_exceptions(child.iter, gathered):
+                if _iterates_exceptions(child.iter, here.exceptions, gathered):
                     exceptions.update(_bound([child.target]))
                 elif _reads(child.iter, here.all).name_hit:
                     texts.update(_bound([child.target]))
@@ -386,13 +392,19 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
 
 
 def _may_be_text(code: ast.AST, names: _Names) -> bool:
-    """An exit code the interpreter would print: one built as a string (an
-    f-string, a ``+``/``%``, a ``str``/``format``/``repr`` call) or one reading
-    an exception name. ``main()``, ``0 if ok else 1`` and a constant are not."""
+    """An exit code the interpreter would print: an f-string, a ``+`` or ``%``,
+    a ``str``/``format``/``repr`` call, or a read of an exception name or of
+    subprocess output, in either branch of an ``if``-expression. ``main()``,
+    ``0 if ok else 1``, ``base | 1`` and a constant are not."""
+    if isinstance(code, ast.IfExp):
+        return _may_be_text(code.body, names) or _may_be_text(code.orelse, names)
+    reads = _reads(code, names.all)
     return (
-        isinstance(code, (ast.JoinedStr, ast.BinOp))
+        isinstance(code, ast.JoinedStr)
+        or (isinstance(code, ast.BinOp) and isinstance(code.op, (ast.Add, ast.Mod)))
         or (isinstance(code, ast.Call) and _callee(code) in ("str", "format", "repr"))
-        or _reads(code, names.all).name_hit
+        or reads.name_hit
+        or reads.output_hit
     )
 
 
@@ -716,7 +728,7 @@ def _found(source: str) -> List[Site]:
         "raise SystemExit(f'refusing: {path}')",
         "traceback.print_exc()",
         "def f(t):\n    logger.warning('failed: %r', t.exception())",
-        "def f(group: ExceptionGroup):\n    for m in group.exceptions:\n        logger.info(f'{m}')",
+        "def f(e):\n    for m in e.exceptions:\n        logger.info(f'{m}')",
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n    for r in rs:\n        logger.info(f'{r}')",
         "async def f():\n    for r in await gather(a(), return_exceptions=True):\n        logger.info(f'{r}')",
         "def f(e):\n    for x in e.args:\n        logger.info(f'{x}')",
@@ -724,6 +736,14 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    for line in str(e).splitlines():\n"
         "        logger.info('x', extra={'line': line})",
         "def f(e):\n    sys.exit(e)",
+        "sys.exit('refusing: {}'.format(path))",
+        "sys.exit('refusing: ' + path)",
+        "def f():\n    r = run()\n    sys.exit(r.stderr)",
+        "sys.exit(f'bad {p}' if c else 0)",
+        "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
+        "    for line in str(rs[0]).splitlines():\n        log.warning('x', line=line)",
+        "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
+        "    for line in str(rs).split(','):\n        log.warning('x', extra={'line': line})",
         "traceback.print_exception(e)",
         "traceback.format_exception_only(type(e), e)",
         "lines = traceback.TracebackException.from_exception(e).format()",
@@ -765,8 +785,11 @@ def test_a_site_is_found(source):
         "sys.exit(1)",
         "sys.exit(main())",
         "sys.exit(0 if ok else 1)",
-        "def f(group: ExceptionGroup):\n    for m in group.exceptions:\n"
-        "        log.warning('x', error=m)",
+        "sys.exit(base | 1)",
+        "def f(e):\n    for m in e.exceptions:\n        log.warning('x', error=m)",
+        "def f(e):\n    for i, m in enumerate(e.exceptions):\n        log.warning('x', error=m)",
+        "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
+        "    for r in rs:\n        log.warning('x', error=r)",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
