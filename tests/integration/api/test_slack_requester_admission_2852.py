@@ -58,6 +58,9 @@ pytestmark = pytest.mark.integration
 
 READABLE, UNREADABLE = "case_2852aaaaaaaa", "case_2852bbbbbbbb"
 ID1, ID2 = "a" * 32, "b" * 32
+# The file's one time limit, bounding a hang, not performance: each wait ends on
+# the event it waits for, and a request's wait for a Tier 1 slot is set to it.
+HANG_GUARD_SECONDS = 60
 
 
 async def _provision(store, username, kind, channel="slack"):
@@ -104,14 +107,17 @@ async def world(monkeypatch):
     seen = SimpleNamespace(
         keys=[], case_users=[], turn_users=[], gate=None, running=0, now=0, most=0
     )
+    seen.changed = asyncio.Event()  # set each time ``keys`` or ``running`` changes
     acquire = FairSlots.acquire
 
     async def acquiring(self, account, requester=None):
         seen.keys.append((account, requester))
+        seen.changed.set()
         await acquire(self, account, requester)
 
     async def run(*_args, **_kwargs):
         seen.running += 1
+        seen.changed.set()
         seen.now += 1
         seen.most = max(seen.most, seen.now)
         try:
@@ -123,13 +129,19 @@ async def world(monkeypatch):
 
     monkeypatch.setattr(FairSlots, "acquire", acquiring)
     monkeypatch.setattr(worker_process, "run", run)
+    # A slot waiter falls back to the busy preview past its wait (#2942).
+    monkeypatch.setattr(
+        preprocessing_service, "TIER1_SLOT_WAIT_SECONDS", HANG_GUARD_SECONDS
+    )
 
     def tier1_slots(count):
+        pool = FairSlots(count)
         monkeypatch.setattr(
             preprocessing_service,
             "_tier1_slots_state",
-            (asyncio.get_running_loop(), FairSlots(count)),
+            (asyncio.get_running_loop(), pool),
         )
+        return pool
 
     tier1_slots(2)
     tier1 = _tier1_service()
@@ -182,6 +194,12 @@ async def world(monkeypatch):
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: (
         SimpleNamespace(require_case=require_case)
     )
+    started = []
+
+    def spawn(coro):
+        started.append(asyncio.create_task(coro))
+        return started[-1]
+
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
 
         def headers(who, requester, enterprise_id):
@@ -212,30 +230,39 @@ async def world(monkeypatch):
         yield SimpleNamespace(
             post=post,
             patch=patch,
+            spawn=spawn,
             seen=seen,
             app=app,
             tier1_slots=tier1_slots,
             ids={k: u.user_id for k, u in accounts.items()},
         )
+        # No request outlives the stand-in: ended before it is undone (#2942).
+        for task in started:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*started, return_exceptions=True)
     monkeypatch.undo()  # the flag's environment, before the settings rebuild
     reset_settings()
 
 
-async def _settle():
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-
-async def _until(condition, *requests, turns=10_000):
-    """Yield to the loop until ``condition`` holds, at most ``turns`` times; a
-    request that ends first fails the test with its answer."""
-    for _ in range(turns):
-        if condition():
-            return
-        ended = [r.result() for r in requests if r.done()]
-        assert not ended, [(a.status_code, a.text) for a in ended]
-        await asyncio.sleep(0)
-    pytest.fail(f"not reached in {turns} turns of the loop")
+async def _until(seen, what, condition, *requests):
+    """Wait until ``condition`` holds, woken by each change ``seen`` notes or a
+    request's end; a request that ends first fails the test with its answer."""
+    try:
+        async with asyncio.timeout(HANG_GUARD_SECONDS):
+            while not condition():
+                ended = [r.result() for r in requests if r.done()]
+                assert not ended, [(a.status_code, a.text) for a in ended]
+                seen.changed.clear()
+                changed = asyncio.create_task(seen.changed.wait())
+                try:
+                    await asyncio.wait(
+                        [changed, *requests], return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    changed.cancel()
+    except TimeoutError:
+        pytest.fail(f"{what}: not reached in {HANG_GUARD_SECONDS}s")
 
 
 @pytest.mark.parametrize("count", [2, 3])
@@ -245,15 +272,21 @@ async def test_a_second_person_waits_one_job_on_two_slots_and_runs_beside_on_thr
     """Ruling 2026-11-19: the account is one principal per pool. On a two-slot
     pool the second person is served when the first's job ends, never beside
     it; with three slots they run side by side."""
-    world.tier1_slots(count)
-    world.seen.gate = asyncio.Event()
-    first = asyncio.create_task(world.post(requester=ID1))
-    await _until(lambda: world.seen.running == 1, first)
-    later = asyncio.create_task(world.post(requester=ID2))
-    await _until(lambda: len(world.seen.keys) == 2, first, later)
-    await _settle()
+    pool, seen = world.tier1_slots(count), world.seen
+    seen.gate = asyncio.Event()
+    first = world.spawn(world.post(requester=ID1))
+    await _until(seen, "the first job running", lambda: seen.running == 1, first)
+    later = world.spawn(world.post(requester=ID2))
+    await _until(seen, "both at the slots", lambda: len(seen.keys) == 2, first, later)
 
     account = world.ids["slack"]
+    if count == 2:  # ``acquire`` decides a grant before it awaits: this one waits
+        (waiting,) = [w for w in pool._waiting if w[1] == (account, ID2)]
+        assert not waiting[2].done()
+    else:
+        await _until(
+            seen, "the second job running", lambda: seen.running == 2, first, later
+        )
     assert world.seen.keys == [(account, ID1), (account, ID2)]
     assert world.seen.running == (1 if count == 2 else 2)
     world.seen.gate.set()
