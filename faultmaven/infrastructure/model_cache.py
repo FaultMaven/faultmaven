@@ -146,8 +146,9 @@ CGROUP_V1_NO_LIMIT = 2**62
 
 @dataclass(frozen=True)
 class CgroupMemory:
-    """The container's memory limit and OOM grouping, and where they came from:
-    ``cgroup_v2``, ``cgroup_v1``, ``absent``, ``unreadable`` or ``invalid``."""
+    """The container's memory limit and OOM grouping, and where the limit came
+    from: ``cgroup_v2``, ``cgroup_v1``, ``absent``, ``unreadable`` or
+    ``invalid``. ``oom_group`` is None under v1 and when v2's is not read."""
 
     memory_max_bytes: Optional[int]
     oom_group: Optional[bool]
@@ -155,33 +156,40 @@ class CgroupMemory:
 
 
 def _read_cgroup_int(path: str) -> Optional[int]:
-    """A non-negative integer, None for ``max``; OSError or ValueError else."""
+    """ASCII digits as an integer, None for ``max``; OSError or ValueError
+    (anything else, non-UTF-8 bytes included) otherwise."""
     with open(path, encoding="utf-8") as fh:
         text = fh.read().strip()
     if text == "max":
         return None
-    if int(text) < 0:
+    if not (text.isascii() and text.isdigit()):
         raise ValueError(text)
     return int(text)
+
+
+def _cgroup_oom_group() -> Optional[bool]:
+    """v2's ``memory.oom.group`` (kernel 4.19+), None when it cannot be read
+    or is not 0 or 1: its absence never discards the limit."""
+    try:
+        group = _read_cgroup_int(os.path.join(CGROUP_ROOT, "memory.oom.group"))
+    except (OSError, ValueError):
+        return None
+    return group == 1 if group in (0, 1) else None
 
 
 def cgroup_memory() -> CgroupMemory:
     """``memory.max`` and ``memory.oom.group`` (v2), else v1's limit (#2921).
 
     Mirrors :func:`_cgroup_cpu_quota`: the files under ``CGROUP_ROOT``, no
-    ``/proc/self/cgroup`` resolution. The version is decided by which file
-    exists, so a v2 file that cannot be read or parsed never falls through to
-    v1. Never raises.
+    ``/proc/self/cgroup`` resolution. The version is decided by which limit
+    file exists, so a v2 ``memory.max`` that cannot be read or parsed never
+    falls through to v1. Never raises.
     """
     v2 = os.path.join(CGROUP_ROOT, "memory.max")
     v1 = os.path.join(CGROUP_ROOT, "memory", "memory.limit_in_bytes")
     try:
         if os.path.lexists(v2):
-            limit = _read_cgroup_int(v2)
-            group = _read_cgroup_int(os.path.join(CGROUP_ROOT, "memory.oom.group"))
-            if group not in (0, 1):
-                raise ValueError(group)
-            return CgroupMemory(limit, group == 1, "cgroup_v2")
+            return CgroupMemory(_read_cgroup_int(v2), _cgroup_oom_group(), "cgroup_v2")
         if os.path.lexists(v1):
             limit = _read_cgroup_int(v1)
             unlimited = limit is None or limit >= CGROUP_V1_NO_LIMIT

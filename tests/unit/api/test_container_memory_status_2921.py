@@ -3,14 +3,13 @@
 Principle 14, *Container memory*: the worst-overlap formula's bounded terms,
 the jobs' address-space caps, beside the container's cgroup memory limit.
 Pin 1: the cgroup parse matrix. Pin 2: each term moves the figure by exactly
-its share, asserted as literals from the design text's worked figures. Pin 3:
-caps over the limit are reported and warned once, and the app still starts
-and serves under every cgroup state (ruling (c): never refused).
+its share, asserted as literals from the design text's worked figures. Pin 3,
+the app booted under each cgroup state, is the route test
+``tests/integration/api/test_container_memory_status_2921.py``.
 """
 
 from __future__ import annotations
 
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -26,15 +25,24 @@ MIB = 1024 * 1024
 GIB = 1024 * MIB
 
 
+#: A ``files`` value: a symlink at the path to a file that does not exist.
+DANGLING = object()
+
+
 def _tree(root, files):
-    """Write ``files`` ({relative path: text, or None for a directory there})."""
-    for rel, text in files.items():
+    """Write ``files`` ({relative path: text, bytes, None for a directory there,
+    or ``DANGLING``})."""
+    for rel, content in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        if text is None:
+        if content is None:
             path.mkdir()
+        elif content is DANGLING:
+            path.symlink_to(root / "nowhere")
+        elif isinstance(content, bytes):
+            path.write_bytes(content)
         else:
-            path.write_text(text)
+            path.write_text(content)
     return root
 
 
@@ -68,14 +76,28 @@ def _tree(root, files):
         ({"memory.max": None}, CgroupMemory(None, None, "unreadable")),
         (
             {"memory.max": "1024\n", "memory.oom.group": None},
-            CgroupMemory(None, None, "unreadable"),
+            CgroupMemory(1024, None, "cgroup_v2"),
         ),
+        ({"memory.max": "1024\n"}, CgroupMemory(1024, None, "cgroup_v2")),
+        (
+            {"memory.max": "1024\n", "memory.oom.group": "max\n"},
+            CgroupMemory(1024, None, "cgroup_v2"),
+        ),
+        ({"memory.max": DANGLING}, CgroupMemory(None, None, "unreadable")),
         (
             {"memory.max": "lots\n", "memory.oom.group": "1\n"},
             CgroupMemory(None, None, "invalid"),
         ),
         (
             {"memory.max": "1024\n", "memory.oom.group": "2\n"},
+            CgroupMemory(1024, None, "cgroup_v2"),
+        ),
+        ({"memory.max": b"\xff\xfe1024\n"}, CgroupMemory(None, None, "invalid")),
+        ({"memory.max": ""}, CgroupMemory(None, None, "invalid")),
+        ({"memory.max": "1_073_741_824\n"}, CgroupMemory(None, None, "invalid")),
+        ({"memory.max": "+1073741824\n"}, CgroupMemory(None, None, "invalid")),
+        (
+            {"memory.max": "\u0661\u0660\u0662\u0664\n"},
             CgroupMemory(None, None, "invalid"),
         ),
         (
@@ -99,9 +121,17 @@ def _tree(root, files):
         "v1-kernel-no-limit",
         "absent",
         "unreadable-memory-max",
-        "unreadable-oom-group",
+        "unreadable-oom-group-keeps-the-limit",
+        "absent-oom-group-keeps-the-limit",
+        "max-in-oom-group-keeps-the-limit",
+        "dangling-symlink-memory-max",
         "invalid-v2",
-        "invalid-oom-group",
+        "invalid-oom-group-keeps-the-limit",
+        "non-utf8",
+        "empty",
+        "underscore-digits",
+        "plus-sign",
+        "non-ascii-digits",
         "invalid-v1",
         "invalid-v2-does-not-fall-through-to-v1",
     ],
@@ -170,57 +200,3 @@ def test_a_second_serving_process_adds_its_pools_buffers_and_the_supervisor(
         "supervisor",
         "encode_buffers",
     ]
-
-
-# -- pin 3: over the limit, reported and served -----------------------------
-
-_WARNING = "The jobs' address-space caps"
-
-#: Every cgroup state the app must start and serve under, and what it reports.
-_STATES = {
-    "over": (
-        {"memory.max": f"{8 * GIB}\n", "memory.oom.group": "1\n"},
-        True,
-    ),
-    "absent": ({}, None),
-    "invalid": ({"memory.max": "garbage\n", "memory.oom.group": "1\n"}, None),
-    "unreadable": ({"memory.max": None}, None),
-}
-
-
-@pytest.mark.parametrize("state", list(_STATES))
-def test_the_app_starts_serves_and_reports_under_every_cgroup_state(
-    state, tmp_path, monkeypatch, caplog, unshared_app_boot
-):
-    from fastapi.testclient import TestClient
-
-    from faultmaven.main import app
-
-    files, exceeds = _STATES[state]
-    monkeypatch.setattr(model_cache, "CGROUP_ROOT", str(_tree(tmp_path, files)))
-    caplog.set_level(logging.WARNING, logger="faultmaven.bootstrap.lifespan")
-
-    with TestClient(app) as client:
-        login = client.post("/api/v1/auth/dev-login", json={"username": "admin"})
-        assert login.status_code == 200, login.text
-        response = client.get(
-            "/api/v1/admin/config/status",
-            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
-        )
-
-    assert response.status_code == 200, response.text
-    memory = response.json()["container_memory"]
-    assert memory["job_caps_exceed_limit"] is exceeds
-    warnings = [r for r in caplog.records if r.getMessage().startswith(_WARNING)]
-    if exceeds:
-        assert memory["memory_max_bytes"] == 8 * GIB
-        assert memory["oom_group"] is True
-        assert memory["headroom_bytes"] == 8 * GIB - memory["job_caps_bytes"] < 0
-        assert len(warnings) == 1
-        assert warnings[0].levelno == logging.WARNING
-        # The caps, never "memory" or a predicted OOM.
-        assert not {"memory", "oom"} & set(warnings[0].getMessage().lower().split())
-    else:
-        assert memory["cgroup_source"] == state
-        assert (memory["memory_max_bytes"], memory["headroom_bytes"]) == (None, None)
-        assert warnings == []

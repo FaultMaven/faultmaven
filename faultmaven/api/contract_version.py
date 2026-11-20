@@ -161,18 +161,20 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         ),
         body=r"""* `job_caps_bytes` = `pools_bytes` + `buffers_bytes` + `encode_bytes`: the
   bounded terms of Principle 14's worst-overlap formula for the running
-  configuration (`serving_processes`, `upload_limit_mb`, `tier1_slots`).
-  `encode_without_host_lock_bytes` is the encode's term when no process holds
-  the host lock. `unbounded_terms` names what no constant bounds and the
+  configuration (`serving_processes`, `upload_limit_mb`, `tier1_slots`), the
+  encode counted once, as while the host lock holds;
+  `encode_without_host_lock_bytes` is its term when no process holds it. `unbounded_terms` names what no constant bounds and the
   figure leaves out: `api`, `supervisor`, `encode_buffers`.
 * `memory_max_bytes` and `oom_group`, read from cgroup v2 (`memory.max`,
   `memory.oom.group`) or v1, with `cgroup_source` (`cgroup_v2`, `cgroup_v1`,
-  `absent`, `unreadable`, `invalid`).
+  `absent`, `unreadable`, `invalid`). An unreadable `memory.oom.group` leaves
+  `oom_group` null and keeps the limit.
 * `headroom_bytes` (the limit less the caps, negative when over) and
   `job_caps_exceed_limit` (true: the caps alone exceed it; false says
   nothing of the unbounded terms), both null with no limit known.
 
-Caps over the limit are logged at startup and never refused.""",
+Caps over the limit are logged at startup and never refused; a failure of
+that check is logged by its class, and startup continues.""",
     ),
     ContractChange(
         version="15.6.0",

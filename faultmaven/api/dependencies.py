@@ -150,7 +150,7 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         prep.PREPARATION_SLOTS * prep.PREPARATION_OUTPUT_LIMIT_BYTES
         + slots * (2 * 3 * u + tier1_output)
         + gate.GATE_SLOTS * (gate_texts_in + gate.GATE_OUTPUT_LIMIT_BYTES)
-        + count.TOKEN_COUNT_SLOTS * (2 * u + _MIB)
+        + count.TOKEN_COUNT_SLOTS * (2 * u + count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
     )
     encode = index_slot.ENCODE_MEMORY_BYTES
     caps = pools + buffers + encode

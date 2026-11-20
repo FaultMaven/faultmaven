@@ -100,6 +100,9 @@ TOKEN_COUNT_THREADS = 2
 #: quota (#2851).
 TOKEN_COUNT_MEMORY_BYTES = 1024 * 1024 * 1024
 
+#: What the parent reads from a count worker: its count.
+TOKEN_COUNT_OUTPUT_LIMIT_BYTES = 1024 * 1024
+
 #: Each step of a count: spawn to ``ready`` (0.3-0.4 s measured), each
 #: transfer, and the work: loading the tokenizer (1.0-1.1 s) and counting 10 MB
 #: of pack text (4.3 s at 2 CPUs), with an order of magnitude of headroom.
@@ -176,7 +179,7 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
             {"threads": TOKEN_COUNT_THREADS},
             memory_bytes=TOKEN_COUNT_MEMORY_BYTES,
             cpu_seconds=math.ceil(TOKEN_COUNT_PHASES.work * TOKEN_COUNT_THREADS) + 10,
-            output_limit_bytes=1024 * 1024,
+            output_limit_bytes=TOKEN_COUNT_OUTPUT_LIMIT_BYTES,
             phases=TOKEN_COUNT_PHASES,
             parts=tuple(texts),
         )

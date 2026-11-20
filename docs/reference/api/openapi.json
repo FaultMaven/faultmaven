@@ -2750,15 +2750,15 @@
         ]
       },
       "ContainerMemoryStatus": {
-        "description": "The jobs' address-space caps beside the container's memory limit (#2921).\n\nThe bounded terms of Principle 14's worst-overlap formula (*Container\nmemory*): every slot of every worker pool held at once, each job at its\n``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB\nencode. Caps, not resident use. Reported, never refused.",
+        "description": "The jobs' address-space caps beside the container's memory limit (#2921).\n\nThe bounded terms of Principle 14's worst-overlap formula (*Container\nmemory*): every slot of every worker pool held at once, each job at its\n``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB\nencode, once, as while the host lock holds. Caps, not resident use.\nReported, never refused.",
         "properties": {
           "buffers_bytes": {
-            "description": "serving_processes x each pool's slots x the request held twice and the output limit, Tier 1's input at 3 x the upload limit. The text the gate's verify publishes is outside it (#2674).",
+            "description": "serving_processes x each pool's slots x its job's buffers, U the upload limit: preparation, its output limit; Tier 1, 2 x 3U in and its output limit; the gate, 2 x two texts at the draft bound (4 bytes a character) in and its output limit (the text verify publishes is outside it, #2674); a token count, 2U in and its 1 MiB output limit.",
             "title": "Buffers Bytes",
             "type": "integer"
           },
           "cgroup_source": {
-            "description": "Where the limit was read: 'absent' when neither version's file exists; 'unreadable' or 'invalid' when it could not be read or parsed.",
+            "description": "Where the limit was read: 'absent' when neither version's limit file exists; 'unreadable' or 'invalid' when it could not be read or held no non-negative integer ('max' on v2).",
             "enum": [
               "cgroup_v2",
               "cgroup_v1",
@@ -2788,11 +2788,11 @@
                 "type": "null"
               }
             ],
-            "description": "memory_max_bytes - job_caps_bytes, negative when over: what the limit leaves for unbounded_terms, to compare with their measured resident use. Null with no limit known.",
+            "description": "memory_max_bytes - job_caps_bytes, negative when over: what the limit leaves for unbounded_terms, to compare with their measured resident use. Assumes the host lock holds, as job_caps_bytes does. Null with no limit known.",
             "title": "Headroom Bytes"
           },
           "job_caps_bytes": {
-            "description": "pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are outside it.",
+            "description": "pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are outside it. Assumes the host lock holds: without it the encode term is encode_without_host_lock_bytes (knowledge_indexing.host_lock_available).",
             "title": "Job Caps Bytes",
             "type": "integer"
           },
@@ -2805,7 +2805,7 @@
                 "type": "null"
               }
             ],
-            "description": "True: the jobs' caps alone exceed the limit. False: they alone fit, which says nothing of unbounded_terms. Null: no limit known.",
+            "description": "True: the jobs' caps alone exceed the limit. False: they alone fit, which says nothing of unbounded_terms, and assumes the host lock holds, as job_caps_bytes does. Null: no limit known.",
             "title": "Job Caps Exceed Limit"
           },
           "memory_max_bytes": {
@@ -2829,7 +2829,7 @@
                 "type": "null"
               }
             ],
-            "description": "memory.oom.group: true when one OOM kills the whole container, the API included. Null under cgroup_v1 (no grouping) or when unread.",
+            "description": "memory.oom.group: true when one OOM kills the whole container, the API included. Null under cgroup_v1 (no grouping), and when memory.oom.group cannot be read or holds neither 0 nor 1.",
             "title": "Oom Group"
           },
           "pools_bytes": {

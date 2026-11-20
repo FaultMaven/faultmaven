@@ -745,11 +745,17 @@ class ContainerMemoryStatus(BaseModel):
     The bounded terms of Principle 14's worst-overlap formula (*Container
     memory*): every slot of every worker pool held at once, each job at its
     ``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB
-    encode. Caps, not resident use. Reported, never refused.
+    encode, once, as while the host lock holds. Caps, not resident use.
+    Reported, never refused.
     """
 
     job_caps_bytes: int = Field(
-        description="pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are outside it."
+        description=(
+            "pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are "
+            "outside it. Assumes the host lock holds: without it the encode term "
+            "is encode_without_host_lock_bytes (knowledge_indexing."
+            "host_lock_available)."
+        )
     )
     pools_bytes: int = Field(
         description=(
@@ -759,9 +765,12 @@ class ContainerMemoryStatus(BaseModel):
     )
     buffers_bytes: int = Field(
         description=(
-            "serving_processes x each pool's slots x the request held twice and "
-            "the output limit, Tier 1's input at 3 x the upload limit. The text "
-            "the gate's verify publishes is outside it (#2674)."
+            "serving_processes x each pool's slots x its job's buffers, U the "
+            "upload limit: preparation, its output limit; Tier 1, 2 x 3U in and "
+            "its output limit; the gate, 2 x two texts at the draft bound (4 "
+            "bytes a character) in and its "
+            "output limit (the text verify publishes is outside it, #2674); a "
+            "token count, 2U in and its 1 MiB output limit."
         )
     )
     encode_bytes: int = Field(
@@ -792,28 +801,32 @@ class ContainerMemoryStatus(BaseModel):
     oom_group: Optional[bool] = Field(
         description=(
             "memory.oom.group: true when one OOM kills the whole container, the "
-            "API included. Null under cgroup_v1 (no grouping) or when unread."
+            "API included. Null under cgroup_v1 (no grouping), and when "
+            "memory.oom.group cannot be read or holds neither 0 nor 1."
         )
     )
     cgroup_source: Literal[
         "cgroup_v2", "cgroup_v1", "absent", "unreadable", "invalid"
     ] = Field(
         description=(
-            "Where the limit was read: 'absent' when neither version's file "
-            "exists; 'unreadable' or 'invalid' when it could not be read or parsed."
+            "Where the limit was read: 'absent' when neither version's limit "
+            "file exists; 'unreadable' or 'invalid' when it could not be read or "
+            "held no non-negative integer ('max' on v2)."
         )
     )
     headroom_bytes: Optional[int] = Field(
         description=(
             "memory_max_bytes - job_caps_bytes, negative when over: what the "
             "limit leaves for unbounded_terms, to compare with their measured "
-            "resident use. Null with no limit known."
+            "resident use. Assumes the host lock holds, as job_caps_bytes does. "
+            "Null with no limit known."
         )
     )
     job_caps_exceed_limit: Optional[bool] = Field(
         description=(
             "True: the jobs' caps alone exceed the limit. False: they alone fit, "
-            "which says nothing of unbounded_terms. Null: no limit known."
+            "which says nothing of unbounded_terms, and assumes the host lock "
+            "holds, as job_caps_bytes does. Null: no limit known."
         )
     )
 
