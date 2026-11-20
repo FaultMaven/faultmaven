@@ -106,15 +106,15 @@ async def test_a_provider_failure_is_named_by_class_and_code(lines):
     with pytest.raises(LLMException):
         await registry.route_request(prompt=vetted("why is node-3 down?"))
     rendered = lines()
-    failed = _named(
-        rendered, "primary failed", "status: 401", "LLMException[PROVIDER_AUTH_FAILED]"
-    )
+    failed = _named(rendered, "primary failed", "LLMException[PROVIDER_AUTH_FAILED]")
     assert failed["category"] == "request_rejected"
+    assert failed["status"] == 401
     assert failed["frames"].startswith("LLMException:")
     raised = _named(
         rendered, "All providers failed", "LLMException[PROVIDER_AUTH_FAILED]"
     )
-    assert "(status: 401)" in raised["event"]
+    assert raised["category"] == "request_rejected"
+    assert raised["status"] == 401
     assert raised["frames"].startswith("LLMException:")
 
 
@@ -129,11 +129,13 @@ async def test_the_router_names_the_chain_failure_by_class_and_code(lines):
     ):
         with pytest.raises(LLMException):
             await LLMRouter().route(prompt=vetted("node-3"), bypass_cache=True)
-    _named(
+    failed = _named(
         lines(),
         "LLM Router: All providers failed",
-        "LLMException[PROVIDER_AUTH_FAILED] (status: 401)",
+        "LLMException[PROVIDER_AUTH_FAILED]",
     )
+    assert failed["category"] == "request_rejected"
+    assert failed["status"] == 401
 
 
 # ── local_llm_manager.py ──────────────────────────────────────────────────

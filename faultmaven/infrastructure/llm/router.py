@@ -995,10 +995,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 (time.monotonic() - request_started) * 1000.0,
                 success=False,
             )
+            status = getattr(e, "status_code", None)
             self.logger.error(
-                f"❌ LLM Router: All providers failed: {exception_log_name(e)} (status: {getattr(e, 'status_code', None)})",
+                f"❌ LLM Router: All providers failed: {exception_log_name(e)}",
                 exc_info=True,
-                extra={"category": declared_llm_category(e)},
+                extra={"category": declared_llm_category(e), "status": status},
             )
             raise
 

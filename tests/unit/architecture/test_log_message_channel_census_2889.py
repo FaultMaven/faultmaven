@@ -25,9 +25,10 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
 * **A call** to ``format_exc``, ``format_exception``, ``format_exception_only``,
   ``print_exc`` or ``print_exception``, or ``.format()`` on a
   ``TracebackException(...)`` or ``TracebackException.from_exception(...)``.
-* **``SystemExit(<non-literal>)``** and **``sys.exit(<non-literal>)``**: the
-  interpreter prints a non-integer code (§7's outputs table, the ``SystemExit``
-  row).
+* **``SystemExit(<code>)``** and **``sys.exit(<code>)``** whose code may be text
+  (:func:`_may_be_text`: an f-string, a ``+`` or ``%``, a ``str``/``format``/
+  ``repr`` call, or a read of an exception name): the interpreter prints a
+  non-integer code (§7's outputs table, the ``SystemExit`` row).
 
 **Exception names** are the names bound by ``except ... as N``, a function's
 parameters annotated ``...Error``/``...Exception`` or unannotated and named
@@ -35,9 +36,10 @@ parameters annotated ``...Error``/``...Exception`` or unannotated and named
 assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
 from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
-(``failure = task.exception()``) or a ``gather(..., return_exceptions=True)``,
-and the targets of a ``for`` loop over one of those, over a group's
-``.exceptions`` or over such a ``gather``.
+(``failure = task.exception()``) or a ``gather(..., return_exceptions=True)``.
+A ``for`` loop's targets are exceptions over a group's ``.exceptions`` or such
+a ``gather``, and texts over any other read of those names (``e.args``,
+``str(e).splitlines()``).
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
 ``type(e)``, ``len(result.stderr)``, ...); an attribute in :data:`SAFE_ATTRS`
@@ -57,13 +59,13 @@ and the census counts no call to it (:data:`NOT_SITES`).
 through two names (``a = str(e); b = a``), a container, or a parameter typed
 ``str`` (``error: str`` holding a caller's ``str(e)``); the worker child's
 ``failure`` frame, whose text arrives as data; a payload that is not an
-exception or a subprocess's output (a response body). The allowlist counts sites per file, so switching one
-site and adding another in the same file leaves the count, and the guard,
-unchanged. **Over-counts**: an alias is any name assigned from an exception, so
-one holding a flag or a count computed from it
-(``cancelled = _arrived_cancelled(failure)``) is read as text, and a loop over
-``zip(names, results)`` binds both targets; ``sys.exit(main())`` and
-``sys.exit(STARTUP_FAILURE)``, whose codes are integers, are counted.
+exception or a subprocess's output (a response body); an exit whose code is a
+bare name holding text the census does not track (``sys.exit(msg)``). The
+allowlist counts sites per file, so switching one site and adding another in
+the same file leaves the count, and the guard, unchanged. **Over-counts**: an
+alias is any name assigned from an exception, so one holding a flag or a count
+computed from it (``cancelled = _arrived_cancelled(failure)``) is read as
+text, and a loop over ``zip(names, results)`` binds both targets.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
@@ -333,12 +335,14 @@ def _bound(targets) -> set:
     }
 
 
-def _iterates_exceptions(iterable: ast.AST, names: _Names) -> bool:
-    """A loop over a tracked name, a group's ``.exceptions`` or a
-    ``gather(..., return_exceptions=True)`` result binds exceptions."""
-    return _reads(iterable, names.all).name_hit or any(
+def _iterates_exceptions(iterable: ast.AST, gathered: set) -> bool:
+    """A loop over a group's ``.exceptions`` or a
+    ``gather(..., return_exceptions=True)`` result, inline or by a name it was
+    assigned to, binds exceptions."""
+    return any(
         (isinstance(sub, ast.Attribute) and sub.attr == "exceptions")
         or _is_gather_of_exceptions(sub)
+        or (isinstance(sub, ast.Name) and sub.id in gathered)
         for sub in ast.walk(iterable)
     )
 
@@ -346,9 +350,10 @@ def _iterates_exceptions(iterable: ast.AST, names: _Names) -> bool:
 def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
     """The names assigned, anywhere in ``scope`` outside a nested function,
     from an exception name in force where the assignment stands, then the
-    targets of a loop over one of those (:func:`_iterates_exceptions`): one
-    level, flow-insensitive."""
-    exceptions, texts = set(), set()
+    targets of a loop: exceptions over exceptions (:func:`_iterates_exceptions`),
+    texts over any other read of a tracked name (``e.args``,
+    ``str(e).splitlines()``). One level, flow-insensitive."""
+    exceptions, texts, gathered = set(), set(), set()
 
     def visit(node: ast.AST, in_force: _Names, loops: bool) -> None:
         for child in ast.iter_child_nodes(node):
@@ -363,18 +368,32 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
                 bound = _bound(targets)
                 if _is_exception_valued(child.value, here.exceptions):
                     exceptions.update(bound)
-                elif _reads(child.value, here.all).name_hit or any(
-                    _is_gather_of_exceptions(sub) for sub in ast.walk(child.value)
-                ):
+                elif any(_is_gather_of_exceptions(n) for n in ast.walk(child.value)):
                     texts.update(bound)
-            looping = loops and isinstance(child, (ast.For, ast.AsyncFor))
-            if looping and _iterates_exceptions(child.iter, here):
-                exceptions.update(_bound([child.target]))
+                    gathered.update(bound)
+                elif _reads(child.value, here.all).name_hit:
+                    texts.update(bound)
+            if loops and isinstance(child, (ast.For, ast.AsyncFor)):
+                if _iterates_exceptions(child.iter, gathered):
+                    exceptions.update(_bound([child.target]))
+                elif _reads(child.iter, here.all).name_hit:
+                    texts.update(_bound([child.target]))
             visit(child, here, loops)
 
     visit(scope, names, loops=False)
     visit(scope, names.adding(exceptions=exceptions, texts=texts), loops=True)
     return names.adding(exceptions=exceptions, texts=texts)
+
+
+def _may_be_text(code: ast.AST, names: _Names) -> bool:
+    """An exit code the interpreter would print: one built as a string (an
+    f-string, a ``+``/``%``, a ``str``/``format``/``repr`` call) or one reading
+    an exception name. ``main()``, ``0 if ok else 1`` and a constant are not."""
+    return (
+        isinstance(code, (ast.JoinedStr, ast.BinOp))
+        or (isinstance(code, ast.Call) and _callee(code) in ("str", "format", "repr"))
+        or _reads(code, names.all).name_hit
+    )
 
 
 Site = Tuple[int, str]
@@ -400,7 +419,7 @@ def _call_site(call: ast.Call, names: _Names) -> str:
         and isinstance(func, ast.Attribute)
         and _receiver_name(func) == "sys"
     )
-    if exiting and call.args and not isinstance(call.args[0], ast.Constant):
+    if exiting and call.args and _may_be_text(call.args[0], names):
         return "systemexit-text"
     printing = _is_print(call)
     if not (printing or _is_log_call(call)):
@@ -485,18 +504,17 @@ ALLOWED = {
     "bootstrap/lifespan.py": 11,
     "bootstrap/middleware.py": 5,
     "bootstrap/startup.py": 2,
-    "cli/backfill_case_outcome.py": 2,
-    "cli/demote_platform_admin.py": 5,
-    "cli/personal_tenant.py": 9,
-    "cli/promote_platform_admin.py": 3,
-    "cli/provision_service_account.py": 1,
-    "cli/provision_sso_org.py": 11,
-    "cli/purge_traces.py": 3,
-    "cli/reassign_cases.py": 5,
-    "cli/remove_org_member.py": 6,
-    "cli/reset_kb.py": 5,
-    "cli/set_turn_cap.py": 2,
-    "cli/wipe_deployment.py": 4,
+    "cli/backfill_case_outcome.py": 1,
+    "cli/demote_platform_admin.py": 4,
+    "cli/personal_tenant.py": 6,
+    "cli/promote_platform_admin.py": 2,
+    "cli/provision_sso_org.py": 10,
+    "cli/purge_traces.py": 2,
+    "cli/reassign_cases.py": 4,
+    "cli/remove_org_member.py": 5,
+    "cli/reset_kb.py": 4,
+    "cli/set_turn_cap.py": 1,
+    "cli/wipe_deployment.py": 3,
     "config/investigation_capability.py": 2,
     "config/llm_config_overrides.py": 6,
     "config/revocation_storage.py": 1,
@@ -531,7 +549,6 @@ ALLOWED = {
     "infrastructure/caching/intelligent_cache.py": 13,
     "infrastructure/concurrency/teardown.py": 1,
     "infrastructure/embedding_guard.py": 1,
-    "infrastructure/encode_worker.py": 1,
     "infrastructure/error_recovery.py": 4,
     "infrastructure/health/component_monitor.py": 4,
     "infrastructure/index_slot.py": 1,
@@ -567,13 +584,12 @@ ALLOWED = {
     "infrastructure/tasks/case_cleanup.py": 6,
     "infrastructure/tasks/job_runners.py": 4,
     "infrastructure/tasks/llm_usage_retention.py": 1,
-    "infrastructure/token_count_worker.py": 1,
     "infrastructure/worker_process.py": 2,
     "jobs/case_cleanup.py": 1,
     "jobs/kb_seed.py": 1,
     "jobs/kb_vector_enterprise_backfill.py": 2,
     "jobs/llm_usage_retention.py": 1,
-    "jobs/run.py": 5,
+    "jobs/run.py": 4,
     "main.py": 27,
     "modules/agent/domain/services/investigation_service/attachments.py": 1,
     "modules/agent/domain/services/investigation_service/service.py": 2,
@@ -622,16 +638,13 @@ ALLOWED = {
     "modules/knowledge/domain/services/document_parser.py": 3,
     "modules/knowledge/domain/services/document_preprocessor.py": 3,
     "modules/knowledge/domain/services/knowledge_service.py": 20,
-    "modules/knowledge/domain/services/preparation_worker.py": 1,
     "modules/knowledge/domain/services/runbook_gate.py": 1,
-    "modules/knowledge/domain/services/validation_worker.py": 1,
     "modules/knowledge/infrastructure/persistence/knowledge_item_repository.py": 13,
-    "modules/preprocessing/extraction_worker.py": 1,
     "modules/preprocessing/preprocessing_service.py": 2,
     "modules/report/api/routes.py": 7,
     "modules/report/domain/services/report_generation_service.py": 1,
     "modules/report/domain/services/report_recommendation_service.py": 1,
-    "server.py": 2,
+    "server.py": 1,
     "services/base.py": 4,
     "utils/frontmatter.py": 1,
     "utils/model_context.py": 1,
@@ -707,6 +720,10 @@ def _found(source: str) -> List[Site]:
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n    for r in rs:\n        logger.info(f'{r}')",
         "async def f():\n    for r in await gather(a(), return_exceptions=True):\n        logger.info(f'{r}')",
         "def f(e):\n    for x in e.args:\n        logger.info(f'{x}')",
+        "def f(e):\n    for x in e.args:\n        log.warning('x', arg=x)",
+        "def f(e):\n    for line in str(e).splitlines():\n"
+        "        logger.info('x', extra={'line': line})",
+        "def f(e):\n    sys.exit(e)",
         "traceback.print_exception(e)",
         "traceback.format_exception_only(type(e), e)",
         "lines = traceback.TracebackException.from_exception(e).format()",
@@ -746,6 +763,10 @@ def test_a_site_is_found(source):
         "def f(e):\n    logger.info(f'{getattr(e, \"status_code\", None)}')",
         "raise SystemExit('refusing to run')",
         "sys.exit(1)",
+        "sys.exit(main())",
+        "sys.exit(0 if ok else 1)",
+        "def f(group: ExceptionGroup):\n    for m in group.exceptions:\n"
+        "        log.warning('x', error=m)",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
