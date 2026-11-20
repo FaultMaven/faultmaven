@@ -169,7 +169,7 @@ def _apply_evidence_need_updates(
                     f"case {case.case_id}: no valid motivating "
                     f"hypothesis (omitted, or all references were "
                     f"dangling/retired). "
-                    f"request_text={update.request_text[:80]!r}"
+                    f"request_text_len={len(update.request_text)}"
                 )
                 metadata.setdefault("validation_repairs", []).append(
                     "Rejected causal-purpose evidence_need create "

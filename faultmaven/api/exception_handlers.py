@@ -1699,7 +1699,8 @@ async def request_validation_exception_handler(
     shapes :func:`_withheld_input` names — which is where the boundary of the
     #1156 guard is written down, limits included.
 
-    The log line carries the same sanitized errors the response carries, plus
+    The log line carries each error's ``loc``, ``type`` and input length, never
+    the input (case content, principles §7 rule 3), plus
     :func:`describe_request_body`'s content-free shape, and no other request
     content: the path rather than ``request.url`` (which would put a
     query-string credential on an ERROR record, and is what every sibling
@@ -1727,13 +1728,18 @@ async def request_validation_exception_handler(
             }
         )
 
+    logged = [
+        {"loc": e.get("loc"), "type": e.get("type")}
+        | ({"input_len": len(str(e["input"]))} if "input" in e else {})
+        for e in errors
+    ]
     logger.error(
         "Validation error on %s %s: %s",
         request.method,
         request.url.path,
-        errors,
+        logged,
         extra={
-            "validation_errors": errors,
+            "validation_errors": logged,
             "body": describe_request_body(body),
         },
     )

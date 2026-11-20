@@ -486,7 +486,10 @@ class LocalProvider(BaseLLMProvider):
         # Discards the router-level knobs, then merges the rest (see base).
         self._merge_extra_kwargs(payload, kwargs, model=model)
 
-        self.logger.debug(f"Request payload: {payload}")
+        self.logger.debug(
+            f"Request payload: model={model}, messages="
+            f"{len(messages) if messages else 1}, prompt_len={len(prompt or '')}"
+        )
 
         async with aiohttp.ClientSession() as session:
             try:
@@ -511,7 +514,7 @@ class LocalProvider(BaseLLMProvider):
                         )
 
                     data = await response.json()
-                    self.logger.debug(f"Response data: {data}")
+                    self.logger.debug(f"Response data: response_len={len(str(data))}")
 
                     # Extract response content
                     if not data.get("choices") or len(data["choices"]) == 0:
@@ -524,7 +527,7 @@ class LocalProvider(BaseLLMProvider):
                     # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
                     stop_reason = normalize_stop_reason(choice.get("finish_reason"))
                     content = message.get("content") or ""
-                    self.logger.debug(f"Raw content: {repr(content)}")
+                    self.logger.debug(f"Raw content: content_len={len(content)}")
 
                     # Extract tool calls if present. FUNCTION_CALLING-capable
                     # local models (functionary, hermes served via vLLM/llama.cpp
@@ -547,7 +550,9 @@ class LocalProvider(BaseLLMProvider):
                     if not tool_calls:
                         try:
                             content = self._validate_response_content(content)
-                            self.logger.debug(f"Validated content: {repr(content)}")
+                            self.logger.debug(
+                                f"Validated content: content_len={len(content)}"
+                            )
                         except Exception as e:
                             self.logger.error(f"Content validation failed: {e}")
                             raise

@@ -477,10 +477,10 @@ def link_evidence_suggestions_to_needs(
             if created_this_turn >= _MAX_BACKFILLED_PER_TURN:
                 logger.warning(
                     "Backfill cap reached on case %s turn %s; EVIDENCE "
-                    "suggestion left unlinked: %.80r",
+                    "suggestion left unlinked: ask_len=%d",
                     case.case_id,
                     current_turn,
-                    ask_text,
+                    len(ask_text),
                 )
                 retained.append(follow_up)
                 continue

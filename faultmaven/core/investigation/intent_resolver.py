@@ -318,7 +318,9 @@ class IntentResolver:
             if len(digits) == 1:
                 choice_num = int(digits[0])
             else:
-                logger.debug(f"Classifier returned unparseable response: '{text}'")
+                logger.debug(
+                    f"Classifier returned unparseable response: text_len={len(text)}"
+                )
                 return None
 
         # Validate range

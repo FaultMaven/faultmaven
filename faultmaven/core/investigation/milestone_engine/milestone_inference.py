@@ -82,10 +82,10 @@ def _apply_symptom_retraction(
     unverify_problem(case, via="retraction")
     metadata.setdefault("milestones_retracted", []).append("symptom_verified")
     logger.info(
-        "Case %s: symptom_verified RETRACTED at turn %s — %s",
+        "Case %s: symptom_verified RETRACTED at turn %s — rationale_len=%d",
         case.case_id,
         case.current_turn,
-        str(rationale)[:200],
+        len(str(rationale)),
     )
     return True
 

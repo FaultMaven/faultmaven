@@ -1221,14 +1221,11 @@ class StructuredOutputGenerator:
                 func_name = tc.function.get("name", "")
                 args_str = tc.function.get("arguments", "{}")
                 logger.info(
-                    "Tool loop iter %d: LLM called tool=%s args=%s",
+                    "Tool loop iter %d: LLM called tool=%s (call %s) args_len=%d",
                     iteration,
                     func_name,
-                    (
-                        args_str[:200]
-                        if isinstance(args_str, str)
-                        else str(args_str)[:200]
-                    ),
+                    tc.id,
+                    len(args_str if isinstance(args_str, str) else str(args_str)),
                 )
 
                 args_well_formed = True

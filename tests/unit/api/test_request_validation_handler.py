@@ -556,12 +556,15 @@ def test_error_log_does_not_carry_the_request_body(auth_client, logs):
     assert SECRET_API_KEY not in logs.everything()
     assert SECRET_API_KEY not in response.text
 
-    # #1048's deliberate behaviour is intact: the *offending* field's own value
-    # is still echoed, in both channels. Blanket-stripping would pass the
-    # security assertion above while making every 422 useless.
+    # #1048's deliberate behaviour is intact in the response: the *offending*
+    # field's own value is still echoed. The log names it by place, kind and
+    # length, never the value (#2890).
     assert errors[0]["loc"] == ["body", "fallback_chain"]
     assert errors[0]["input"] == "openai,groq"
-    assert "openai,groq" in logs.everything()
+    assert "openai,groq" not in logs.everything()
+    assert getattr(logs.records[0], "validation_errors") == [
+        {"loc": ["body", "fallback_chain"], "type": "list_type", "input_len": 11}
+    ]
 
     # The body's shape survives, which is the part that was diagnostic.
     assert getattr(logs.records[0], "body") == "<dict: 2 items>"

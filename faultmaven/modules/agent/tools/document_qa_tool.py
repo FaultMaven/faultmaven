@@ -216,7 +216,7 @@ class DocumentQATool:
         its ``content``, ``score`` and ``metadata``; none when nothing was
         answered from.
         """
-        logger.info(f"Query: {question[:100]}, scope_id: {scope_id}")
+        logger.info(f"Query: question_len={len(question)}, scope_id: {scope_id}")
 
         result = await self.answer_question(
             question,

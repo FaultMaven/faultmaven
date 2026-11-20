@@ -407,12 +407,12 @@ class SearchFileTool(AgentTool):
             results = all_results[:effective_max_results]
 
             logger.info(
-                "search_file: %s (%s), mode=%s, format=excerpts, query='%s', "
+                "search_file: %s (%s), mode=%s, format=excerpts, query_len=%d, "
                 "results=%d (total=%d, truncated=%s)",
                 evidence_id,
                 filename,
                 search_type,
-                query[:50],
+                len(query),
                 len(results),
                 total_matches,
                 truncated,
@@ -495,12 +495,12 @@ class SearchFileTool(AgentTool):
         returned = all_matches[:effective_max_results]
 
         logger.info(
-            "search_file: %s (%s), mode=%s, format=count, query='%s', "
+            "search_file: %s (%s), mode=%s, format=count, query_len=%d, "
             "match_count=%d (returned=%d, truncated=%s)",
             evidence_id,
             filename,
             search_type,
-            query[:50],
+            len(query),
             match_count,
             len(returned),
             truncated,

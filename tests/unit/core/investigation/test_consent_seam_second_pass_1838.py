@@ -700,7 +700,9 @@ class TestTheCardRule:
     def test_the_rewrite_is_logged_with_the_label(self, card_counter, caplog):
         with caplog.at_level("INFO", logger=turn_records.__name__):
             _flatten_follow_ups([_card("Check the pool config", "Proceed")], {})
-        assert "Check the pool config" in caplog.text
+        # The label by its length, never its text (#2890).
+        assert "Check the pool config" not in caplog.text
+        assert f"label_len={len('Check the pool config')}" in caplog.text
         assert "#1839" in caplog.text
 
     async def test_through_the_engine(self, card_counter):

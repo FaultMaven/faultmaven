@@ -273,7 +273,7 @@ class HypothesisManager:
 
         logger.info(
             f"Created hypothesis {hypothesis.hypothesis_id}: "
-            f"{statement[:50]}... (category={category}, likelihood={capped_likelihood}, turn={current_turn})"
+            f"statement_len={len(statement)} (category={category}, likelihood={capped_likelihood}, turn={current_turn})"
         )
 
         return hypothesis
@@ -374,7 +374,7 @@ class HypothesisManager:
                     f"Revised {stance.value} evidence link on hypothesis: {evidence_id}",
                     extra={
                         "hypothesis_id": hypothesis.hypothesis_id,
-                        "hypothesis": hypothesis.statement[:50],
+                        "statement_len": len(hypothesis.statement),
                         "prior_stance": prior.stance.value,
                         "prior_confidence": prior.stance_confidence,
                     },
@@ -388,7 +388,7 @@ class HypothesisManager:
                 f"Linked {stance_label} evidence to hypothesis: {evidence_id}",
                 extra={
                     "hypothesis_id": hypothesis.hypothesis_id,
-                    "hypothesis": hypothesis.statement[:50],
+                    "statement_len": len(hypothesis.statement),
                 },
             )
 
@@ -676,7 +676,8 @@ class HypothesisManager:
         ):
             hypothesis.state = HypothesisState.INCONCLUSIVE
             logger.info(
-                f"Hypothesis INCONCLUSIVE: {hypothesis.statement} "
+                f"Hypothesis INCONCLUSIVE: {hypothesis.hypothesis_id} "
+                f"statement_len={len(hypothesis.statement)} "
                 f"(likelihood={hypothesis.likelihood:.2f}, stagnant for "
                 f"{hypothesis.iterations_without_progress} turns)",
                 extra={
@@ -899,7 +900,8 @@ class HypothesisManager:
         hypothesis.last_updated_turn = current_turn
 
         logger.info(
-            f"Hypothesis {hypothesis.hypothesis_id} REFUTED: {reason} "
+            f"Hypothesis {hypothesis.hypothesis_id} REFUTED: "
+            f"reason_len={len(reason)} "
             f"(evidence: {refuting_evidence_ids})"
         )
 

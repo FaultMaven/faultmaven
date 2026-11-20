@@ -1006,7 +1006,7 @@ async def search_sessions(
 
         logger.info(
             f"Search returned {len(sessions)} sessions for user {current_user.user_id} "
-            f"(query={query}, status={status})"
+            f"(query_len={len(str(query or ''))}, status={status})"
         )
 
         return {"sessions": sessions_response, "total": len(sessions)}
