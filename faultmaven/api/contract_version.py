@@ -167,8 +167,10 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
   figure leaves out: `api`, `supervisor`, `encode_buffers`.
 * `memory_max_bytes` and `oom_group`, read from cgroup v2 (`memory.max`,
   `memory.oom.group`) or v1, with `cgroup_source` (`cgroup_v2`, `cgroup_v1`,
-  `absent`, `unreadable`, `invalid`). An unreadable `memory.oom.group` leaves
-  `oom_group` null and keeps the limit.
+  `absent`, `unreadable`, `invalid`). v2's `max` is no limit: a null
+  `memory_max_bytes` under `cgroup_v2`. `oom_group` is null under any source
+  but `cgroup_v2`, and an unreadable `memory.oom.group` leaves it null and
+  keeps the limit.
 * `headroom_bytes` (the limit less the caps, negative when over) and
   `job_caps_exceed_limit` (true: the caps alone exceed it; false says
   nothing of the unbounded terms), both null with no limit known.

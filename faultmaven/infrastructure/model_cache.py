@@ -148,7 +148,8 @@ CGROUP_V1_NO_LIMIT = 2**62
 class CgroupMemory:
     """The container's memory limit and OOM grouping, and where the limit came
     from: ``cgroup_v2``, ``cgroup_v1``, ``absent``, ``unreadable`` or
-    ``invalid``. ``oom_group`` is None under v1 and when v2's is not read."""
+    ``invalid``. ``oom_group`` is None unless the source is ``cgroup_v2`` and
+    ``memory.oom.group`` reads 0 or 1."""
 
     memory_max_bytes: Optional[int]
     oom_group: Optional[bool]

@@ -801,8 +801,9 @@ class ContainerMemoryStatus(BaseModel):
     oom_group: Optional[bool] = Field(
         description=(
             "memory.oom.group: true when one OOM kills the whole container, the "
-            "API included. Null under cgroup_v1 (no grouping), and when "
-            "memory.oom.group cannot be read or holds neither 0 nor 1."
+            "API included. Null whenever cgroup_source is not cgroup_v2 "
+            "(cgroup_v1 has no grouping; otherwise the limit was not read), and "
+            "when memory.oom.group cannot be read or holds neither 0 nor 1."
         )
     )
     cgroup_source: Literal[
@@ -811,7 +812,8 @@ class ContainerMemoryStatus(BaseModel):
         description=(
             "Where the limit was read: 'absent' when neither version's limit "
             "file exists; 'unreadable' or 'invalid' when it could not be read or "
-            "held no non-negative integer ('max' on v2)."
+            "held neither a non-negative integer nor 'max' (v2's no limit, "
+            "reported as cgroup_v2)."
         )
     )
     headroom_bytes: Optional[int] = Field(
