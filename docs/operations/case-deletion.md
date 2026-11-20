@@ -28,12 +28,12 @@ Then the row goes, in one transaction with its team shares and a
 Spans hold no content (#2616 K0): no prompt, no response, and no exception
 message or traceback; a failed call shows only its class, as
 `metadata.error_class`. `OPIK_CAPTURE_CONTENT=true` stops the process at
-startup until a retention bound for the trace store is verified (#2616 K3),
-and `GET /admin/config/status` reports `trace_backend.capture_content`.
-Traces written before this release keep their prompts, responses and
-exception text, with no retention bound today (#2604, #2616 K3); an operator
-who wants them gone deletes the Opik project, or its traces, in Opik. The
-eraser below still runs for them.
+startup, and `GET /admin/config/status` reports `trace_backend.capture_content`.
+The trace store has no retention bound: none can be verified through Opik's
+API (#2700). Traces written before #2669 (PR #2698) keep their prompts,
+responses and exception text until an operator
+[purges them](#purging-the-traces-written-before-2698) or deletes the Opik
+project. The eraser below still runs for them.
 
 Each trace and span of a model call for a case is tagged with the case and its
 enterprise, and the delete finds them by those tags. The traces clear first, so
@@ -60,6 +60,39 @@ and the traces already recorded can still be deleted.
 
 Without `OPIK_ENABLED` and a backend URL, no process records a trace, and the
 audit row names `llm_traces` under `not_configured`.
+
+### Purging the traces written before #2698
+
+`fm-purge-traces` counts, then deletes, the traces and spans that started
+before `--before` in the configured project, across enterprises: traces before
+#2578 carry no tags. Run it in each deployment that ever ran an image older
+than #2698, once per backend URL, workspace and project that received traces,
+selected by `OPIK_URL_OVERRIDE` (or `OPIK_USE_LOCAL` and `OPIK_LOCAL_URL`),
+`COMET_WORKSPACE` and `OPIK_PROJECT_NAME`. Nothing else removes traces left
+behind by a changed URL, workspace or project (#2581).
+
+1. Choose `--before`, with its UTC offset, from the deployment's rollout
+   history: any time after the last process from an older image (pod, job or
+   CronJob, a rollback included) stopped. A later cutoff costs only telemetry:
+   no trace since #2698 holds content, and no trace a newer replica parks
+   (#2573) does either.
+2. `fm-purge-traces --before <time>` prints the backend, workspace, project
+   and the traces and spans it would delete.
+3. `fm-purge-traces --before <time> --delete --confirm-project <project>`
+   prints them before and after the delete, and then counts the traces and
+   spans anywhere in the project that carry error text, expecting 0. That
+   count sees only failed calls: a prompt or response of a call that
+   succeeded after a cutoff that is too early is invisible to it, and no
+   filter asks for a non-empty input. Only step 1 rules those out.
+4. Record the counts in the deployment's change record.
+
+Exit 1 is a refusal, a project the backend does not have, or a failure when
+nothing was deleted or with a 4xx other than 408 or 429: read the error before
+running it again. Exit 3: run it again; it is idempotent, and the backend
+deletes spans after it answers. Exit 4: error text remains, so the cutoff is
+too early. Deleted rows are no longer served by the backend, but
+ClickHouse keeps them in its parts until a merge, and in backups: deleting the
+Opik project is the complete alternative.
 
 ## Draft and document deletes (#2575)
 

@@ -56,10 +56,11 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
     DECLARED: dict[str, str] = tomllib.load(_handle)["project"]["scripts"]
 
 #: Commands that act on no database and so may skip the gate, each with its
-#: reason. Empty: every command shipped today reads or writes the deployment's
-#: database. An entry here is a decision someone must write down, never a way
-#: to quiet this test.
-NEEDS_NO_DATABASE: dict[str, str] = {}
+#: reason. An entry here is a decision someone must write down, never a way to
+#: quiet this test.
+NEEDS_NO_DATABASE: dict[str, str] = {
+    "fm-purge-traces": "it reads and deletes in the trace backend alone (#2700)",
+}
 
 #: Commands that start no event loop, each with its reason: the census's
 #: positive control (it sees a loop start) does not apply to them.
@@ -316,12 +317,14 @@ def _database_scripts() -> dict[str, ast.Module]:
     return found
 
 
-def _reaches_database(tree: ast.Module) -> bool:
-    """The scan's pattern: an import or a call that reaches the database."""
+def _reaches_database(tree: ast.Module, harmless: frozenset = frozenset()) -> bool:
+    """The scan's pattern: an import or a call that reaches the database. An
+    ``from m import a, b`` whose every ``m.a`` is in ``harmless`` is not one."""
     for node in ast.walk(tree):
         modules = []
         if isinstance(node, ast.ImportFrom) and node.module:
-            modules = [node.module]
+            names = {f"{node.module}.{alias.name}" for alias in node.names}
+            modules = [] if names <= harmless else [node.module]
         elif isinstance(node, ast.Import):
             modules = [alias.name for alias in node.names]
         if any(_reaches_the_database(m) for m in modules):
@@ -354,6 +357,34 @@ def test_each_exempt_script_exists_and_still_matches_the_scan(script):
     assert _reaches_database(
         ast.parse(path.read_text(encoding="utf-8"))
     ), f"{script} no longer matches the scan: drop it from _NOT_DATABASE_SCRIPTS"
+
+
+#: What a command imports that opens no store: the log chain on stderr (#2888).
+_HARMLESS_COMMAND_IMPORTS = frozenset({"faultmaven.cli._log_chain"})
+
+
+def _command_tree(command: str) -> ast.Module:
+    return _module_source(DECLARED[command].partition(":")[0])[1]
+
+
+@pytest.mark.parametrize("command", sorted(NEEDS_NO_DATABASE))
+def test_a_command_exempt_from_the_gate_reaches_no_database(command):
+    assert not _reaches_database(_command_tree(command), _HARMLESS_COMMAND_IMPORTS), (
+        f"{command} is in NEEDS_NO_DATABASE but its module imports or calls "
+        "what reaches the database: gate it, or drop the exemption"
+    )
+
+
+@pytest.mark.parametrize("command", sorted(NEEDS_NO_DATABASE))
+def test_the_exemption_check_sees_a_command_that_composes(command):
+    """Positive control: the same module, running through the container."""
+    tree = _command_tree(command)
+    tree.body += ast.parse(
+        "from faultmaven.cli._container import run_with_container\n"
+        "run_with_container(main())\n"
+    ).body
+
+    assert _reaches_database(tree, _HARMLESS_COMMAND_IMPORTS)
 
 
 def test_the_script_scan_finds_the_known_database_scripts():

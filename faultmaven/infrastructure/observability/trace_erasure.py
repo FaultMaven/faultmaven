@@ -9,6 +9,9 @@ deleted so a retry can finish: there is no queued purge. Each delete runs it
 before any row changes, so a trace backend that is down leaves the case, draft
 or document untouched. What a delete can still miss is in
 ``docs/operations/case-deletion.md``.
+
+:func:`purge_traces_before` is the operator's purge by start time
+(``fm-purge-traces``, #2700), through the same read and delete.
 """
 
 import asyncio
@@ -19,6 +22,8 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, List, Optional
 
 from faultmaven.exceptions import ServiceException
@@ -42,6 +47,10 @@ TRACE_DELETE_CHUNK_SIZE = 1000
 #: The whole erase, and what ends a very long case: the number of pages is the
 #: case's to set.
 TRACE_ERASE_TIMEOUT_SECONDS = 60
+#: The purge's wait for the spans of the traces it deleted: the backend deletes
+#: them after it has answered the trace delete (Opik's ``TraceDeletedListener``).
+PURGE_SETTLE_POLLS = 20
+PURGE_SETTLE_SECONDS = 3.0
 
 #: Every field each read can leave out, so no case content comes back into
 #: memory. ``id`` and a span's ``trace_id`` cannot be excluded, and the SDK's page
@@ -143,46 +152,19 @@ class LLMTraceEraser:
             f'metadata.{_OWNER_KEYS[kind]} = "{owner_id}" '
             f'AND metadata.enterprise_id = "{enterprise_id}"'
         )
-        # The tag and the content travel in separate batches, so a dropped trace
-        # batch leaves a content span on an untagged trace: the spans find it.
-        # The paged endpoints, not the streaming search: a stream that fails
-        # mid-query ends as cleanly as one that is done.
-        rest = client.rest_client
-        options = {"timeout_in_seconds": self._request_timeout_seconds}
-        project = self.project_name or client.project_name
-        found: List[str] = []
-        for get_page, entity, exclude, row_key in (
-            (rest.traces.get_traces_by_project, "traces", TRACE_EXCLUDE, "id"),
-            (rest.spans.get_spans_by_project, "spans", SPAN_EXCLUDE, "trace_id"),
-        ):
-            read_page = functools.partial(
-                get_page,
-                project_name=project,
-                filters=opik_sdk.parsed_filters(filter_string, entity),
-                exclude=json.dumps(exclude),
-                size=TRACE_PAGE_SIZE,
-                request_options=options,
-            )
-            try:
-                found += _read_ids(read_page, row_key, owner, deadline)
-            except Exception as exc:
-                # Only the first read's 404 can mean the project does not exist.
-                if not (entity == "traces" and opik_sdk.is_not_found(exc)):
-                    raise
-                if not _no_such_project(rest, project, options):
-                    raise
-                logger.info(
-                    "No trace project %r: nothing of %s to delete", project, owner
-                )
-                return 0
-        ids = list(dict.fromkeys(found))
-        for start in range(0, len(ids), TRACE_DELETE_CHUNK_SIZE):
-            rest.traces.delete_traces(
-                ids=ids[start : start + TRACE_DELETE_CHUNK_SIZE],
-                request_options=options,
-            )
-        logger.info("Deleted %d traces of %s", len(ids), owner)
-        return len(ids)
+        deleted = _Project(
+            client.rest_client,
+            self.project_name or client.project_name,
+            {"timeout_in_seconds": self._request_timeout_seconds},
+            owner,
+        ).read_and_delete(
+            filter_string,
+            lambda read_page, row_key: _read_ids(read_page, row_key, owner, deadline),
+        )
+        if deleted is None:
+            return 0
+        logger.info("Deleted %d traces of %s", deleted, owner)
+        return deleted
 
     def _deliver_queued(self, client: Any, owner: str) -> None:
         """Send what this pod holds for the backend, so the search can find it.
@@ -229,6 +211,214 @@ class UnavailableTraceEraser:
         raise _refused(f"conversion {conversion_id}", self.reason)
 
 
+@dataclass(frozen=True)
+class _Project:
+    """The reads and the delete of one project's traces, refused as ``owner``.
+    With ``project_id``, the backend confines each delete to the project too."""
+
+    rest: Any
+    name: str
+    options: dict
+    owner: str
+    project_id: Optional[str] = None
+
+    def read_each(
+        self, filter_string: str, read: Callable[[Callable[..., Any], str], Any]
+    ) -> Optional[List[Any]]:
+        """``read(read_page, row_key)`` over the traces, then the spans, that
+        ``filter_string`` matches, every content field excluded; None when the
+        backend has no such project. The paged endpoints, not the streaming
+        search: a stream that fails mid-query ends as cleanly as one that is
+        done."""
+        rest, results = self.rest, []
+        for get_page, entity, exclude, row_key in (
+            (rest.traces.get_traces_by_project, "traces", TRACE_EXCLUDE, "id"),
+            (rest.spans.get_spans_by_project, "spans", SPAN_EXCLUDE, "trace_id"),
+        ):
+            read_page = functools.partial(
+                get_page,
+                project_name=self.name,
+                filters=opik_sdk.parsed_filters(filter_string, entity),
+                exclude=json.dumps(exclude),
+                request_options=self.options,
+            )
+            try:
+                results.append(read(read_page, row_key))
+            except Exception as exc:
+                # Only the first read's 404 can mean the project does not exist.
+                if not (entity == "traces" and opik_sdk.is_not_found(exc)):
+                    raise
+                if not _no_such_project(rest, self.name, self.options):
+                    raise
+                logger.info(
+                    "No trace project %r: nothing of %s to delete",
+                    self.name,
+                    self.owner,
+                )
+                return None
+        return results
+
+    def read_and_delete(
+        self,
+        filter_string: str,
+        read: Callable[[Callable[..., Any], str], List[str]],
+        sent: Optional[set] = None,
+        resend: bool = False,
+    ) -> Optional[int]:
+        """Delete, in chunks, the traces ``read`` finds by the traces' ids and
+        the spans' trace ids: a dropped trace batch leaves a content span on an
+        untagged trace, which the spans find. Every id comes from a read of this
+        project. Adds each chunk to ``sent`` before sending it, and skips the
+        ids already there unless ``resend``. The ids sent, or None for no
+        project."""
+        found = self.read_each(filter_string, read)
+        if found is None:
+            return None
+        ids = list(dict.fromkeys(i for rows in found for i in rows))
+        if sent is not None and not resend:
+            ids = [i for i in ids if i not in sent]
+        options = self.options
+        if self.project_id is not None:
+            # Else the delete, and its span cascade, reach across the workspace.
+            body = {"project_id": self.project_id}
+            options = {**options, "additional_body_parameters": body}
+        for start in range(0, len(ids), TRACE_DELETE_CHUNK_SIZE):
+            chunk = ids[start : start + TRACE_DELETE_CHUNK_SIZE]
+            if sent is not None:
+                sent.update(chunk)
+            self.rest.traces.delete_traces(ids=chunk, request_options=options)
+        return len(ids)
+
+
+@dataclass(frozen=True)
+class TraceCount:
+    traces: int
+    spans: int
+
+
+@dataclass(frozen=True)
+class TracePurge:
+    """What :func:`purge_traces_before` counted in ``project``."""
+
+    project: str
+    #: The cutoff as sent: UTC, ``%Y-%m-%dT%H:%M:%S.%fZ``.
+    cutoff: str
+    before: TraceCount
+    #: The rest of a delete: None on a dry run.
+    after: Optional[TraceCount] = None
+    #: A delete's last check, with no time filter: what in the project still
+    #: carries an error's text, which no trace written since #2698 does. A
+    #: call that succeeded carries none, so it cannot show the rest.
+    error_text: Optional[TraceCount] = None
+    #: Distinct trace ids sent for deletion.
+    sent: int = 0
+    #: The backend has no project of that name: nothing was counted.
+    missing: bool = False
+
+
+def purge_traces_before(
+    cutoff: datetime,
+    *,
+    delete: bool,
+    project_name: Optional[str] = None,
+    client_factory: Callable[[], Any] = opik_sdk.cached_client,
+    request_timeout_seconds: int = 15,
+    sleep: Callable[[float], None] = time.sleep,
+    progress: Callable[[str], None] = lambda line: None,
+) -> TracePurge:
+    """Count, and with ``delete`` delete, the traces and spans that started
+    before ``cutoff`` in the project (#2700): an operator's purge of what
+    #2698's release left with content. Blocking, with no deadline: each request
+    has its timeout.
+
+    It reads one page of ids and deletes the ids it has not sent, until a page
+    holds none. The backend deletes a trace's spans after it has answered, so
+    the recount waits up to ``PURGE_SETTLE_POLLS`` times, sending the delete
+    again for the trace ids of spans still there. Nothing is sent from this
+    process's queue: a command records no trace. Running it again deletes
+    nothing it already deleted. A failure raises with ``details["rerun"]``:
+    True once a delete may have gone out, unless the answer was a 4xx other
+    than 408 or 429.
+    """
+    if cutoff.utcoffset() is None:
+        raise ValueError("the cutoff needs a UTC offset: without one it is no instant")
+    # The backend parses the value as an Instant after decoding it twice, so an
+    # offset's "+" arrives as a space: UTC and "Z" only.
+    stamp = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    owner = f"traces started before {stamp}"
+    sent: set = set()
+    try:
+        client = client_factory()
+        name = project_name or client.project_name
+        options = {"timeout_in_seconds": request_timeout_seconds}
+        project_id = _project_id(client.rest_client, name, options, owner)
+        if project_id is None:
+            return TracePurge(name, stamp, TraceCount(0, 0), missing=True)
+        target = _Project(client.rest_client, name, options, owner, project_id)
+        before_cutoff = f'start_time < "{stamp}"'
+
+        def count(filter_string: str) -> TraceCount:
+            found = target.read_each(filter_string, _total)
+            return TraceCount(0, 0) if found is None else TraceCount(*found)
+
+        def one_page(read_page: Callable[..., Any], row_key: str) -> List[str]:
+            page = read_page(page=1, size=TRACE_PAGE_SIZE)
+            rows = [getattr(row, row_key) for row in page.content or []]
+            if not all(rows):
+                raise _refused(owner, "a row came back without its id")
+            return rows
+
+        before, none = count(before_cutoff), TraceCount(0, 0)
+        if not delete:
+            return TracePurge(name, stamp, before)
+        # A span the backend has not deleted yet names a trace already sent:
+        # only new ids are progress, and the wait below handles the rest.
+        while target.read_and_delete(before_cutoff, one_page, sent):
+            progress(f"Sent {len(sent)} trace ids for deletion")
+        after = count(before_cutoff)
+        for poll in range(PURGE_SETTLE_POLLS):
+            if after == none:
+                break
+            if poll:
+                # What one wait did not clear: send their trace ids again.
+                target.read_and_delete(before_cutoff, one_page, sent, resend=True)
+            sleep(PURGE_SETTLE_SECONDS)
+            after = count(before_cutoff)
+        error_text = count("error_info is_not_empty")
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        final = isinstance(status, int) and 400 <= status < 500
+        rerun = bool(sent) and not (final and status not in (408, 429))
+        # An SDK error is named by class only: its text carries the backend's body.
+        refusal = exc if isinstance(exc, ServiceException) else None
+        refusal = refusal or _refused(owner, exception_class_name(exc))
+        raise ServiceException(str(refusal), {"rerun": rerun}) from exc
+    return TracePurge(name, stamp, before, after, error_text, len(sent))
+
+
+def _project_id(rest: Any, project: str, options: dict, owner: str) -> Optional[str]:
+    """The id of the project named exactly ``project``, or None when the
+    backend lists every partial match and none is it (#2588's check)."""
+    page = rest.projects.find_projects(
+        name=project, size=TRACE_PAGE_SIZE, request_options=options
+    )
+    listed = page.content or []
+    for listed_project in listed:
+        if listed_project.name == project:
+            return listed_project.id
+    if page.total != len(listed):
+        raise _refused(owner, "the backend's project list disagrees with its total")
+    return None
+
+
+def _total(read_page: Callable[..., Any], row_key: str) -> int:
+    """The ``total`` a page of one row carries: the count, with no ids read."""
+    total = read_page(page=1, size=1).total
+    if not isinstance(total, int):
+        raise ServiceException(f"Cannot count {STORE_NAME}: a page carried no total")
+    return total
+
+
 def _no_such_project(rest: Any, project: str, options: dict) -> bool:
     """#2588's positive check, after a 404 for ``project``: the backend that
     answered lists its projects, and none is named exactly ``project``. Its name
@@ -259,7 +449,7 @@ def _read_ids(
         # Stops a worker that outlived ``wait_for`` on an owner of endless pages.
         if time.monotonic() > deadline:
             raise _refused(owner, "ran past its time limit")
-        page = read_page(page=len(ids) // TRACE_PAGE_SIZE + 1)
+        page = read_page(page=len(ids) // TRACE_PAGE_SIZE + 1, size=TRACE_PAGE_SIZE)
         total = page.total if total is None else total
         rows = [getattr(row, row_key) for row in page.content or []]
         if not (

@@ -262,7 +262,10 @@ def test_every_dev_script_the_census_finds_is_driven_here():
 
 
 def test_every_declared_command_has_an_argument_vector():
-    missing = sorted(command for command in DECLARED if not ARGV.get(command))
+    from tests.unit.cli.test_database_gate import NEEDS_NO_DATABASE
+
+    gated = set(DECLARED) - set(NEEDS_NO_DATABASE)
+    missing = sorted(command for command in gated if not ARGV.get(command))
     assert not missing, (
         f"no ARGV row for {missing}: add a vector for each mode the command's "
         "main() branches on, so this file drives it"

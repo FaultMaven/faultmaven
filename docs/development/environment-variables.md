@@ -592,7 +592,7 @@ error class, and no prompt, response or exception text (#2616 K0).
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `OPIK_CAPTURE_CONTENT` | bool | false | Spans carry prompts and responses. `true` stops the API, every `fm-*` command and every job at startup until a retention bound for the trace store is verified (#2616 K3). `GET /admin/config/status` reports it as `trace_backend.capture_content` |
+| `OPIK_CAPTURE_CONTENT` | bool | false | Spans carry prompts and responses. `true` stops the API, every `fm-*` command and every job at startup until a retention bound for the trace store is verified (#2616). `GET /admin/config/status` reports it as `trace_backend.capture_content` |
 
 ## LLM Trace SDK (Opik)
 
