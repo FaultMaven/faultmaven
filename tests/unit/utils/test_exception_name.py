@@ -259,3 +259,23 @@ def test_a_log_name_holds_no_text_and_no_unchecked_code(error, named):
 )
 def test_a_first_party_code_is_named_beside_its_class(error, named):
     assert exception_log_name(error) == named
+
+
+def test_a_code_copied_from_a_third_party_is_written_when_it_matches():
+    """``CircuitBreakerError``'s latch (``infrastructure/base_client.py``) and
+    ``MilestoneEngineError`` (``milestone_engine/engine.py``) copy another
+    exception's ``error_code``: an upper-case one is written, as the docstring
+    says. The pattern bounds what can reach the line, not where it came from."""
+
+    class VendorError(Exception):
+        error_code = "VENDOR_QUOTA_HIT"
+
+    copied = getattr(VendorError(MARKER), "error_code", None)
+    assert (
+        exception_log_name(CircuitBreakerError(MARKER, error_code=copied))
+        == "CircuitBreakerError[VENDOR_QUOTA_HIT]"
+    )
+    assert (
+        exception_log_name(MilestoneEngineError(MARKER, error_code=copied))
+        == "MilestoneEngineError[VENDOR_QUOTA_HIT]"
+    )

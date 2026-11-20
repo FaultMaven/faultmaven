@@ -9,9 +9,8 @@ case reader is served, names the class (#2072, #2332).
 (``docs/architecture/core-architecture/architectural-design-principles.md``),
 the one statement of what a line may hold and of the redactor under it. This
 module supplies the names that rule uses: the class chain
-(:func:`exception_class_chain`), a log message's name for an exception, the
-chain with each first-party ``error_code`` (:func:`exception_log_name`, rule 1),
-the frames without any message
+(:func:`exception_class_chain`, with each first-party code in
+:func:`exception_log_name`), the frames without any message
 (:func:`exception_frames`), and the exception a record's ``exc_info`` names
 (:func:`logged_exception`).
 """
@@ -39,28 +38,27 @@ def exception_class_chain(exc: BaseException) -> str:
     return " <- ".join(exception_class_name(link) for link in walk_cause_chain(exc))
 
 
-#: A first-party ``error_code`` a line may hold: an upper-case identifier, as
-#: every code ``faultmaven`` defines is.
+#: The ``error_code`` a line may hold: an upper-case identifier, as every one
+#: ``faultmaven`` defines is.
 ERROR_CODE_PATTERN = r"[A-Z][A-Z0-9_]{0,63}"
 
 
 def exception_log_name(exc: BaseException) -> str:
-    """How a log message names ``exc`` (principles §7, rule 1: "A first-party
-    exception contributes its class and its ``error_code`` ..., not its
-    message"): :func:`exception_class_chain`, with each first-party link's code
-    as ``Name[CODE]`` (``ServiceException <- LLMException[PROVIDER_AUTH_FAILED]``).
+    """How a log message names ``exc`` (principles §7, rule 1):
+    :func:`exception_class_chain`, with a first-party link's ``error_code`` as
+    ``Name[CODE]`` (``ServiceException <- LLMException[PROVIDER_AUTH_FAILED]``).
 
     A link is first-party when its class's module is under ``faultmaven``
-    (``faultmaven_cloud`` is not). Its code is written only when it is exactly a
-    ``str`` matching :data:`ERROR_CODE_PATTERN`: a code copied from a third
-    party's exception, an enum, a ``str`` subclass or a long one is left off.
-    Never raises (#2889)."""
+    (``faultmaven_cloud`` is not); its code is written only when it is exactly
+    a ``str`` matching :data:`ERROR_CODE_PATTERN`, so an enum, a ``str``
+    subclass or a long one is left off. A code a first-party exception copied
+    from another's (``CircuitBreakerError``'s latch, ``MilestoneEngineError``)
+    is written when it matches. Never raises (#2889)."""
     names = []
     try:
         for link in walk_cause_chain(exc):
             code = _first_party_code(link)
-            name = exception_class_name(link)
-            names.append(f"{name}[{code}]" if code else name)
+            names.append(exception_class_name(link) + (f"[{code}]" if code else ""))
     except Exception:  # a ``__cause__`` that raises ends the chain
         pass
     return " <- ".join(names) or exception_class_name(exc)
@@ -69,14 +67,13 @@ def exception_log_name(exc: BaseException) -> str:
 def _first_party_code(link: BaseException) -> Optional[str]:
     try:
         module = type(link).__module__
-        if not isinstance(module, str) or module.split(".")[0] != "faultmaven":
-            return None
-        code = getattr(link, "error_code", None)
+        first_party = isinstance(module, str) and module.split(".")[0] == "faultmaven"
+        code = getattr(link, "error_code", None) if first_party else None
     except Exception:  # an ``error_code`` property that raises
         return None
-    if type(code) is str and re.fullmatch(ERROR_CODE_PATTERN, code):
-        return code
-    return None
+    return (
+        code if type(code) is str and re.fullmatch(ERROR_CODE_PATTERN, code) else None
+    )
 
 
 #: How far :func:`exception_frames` descends into an ``ExceptionGroup``, the caps

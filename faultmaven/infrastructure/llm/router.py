@@ -996,7 +996,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 success=False,
             )
             self.logger.error(
-                f"❌ LLM Router: All providers failed: {exception_log_name(e)}",
+                f"❌ LLM Router: All providers failed: {exception_log_name(e)} (status: {getattr(e, 'status_code', None)})",
                 exc_info=True,
                 extra={"category": declared_llm_category(e)},
             )
@@ -1020,7 +1020,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             opik_sdk.update_current_span(metadata=owner)
         except Exception as e:
-            self.logger.warning(f"Failed to tag Opik trace: {exception_log_name(e)}")
+            self.logger.warning(
+                f"Failed to tag Opik trace: {exception_log_name(e)}", exc_info=True
+            )
 
     def _update_opik_span(
         self,
@@ -1109,7 +1111,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 usage=usage,
             )
         except Exception as e:
-            self.logger.warning(f"Failed to update Opik span: {exception_log_name(e)}")
+            self.logger.warning(
+                f"Failed to update Opik span: {exception_log_name(e)}", exc_info=True
+            )
 
     def get_provider_status(self):
         """Get status of all providers"""

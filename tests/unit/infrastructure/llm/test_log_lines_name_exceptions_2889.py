@@ -106,9 +106,16 @@ async def test_a_provider_failure_is_named_by_class_and_code(lines):
     with pytest.raises(LLMException):
         await registry.route_request(prompt=vetted("why is node-3 down?"))
     rendered = lines()
-    failed = _named(rendered, "primary failed", "LLMException[PROVIDER_AUTH_FAILED]")
+    failed = _named(
+        rendered, "primary failed", "status: 401", "LLMException[PROVIDER_AUTH_FAILED]"
+    )
     assert failed["category"] == "request_rejected"
-    _named(rendered, "All providers failed", "LLMException[PROVIDER_AUTH_FAILED]")
+    assert failed["frames"].startswith("LLMException:")
+    raised = _named(
+        rendered, "All providers failed", "LLMException[PROVIDER_AUTH_FAILED]"
+    )
+    assert "(status: 401)" in raised["event"]
+    assert raised["frames"].startswith("LLMException:")
 
 
 # ── router.py ─────────────────────────────────────────────────────────────
@@ -125,7 +132,7 @@ async def test_the_router_names_the_chain_failure_by_class_and_code(lines):
     _named(
         lines(),
         "LLM Router: All providers failed",
-        "LLMException[PROVIDER_AUTH_FAILED]",
+        "LLMException[PROVIDER_AUTH_FAILED] (status: 401)",
     )
 
 
@@ -213,7 +220,8 @@ def test_a_metering_failure_is_named_by_class(lines):
         side_effect=RuntimeError(f"pricing {MARKER}"),
     ):
         record_provider_call("openai", "gpt-x", SimpleNamespace(), 1.0)
-    _named(lines(), "record_provider_call failed", "RuntimeError")
+    failed = _named(lines(), "record_provider_call failed", "RuntimeError")
+    assert failed["frames"].startswith("RuntimeError:")
 
 
 # ── structured_output_capability.py ───────────────────────────────────────
@@ -256,8 +264,8 @@ async def test_a_refused_reply_is_named_by_class(lines):
         with pytest.raises(ValueError):
             await send_to_model(provider, prompt=vetted("node-3"))
     rendered = lines()
-    _named(rendered, "Content validation failed", "ValueError")
-    _named(rendered, "Request failed after", "ValueError")
+    for event in ("Content validation failed", "Request failed after"):
+        assert _named(rendered, event, "ValueError")["frames"].startswith("ValueError:")
 
 
 async def test_an_error_body_is_named_by_status_and_length(lines):

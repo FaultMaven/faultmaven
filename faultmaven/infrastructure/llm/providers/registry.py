@@ -1151,7 +1151,8 @@ class ProviderRegistry:
 
                 self.logger.warning(
                     f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
-                    f"health: {state.health.value}): {exception_log_name(e)}",
+                    f"health: {state.health.value}, status: {getattr(e, 'status_code', None)}): {exception_log_name(e)}",
+                    exc_info=True,
                     extra={"category": declared_llm_category(e)},
                 )
                 last_error = _higher_ranked(last_error, e)
@@ -1173,8 +1174,10 @@ class ProviderRegistry:
         # failure directly (``chain_failure_rank``) so that retryability
         # metadata is preserved for upstream retry logic in call_external().
         self.logger.error(
-            "All providers failed. Raised error: %s",
+            "All providers failed. Raised error: %s (status: %s)",
             exception_log_name(last_error) if last_error is not None else None,
+            getattr(last_error, "status_code", None),
+            exc_info=last_error,
             extra={"category": declared_llm_category(last_error)},
         )
         if last_error is not None:

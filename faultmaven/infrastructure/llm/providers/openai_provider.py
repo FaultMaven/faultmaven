@@ -11,11 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import aiohttp
 
-from faultmaven.exceptions import (
-    LLMErrorCategory,
-    LLMException,
-    declared_llm_category,
-)
+from faultmaven.exceptions import LLMErrorCategory, LLMException, declared_llm_category
 from faultmaven.infrastructure.llm.prompt_cache import cache_boundary_parts
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,

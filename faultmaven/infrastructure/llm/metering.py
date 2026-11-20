@@ -291,7 +291,9 @@ def record_provider_call(
         )
     except Exception as exc:  # metering must never break a request
         logger.warning(
-            "record_provider_call failed (non-fatal): %s", exception_log_name(exc)
+            "record_provider_call failed (non-fatal): %s",
+            exception_log_name(exc),
+            exc_info=True,
         )
 
 
@@ -327,5 +329,7 @@ def record_investigation_call(
                 ).inc(amount)
     except Exception as exc:  # metering must never break a request
         logger.warning(
-            "record_investigation_call failed (non-fatal): %s", exception_log_name(exc)
+            "record_investigation_call failed (non-fatal): %s",
+            exception_log_name(exc),
+            exc_info=True,
         )

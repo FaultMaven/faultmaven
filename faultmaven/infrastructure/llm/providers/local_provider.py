@@ -569,7 +569,8 @@ class LocalProvider(BaseLLMProvider):
                             )
                         except Exception as e:
                             self.logger.error(
-                                f"Content validation failed: {exception_log_name(e)}"
+                                f"Content validation failed: {exception_log_name(e)}",
+                                exc_info=True,
                             )
                             raise
 
@@ -625,7 +626,8 @@ class LocalProvider(BaseLLMProvider):
             except Exception as e:
                 response_time = self._get_response_time_ms()
                 self.logger.error(
-                    f"Request failed after {response_time}ms: {exception_log_name(e)}"
+                    f"Request failed after {response_time}ms: {exception_log_name(e)}",
+                    exc_info=True,
                 )
                 raise
 
