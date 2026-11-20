@@ -6,8 +6,9 @@ a hypothesis is staged with the turn's other cause work: replayed when the user
 confirms, dropped with it when they decline. An entry naming a hypothesis the
 case does not hold after the apply (one the gate refused) is dropped. A
 same-turn ref (``new_index_N``, or a bare ``N``) is resolved through the apply's
-emit order and stored as the id it names. Entries naming no hypothesis apply as
-before. No live LLM.
+emit order and stored as the id it names. An evidence ref resolves through the
+apply's evidence slots and is stored only when the id is on the case; the entry
+stands either way. Entries naming no hypothesis apply as before. No live LLM.
 """
 
 import pytest
@@ -15,10 +16,18 @@ import pytest
 from faultmaven.core.investigation.milestone_engine.statement_revision import (
     confirm_revision,
 )
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _validate_with_degradation,
+)
 from faultmaven.core.investigation.problem_status import decline_revision
-from faultmaven.core.investigation.schemas import HypothesisToAdd, JournalEntryOutput
+from faultmaven.core.investigation.schemas import (
+    HypothesisToAdd,
+    InvestigationResponse_Diagnosis,
+    JournalEntryOutput,
+)
 from faultmaven.modules.case.contracts import (
     AnswerVia,
+    EvidenceCategory,
     Hypothesis,
     HypothesisCategory,
     HypothesisGenerationMode,
@@ -144,3 +153,87 @@ async def test_a_staged_ref_to_the_bundles_own_hypothesis_is_kept_on_confirm():
     assert [
         (e.content, e.hypothesis_id, e.turn) for e in case.investigation_journal
     ] == [(FINDING, replayed, 4)]
+
+
+async def test_a_bare_int_ref_survives_validation_and_resolves():
+    """An unquoted ``0`` in either field is ``new_index_0`` (``IdRef``); as a
+    plain ``str`` it failed validation and the entry was pruned."""
+    dsu = _turn("unused")
+    dsu.evidence_to_add = [revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")]
+    state = dsu.model_dump(mode="json")
+    entry = {"entry_type": "finding", "content": FINDING}
+    state["journal_entries"] = [{**entry, "hypothesis_id": 0, "evidence_id": 0}]
+    parsed = _validate_with_degradation(
+        {"agent_response": "Noted.", "state_updates": state},
+        InvestigationResponse_Diagnosis,
+    )
+    (je,) = parsed.state_updates.journal_entries
+    assert (je.hypothesis_id, je.evidence_id) == ("new_index_0", "new_index_0")
+
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    await revision._apply(engine, case, parsed.state_updates)
+    (minted_hyp,) = case.hypotheses
+    (stored,) = case.investigation_journal
+    assert (stored.hypothesis_id, stored.evidence_id) == (
+        minted_hyp,
+        case.evidence[0].evidence_id,
+    )
+
+
+_KNOWN = revision._evidence(EvidenceCategory.SYMPTOM_EVIDENCE, "known")
+_REFUSED_ROW = revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "r").model_copy(
+    update={"source_file_id": "file_ffffffffffff"}
+)
+
+
+@pytest.mark.parametrize(
+    "ref, rows, expected",
+    [
+        ("new_index_0", ["new"], "minted"),
+        (_KNOWN.evidence_id, [], _KNOWN.evidence_id),
+        ("new_index_1", ["new"], None),  # out of range
+        ("new_index_0", ["refused", "new"], None),  # a refused slot
+        ("ev_000000000000", [], None),  # an id the case does not hold
+        ("", [], None),
+    ],
+)
+async def test_an_evidence_ref_is_stored_only_as_an_id_on_the_case(ref, rows, expected):
+    engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
+    revision._with(case, _KNOWN)
+    new = revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")
+    dsu = revision._DSU(
+        evidence_to_add=[new if r == "new" else _REFUSED_ROW for r in rows],
+        journal_entries=[
+            JournalEntryOutput(entry_type="finding", content=FINDING, evidence_id=ref)
+        ],
+    )
+    await revision._apply(engine, case, dsu)
+
+    if expected == "minted":
+        (expected,) = [e.evidence_id for e in case.evidence if e is not _KNOWN]
+    (stored,) = case.investigation_journal
+    assert (stored.content, stored.evidence_id) == (FINDING, expected)
+
+
+async def test_a_staged_entrys_evidence_ref_is_the_minted_id_after_replay():
+    """Staged with the cause work as written; the replay resolves it through
+    the bundle's own evidence slots."""
+    engine, case = revision._engine(), revision._case()
+    dsu = revision._revision_turn_with_cause_work()
+    dsu.journal_entries = [
+        JournalEntryOutput(
+            entry_type="finding",
+            content=FINDING,
+            hypothesis_id="new_index_0",
+            evidence_id="new_index_2",
+        )
+    ]
+    await revision._apply(engine, case, dsu)
+    assert case.investigation_journal == [], "premise: held with the cause work"
+
+    case.current_turn = 5
+    await confirm_revision(engine.responses, case, {}, via=AnswerVia.CLICK)
+
+    (a2,) = [e.evidence_id for e in case.evidence if "fact-a2" in e.summary]
+    (stored,) = case.investigation_journal
+    assert stored.evidence_id == a2

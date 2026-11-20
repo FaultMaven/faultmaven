@@ -1437,13 +1437,20 @@ class JournalEntryOutput(BaseModel):
             return v[:197] + "..."
         return v
 
-    evidence_id: Optional[str] = Field(
+    # IdRef: step 6 resolves ``new_index_N`` through the turn's slots.
+    evidence_id: Optional[IdRef] = Field(
         default=None,
-        description="Evidence ID this entry relates to, if any",
+        description=(
+            "Evidence ID this entry relates to, if any: an existing ev_ id, "
+            "or new_index_N for evidence added this turn"
+        ),
     )
-    hypothesis_id: Optional[str] = Field(
+    hypothesis_id: Optional[IdRef] = Field(
         default=None,
-        description="Hypothesis ID this entry relates to, if any",
+        description=(
+            "Hypothesis ID this entry relates to, if any: an existing hyp_ id, "
+            "or new_index_N for a hypothesis added this turn"
+        ),
     )
 
 
