@@ -58,7 +58,8 @@ pytestmark = pytest.mark.integration
 
 READABLE, UNREADABLE = "case_2852aaaaaaaa", "case_2852bbbbbbbb"
 ID1, ID2 = "a" * 32, "b" * 32
-# Bounds a hang, not a performance bound: each wait ends on the event it waits for.
+# The file's one time limit, bounding a hang, not performance: each wait ends on
+# the event it waits for, and a request's wait for a Tier 1 slot is set to it.
 HANG_GUARD_SECONDS = 60
 
 
@@ -128,6 +129,10 @@ async def world(monkeypatch):
 
     monkeypatch.setattr(FairSlots, "acquire", acquiring)
     monkeypatch.setattr(worker_process, "run", run)
+    # A slot waiter falls back to the busy preview past its wait (#2942).
+    monkeypatch.setattr(
+        preprocessing_service, "TIER1_SLOT_WAIT_SECONDS", HANG_GUARD_SECONDS
+    )
 
     def tier1_slots(count):
         pool = FairSlots(count)
