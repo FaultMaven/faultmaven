@@ -1316,7 +1316,9 @@ async def fulltext_search_documents(
         )
 
         logger.info(
-            f"Full-text search for '{request.query}' returned {result.get('total_results', 0)} results"
+            f"Full-text search (user_id="
+            f"{current_user.user_id if current_user else None}, query_len="
+            f"{len(request.query)}) returned {result.get('total_results', 0)} results"
         )
 
         return result

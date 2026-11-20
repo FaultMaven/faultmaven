@@ -682,7 +682,7 @@ class PreprocessingService:
                 "falling through to standard extractor dispatch",
                 extra={
                     "attachment_filename": filename,
-                    "content_prefix": content[:120],
+                    "content_len": len(content),
                     "captured_at_preamble": has_captured_at,
                     "h2_heading": has_h2_heading,
                 },

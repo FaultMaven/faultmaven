@@ -292,7 +292,9 @@ class TestThePreFetchLogCarriesIdentity:
         records = [r for r in caplog.records if "KB pre-fetch" in r.getMessage()]
         assert len(records) == 1, "the pre-fetch logs once per firing"
         message = records[0].getMessage()
-        assert RUNBOOK_TITLE in message
+        # Named by id and title length, never the title (#2890).
+        assert RUNBOOK_TITLE not in message
+        assert f"title_len={len(RUNBOOK_TITLE)}" in message
         assert RUNBOOK_ID in message
         assert "0.620" in message and "0.880" in message
 

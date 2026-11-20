@@ -565,7 +565,7 @@ class KnowledgeService:
                 run; never an empty result.
         """
         with self._tracer.trace("knowledge_service_search"):
-            logger.debug(f"Searching knowledge base: {query}")
+            logger.debug(f"Searching knowledge base: query_len={len(query or '')}")
 
             # Validate and sanitize query
             if not query or not query.strip():
@@ -638,7 +638,8 @@ class KnowledgeService:
                         search_results.append(search_result)
 
                     logger.info(
-                        f"Found {len(search_results)} results for query: {query}"
+                        f"Found {len(search_results)} results for query: "
+                        f"query_len={len(query)}"
                     )
                     return search_results
                 else:
@@ -1228,7 +1229,7 @@ class KnowledgeService:
                 "Indexed document into vector store",
                 extra={
                     "document_id": document.document_id,
-                    "title": document.title,
+                    "title_len": len(document.title or ""),
                     "chunk_count": len(chunks),
                 },
             )
@@ -3073,7 +3074,10 @@ class KnowledgeService:
 
             limited = vector_results[:limit]
 
-            logger.info(f"Semantic search '{query}' returned {len(limited)} results")
+            logger.info(
+                f"Semantic search (user_id={user_id}, query_len={len(query)}) "
+                f"returned {len(limited)} results"
+            )
 
             return {
                 "query": query,
@@ -3259,7 +3263,8 @@ class KnowledgeService:
             limited_results = scored_results[:limit]
 
             logger.info(
-                f"Full-text search '{query}' returned {len(limited_results)} results"
+                f"Full-text search (user_id={user_id}, query_len={len(query)}) "
+                f"returned {len(limited_results)} results"
             )
 
             return {

@@ -993,7 +993,7 @@ class InvestigationService:
                         intent_minted = True
                         logger.info(
                             f"Intent resolved from suggestions: {intent_type.value} "
-                            f"for message: '{query[:50]}...'"
+                            f"for case {case_id}: query_len={len(query)}"
                         )
                 except Exception:
                     logger.warning(

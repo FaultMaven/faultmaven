@@ -1094,7 +1094,10 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 # not, so it must not be caught by the handler below (#943).
                 raise
             except Exception as e:
-                logger.debug(f"Keyword-constrained search for '{keyword}' failed: {e}")
+                logger.debug(
+                    f"Keyword-constrained search in {collection_name} "
+                    f"(keyword_len={len(keyword)}) failed: {e}"
+                )
 
         return all_results
 

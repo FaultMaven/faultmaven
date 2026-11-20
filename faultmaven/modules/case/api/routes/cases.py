@@ -1068,10 +1068,12 @@ async def generate_case_title(
             max_words = MAX_TITLE_WORDS_DEFAULT
 
         logger.info(
-            f"🔍 Effective parameters: max_words={max_words}, hint='{hint}', force={effective_force}",
+            f"🔍 Effective parameters: case_id={case_id}, max_words={max_words}, "
+            f"hint_len={len(str(hint or ''))}, force={effective_force}",
             extra={
+                "case_id": case_id,
                 "max_words": max_words,
-                "hint": hint,
+                "hint_len": len(str(hint or "")),
                 "effective_force": effective_force,
             },
         )
@@ -1085,8 +1087,9 @@ async def generate_case_title(
         )
 
         logger.info(
-            f"🔍 Case retrieved: title='{case.title}', force={effective_force}",
-            extra={"existing_title": case.title},
+            f"🔍 Case retrieved: case_id={case_id}, "
+            f"title_len={len(case.title or '')}, force={effective_force}",
+            extra={"case_id": case_id, "existing_title_len": len(case.title or "")},
         )
 
         # A terminal case's title is final and is not regenerated — unless it was

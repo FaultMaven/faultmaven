@@ -1088,14 +1088,14 @@ class ProviderRegistry:
 
                     return response
                 else:
-                    # Log the actual response content for debugging
+                    # The response's length, never its content (principles §7, rule 3)
                     self.logger.warning(
                         f"⚠️ Low confidence from {provider_name} "
                         f"({response.confidence:.2f} < {confidence_threshold})"
                     )
                     self.logger.info(
                         f"🔍 Low confidence response content from {provider_name}: "
-                        f"{response.content[:200]}{'...' if len(response.content) > 200 else ''}"
+                        f"content_len={len(response.content)}"
                     )
 
                     # Keep track of the best low-confidence response

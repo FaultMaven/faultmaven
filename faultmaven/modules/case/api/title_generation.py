@@ -1152,7 +1152,10 @@ async def _generate_and_persist_title(
         if not success:
             logger.error(
                 f"Failed to persist generated title for case {case_id}",
-                extra={"case_id": case_id, "generated_title": generated_title},
+                extra={
+                    "case_id": case_id,
+                    "generated_title_len": len(generated_title),
+                },
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1163,11 +1166,13 @@ async def _generate_and_persist_title(
         verification_case = await case_service.get_case(case_id, user_id)
         if verification_case and verification_case.title != generated_title:
             logger.error(
-                f"Title persistence verification failed for case {case_id}: expected '{generated_title}', got '{verification_case.title}'",
+                f"Title persistence verification failed for case {case_id}: "
+                f"expected_len={len(generated_title)}, "
+                f"actual_len={len(verification_case.title or '')}",
                 extra={
                     "case_id": case_id,
-                    "expected_title": generated_title,
-                    "actual_title": verification_case.title,
+                    "expected_title_len": len(generated_title),
+                    "actual_title_len": len(verification_case.title or ""),
                 },
             )
             raise HTTPException(
@@ -1177,7 +1182,7 @@ async def _generate_and_persist_title(
 
         logger.info(
             f"Title persistence verified for case {case_id}",
-            extra={"case_id": case_id, "title": generated_title},
+            extra={"case_id": case_id, "title_len": len(generated_title)},
         )
     except HTTPException:
         # Re-raise HTTPException without modification to preserve original error
@@ -1294,7 +1299,11 @@ async def _auto_title_case_if_default(
         )
         logger.info(
             "Auto-titled case on turn completion",
-            extra={"case_id": case_id, "title": title, "title_source": source},
+            extra={
+                "case_id": case_id,
+                "title_len": len(title or ""),
+                "title_source": source,
+            },
         )
     except _TitleSubstanceTooThin as e:
         # The gate working, not a fault: the case is genuinely too thin to name

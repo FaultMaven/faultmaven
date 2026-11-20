@@ -1965,8 +1965,9 @@ def _apply_stage_gate_side_effects(
                 # ``solution_deferred``, which no local mirror would.
                 logger.info(
                     f"Proposed CLOSED transition for case {case.case_id} "
-                    f"(rca_infeasible=True; closure_reason derived as "
-                    f"{record.open.closure_reason}, rationale: {rationale})"
+                    f"(proposal_id={record.open.proposal_id}, rca_infeasible=True; "
+                    f"closure_reason derived as {record.open.closure_reason}, "
+                    f"rationale_len={len(rationale)})"
                 )
 
     metadata["compliance_detected"] = True

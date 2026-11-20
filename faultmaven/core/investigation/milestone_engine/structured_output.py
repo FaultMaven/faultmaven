@@ -516,7 +516,10 @@ def _account_confidence(parsed, repairs, original_error):
         "structured_output_confidence_repaired",
         extra={
             "schema": type(parsed).__name__,
-            "repairs": [repair.note() for repair in kept],
+            "repairs": [
+                r.note(f"<{type(r.raw).__name__}, raw_len={len(str(r.raw))}>")
+                for r in kept
+            ],
         },
     )
     if "_confidence_repairs" in getattr(type(parsed), "__private_attributes__", {}):
@@ -1038,14 +1041,15 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
                 if closest_match:
                     corrected = closest_match[0]
                     logger.warning(
-                        f"Auto-correcting hallucinated enum value: "
-                        f"'{value}' -> '{corrected}' for field '{key}'"
+                        f"Auto-correcting hallucinated enum value "
+                        f"(value_len={len(value)}) -> '{corrected}' for field '{key}'"
                     )
                     fixed_obj[key] = corrected
                 else:
                     fallback = valid_values[0]
                     logger.warning(
-                        f"No close match for hallucinated enum '{value}', "
+                        f"No close match for hallucinated enum "
+                        f"(value_len={len(value)}), "
                         f"using fallback '{fallback}' for field '{key}'"
                     )
                     fixed_obj[key] = fallback

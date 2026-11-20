@@ -1,6 +1,7 @@
 """Applying a parsed structured LLM response onto a case: the INQUIRY and INVESTIGATING state-update paths that turn schema fields into case mutations."""
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -710,7 +711,8 @@ class ResponseApplier:
         ):
             # Apply post-processing to repair state_updates
             logger.debug(
-                f"Applying post-processing to state_updates with user_message preview: {user_message[:100]}..."
+                f"Applying post-processing to state_updates for case {case.case_id}: "
+                f"user_message_len={len(user_message)}"
             )
             response_obj.state_updates = _post_process_llm_response(
                 updates=response_obj.state_updates,
@@ -735,9 +737,20 @@ class ResponseApplier:
             response_obj, case
         )
         if not is_valid:
-            error_msg = "Reasoning validation failed:\n" + "\n".join(validation_errors)
+            # Each error's engine text, the turn reference the model wrote
+            # (``milestone_inference``) named by its length.
             logger.warning(
-                f"Reasoning validation failed for case {case.case_id}: {error_msg}"
+                f"Reasoning validation failed for case {case.case_id}: offending "
+                f"{sorted(offending_milestones)}; "
+                + " | ".join(
+                    re.sub(
+                        r"'(.*)'(?=: turn number|\. Expected format)",
+                        lambda m: f"<ref_len={len(m[1])}>",
+                        e,
+                        flags=re.S,
+                    )
+                    for e in validation_errors
+                )
             )
             # Degrade gracefully: strip ONLY the milestones that actually failed
             # validation, preserving co-emitted valid ones. A single unjustified
@@ -932,8 +945,9 @@ class ResponseApplier:
             case.inquiry.problem_statement_confirmed = True
             case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
             logger.info(
-                f"User confirmed problem statement — transitioning to INVESTIGATING. "
-                f"statement='{case.inquiry.proposed_problem_statement[:80]}...'"
+                f"User confirmed problem statement — transitioning to INVESTIGATING "
+                f"for case {case.case_id}. statement_len="
+                f"{len(case.inquiry.proposed_problem_statement)}"
             )
         elif (
             _llm_flag
@@ -985,7 +999,7 @@ class ResponseApplier:
                 extra={
                     "case_id": case.case_id,
                     "turn": case.current_turn,
-                    "statement_preview": case.inquiry.proposed_problem_statement[:80],
+                    "statement_len": len(case.inquiry.proposed_problem_statement),
                 },
             )
         elif (
@@ -1332,7 +1346,10 @@ class ResponseApplier:
                 )
             _add_system_feedback(metadata, blocker_msg)
             metadata["data_blocker_detected"] = True
-            logger.warning(f"Case {case.case_id} data blocker: {blocker.description}")
+            logger.warning(
+                f"Case {case.case_id} data blocker: "
+                f"description_len={len(blocker.description)}"
+            )
 
         # Track evidence quality issues (non-blocking)
         if (
@@ -1397,9 +1414,8 @@ class ResponseApplier:
         evidence_list = getattr(updates, "evidence_to_add", None) if has_attr else None
         evidence_count = len(evidence_list) if evidence_list else 0
         logger.info(
-            f"Evidence creation check: "
+            f"Evidence creation check for case {case.case_id}: "
             f"hasattr(updates, 'evidence_to_add')={has_attr}, "
-            f"evidence_to_add={evidence_list}, "
             f"count={evidence_count}"
         )
 
@@ -1477,7 +1493,7 @@ class ResponseApplier:
                     f"Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
                     f"source_file_id={ev.source_file_id}, "
-                    f"summary='{ev.summary[:80]}...'"
+                    f"summary_len={len(ev.summary)}"
                 )
             _record_rechecks(case, updates.evidence_to_add, metadata["evidence_slots"])
 
@@ -1636,8 +1652,8 @@ class ResponseApplier:
                         "evidence rather than restating it.",
                     )
                     logger.info(
-                        "Deduped hypothesis (INV-36): '%s' matches standing %s",
-                        h_item.statement[:60],
+                        "Deduped hypothesis (INV-36): statement_len=%d matches standing %s",
+                        len(h_item.statement),
                         dup_id,
                     )
                     # A chain the LLM emitted for the duplicate is left to the

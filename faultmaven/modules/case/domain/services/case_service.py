@@ -349,7 +349,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             if saved_case.source == "slack":
                 await self._auto_share_slack_case(saved_case)
 
-            logger.info(f"Created case {saved_case.case_id} with title '{title}'")
+            logger.info(
+                f"Created case {saved_case.case_id} with title_len={len(title or '')}"
+            )
             return saved_case
 
         except ValidationException:

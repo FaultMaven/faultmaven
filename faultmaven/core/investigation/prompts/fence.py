@@ -403,11 +403,6 @@ _TOKEN_BYTES = 4
 #: fence the content is known to contain.
 _MAX_ATTEMPTS = 64
 
-#: How much of an absorbed blob reaches the log. The blob is case content, so
-#: this is a privacy/volume bound, not a formatting one — enough to identify
-#: the shape, not enough to spill an uploaded log line into the log stream.
-_LOG_BLOB_CHARS = 120
-
 #: Marks a renderer-inserted tag terminator so the model does not read it as
 #: part of the evidence. Only ever emitted when :func:`_ends_inside_tag` says
 #: the body would otherwise swallow the delimiter that follows it.
@@ -862,14 +857,11 @@ def render_fenced(
             logger.warning(
                 "prompt_fence_absorbed_delimiter",
                 extra={
-                    # Truncated: an absorbed blob is everything between the
-                    # forged tag and the delimiter it swallowed, so it carries
-                    # CASE CONTENT — up to ~1.5 KB of it per blob on the
-                    # fallback path, which #1242 made reachable. A log line is
-                    # the wrong place for that volume of user data; the first
-                    # 120 characters identify the shape, which is all this
-                    # line is for.
-                    "blobs": [b[:_LOG_BLOB_CHARS] for b in absorbed[:3]],
+                    # Lengths only: an absorbed blob is everything between the
+                    # forged tag and the delimiter it swallowed, so it is CASE
+                    # CONTENT, which no log line holds (principles §7, rule 3).
+                    # The first three, as a volume bound; ``count`` has them all.
+                    "blob_lens": [len(b) for b in absorbed[:3]],
                     "count": len(absorbed),
                 },
             )

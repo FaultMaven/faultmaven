@@ -32,7 +32,6 @@ from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
     ConfidenceRepair,
     classify,
-    short_repr,
 )
 from faultmaven.core.investigation.confidence_repair import (
     count as count_confidence_repair,
@@ -266,7 +265,8 @@ def _triage_confidence(raw: Any) -> float:
     takes :data:`TRIAGE_DEFAULT_CONFIDENCE` — the advisory path, never the hard
     reject. A missing or ``null`` confidence is absence the model chose, not a
     repair, and is not counted. Every repair is counted on
-    ``faultmaven_schema_field_repairs_total`` and logged with the raw value.
+    ``faultmaven_schema_field_repairs_total`` and logged with the raw value's
+    type and length, never the value.
     """
     if raw is None:
         return TRIAGE_DEFAULT_CONFIDENCE
@@ -287,8 +287,13 @@ def _triage_confidence(raw: Any) -> float:
     count_confidence_repair(repair)
     logger.warning(
         "Content triage confidence repaired: %s",
-        repair.note(),
-        extra={"action": action.value, "raw": short_repr(raw), "value": value},
+        repair.note(f"<{type(raw).__name__}, raw_len={len(str(raw))}>"),
+        extra={
+            "action": action.value,
+            "raw_type": type(raw).__name__,
+            "raw_len": len(str(raw)),
+            "value": value,
+        },
     )
     return value
 

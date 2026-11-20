@@ -49,12 +49,13 @@ import json
 import logging
 from collections.abc import Mapping, Sized
 from json import JSONDecodeError
-from typing import Any, Callable, Dict, Iterator, Optional, Type
+from typing import Any, Callable, Dict, Iterator, Optional, Type, get_args
 
 from fastapi import HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from pydantic_core.core_schema import ErrorType
 
 from faultmaven.exceptions import (
     CASE_NOT_FOUND,
@@ -1359,9 +1360,22 @@ MAX_VALIDATION_INPUT_BYTES = 2048
 # Ceiling on how many errors one 422 reports. Pydantic emits one per offending
 # item, so a request whose body is a long list of wrong-typed values produces a
 # response many times its own size: a measured 128,900-byte body yielded 20,000
-# errors and a 2,057,820-byte response (x16), and the same line goes to the log.
+# errors and a 2,057,820-byte response (x16), and the log holds one entry per error.
 # The per-error budget above cannot bound that — only a cap on the count can.
 MAX_VALIDATION_ERRORS = 50
+
+#: Pydantic's own error types whose ``msg`` and ``ctx`` the schema writes. A
+#: ``value_error``'s or ``assertion_error``'s message is a validator's, and a
+#: custom type's is its author's: either can quote the value. Some of
+#: pydantic's own quote the input too: ``union_tag_invalid`` its tag,
+#: ``uuid_parsing`` and ``bytes_invalid_encoding`` a character of it.
+_PYDANTIC_MESSAGES = frozenset(get_args(ErrorType)) - {
+    "value_error",
+    "assertion_error",
+    "union_tag_invalid",
+    "uuid_parsing",
+    "bytes_invalid_encoding",
+}
 
 # `loc == ("body",)` means the whole body failed to bind, so `input` IS the whole
 # body. Echoing it hands a caller's own credentials back in the response: the
@@ -1627,13 +1641,15 @@ def describe_request_body(body: Any) -> Optional[str]:
     Key names are deliberately not reported either. They would be useful (they
     are what makes a camelCase mistake obvious) and they are *usually* not
     secret — but "this part of the body is never sensitive" is exactly the
-    assumption that produced #1156, and the sanitized ``validation_errors`` on
-    the same record already name every offending ``loc``.
+    assumption that produced #1156, and the ``validation_errors`` on the same
+    record already name every offending ``loc`` (an undeclared key by its
+    length).
 
     Containers render as ``<{type}: {n} items>`` to match how
     ``utils.serialization.to_json_safe`` summarizes a container, because both
-    can appear on one ERROR record — ``body`` beside an echoed ``input`` — and
-    two spellings of the same fact invite the reader to think they differ.
+    describe one request — ``body`` on the ERROR record, an echoed ``input`` in
+    the 422 — and two spellings of the same fact invite the reader to think
+    they differ.
     ``Sized`` covers ``FormData`` and ``ImmutableMultiDict`` as well as the
     builtins, which matters because form-encoded shape is the reason this
     exists at all.
@@ -1699,7 +1715,11 @@ async def request_validation_exception_handler(
     shapes :func:`_withheld_input` names — which is where the boundary of the
     #1156 guard is written down, limits included.
 
-    The log line carries the same sanitized errors the response carries, plus
+    The log line carries each error's ``loc`` (an undeclared body key by its
+    length), ``type``, pydantic's own ``msg`` and ``ctx`` (none for a
+    validator's message, nor for those of pydantic's own that quote the input), and
+    the raw input's length (its type when it is not
+    text), never the input (case content, principles §7 rule 3), plus
     :func:`describe_request_body`'s content-free shape, and no other request
     content: the path rather than ``request.url`` (which would put a
     query-string credential on an ERROR record, and is what every sibling
@@ -1727,13 +1747,30 @@ async def request_validation_exception_handler(
             }
         )
 
+    logged = []
+    for e, raw in zip(errors, [*raw_errors[:MAX_VALIDATION_ERRORS], {}]):
+        loc, kind = e.get("loc"), e.get("type")
+        line: Dict[str, Any] = {"loc": loc, "type": kind}
+        if kind == "extra_forbidden" and loc:
+            line["loc"] = [*loc[:-1], f"<key_len={len(str(loc[-1]))}>"]
+        if kind in _PYDANTIC_MESSAGES:
+            line["msg"] = e.get("msg")
+            if isinstance(e.get("ctx"), dict):
+                line["ctx"] = {k: v for k, v in e["ctx"].items() if k != "input"}
+        if "input" in raw:
+            value = raw["input"]
+            text = isinstance(value, (str, bytes, bytearray))
+            line["input_len" if text else "input_type"] = (
+                len(value) if text else type(value).__name__
+            )
+        logged.append(line)
     logger.error(
         "Validation error on %s %s: %s",
         request.method,
         request.url.path,
-        errors,
+        logged,
         extra={
-            "validation_errors": errors,
+            "validation_errors": logged,
             "body": describe_request_body(body),
         },
     )

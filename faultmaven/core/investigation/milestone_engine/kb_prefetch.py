@@ -364,8 +364,8 @@ class KbPrefetcher:
                     len(case.kb_context),
                     case.case_id,
                     "; ".join(
-                        f"{r.get('title') or '(untitled)'}"
-                        f" [{r.get('parent_document_id') or 'no-id'}]"
+                        f"[{r.get('parent_document_id') or 'no-id'}]"
+                        f" title_len={len(str(r.get('title') or ''))}"
                         f" score={float(r.get('score') or 0.0):.3f}"
                         for r in case.kb_context
                     ),
@@ -374,8 +374,8 @@ class KbPrefetcher:
                         "kb_prefetch_hits": len(case.kb_context),
                         "kb_prefetch_top_score": max(_kb_scores),
                         "kb_runbook_ids": _kb_ids,
-                        "kb_runbook_titles": [
-                            str(r.get("title") or "") for r in case.kb_context
+                        "kb_runbook_title_lens": [
+                            len(str(r.get("title") or "")) for r in case.kb_context
                         ],
                     },
                 )

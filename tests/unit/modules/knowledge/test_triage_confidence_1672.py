@@ -178,8 +178,13 @@ async def test_triage_takes_the_path_the_repaired_confidence_decides(
         assert [(r.action, r.value) for r in repaired] == [
             (action, pytest.approx(value))
         ]
-        # The raw value is quoted, not only the outcome.
-        assert repaired[0].raw == short_repr(json.loads(answer))
+        # The raw value by type and length, never quoted (#2890).
+        raw = json.loads(answer)
+        assert (repaired[0].raw_type, repaired[0].raw_len) == (
+            type(raw).__name__,
+            len(str(raw)),
+        )
+        assert short_repr(raw) not in repaired[0].getMessage()
         assert _NOTE[action] in repaired[0].getMessage()
 
 

@@ -440,7 +440,7 @@ class RunbookCreator:
                 draft = result.drafts[0]
                 logger.info(
                     f"Runbook draft created: {draft.runbook_id} "
-                    f"(title='{draft.title}', quality={getattr(draft, 'quality_score', 'N/A')})",
+                    f"(title_len={len(draft.title or '')}, quality={getattr(draft, 'quality_score', 'N/A')})",
                     extra={
                         "case_id": request.case_id,
                         "runbook_id": draft.runbook_id,

@@ -138,9 +138,12 @@ class ConfidenceRepair:
     # ``MilestoneUpdates.mitigation_disposition``, #2100): the value is dropped.
     detail: Optional[str] = None
 
-    def note(self) -> str:
-        """The line this repair contributes to the turn's ``validation_repairs``."""
-        head = f"{self.schema}.{self.field}: {short_repr(self.raw)}"
+    def note(self, raw: Optional[str] = None) -> str:
+        """The line this repair contributes to the turn's ``validation_repairs``;
+        ``raw``, when given, stands for the value (a log line names its type and
+        length instead, principles §7 rule 3)."""
+        shown = short_repr(self.raw) if raw is None else raw
+        head = f"{self.schema}.{self.field}: {shown}"
         if self.detail:
             return f"{head} {self.detail}"
         if self.action is ConfidenceAction.RESCALED:

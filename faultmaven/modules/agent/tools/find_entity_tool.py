@@ -120,9 +120,9 @@ class FindEntityTool(AgentTool):
             )
         except Exception as e:
             logger.exception(
-                "find_entity failed for case %s value %r: %s",
+                "find_entity failed for case %s value_len=%d: %s",
                 context.case_id,
-                entity_value,
+                len(entity_value),
                 e,
             )
             return tool_failure("Entity lookup failed", e)
