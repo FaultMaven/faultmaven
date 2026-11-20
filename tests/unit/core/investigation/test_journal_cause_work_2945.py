@@ -5,11 +5,15 @@ never stood. While a revised statement awaits re-confirmation, an entry naming
 a hypothesis is staged with the turn's other cause work: replayed when the user
 confirms, dropped with it when they decline. An entry naming a hypothesis the
 case does not hold after the apply (one the gate refused) is dropped. A
-same-turn ref (``new_index_N``, or a bare ``N``) is resolved through the apply's
-emit order and stored as the id it names. An evidence ref resolves through the
-apply's evidence slots and is stored only when the id is on the case; the entry
-stands either way. Entries naming no hypothesis apply as before. No live LLM.
+same-turn ref (``new_index_N``, or a bare ``N``, padded or not) is resolved
+through the apply's emit order and stored as the id it names; an empty ref names
+no hypothesis. An evidence ref resolves through the apply's evidence slots and
+is stored only when the id is on the case, else logged and stored as None; the
+entry stands either way. Entries naming no hypothesis apply as before. No live
+LLM.
 """
+
+import logging
 
 import pytest
 
@@ -111,7 +115,7 @@ def _turn(hypothesis_id: str):
     )
 
 
-@pytest.mark.parametrize("ref", ["new_index_0", "0", " [new_index_0] "])
+@pytest.mark.parametrize("ref", ["new_index_0", "0", " 0 ", " [new_index_0] "])
 async def test_a_same_turn_ref_is_kept_as_the_minted_id(ref):
     engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
     await revision._apply(engine, case, _turn(ref))
@@ -180,7 +184,12 @@ async def test_a_bare_int_ref_survives_validation_and_resolves():
     )
 
 
-_KNOWN = revision._evidence(EvidenceCategory.SYMPTOM_EVIDENCE, "known")
+def _known():
+    """A row already on the case, built per test."""
+    return revision._evidence(EvidenceCategory.SYMPTOM_EVIDENCE, "known")
+
+
+KNOWN_ID = _known().evidence_id
 _REFUSED_ROW = revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "r").model_copy(
     update={"source_file_id": "file_ffffffffffff"}
 )
@@ -190,16 +199,20 @@ _REFUSED_ROW = revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "r").model_copy(
     "ref, rows, expected",
     [
         ("new_index_0", ["new"], "minted"),
-        (_KNOWN.evidence_id, [], _KNOWN.evidence_id),
+        (KNOWN_ID, [], KNOWN_ID),
         ("new_index_1", ["new"], None),  # out of range
         ("new_index_0", ["refused", "new"], None),  # a refused slot
         ("ev_000000000000", [], None),  # an id the case does not hold
         ("", [], None),
     ],
 )
-async def test_an_evidence_ref_is_stored_only_as_an_id_on_the_case(ref, rows, expected):
+async def test_an_evidence_ref_is_stored_only_as_an_id_on_the_case(
+    ref, rows, expected, caplog
+):
+    """A discarded citation is logged with the case id and the raw ref."""
+    caplog.set_level(logging.INFO)
     engine, case = revision._engine(), revision._case(ProblemStatus.VERIFIED)
-    revision._with(case, _KNOWN)
+    revision._with(case, _known())
     new = revision._row(EvidenceCategory.SYMPTOM_EVIDENCE, "s1")
     dsu = revision._DSU(
         evidence_to_add=[new if r == "new" else _REFUSED_ROW for r in rows],
@@ -210,9 +223,13 @@ async def test_an_evidence_ref_is_stored_only_as_an_id_on_the_case(ref, rows, ex
     await revision._apply(engine, case, dsu)
 
     if expected == "minted":
-        (expected,) = [e.evidence_id for e in case.evidence if e is not _KNOWN]
+        (expected,) = [
+            e.evidence_id for e in case.evidence if e.evidence_id != KNOWN_ID
+        ]
     (stored,) = case.investigation_journal
     assert (stored.content, stored.evidence_id) == (FINDING, expected)
+    discarded = f"{case.case_id}: journal entry kept without its evidence ref {ref!r}"
+    assert (discarded in caplog.text) == bool(ref and expected is None)
 
 
 async def test_a_staged_entrys_evidence_ref_is_the_minted_id_after_replay():
@@ -237,3 +254,18 @@ async def test_a_staged_entrys_evidence_ref_is_the_minted_id_after_replay():
     (a2,) = [e.evidence_id for e in case.evidence if "fact-a2" in e.summary]
     (stored,) = case.investigation_journal
     assert stored.evidence_id == a2
+
+
+@pytest.mark.parametrize("ref", ["", "  "])
+async def test_an_empty_hypothesis_ref_names_no_hypothesis(ref):
+    """Not staged with the revision turn's cause work, and stored as None."""
+    engine, case = revision._engine(), revision._case()
+    dsu = revision._revision_turn_with_cause_work()
+    dsu.journal_entries = [
+        JournalEntryOutput(entry_type="blocker", content=BLOCKER, hypothesis_id=ref)
+    ]
+    await revision._apply(engine, case, dsu)
+
+    assert [(e.content, e.hypothesis_id) for e in case.investigation_journal] == [
+        (BLOCKER, None)
+    ]

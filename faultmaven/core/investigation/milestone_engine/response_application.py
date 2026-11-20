@@ -450,10 +450,18 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         action.target_ids = [t for t in action.target_ids if t in case.causal_nodes]
 
 
+def _names_hypothesis(je: Any) -> bool:
+    """Whether a journal entry names a hypothesis; a whitespace-only ref
+    names none."""
+    return bool(je.hypothesis_id and je.hypothesis_id.strip())
+
+
 def _hypothesis_journal_entries(updates: Any) -> list[Any]:
     """The journal entries that name a hypothesis: cause work (step 2d)."""
     return [
-        je for je in getattr(updates, "journal_entries", None) or [] if je.hypothesis_id
+        je
+        for je in getattr(updates, "journal_entries", None) or []
+        if _names_hypothesis(je)
     ]
 
 
@@ -462,14 +470,16 @@ def _journal_hypothesis_id(ref: str | None, metadata: dict[str, Any]) -> str | N
     ``IdRef`` coerced a bare ``N``) resolved through this apply's emit order
     the way the hypothesis links resolve it: a refused restatement maps to the
     standing hypothesis, a refused slot to ``_REFUSED_HYPOTHESIS_SLOT``, which
-    no hypothesis holds, so the entry is dropped after the apply."""
+    no hypothesis holds, so the entry is dropped after the apply. A ref that
+    is empty once normalised names no hypothesis: ``None``."""
     if not ref:
-        return ref
-    return _resolve_id_ref(
+        return None
+    hyp_id = _resolve_id_ref(
         ref,
         metadata.get("hyp_emit_order") or metadata.get("hypotheses_generated", []),
         "hyp",
     )
+    return hyp_id or None
 
 
 def _journal_evidence_id(
@@ -478,11 +488,18 @@ def _journal_evidence_id(
     """The evidence a journal entry cites, a same-turn ref resolved through the
     turn's positional slots; ``None`` unless the id is on the case (an
     out-of-range or refused slot, an unknown id). The entry stands either way:
-    the citation is bad, not the content."""
+    the citation is bad, not the content. Only the loaded rows are checked."""
     if not ref:
         return None
     ev_id = _resolve_id_ref(ref, metadata.get("evidence_slots", []), "ev_")
-    return ev_id if ev_id in {e.evidence_id for e in case.evidence} else None
+    if ev_id in {e.evidence_id for e in case.evidence}:
+        return ev_id
+    logger.info(
+        "Case %s: journal entry kept without its evidence ref %r, no row on the case",
+        case.case_id,
+        ref,
+    )
+    return None
 
 
 def _drop_journal_entries_on_absent_hypotheses(case: Case, start: int) -> None:
@@ -2011,7 +2028,7 @@ class ResponseApplier:
         # resolves to (on replay, through the bundle's own slots).
         journal_at_start = len(case.investigation_journal)
         for je_item in getattr(updates, "journal_entries", None) or []:
-            if staging and je_item.hypothesis_id:
+            if staging and _names_hypothesis(je_item):
                 continue
             case.investigation_journal.append(
                 JournalEntry(
