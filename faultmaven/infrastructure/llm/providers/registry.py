@@ -31,6 +31,7 @@ from faultmaven.infrastructure.llm.dispatch import (
 )
 from faultmaven.infrastructure.llm.metering import record_provider_call
 from faultmaven.infrastructure.security.model_content import non_case_text
+from faultmaven.utils.exception_name import exception_log_name
 
 from .anthropic import AnthropicProvider
 from .azure_provider import AzureProvider, v1_base_url
@@ -465,7 +466,9 @@ class ProviderRegistry:
                     )
             except Exception as e:
                 self.logger.warning(
-                    f"❌ Failed to initialize provider {provider_name}: {e}"
+                    f"❌ Failed to initialize provider {provider_name}: "
+                    f"{exception_log_name(e)}",
+                    exc_info=True,
                 )
 
         # Set up fallback chain with primary first
@@ -647,7 +650,7 @@ class ProviderRegistry:
         except Exception as exc:
             self.logger.debug(
                 f"No per-task models resolved for '{provider_name}' "
-                f"({type(exc).__name__}: {exc}); provider gets its base model only"
+                f"({exception_log_name(exc)}); provider gets its base model only"
             )
             task_models = []
         models = [model] + [m for m in task_models if m != model]
@@ -691,7 +694,10 @@ class ProviderRegistry:
                     f"❌ Provider '{name}' not available (missing config)"
                 )
         except Exception as e:
-            self.logger.error(f"❌ Error creating provider '{name}': {e}")
+            self.logger.error(
+                f"❌ Error creating provider '{name}': {exception_log_name(e)}",
+                exc_info=True,
+            )
 
     def _setup_fallback_chain(self, primary_provider: str):
         """Set up the provider fallback chain.
@@ -788,7 +794,10 @@ class ProviderRegistry:
             provider = provider_class(config)
             return provider if provider.is_available() else None
         except Exception as e:
-            self.logger.warning(f"Failed to create test provider '{name}': {e}")
+            self.logger.warning(
+                f"Failed to create test provider '{name}': {exception_log_name(e)}",
+                exc_info=True,
+            )
             return None
 
     async def send_connection_check(self, provider: BaseLLMProvider) -> LLMResponse:
@@ -1121,7 +1130,7 @@ class ProviderRegistry:
                 # the chain continues; ``chain_failure_rank`` ranks it last.
                 self.logger.warning(
                     f"{provider_name} cannot carry this call shape and was "
-                    f"skipped without a health penalty: {e}"
+                    f"skipped without a health penalty: {exception_log_name(e)}"
                 )
                 last_error = _higher_ranked(last_error, e)
                 continue
@@ -1132,7 +1141,7 @@ class ProviderRegistry:
                     # penalty; the chain moves on (``chain_failure_rank``).
                     self.logger.warning(
                         f"{provider_name} rate-limited this call and was skipped "
-                        f"without a health penalty: {e}"
+                        f"without a health penalty: {exception_log_name(e)}"
                     )
                     last_error = _higher_ranked(last_error, e)
                     continue
@@ -1142,7 +1151,8 @@ class ProviderRegistry:
 
                 self.logger.warning(
                     f"❌ {provider_name} failed (consecutive: {state.consecutive_failures}, "
-                    f"health: {state.health.value}): {e}"
+                    f"health: {state.health.value}): {exception_log_name(e)}",
+                    extra={"category": declared_llm_category(e)},
                 )
                 last_error = _higher_ranked(last_error, e)
                 continue
@@ -1162,7 +1172,11 @@ class ProviderRegistry:
         # All providers failed completely — re-raise the highest-ranked
         # failure directly (``chain_failure_rank``) so that retryability
         # metadata is preserved for upstream retry logic in call_external().
-        self.logger.error(f"All providers failed. Raised error: {last_error}")
+        self.logger.error(
+            "All providers failed. Raised error: %s",
+            exception_log_name(last_error) if last_error is not None else None,
+            extra={"category": declared_llm_category(last_error)},
+        )
         if last_error is not None:
             raise last_error
         raise Exception("All providers failed with no error details")

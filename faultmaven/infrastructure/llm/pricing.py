@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from faultmaven.infrastructure.llm.claude_model_id import parse_claude_model_id
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,11 @@ def _load_overrides() -> dict[str, dict[str, TokenRates]]:
     try:
         parsed = json.loads(raw)
     except (ValueError, TypeError) as exc:
-        logger.warning("Ignoring invalid %s (not JSON): %s", _OVERRIDES_ENV, exc)
+        logger.warning(
+            "Ignoring invalid %s (not JSON): %s",
+            _OVERRIDES_ENV,
+            exception_log_name(exc),
+        )
         return {}
     result: dict[str, dict[str, TokenRates]] = {}
     for provider, models in (parsed or {}).items():
