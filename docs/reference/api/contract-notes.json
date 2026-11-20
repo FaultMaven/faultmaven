@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.6.0",
+  "contractVersion": "15.7.0",
   "entries": [
+    {
+      "body": "* `job_caps_bytes` = `pools_bytes` + `buffers_bytes` + `encode_bytes`: the\n  bounded terms of Principle 14's worst-overlap formula for the running\n  configuration (`serving_processes`, `upload_limit_mb`, `tier1_slots`).\n  `encode_without_host_lock_bytes` is the encode's term when no process holds\n  the host lock. `unbounded_terms` names what no constant bounds and the\n  figure leaves out: `api`, `supervisor`, `encode_buffers`.\n* `memory_max_bytes` and `oom_group`, read from cgroup v2 (`memory.max`,\n  `memory.oom.group`) or v1, with `cgroup_source` (`cgroup_v2`, `cgroup_v1`,\n  `absent`, `unreadable`, `invalid`).\n* `headroom_bytes` (the limit less the caps, negative when over) and\n  `job_caps_exceed_limit` (true: the caps alone exceed it; false says\n  nothing of the unbounded terms), both null with no limit known.\n\nCaps over the limit are logged at startup and never refused.",
+      "level": "MINOR",
+      "title": "`GET /admin/config/status` gains `container_memory`, a new `ContainerMemoryStatus` schema: the worker jobs' address-space caps beside the container's cgroup memory limit (#2921). MINOR: a new field on an operator response.",
+      "version": "15.7.0"
+    },
     {
       "body": "The value is an opaque id matching `[A-Za-z0-9_-]{16,64}` in\nfull (the OpenAPI header schema carries no pattern). From an account whose\n`service_channel` is `slack`, it orders the account's own waiters for a worker\nslot (Principle 14): Tier 1 extraction of the turn's attachment or the\nreclassified file, and the runbook gate of the conversion a resolved turn\nstarts when that account created the case. The account is still one principal\nto admission, per pool: it takes a slot while one is free when it holds none,\nand another only while two are free. Among its waiters, the person holding the\nfewest slots of the pool goes first, then the person served least recently,\nthen the earliest; each person's own jobs run in order. So on a two-slot pool\nthe people of a workspace take turns, one job each: a second person waits for\nthe first's running job, not the first's queued batch, and never runs beside\nit; with three or more slots they run side by side.\n\nIt grants nothing: authorization, case ownership, queries, stored rows and\nthe response are those of the account, with or without it. A malformed value,\nor any value from another account, is ignored with a log and the request is\nadmitted as the account: never a 4xx.",
       "level": "MINOR",

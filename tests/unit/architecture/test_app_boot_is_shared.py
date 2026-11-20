@@ -96,15 +96,16 @@ CENSUS_COMMAND = 'grep -rn "with TestClient(" tests/ --include=*.py'
 #: #2622 added one scratch site (the conversion route under the global 500).
 #: #1789 added one in a child-process string literal (the padded-URL boot).
 #: #1806 added one in a child-process string literal (the refused-JWT-secret boot).
-EXPECTED_TOTAL_SITES = 60
+#: #2921 added one real site (the boot under each cgroup state).
+EXPECTED_TOTAL_SITES = 61
 
 #: The functions the resolver reads as entering the real application's
 #: lifespan: the EXPECTED entries marked ``"real"``, not the ``with`` statements
 #: and not the lifespans paid. Was 25. fm#1628's controls added nine. Four pay
 #: a lifespan, one of them also holding a nested second site that is refused;
 #: four are refused before theirs starts; and one is the scratch app the
-#: resolver misreads as real, the known residual.
-EXPECTED_REAL_APP_SITES = 18
+#: resolver misreads as real, the known residual. #2921 added one.
+EXPECTED_REAL_APP_SITES = 19
 
 #: Sites that call ``TestClient.__enter__`` by hand rather than through a
 #: ``with``, which a scan for ``with`` statements cannot see, so
@@ -167,6 +168,14 @@ EXPECTED: dict[str, dict[str, tuple[str, int]]] = {
         ),
         # A scratch probe app built to carry one route.
         "test_multipart_form_field_limit_matches_max_upload_size": ("scratch", 1),
+    },
+    "tests/unit/api/test_container_memory_status_2921.py": {
+        # The boot must SERVE under each cgroup state (#2921, ruling (c)): the
+        # jobs' caps over the limit are warned once, never refused. Four boots.
+        "test_the_app_starts_serves_and_reports_under_every_cgroup_state": (
+            "real",
+            1,
+        ),
     },
     "tests/integration/test_readiness_and_redis.py": {
         # The only booting site in its module, so module-scoped sharing would

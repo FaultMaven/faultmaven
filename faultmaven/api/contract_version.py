@@ -151,6 +151,30 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.7.0",
+        level="MINOR",
+        title=(
+            "`GET /admin/config/status` gains `container_memory`, a new "
+            "`ContainerMemoryStatus` schema: the worker jobs' address-space caps "
+            "beside the container's cgroup memory limit (#2921). MINOR: a new "
+            "field on an operator response."
+        ),
+        body=r"""* `job_caps_bytes` = `pools_bytes` + `buffers_bytes` + `encode_bytes`: the
+  bounded terms of Principle 14's worst-overlap formula for the running
+  configuration (`serving_processes`, `upload_limit_mb`, `tier1_slots`).
+  `encode_without_host_lock_bytes` is the encode's term when no process holds
+  the host lock. `unbounded_terms` names what no constant bounds and the
+  figure leaves out: `api`, `supervisor`, `encode_buffers`.
+* `memory_max_bytes` and `oom_group`, read from cgroup v2 (`memory.max`,
+  `memory.oom.group`) or v1, with `cgroup_source` (`cgroup_v2`, `cgroup_v1`,
+  `absent`, `unreadable`, `invalid`).
+* `headroom_bytes` (the limit less the caps, negative when over) and
+  `job_caps_exceed_limit` (true: the caps alone exceed it; false says
+  nothing of the unbounded terms), both null with no limit known.
+
+Caps over the limit are logged at startup and never refused.""",
+    ),
+    ContractChange(
         version="15.6.0",
         level="MINOR",
         title=(

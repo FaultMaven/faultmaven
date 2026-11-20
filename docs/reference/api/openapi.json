@@ -2749,6 +2749,142 @@
           "No more specific reason held: the problem could not be verified, no cause could be grounded in the evidence, or a cause was identified but no fix was confirmed to work, none was left documented to apply, and no mitigation was verified or declared stable without a relapse seen after it."
         ]
       },
+      "ContainerMemoryStatus": {
+        "description": "The jobs' address-space caps beside the container's memory limit (#2921).\n\nThe bounded terms of Principle 14's worst-overlap formula (*Container\nmemory*): every slot of every worker pool held at once, each job at its\n``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB\nencode. Caps, not resident use. Reported, never refused.",
+        "properties": {
+          "buffers_bytes": {
+            "description": "serving_processes x each pool's slots x the request held twice and the output limit, Tier 1's input at 3 x the upload limit. The text the gate's verify publishes is outside it (#2674).",
+            "title": "Buffers Bytes",
+            "type": "integer"
+          },
+          "cgroup_source": {
+            "description": "Where the limit was read: 'absent' when neither version's file exists; 'unreadable' or 'invalid' when it could not be read or parsed.",
+            "enum": [
+              "cgroup_v2",
+              "cgroup_v1",
+              "absent",
+              "unreadable",
+              "invalid"
+            ],
+            "title": "Cgroup Source",
+            "type": "string"
+          },
+          "encode_bytes": {
+            "description": "The KB encode's RLIMIT_AS, once per container under the host lock.",
+            "title": "Encode Bytes",
+            "type": "integer"
+          },
+          "encode_without_host_lock_bytes": {
+            "description": "serving_processes x the encode's RLIMIT_AS, the term when no process holds the host lock (knowledge_indexing.host_lock_available).",
+            "title": "Encode Without Host Lock Bytes",
+            "type": "integer"
+          },
+          "headroom_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "memory_max_bytes - job_caps_bytes, negative when over: what the limit leaves for unbounded_terms, to compare with their measured resident use. Null with no limit known.",
+            "title": "Headroom Bytes"
+          },
+          "job_caps_bytes": {
+            "description": "pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are outside it.",
+            "title": "Job Caps Bytes",
+            "type": "integer"
+          },
+          "job_caps_exceed_limit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True: the jobs' caps alone exceed the limit. False: they alone fit, which says nothing of unbounded_terms. Null: no limit known.",
+            "title": "Job Caps Exceed Limit"
+          },
+          "memory_max_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "memory.max (v1: memory.limit_in_bytes). Null under cgroup_v2 or cgroup_v1: no limit at this cgroup; under any other source: unknown.",
+            "title": "Memory Max Bytes"
+          },
+          "oom_group": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "memory.oom.group: true when one OOM kills the whole container, the API included. Null under cgroup_v1 (no grouping) or when unread.",
+            "title": "Oom Group"
+          },
+          "pools_bytes": {
+            "description": "serving_processes x each pool's slots x its RLIMIT_AS: document preparation, Evidence Tier 1, the runbook gate, the KB token counts.",
+            "title": "Pools Bytes",
+            "type": "integer"
+          },
+          "serving_processes": {
+            "description": "WORKERS, or 1 under RELOAD.",
+            "title": "Serving Processes",
+            "type": "integer"
+          },
+          "tier1_slots": {
+            "description": "Evidence Tier 1's slots in force.",
+            "title": "Tier1 Slots",
+            "type": "integer"
+          },
+          "unbounded_terms": {
+            "description": "Terms no constant bounds: 'api', each serving process's resident memory; 'supervisor', uvicorn's, above one serving process or under RELOAD; 'encode_buffers', the KB encode's texts in and output.",
+            "items": {
+              "enum": [
+                "api",
+                "supervisor",
+                "encode_buffers"
+              ],
+              "type": "string"
+            },
+            "title": "Unbounded Terms",
+            "type": "array"
+          },
+          "upload_limit_mb": {
+            "description": "MAX_UPLOAD_SIZE_MB.",
+            "title": "Upload Limit Mb",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_caps_bytes",
+          "pools_bytes",
+          "buffers_bytes",
+          "encode_bytes",
+          "encode_without_host_lock_bytes",
+          "serving_processes",
+          "upload_limit_mb",
+          "tier1_slots",
+          "unbounded_terms",
+          "memory_max_bytes",
+          "oom_group",
+          "cgroup_source",
+          "headroom_bytes",
+          "job_caps_exceed_limit"
+        ],
+        "title": "ContainerMemoryStatus",
+        "type": "object"
+      },
       "DatabaseTimeoutsStatus": {
         "description": "The bounds in force on a database that stops answering (#2280).\n\nRead from what the running process built \u2014 the database engine and the\ntoken-revocation store \u2014 not from settings. Each value is in seconds;\n``null`` means no bound is set: the setting is ``0``, or the bound does not\napply to this deployment (the four PostgreSQL bounds on a SQLite engine,\nthe revocation read on the Redis store).",
         "properties": {
@@ -3060,6 +3196,10 @@
             "title": "Auth Mode",
             "type": "string"
           },
+          "container_memory": {
+            "$ref": "#/components/schemas/ContainerMemoryStatus",
+            "description": "The jobs' address-space caps for this configuration (Principle 14, Container memory) beside the container's cgroup memory limit and OOM grouping, and whether the caps alone exceed it."
+          },
           "database_timeouts": {
             "$ref": "#/components/schemas/DatabaseTimeoutsStatus",
             "description": "The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read."
@@ -3154,6 +3294,7 @@
           "personal_tenant_limits",
           "database_timeouts",
           "knowledge_indexing",
+          "container_memory",
           "trace_backend",
           "timestamp"
         ],
@@ -7935,7 +8076,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.6.0"
+    "version": "15.7.0"
   },
   "openapi": "3.1.0",
   "paths": {
