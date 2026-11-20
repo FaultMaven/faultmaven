@@ -263,17 +263,23 @@ def _declared_http_status(exc: BaseException) -> Optional[int]:
     return None
 
 
-def _first_declared_http_status(error: BaseException) -> Optional[int]:
-    """The first HTTP status declared on the ``__cause__`` chain, if any.
+def _first_declaration(
+    error: BaseException,
+) -> Tuple[Optional[int], bool]:
+    """What the first declaring cursor on the ``__cause__`` chain declared.
 
-    The first status settles the question, as in :func:`_transient_by_structure`:
-    it is what the nearest raiser that saw a response said about it.
+    The one chain rule for AUTH_FAILED and MODEL_NOT_FOUND (#2138): the first
+    cursor that declares an HTTP status or ``error_code ==
+    PROVIDER_AUTH_FAILED`` settles both questions, as the nearest raiser that
+    saw a response. Returns ``(status, auth_failed)`` for that cursor, or
+    ``(None, False)`` when no cursor declares either. Never the message text.
     """
     for cursor in walk_cause_chain(error):
         status = _declared_http_status(cursor)
-        if status is not None:
-            return status
-    return None
+        auth_failed = getattr(cursor, "error_code", None) == PROVIDER_AUTH_FAILED
+        if status is not None or auth_failed:
+            return status, auth_failed
+    return None, False
 
 
 def _transient_by_structure(error: BaseException) -> bool:
@@ -487,25 +493,18 @@ class LLMErrorHandler:
         return is_billing_error(error)
 
     def is_auth_error(self, error: Exception) -> bool:
-        """A rejected credential, as its raiser declared it (#2138).
-
-        ``PROVIDER_AUTH_FAILED`` on the ``__cause__`` chain, or a first
-        declared HTTP status of 401/403. Never the message: "auth" matched
-        ``author_id``, and "401" any decoder position or ``host:port``.
-        """
-        if any(
-            getattr(cursor, "error_code", None) == PROVIDER_AUTH_FAILED
-            for cursor in walk_cause_chain(error)
-        ):
-            return True
-        return _first_declared_http_status(error) in (401, 403)
+        """A rejected credential: the first declaring cursor (see
+        :func:`_first_declaration`) carries ``PROVIDER_AUTH_FAILED`` or a
+        401/403."""
+        status, auth_failed = _first_declaration(error)
+        return auth_failed or status in (401, 403)
 
     def is_model_not_found_error(self, error: Exception) -> bool:
-        """A missing model, as its raiser declared it: a first declared HTTP
-        status of 404 on the ``__cause__`` chain (#2138). Never the message: a
-        JSON decode error at char 1404 is not a 404.
-        """
-        return _first_declared_http_status(error) == 404
+        """A missing model: the first declaring cursor (see
+        :func:`_first_declaration`) carries a 404 and not
+        ``PROVIDER_AUTH_FAILED``."""
+        status, auth_failed = _first_declaration(error)
+        return status == 404 and not auth_failed
 
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if an error is a context-window overflow.
@@ -754,7 +753,7 @@ class LLMErrorHandler:
         # unavailable on its first connect failure.
         #
         # Since #2138 neither classifier reads the message at all: each reads
-        # a declared status (401/403, 404) or ``PROVIDER_AUTH_FAILED`` off the
+        # the first status or ``PROVIDER_AUTH_FAILED`` declared on the
         # ``__cause__`` chain, so no text can decide either code. The gate
         # stays ahead of them: a raiser that declared its failure transient is
         # retried even when its chain also carries a 4xx status.

@@ -330,14 +330,19 @@ class LocalProvider(BaseLLMProvider):
                     llamacpp_error, (asyncio.TimeoutError, aiohttp.ClientError)
                 ):
                     llamacpp_error = self._transport_error("llama.cpp", llamacpp_error)
+                retryable = (
+                    getattr(openai_error, "retryable", None) is True
+                    or getattr(llamacpp_error, "retryable", None) is True
+                )
                 raise LLMException(
                     f"Local LLM server failed with both API formats. "
                     f"OpenAI-compatible: {openai_error}. "
                     f"Raw llama.cpp: {llamacpp_error}",
-                    retryable=(
-                        getattr(openai_error, "retryable", None) is True
-                        or getattr(llamacpp_error, "retryable", None) is True
-                    ),
+                    # A permanent composite declares the 404 that sent it here,
+                    # so it reads as MODEL_NOT_FOUND (#2138). A transient one
+                    # declares no status, so it still reads as transient.
+                    status_code=None if retryable else 404,
+                    retryable=retryable,
                 ) from llamacpp_error
 
     def _transport_error(self, transport: str, error: BaseException) -> LLMException:

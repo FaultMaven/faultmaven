@@ -291,10 +291,13 @@ carried `host:port` — so a declared-retryable connect failure to
 `AUTH_FAILED`. A declared **transient** failure therefore short-circuits to the
 retry ladder ahead of those classifiers; a declared **permanent** one still
 falls through to them, because they add semantics the flag does not carry.
-Since #2138 neither reads text: `AUTH_FAILED` needs a declared 401/403 or
-`PROVIDER_AUTH_FAILED` on the `__cause__` chain, and `MODEL_NOT_FOUND` a
-declared 404. This mapping follows the same rule, reading the declared flag
-off any class rather than only off `LLMException`.
+Since #2138 neither reads text: the first declared status or code on the
+`__cause__` chain decides both. `AUTH_FAILED` needs that declaration to be
+`PROVIDER_AUTH_FAILED` or a 401/403, and `MODEL_NOT_FOUND` a 404. A provider
+that signals a rejected credential with another status declares
+`PROVIDER_AUTH_FAILED` itself: Gemini answers an invalid key with a 400 whose
+ErrorInfo reason is `API_KEY_INVALID`. This mapping follows the same rule,
+reading the declared flag off any class rather than only off `LLMException`.
 
 `LLM_CONFIG_ERROR` is the engine code for "the LLM layer is not routable" —
 no provider in the fallback chain, or the registry cannot build one. It is

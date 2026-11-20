@@ -289,7 +289,9 @@ PROVIDER_REFUSED = "PROVIDER_REFUSED"
 
 
 # Stable error_code for a rejected provider CREDENTIAL — revoked/invalid API key,
-# or a key without access to the requested resource (HTTP 401/403). Like
+# or a key without access to the requested resource (HTTP 401/403, or a
+# provider's own rejected-key signal on another status: Gemini's 400 with
+# ErrorInfo reason API_KEY_INVALID, declared by its adapter). Like
 # QUOTA_EXHAUSTED this is permanent and account-scoped: every request fails the
 # same way until an operator rotates or re-provisions the key. It exists so that
 # condition can (a) open a circuit breaker instead of letting every turn make a

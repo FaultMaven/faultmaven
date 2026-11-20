@@ -877,9 +877,9 @@ class TestDeclarationOutranksProse:
 
 
 class TestAuthAndModelNotFoundAreDeclared:
-    """#2138: AUTH_FAILED and MODEL_NOT_FOUND come from a declared HTTP status
-    (401/403, 404) or ``PROVIDER_AUTH_FAILED`` on the ``__cause__`` chain,
-    never from digits or letters in a message.
+    """#2138: AUTH_FAILED and MODEL_NOT_FOUND come from the first HTTP status
+    (401/403, 404) or ``PROVIDER_AUTH_FAILED`` declared on the ``__cause__``
+    chain, never from digits or letters in a message.
     """
 
     @pytest.mark.asyncio
@@ -952,6 +952,27 @@ class TestAuthAndModelNotFoundAreDeclared:
         outer = LLMException("gateway error", status_code=502)
         outer.__cause__ = LLMException("not found", status_code=404)
         assert handler.is_model_not_found_error(outer) is False
+
+    def test_one_chain_rule_for_status_and_auth_code(self, handler):
+        """The first cursor declaring a status OR ``PROVIDER_AUTH_FAILED``
+        settles both predicates; nothing further down is read."""
+        from faultmaven.exceptions import PROVIDER_AUTH_FAILED
+
+        # A status on the nearest raiser outranks an auth code below it.
+        outer = LLMException("gateway error", status_code=502)
+        outer.__cause__ = LLMException("key revoked", error_code=PROVIDER_AUTH_FAILED)
+        assert handler.is_auth_error(outer) is False
+        # An auth code on the nearest raiser outranks a 404 below it...
+        coded = LLMException("key revoked", error_code=PROVIDER_AUTH_FAILED)
+        coded.__cause__ = LLMException("not found", status_code=404)
+        assert handler.is_auth_error(coded) is True
+        assert handler.is_model_not_found_error(coded) is False
+        # ...and on the same cursor as a 404.
+        both = LLMException(
+            "no access", status_code=404, error_code=PROVIDER_AUTH_FAILED
+        )
+        assert handler.is_auth_error(both) is True
+        assert handler.is_model_not_found_error(both) is False
 
 
 class TestRecoveryFollowsTheDeclaredCategory:
