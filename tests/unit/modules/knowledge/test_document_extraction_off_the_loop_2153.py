@@ -862,9 +862,7 @@ async def test_a_document_quoting_a_special_token_is_counted(tmp_path):
     result = await _preprocess(path, "text/markdown")
 
     assert not result.is_rejected, result.rejection_reason
-    counted = _get_tiktoken_encoder("gpt-4").encode(
-        result.extracted_text, disallowed_special=()
-    )
+    counted = _get_tiktoken_encoder("gpt-4").encode(result.extracted_text)
     assert result.token_count == len(counted)
 
 

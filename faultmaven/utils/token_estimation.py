@@ -17,8 +17,9 @@ Usage:
 """
 
 import logging
+import re
 from functools import lru_cache
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from faultmaven.utils.optional_dependency import module_is_usable
 
@@ -46,15 +47,81 @@ if not TIKTOKEN_AVAILABLE:
     )
 
 
+#: The longest span tiktoken encodes in one call when its pre-tokenizer cannot
+#: split it: a run of non-whitespace or of whitespace. Its BPE is super-linear
+#: on such a run (``infrastructure/llm/router.py``'s output-floor note): on
+#: cl100k, 65,536 spaces took 4.3 s, ``a`` 5.0 s, ``-`` 3.7 s, random letters
+#: 3.1 s and ``ab`` repeated 3.4 s, all blocking, and 1,000,000 spaces raised
+#: "Max stack size exceeded". A longer run is encoded in pieces of this length.
+_MAX_ENCODE_RUN = 1024
+#: Whitespace as tiktoken's pre-tokenizer reads it: Unicode White_Space, not
+#: Python's ``\s``, which also takes U+001C-U+001F (record separators that
+#: tiktoken reads as punctuation).
+_WS = r"\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
+#: A run of non-whitespace or whitespace longer than ``_MAX_ENCODE_RUN``,
+#: matched only from the run's first character, so a scan takes linear time.
+_LONG_RUN = re.compile(
+    r"(?<![^{ws}])[^{ws}]{{{n},}}|(?<![{ws}])[{ws}]{{{n},}}".format(
+        ws=_WS, n=_MAX_ENCODE_RUN + 1
+    )
+)
+
+
+def _cuts(text: str):
+    """Where ``PlainEncoder.encode`` cuts *text*: every ``_MAX_ENCODE_RUN``
+    characters into each long run, one further where that would part a
+    surrogate pair."""
+    for run in _LONG_RUN.finditer(text):
+        for cut in range(run.start() + _MAX_ENCODE_RUN, run.end(), _MAX_ENCODE_RUN):
+            high = "\ud800" <= text[cut - 1] <= "\udbff"
+            yield cut + 1 if high and "\udc00" <= text[cut] <= "\udfff" else cut
+
+
+class PlainEncoder:
+    """A tiktoken encoding that encodes every text as plain text.
+
+    tiktoken's own ``encode`` raises on text spelling a special token, such as
+    ``<|endoftext|>`` in a model-serving log. Here that spelling is counted and
+    cut as the text it is (``disallowed_special=()``), so no caller can choose
+    otherwise (#2948). Nothing allows a special token either: the token bytes
+    of an encoding always concatenate back to its text.
+
+    A run of non-whitespace or of whitespace longer than ``_MAX_ENCODE_RUN``
+    is cut every ``_MAX_ENCODE_RUN`` characters, and each segment between
+    consecutive cuts is encoded in one call; the ids still decode to the text.
+    Text without such a run is encoded in one call, its ids unchanged.
+    """
+
+    __slots__ = ("_encoding",)
+
+    def __init__(self, encoding) -> None:
+        self._encoding = encoding
+
+    def encode(self, text: str) -> List[int]:
+        cuts = list(_cuts(text))
+        ids: List[int] = []
+        for start, end in zip([0, *cuts], [*cuts, len(text)]):
+            ids += self._encoding.encode(text[start:end], disallowed_special=())
+        return ids
+
+    def decode(self, tokens: Sequence[int]) -> str:
+        return self._encoding.decode(tokens)
+
+    def decode_tokens_bytes(self, tokens: Sequence[int]) -> List[bytes]:
+        return self._encoding.decode_tokens_bytes(tokens)
+
+
 @lru_cache(maxsize=10)
-def _get_tiktoken_encoder(model: str = "gpt-4"):
+def _get_tiktoken_encoder(model: str = "gpt-4") -> Optional[PlainEncoder]:
     """Get cached tiktoken encoder for OpenAI models
+
+    Every tiktoken count and cut in the codebase loads its encoding here.
 
     Args:
         model: Model name (e.g., "gpt-4", "gpt-3.5-turbo")
 
     Returns:
-        tiktoken.Encoding instance
+        The encoding as a ``PlainEncoder``, or None when it cannot be loaded
     """
     if not TIKTOKEN_AVAILABLE:
         return None
@@ -68,7 +135,7 @@ def _get_tiktoken_encoder(model: str = "gpt-4"):
         else:
             encoding_name = "cl100k_base"  # Default for modern models
 
-        return tiktoken.get_encoding(encoding_name)
+        return PlainEncoder(tiktoken.get_encoding(encoding_name))
     except MemoryError:
         raise  # the preparation worker's declared exit, never a fallback (#2622)
     except Exception as e:

@@ -100,7 +100,7 @@ def _measure(text: str) -> tuple[int, str]:
         return len(text) // 4, text[: TRIAGE_SAMPLE_TOKENS * 4]
     count, head = 0, []
     for chunk in _chunks(text):
-        tokens = encoder.encode(chunk, disallowed_special=())
+        tokens = encoder.encode(chunk)
         count += len(tokens)
         head += tokens[: TRIAGE_SAMPLE_TOKENS + 1 - len(head)]
     if count > TRIAGE_SAMPLE_TOKENS:
