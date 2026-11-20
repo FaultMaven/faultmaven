@@ -647,6 +647,14 @@ def _whole_notices(
 
 
 _MILESTONE_STATUS = "milestone status"
+_CONTEST_NOTE = "working conclusion's contest note"
+
+#: The working conclusion's line, in place of its contest NOTE, when the
+#: record could not be read this turn (#2811 S2b-2a).
+CONTEST_OMITTED = (
+    "NOTE: whether other validated causes contest this one could not be read "
+    "this turn; do not treat this statement as the identified cause this turn."
+)
 
 
 def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
@@ -732,7 +740,8 @@ def build_investigation_context(
     ``narration_fold`` is the prompt assembly's record, needs pool and fresh
     inputs for the ``<fix_verification>`` and ``<evidence_needs>`` blocks,
     the milestone status, the exclusion rule and the state summary (#2811
-    S2b-1a, S2b-1b-ii, S2b-1c-i): one per assembly, so a context built again
+    S2b-1a, S2b-1b-ii, S2b-1c-i), and the causal graph's recovery notes and
+    the working conclusion's contest NOTE (S2b-2a): one per assembly, so a context built again
     at a tighter budget folds and reads each once; a fresh one per build
     without it.
 
@@ -922,7 +931,7 @@ def build_investigation_context(
     # node-identity-loop rationale (render ids back so the LLM extends rather
     # than re-emits). The stage-specific loading below may later REPLACE this
     # with a condensed <working_hypotheses> block on non-DIAGNOSIS stages.
-    hypothesis_str = _build_causal_graph_block(case)
+    hypothesis_str = _build_causal_graph_block(case, narration_fold)
 
     # 5a. Investigation Journal (durable long-term memory)
     # Compact, append-only record of key findings, decisions, and context.
@@ -945,7 +954,12 @@ def build_investigation_context(
         # several simultaneously-validated exclusive causes, and rendering it
         # unqualified beside the graph block's discrimination ask invites the
         # model to anchor on the pick instead of running the separating test.
-        if getattr(case.progress, "cause_identification_contested", False):
+        # The contested roots are the record's (#2811 S2b-2a), the same the
+        # graph block's notes read; if it cannot be read, CONTEST_OMITTED.
+        outcome = narration_fold.outcome(_CONTEST_NOTE)
+        if outcome is None:
+            conclusion_str += f"{CONTEST_OMITTED}\n"
+        elif outcome.cause.contested_root_ids:
             conclusion_str += (
                 "NOTE: this is ONE of several simultaneously-validated "
                 "mutually-exclusive candidate causes (see the causal graph) — "

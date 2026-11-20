@@ -55,6 +55,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable, Optional
 
+from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
 from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
@@ -401,10 +402,17 @@ def _shape_4(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome
     return prior
 
 
+def _shape_5(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
+    """Shape 4 -> 5 (#2811 S2b-2a): the identity. Shape 5 adds
+    ``cause.contested_root_ids``, not a carried verdict, so every fold
+    derives it fresh and nothing stored is rewritten."""
+    return prior
+
+
 #: Each shape's step from the shape below it, in order; a record is moved one
 #: step at a time to ``CURRENT_OUTCOME_SHAPE``, each step run only on a record
 #: of exactly the shape below its own. A shape change adds its step here.
-SHAPE_STEPS = {2: _shape_2, 3: _shape_3, 4: _shape_4}
+SHAPE_STEPS = {2: _shape_2, 3: _shape_3, 4: _shape_4, 5: _shape_5}
 
 
 def _upgraded(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:
@@ -443,9 +451,12 @@ def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome
         identified_root_ids=sorted(identified),
         held_root_ids=sorted(held),
         fallen_root_ids=sorted(fallen),
-        # Derived fresh at the write, unlike ``pool_empty_reason``'s HELD_OPEN
-        # verdict and ``identification_held_open`` below.
+        # Both derived fresh at the write, unlike ``pool_empty_reason``'s
+        # HELD_OPEN and IDENTIFICATION_CONTESTED verdicts and
+        # ``identification_held_open`` below. The prompt's recovery notes
+        # and working-conclusion NOTE read them (#2811 S2b-2a).
         held_open_root_ids=sorted(held_open_root_ids(case)),
+        contested_root_ids=sorted(mece_contested_root_ids(case)),
         confirmation_root_ids=sorted(subjects.pool_roots),
         cited_basis={
             node_id: sorted(rows)

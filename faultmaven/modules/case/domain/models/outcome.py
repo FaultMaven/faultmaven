@@ -193,7 +193,7 @@ class ClosureEligibility(StrEnum):
 
 #: Raised by every change that adds or changes a ``CaseOutcome`` field: a
 #: stored record of an older shape is rewritten by the backfill (#2811).
-CURRENT_OUTCOME_SHAPE = 4
+CURRENT_OUTCOME_SHAPE = 5
 
 
 class WritePoint(StrEnum):
@@ -244,6 +244,14 @@ class CauseOutcome(BaseModel):
     )
     fallen_root_ids: List[str] = Field(default_factory=list)
     held_open_root_ids: List[str] = Field(default_factory=list)
+    contested_root_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "The validated, mutually-exclusive roots that contest "
+            "identification (``mece_contested_root_ids``, #2811 S2b-2a), "
+            "derived fresh at the write like ``held_open_root_ids``"
+        ),
+    )
     confirmation_root_ids: List[str] = Field(
         default_factory=list, description="The confirmation pool"
     )

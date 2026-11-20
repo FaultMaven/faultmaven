@@ -1,10 +1,7 @@
 import logging
+from typing import Optional
 
-from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
-from faultmaven.core.investigation.causal_graph.projection import (
-    _standing_hypotheses,
-    held_open_root_ids,
-)
+from faultmaven.core.investigation.causal_graph.projection import _standing_hypotheses
 from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
@@ -19,7 +16,13 @@ from faultmaven.core.investigation.cause_assurance import (
     latest_decided_fix_window,
 )
 from faultmaven.core.investigation.narration.prompt_state import cause_work_rule
-from faultmaven.modules.case.contracts import Case, CaseState, NodeState, NodeType
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseOutcome,
+    CaseState,
+    NodeState,
+    NodeType,
+)
 
 from .narration_fold import NarrationFold
 
@@ -308,8 +311,18 @@ def refused_verdict_root_ids(case: Case) -> set[str]:
     }
 
 
+#: The graph block's one line, in place of the MECE-contested, why-open and
+#: verdict-refused notes, when the record could not be read this turn
+#: (#2811 S2b-2a).
+RECOVERY_OMITTED = (
+    "Root recovery notes (MECE-contested, why-open, verdict-refused) could not "
+    "be read this turn; do not treat a validated root as the identified cause "
+    "this turn."
+)
+_RECOVERY_BLOCK = "graph block's recovery section"
+
 # The populations ``_root_recovery_reasons`` reads, each named by the
-# predicate that produces it.
+# predicate that produces it (the first two read off the record).
 _MECE_POPULATION = "mece_contested_root_ids"
 _WHY_POPULATION = "held_open_root_ids"
 _REFUSED_POPULATION = "refused_verdict_root_ids"
@@ -329,7 +342,9 @@ _DISJOINT_POPULATIONS = (
 )
 
 
-def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
+def _root_recovery_reasons(
+    case: Case, outcome: Optional[CaseOutcome]
+) -> dict[str, list[str]]:
     """The recovery notes each root carries, by root node id, in render order.
 
     Rendering only: it feeds the per-root note in
@@ -369,18 +384,27 @@ def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
     ERROR as ``recovery_note_population_collision``, once per root, naming
     every population it is in. Its notes are still the ones this order
     renders, and building the prompt never raises.
+
+    The contested and held-open roots are the record's
+    (``cause.contested_root_ids``, ``cause.held_open_root_ids``, #2811
+    S2b-2a). With no record (``outcome`` None) the first three notes are not
+    rendered, since the refused population excludes the held-open one.
     """
-    why = held_open_root_ids(case)
-    populations = (  # in render order
-        (
-            _MECE_POPULATION,
-            dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
-        ),
-        (_WHY_POPULATION, dict.fromkeys(why, _WHY_OPEN)),
-        (
-            _REFUSED_POPULATION,
-            dict.fromkeys(refused_verdict_root_ids(case) - why, _VERDICT_REFUSED),
-        ),
+    populations: tuple = ()
+    if outcome is not None:
+        why = set(outcome.cause.held_open_root_ids)
+        populations = (
+            (
+                _MECE_POPULATION,
+                dict.fromkeys(outcome.cause.contested_root_ids, _MECE_CONTESTED),
+            ),
+            (_WHY_POPULATION, dict.fromkeys(why, _WHY_OPEN)),
+            (
+                _REFUSED_POPULATION,
+                dict.fromkeys(refused_verdict_root_ids(case) - why, _VERDICT_REFUSED),
+            ),
+        )
+    populations += (  # in render order
         (
             _RESTATEMENT_POPULATION,
             dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
@@ -410,7 +434,7 @@ def _root_recovery_reasons(case: Case) -> dict[str, list[str]]:
     return reasons
 
 
-def _build_causal_graph_block(case: Case) -> str:
+def _build_causal_graph_block(case: Case, fold: Optional[NarrationFold] = None) -> str:
     """Render the causal graph (hypotheses ARE chains, methodology M3).
 
     Render the chain STRUCTURE with node ids — not flat statements — so the LLM
@@ -426,6 +450,12 @@ def _build_causal_graph_block(case: Case) -> str:
 
     Returns an empty string when the case has no active hypotheses and no
     causal nodes (nothing to render yet).
+
+    The contested and held-open roots are read off the record, from ``fold``
+    (the prompt assembly's; a fresh one without it). If it cannot be read,
+    the block renders ``RECOVERY_OMITTED`` once in place of those notes and
+    the refused-verdict ones; the failure is logged and counted once per
+    assembly (``NarrationFold``).
     """
 
     nodes = case.causal_nodes or {}
@@ -433,7 +463,8 @@ def _build_causal_graph_block(case: Case) -> str:
     if not (active_h or nodes):
         return ""
 
-    reasons = _root_recovery_reasons(case)
+    outcome = (NarrationFold(case) if fold is None else fold).outcome(_RECOVERY_BLOCK)
+    reasons = _root_recovery_reasons(case, outcome)
 
     def _node_line(indent: str, n, node_type: str | None = None) -> str:
         note = "".join(_RECOVERY_NOTES.get(r, "") for r in reasons.get(n.node_id, ()))
@@ -475,6 +506,8 @@ def _build_causal_graph_block(case: Case) -> str:
         "hypothesis by its [hyp_...] id in hypothesis_evidence_links and "
         "hypotheses_to_update.",
     ]
+    if outcome is None:
+        lines.append(RECOVERY_OMITTED)
     for h in active_h:
         lines.append(
             f"- [{h.hypothesis_id}] {_one_line(h.statement)} "

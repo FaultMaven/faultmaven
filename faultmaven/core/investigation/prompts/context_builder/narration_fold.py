@@ -4,8 +4,9 @@ prompt state's fresh inputs (``PromptStateFresh``) and the two fresh reads
 printed beside the record (the symptom's currency note, ``fix_confirmed``),
 each computed at most once and shared by every block that reads them:
 ``<fix_verification>``, ``<evidence_needs>``, the milestone status, the
-exclusion rule, the focus emphasis, the state summary, and the fallback
-prompt the assembly may return instead."""
+exclusion rule, the focus emphasis, the state summary, the causal graph's
+recovery notes and the working conclusion's contest NOTE (S2b-2a), and the
+fallback prompt the assembly may return instead."""
 
 import logging
 import sys

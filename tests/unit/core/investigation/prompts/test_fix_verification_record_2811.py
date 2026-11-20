@@ -749,14 +749,14 @@ async def test_a_shape_2_record_upgrades_through_the_identity_steps(monkeypatch)
 
 async def test_a_shape_3_record_upgrades_to_4(monkeypatch):
     """Shape 4 adds ``pending_check_reason``: a shape-3 record loads with its
-    default and folds to shape 4 with the reason; without ``_shape_4`` the
-    upgrade raises."""
+    default and folds to the current shape with the reason; without
+    ``_shape_4`` the upgrade raises. (Shape 5's step: #2811 S2b-2a,
+    ``test_contest_record_2811``.)"""
     case = await build("N:held_fulfilled")
     old = _stored(case, 3, "pending_check_reason")
-    assert CURRENT_OUTCOME_SHAPE == 4
     assert old.resolution.pending_check_reason is None, "premise: the default"
     folded = compute_case_outcome(old, case, at=WritePoint.COMMIT)
-    assert folded.shape == 4
+    assert folded.shape == CURRENT_OUTCOME_SHAPE
     assert (
         folded.resolution.pending_check_reason
         == PendingCheckReason.FULFILLED_BEFORE_ASK

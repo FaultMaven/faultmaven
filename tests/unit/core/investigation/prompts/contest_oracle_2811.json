@@ -1,0 +1,374 @@
+{
+ "2582_cited_failure_re_rooted": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: active)\n    cn_0000000a2a2a [root/inconclusive] pgbouncer caps the pool at 20 connections (posited turn 10) \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n    cn_000000001927 [intermediate/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "2595_unkinded_failure_rebound": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: active)\n    cn_0000000a2a2a [root/inconclusive] pgbouncer caps the pool at 20 connections (posited turn 10) \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n    cn_000000001927 [intermediate/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "2609_relapsed_mitigation": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "C:all_three": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the deploy removed the connection release call so pool connections leak until exhaustion\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\nNOTE: this is ONE of several simultaneously-validated mutually-exclusive candidate causes (see the causal graph) \u2014 cause identification is HELD; gather DISCRIMINATING evidence before treating this statement as the cause.\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000aa] the deploy removed the connection release call so pool connections leak until exhaustion (Confidence: 50%, State: validated)\n    cn_00000000000a [root/validated] the deploy removed the connection release call so pool connections leak until exhaustion \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause) \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n- [hyp_0000000000bb] connection pool max size undersized for current checkout load (Confidence: 50%, State: validated)\n    cn_00000000000b [root/validated] connection pool max size undersized for current checkout load \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause) \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n- [hyp_0000000000cc] transient traffic spike exhausted available database connections (Confidence: 50%, State: validated)\n    cn_00000000000c [root/validated] transient traffic spike exhausted available database connections \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause) \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "C:contested": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the deploy removed the connection release call so pool connections leak until exhaustion\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\nNOTE: this is ONE of several simultaneously-validated mutually-exclusive candidate causes (see the causal graph) \u2014 cause identification is HELD; gather DISCRIMINATING evidence before treating this statement as the cause.\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000aa] the deploy removed the connection release call so pool connections leak until exhaustion (Confidence: 50%, State: validated)\n    cn_00000000000a [root/validated] the deploy removed the connection release call so pool connections leak until exhaustion \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n- [hyp_0000000000bb] connection pool max size undersized for current checkout load (Confidence: 50%, State: validated)\n    cn_00000000000b [root/validated] connection pool max size undersized for current checkout load \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n- [hyp_0000000000cc] transient traffic spike exhausted available database connections (Confidence: 50%, State: validated)\n    cn_00000000000c [root/validated] transient traffic spike exhausted available database connections \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "C:held_open": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the deploy removed the connection release call so pool connections leak until exhaustion\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000aa] the deploy removed the connection release call so pool connections leak until exhaustion (Confidence: 50%, State: validated)\n    cn_00000000000a [root/validated] the deploy removed the connection release call so pool connections leak until exhaustion \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "C:refused_count_held": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the deploy removed the connection release call so pool connections leak until exhaustion\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000aa] the deploy removed the connection release call so pool connections leak until exhaustion (Confidence: 50%, State: active)\n    cn_00000000000a [root/inconclusive] the deploy removed the connection release call so pool connections leak until exhaustion \u2014 its root_is_terminal true was refused: it cited no causal_evidence row recorded since this root was posited. Cite in terminal_basis_evidence_ids the row that shows nothing renews or re-creates it \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "C:refused_held_open": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the deploy removed the connection release call so pool connections leak until exhaustion\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000aa] the deploy removed the connection release call so pool connections leak until exhaustion (Confidence: 50%, State: validated)\n    cn_00000000000a [root/validated] the deploy removed the connection release call so pool connections leak until exhaustion \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "C:retired": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: connection pool max size undersized for current checkout load\nCONFIDENCE: 80%\nREASONING: the strongest standing hypothesis on its supports\nNOTE: this is ONE of several simultaneously-validated mutually-exclusive candidate causes (see the causal graph) \u2014 cause identification is HELD; gather DISCRIMINATING evidence before treating this statement as the cause.\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_0000000000bb] connection pool max size undersized for current checkout load (Confidence: 50%, State: validated)\n    cn_00000000000b [root/validated] connection pool max size undersized for current checkout load\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n  Unattached causes already in the graph \u2014 reference these ids, do not re-emit:\n    cn_00000000000a [root/validated] the deploy removed the connection release call so pool connections leak until exhaustion\n</causal_graph>"
+ },
+ "D:carried_turn": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: active)\n    cn_0000000a2a2a [root/inconclusive] pgbouncer caps the pool at 20 connections (posited turn 10) \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n    cn_000000001927 [intermediate/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "D:closure": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "D:gone_action": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "D:omitted": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n- [hyp_00000000b0b0] the pgbouncer pool starves checkout (Confidence: 50%, State: validated)\n    cn_00000000b0b0 [root/validated] pgbouncer's pool for checkout is sized at 20 \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "E:checklist_overflow": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:diagnosis": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:exhausted_only": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:exhausted_overflow": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:fallback": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n  Unattached causes already in the graph \u2014 reference these ids, do not re-emit:\n    cn_00000000c0de [root/validated] the identified root cause\n</causal_graph>"
+ },
+ "E:only_carried": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "E:only_gone": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "E:render_cap": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:row_text": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:surface_rotation": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "E:verifying_names_no_row": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n  Unattached causes already in the graph \u2014 reference these ids, do not re-emit:\n    cn_00000000c0de [root/validated] the identified root cause\n</causal_graph>"
+ },
+ "M:no_rows": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "M:not_rechecked": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "M:refused": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "M:relieved": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "M:seen_again": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "M:with_fix": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "N:held_exhausted": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:held_fulfilled": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:held_fulfilled_declined": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:held_pending": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:held_pending_declined": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:invalidated": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "N:long_request": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "N:more_than_five": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "N:none_stopped": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_closed_false_alarm": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_closed_insufficient_evidence": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_closed_rca_infeasible": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_closed_restatement_held": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_inquiry_only": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_mitigation_sufficient": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_resolution_declined": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:closed_solution_deferred": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:current": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "P:declined_earlier": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the worker pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 4 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "P:declined_offer_open": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the worker pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 4 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "P:disposition": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "P:false_alarm_declined": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n</causal_graph>"
+ },
+ "P:inquiry": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "P:resolved": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:resolved_verified": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "P:revision_hypotheses": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_aaaaaaaaaaaa] app-02's clock runs 247 s fast (Confidence: 90%, State: validated)\n    (no chain yet \u2014 emit this hypothesis's OWN root cause node and point root_node_ref at it; a root another hypothesis already owns cannot be reused)\n- [hyp_bbbbbbbbbbbb] app-02 signs with a stale signing key (Confidence: 0%, State: refuted)\n    Refuted because: the gateway rejected with a time check, after the signature verified\n  Ruled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\n</causal_graph>"
+ },
+ "P:solution_verified": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_aaaaaaaaaaaa] app-02's clock runs 247 s fast (Confidence: 90%, State: validated)\n    (no chain yet \u2014 emit this hypothesis's OWN root cause node and point root_node_ref at it; a root another hypothesis already owns cannot be reused)\n- [hyp_bbbbbbbbbbbb] app-02 signs with a stale signing key (Confidence: 0%, State: refuted)\n    Refuted because: the gateway rejected with a time check, after the signature verified\n  Ruled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\n</causal_graph>"
+ },
+ "P:stale": {
+  "conclusion": "",
+  "graph": ""
+ },
+ "P:unverified_hypotheses": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_aaaaaaaaaaaa] app-02's clock runs 247 s fast (Confidence: 90%, State: validated)\n    (no chain yet \u2014 emit this hypothesis's OWN root cause node and point root_node_ref at it; a root another hypothesis already owns cannot be reused)\n- [hyp_bbbbbbbbbbbb] app-02 signs with a stale signing key (Confidence: 0%, State: refuted)\n    Refuted because: the gateway rejected with a time check, after the signature verified\n  Ruled out on record: hyp_bbbbbbbbbbbb (each refuted by evidence). No other alternative is excluded on record.\n</causal_graph>"
+ },
+ "R:before_the_failed_fix": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "R:fix_failed": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 6 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:fix_failed_newer": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 6 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:held_open": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:latest_failed": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 6 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_610ee10d9fec [root/validated] nothing rotates the certificate (posited turn 7)\n    cn_000000001927 [intermediate/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:no_longer_identified": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 7 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_782e19e3d217 [root/validated] nothing rotates the certificate (posited turn 7)\n    cn_000000001927 [intermediate/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:off_cause_attempt": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:other_cause": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n- [hyp_00000000b0b0] the pgbouncer pool starves checkout (Confidence: 50%, State: validated)\n    cn_00000000b0b0 [root/validated] pgbouncer's pool for checkout is sized at 20 \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:posited_later": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size (posited turn 5) \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:uncited_cited": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_00000000255c [root/validated] nothing rotates the fixed-life AppRole secret_id the issuer logs in with\n    cn_00000000255b [intermediate/validated] the AppRole secret_id is expired\n    cn_000000001927 [intermediate/validated] the api-gateway client certificate expired\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:uncited_no_citation": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_00000000255c [root/validated] nothing rotates the fixed-life AppRole secret_id the issuer logs in with \u2014 its WHY is open (ROOT-CAUSE TEST, clause b): ask for what produced this state and whether it returns once corrected. Then re-root this hypothesis onto that cause, or mark this root terminal on its hypotheses_to_update entry: root_is_terminal true, citing in terminal_basis_evidence_ids the causal_evidence row that shows nothing renews or re-creates it. The cause is not identified until one of them is done\n    cn_00000000255b [intermediate/validated] the AppRole secret_id is expired\n    cn_000000001927 [intermediate/validated] the api-gateway client certificate expired\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:uncited_no_root": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: a memory leak in the gunicorn worker\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 9 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 0%, State: refuted)\n    cn_000000001927 [root/refuted] max_connections is set to 20, below the checkout pool size\n    Refuted because: counterfactual disconfirmation: the cause was addressed or confirmed correct yet the problem persisted\n- [hyp_00000000eeee] a memory leak in the gunicorn worker (Confidence: 50%, State: active)\n    cn_00000000eeee [root/inconclusive] a memory leak in the gunicorn worker \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: hyp_000000001927 (each refuted by evidence). No other alternative is excluded on record.\n</causal_graph>"
+ },
+ "R:window_zero_failed": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 6 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "R:window_zero_failed_newer": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 6 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:four_fixes": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:gone_outside_window": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_00000000255c [root/validated] nothing rotates the fixed-life AppRole secret_id the issuer logs in with\n    cn_00000000255b [intermediate/validated] the AppRole secret_id is expired\n    cn_000000001927 [intermediate/validated] the api-gateway client certificate expired\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:interception_only": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:interception_seen_gone": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "T:no_dated_fix": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:other_cause_disconfirmation": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n- [hyp_00000000b0b0] the pgbouncer pool starves checkout (Confidence: 50%, State: validated)\n    cn_00000000b0b0 [root/validated] pgbouncer's pool for checkout is sized at 20 \u2014 one of several simultaneously-validated MUTUALLY-EXCLUSIVE roots: cause identification is HELD until discriminating evidence refutes the alternatives (at most one can be the real cause)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n  Unattached causes already in the graph \u2014 reference these ids, do not re-emit:\n    cn_d8f92929dafb [intermediate/candidate] the restart cleared the pool\n</causal_graph>"
+ },
+ "T:outside_window": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:past_the_bounds": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:predates_failed_fix": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "T:repeated_why": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "T:uncited_no_root": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: a memory leak in the gunicorn worker\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 9 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 0%, State: refuted)\n    cn_000000001927 [root/refuted] max_connections is set to 20, below the checkout pool size\n    Refuted because: counterfactual disconfirmation: the cause was addressed or confirmed correct yet the problem persisted\n- [hyp_00000000eeee] a memory leak in the gunicorn worker (Confidence: 50%, State: active)\n    cn_00000000eeee [root/inconclusive] a memory leak in the gunicorn worker \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: hyp_000000001927 (each refuted by evidence). No other alternative is excluded on record.\n</causal_graph>"
+ },
+ "gate_one": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: Verifying symptom - problem understanding in progress\nCONFIDENCE: 0%\nREASONING: Investigation in early stage - hypotheses not yet generated\n</working_conclusion>",
+  "graph": ""
+ },
+ "held_check": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "held_check_on_a_false_alarm": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "held_check_then_interception": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "hypothesis_action": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 100%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 3 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 100%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "menu_close": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n</causal_graph>"
+ },
+ "offer_answered_at_0b": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the worker pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 4 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_00000000b0dd] the postgres connection limit starves the worker pool (Confidence: 50%, State: active)\n    cn_00000000b0dd [root/inconclusive] max_connections is set to 20, below the worker pool size \u2014 needs a SECOND INDEPENDENT causal observation to validate (re-recording the same datum does not count)\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record. The latest fix is confirmed (the cause and the problem observed gone after it): an unexcluded alternative was not what caused this problem, but is not shown absent.\n</causal_graph>"
+ },
+ "terminal_qa": {
+  "conclusion": "",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ },
+ "told_then_committed": {
+  "conclusion": "<working_conclusion>\nSTATEMENT: the postgres connection limit starves the checkout pool\nCONFIDENCE: 50%\nREASONING: Based on 0 supporting evidence items linked to this hypothesis (of 4 on the case).\n</working_conclusion>",
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n- [hyp_000000001927] the postgres connection limit starves the checkout pool (Confidence: 50%, State: validated)\n    cn_000000001927 [root/validated] max_connections is set to 20, below the checkout pool size\n  Ruled out on record: nothing. No alternative cause is excluded by evidence on record.\n</causal_graph>"
+ }
+}

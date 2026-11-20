@@ -286,8 +286,8 @@ async def test_a_failure_omits_only_the_checklist(
 async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
     """``D:omitted``: the fold fails once, and each block that renders an
     omission logs it once, naming itself, over the assembly's builds (the
-    prompt-state lines included, #2811 S2b-1c-i); the failure is counted
-    once."""
+    prompt-state lines included, #2811 S2b-1c-i, and the graph block's
+    recovery notes, S2b-2a); the failure is counted once."""
     case = await build("D:omitted")
     with caplog.at_level("ERROR", logger=fold_module.__name__):
         prompt = templates.get_prompt_for_case(
@@ -304,6 +304,8 @@ async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
         "(#2811)",
         f"Case {case.case_id}: the exclusion rule was not rendered (#2811)",
         f"Case {case.case_id}: the focus emphasis was not rendered (#2811)",
+        f"Case {case.case_id}: the graph block's recovery section was not "
+        "rendered (#2811)",
         f"Case {case.case_id}: the milestone status was not rendered (#2811)",
         f"Case {case.case_id}: the state summary was not rendered (#2811)",
     ]
