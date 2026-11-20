@@ -110,7 +110,9 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
     with no exception and no metric — a silent loss, where the unquoted form at
     least fails soft into a correct link. ``int()`` normalises leading zeros so
     ``"007"`` and ``7`` resolve to the same placeholder. A padded ``" 0 "`` is
-    the same value, so the digits are tested and coerced stripped.
+    the same value, so the digits are tested and coerced stripped. The test is
+    ``isdecimal()``, what ``int()`` accepts: a superscript ``"²"`` passes
+    ``isdigit()`` but not ``int()``, so it passes through unchanged.
 
     See [[project_pydantic_shape_failures_backlog]] Variant E.
     """
@@ -118,7 +120,7 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
         return v
     if isinstance(v, int):
         return f"new_index_{v}"
-    if isinstance(v, str) and v.strip().isdigit():
+    if isinstance(v, str) and v.strip().isdecimal():
         return f"new_index_{int(v.strip())}"
     return v
 

@@ -23,7 +23,10 @@ from faultmaven.core.investigation.milestone_engine.statement_revision import (
 from faultmaven.core.investigation.milestone_engine.structured_output import (
     _validate_with_degradation,
 )
-from faultmaven.core.investigation.problem_status import decline_revision
+from faultmaven.core.investigation.problem_status import (
+    decline_revision,
+    pending_revision,
+)
 from faultmaven.core.investigation.schemas import (
     HypothesisToAdd,
     InvestigationResponse_Diagnosis,
@@ -228,7 +231,9 @@ async def test_an_evidence_ref_is_stored_only_as_an_id_on_the_case(
         ]
     (stored,) = case.investigation_journal
     assert (stored.content, stored.evidence_id) == (FINDING, expected)
-    discarded = f"{case.case_id}: journal entry kept without its evidence ref {ref!r}"
+    discarded = (
+        f"{case.case_id}: journal entry stored without its evidence reference {ref!r}"
+    )
     assert (discarded in caplog.text) == bool(ref and expected is None)
 
 
@@ -256,9 +261,10 @@ async def test_a_staged_entrys_evidence_ref_is_the_minted_id_after_replay():
     assert stored.evidence_id == a2
 
 
-@pytest.mark.parametrize("ref", ["", "  "])
+@pytest.mark.parametrize("ref", ["", "  ", "[]", " [ ] "])
 async def test_an_empty_hypothesis_ref_names_no_hypothesis(ref):
-    """Not staged with the revision turn's cause work, and stored as None."""
+    """Empty once normalised: not staged with the revision turn's cause work
+    (at either staging site), and stored as None."""
     engine, case = revision._engine(), revision._case()
     dsu = revision._revision_turn_with_cause_work()
     dsu.journal_entries = [
@@ -269,3 +275,5 @@ async def test_an_empty_hypothesis_ref_names_no_hypothesis(ref):
     assert [(e.content, e.hypothesis_id) for e in case.investigation_journal] == [
         (BLOCKER, None)
     ]
+    (bundle,) = pending_revision(case).staged
+    assert "journal_entries" not in bundle.updates

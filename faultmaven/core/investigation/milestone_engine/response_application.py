@@ -128,6 +128,7 @@ from .stage_gates import (
     _case_has_symptom_evidence,
     _coerce_intervention_quadrant,
     _determine_action_type,
+    _normalise_id_ref,
     _settled_likelihoods,
     _settled_working_conclusion,
     _supersede_pending_solution_offers,
@@ -451,9 +452,9 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
 
 
 def _names_hypothesis(je: Any) -> bool:
-    """Whether a journal entry names a hypothesis; a whitespace-only ref
-    names none."""
-    return bool(je.hypothesis_id and je.hypothesis_id.strip())
+    """Whether a journal entry names a hypothesis: a ref empty once normalised
+    (whitespace, ``[]``) names none, as ``_journal_hypothesis_id`` reads it."""
+    return bool(_normalise_id_ref(je.hypothesis_id))
 
 
 def _hypothesis_journal_entries(updates: Any) -> list[Any]:
@@ -495,7 +496,8 @@ def _journal_evidence_id(
     if ev_id in {e.evidence_id for e in case.evidence}:
         return ev_id
     logger.info(
-        "Case %s: journal entry kept without its evidence ref %r, no row on the case",
+        "Case %s: journal entry stored without its evidence reference %r, "
+        "no row on the case",
         case.case_id,
         ref,
     )

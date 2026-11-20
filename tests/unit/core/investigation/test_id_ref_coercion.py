@@ -134,13 +134,20 @@ def test_the_schema_actually_has_id_ref_fields():
 )
 @pytest.mark.parametrize(
     "emitted,expected",
-    [(3, "new_index_3"), ("3", "new_index_3"), (" 3 ", "new_index_3")],
+    [
+        (3, "new_index_3"),
+        ("3", "new_index_3"),
+        (" 3 ", "new_index_3"),
+        ("\u0663", "new_index_3"),  # ARABIC-INDIC DIGIT THREE: int() takes it
+        ("\u00b2", "\u00b2"),  # SUPERSCRIPT TWO: a digit int() refuses
+        (" \u00b2 ", " \u00b2 "),
+    ],
 )
 def test_id_ref_field_coerces_a_bare_index(
     model_name, field_name, field, emitted, expected
 ):
     """A bare index becomes the ``new_index_N`` placeholder, quoted, padded or
-    not."""
+    not; a digit ``int()`` refuses passes through."""
     adapter = _adapter_for(field)
     if _is_list_field(field):
         emitted, expected = [emitted], [expected]
