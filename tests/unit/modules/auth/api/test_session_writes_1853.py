@@ -27,6 +27,9 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, get_args
 
 import fakeredis
+
+# fakeredis's private clock module (2.35.1), patched for an exact re-arm check; an
+# upgrade that moves it fails the import or that check loudly.
 import fakeredis._basefakesocket as fakeredis_socket
 import fakeredis.aioredis as fakeredis_aio
 import httpx
