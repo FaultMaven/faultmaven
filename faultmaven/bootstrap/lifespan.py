@@ -193,6 +193,30 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
     if _policy_problem:
         raise RuntimeError(_policy_problem)
 
+    # The jobs' caps over the container's limit are reported, never refused
+    # (#2921, ruling (c)): once per serving process, as each runs this. Nothing
+    # here may refuse startup, so a failure is logged by its class and passed.
+    try:
+        from faultmaven.api.dependencies import container_memory_status
+
+        memory = container_memory_status(settings)
+        if memory.job_caps_exceed_limit:
+            logger.warning(
+                "The jobs' address-space caps (%d bytes) exceed the container's "
+                "cgroup limit (%d bytes, %s); outside them: %s. See "
+                "GET /admin/config/status.",
+                memory.job_caps_bytes,
+                memory.memory_max_bytes,
+                memory.cgroup_source,
+                ", ".join(memory.unbounded_terms),
+            )
+    except Exception as exc:
+        logger.warning(
+            "The jobs' address-space caps were not checked against the "
+            "container's limit (%s); startup continues.",
+            type(exc).__name__,
+        )
+
     # Initialize core services with K8s support
     # SessionManager replaced by services.session.SessionService via DI container
     # Access via: container.get_session_service()

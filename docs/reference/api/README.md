@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.6.0
+**Version:** 15.7.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5482,6 +5482,35 @@ Why a CLOSED case ended: the most specific reason that holds when it is closed. 
 
 ---
 
+### ContainerMemoryStatus
+
+The jobs' address-space caps beside the container's memory limit (#2921).
+
+The bounded terms of Principle 14's worst-overlap formula (*Container
+memory*): every slot of every worker pool held at once, each job at its
+``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB
+encode, once, as while the host lock holds. Caps, not resident use.
+Reported, never refused.
+
+**Properties:**
+
+- `buffers_bytes` (integer, required) — serving_processes x each pool's slots x its job's buffers, U the upload limit: preparation, its output limit; Tier 1, 2 x 3U in and its output limit; the gate, 2 x two texts at the draft bound (4 bytes a character) in and its output limit (the text verify publishes is outside it, #2674); a token count, 2U in and its 1 MiB output limit.
+- `cgroup_source` (string, required) — Where the limit was read: 'absent' when neither version's limit file exists; 'unreadable' or 'invalid' when it could not be read or held neither a non-negative integer nor 'max' (v2's no limit, reported as cgroup_v2).
+- `encode_bytes` (integer, required) — The KB encode's RLIMIT_AS, once per container under the host lock.
+- `encode_without_host_lock_bytes` (integer, required) — serving_processes x the encode's RLIMIT_AS, the term when no process holds the host lock (knowledge_indexing.host_lock_available).
+- `headroom_bytes` (object, required) — memory_max_bytes - job_caps_bytes, negative when over: what the limit leaves for unbounded_terms, to compare with their measured resident use. Assumes the host lock holds, as job_caps_bytes does. Null with no limit known.
+- `job_caps_bytes` (integer, required) — pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are outside it. Assumes the host lock holds: without it the encode term is encode_without_host_lock_bytes (knowledge_indexing.host_lock_available).
+- `job_caps_exceed_limit` (object, required) — True: the jobs' caps alone exceed the limit. False: they alone fit, which says nothing of unbounded_terms, and assumes the host lock holds, as job_caps_bytes does. Null: no limit known.
+- `memory_max_bytes` (object, required) — memory.max (v1: memory.limit_in_bytes). Null under cgroup_v2 or cgroup_v1: no limit at this cgroup; under any other source: unknown.
+- `oom_group` (object, required) — memory.oom.group: true when one OOM kills the whole container, the API included. Null whenever cgroup_source is not cgroup_v2 (cgroup_v1 has no grouping; otherwise the limit was not read), and when memory.oom.group cannot be read or holds neither 0 nor 1.
+- `pools_bytes` (integer, required) — serving_processes x each pool's slots x its RLIMIT_AS: document preparation, Evidence Tier 1, the runbook gate, the KB token counts.
+- `serving_processes` (integer, required) — WORKERS, or 1 under RELOAD.
+- `tier1_slots` (integer, required) — Evidence Tier 1's slots in force.
+- `unbounded_terms` (array, required) — Terms no constant bounds: 'api', each serving process's resident memory; 'supervisor', uvicorn's, above one serving process or under RELOAD; 'encode_buffers', the KB encode's texts in and output.
+- `upload_limit_mb` (integer, required) — MAX_UPLOAD_SIZE_MB.
+
+---
+
 ### DatabaseTimeoutsStatus
 
 The bounds in force on a database that stops answering (#2280).
@@ -5582,6 +5611,7 @@ Read-only environment configuration status for dashboard display.
 **Properties:**
 
 - `auth_mode` (string, required) — 'local' or 'oauth'
+- `container_memory` (object, required) — The jobs' address-space caps for this configuration (Principle 14, Container memory) beside the container's cgroup memory limit and OOM grouping, and whether the caps alone exceed it.
 - `database_timeouts` (object, required) — The bounds in force on a database that stops answering: the PostgreSQL command, connect and statement timeouts the engine was built with, and the deadline on the token-revocation read.
 - `db_backend` (string, required) — 'sqlite' or 'postgresql' — the dialect of the database engine the running process built; 'not initialized' before it has built one
 - `deployment` (string, required) — 'standalone' or 'cloud' — from DEPLOYMENT_MODE (ADR-004)

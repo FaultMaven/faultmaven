@@ -2,8 +2,12 @@
 
 The names of the runtime backends ``GET /admin/config/status`` reports, decided
 by the infrastructure predicates that own each question, and the database
-bounds it reports beside them; and the LLM usage ledger's read side
-(``GET /admin/llm/usage`` and ``features.llm_usage_metering``).
+bounds it reports beside them; the jobs' memory caps beside the container's
+limit (``container_memory``, #2921), from the worker pools' own constants
+(``document_preprocessor``, ``preprocessing_service``, ``runbook_gate``,
+``embedding_guard``, ``index_slot``, ``draft_content``), imported where they
+are read; and the LLM usage ledger's read side (``GET /admin/llm/usage`` and
+``features.llm_usage_metering``).
 
 The request-scoped service factory and every dependency built on it were
 removed in #1935, together with the case-nested session routes that were their
@@ -13,6 +17,7 @@ only consumer.
 from typing import Any, Optional
 
 from faultmaven.api.models import (
+    ContainerMemoryStatus,
     DatabaseTimeoutsStatus,
     FeatureStatus,
     KnowledgeIndexingStatus,
@@ -38,6 +43,7 @@ from faultmaven.models.exceptions import IndexAdmissionRefused
 
 
 __all__ = [
+    "container_memory_status",
     "database_backend_name",
     "database_timeouts_status",
     "llm_usage_metering_status",
@@ -104,6 +110,72 @@ def knowledge_indexing_status(window_seconds: int) -> KnowledgeIndexingStatus:
         encoding_for_seconds=slot.encoding_for_seconds(),
         host_lock_available=slot.host_lock_available,
         waiting_for_host_lock=slot.waiting_for_host_lock,
+    )
+
+
+_MIB = 1024 * 1024
+
+
+def container_memory_status(settings: Any) -> ContainerMemoryStatus:
+    """The worst-overlap formula's bounded terms, beside the cgroup's limit.
+
+    Principle 14, *Container memory*: per serving process, every pool's slots
+    at their ``RLIMIT_AS`` plus the buffers the process holds per job, Tier 1's
+    input at its worst (3 *U*); the KB encode once per container. *U* is in
+    MiB, as the body-size limit counts it. Tier 1's slots are read as in force.
+    """
+    from faultmaven.config.worker_stores import serving_processes
+    from faultmaven.infrastructure import embedding_guard as count
+    from faultmaven.infrastructure.model_cache import cgroup_memory
+    from faultmaven.modules.knowledge.domain.services import (
+        document_preprocessor as prep,
+    )
+    from faultmaven.modules.knowledge.domain.services import runbook_gate as gate
+    from faultmaven.modules.knowledge.draft_content import DRAFT_CONTENT_MAX_CHARS
+    from faultmaven.modules.preprocessing import preprocessing_service as tier1
+
+    w = serving_processes(settings)
+    u_mb = int(settings.upload.max_upload_size_mb)
+    u = u_mb * _MIB
+    slots = tier1.TIER1_SLOTS
+    _, tier1_memory, tier1_output = tier1.tier1_limits(u_mb)
+    pools = w * (
+        prep.PREPARATION_SLOTS * prep.preparation_memory_limit(u_mb)
+        + slots * tier1_memory
+        + gate.GATE_SLOTS * gate.GATE_MEMORY_BYTES
+        + count.TOKEN_COUNT_SLOTS * count.TOKEN_COUNT_MEMORY_BYTES
+    )
+    gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
+    buffers = w * (
+        prep.PREPARATION_SLOTS * prep.PREPARATION_OUTPUT_LIMIT_BYTES
+        + slots * (2 * 3 * u + tier1_output)
+        + gate.GATE_SLOTS * (gate_texts_in + gate.GATE_OUTPUT_LIMIT_BYTES)
+        + count.TOKEN_COUNT_SLOTS * (2 * u + count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
+    )
+    encode = index_slot.ENCODE_MEMORY_BYTES
+    caps = pools + buffers + encode
+    supervised = w > 1 or bool(getattr(settings.server, "reload", False))
+    cgroup = cgroup_memory()
+    limit = cgroup.memory_max_bytes
+    return ContainerMemoryStatus(
+        job_caps_bytes=caps,
+        pools_bytes=pools,
+        buffers_bytes=buffers,
+        encode_bytes=encode,
+        encode_without_host_lock_bytes=w * encode,
+        serving_processes=w,
+        upload_limit_mb=u_mb,
+        tier1_slots=slots,
+        unbounded_terms=[
+            "api",
+            *(["supervisor"] if supervised else []),
+            "encode_buffers",
+        ],
+        memory_max_bytes=limit,
+        oom_group=cgroup.oom_group,
+        cgroup_source=cgroup.source,
+        headroom_bytes=None if limit is None else limit - caps,
+        job_caps_exceed_limit=None if limit is None else caps > limit,
     )
 
 

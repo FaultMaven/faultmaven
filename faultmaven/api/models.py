@@ -739,6 +739,100 @@ class KnowledgeIndexingStatus(BaseModel):
     )
 
 
+class ContainerMemoryStatus(BaseModel):
+    """The jobs' address-space caps beside the container's memory limit (#2921).
+
+    The bounded terms of Principle 14's worst-overlap formula (*Container
+    memory*): every slot of every worker pool held at once, each job at its
+    ``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB
+    encode, once, as while the host lock holds. Caps, not resident use.
+    Reported, never refused.
+    """
+
+    job_caps_bytes: int = Field(
+        description=(
+            "pools_bytes + buffers_bytes + encode_bytes; unbounded_terms are "
+            "outside it. Assumes the host lock holds: without it the encode term "
+            "is encode_without_host_lock_bytes (knowledge_indexing."
+            "host_lock_available)."
+        )
+    )
+    pools_bytes: int = Field(
+        description=(
+            "serving_processes x each pool's slots x its RLIMIT_AS: document "
+            "preparation, Evidence Tier 1, the runbook gate, the KB token counts."
+        )
+    )
+    buffers_bytes: int = Field(
+        description=(
+            "serving_processes x each pool's slots x its job's buffers, U the "
+            "upload limit: preparation, its output limit; Tier 1, 2 x 3U in and "
+            "its output limit; the gate, 2 x two texts at the draft bound (4 "
+            "bytes a character) in and its "
+            "output limit (the text verify publishes is outside it, #2674); a "
+            "token count, 2U in and its 1 MiB output limit."
+        )
+    )
+    encode_bytes: int = Field(
+        description="The KB encode's RLIMIT_AS, once per container under the host lock."
+    )
+    encode_without_host_lock_bytes: int = Field(
+        description=(
+            "serving_processes x the encode's RLIMIT_AS, the term when no process "
+            "holds the host lock (knowledge_indexing.host_lock_available)."
+        )
+    )
+    serving_processes: int = Field(description="WORKERS, or 1 under RELOAD.")
+    upload_limit_mb: int = Field(description="MAX_UPLOAD_SIZE_MB.")
+    tier1_slots: int = Field(description="Evidence Tier 1's slots in force.")
+    unbounded_terms: List[Literal["api", "supervisor", "encode_buffers"]] = Field(
+        description=(
+            "Terms no constant bounds: 'api', each serving process's resident "
+            "memory; 'supervisor', uvicorn's, above one serving process or under "
+            "RELOAD; 'encode_buffers', the KB encode's texts in and output."
+        )
+    )
+    memory_max_bytes: Optional[int] = Field(
+        description=(
+            "memory.max (v1: memory.limit_in_bytes). Null under cgroup_v2 or "
+            "cgroup_v1: no limit at this cgroup; under any other source: unknown."
+        )
+    )
+    oom_group: Optional[bool] = Field(
+        description=(
+            "memory.oom.group: true when one OOM kills the whole container, the "
+            "API included. Null whenever cgroup_source is not cgroup_v2 "
+            "(cgroup_v1 has no grouping; otherwise the limit was not read), and "
+            "when memory.oom.group cannot be read or holds neither 0 nor 1."
+        )
+    )
+    cgroup_source: Literal[
+        "cgroup_v2", "cgroup_v1", "absent", "unreadable", "invalid"
+    ] = Field(
+        description=(
+            "Where the limit was read: 'absent' when neither version's limit "
+            "file exists; 'unreadable' or 'invalid' when it could not be read or "
+            "held neither a non-negative integer nor 'max' (v2's no limit, "
+            "reported as cgroup_v2)."
+        )
+    )
+    headroom_bytes: Optional[int] = Field(
+        description=(
+            "memory_max_bytes - job_caps_bytes, negative when over: what the "
+            "limit leaves for unbounded_terms, to compare with their measured "
+            "resident use. Assumes the host lock holds, as job_caps_bytes does. "
+            "Null with no limit known."
+        )
+    )
+    job_caps_exceed_limit: Optional[bool] = Field(
+        description=(
+            "True: the jobs' caps alone exceed the limit. False: they alone fit, "
+            "which says nothing of unbounded_terms, and assumes the host lock "
+            "holds, as job_caps_bytes does. Null: no limit known."
+        )
+    )
+
+
 class TraceBackendStatus(BaseModel):
     """The LLM trace SDK's process policy, and its client's state (#2616 part c).
 
@@ -880,6 +974,13 @@ class EnvConfigStatusResponse(BaseModel):
             "The KB indexing request window, and this process's indexing "
             "slot: how many encodes it holds and how long the running one has "
             "run."
+        )
+    )
+    container_memory: ContainerMemoryStatus = Field(
+        description=(
+            "The jobs' address-space caps for this configuration (Principle 14, "
+            "Container memory) beside the container's cgroup memory limit and "
+            "OOM grouping, and whether the caps alone exceed it."
         )
     )
     trace_backend: TraceBackendStatus = Field(

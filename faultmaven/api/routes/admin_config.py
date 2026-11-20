@@ -1421,6 +1421,11 @@ async def get_env_config_status(
             settings.knowledge.index_request_window_seconds
         )
 
+        # The jobs' memory caps beside the container's cgroup limit (#2921).
+        from faultmaven.api.dependencies import container_memory_status
+
+        container_memory = container_memory_status(settings)
+
         # The trace SDK's policy, and its client's state (#2616 part c, #2573).
         # The parked count is a SQLite read, so it runs off the loop.
         from faultmaven.api.dependencies import trace_backend_status
@@ -1444,6 +1449,7 @@ async def get_env_config_status(
             personal_tenant_limits=personal_tenant_limits,
             database_timeouts=database_timeouts,
             knowledge_indexing=knowledge_indexing,
+            container_memory=container_memory,
             trace_backend=trace_backend,
             timestamp=datetime.now(timezone.utc),
         )
