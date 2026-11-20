@@ -27,6 +27,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, get_args
 
 import fakeredis
+import fakeredis._basefakesocket as fakeredis_socket
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
@@ -80,10 +81,10 @@ async def world():
     store = RedisSessionStore(redis, session_ttl_seconds=1800)
     service = AuthSessionService(session_store=store)
     own, _ = await service.create_session(OWNER, client_id="laptop", metadata=SEED)
-    # Below the store's 1800 s, so a write that re-arms a key moves its expiry
-    # later however little time has passed.
+    # Shorter than the store's TTL, so a write that re-arms a key moves its
+    # expiry later however little time has passed.
     for key in await redis.keys("*"):
-        await redis.expire(key, 1000)
+        await redis.expire(key, store.session_ttl_seconds // 2)
     owner = DevUser(
         user_id=OWNER,
         username="owner",
@@ -377,6 +378,7 @@ async def test_a_write_inside_another_writers_window_is_not_lost(
     world, monkeypatch, call, nth_read, edit, expected, touches
 ):
     method, path, body = call
+    _stamp(world)()  # last_activity in 2001: a write of the call's own is later
     before = json.loads(world.sync.get(world.key))["last_activity"]
     _interleave(monkeypatch, world, nth_read, _record_edit(world, edit))
 
@@ -497,15 +499,25 @@ def _set_mutated(session):
 async def test_mutate_retries_after_a_conflicting_write_and_keeps_it(
     world, monkeypatch
 ):
-    _interleave(monkeypatch, world, 1, _record_edit(world, _set_last_activity))
-    armed = world.sync.pexpiretime(world.key)
+    edit, frozen = _record_edit(world, _set_last_activity), {}
+
+    def conflict():
+        edit()
+        # After the other writer, hold the server's clock on a whole second
+        # before now: only a write after this one lands one TTL past it, exactly.
+        frozen["s"] = int(world.sync.time()[0]) - 1
+        clock = SimpleNamespace(time=lambda: float(frozen["s"]))
+        monkeypatch.setattr(fakeredis_socket, "time", clock)
+
+    _interleave(monkeypatch, world, 1, conflict)
 
     written = await world.store.mutate_session(world.own_id, _set_mutated)
 
     assert written.metadata == {"mutated": True}
     stored = json.loads(world.sync.get(world.key))
     assert (stored["metadata"], stored["last_activity"]) == ({"mutated": True}, MARKER)
-    assert world.sync.pexpiretime(world.key) > armed  # the write re-armed it
+    ttl = world.store.session_ttl_seconds
+    assert world.sync.pexpiretime(world.key) == (frozen["s"] + ttl) * 1000
 
 
 async def test_mutate_gives_up_after_five_conflicts_and_writes_nothing(
