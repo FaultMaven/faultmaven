@@ -232,8 +232,9 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     an outcome line from it: the fix-verification and evidence-needs blocks,
     the milestone status, the exclusion rule, the focus emphasis, the state
     summary, the causal graph block's recovery notes and the working
-    conclusion's contest NOTE (S2b-2a; both built on every assembly whose
-    case has a graph or a working conclusion), and the fallback prompt the
+    conclusion's contest NOTE (S2b-2a: the block is built on every assembly
+    whose case has a non-retired hypothesis or a causal node, the NOTE on
+    every one with a working conclusion), and the fallback prompt the
     assembly may return instead (which, called alone, folds once per
     call)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)

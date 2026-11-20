@@ -177,9 +177,10 @@ class NarrationFold:
         block and distinct failure (its class and the line that raised it),
         naming ``block``, and count a failure once per assembly; a metrics
         error is logged and swallowed. A ``record`` failure (the fold raised)
-        is logged as the record not read for ``block``, which is built
-        whether or not the template shows it; any other as the block not
-        rendered."""
+        is logged as the record not read for ``block``, any other as the
+        block not rendered. The record line claims nothing about display:
+        the causal graph block and the working conclusion's contest NOTE
+        (S2b-2a) are built whether or not the template shows them."""
         error = sys.exc_info()[1] if error is None else error
         tb = getattr(error, "__traceback__", None)
         raised = traceback.extract_tb(tb)[-1] if tb is not None else None

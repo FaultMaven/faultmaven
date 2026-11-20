@@ -1120,8 +1120,10 @@ written*, as amended by #2811, ruled 2026-11-15):
   narration folds it once, at its entry, when the cycle's write failed and a
   logged code reads the record; the prompt folds it lazily, at most once per
   prompt assembly (`NarrationFold`), where a block that reads it is built.
-  The causal graph block and the working conclusion's contest NOTE fold on
-  every assembly that builds them, whether or not the template shows them.
+  The causal graph block (built when the case has a non-retired hypothesis
+  or a causal node) and the working conclusion's contest NOTE (built when
+  it has a working conclusion) fold on every assembly that builds them,
+  whether or not the template shows them.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;
