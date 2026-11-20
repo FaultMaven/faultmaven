@@ -45,11 +45,13 @@ async def _upsert_case_record(db, case: Case) -> None:
     ``closed_at`` live in first-class columns; ``last_activity_at``
     is bumped to the current UTC time on every save so staleness
     queries can run without scanning JSON. The ``metadata`` JSON
-    column carries transient runtime state that has no first-class
-    column yet (``message_count``, ``offer_record``,
-    ``proposed_actions``, ``action_attempts``, ``turn_history``).
+    column carries the case state that has no first-class column
+    (``_case_record_params`` lists its members).
     """
     last_activity_at = datetime.now(UTC)
+    # Stamped on the case as well (SAVE_STAMPED_FIELDS), so the saved case
+    # carries what the row holds.
+    case.last_activity_at = last_activity_at
     params = _case_record_params(case, last_activity_at)
 
     # Step 1: attempt UPDATE with version check.

@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models.conclusion import (
 from faultmaven.modules.case.domain.models.documentation import (
     DocumentationData,
     EscalationState,
+    JournalEntry,
 )
 from faultmaven.modules.case.domain.models.evidence import (
     EvidenceStance,
@@ -495,6 +496,9 @@ async def _row_to_case(
         "kb_context": metadata.get("kb_context"),
         "kb_context_origin": metadata.get("kb_context_origin"),
         "chat_data_offers": metadata.get("chat_data_offers") or [],
+        "investigation_journal": [
+            JournalEntry(**e) for e in metadata.get("investigation_journal") or []
+        ],
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

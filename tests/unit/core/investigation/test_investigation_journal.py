@@ -1,7 +1,7 @@
 """Unit tests for the Investigation Journal feature.
 
-Tests the JournalEntry model, journal context building, journal extraction
-in state updates, and persistence round-trip.
+Tests the JournalEntry model, journal context building and journal extraction
+in state updates. Persistence: the note at the end of this module.
 
 Design Reference:
 - docs/architecture/investigation-engine/investigation-journal.md (Phase 2)
@@ -354,10 +354,10 @@ class TestSchemaJournalEntries:
         assert state.journal_entries == []
 
 
-# Persistence-resilience tests previously verified
-# `DatabaseCaseRepository._parse_investigation_journal` — a defensive
-# parser that lived in the now-deleted parallel repository hierarchy.
-# investigation_journal is currently an in-memory-only field on Case
-# (no DB column, no read/write through any repository), so there is no
-# persistence layer to be defensive about. If journal persistence is
-# ever added back, port the resilience tests to the new home then.
+# Persistence: both case repositories store the journal in the cases row's
+# metadata blob (#2945), pinned by the round-trip guard
+# (tests/integration/modules/case/case_roundtrip_guard.py) and the two-turn
+# engine test beside it. A stored entry that does not validate as a
+# JournalEntry raises on load rather than being skipped: every entry is
+# written as a validated JournalEntry dump, so a bad one is corruption, not a
+# shape to tolerate.

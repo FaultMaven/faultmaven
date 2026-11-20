@@ -72,6 +72,9 @@ async def _upsert_case_record(is_pg, db, case: Case) -> None:
     - Uses plain ``:name`` placeholders for SQLite compatibility
     """
     last_activity_at = datetime.now(timezone.utc)
+    # Stamped on the case as well (SAVE_STAMPED_FIELDS), so the saved case
+    # carries what the row holds.
+    case.last_activity_at = last_activity_at
     params = _case_record_params(case, last_activity_at)
     expected_version = case.version
     new_version = expected_version + 1
