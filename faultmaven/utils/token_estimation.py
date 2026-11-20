@@ -18,7 +18,7 @@ Usage:
 
 import logging
 from functools import lru_cache
-from typing import Optional
+from typing import List, Optional, Sequence
 
 from faultmaven.utils.optional_dependency import module_is_usable
 
@@ -46,15 +46,42 @@ if not TIKTOKEN_AVAILABLE:
     )
 
 
+class PlainEncoder:
+    """A tiktoken encoding that encodes every text as plain text.
+
+    tiktoken's own ``encode`` raises on text spelling a special token, such as
+    ``<|endoftext|>`` in a model-serving log. Here that spelling is counted and
+    cut as the text it is (``disallowed_special=()``), so no caller can choose
+    otherwise (#2948). Nothing allows a special token either: the token bytes
+    of an encoding always concatenate back to its text.
+    """
+
+    __slots__ = ("_encoding",)
+
+    def __init__(self, encoding) -> None:
+        self._encoding = encoding
+
+    def encode(self, text: str) -> List[int]:
+        return self._encoding.encode(text, disallowed_special=())
+
+    def decode(self, tokens: Sequence[int]) -> str:
+        return self._encoding.decode(tokens)
+
+    def decode_tokens_bytes(self, tokens: Sequence[int]) -> List[bytes]:
+        return self._encoding.decode_tokens_bytes(tokens)
+
+
 @lru_cache(maxsize=10)
-def _get_tiktoken_encoder(model: str = "gpt-4"):
+def _get_tiktoken_encoder(model: str = "gpt-4") -> Optional[PlainEncoder]:
     """Get cached tiktoken encoder for OpenAI models
+
+    Every tiktoken count and cut in the codebase loads its encoding here.
 
     Args:
         model: Model name (e.g., "gpt-4", "gpt-3.5-turbo")
 
     Returns:
-        tiktoken.Encoding instance
+        The encoding as a ``PlainEncoder``, or None when it cannot be loaded
     """
     if not TIKTOKEN_AVAILABLE:
         return None
@@ -68,7 +95,7 @@ def _get_tiktoken_encoder(model: str = "gpt-4"):
         else:
             encoding_name = "cl100k_base"  # Default for modern models
 
-        return tiktoken.get_encoding(encoding_name)
+        return PlainEncoder(tiktoken.get_encoding(encoding_name))
     except MemoryError:
         raise  # the preparation worker's declared exit, never a fallback (#2622)
     except Exception as e:

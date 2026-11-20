@@ -242,6 +242,13 @@ def _accumulate(
     return texts
 
 
+#: A section header: one whole line ``=== NAME ===``, whatever produced it
+#: (CRLF-safe). The group lets ``re.split`` keep it. Not anchored to a line,
+#: ``\s+`` crossed newlines, and a multi-line banner (an ``=====`` rule, a
+#: line, a rule) took its middle line out of every chunk (#2949).
+_SECTION_HEADER = re.compile(r"(?m)^(===[ \t]+[^\r\n]+?[ \t]+===[ \t]*\r?)$")
+
+
 def chunk_structural_index(
     structural_index: str,
     max_chunk_tokens: int = 500,
@@ -251,7 +258,8 @@ def chunk_structural_index(
     Split a Tier 1 structural index into chunks for vector DB storage.
 
     Strategy:
-    1. Split on section headers (=== ... ===) into logical sections
+    1. Split on section headers (a whole line ``=== NAME ===``) into
+       logical sections
     2. If a section fits in one chunk, keep it whole
     3. If a section exceeds max_chunk_tokens, accumulate its paragraphs
        (\\n\\n) with overlap; a paragraph over the limit once stripped goes
@@ -281,19 +289,19 @@ def chunk_structural_index(
         return []
 
     # Split on section headers, preserving the headers as separators
-    parts = re.split(r"(===\s+.+?\s+===)", structural_index)
+    parts = _SECTION_HEADER.split(structural_index)
 
     chunks: list[Chunk] = []
     current_section_name = "HEADER"
 
     for part in parts:
-        part = part.strip()
-        if not part:
+        # Track current section name for metadata
+        if _SECTION_HEADER.fullmatch(part):
+            current_section_name = part.strip().strip("= ").strip()
             continue
 
-        # Track current section name for metadata
-        if re.match(r"===\s+.+?\s+===", part):
-            current_section_name = part.strip("= ").strip()
+        part = part.strip()
+        if not part:
             continue
 
         # If section fits in one chunk, emit as-is
