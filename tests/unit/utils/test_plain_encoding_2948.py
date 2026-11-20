@@ -3,6 +3,7 @@ the chunker, the shared count and the fallback prompt's bound never raise on
 it or fall back to the character estimate."""
 
 import logging
+import random
 
 import pytest
 import tiktoken
@@ -11,7 +12,11 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
     get_fallback_prompt_for_case,
 )
 from faultmaven.core.preprocessing.vector_storage import chunk_structural_index
-from faultmaven.utils.token_estimation import _get_tiktoken_encoder, estimate_tokens
+from faultmaven.utils.token_estimation import (
+    _MAX_ENCODE_RUN,
+    _get_tiktoken_encoder,
+    estimate_tokens,
+)
 from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
@@ -68,3 +73,46 @@ def test_the_fallback_prompt_carries_a_special_token_in_the_message(special):
     message = f"vllm out: hi{special} req=1"
 
     assert message in get_fallback_prompt_for_case(case, message)
+
+
+def _texts_without_a_long_run() -> list[str]:
+    """Varied texts whose longest run of one character is the constant."""
+    pieces = [
+        *SPECIALS,
+        "日本語のログ",
+        "🙂🚀",
+        "café",
+        "\r\n",
+        "\t",
+        " ",
+        "=",
+        "a",
+        "ERROR ",
+    ]
+    rng = random.Random(2948)
+    texts = ["".join(rng.choices(pieces, k=rng.randint(1, 400))) for _ in range(40)]
+    texts += [c * _MAX_ENCODE_RUN for c in " a-🙂"]
+    texts += ["x" + " " * _MAX_ENCODE_RUN + "y" + "-" * _MAX_ENCODE_RUN]
+    return texts
+
+
+def test_text_without_a_long_run_is_encoded_in_one_call():
+    raw = tiktoken.get_encoding("cl100k_base")
+    encoder = _get_tiktoken_encoder("gpt-4")
+
+    for text in _texts_without_a_long_run():
+        assert encoder.encode(text) == raw.encode(text, disallowed_special=()), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [c * 1_000_000 for c in " a-"] + ["log " + "=" * 3000 + " <|endoftext|> 日本"],
+    ids=["spaces", "a", "dashes", "mixed"],
+)
+def test_a_long_run_is_encoded_in_pieces_that_decode_to_the_text(text):
+    encoder = _get_tiktoken_encoder("gpt-4")
+
+    ids = encoder.encode(text)
+
+    assert b"".join(encoder.decode_tokens_bytes(ids)) == text.encode("utf-8")
+    assert encoder.decode(ids) == text

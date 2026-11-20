@@ -17,6 +17,7 @@ Usage:
 """
 
 import logging
+import re
 from functools import lru_cache
 from typing import List, Optional, Sequence
 
@@ -46,6 +47,17 @@ if not TIKTOKEN_AVAILABLE:
     )
 
 
+#: The longest run of one repeated character tiktoken encodes in one call.
+#: Its BPE is super-linear on such a run (``infrastructure/llm/router.py``'s
+#: output-floor note): on cl100k, 65,536 spaces took 4.3 s, ``a`` 5.0 s and
+#: ``-`` 3.7 s, 16,000 spaces 1.0 s, all blocking, and 1,000,000 raised "Max
+#: stack size exceeded". A longer run is encoded in pieces of this length.
+_MAX_ENCODE_RUN = 1024
+#: A run of one character longer than ``_MAX_ENCODE_RUN``, matched only from
+#: the run's first character, so a scan takes linear time.
+_LONG_RUN = re.compile(r"(?:\A|(?<=(.))(?!\1))(.)\2{%d,}" % _MAX_ENCODE_RUN, re.DOTALL)
+
+
 class PlainEncoder:
     """A tiktoken encoding that encodes every text as plain text.
 
@@ -54,6 +66,11 @@ class PlainEncoder:
     cut as the text it is (``disallowed_special=()``), so no caller can choose
     otherwise (#2948). Nothing allows a special token either: the token bytes
     of an encoding always concatenate back to its text.
+
+    A run of one character longer than ``_MAX_ENCODE_RUN`` is cut into pieces
+    of at most that length, each piece and the text between encoded on its
+    own; the ids still decode to the text. Text without such a run is encoded
+    in one call, its ids unchanged.
     """
 
     __slots__ = ("_encoding",)
@@ -62,7 +79,15 @@ class PlainEncoder:
         self._encoding = encoding
 
     def encode(self, text: str) -> List[int]:
-        return self._encoding.encode(text, disallowed_special=())
+        cuts = [
+            cut
+            for run in _LONG_RUN.finditer(text)
+            for cut in range(run.start() + _MAX_ENCODE_RUN, run.end(), _MAX_ENCODE_RUN)
+        ]
+        ids: List[int] = []
+        for start, end in zip([0, *cuts], [*cuts, len(text)]):
+            ids += self._encoding.encode(text[start:end], disallowed_special=())
+        return ids
 
     def decode(self, tokens: Sequence[int]) -> str:
         return self._encoding.decode(tokens)
