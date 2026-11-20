@@ -1,12 +1,10 @@
 """Count, then delete, the trace store's traces and spans that started before a
 cutoff (#2700).
 
-Traces written before #2698 hold prompts, responses and exception text, and no
-retention bound on the trace store can be verified through its API, so content
-capture stays refused and those traces are bounded by this one audited purge.
-It acts on the configured backend, workspace and project, whole-project across
-enterprises: traces before #2578 carry no tags. Runbook:
-``docs/operations/case-deletion.md``, "Purging the traces written before #2698".
+An operator removes, once, the prompts, responses and exception text traces
+written before #2698 hold: no retention bound can be verified. It acts on the
+configured backend, workspace and project, across enterprises (traces before
+#2578 carry no tags). Runbook: ``docs/operations/case-deletion.md``.
 
 Usage (``fm-purge-traces``, installed with the package)
 --------------------------------------------------------
@@ -17,11 +15,13 @@ Exit codes
 ----------
 | 0 | dry run counted, or the delete left nothing before the cutoff and no
       error text in the project |
-| 1 | refused, nothing deleted: no trace backend, content capture requested,
-      ``--confirm-project`` missing or not the project, or a dry run that failed |
+| 1 | refused: no trace backend, content capture requested, no such project,
+      ``--confirm-project`` missing or not the project; or a failure before any
+      delete went out, or a 4xx answer, which a re-run would meet again |
 | 2 | argparse usage error, a ``--before`` without a UTC offset among them |
 | 3 | re-run needed: traces or spans before the cutoff remain after the wait, or
-      the backend failed during the delete. A re-run is safe |
+      the backend failed, other than with a 4xx, after a delete went out. A
+      re-run is safe |
 | 4 | done, but traces or spans with error text remain in the project: the
       cutoff is earlier than the last process that wrote content |
 """
@@ -91,7 +91,13 @@ def purge(cutoff: datetime, *, delete: bool, confirm_project: str | None) -> int
         )
     except ServiceException as exc:
         print(f"❌ {exc}")
-        return 3 if delete else 1
+        return 3 if exc.details.get("rerun") else 1
+    if result.missing:
+        print(
+            f"❌ Refusing: the backend has no project named {result.project!r} in "
+            f"workspace {backend.workspace!r}."
+        )
+        return 1
     print(_counts(f"Started before {result.cutoff}", result.before))
     if result.after is None or result.error_text is None:
         print("Dry run: nothing deleted. --delete --confirm-project deletes them.")
@@ -104,7 +110,7 @@ def purge(cutoff: datetime, *, delete: bool, confirm_project: str | None) -> int
     if result.error_text != trace_erasure.TraceCount(0, 0):
         print("⚠️  Error text remains: the cutoff is too early (see the runbook).")
         return 4
-    print("✅ Nothing before the cutoff remains.")
+    print("✅ Nothing before the cutoff remains, and no error text in the project.")
     return 0
 
 

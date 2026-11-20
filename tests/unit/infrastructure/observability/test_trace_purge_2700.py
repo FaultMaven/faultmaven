@@ -31,14 +31,19 @@ STAMP = "2026-11-18T00:00:00.000000Z"
 OLD, NEW = "2026-11-01T00:00:00.000000Z", "2026-11-19T00:00:00.000000Z"
 
 
-class _NotFound(Exception):
-    pass
+class _Status(Exception):
+    """An SDK error carrying the backend's status, as ``ApiError`` does."""
+
+    def __init__(self, status_code):
+        self.status_code = status_code
 
 
 class _Backend:
     """Traces ``{id: start}``; spans ``(trace_id, start)``. A deleted trace's
     spans go at the next ``sleep``, unless its trace id is ``lost``: then that
-    delete's span cascade never runs, and only a second delete clears them."""
+    delete's span cascade never runs, and only a second delete clears them. The
+    workspace lists a project whose name contains ``PROJECT``, and with
+    ``project`` the project itself."""
 
     def __init__(self, traces=(), spans=(), errors=0, lost=(), project=True):
         self.traces = dict(traces)
@@ -47,7 +52,11 @@ class _Backend:
         self.pending: set = set()
         self.reads: list = []
         self.deleted: list = []
+        self.delete_options: list = []
         self.sleeps = 0
+        listed = [SimpleNamespace(id="p-staging", name=f"{PROJECT}-staging")]
+        if project:
+            listed.append(SimpleNamespace(id="p-faultmaven", name=PROJECT))
         self.project_name = "the-clients-project"
         self.rest_client = SimpleNamespace(
             traces=SimpleNamespace(
@@ -58,7 +67,9 @@ class _Backend:
                 get_spans_by_project=lambda **kw: self._page("spans", kw)
             ),
             projects=SimpleNamespace(
-                find_projects=lambda **_: SimpleNamespace(total=0, content=[])
+                find_projects=lambda **_: SimpleNamespace(
+                    total=len(listed), content=listed
+                )
             ),
         )
 
@@ -67,8 +78,6 @@ class _Backend:
 
     def _page(self, entity, kw):
         self.reads.append({"entity": entity, **kw})
-        if not self.project:
-            raise _NotFound()
         text = kw["filters"].split(":", 1)[1]
         if text == "error_info is_not_empty":
             rows = [
@@ -92,6 +101,7 @@ class _Backend:
 
     def _delete(self, *, ids, request_options):
         self.deleted.append(list(ids))
+        self.delete_options.append(request_options)
         for trace_id in ids:
             self.traces.pop(trace_id, None)
             if trace_id in self.lost:
@@ -107,12 +117,9 @@ class _Backend:
 
 @pytest.fixture(autouse=True)
 def fake_sdk(monkeypatch):
-    """The SDK's filter parser and its 404 test, as opik is absent here."""
+    """The SDK's filter parser, as opik is absent here."""
     monkeypatch.setattr(
         opik_sdk, "parsed_filters", lambda text, entity: f"{entity}:{text}"
-    )
-    monkeypatch.setattr(
-        opik_sdk, "is_not_found", lambda exc: isinstance(exc, _NotFound)
     )
 
 
@@ -173,13 +180,14 @@ class TestTheDryRun:
                 datetime(2026, 11, 18), delete=False, client_factory=no_client
             )
 
-    def test_a_project_the_backend_does_not_have_counts_nothing(self):
+    def test_a_project_the_backend_does_not_have_is_reported_not_counted(self):
+        """A mistyped project, or another workspace, is not an empty one."""
         backend = _Backend(project=False)
 
         result = _purge(backend)
 
-        assert (result.before, result.after) == (TraceCount(0, 0), TraceCount(0, 0))
-        assert backend.deleted == []
+        assert result.missing and result.after is None
+        assert backend.reads == [] and backend.deleted == []
 
 
 class TestTheDelete:
@@ -199,6 +207,18 @@ class TestTheDelete:
         assert sent == {"t00000", "t00001", "orphan"}
         assert {r["project_name"] for r in backend.reads} == {PROJECT}
 
+    def test_each_delete_names_the_project_so_the_backend_confines_it(self):
+        backend = _Backend(traces=_old_traces(1), spans=[("t00000", OLD)])
+
+        _purge(backend)
+
+        assert backend.delete_options == [
+            {
+                "timeout_in_seconds": 15,
+                "additional_body_parameters": {"project_id": "p-faultmaven"},
+            }
+        ]
+
     def test_it_reads_one_page_deletes_it_and_reads_page_one_again(self):
         backend = _Backend(traces=_old_traces(TRACE_PAGE_SIZE + 500))
 
@@ -209,12 +229,19 @@ class TestTheDelete:
         assert [len(chunk) for chunk in backend.deleted] == [1000, 1000, 500]
         assert backend.traces == {}
 
-    def test_spans_the_backend_deletes_later_are_waited_for(self):
-        backend = _Backend(traces=_old_traces(1), spans=[("t00000", OLD)] * 3)
+    def test_spans_the_backend_deletes_later_are_waited_for_not_resent(self):
+        """Their trace ids come back on every span page until the backend's
+        cascade runs: a page of ids already sent is not progress."""
+        backend = _Backend(
+            traces=_old_traces(10),
+            spans=[(t, OLD) for t in _old_traces(10) for _ in range(200)],
+        )
 
         result = _purge(backend)
 
         assert result.after == TraceCount(0, 0) and backend.sleeps == 1
+        assert backend.deleted == [sorted(_old_traces(10))]
+        assert result.sent == 10
 
     def test_spans_whose_delete_was_lost_are_cleared_by_sending_it_again(self):
         backend = _Backend(
@@ -224,7 +251,7 @@ class TestTheDelete:
         result = _purge(backend)
 
         assert result.after == TraceCount(0, 0)
-        assert backend.deleted.count(["t00000"]) >= 2
+        assert backend.deleted == [["t00000"], ["t00000"]]
 
     def test_spans_that_never_go_end_the_wait_with_what_is_left(self):
         backend = _Backend(spans=[("stuck", OLD)])
@@ -267,3 +294,39 @@ class TestTheDelete:
             _purge(backend)
 
         assert "body" not in str(raised.value)
+
+    @pytest.mark.parametrize(
+        "error, rerun",
+        [(_Status(503), True), (RuntimeError(), True), (_Status(403), False)],
+        ids=["5xx", "no-status", "4xx"],
+    )
+    def test_a_failure_after_a_delete_went_out_asks_for_a_rerun_unless_4xx(
+        self, error, rerun
+    ):
+        backend = _Backend(traces=_old_traces(1500))
+        real = backend.rest_client.traces.delete_traces
+
+        def second_fails(**kwargs):
+            if backend.deleted:
+                raise error
+            real(**kwargs)
+
+        backend.rest_client.traces.delete_traces = second_fails
+
+        with pytest.raises(ServiceException) as raised:
+            _purge(backend)
+
+        assert raised.value.details == {"rerun": rerun}
+
+    def test_a_failure_before_any_delete_asks_for_no_rerun(self):
+        backend = _Backend(traces=_old_traces(1))
+        backend.rest_client.traces.delete_traces = lambda **_: _raise(_Status(503))
+
+        with pytest.raises(ServiceException) as raised:
+            _purge(backend)
+
+        assert raised.value.details == {"rerun": False}
+
+
+def _raise(error):
+    raise error

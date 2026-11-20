@@ -14,6 +14,8 @@ from faultmaven.infrastructure.observability import opik_sdk, trace_erasure
 from tests.unit.infrastructure.observability.test_trace_purge_2700 import (  # noqa: F401
     OLD,
     _Backend,
+    _old_traces,
+    _Status,
     fake_sdk,
 )
 
@@ -101,7 +103,26 @@ def test_error_text_left_in_the_project_exits_4(run):
     assert code == 4 and "With error text" in out
 
 
-def test_a_backend_that_fails_during_the_delete_exits_3(run):
+@pytest.mark.parametrize(
+    "error, code",
+    [(_Status(503), 3), (_Status(403), 1)],
+    ids=["5xx-rerun", "4xx-refused"],
+)
+def test_a_failure_after_a_delete_went_out_exits_3_unless_4xx(run, error, code):
+    store = _Backend(traces=_old_traces(1500))
+    real = store.rest_client.traces.delete_traces
+
+    def second_fails(**kwargs):
+        if store.deleted:
+            raise error
+        real(**kwargs)
+
+    store.rest_client.traces.delete_traces = second_fails
+
+    assert run(DELETE, store)[0] == code
+
+
+def test_a_failure_before_any_delete_exits_1(run):
     store = _Backend(traces={"t1": OLD})
 
     def refused(**_):
@@ -109,7 +130,16 @@ def test_a_backend_that_fails_during_the_delete_exits_3(run):
 
     store.rest_client.traces.delete_traces = refused
 
-    assert run(DELETE, store)[0] == 3
+    assert run(DELETE, store)[0] == 1
+
+
+def test_a_project_the_backend_does_not_have_exits_1_with_no_counts(run):
+    store = _Backend(project=False)
+
+    code, out = run(DELETE, store)
+
+    assert code == 1 and "no project named 'faultmaven'" in out
+    assert "Started before" not in out and store.deleted == []
 
 
 @pytest.mark.parametrize(

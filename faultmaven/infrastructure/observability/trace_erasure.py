@@ -213,12 +213,14 @@ class UnavailableTraceEraser:
 
 @dataclass(frozen=True)
 class _Project:
-    """The reads and the delete of one project's traces, refused as ``owner``."""
+    """The reads and the delete of one project's traces, refused as ``owner``.
+    With ``project_id``, the backend confines each delete to the project too."""
 
     rest: Any
     name: str
     options: dict
     owner: str
+    project_id: Optional[str] = None
 
     def read_each(
         self, filter_string: str, read: Callable[[Callable[..., Any], str], Any]
@@ -257,22 +259,32 @@ class _Project:
         return results
 
     def read_and_delete(
-        self, filter_string: str, read: Callable[[Callable[..., Any], str], List[str]]
+        self,
+        filter_string: str,
+        read: Callable[[Callable[..., Any], str], List[str]],
+        sent: Optional[set] = None,
     ) -> Optional[int]:
         """Delete, in chunks, the traces ``read`` finds by the traces' ids and
         the spans' trace ids: a dropped trace batch leaves a content span on an
-        untagged trace, which the spans find. The ids sent, or None for no
-        project. Every id comes from a read of this project: the delete takes
-        no project of its own."""
+        untagged trace, which the spans find. Every id comes from a read of this
+        project. Skips the ids in ``sent`` and adds each chunk the backend
+        took. The ids sent, or None for no project."""
         found = self.read_each(filter_string, read)
         if found is None:
             return None
         ids = list(dict.fromkeys(i for rows in found for i in rows))
+        if sent is not None:
+            ids = [i for i in ids if i not in sent]
+        options = self.options
+        if self.project_id is not None:
+            # Else the delete, and its span cascade, reach across the workspace.
+            body = {"project_id": self.project_id}
+            options = {**options, "additional_body_parameters": body}
         for start in range(0, len(ids), TRACE_DELETE_CHUNK_SIZE):
-            self.rest.traces.delete_traces(
-                ids=ids[start : start + TRACE_DELETE_CHUNK_SIZE],
-                request_options=self.options,
-            )
+            chunk = ids[start : start + TRACE_DELETE_CHUNK_SIZE]
+            self.rest.traces.delete_traces(ids=chunk, request_options=options)
+            if sent is not None:
+                sent.update(chunk)
         return len(ids)
 
 
@@ -293,10 +305,13 @@ class TracePurge:
     #: The rest of a delete: None on a dry run.
     after: Optional[TraceCount] = None
     #: A delete's last check, with no time filter: what in the project still
-    #: carries an error's text, which no trace written since #2698 does.
+    #: carries an error's text, which no trace written since #2698 does. A
+    #: call that succeeded carries none, so it cannot show the rest.
     error_text: Optional[TraceCount] = None
-    #: Trace ids sent for deletion, repeats included.
+    #: Distinct trace ids sent for deletion.
     sent: int = 0
+    #: The backend has no project of that name: nothing was counted.
+    missing: bool = False
 
 
 def purge_traces_before(
@@ -314,12 +329,13 @@ def purge_traces_before(
     #2698's release left with content. Blocking, with no deadline: each request
     has its timeout.
 
-    It reads one page of ids and deletes it, until a page comes back empty or
-    the pages counted run out. The backend deletes a trace's spans after it has
-    answered, so the recount waits up to ``PURGE_SETTLE_POLLS`` times, sending
-    the delete again for the trace ids of spans still there. Nothing is sent
-    from this process's queue: a command records no trace. Running it again
-    deletes nothing it already deleted.
+    It reads one page of ids and deletes the ids it has not sent, until a page
+    holds none. The backend deletes a trace's spans after it has answered, so
+    the recount waits up to ``PURGE_SETTLE_POLLS`` times, sending the delete
+    again for the trace ids of spans still there. Nothing is sent from this
+    process's queue: a command records no trace. Running it again deletes
+    nothing it already deleted. A failure raises with ``details["rerun"]``:
+    True once a delete went out and the backend's answer was not a 4xx.
     """
     if cutoff.utcoffset() is None:
         raise ValueError("the cutoff needs a UTC offset: without one it is no instant")
@@ -327,14 +343,15 @@ def purge_traces_before(
     # offset's "+" arrives as a space: UTC and "Z" only.
     stamp = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     owner = f"traces started before {stamp}"
+    sent: set = set()
     try:
         client = client_factory()
-        target = _Project(
-            client.rest_client,
-            project_name or client.project_name,
-            {"timeout_in_seconds": request_timeout_seconds},
-            owner,
-        )
+        name = project_name or client.project_name
+        options = {"timeout_in_seconds": request_timeout_seconds}
+        project_id = _project_id(client.rest_client, name, options, owner)
+        if project_id is None:
+            return TracePurge(name, stamp, TraceCount(0, 0), missing=True)
+        target = _Project(client.rest_client, name, options, owner, project_id)
         before_cutoff = f'start_time < "{stamp}"'
 
         def count(filter_string: str) -> TraceCount:
@@ -348,35 +365,46 @@ def purge_traces_before(
                 raise _refused(owner, "a row came back without its id")
             return rows
 
-        def send_one_page() -> int:
-            return target.read_and_delete(before_cutoff, one_page) or 0
-
         before, none = count(before_cutoff), TraceCount(0, 0)
         if not delete:
-            return TracePurge(target.name, stamp, before)
-        sent = 0
-        for _ in range(-(-(before.traces + before.spans) // TRACE_PAGE_SIZE) + 1):
-            page = send_one_page()
-            if not page:
-                break
-            sent += page
-            progress(f"Sent {sent} trace ids for deletion")
+            return TracePurge(name, stamp, before)
+        # A span the backend has not deleted yet names a trace already sent:
+        # only new ids are progress, and the wait below handles the rest.
+        while target.read_and_delete(before_cutoff, one_page, sent):
+            progress(f"Sent {len(sent)} trace ids for deletion")
         after = count(before_cutoff)
         for poll in range(PURGE_SETTLE_POLLS):
             if after == none:
                 break
             if poll:
                 # What one wait did not clear: send their trace ids again.
-                sent += send_one_page()
+                target.read_and_delete(before_cutoff, one_page)
             sleep(PURGE_SETTLE_SECONDS)
             after = count(before_cutoff)
         error_text = count("error_info is_not_empty")
-    except ServiceException:
-        raise
     except Exception as exc:
-        # Named by class only: an SDK error's text carries the backend's body.
-        raise _refused(owner, exception_class_name(exc)) from exc
-    return TracePurge(target.name, stamp, before, after, error_text, sent)
+        status = getattr(exc, "status_code", None)
+        rerun = bool(sent) and not (isinstance(status, int) and 400 <= status < 500)
+        # An SDK error is named by class only: its text carries the backend's body.
+        refusal = exc if isinstance(exc, ServiceException) else None
+        refusal = refusal or _refused(owner, exception_class_name(exc))
+        raise ServiceException(str(refusal), {"rerun": rerun}) from exc
+    return TracePurge(name, stamp, before, after, error_text, len(sent))
+
+
+def _project_id(rest: Any, project: str, options: dict, owner: str) -> Optional[str]:
+    """The id of the project named exactly ``project``, or None when the
+    backend lists every partial match and none is it (#2588's check)."""
+    page = rest.projects.find_projects(
+        name=project, size=TRACE_PAGE_SIZE, request_options=options
+    )
+    listed = page.content or []
+    for listed_project in listed:
+        if listed_project.name == project:
+            return listed_project.id
+    if page.total != len(listed):
+        raise _refused(owner, "the backend's project list disagrees with its total")
+    return None
 
 
 def _total(read_page: Callable[..., Any], row_key: str) -> int:

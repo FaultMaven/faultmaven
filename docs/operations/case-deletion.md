@@ -67,24 +67,29 @@ audit row names `llm_traces` under `not_configured`.
 before `--before` in the configured project, across enterprises: traces before
 #2578 carry no tags. Run it in each deployment that ever ran an image older
 than #2698, once per backend URL, workspace and project that received traces,
-with `OPIK_*` set for that one. Nothing else bounds traces left behind by a
-changed URL, workspace or project (#2581).
+selected by `OPIK_URL_OVERRIDE` (or `OPIK_USE_LOCAL` and `OPIK_LOCAL_URL`),
+`COMET_WORKSPACE` and `OPIK_PROJECT_NAME`. Nothing else removes traces left
+behind by a changed URL, workspace or project (#2581).
 
-1. Choose `--before`, with its UTC offset: any time after the last process
-   from an older image (pod, job or CronJob, a rollback included) stopped. A
-   later cutoff costs only telemetry: no trace since #2698 holds content,
-   and no trace a newer replica parks (#2573) does either.
+1. Choose `--before`, with its UTC offset, from the deployment's rollout
+   history: any time after the last process from an older image (pod, job or
+   CronJob, a rollback included) stopped. A later cutoff costs only telemetry:
+   no trace since #2698 holds content, and no trace a newer replica parks
+   (#2573) does either.
 2. `fm-purge-traces --before <time>` prints the backend, workspace, project
    and the traces and spans it would delete.
 3. `fm-purge-traces --before <time> --delete --confirm-project <project>`
    prints them before and after the delete, and then counts the traces and
-   spans anywhere in the project that carry error text, expecting 0: no filter
-   asks for a non-empty input, so that count is the content check.
+   spans anywhere in the project that carry error text, expecting 0. That
+   count sees only failed calls: a prompt or response of a call that
+   succeeded after a cutoff that is too early is invisible to it, and no
+   filter asks for a non-empty input. Only step 1 rules those out.
 4. Record the counts in the deployment's change record.
 
-Exit 1 is a refusal with nothing deleted; 3, run it again: it is idempotent,
-and the backend deletes spans after it answers; 4, error text remains, so the
-cutoff is too early. Deleted rows are no longer served by the backend, but
+Exit 1 is a refusal, a project the backend does not have, or a failure a
+re-run would meet again (before any delete, or a 4xx); 3, run it again: it
+is idempotent, and the backend deletes spans after it answers; 4, error text
+remains, so the cutoff is too early. Deleted rows are no longer served by the backend, but
 ClickHouse keeps them in its parts until a merge, and in backups: deleting the
 Opik project is the complete alternative.
 

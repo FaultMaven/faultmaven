@@ -71,6 +71,7 @@ def _seed(backend):
             "start_time": start,
         }
     backend.page["traces"] = backend.page["spans"] = _by_time(backend)
+    backend.project_names = [f"{PROJECT}-staging", PROJECT]
 
 
 def _purge(client, delete):
@@ -118,3 +119,5 @@ def test_only_what_started_before_the_cutoff_is_deleted(backend, client):
     assert sorted(i for chunk in backend.deleted for i in chunk) == ["t-gone", "t-old"]
     assert list(backend.stored["traces"]) == ["t-new"]
     assert list(backend.stored["spans"]) == ["s-new"]
+    (sent,) = [json.loads(body) for body in backend.bodies]
+    assert sent == {"ids": ["t-old", "t-gone"], "project_id": f"p-{PROJECT}"}
