@@ -128,6 +128,7 @@ from .stage_gates import (
     _case_has_symptom_evidence,
     _coerce_intervention_quadrant,
     _determine_action_type,
+    _normalise_id_ref,
     _settled_likelihoods,
     _settled_working_conclusion,
     _supersede_pending_solution_offers,
@@ -450,29 +451,57 @@ def _settle_fix_attempts(case: Case, metadata: dict[str, Any]) -> None:
         action.target_ids = [t for t in action.target_ids if t in case.causal_nodes]
 
 
+def _names_hypothesis(je: Any) -> bool:
+    """Whether a journal entry names a hypothesis: a ref empty once normalised
+    (whitespace, ``[]``) names none, as ``_journal_hypothesis_id`` reads it."""
+    return bool(_normalise_id_ref(je.hypothesis_id))
+
+
 def _hypothesis_journal_entries(updates: Any) -> list[Any]:
     """The journal entries that name a hypothesis: cause work (step 2d)."""
     return [
-        je for je in getattr(updates, "journal_entries", None) or [] if je.hypothesis_id
+        je
+        for je in getattr(updates, "journal_entries", None) or []
+        if _names_hypothesis(je)
     ]
 
 
 def _journal_hypothesis_id(ref: str | None, metadata: dict[str, Any]) -> str | None:
-    """The hypothesis a journal entry names, a same-turn ref (``new_index_N``,
-    or a bare ``N``) resolved through this apply's emit order the way the
-    hypothesis links resolve it: a refused restatement maps to the standing
-    hypothesis, a refused slot to ``_REFUSED_HYPOTHESIS_SLOT``, which no
-    hypothesis holds, so the entry is dropped after the apply."""
+    """The hypothesis a journal entry names, a same-turn ref (``new_index_N``;
+    ``IdRef`` coerced a bare ``N``) resolved through this apply's emit order
+    the way the hypothesis links resolve it: a refused restatement maps to the
+    standing hypothesis, a refused slot to ``_REFUSED_HYPOTHESIS_SLOT``, which
+    no hypothesis holds, so the entry is dropped after the apply. A ref that
+    is empty once normalised names no hypothesis: ``None``."""
     if not ref:
-        return ref
-    ref = ref.strip()
-    if ref.isdigit():
-        ref = f"new_index_{int(ref)}"
-    return _resolve_id_ref(
+        return None
+    hyp_id = _resolve_id_ref(
         ref,
         metadata.get("hyp_emit_order") or metadata.get("hypotheses_generated", []),
         "hyp",
     )
+    return hyp_id or None
+
+
+def _journal_evidence_id(
+    case: Case, ref: str | None, metadata: dict[str, Any]
+) -> str | None:
+    """The evidence a journal entry cites, a same-turn ref resolved through the
+    turn's positional slots; ``None`` unless the id is on the case (an
+    out-of-range or refused slot, an unknown id). The entry stands either way:
+    the citation is bad, not the content. Only the loaded rows are checked."""
+    if not ref:
+        return None
+    ev_id = _resolve_id_ref(ref, metadata.get("evidence_slots", []), "ev_")
+    if ev_id in {e.evidence_id for e in case.evidence}:
+        return ev_id
+    logger.info(
+        "Case %s: journal entry stored without its evidence reference %r, "
+        "no row on the case",
+        case.case_id,
+        ref,
+    )
+    return None
 
 
 def _drop_journal_entries_on_absent_hypotheses(case: Case, start: int) -> None:
@@ -1997,17 +2026,20 @@ class ResponseApplier:
 
         # 6. Journal Entries (append-only investigation memory). One naming a
         # hypothesis was held at step 2d while the cause work is staged; a
-        # same-turn ref to a hypothesis is stored as the id it resolves to.
+        # same-turn ref to a hypothesis or evidence is stored as the id it
+        # resolves to (on replay, through the bundle's own slots).
         journal_at_start = len(case.investigation_journal)
         for je_item in getattr(updates, "journal_entries", None) or []:
-            if staging and je_item.hypothesis_id:
+            if staging and _names_hypothesis(je_item):
                 continue
             case.investigation_journal.append(
                 JournalEntry(
                     turn=emission_turn(case, metadata),
                     entry_type=je_item.entry_type,
                     content=je_item.content[:200],
-                    evidence_id=je_item.evidence_id,
+                    evidence_id=_journal_evidence_id(
+                        case, je_item.evidence_id, metadata
+                    ),
                     hypothesis_id=_journal_hypothesis_id(
                         je_item.hypothesis_id, metadata
                     ),
