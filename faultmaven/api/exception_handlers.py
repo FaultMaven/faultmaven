@@ -1366,14 +1366,15 @@ MAX_VALIDATION_ERRORS = 50
 
 #: Pydantic's own error types whose ``msg`` and ``ctx`` the schema writes. A
 #: ``value_error``'s or ``assertion_error``'s message is a validator's, and a
-#: custom type's is its author's: either can quote the value. Two of pydantic's
-#: own quote the input too: ``union_tag_invalid`` its tag, ``uuid_parsing`` a
-#: character of it.
+#: custom type's is its author's: either can quote the value. Some of
+#: pydantic's own quote the input too: ``union_tag_invalid`` its tag,
+#: ``uuid_parsing`` and ``bytes_invalid_encoding`` a character of it.
 _PYDANTIC_MESSAGES = frozenset(get_args(ErrorType)) - {
     "value_error",
     "assertion_error",
     "union_tag_invalid",
     "uuid_parsing",
+    "bytes_invalid_encoding",
 }
 
 # `loc == ("body",)` means the whole body failed to bind, so `input` IS the whole
@@ -1716,7 +1717,7 @@ async def request_validation_exception_handler(
 
     The log line carries each error's ``loc`` (an undeclared body key by its
     length), ``type``, pydantic's own ``msg`` and ``ctx`` (none for a
-    validator's message, nor for the pydantic types that quote the input), and
+    validator's message, nor for those of pydantic's own that quote the input), and
     the raw input's length (its type when it is not
     text), never the input (case content, principles §7 rule 3), plus
     :func:`describe_request_body`'s content-free shape, and no other request

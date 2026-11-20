@@ -514,12 +514,13 @@ async def test_validation_error_is_named_by_loc_type_and_input_length(lines):
 
 
 async def test_pydantic_messages_that_quote_the_input_are_not_logged(lines):
-    """``union_tag_invalid`` quotes the input's tag, ``uuid_parsing`` one of
-    its characters: their ``msg`` and ``ctx`` stay off the line."""
+    """``union_tag_invalid`` quotes the input's tag, ``uuid_parsing`` and
+    ``bytes_invalid_encoding`` one of its characters: their ``msg`` and ``ctx``
+    stay off the line."""
     from typing import Literal, Union
     from uuid import UUID
 
-    from pydantic import BaseModel, Field, ValidationError
+    from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
     class A(BaseModel):
         k: Literal["a"]
@@ -528,20 +529,30 @@ async def test_pydantic_messages_that_quote_the_input_are_not_logged(lines):
         k: Literal["b"]
 
     class Body(BaseModel):
+        model_config = ConfigDict(val_json_bytes="base64")
         x: Union[A, B] = Field(discriminator="k")
         u: UUID
+        b: bytes
 
     with pytest.raises(ValidationError) as raised:
-        Body.model_validate({"x": {"k": MARKER}, "u": "q-not-a-uuid"})
+        Body.model_validate_json(
+            json.dumps({"x": {"k": MARKER}, "u": "q-not-a-uuid", "b": "ab!cd"})
+        )
     errors = [{**e, "loc": ("body", *e["loc"])} for e in raised.value.errors()]
     request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/x"))
     await request_validation_exception_handler(request, RequestValidationError(errors))
     fields = _named(lines(), "Validation error on POST", "union_tag_invalid")
     entries = {e["type"]: e for e in fields["validation_errors"]}
-    assert set(entries) == {"union_tag_invalid", "uuid_parsing"}
+    assert set(entries) == {
+        "union_tag_invalid",
+        "uuid_parsing",
+        "bytes_invalid_encoding",
+    }
     for entry in entries.values():
         assert "msg" not in entry and "ctx" not in entry, entry
-    assert "`q`" not in json.dumps(fields)
+    assert "`q`" not in json.dumps(fields) and "Invalid symbol" not in json.dumps(
+        fields
+    )
 
 
 # ── case_service.py: create_case ──────────────────────────────────────────
