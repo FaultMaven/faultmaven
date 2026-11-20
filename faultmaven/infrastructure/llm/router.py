@@ -124,10 +124,11 @@ _TOKENIZER_BACKED_PROVIDERS = frozenset(
 # 385 ms, 32k 1316 ms of BLOCKING CPU, against 1-4 ms for prose or dense JSON
 # of the same length. The floor check runs on the event loop, so an unbounded
 # call would hand a starved-and-looping response a second failure mode. At 4k
-# the same worst case measures ~24 ms. The shared encoder now cuts a run of one
-# character longer than ``utils.token_estimation._MAX_ENCODE_RUN`` (#2948), but
-# an unbroken run of mixed characters (``abab…``, 32k: ~1 s) is as slow, so
-# this bound stays.
+# the same worst case measures ~24 ms. The shared encoder now encodes a run of
+# non-whitespace or of whitespace longer than
+# ``utils.token_estimation._MAX_ENCODE_RUN`` in pieces (#2948), so a count is
+# linear (32k of ``abab…``: ~20 ms); this bound stays as the floor check's own
+# cap on the work it does on the event loop (1M characters: up to ~1 s).
 #
 # WHY NOT SAMPLE-AND-SCALE. The obvious bound — tokenize a 4k prefix and scale
 # by ``len(text)/4000`` — is sound only if density is uniform, which the block
