@@ -171,7 +171,10 @@ def _units(
 
     Paragraphs (``\\n\\n``); a paragraph over *max_tokens* as its lines
     (``\\n``); a line over *max_tokens* as ``_cut_line``'s pieces, joined by
-    nothing. Each unit is encoded once, and again stripped when that differs.
+    nothing. A paragraph or line is encoded once as kept, and again stripped
+    when that differs; an over-long line's ids are reused for its cuts, a
+    piece's stripped text is encoded at each check of its size, and the
+    piece once more as kept for its count.
     """
     for p, paragraph in enumerate(section.split("\n\n")):
         paragraph_separator = "\n\n" if p else ""
