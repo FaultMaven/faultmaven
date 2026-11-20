@@ -1446,14 +1446,33 @@ class DatabaseSettings(BaseSettings):
     # degrades retrieval quality. Leave at defaults unless you have a reason.
     vector_chunk_size_tokens: int = Field(
         default=500,
+        ge=16,
         validation_alias="VECTOR_CHUNK_SIZE_TOKENS",
         description="Max tokens per chunk when embedding structural indexes",
     )
     vector_chunk_overlap_tokens: int = Field(
         default=50,
+        ge=0,
         validation_alias="VECTOR_CHUNK_OVERLAP_TOKENS",
         description="Token overlap between adjacent chunks",
     )
+
+    @model_validator(mode="after")
+    def vector_chunk_overlap_is_at_most_half(self) -> "DatabaseSettings":
+        """Refuse an overlap over half the chunk size (#2936).
+
+        The size is at least 16 (``ge=16``), so no one character, at most 4
+        tokens, exceeds it. An over-long line is cut into pieces of size minus
+        overlap, so a larger overlap would cut it a few tokens a chunk.
+        """
+        size = self.vector_chunk_size_tokens
+        overlap = self.vector_chunk_overlap_tokens
+        if overlap > size // 2:
+            raise ValueError(
+                f"VECTOR_CHUNK_OVERLAP_TOKENS ({overlap}) must be at most half "
+                f"of VECTOR_CHUNK_SIZE_TOKENS ({size})."
+            )
+        return self
 
     # ============================================
     # Pinecone Configuration (Optional Vector Backend)

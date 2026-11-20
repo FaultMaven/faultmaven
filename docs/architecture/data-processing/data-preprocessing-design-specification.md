@@ -6,6 +6,10 @@
 
 ## Change Summary
 
+### v5.10 → v5.11 (Every evidence chunk within `max_chunk_tokens`, #2936)
+
+`chunk_structural_index` split an oversize section only on blank lines, so a log with none went out as chunks of up to 14,508 tokens, past BGE-M3's 8,192. An oversize paragraph now splits on lines, and a line that alone exceeds the limit is cut (§5.6.1). The chunker runs off the event loop. A re-index replaces the evidence's chunks, and a failed one leaves them (§5.6.4). The chunk size is at least 16 tokens and the overlap at most half of it (§5.7).
+
 ### v5.9 → v5.10 (An extractor that cannot parse a shape keeps the content, #2791)
 
 An extractor that meets a shape it does not parse reports it, and the dispatch keeps the content in place of the fragment the extractor made (§2.4, "Shapes an extractor does not parse"). Measured offline, five shapes lost content silently: `kubectl describe` under the config extractor's key=value fallback kept the 5 of 58 lines holding an `=`; a repeated YAML key kept only its last value; a 300-row table from a command no parser reads kept its first 20 rows; a whitespace-aligned metrics table kept nothing; a unified diff kept its language and class names. The first, third and fifth are now kept as uploaded, and so are the trace and profiling extractors' unknown-format previews. A repeated key in JSON or YAML is now a parse failure. The metrics extractor now reads whitespace-aligned tables. New counter `faultmaven_preprocessing_unparsed_shape_total{extractor}`.
@@ -1046,7 +1050,7 @@ async def vectorize_file(
 
 The Tier 1 **structural index** — not the raw file content. This is unchanged from v3.2 Section 5. The stored index is bounded (`MAX_STORED_EXTRACT_CHARS` for each of `file_extract` and `search_map`, #2789), so a raw passthrough is embedded whole up to 64 KiB, and an upload past that is embedded as its stored head and tail.
 
-- 10MB log file → Structural index (~50KB) → ~100 chunks
+- 10MB log file → stored index (its 64 KiB head and tail when Tier 1 extraction runs past its 2 s) → ~60 chunks (63 measured, #2936)
 - 5MB metrics CSV → Statistical profile (~30KB) → ~60 chunks
 - 5KB config → Full parsed config → skipped (below size minimum)
 
@@ -1056,8 +1060,8 @@ Implemented in `faultmaven/core/preprocessing/vector_storage.py`. Section-aware 
 
 1. **Split on section headers.** The input is split on the regex `===\s+.+?\s+===` which preserves section headers as separator tokens. Text before the first header is attributed to a default section named `HEADER`.
 2. **Whole sections first.** If a section fits under `max_chunk_tokens`, it becomes a single chunk with `metadata["section"]` set to the section name.
-3. **Oversize sections split on paragraph boundaries.** For sections larger than `max_chunk_tokens`, the text is split on `\n\n` and accumulated into a running buffer. When adding the next paragraph would overflow the budget, the buffer is emitted as a chunk and the next buffer is seeded with the **last `overlap_tokens` worth** of the previous chunk (`_get_last_n_tokens`) to preserve cross-chunk context.
-4. **Never split mid-line.**
+3. **Oversize sections split on paragraph boundaries, then lines.** For sections larger than `max_chunk_tokens`, the text is split on `\n\n`, and a paragraph larger than `max_chunk_tokens` once stripped, as it is emitted, on `\n`; the units are accumulated into a running buffer. When adding the next unit would overflow the budget (the joined text as kept, the rule the paragraph split always used, or as emitted), the buffer is emitted as a chunk and the next buffer is seeded with the **last `overlap_tokens` worth** of the previous chunk (`_get_last_n_tokens`, cut on a character boundary) to preserve cross-chunk context, or with the unit alone when the overlap would not fit as emitted. A buffer holding nothing but whitespace past its overlap is not emitted. No chunk exceeds `max_chunk_tokens`, measured on the text emitted (#2936); the joined text is encoded only near the limit, and `store_in_vector_db_background` runs the chunker in `asyncio.to_thread`.
+4. **A line is never split unless it alone exceeds `max_chunk_tokens` once stripped; then it is cut at token boundaries** (moved to a character boundary) into pieces of at most `max_chunk_tokens - overlap_tokens`, so the overlap fits (owner ruling, #2936). An overlap prefix may begin mid-line. The bounds on both settings are in §5.7.
 
 Token counts are computed by `_estimate_tokens(text)` in `vector_storage.py`. Primary path: tiktoken's `cl100k_base` encoding (BPE-family, agrees with BGE-M3's XLM-RoBERTa tokenization within ±15% on typical mixed content). Fallback path (only when tiktoken cannot be imported, or its encoding file cannot be loaded; the encoding is loaded on first use through `utils.token_estimation`'s shared loader, not at import): the `len(text) // 4` heuristic — lossy by ±40% on realistic log content (long hex strings, CSV rows, non-ASCII text), kept solely so the preprocessor continues to function with degraded chunking precision rather than refusing to start. tiktoken is a hard project dependency in `pyproject.toml`, and the Docker image bakes the `cl100k_base` file into `TIKTOKEN_CACHE_DIR`, so a container does not reach the fallback even without network access: the image build fails if the baked file does not load offline.
 
@@ -1087,7 +1091,7 @@ Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_
 
 #### 5.6.4 Failure Semantics
 
-`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and does not raise: it runs as a fire-and-forget background task for the proactive case, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state.
+`store_in_vector_db_background` catches all exceptions from chunking, embedding, and the Chroma write (which upserts the new chunks, then deletes the evidence's chunks outside the new set, so a re-index replaces them and a failed write leaves the old ones), logs them, and does not raise: it runs as a fire-and-forget background task for the proactive case, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state.
 
 Despite the name, nothing calls it at upload time. `VectorizeFileTool` is its only caller, awaiting it inside the directed-analysis tool loop, so indexing is always agent-driven and nothing else will cover a file the tool does not.
 
@@ -1105,8 +1109,8 @@ VECTORIZATION_REACTIVE_TIMEOUT_SECONDS=180  # Reactive bound (proactive: embed g
 CHROMADB_COLLECTION_PREFIX=case_
 
 # Chunking (read at startup via faultmaven/config/settings.py)
-VECTOR_CHUNK_SIZE_TOKENS=500
-VECTOR_CHUNK_OVERLAP_TOKENS=50
+VECTOR_CHUNK_SIZE_TOKENS=500             # At least 16: no one character (at most 4 tokens) exceeds it
+VECTOR_CHUNK_OVERLAP_TOKENS=50           # 0 to half the size: an over-long line is cut into size - overlap
 
 # Embedding model warmup (see §5.6.3, §5.7.1)
 LAZY_LOAD_ML_MODELS=true                 # Defer non-preloaded models to first use

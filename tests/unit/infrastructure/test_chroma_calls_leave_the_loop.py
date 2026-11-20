@@ -55,6 +55,9 @@ class _RecordingCollection:
     def add(self, **kwargs: Any) -> None:
         self._record("add")
 
+    def upsert(self, **kwargs: Any) -> None:
+        self._record("upsert")
+
     def update(self, **kwargs: Any) -> None:
         self._record("update")
 

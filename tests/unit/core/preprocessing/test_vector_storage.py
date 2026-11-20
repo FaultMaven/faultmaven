@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from faultmaven.core.preprocessing import vector_storage
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 from faultmaven.core.preprocessing.vector_storage import (
+    _cut_line,
     _estimate_tokens,
     _get_last_n_tokens,
     chunk_structural_index,
@@ -319,3 +321,176 @@ class TestStoreInVectorDbBackground:
         assert docs[1]["metadata"]["chunk_index"] == 1
         assert docs[0]["metadata"]["total_chunks"] == 2
         assert docs[1]["metadata"]["total_chunks"] == 2
+
+
+# =============================================================================
+# Every chunk within max_chunk_tokens (#2936)
+# =============================================================================
+
+
+def _log(lines: int) -> str:
+    """An application log with no blank lines: one paragraph."""
+    return "\n".join(
+        f"2026-11-19T10:{i // 60 % 60:02d}:{i % 60:02d}.123Z ERROR [payments] "
+        f"req={i * 7919:012x} upstream timeout calling db-primary:5432 after {i}ms"
+        for i in range(lines)
+    )
+
+
+#: One base64-like line of about 3,000 tokens, and one of multi-byte text.
+_BLOB = "".join(f"MIIE{i:05d}Qx+/aZ9kLwPq3==" for i in range(600))
+_MULTIBYTE = "".join(f"错误{i}：连接数据库失败，重试 🚀 naïve " for i in range(300))
+
+
+@pytest.mark.unit
+class TestEveryChunkFits:
+    def test_a_log_with_no_blank_lines_splits_on_lines(self):
+        text = "=== Log ===\n" + _log(3000)
+        chunks = chunk_structural_index(text, max_chunk_tokens=500, overlap_tokens=50)
+
+        assert len(chunks) > 1
+        assert max(_estimate_tokens(c.text) for c in chunks) <= 500
+        for line in _log(3000).split("\n"):
+            assert any(line in c.text for c in chunks), line
+
+    @pytest.mark.parametrize("line", [_BLOB, _MULTIBYTE], ids=["base64", "multibyte"])
+    def test_an_over_long_line_is_cut_and_its_pieces_rebuild_it(self, line):
+        assert _estimate_tokens(line) > 1500
+        pieces = [piece for piece, _ in _cut_line(line, 500, 450)]
+        assert "".join(pieces) == line
+        assert max(_estimate_tokens(p) for p in pieces) <= 450
+        assert not any("\ufffd" in p for p in pieces)
+
+        chunks = chunk_structural_index(line, max_chunk_tokens=500, overlap_tokens=50)
+
+        assert max(_estimate_tokens(c.text) for c in chunks) <= 500
+        assert not any("\ufffd" in c.text for c in chunks)
+        # One chunk a piece, each after the first led by the overlap:
+        # the window left room for it.
+        assert len(chunks) == len(pieces)
+        for chunk, piece in zip(chunks[1:], pieces[1:]):
+            assert chunk.text.endswith(piece.rstrip())
+            assert len(chunk.text) > len(piece.strip())
+
+    def test_a_line_within_the_limit_is_never_cut(self):
+        line = "x" * 300
+        assert _cut_line(line, 500, 450) == [(line, _estimate_tokens(line))]
+
+    def test_the_overlap_is_dropped_when_it_would_not_fit(self):
+        """Two paragraphs of nearly the limit: seeding the second with the
+        first's tail would pass it, so the second goes out alone."""
+        first = " ".join(f"alpha{i}" for i in range(240))
+        second = " ".join(f"omega{i}" for i in range(240))
+        assert 450 < _estimate_tokens(second) <= 500
+
+        chunks = chunk_structural_index(
+            f"{first}\n\n{second}", max_chunk_tokens=500, overlap_tokens=50
+        )
+
+        assert [c.text for c in chunks] == [first, second]
+
+    def test_the_overlap_suffix_never_splits_a_character(self):
+        for n in range(1, 200):
+            tail = _get_last_n_tokens(_MULTIBYTE, n)
+            assert _MULTIBYTE.endswith(tail) and "�" not in tail
+            assert _estimate_tokens(tail) <= n
+        assert _get_last_n_tokens(_MULTIBYTE, 0) == ""
+
+    def test_the_bound_holds_on_the_heuristic_path(self, monkeypatch):
+        monkeypatch.setattr(
+            vector_storage, "_get_tiktoken_encoder", lambda model="gpt-4": None
+        )
+        text = _log(500) + "\n" + _BLOB
+
+        chunks = chunk_structural_index(text, max_chunk_tokens=500, overlap_tokens=50)
+
+        assert max(len(c.text) // 4 for c in chunks) <= 500
+        assert "".join(piece for piece, _ in _cut_line(_BLOB, 500, 450)) == _BLOB
+
+    @pytest.mark.parametrize("overlap", [0, 50])
+    def test_no_chunk_is_only_whitespace_past_its_overlap(self, overlap):
+        """A whitespace-only line overflows the buffer: the next buffer is the
+        overlap plus whitespace, and was emitted as an empty chunk (overlap 0)
+        or a repeat of the previous chunk's tail (overlap 50)."""
+        blob = "".join(f"MIIE{i:05d}Qx+/aZ9kLwPq3==" for i in range(100))
+        text = "x\n" + " ".join(f"tok{i}" for i in range(249)) + "\n   \n" + blob
+
+        chunks = chunk_structural_index(
+            text, max_chunk_tokens=500, overlap_tokens=overlap
+        )
+
+        assert max(_estimate_tokens(c.text) for c in chunks) <= 500
+        assert all(c.text for c in chunks)
+        for before, after in zip(chunks, chunks[1:]):
+            assert after.text not in before.text
+
+    async def test_the_chunker_runs_off_the_event_loop(self, monkeypatch):
+        threads = []
+        chunk = vector_storage.chunk_structural_index
+
+        def recording(*args, **kwargs):
+            threads.append(threading.current_thread())
+            return chunk(*args, **kwargs)
+
+        monkeypatch.setattr(vector_storage, "chunk_structural_index", recording)
+        await store_in_vector_db_background(
+            case_id="c",
+            evidence_id="e",
+            structural_index="",
+            data_type=UnifiedDataType.LOGS,
+            metadata={},
+            case_vector_store=AsyncMock(),
+        )
+
+        assert threads and threads[0] is not threading.main_thread()
+
+
+def _log_paragraph(lines: int, emitted: int) -> str:
+    """Log lines whose paragraph is *emitted* tokens stripped, kept with two
+    trailing spaces on its last line."""
+    text = "\n".join(
+        f"2026-11-20T02:{i % 60:02d}:00Z INFO worker-{i} handled request id={i * 7919}"
+        for i in range(lines)
+    )
+    while _estimate_tokens(text) > emitted:
+        text = text[:-1]
+    while _estimate_tokens(text) < emitted:
+        text += "x"
+    return text + "  "
+
+
+@pytest.mark.unit
+class TestChunksThatFitAreUnchanged:
+    """A paragraph is judged as emitted (stripped); a join as kept, the rule
+    the paragraph split always used. Each input chunks as on ``main``."""
+
+    def test_a_paragraph_fitting_only_once_stripped_stays_whole(self):
+        paragraph = _log_paragraph(60, 500)
+        assert _estimate_tokens(paragraph) > 500
+        tail = "tail " * 5
+
+        chunks = chunk_structural_index(
+            f"=== LOG ===\n{paragraph}\n\nnext paragraph\n\n{tail}",
+            max_chunk_tokens=500,
+            overlap_tokens=50,
+        )
+
+        overlap = _get_last_n_tokens(paragraph, 50)
+        assert [c.text for c in chunks] == [
+            paragraph.strip(),
+            f"{overlap}\n\nnext paragraph\n\n{tail}".strip(),
+        ]
+        assert {c.metadata["section"] for c in chunks} == {"LOG"}
+
+    def test_a_join_over_the_limit_only_as_kept_is_split(self):
+        first = _log_paragraph(15, 300).rstrip()
+        second = _log_paragraph(25, 499 - _estimate_tokens(first))
+        joined = f"{first}\n\n{second}"
+        assert _estimate_tokens(joined.strip()) <= 500 < _estimate_tokens(joined)
+
+        chunks = chunk_structural_index(
+            f"{joined}\n\nnext", max_chunk_tokens=500, overlap_tokens=50
+        )
+
+        overlap = _get_last_n_tokens(first, 50)
+        assert [c.text for c in chunks] == [first, f"{overlap}\n\n{second}\n\nnext"]
