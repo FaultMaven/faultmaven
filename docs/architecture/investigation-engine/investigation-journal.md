@@ -276,7 +276,7 @@ The core feature. Model change, schema change, context builder change, and promp
 | Journal extraction in milestone engine | `core/investigation/milestone_engine/` | Done |
 | Journal section in context builder | `core/investigation/prompts/context_builder/assembly.py` | Done |
 | Journal prompt instructions | `core/investigation/prompts/templates/investigation.py` | Done |
-| Persistence (metadata blob) | `infrastructure/persistence/database_case_repository.py` | Done |
+| Persistence (metadata blob) | `_case_record_params` / `_row_to_case` in both case repositories (`modules/case/infrastructure/`) | Done (lost from `1b1689adc`, April, until #2945) |
 | Tests (24 tests) | `tests/unit/core/investigation/test_investigation_journal.py` | Done |
 
 ### Phase 3: Hypothesis Refutation Reason

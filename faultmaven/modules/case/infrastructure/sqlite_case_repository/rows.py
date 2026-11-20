@@ -23,6 +23,7 @@ from faultmaven.modules.case.contracts import (
     InquiryData,
     InvestigationProgress,
     InvestigationStrategy,
+    JournalEntry,
     NeedObtainability,
     NeedPriority,
     NeedPurpose,
@@ -244,10 +245,11 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
 
     Post-redesign: ``description``, ``investigation_strategy``,
     ``current_turn``, ``turns_without_progress`` are first-class
-    columns. The ``metadata`` JSON blob still holds the transient
-    runtime state (proposed_actions / action_attempts / turn_history /
-    offer_record / message_count / last_suggestions) — those have
-    no first-class column yet.
+    columns. The ``metadata`` JSON blob holds the case state with no
+    first-class column (message_count, offer_record, proposed_actions,
+    action_attempts, turn_history, last_suggestions, kb_context,
+    kb_context_origin, chat_data_offers, investigation_journal). It is
+    durable case content: a member dropped here is lost at the next load.
     """
     return {
         "case_id": case.case_id,
@@ -370,6 +372,11 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> dict[str, Any
                     if case.chat_data_offers
                     else []
                 ),
+                # The investigation journal (#2945): append-only, and rendered
+                # into every later turn's prompt, so it must round trip.
+                "investigation_journal": [
+                    e.model_dump(mode="json") for e in case.investigation_journal
+                ],
             }
         ),
     }
@@ -449,10 +456,8 @@ def _row_to_case(
         [UploadedFile(**f) for f in uploaded_files_data] if uploaded_files_data else []
     )
 
-    # Parse metadata for the transient runtime state that has no
-    # first-class column yet (proposed_actions / action_attempts /
-    # turn_history / offer_record / message_count /
-    # last_suggestions).
+    # The case state with no first-class column (see the writer,
+    # ``_case_record_params``, for the members).
     metadata = json.loads(row.metadata) if row.metadata else {}
 
     # Promoted columns: read directly from the row.
@@ -479,6 +484,9 @@ def _row_to_case(
         "kb_context": metadata.get("kb_context"),
         "kb_context_origin": metadata.get("kb_context_origin"),
         "chat_data_offers": metadata.get("chat_data_offers") or [],
+        "investigation_journal": [
+            JournalEntry(**e) for e in metadata.get("investigation_journal") or []
+        ],
         "progress": progress,
         "current_turn": int(row.current_turn or 0),
         "turns_without_progress": int(row.turns_without_progress or 0),

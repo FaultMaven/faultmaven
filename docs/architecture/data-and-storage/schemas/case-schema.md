@@ -1499,11 +1499,14 @@ The options below are retained for historical reference only — they document w
 - `problem_verification` — set once per milestone
 - `working_conclusion` — updated during investigation
 - `root_cause_conclusion` — set once at resolution
-- `progress` — updated frequently (contains the investigation journal plus the
-  assessment variables `cause_state`/`solution_state`/`solution_feasible` and the
-  `stabilization` record introduced by the flow redesign; `path_selection` was
-  dropped in migration 016)
+- `progress` — updated frequently (contains the assessment variables
+  `cause_state`/`solution_state`/`solution_feasible` and the `stabilization`
+  record introduced by the flow redesign; `path_selection` was dropped in
+  migration 016)
 - `documentation` — updated occasionally
+- `metadata` — the case state with no first-class column, the investigation
+  journal among it (its members: `_case_record_params` in either case
+  repository's `rows.py`)
 
 **Historical options considered (not implemented)**:
 

@@ -321,10 +321,8 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
     ``current_turn``, ``turns_without_progress`` are first-class
     columns (the PG hybrid had been writing them as phantom columns
     before the schema baseline; now they're real). The ``metadata``
-    JSON blob still holds the transient runtime state (proposed_actions /
-    action_attempts / turn_history / offer_record /
-    message_count / last_suggestions) — those have no first-class
-    column yet.
+    JSON blob holds the case state with no first-class column: the same
+    members as the SQLite writer's, durable case content.
     """
     from faultmaven.utils.serialization import to_json_compatible
 
@@ -448,6 +446,10 @@ def _case_record_params(case: Case, last_activity_at: datetime) -> Dict[str, Any
                         if case.chat_data_offers
                         else []
                     ),
+                    # The investigation journal (#2945) — see the SQLite writer.
+                    "investigation_journal": [
+                        e.model_dump(mode="json") for e in case.investigation_journal
+                    ],
                 }.items()
                 if v
             }

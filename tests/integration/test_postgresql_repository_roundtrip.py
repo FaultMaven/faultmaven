@@ -66,6 +66,10 @@ from faultmaven.modules.case.domain.owned_models.report import (
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
     PostgreSQLHybridCaseRepository,
 )
+from tests.integration.modules.case.case_roundtrip_guard import (
+    assert_every_field_round_trips,
+    roundtrip_fixtures,
+)
 from tests.utils import pg_tenant, seed_users
 
 pytestmark = [
@@ -1255,3 +1259,33 @@ async def test_time_still_dominates_the_turn_number_on_postgres(
         ]
 
     assert got == ["earlier in time, higher turn", "later in time, lower turn"]
+
+
+@pytest.mark.asyncio
+async def test_every_case_field_round_trips_on_postgres(tenant):
+    """The SQLite guard (``case_roundtrip_guard``, #2945) on real PostgreSQL:
+    each ``Case`` field survives ``save`` and a ``get`` on a fresh session."""
+    driver_id, organization_id = f"user_{uuid4().hex[:8]}", f"org_{uuid4().hex[:8]}"
+    async with tenant.factory() as session:
+        await seed_users(session, [driver_id], enterprise_id=tenant.enterprise_id)
+        await session.execute(
+            text(
+                "INSERT INTO organizations (organization_id, enterprise_id, name, slug)"
+                " VALUES (:oid, :eid, 'O', :oid)"
+            ),
+            {"oid": organization_id, "eid": tenant.enterprise_id},
+        )
+        await session.commit()
+
+    async def save(case):
+        async with tenant.factory() as session:
+            return await PostgreSQLHybridCaseRepository(session).save(case)
+
+    async def get_fresh(case_id):
+        async with tenant.factory() as session:
+            return await PostgreSQLHybridCaseRepository(session).get(case_id)
+
+    fixtures = roundtrip_fixtures(
+        tenant.enterprise_id, organization_id, tenant.owner, driver_id
+    )
+    await assert_every_field_round_trips(save, get_fresh, fixtures)
