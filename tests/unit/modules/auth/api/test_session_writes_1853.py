@@ -123,18 +123,20 @@ async def world():
 
 
 async def _snapshot(world) -> Dict[str, Any]:
-    """Every key, its value and its TTL: a refusal must change none of them."""
+    """Every key, its value and its expiry: a refusal must change none of them.
+
+    The expiry is absolute (``PEXPIRETIME``, ms; -1 none, -2 no key), so it does
+    not tick while the test runs and a re-armed key changes it.
+    """
     keys = sorted(await world.redis.keys("*"))
-    return {k: (await world.redis.dump(k), await world.redis.ttl(k)) for k in keys}
+    return {
+        k: (await world.redis.dump(k), await world.redis.pexpiretime(k)) for k in keys
+    }
 
 
 async def _assert_unchanged(world, before: Dict[str, Any]) -> None:
     after = await _snapshot(world)
-    assert after.keys() == before.keys()
-    for key, (value, ttl) in before.items():
-        assert after[key][0] == value, key
-        # A TTL only ticks down; a re-armed one jumps back up to 1800.
-        assert ttl - 2 <= after[key][1] <= ttl, (key, ttl, after[key][1])
+    assert after == before
 
 
 async def _status(world) -> str:
