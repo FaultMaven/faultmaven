@@ -242,11 +242,18 @@ def _accumulate(
     return texts
 
 
-#: A section header: one whole line ``=== NAME ===``, whatever produced it
-#: (CRLF-safe). The group lets ``re.split`` keep it. Not anchored to a line,
-#: ``\s+`` crossed newlines, and a multi-line banner (an ``=====`` rule, a
-#: line, a rule) took its middle line out of every chunk (#2949).
-_SECTION_HEADER = re.compile(r"(?m)^(===[ \t]+[^\r\n]+?[ \t]+===[ \t]*\r?)$")
+#: A section header: one whole line ``=== NAME ===``, whatever produced it.
+#: It starts the text (after an optional byte-order mark) or follows ``\n`` or
+#: ``\r``, and ends before ``\r\n``, ``\r``, ``\n`` or the end of the text.
+#: Its group, the label, is NAME without its surrounding blanks; NAME's first
+#: and last characters are not blank, so no run of blanks can be claimed two
+#: ways and a match takes linear time. Not anchored to a line, ``\s+`` crossed
+#: newlines, and a multi-line banner (an ``=====`` rule, a line, a rule) took
+#: its middle line out of every chunk (#2949).
+_SECTION_HEADER = re.compile(
+    r"(?:\A|(?<=\A\ufeff)|(?<=[\r\n]))"
+    r"===[ \t]+([^ \t\r\n](?:[^\r\n]*[^ \t\r\n])?)[ \t]+===[ \t]*(?=[\r\n]|\Z)"
+)
 
 
 def chunk_structural_index(
@@ -288,16 +295,16 @@ def chunk_structural_index(
     if not structural_index.strip():
         return []
 
-    # Split on section headers, preserving the headers as separators
+    # Split on section headers: the parts alternate text and a header's label
     parts = _SECTION_HEADER.split(structural_index)
 
     chunks: list[Chunk] = []
     current_section_name = "HEADER"
 
-    for part in parts:
+    for index, part in enumerate(parts):
         # Track current section name for metadata
-        if _SECTION_HEADER.fullmatch(part):
-            current_section_name = part.strip().strip("= ").strip()
+        if index % 2:
+            current_section_name = part.strip()
             continue
 
         part = part.strip()

@@ -54,7 +54,7 @@ def test_the_chunker_chunks_a_log_quoting_a_special_token(special):
 
     chunks = chunk_structural_index("=== Log ===\n" + "\n".join(lines), 500, 50)
 
-    assert all(any(line in c.text for c in chunks) for line in lines)
+    assert set(lines) <= {line for c in chunks for line in c.text.split("\n")}
 
 
 @pytest.mark.parametrize("special", SPECIALS)
