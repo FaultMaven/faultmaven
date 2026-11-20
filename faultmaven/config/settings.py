@@ -1446,14 +1446,29 @@ class DatabaseSettings(BaseSettings):
     # degrades retrieval quality. Leave at defaults unless you have a reason.
     vector_chunk_size_tokens: int = Field(
         default=500,
+        ge=1,
         validation_alias="VECTOR_CHUNK_SIZE_TOKENS",
         description="Max tokens per chunk when embedding structural indexes",
     )
     vector_chunk_overlap_tokens: int = Field(
         default=50,
+        ge=0,
         validation_alias="VECTOR_CHUNK_OVERLAP_TOKENS",
         description="Token overlap between adjacent chunks",
     )
+
+    @model_validator(mode="after")
+    def vector_chunk_overlap_fits_in_a_chunk(self) -> "DatabaseSettings":
+        """Refuse an overlap at or above the chunk size: an over-long line is
+        cut into pieces of size minus overlap, which would be empty (#2936)."""
+        size = self.vector_chunk_size_tokens
+        overlap = self.vector_chunk_overlap_tokens
+        if overlap >= size:
+            raise ValueError(
+                f"VECTOR_CHUNK_OVERLAP_TOKENS ({overlap}) must be less than "
+                f"VECTOR_CHUNK_SIZE_TOKENS ({size})."
+            )
+        return self
 
     # ============================================
     # Pinecone Configuration (Optional Vector Backend)

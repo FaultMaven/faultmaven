@@ -111,6 +111,9 @@ class CaseVectorStore(BaseExternalClient):
     ) -> None:
         """Add documents to case-specific collection.
 
+        The chunks already stored for any ``evidence_id`` the documents carry
+        are deleted first, so the documents become that evidence's only chunks.
+
         Args:
             case_id: Case identifier.
             documents: List of dicts with 'id', 'content', and optional 'metadata'.
@@ -143,6 +146,14 @@ class CaseVectorStore(BaseExternalClient):
             )
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings
+            # A re-index replaces the evidence's chunks: add() keeps an
+            # existing id's old text, so a re-chunked file would keep its old
+            # chunks beside the new ones (#2936).
+            evidence_ids = sorted(
+                {md["evidence_id"] for md in sanitized_metadatas if "evidence_id" in md}
+            )
+            if evidence_ids:
+                collection.delete(where={"evidence_id": {"$in": evidence_ids}})
             # Where this runs is the client's call: an HttpClient runs it in
             # the chroma-http executor, off the loop, bounded per phase by its
             # client timeout (#2056); a local PersistentClient keeps it on the
