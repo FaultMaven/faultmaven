@@ -901,7 +901,7 @@ class HypothesisManager:
 
         logger.info(
             f"Hypothesis {hypothesis.hypothesis_id} REFUTED: "
-            f"reason_len={len(reason)} "
+            f"reason_len={len(reason or '')} "
             f"(evidence: {refuting_evidence_ids})"
         )
 

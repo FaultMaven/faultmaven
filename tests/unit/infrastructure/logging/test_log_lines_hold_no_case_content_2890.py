@@ -182,6 +182,15 @@ def test_hypothesis_lines_name_the_hypothesis_not_its_statement(lines):
     _named(rendered, "REFUTED", h.hypothesis_id, f"reason_len={len(MARKER) + 10}")
 
 
+def test_a_refutation_without_a_reason_still_logs(lines):
+    """The length of an absent reason is 0: the line cannot raise after the
+    hypothesis has already been refuted."""
+    manager = HypothesisManager()
+    h = manager.create_hypothesis(CONTENT, "config", 0.4, current_turn=1)
+    manager.refute_hypothesis(h, 2, [], reason=None)
+    _named(lines(), "REFUTED", h.hypothesis_id, "reason_len=0")
+
+
 def _user() -> DevUser:
     return DevUser(
         user_id="user-1",
@@ -354,10 +363,42 @@ async def test_local_provider_names_prompt_and_reply_by_length(lines):
     with patch("aiohttp.ClientSession", return_value=_mock_session(data)):
         await send_to_model(provider, prompt=vetted(CONTENT))
     rendered = lines()
-    _named(rendered, "Request payload", "functionary-7b-v2", "messages=1")
+    _named(
+        rendered,
+        "Request payload",
+        "functionary-7b-v2",
+        f"messages=1, content_len={len(CONTENT)}, prompt_len={len(CONTENT)}",
+    )
     _named(rendered, "Response data", "response_len=")
     _named(rendered, "Raw content", f"content_len={len(reply)}")
     _named(rendered, "Validated content", f"content_len={len(reply.strip())}")
+
+
+async def test_local_provider_names_sent_messages_by_count_and_length(lines):
+    """A conversation is sent as its messages, not the prompt: the line counts
+    and measures what was sent, and names no prompt length."""
+    provider = LocalProvider(
+        ProviderConfig(
+            name="local",
+            api_key=None,
+            base_url="http://localhost:5000",
+            models=["functionary-7b-v2"],
+            default_model="functionary-7b-v2",
+            timeout=30,
+        )
+    )
+    sent = [
+        {"role": "system", "content": "You are terse."},
+        {"role": "user", "content": CONTENT},
+    ]
+    data = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+    with patch("aiohttp.ClientSession", return_value=_mock_session(data)):
+        await provider._call_openai_compatible_api(
+            "unused", "functionary-7b-v2", 100, 0.0, messages=sent
+        )
+    line = _named(lines(), "Request payload", "messages=2")
+    assert f"content_len={len('You are terse.') + len(CONTENT)}" in line["event"]
+    assert "prompt_len" not in line["event"]
 
 
 # ── modules/auth/api/session.py ───────────────────────────────────────────
@@ -391,6 +432,7 @@ def test_triage_confidence_repair_is_named_by_type_and_length(lines):
 
 
 async def test_validation_error_is_named_by_loc_type_and_input_length(lines):
+    oversized = f"{MARKER} " + "x" * 4000  # echoed as a placeholder (#1048)
     exc = RequestValidationError(
         [
             {
@@ -398,15 +440,70 @@ async def test_validation_error_is_named_by_loc_type_and_input_length(lines):
                 "loc": ("body", "query"),
                 "msg": "String should have at most 3 characters",
                 "input": CONTENT,
-            }
+                "ctx": {"max_length": 3},
+            },
+            {  # a validator's message can quote the value: not logged
+                "type": "value_error",
+                "loc": ("body", "title"),
+                "msg": f"Value error, {MARKER} is not a title",
+                "input": TITLE,
+                "ctx": {"error": ValueError(f"{MARKER} is not a title")},
+            },
+            {  # the client's own key, not one the schema declared
+                "type": "extra_forbidden",
+                "loc": ("body", f"{MARKER}_key"),
+                "msg": "Extra inputs are not permitted",
+                "input": 1,
+            },
+            {
+                "type": "string_too_long",
+                "loc": ("body", "note"),
+                "msg": "String should have at most 3 characters",
+                "input": oversized,
+                "ctx": {"max_length": 3},
+            },
+            {
+                "type": "string_type",
+                "loc": ("body", "name"),
+                "msg": "Input should be a valid string",
+                "input": None,
+            },
         ]
     )
     request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/x"))
     response = await request_validation_exception_handler(request, exc)
     assert response.status_code == 422
+    assert CONTENT in response.body.decode(), "the response still echoes it"
     fields = _named(lines(), "Validation error on POST /x", "string_too_long")
+    too_long = "String should have at most 3 characters"
     assert fields["validation_errors"] == [
-        {"loc": ["body", "query"], "type": "string_too_long", "input_len": len(CONTENT)}
+        {
+            "loc": ["body", "query"],
+            "type": "string_too_long",
+            "msg": too_long,
+            "ctx": {"max_length": 3},
+            "input_len": len(CONTENT),
+        },
+        {"loc": ["body", "title"], "type": "value_error", "input_len": len(TITLE)},
+        {
+            "loc": ["body", f"<key_len={len(MARKER) + 4}>"],
+            "type": "extra_forbidden",
+            "msg": "Extra inputs are not permitted",
+            "input_type": "int",
+        },
+        {
+            "loc": ["body", "note"],
+            "type": "string_too_long",
+            "msg": too_long,
+            "ctx": {"max_length": 3},
+            "input_len": len(oversized),
+        },
+        {
+            "loc": ["body", "name"],
+            "type": "string_type",
+            "msg": "Input should be a valid string",
+            "input_type": "NoneType",
+        },
     ]
 
 
@@ -725,22 +822,21 @@ def test_an_absorbed_blob_is_named_by_length(lines):
     hostile = f'line one\n<uploaded_file label="{MARKER}.log" file_backed="true"'
 
     def render(f: PromptFence) -> str:
-        # Hand-rolled: a raw body bypassing ``element`` (test_fence.py).
-        return (
-            f.open("evidence_collected")
-            + "\n"
-            + f.open("file_extract")
+        # Hand-rolled: raw bodies bypassing ``element`` (test_fence.py), five
+        # of them, so the lengths' volume bound shows.
+        return "".join(
+            f.open("file_extract")
             + "\n"
             + f.data(hostile)
             + "\n"
             + f.close("file_extract")
-            + f.close("evidence_collected")
+            for _ in range(5)
         )
 
     render_fenced(render, token_source=lambda: "aaaaaaaa")
     line = _named(lines(), "prompt_fence_absorbed_delimiter")
-    assert line["count"] >= 1
-    assert len(line["blob_lens"]) == line["count"] and all(line["blob_lens"])
+    assert line["count"] > 3
+    assert len(line["blob_lens"]) == 3 and all(line["blob_lens"])
 
 
 # ── milestone_engine/turn_records.py ──────────────────────────────────────
@@ -1143,7 +1239,7 @@ async def test_investigation_updates_name_their_content_by_id_and_length(lines):
     )
 
 
-async def test_a_failed_reasoning_validation_is_named_by_its_count(lines):
+async def test_a_failed_reasoning_validation_names_its_errors_and_ref_length(lines):
     from unittest.mock import AsyncMock, MagicMock
 
     from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
@@ -1166,4 +1262,11 @@ async def test_a_failed_reasoning_validation_is_named_by_its_count(lines):
     repo.save = AsyncMock(side_effect=lambda c, **_: c)
     engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
     await engine.responses.process_response_structured(case, "it fails", response)
-    _named(lines(), "Reasoning validation failed", case.case_id, "error(s)")
+    _named(
+        lines(),
+        "Reasoning validation failed",
+        case.case_id,
+        "offending ['symptom_verified']",
+        f"Invalid turn reference format: <ref_len={len(MARKER) + 5}>. Expected",
+        "Cannot complete milestones when no actionable evidence",
+    )

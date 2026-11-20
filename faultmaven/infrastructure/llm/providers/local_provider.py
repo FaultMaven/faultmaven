@@ -486,9 +486,16 @@ class LocalProvider(BaseLLMProvider):
         # Discards the router-level knobs, then merges the rest (see base).
         self._merge_extra_kwargs(payload, kwargs, model=model)
 
+        # What was sent, by count and length: the prompt only when it was sent.
+        sent = messages or [{"content": prompt}]
+        content_len = sum(
+            len(str((m.get("content") or "") if isinstance(m, dict) else m))
+            for m in sent
+        )
         self.logger.debug(
-            f"Request payload: model={model}, messages="
-            f"{len(messages) if messages else 1}, prompt_len={len(prompt or '')}"
+            f"Request payload: model={model}, messages={len(sent)}, "
+            f"content_len={content_len}"
+            + ("" if messages else f", prompt_len={len(prompt or '')}")
         )
 
         async with aiohttp.ClientSession() as session:

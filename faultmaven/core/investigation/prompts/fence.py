@@ -860,7 +860,8 @@ def render_fenced(
                     # Lengths only: an absorbed blob is everything between the
                     # forged tag and the delimiter it swallowed, so it is CASE
                     # CONTENT, which no log line holds (principles §7, rule 3).
-                    "blob_lens": [len(b) for b in absorbed],
+                    # The first three, as a volume bound; ``count`` has them all.
+                    "blob_lens": [len(b) for b in absorbed[:3]],
                     "count": len(absorbed),
                 },
             )

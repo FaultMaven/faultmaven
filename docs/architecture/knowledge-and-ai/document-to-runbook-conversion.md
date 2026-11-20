@@ -283,7 +283,8 @@ Upload (file + scope + metadata)
           percentage and rescaled, a bool is coerced; anything else, or
           none, is the 0.5 default, which can only warn. Each repair is
           counted on faultmaven_schema_field_repairs_total
-          {schema="TriageResult"} and logged with the raw value.
+          {schema="TriageResult"} and logged with the raw value's type
+          and length, never the value.
         If not actionable (confidence > 0.8):
           → Reject with: "This document does not appear to contain
              troubleshooting content. The conversion pipeline produces

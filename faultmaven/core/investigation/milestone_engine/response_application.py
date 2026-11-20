@@ -1,6 +1,7 @@
 """Applying a parsed structured LLM response onto a case: the INQUIRY and INVESTIGATING state-update paths that turn schema fields into case mutations."""
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -736,9 +737,20 @@ class ResponseApplier:
             response_obj, case
         )
         if not is_valid:
+            # Each error's engine text, the turn reference the model wrote
+            # (``milestone_inference``) named by its length.
             logger.warning(
-                f"Reasoning validation failed for case {case.case_id}: "
-                f"{len(validation_errors)} error(s)"
+                f"Reasoning validation failed for case {case.case_id}: offending "
+                f"{sorted(offending_milestones)}; "
+                + " | ".join(
+                    re.sub(
+                        r"'(.*)'(?=: turn number|\. Expected format)",
+                        lambda m: f"<ref_len={len(m[1])}>",
+                        e,
+                        flags=re.S,
+                    )
+                    for e in validation_errors
+                )
             )
             # Degrade gracefully: strip ONLY the milestones that actually failed
             # validation, preserving co-emitted valid ones. A single unjustified

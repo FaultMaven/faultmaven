@@ -563,7 +563,12 @@ def test_error_log_does_not_carry_the_request_body(auth_client, logs):
     assert errors[0]["input"] == "openai,groq"
     assert "openai,groq" not in logs.everything()
     assert getattr(logs.records[0], "validation_errors") == [
-        {"loc": ["body", "fallback_chain"], "type": "list_type", "input_len": 11}
+        {
+            "loc": ["body", "fallback_chain"],
+            "type": "list_type",
+            "msg": "Input should be a valid list",
+            "input_len": 11,
+        }
     ]
 
     # The body's shape survives, which is the part that was diagnostic.
