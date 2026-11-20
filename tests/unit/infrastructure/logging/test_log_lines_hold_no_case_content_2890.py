@@ -746,12 +746,22 @@ def test_an_absorbed_blob_is_named_by_length(lines):
 # ── milestone_engine/turn_records.py ──────────────────────────────────────
 
 
-def test_a_bare_payload_card_is_named_by_label_length(lines):
+def test_a_bare_payload_card_is_named_by_label_and_payload_length(lines):
     label = f"Check {MARKER} pool config"
-    card = SuggestedFollowUp(label=label, action_type="DECIDE", payload="Proceed")
+    # The line fires only on a payload that reads as a bare gate reply, which no
+    # marker survives (``card_reads_as_bare_reply``): the payload's own text is
+    # the content that must stay off the line.
+    payload = "\ufeffProceed"
+    card = SuggestedFollowUp(label=label, action_type="DECIDE", payload=payload)
     _flatten_follow_ups([card], {})
-    line = _named(lines(), "LLM DECIDE card", f"label_len={len(label)}")
+    line = _named(
+        lines(),
+        "LLM DECIDE card",
+        f"label_len={len(label)}",
+        f"send_len={len(payload)}",
+    )
     assert line["card_label_len"] == len(label)
+    assert "Proceed" not in json.dumps(line)
 
 
 # ── milestone_engine/structured_output.py ─────────────────────────────────

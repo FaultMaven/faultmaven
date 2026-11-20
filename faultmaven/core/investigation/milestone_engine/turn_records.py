@@ -579,7 +579,7 @@ def _flatten_follow_ups(
                 outcome = "dropped: its label would not stay a DECIDE payload"
             logger.info(
                 f"LLM DECIDE card (label_len={len(f.label)}) carried the bare gate "
-                f"reply {send!r} as its payload (#1839), {outcome}",
+                f"reply (send_len={len(send)}) as its payload (#1839), {outcome}",
                 extra={"card_label_len": len(f.label), "action": action},
             )
             try:
