@@ -443,3 +443,54 @@ class TestEveryChunkFits:
         )
 
         assert threads and threads[0] is not threading.main_thread()
+
+
+def _log_paragraph(lines: int, emitted: int) -> str:
+    """Log lines whose paragraph is *emitted* tokens stripped, kept with two
+    trailing spaces on its last line."""
+    text = "\n".join(
+        f"2026-11-20T02:{i % 60:02d}:00Z INFO worker-{i} handled request id={i * 7919}"
+        for i in range(lines)
+    )
+    while _estimate_tokens(text) > emitted:
+        text = text[:-1]
+    while _estimate_tokens(text) < emitted:
+        text += "x"
+    return text + "  "
+
+
+@pytest.mark.unit
+class TestChunksThatFitAreUnchanged:
+    """A paragraph is judged as emitted (stripped); a join as kept, the rule
+    the paragraph split always used. Each input chunks as on ``main``."""
+
+    def test_a_paragraph_fitting_only_once_stripped_stays_whole(self):
+        paragraph = _log_paragraph(60, 500)
+        assert _estimate_tokens(paragraph) > 500
+        tail = "tail " * 5
+
+        chunks = chunk_structural_index(
+            f"=== LOG ===\n{paragraph}\n\nnext paragraph\n\n{tail}",
+            max_chunk_tokens=500,
+            overlap_tokens=50,
+        )
+
+        overlap = _get_last_n_tokens(paragraph, 50)
+        assert [c.text for c in chunks] == [
+            paragraph.strip(),
+            f"{overlap}\n\nnext paragraph\n\n{tail}".strip(),
+        ]
+        assert {c.metadata["section"] for c in chunks} == {"LOG"}
+
+    def test_a_join_over_the_limit_only_as_kept_is_split(self):
+        first = _log_paragraph(15, 300).rstrip()
+        second = _log_paragraph(25, 499 - _estimate_tokens(first))
+        joined = f"{first}\n\n{second}"
+        assert _estimate_tokens(joined.strip()) <= 500 < _estimate_tokens(joined)
+
+        chunks = chunk_structural_index(
+            f"{joined}\n\nnext", max_chunk_tokens=500, overlap_tokens=50
+        )
+
+        overlap = _get_last_n_tokens(first, 50)
+        assert [c.text for c in chunks] == [first, f"{overlap}\n\n{second}\n\nnext"]
