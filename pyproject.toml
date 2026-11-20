@@ -362,6 +362,7 @@ fm-set-turn-cap = "faultmaven.cli.set_turn_cap:main"
 fm-reset-kb = "faultmaven.cli.reset_kb:main"
 fm-wipe-deployment = "faultmaven.cli.wipe_deployment:main"
 fm-migrate = "faultmaven.cli.migrate:main"
+fm-purge-traces = "faultmaven.cli.purge_traces:main"
 
 # ============================================================================
 # PROJECT METADATA AND URLS

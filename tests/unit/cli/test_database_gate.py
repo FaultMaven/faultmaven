@@ -56,10 +56,11 @@ with (REPO_ROOT / "pyproject.toml").open("rb") as _handle:
     DECLARED: dict[str, str] = tomllib.load(_handle)["project"]["scripts"]
 
 #: Commands that act on no database and so may skip the gate, each with its
-#: reason. Empty: every command shipped today reads or writes the deployment's
-#: database. An entry here is a decision someone must write down, never a way
-#: to quiet this test.
-NEEDS_NO_DATABASE: dict[str, str] = {}
+#: reason. An entry here is a decision someone must write down, never a way to
+#: quiet this test.
+NEEDS_NO_DATABASE: dict[str, str] = {
+    "fm-purge-traces": "it reads and deletes in the trace backend alone (#2700)",
+}
 
 #: Commands that start no event loop, each with its reason: the census's
 #: positive control (it sees a loop start) does not apply to them.
