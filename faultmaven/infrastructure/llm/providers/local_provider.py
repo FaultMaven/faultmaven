@@ -486,12 +486,15 @@ class LocalProvider(BaseLLMProvider):
         # Discards the router-level knobs, then merges the rest (see base).
         self._merge_extra_kwargs(payload, kwargs, model=model)
 
-        # What was sent, by count and length: the prompt only when it was sent.
+        # What was sent, by count and length (a multimodal message's text
+        # parts): the prompt only when it was sent.
         sent = messages or [{"content": prompt}]
-        content_len = sum(
-            len(str((m.get("content") or "") if isinstance(m, dict) else m))
-            for m in sent
-        )
+        content_len = 0
+        for m in sent:
+            c = m.get("content") if isinstance(m, dict) else m
+            for part in c if isinstance(c, list) else [c]:
+                text = part.get("text") if isinstance(part, dict) else part
+                content_len += len(str(text or ""))
         self.logger.debug(
             f"Request payload: model={model}, messages={len(sent)}, "
             f"content_len={content_len}"

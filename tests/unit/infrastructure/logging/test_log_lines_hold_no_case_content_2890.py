@@ -389,7 +389,13 @@ async def test_local_provider_names_sent_messages_by_count_and_length(lines):
     )
     sent = [
         {"role": "system", "content": "You are terse."},
-        {"role": "user", "content": CONTENT},
+        {  # multimodal: the text parts are what is measured
+            "role": "user",
+            "content": [
+                {"type": "text", "text": CONTENT},
+                {"type": "image_url", "image_url": {"url": "data:image/png;x"}},
+            ],
+        },
     ]
     data = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
     with patch("aiohttp.ClientSession", return_value=_mock_session(data)):
@@ -505,6 +511,37 @@ async def test_validation_error_is_named_by_loc_type_and_input_length(lines):
             "input_type": "NoneType",
         },
     ]
+
+
+async def test_pydantic_messages_that_quote_the_input_are_not_logged(lines):
+    """``union_tag_invalid`` quotes the input's tag, ``uuid_parsing`` one of
+    its characters: their ``msg`` and ``ctx`` stay off the line."""
+    from typing import Literal, Union
+    from uuid import UUID
+
+    from pydantic import BaseModel, Field, ValidationError
+
+    class A(BaseModel):
+        k: Literal["a"]
+
+    class B(BaseModel):
+        k: Literal["b"]
+
+    class Body(BaseModel):
+        x: Union[A, B] = Field(discriminator="k")
+        u: UUID
+
+    with pytest.raises(ValidationError) as raised:
+        Body.model_validate({"x": {"k": MARKER}, "u": "q-not-a-uuid"})
+    errors = [{**e, "loc": ("body", *e["loc"])} for e in raised.value.errors()]
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path="/x"))
+    await request_validation_exception_handler(request, RequestValidationError(errors))
+    fields = _named(lines(), "Validation error on POST", "union_tag_invalid")
+    entries = {e["type"]: e for e in fields["validation_errors"]}
+    assert set(entries) == {"union_tag_invalid", "uuid_parsing"}
+    for entry in entries.values():
+        assert "msg" not in entry and "ctx" not in entry, entry
+    assert "`q`" not in json.dumps(fields)
 
 
 # ── case_service.py: create_case ──────────────────────────────────────────
@@ -1252,7 +1289,7 @@ async def test_a_failed_reasoning_validation_names_its_errors_and_ref_length(lin
             "agent_response": "The symptom is confirmed.",
             "evidence_trail": {
                 "milestone_justifications": {"symptom_verified": "seen in the log"},
-                "evidence_analyzed": [f"turn_{MARKER}"],
+                "evidence_analyzed": [f"turn_{MARKER}", f"turn_99_{MARKER}"],
             },
             "state_updates": {"milestones": {"symptom_verified": True}},
         }
@@ -1268,5 +1305,6 @@ async def test_a_failed_reasoning_validation_names_its_errors_and_ref_length(lin
         case.case_id,
         "offending ['symptom_verified']",
         f"Invalid turn reference format: <ref_len={len(MARKER) + 5}>. Expected",
+        f"Invalid turn reference <ref_len={len(MARKER) + 8}>: turn number must be",
         "Cannot complete milestones when no actionable evidence",
     )
