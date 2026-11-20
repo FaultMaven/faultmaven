@@ -276,18 +276,22 @@ async def test_a_failure_omits_only_the_checklist(
         block = _build_evidence_needs_block(case)
     assert block == want.replace(_checklist_section(want), CHECKLIST_OMITTED)
     assert failures == [WritePoint.NARRATION]
-    logged = [
-        r.getMessage() for r in caplog.records if "not rendered" in r.getMessage()
-    ]
+    logged = [r.getMessage() for r in caplog.records if "(#2811)" in r.getMessage()]
     assert len(logged) == 1
-    assert "<evidence_needs> re-verification checklist was not rendered" in logged[0]
+    checklist = "<evidence_needs> re-verification checklist"
+    assert (
+        f"the record could not be read for the {checklist}"
+        if where == "fold"
+        else f"the {checklist} was not rendered"
+    ) in logged[0]
 
 
 async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
-    """``D:omitted``: the fold fails once, and each block that renders an
-    omission logs it once, naming itself, over the assembly's builds (the
+    """``D:omitted``: the fold fails once, and each block that reads the
+    record logs it once, naming itself, over the assembly's builds (the
     prompt-state lines included, #2811 S2b-1c-i, and the graph block's
-    recovery notes, S2b-2a); the failure is counted once."""
+    recovery notes, S2b-2a, built whether or not the template shows it); the
+    failure is counted once."""
     case = await build("D:omitted")
     with caplog.at_level("ERROR", logger=fold_module.__name__):
         prompt = templates.get_prompt_for_case(
@@ -295,19 +299,19 @@ async def test_a_failed_fold_is_logged_by_each_block_it_omits(caplog, failures):
         )
     assert CHECKLIST_OMITTED in prompt
     logged = sorted(
-        r.getMessage() for r in caplog.records if "not rendered" in r.getMessage()
+        r.getMessage() for r in caplog.records if "(#2811)" in r.getMessage()
     )
     assert logged == [
-        f"Case {case.case_id}: the <evidence_needs> re-verification checklist "
-        "was not rendered (#2811)",
-        f"Case {case.case_id}: the <fix_verification> block was not rendered "
-        "(#2811)",
-        f"Case {case.case_id}: the exclusion rule was not rendered (#2811)",
-        f"Case {case.case_id}: the focus emphasis was not rendered (#2811)",
-        f"Case {case.case_id}: the graph block's recovery section was not "
-        "rendered (#2811)",
-        f"Case {case.case_id}: the milestone status was not rendered (#2811)",
-        f"Case {case.case_id}: the state summary was not rendered (#2811)",
+        f"Case {case.case_id}: the record could not be read for the {block} (#2811)"
+        for block in (
+            "<evidence_needs> re-verification checklist",
+            "<fix_verification> block",
+            "exclusion rule",
+            "focus emphasis",
+            "graph block's recovery section",
+            "milestone status",
+            "state summary",
+        )
     ]
     assert failures == [WritePoint.NARRATION]
 

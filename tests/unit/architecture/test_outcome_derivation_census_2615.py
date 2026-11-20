@@ -68,9 +68,8 @@ Not counted:
 
 * ``problem_status``, ``cause_state`` and ``mitigation.disposition``: progress
   inputs the record reads from (#2615, *The record*). Under ``prompts/``,
-  ``PROMPT_PROGRESS_READS`` watches ``problem_status``, ``cause_state``,
-  ``symptom_verified`` and ``solution_proposed`` per function (#2811
-  S2b-1c-i): a prompt line reads them off the record;
+  ``PROMPT_PROGRESS_READS`` watches each name in ``PROGRESS_INPUTS`` per
+  function (#2811 S2b-1c-i): a prompt line reads them off the record;
 * a read through ``builtins.getattr``, ``operator.attrgetter`` or
   ``object.__getattribute__``, or by a class pattern
   (``case Case(closure_reason=r)``): none exists today;

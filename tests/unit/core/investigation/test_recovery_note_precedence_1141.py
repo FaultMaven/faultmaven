@@ -223,10 +223,11 @@ def test_the_leading_note_is_the_old_merge_choice_and_logs_no_collision(name, ca
 
 
 # 6. precedence table, including pairs no fixture builds yet
-# (predicate name, the reason its population carries), highest precedence first
+# (population name: the record field for the first two, #2811 S2b-2a, else the
+# predicate; the reason its population carries), highest precedence first
 _POPULATIONS = [
-    ("mece_contested_root_ids", cgb._MECE_CONTESTED),
-    ("held_open_root_ids", cgb._WHY_OPEN),
+    (cgb._MECE_POPULATION, cgb._MECE_CONTESTED),
+    (cgb._WHY_POPULATION, cgb._WHY_OPEN),
     ("refused_verdict_root_ids", cgb._VERDICT_REFUSED),
     ("restatement_held_root_ids", BLOCK_REASON_RESTATEMENT),
     ("root_support_block_reasons", BLOCK_REASON_COUNT),

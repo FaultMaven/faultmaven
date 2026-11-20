@@ -495,3 +495,33 @@ async def test_2811_a_first_record_mints_its_finals(repository):
     assert await _run(repository) == 0
     record = (await repository.get(case.case_id)).progress.outcome
     assert _window(record, fix.action_id).final_at.at == "backfill"
+
+
+async def test_2811_a_shape_4_record_is_rewritten_at_shape_5(repository, capsys):
+    """S2b-2a: a stored shape-4 record has no ``cause.contested_root_ids``;
+    the backfill's write folds it to shape 5 with the contested roots."""
+    from faultmaven.core.investigation.causal_graph.clusters import (
+        mece_contested_root_ids,
+    )
+    from faultmaven.modules.case.contracts import CURRENT_OUTCOME_SHAPE
+    from tests.unit.core.investigation.prompts.test_fix_verification_record_2811 import (
+        _stored,
+    )
+    from tests.unit.core.investigation.test_mece_arbitration import _SPECIMEN
+    from tests.unit.core.investigation.test_recovery_note_precedence_1141 import (
+        _built,
+    )
+
+    case = _built(_SPECIMEN)
+    contested = sorted(mece_contested_root_ids(case))
+    assert len(contested) == 3, "premise: a contest"
+    case.progress.outcome = _stored(case, 4)
+    await repository.save(case)
+    stored = (await repository.get(case.case_id)).progress.outcome
+    assert (stored.shape, stored.cause.contested_root_ids) == (4, []), "premise"
+
+    assert await _run(repository) == 0
+    rewritten = (await repository.get(case.case_id)).progress.outcome
+    assert CURRENT_OUTCOME_SHAPE == 5
+    assert rewritten.shape == 5
+    assert rewritten.cause.contested_root_ids == contested

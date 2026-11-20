@@ -5,9 +5,9 @@ S2b-2a, #2615 stage S2): ``cause.contested_root_ids`` and
 
 On every fixture of the corpus (``contest_cases_2811``) both render byte for
 byte what ``main`` rendered (``contest_oracle_2811.json``, captured through
-``build_investigation_context`` and ``_build_causal_graph_block`` at
-0c4b76c6a), but on the fixtures of the declared differences, where they
-differ exactly as declared.
+``build_investigation_context`` and ``_build_causal_graph_block`` from
+``main`` extracts at 0c4b76c6a and 507c7e6c3), but on the fixtures of the
+declared differences, where they differ exactly as declared.
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ from faultmaven.core.investigation.prompts.context_builder.assembly import (
 )
 from faultmaven.modules.case.contracts import (
     CURRENT_OUTCOME_SHAPE,
-    CaseOutcome,
     WritePoint,
 )
 from tests.unit.core.investigation.prompts.contest_cases_2811 import (
@@ -52,6 +51,9 @@ from tests.unit.core.investigation.prompts.contest_cases_2811 import (
     build,
     graph,
     render,
+)
+from tests.unit.core.investigation.prompts.test_fix_verification_record_2811 import (
+    _stored,
 )
 from tests.unit.core.investigation.prompts.test_prompt_state_record_2811 import (
     _poisoned_fold,
@@ -78,18 +80,23 @@ def test_the_oracle_covers_the_corpus():
     assert set(ORACLE) == set(CASES)
 
 
-@pytest.mark.parametrize("name", sorted(set(CASES) - set(DECLARED.values())))
+_DECLARED_FIXTURES = {name for names in DECLARED.values() for name in names}
+
+
+@pytest.mark.parametrize("name", sorted(set(CASES) - _DECLARED_FIXTURES))
 async def test_each_place_renders_as_main_did(name):
     case = await build(name)
     assert render(case) == ORACLE[name]
     assert graph(case) == ORACLE[name]["graph"]
 
 
-async def test_a_retire_that_released_the_contest_drops_the_stale_note():
-    """``C:retired``: the stored flag still says contested, the standing set
-    contests nothing; ``main``'s NOTE contradicted the graph beside it."""
-    case = await build(DECLARED["retired"])
-    want = ORACLE[DECLARED["retired"]]
+@pytest.mark.parametrize("name", DECLARED["stale_flag"])
+async def test_a_stale_flag_after_a_hypothesis_intent_drops_the_note(name):
+    """A user retire or refute applied before the prompt, with no recompute:
+    the stored flag still says contested, the standing set contests nothing;
+    ``main``'s NOTE contradicted the graph beside it."""
+    case = await build(name)
+    want = ORACLE[name]
     assert case.progress.cause_identification_contested is True, "premise"
     assert mece_contested_root_ids(case) == set(), "premise"
     assert _NOTE in want["conclusion"] and _CONTEST not in want["graph"], "premise"
@@ -103,8 +110,9 @@ async def test_a_retire_that_released_the_contest_drops_the_stale_note():
 async def test_an_unreadable_record_omits_the_recovery_notes_as_declared():
     """``D:omitted``: the graph block's contest notes give way to the one
     declared line, under the block's header."""
-    case = await build(DECLARED["omitted"])
-    want = ORACLE[DECLARED["omitted"]]
+    (name,) = DECLARED["omitted"]
+    case = await build(name)
+    want = ORACLE[name]
     assert want["graph"].count(_CONTEST) == 2, "premise"
     lines = want["graph"].replace(_CONTEST, "").splitlines()
     lines.insert(2, cgb.RECOVERY_OMITTED)
@@ -209,11 +217,10 @@ async def test_a_failed_fold_renders_each_blocks_declared_line(
     if name == "C:refused_count_held":
         assert _REFUSED in want["graph"], "premise"
         assert cgb._RECOVERY_NOTES[BLOCK_REASON_COUNT] in got["graph"]
-    logged = [
-        r.getMessage() for r in caplog.records if "not rendered" in r.getMessage()
-    ]
+    logged = [r.getMessage() for r in caplog.records if "(#2811)" in r.getMessage()]
     for block in (cgb._RECOVERY_BLOCK, "working conclusion's contest note"):
-        assert sum(block in m for m in logged) == 1, block
+        read = f"the record could not be read for the {block}"
+        assert sum(read in m for m in logged) == 1, block
     assert failures == [WritePoint.NARRATION]
 
 
@@ -235,14 +242,6 @@ async def test_the_notes_without_a_conclusion_or_a_graph_never_fold(
 # ---------------------------------------------------------------------------
 
 
-def _shape_4(record: CaseOutcome) -> CaseOutcome:
-    """``record`` as a shape-4 writer stored it, without ``contested_root_ids``."""
-    raw = record.model_dump(mode="json")
-    raw["shape"] = 4
-    raw["cause"].pop("contested_root_ids")
-    return CaseOutcome.model_validate(raw)
-
-
 async def test_the_fold_writes_the_contested_roots_sorted():
     case = await build("C:all_three")
     contested = mece_contested_root_ids(case)
@@ -254,7 +253,7 @@ async def test_the_fold_writes_the_contested_roots_sorted():
 
 async def test_a_shape_4_record_upgrades_to_5_through_the_identity(monkeypatch):
     case = await build("C:all_three")
-    old = _shape_4(compute_case_outcome(None, case, at=WritePoint.CYCLE))
+    old = _stored(case, 4)
     assert CURRENT_OUTCOME_SHAPE == 5
     assert old.cause.contested_root_ids == [], "premise: loads with the default"
     assert outcome_module._shape_5(old, case, None, []) is old

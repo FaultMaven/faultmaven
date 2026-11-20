@@ -231,8 +231,11 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     once per prompt assembly (``NarrationFold``), for every block that prints
     an outcome line from it: the fix-verification and evidence-needs blocks,
     the milestone status, the exclusion rule, the focus emphasis, the state
-    summary, and the fallback prompt the assembly may return instead (which,
-    called alone, folds once per call)."""
+    summary, the causal graph block's recovery notes and the working
+    conclusion's contest NOTE (S2b-2a; both built on every assembly whose
+    case has a graph or a working conclusion), and the fallback prompt the
+    assembly may return instead (which, called alone, folds once per
+    call)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 
@@ -471,8 +474,10 @@ def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome
         # notice's variant (#2636), which the next prompt's readers also read.
         # The turn's final recompute (#2636) re-derives these flags after
         # every decider, so the cycle's record reads them agreeing with
-        # ``held_open_root_ids``; a replayed bundle's record reads them as
-        # that bundle left them.
+        # ``held_open_root_ids`` and ``contested_root_ids``; a replayed
+        # bundle's record reads them as that bundle left them, and a prompt
+        # folded after a pre-prompt hypothesis intent (retire or refute),
+        # which runs no recompute, can read them disagreeing.
         pool_empty_reason=cause_pool_empty_reason(case),
         identification_leg=cause_identification_leg(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),

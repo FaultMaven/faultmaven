@@ -321,10 +321,11 @@ RECOVERY_OMITTED = (
 )
 _RECOVERY_BLOCK = "graph block's recovery section"
 
-# The populations ``_root_recovery_reasons`` reads, each named by the
-# predicate that produces it (the first two read off the record).
-_MECE_POPULATION = "mece_contested_root_ids"
-_WHY_POPULATION = "held_open_root_ids"
+# The populations ``_root_recovery_reasons`` reads: the first two by the
+# record field that holds them (#2811 S2b-2a), the others by the live
+# predicate that produces them.
+_MECE_POPULATION = "record:cause.contested_root_ids"
+_WHY_POPULATION = "record:cause.held_open_root_ids"
 _REFUSED_POPULATION = "refused_verdict_root_ids"
 _RESTATEMENT_POPULATION = "restatement_held_root_ids"
 _GROUNDING_POPULATION = "root_support_block_reasons"
@@ -334,7 +335,9 @@ _GROUNDING_POPULATION = "root_support_block_reasons"
 # contest holds only VALIDATED ones. The grounding bar's population excludes
 # restating roots, and the restatement hold requires that bar met. A root
 # found in one of these pairs means a predicate has drifted from its
-# definition, so ``_root_recovery_reasons`` logs it at ERROR.
+# definition or, for a pair with the MECE contest (read off the record, the
+# others live), that the record and a live predicate disagree, so
+# ``_root_recovery_reasons`` logs it at ERROR.
 _DISJOINT_POPULATIONS = (
     frozenset({_GROUNDING_POPULATION, _RESTATEMENT_POPULATION}),
     frozenset({_GROUNDING_POPULATION, _MECE_POPULATION}),
@@ -380,10 +383,12 @@ def _root_recovery_reasons(
     verdict_refused with a grounding reason and with restates_frame.
     verdict_refused excludes why_open by construction. The grounding,
     restatement and contest populations are pairwise disjoint by their
-    predicates' definitions (``_DISJOINT_POPULATIONS``). A root found in one of them is logged at
-    ERROR as ``recovery_note_population_collision``, once per root, naming
-    every population it is in. Its notes are still the ones this order
-    renders, and building the prompt never raises.
+    predicates' definitions (``_DISJOINT_POPULATIONS``). A root found in one
+    of them is logged at ERROR as ``recovery_note_population_collision``,
+    once per root, naming every population it is in: a predicate drifted
+    from its definition, or the record's contest and a live predicate
+    disagree. Its notes are still the ones this order renders, and building
+    the prompt never raises.
 
     The contested and held-open roots are the record's
     (``cause.contested_root_ids``, ``cause.held_open_root_ids``, #2811
@@ -421,7 +426,8 @@ def _root_recovery_reasons(
         if any(pair <= set(names) for pair in _DISJOINT_POPULATIONS):
             logger.error(
                 "recovery_note_population_collision: root %s is in %s, which "
-                "include a pair declared disjoint; rendering its %r notes",
+                "include a pair declared disjoint (a predicate drifted, or the "
+                "record and a live predicate disagree); rendering its %r notes",
                 root_id,
                 names,
                 reasons[root_id],
