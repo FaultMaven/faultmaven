@@ -80,7 +80,8 @@ async def world():
     store = RedisSessionStore(redis, session_ttl_seconds=1800)
     service = AuthSessionService(session_store=store)
     own, _ = await service.create_session(OWNER, client_id="laptop", metadata=SEED)
-    # Below the store's 1800 s, so a write that re-arms a key shows in _snapshot.
+    # Below the store's 1800 s, so a write that re-arms a key moves its expiry
+    # later however little time has passed.
     for key in await redis.keys("*"):
         await redis.expire(key, 1000)
     owner = DevUser(
@@ -497,13 +498,14 @@ async def test_mutate_retries_after_a_conflicting_write_and_keeps_it(
     world, monkeypatch
 ):
     _interleave(monkeypatch, world, 1, _record_edit(world, _set_last_activity))
+    armed = world.sync.pexpiretime(world.key)
 
     written = await world.store.mutate_session(world.own_id, _set_mutated)
 
     assert written.metadata == {"mutated": True}
     stored = json.loads(world.sync.get(world.key))
     assert (stored["metadata"], stored["last_activity"]) == ({"mutated": True}, MARKER)
-    assert 1700 < world.sync.ttl(world.key) <= 1800
+    assert world.sync.pexpiretime(world.key) > armed  # the write re-armed it
 
 
 async def test_mutate_gives_up_after_five_conflicts_and_writes_nothing(
