@@ -282,18 +282,19 @@ the phrase tier is not vestigial either: `httpx` and `redis` timeouts inherit
 from their own bases rather than the builtin `TimeoutError`, so the type rule
 does not reach them.
 
-**A declaration outranks prose at BOTH boundaries, and the ORDERING is what
-makes that true.** `LLMErrorHandler.handle_error` reaches three substring
-classifiers before it asks about retryability, and each matches a bare number
-anywhere in the message (`"401"`, `"403"`, `"404"`). Once providers began
-folding aiohttp's raw text into their messages that text carried `host:port` —
-so a declared-retryable connect failure to `localhost:4040` was answered as
-`MODEL_NOT_FOUND`, and one to `proxy:8401` as `AUTH_FAILED`. A declared
-**transient** failure therefore short-circuits to the retry ladder ahead of
-those classifiers; a declared **permanent** one still falls through to them,
-because they add semantics the flag does not carry. This mapping follows the
-same rule, reading the declared flag off any class rather than only off
-`LLMException`.
+**A declaration outranks prose at BOTH boundaries.** `LLMErrorHandler.handle_error`
+once reached substring classifiers before it asked about retryability, and they
+matched a bare number anywhere in the message (`"401"`, `"403"`, `"404"`). Once
+providers began folding aiohttp's raw text into their messages that text
+carried `host:port` — so a declared-retryable connect failure to
+`localhost:4040` was answered as `MODEL_NOT_FOUND`, and one to `proxy:8401` as
+`AUTH_FAILED`. A declared **transient** failure therefore short-circuits to the
+retry ladder ahead of those classifiers; a declared **permanent** one still
+falls through to them, because they add semantics the flag does not carry.
+Since #2138 neither reads text: `AUTH_FAILED` needs a declared 401/403 or
+`PROVIDER_AUTH_FAILED` on the `__cause__` chain, and `MODEL_NOT_FOUND` a
+declared 404. This mapping follows the same rule, reading the declared flag
+off any class rather than only off `LLMException`.
 
 `LLM_CONFIG_ERROR` is the engine code for "the LLM layer is not routable" —
 no provider in the fallback chain, or the registry cannot build one. It is

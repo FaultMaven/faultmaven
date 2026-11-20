@@ -4,6 +4,7 @@ Tests retry logic and error recovery for LLM API calls.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -135,14 +136,14 @@ class TestErrorClassification:
             assert handler.is_retryable_error(outer) is True
 
     def test_auth_error_detection(self, handler):
-        """Auth errors should be detected."""
-        error = Exception("API key is invalid or expired")
+        """A rejected credential is read off its declared 403 (#2138)."""
+        error = LLMException("API key is invalid or expired", status_code=403)
         assert handler.is_auth_error(error) is True
 
     def test_auth_401_error(self, handler):
-        """401 errors should be auth errors."""
-        error = Exception("HTTP 401 Unauthorized")
-        assert handler.is_auth_error(error) is True
+        """A declared 401 is an auth error; the same text undeclared is not."""
+        assert handler.is_auth_error(LLMException("Unauthorized", status_code=401))
+        assert handler.is_auth_error(Exception("HTTP 401 Unauthorized")) is False
 
     def test_token_limit_error(self, handler):
         """Token limit errors should be detected."""
@@ -281,7 +282,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_auth_error_fails_with_its_code(self, handler):
         """Auth errors FAIL at once with AUTH_FAILED, without a retry."""
-        error = Exception("API key invalid")
+        error = LLMException("API key invalid", status_code=401)
         result = await handler.handle_error(error)
 
         assert result.action == ErrorAction.FAIL
@@ -756,20 +757,23 @@ class TestDeclarationOutranksProse:
         )
 
     @pytest.mark.asyncio
-    async def test_control_the_prose_classifiers_still_fire(self, fast_handler):
+    async def test_control_the_classifiers_behind_the_gate_still_fire(
+        self, fast_handler
+    ):
         """POSITIVE CONTROL. The gate must not disable the classifiers it
         precedes — otherwise the parametrized test above would pass simply
         because nothing classifies anything any more.
 
-        Same three conditions, UNDECLARED, so prose is still allowed to decide.
+        Same three conditions, not declared retryable. The first two carry the
+        status their raiser declared, which is what decides them (#2138).
         """
         cases = [
-            ("model gpt-x not found (404)", "MODEL_NOT_FOUND"),
-            ("401 unauthorized: invalid api key", "AUTH_FAILED"),
+            (LLMException("model gpt-x not found", status_code=404), "MODEL_NOT_FOUND"),
+            (LLMException("invalid api key", status_code=401), "AUTH_FAILED"),
         ]
-        for message, expected in cases:
-            result = await fast_handler.handle_error(Exception(message), 0)
-            assert result.error_code == expected, (message, result.error_code)
+        for error, expected in cases:
+            result = await fast_handler.handle_error(error, 0)
+            assert result.error_code == expected, (str(error), result.error_code)
 
         overflow = await fast_handler.handle_error(
             LLMException("prompt is too long: 250000 > 200000", status_code=400), 0
@@ -829,24 +833,29 @@ class TestDeclarationOutranksProse:
     async def test_the_split_is_between_signature_and_bare_number_matchers(
         self, fast_handler
     ):
-        """Why the ordering splits where it does, asserted rather than argued.
+        """No classifier around the gate reads a ``host:port``.
 
-        ``is_token_limit_error`` sits AHEAD of the gate and the other two sit
-        behind it. That is not arbitrary: the overflow classifier keys on
-        multi-word SIGNATURES, which a ``host:port`` cannot contain, while
-        ``is_auth_error`` and ``is_model_not_found_error`` key on bare numbers,
-        which it can. If a future edit gives the overflow classifier a
-        bare-number pattern, moving it ahead of the gate stops being safe — and
+        ``is_token_limit_error`` sits AHEAD of the gate because it keys on
+        multi-word SIGNATURES, which a ``host:port`` cannot contain. When this
+        test was written ``is_auth_error`` and ``is_model_not_found_error``
+        keyed on bare numbers, which it can, and the gate's ordering was what
+        kept them off a declared-transient connect failure. Since #2138 they
+        read a declared status or code only, so the same text reaches none of
+        the three. If a future edit gives any of them a bare-number pattern,
         this fails.
         """
-        connect_failure = (
+        connect_failure = Exception(
             "Gemini connection error: Cannot connect to host svc:4040 "
             "ssl:default [Connect call failed]"
         )
-        assert fast_handler.is_token_limit_error(Exception(connect_failure)) is False
-        # ...while the classifiers behind the gate DO match it, which is exactly
-        # why they must stay behind it.
-        assert fast_handler.is_model_not_found_error(Exception(connect_failure)) is True
+        assert fast_handler.is_token_limit_error(connect_failure) is False
+        assert fast_handler.is_model_not_found_error(connect_failure) is False
+        assert (
+            fast_handler.is_auth_error(
+                Exception("Cannot connect to host proxy:8401 [Connect call failed]")
+            )
+            is False
+        )
 
     @pytest.mark.asyncio
     async def test_billing_still_outranks_the_declaration_gate(self, fast_handler):
@@ -865,6 +874,84 @@ class TestDeclarationOutranksProse:
         )
         assert result.action == ErrorAction.FAIL
         assert result.error_code == QUOTA_EXHAUSTED
+
+
+class TestAuthAndModelNotFoundAreDeclared:
+    """#2138: AUTH_FAILED and MODEL_NOT_FOUND come from a declared HTTP status
+    (401/403, 404) or ``PROVIDER_AUTH_FAILED`` on the ``__cause__`` chain,
+    never from digits or letters in a message.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            # The issue's reproduction: the decoder's position contains "404".
+            json.JSONDecodeError("Expecting ',' delimiter", "{" + "x" * 1500, 1404),
+            KeyError("author_id"),  # contains "auth"
+            Exception("Cannot connect to host localhost:4040 [Connect call failed]"),
+        ],
+        ids=["json-decode-char-1404", "author_id", "undeclared-host-port"],
+    )
+    async def test_undeclared_text_reaches_neither_code(self, fast_handler, error):
+        result = await fast_handler.handle_error(error, 0)
+        assert result.error_code not in ("MODEL_NOT_FOUND", "AUTH_FAILED")
+        # The tail an undeclared, non-transient failure gets: no retry.
+        assert result.action == ErrorAction.FAIL
+        assert result.error_code == "UNKNOWN_ERROR"
+
+    def test_the_reproduction_carries_the_number(self):
+        """POSITIVE CONTROL: the decode error's text does contain "404", so
+        the test above exercises the substring the old matcher read."""
+        error = json.JSONDecodeError("Expecting ',' delimiter", "{" + "x" * 1500, 1404)
+        assert "1404" in str(error)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status, expected",
+        [(401, "AUTH_FAILED"), (403, "AUTH_FAILED"), (404, "MODEL_NOT_FOUND")],
+    )
+    async def test_a_typed_status_with_plain_wording_is_classified(
+        self, fast_handler, status, expected
+    ):
+        """Wording that names none of the old substrings used to reach
+        UNKNOWN_ERROR; the declared status decides now."""
+        result = await fast_handler.handle_error(
+            LLMException("request rejected", status_code=status), 0
+        )
+        assert result.action == ErrorAction.FAIL
+        assert result.error_code == expected
+
+    @pytest.mark.asyncio
+    async def test_a_wrapped_404_is_model_not_found(self, fast_handler):
+        try:
+            try:
+                raise LLMException("no such deployment", status_code=404)
+            except LLMException as inner:
+                raise RuntimeError("provider call failed") from inner
+        except RuntimeError as outer:
+            result = await fast_handler.handle_error(outer, 0)
+        assert result.error_code == "MODEL_NOT_FOUND"
+
+    def test_a_declared_auth_code_without_a_status_is_auth(self, handler):
+        from faultmaven.exceptions import PROVIDER_AUTH_FAILED
+
+        error = RuntimeError("wrapper")
+        error.__cause__ = LLMException("key revoked", error_code=PROVIDER_AUTH_FAILED)
+        assert handler.is_auth_error(error) is True
+
+    def test_the_first_declared_status_settles_it(self, handler):
+        """A 500 whose text says 404 is not a missing model, and a status on
+        the nearest raiser outranks one further down the chain."""
+        assert (
+            handler.is_model_not_found_error(
+                LLMException("upstream said 404", status_code=500)
+            )
+            is False
+        )
+        outer = LLMException("gateway error", status_code=502)
+        outer.__cause__ = LLMException("not found", status_code=404)
+        assert handler.is_model_not_found_error(outer) is False
 
 
 class TestRecoveryFollowsTheDeclaredCategory:
