@@ -457,6 +457,24 @@ def _hypothesis_journal_entries(updates: Any) -> list[Any]:
     ]
 
 
+def _journal_hypothesis_id(ref: str | None, metadata: dict[str, Any]) -> str | None:
+    """The hypothesis a journal entry names, a same-turn ref (``new_index_N``,
+    or a bare ``N``) resolved through this apply's emit order the way the
+    hypothesis links resolve it: a refused restatement maps to the standing
+    hypothesis, a refused slot to ``_REFUSED_HYPOTHESIS_SLOT``, which no
+    hypothesis holds, so the entry is dropped after the apply."""
+    if not ref:
+        return ref
+    ref = ref.strip()
+    if ref.isdigit():
+        ref = f"new_index_{int(ref)}"
+    return _resolve_id_ref(
+        ref,
+        metadata.get("hyp_emit_order") or metadata.get("hypotheses_generated", []),
+        "hyp",
+    )
+
+
 def _drop_journal_entries_on_absent_hypotheses(case: Case, start: int) -> None:
     """Drop the entries this apply added that name a hypothesis the case does
     not hold (one the gate refused): the journal outlives the turn, and an
@@ -1978,7 +1996,8 @@ class ResponseApplier:
             )
 
         # 6. Journal Entries (append-only investigation memory). One naming a
-        # hypothesis was held at step 2d while the cause work is staged.
+        # hypothesis was held at step 2d while the cause work is staged; a
+        # same-turn ref to a hypothesis is stored as the id it resolves to.
         journal_at_start = len(case.investigation_journal)
         for je_item in getattr(updates, "journal_entries", None) or []:
             if staging and je_item.hypothesis_id:
@@ -1989,7 +2008,9 @@ class ResponseApplier:
                     entry_type=je_item.entry_type,
                     content=je_item.content[:200],
                     evidence_id=je_item.evidence_id,
-                    hypothesis_id=je_item.hypothesis_id,
+                    hypothesis_id=_journal_hypothesis_id(
+                        je_item.hypothesis_id, metadata
+                    ),
                 )
             )
 

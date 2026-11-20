@@ -157,9 +157,11 @@ async def test_a_blocker_written_on_turn_one_is_in_turn_twos_journal_block(
 async def test_a_statement_revision_replay_does_not_append_the_entry_again(
     store,
 ):
-    """The staging turn's journal entry is applied live (``journal_entries`` is
-    not among ``_STAGED_FIELDS``), so confirming the revision on a later,
-    reloaded turn replays the cause work and leaves the journal as it was."""
+    """The staging turn's journal entry names no hypothesis, so it is applied
+    on that turn, not staged (an entry naming one is staged with the cause
+    work: ``test_journal_cause_work_2945``). Confirming the revision on a
+    later, reloaded turn replays the cause work and leaves the journal as it
+    was."""
     engine = revision._engine()
     case = revision._case()
     case.user_id, case.enterprise_id = store.user_id, store.enterprise_id
