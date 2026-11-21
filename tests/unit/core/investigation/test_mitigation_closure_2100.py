@@ -18,9 +18,9 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import mitigation_observation
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
-    _CLOSED_REPLIES,
     _terminal_confirmation_response,
 )
+from faultmaven.core.investigation.narration.replies import _CLOSED_REPLIES
 from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
     build_fix_verification_block,
 )

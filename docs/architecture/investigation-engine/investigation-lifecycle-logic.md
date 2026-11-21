@@ -1123,7 +1123,16 @@ written*, as amended by #2811, ruled 2026-11-15):
   The causal graph block (built when the case has a non-retired hypothesis
   or a causal node) and the working conclusion's contest NOTE (built when
   it has a working conclusion) fold on every assembly that builds them,
-  whether or not the template shows them.
+  whether or not the template shows them. The resolve confirmation folds it
+  once per call, where it is decided (S2b-2b, `narration.replies`); the
+  closed reply reads the closure the terminal transition wrote and folds only
+  when that write failed. The texts the confirmation names besides (the
+  root cause, the latest solution, whether evidence or commands exist) are
+  the case's content, read through one typed accessor, `ResolutionContent`
+  (ruled 2026-11-21). A fold that raises is logged and counted once per call
+  on `case_outcome_write_failures_total{at="narration"}`; the confirmation
+  then derives its two facts as its deciders do, and the closed reply states
+  the reason's line alone.
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;

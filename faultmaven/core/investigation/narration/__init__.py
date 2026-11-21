@@ -15,7 +15,10 @@ typed view (``needs.NeedsView``, S2b-1b-i); ``evidence_needs`` renders the
 ``prompt_state`` selects the prompt's milestone status, exclusion rule,
 focus emphasis and state summary's verified line, and the fallback prompt's
 milestones and resolution, from the record (S2b-1c-i), whose texts stay with
-their templates. The
+their templates; ``replies`` renders the resolve confirmation's facts and the
+closed reply's status line from the record (S2b-2b), the texts the
+confirmation names from the case's content (``replies.ResolutionContent``).
+The
 ``.importlinter`` contract "Narrators render the outcome, never derive it"
 forbids imports of ``cause_assurance``, ``causal_graph.disconfirmation`` and
 ``terminal_transitions`` from this package, direct or through other modules,

@@ -236,7 +236,8 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     whose case has a non-retired hypothesis or a causal node, the NOTE on
     every one with a working conclusion), and the fallback prompt the
     assembly may return instead (which, called alone, folds once per
-    call)."""
+    call). The resolve confirmation folds it once per call, and the closed
+    reply when the terminal write failed (S2b-2b)."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 

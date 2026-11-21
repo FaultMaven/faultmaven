@@ -16,9 +16,10 @@ as the scan writes it (``rel.as_posix()``), with an exact count per name.
 Module level is ``<module>``. Three tables:
 
 * ``DERIVATION_SITES``: every Load reference to a function in ``DERIVATIONS``,
-  the functions #2615's tables name as deciding an outcome, and two one-line
+  the functions #2615's tables name as deciding an outcome, and four one-line
   wrappers of them (``has_resolution_confirmation``,
-  ``_resolution_confirmed``). Stage S1 (#2636) adds the record's own:
+  ``_resolution_confirmed``, ``_cause_identified`` and
+  ``solution_licence_leg``). Stage S1 (#2636) adds the record's own:
   ``compute_case_outcome``, ``closure_outcome``, ``record_case_outcome`` (its
   callers are the write points) and the three codes the record reads at the
   deciders. A call counts, and so does a bare reference, as a
@@ -206,6 +207,12 @@ DERIVATIONS: dict[str, str] = {
     # record (``cause.held_open_root_ids``, ``cause.contested_root_ids``).
     "held_open_root_ids": _INV + "causal_graph/projection.py",
     "mece_contested_root_ids": _INV + "causal_graph/clusters.py",
+    # #2811 S2b-2b: whether a cause is identified, which the resolve
+    # confirmation reads off the record (``cause.identification_leg``), and
+    # its two one-line wrappers.
+    "cause_identification_leg": _INV + "cause_identification.py",
+    "_cause_identified": _TT,
+    "solution_licence_leg": _SG,
 }
 
 #: The watched names that are methods, by the class that defines each.
@@ -303,13 +310,21 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
     (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
-    (_TT, "_suggest_resolve_params"): {"resolution_record_lines": 1},
-    (_TT, "assess_close_summary"): {"shown_milestones": 1},
+    (_TT, "_suggest_resolve_params"): {
+        "cause_identification_leg": 1,
+        "resolution_record_lines": 1,
+    },
+    (_TT, "assess_close_summary"): {
+        "_cause_identified": 1,
+        "cause_identification_leg": 1,
+        "shown_milestones": 1,
+    },
     (_TT, "assess_closure_readiness"): {
         "_resolution_confirmed": 1,
         "assess_close_summary": 1,
     },
     (_TT, "assess_resolution_readiness"): {
+        "_cause_identified": 1,
         "_resolution_confirmed": 1,
         "latest_fix_window": 1,
         "off_cause_attempt": 1,
@@ -350,7 +365,20 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_TT, "mitigation_closure_line"): {"mitigation_observation": 1},
     (_TT, "open_disposition_offer"): {"closure_outcome": 1},
-    (_TT, "resolution_record_lines"): {"resolution_confirmation_rows": 1},
+    (_TT, "resolution_record_lines"): {
+        "cause_identification_leg": 1,
+        "resolution_confirmation_rows": 1,
+    },
+    # #2811 S2b-2b: whether a cause is identified, and its two wrappers, where
+    # the deciders derive it (stage S3): the resolution and closure gates,
+    # the documented-but-unapplied fix, the resolve's truth surface, M5's
+    # licence and the offer record's lapse rule.
+    (_TT, "_cause_identified"): {"cause_identification_leg": 1},
+    (_TT, "_fix_documented_not_applied"): {"_cause_identified": 1},
+    (_TT, "finalize_resolution_truth_surface"): {"cause_identification_leg": 1},
+    (_SG, "solution_licence_leg"): {"cause_identification_leg": 1},
+    (_SG, "_solution_cause_validated"): {"solution_licence_leg": 1},
+    (_OFFERS, "_premise_gone"): {"cause_identification_leg": 1},
     (_TT, "shown_milestones"): {"_mitigation_verified": 1},
     (_TT, "terminal_summary_skip_reason"): {"should_generate_terminal_summary": 1},
     # The engine. ``assess_closure_readiness`` is passed, not called, to
@@ -377,7 +405,11 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "bindable_rows": 1,
         "mitigation_refusal_reason": 1,
     },
-    (_SG, "fix_cause"): {"_cause_pool": 1, "_pool_legs": 1},
+    (_SG, "fix_cause"): {
+        "_cause_pool": 1,
+        "_pool_legs": 1,
+        "solution_licence_leg": 1,
+    },
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
     (_SG, "standing_fix_action"): {
@@ -387,22 +419,30 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
         "assess_resolution_readiness": 1,
+        "cause_identification_leg": 1,
         "resolution_record_lines": 1,
     },
     # #2811 S2b-1b-i: ``pending_symptom_check`` holds the offer (stage S3).
     (_PROPOSALS, "_maybe_propose_deferred_close"): {
         "assess_closure_readiness": 1,
+        "cause_identification_leg": 1,
         "pending_symptom_check": 1,
         "resolution_record_lines": 1,
     },
-    (_ME + "terminal_replies.py", "resolution_confirmation_params"): {
-        "resolution_record_lines": 1
+    # #2811 S2b-2b: the resolve confirmation and the closed reply read the
+    # record. The fold of the moment, for both; and the confirmation's
+    # fallback when the fold raised, the decider's decide-time read (A4),
+    # removed at stage S3.
+    (_ME + "terminal_replies.py", "_reply_outcome"): {"narration_outcome": 1},
+    (_ME + "terminal_replies.py", "_confirmation_outcome_fresh"): {
+        "cause_identification_leg": 1,
+        "resolution_record_lines": 1,
     },
+    # Not a narrated fact: the offer half of the summary gate, whose
+    # enforcement half is ``TerminalTurnHandler``'s (#698, one predicate);
+    # the record has no field for it. Stage S3.
     (_ME + "terminal_replies.py", "_closed_suggestions"): {
         "should_generate_terminal_summary": 1
-    },
-    (_ME + "terminal_replies.py", "_terminal_confirmation_response"): {
-        "mitigation_closure_line": 1
     },
     (_TERMINAL_TURNS, "TerminalTurnHandler._handle_report_regeneration"): {
         "should_generate_terminal_summary": 1,
@@ -469,7 +509,11 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (
         _ME + "response_application.py",
         "ResponseApplier._apply_investigation_updates",
-    ): {"cause_work_accepted": 1, "cause_work_staged": 1},
+    ): {
+        "cause_work_accepted": 1,
+        "cause_work_staged": 1,
+        "solution_licence_leg": 1,
+    },
     (_ME + "response_application.py", "_reclassify_premature_causal_absence"): {
         "cause_work_accepted": 1,
         "cause_work_staged": 1,
@@ -487,6 +531,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # write.
     (_OUTCOME, "_cause"): {
         "_pool_legs": 1,
+        "cause_identification_leg": 1,
         "cause_pool_empty_reason": 1,
         "held_open_root_ids": 1,
         "mece_contested_root_ids": 1,
@@ -590,9 +635,9 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "_apply_stage_gate_signals"): {"verified": 1},
     (_SG, "_register_disposition"): {"verified": 2},
     (_SG, "justification_skipped"): {"solution_verified": 1},
-    (_ME + "terminal_replies.py", "_terminal_confirmation_response"): {
-        "closure_reason": 1
-    },
+    # #2811 S2b-2b: the closed reply when no record can be read (the
+    # terminal write failed and the fold raised): the reason's line alone.
+    (_ME + "terminal_replies.py", "_record_free_reply"): {"closure_reason": 1},
     (_OFFERS, "_premise_gone"): {"closure_reason": 1},
     (_OFFERS, "_scope"): {"closure_reason": 1},
     (_OFFERS, "answer_offer"): {"closure_reason": 2},

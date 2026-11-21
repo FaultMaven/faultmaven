@@ -54,11 +54,9 @@ from faultmaven.core.investigation.terminal_transitions import (
     execute_user_closure,
     mitigation_closure_line,
     resolution_record_lines,
-    should_generate_terminal_summary,
     shown_milestones,
 )
 from faultmaven.modules.case.contracts import (
-    ClosureEligibility,
     EvidenceCategory,
     FixWindowState,
     InvestigationActionType,
@@ -193,10 +191,12 @@ def derived(case) -> dict:
             else (seen.attempt_turn, seen.relief_turn, seen.present_turn, seen.holding)
         ),
         "mitigation.verified": bool(stored is not None and stored.verified),
-        # Read by the closed reply only (``_closed_suggestions``).
-        "summary_due": (
-            should_generate_terminal_summary(case) if case.is_terminal else None
-        ),
+        # No ``summary_due``: the closed reply's summary gate,
+        # ``should_generate_terminal_summary``, is a decider shared with its
+        # enforcement (#698), and the record has no field for it.
+        # ``closure.eligibility != TRIVIAL`` is another predicate: a CLOSED
+        # case with one solution and nothing else is ``has_substance`` while
+        # the gate is False (#2811 S2b-2b). Stage S3.
         "record_lines": resolution_record_lines(case),
         "identification_leg": cause_identification_leg(case),
         "closure": (closure_verdict(case), mitigation_closure_line(case)),
@@ -268,11 +268,6 @@ def recorded(outcome, case) -> dict:
             )
         ),
         "mitigation.verified": bool(mitigation is not None and mitigation.verified),
-        "summary_due": (
-            outcome.closure.eligibility != ClosureEligibility.TRIVIAL
-            if case.is_terminal
-            else None
-        ),
         "record_lines": resolution.statement,
         "identification_leg": cause.identification_leg,
         "closure": (outcome.closure.eligibility, outcome.closure.statement),
