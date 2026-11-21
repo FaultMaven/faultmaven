@@ -63,17 +63,13 @@ and the census counts no call to it (:data:`NOT_SITES`).
 **Blind spots**, stated as what the scanner reads, so nobody mistakes this for
 more. A log call's or a print's arguments are read for the exception names the
 scanner tracks and a zero-argument ``.exception()`` (above), and for subprocess
-output; text that reaches them through an untracked name, or as a payload that
-is neither an exception's text nor subprocess output, is not counted. For an
+output; text that reaches them through an untracked name is not counted. For an
 exit (``SystemExit(...)``, ``sys.exit(...)``), only the first positional
 argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
 argument in any other form, or an exit spelled any other way). The allowlist
 counts sites per file, so switching one site and adding another in the same
-file leaves the count, and the guard, unchanged. **Over-counts**: an alias of
-an exception name is read as text even when it holds a flag or a count
-computed from the exception (``cancelled = _arrived_cancelled(failure)``), and
-a loop over ``zip(names, results)`` binds both targets.
+file leaves the count, and the guard, unchanged.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
