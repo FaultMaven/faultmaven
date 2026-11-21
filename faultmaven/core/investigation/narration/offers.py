@@ -6,9 +6,10 @@ the case: the readiness message (``terminal_transitions``'
 closure→resolve pivot (``assess_closure_readiness``), the close summary
 (``assess_close_summary``) and the resolve confirmation
 (``terminal_replies._build_resolution_confirmation``). The deciders derive the
-params; these compose. The resolve confirmation's params come from the record
-(``narration.replies``), with the decider's read only as the fold-failure
-fallback.
+params; these compose. The resolve confirmation's record facts (whether a
+cause is identified, the record lines) come from the record
+(``narration.replies``), the texts it names from ``ResolutionContent``, with
+the decider's read only as the fold-failure fallback.
 
 ``render_offer`` renders the prose of an offer (or a request) a decision cycle
 opened, from its ``OfferCode`` and the params its decider read (decide-time,
