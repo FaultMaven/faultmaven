@@ -167,7 +167,7 @@ def test_firming_re_checks_only_the_retirement():
     so no stagnant iteration and no INCONCLUSIVE, and 0.4 does not retire."""
     manager, h = HypothesisManager(), _hypothesis(0.6)
     _refutes(manager, h, _HEDGED)
-    h.iterations_without_progress = 2
+    h.iterations_without_progress = 3
     before = (h.likelihood, h.iterations_without_progress, h.last_updated_turn)
 
     manager.link_evidence(h, "ev_0", _REFUTES, 5, stance_confidence=_CONFIDENT)
@@ -176,6 +176,66 @@ def test_firming_re_checks_only_the_retirement():
     assert (h.likelihood, h.iterations_without_progress, h.last_updated_turn) == (
         before
     )
+
+
+def _stagnate(manager, h, *turns):
+    """One stagnant (touched, no progress) decay step per turn."""
+    for turn in turns:
+        h.iterations_without_progress += 1
+        h.last_updated_turn = turn
+        manager.apply_likelihood_decay(h, turn)
+
+
+def test_firming_a_decayed_hypothesis_needs_the_formula_below_the_bar():
+    """Decay took 0.4 to 0.289, but without hedged refutes the formula reads
+    0.4: firming is not a retirement trigger for a decayed prior."""
+    manager, h = HypothesisManager(), _hypothesis(0.6)
+    _refutes(manager, h, _HEDGED)
+    _stagnate(manager, h, 2, 3)
+    assert round(h.likelihood, 3) == 0.289 and h.iterations_without_progress == 2
+
+    manager.link_evidence(h, "ev_0", _REFUTES, 4, stance_confidence=_CONFIDENT)
+
+    assert h.state == HypothesisState.ACTIVE
+
+
+def test_firming_after_a_held_restatement_needs_the_formula_below_the_bar():
+    """0.52 with a hedged REFUTES reads 0.32; the restated 0.28 is held, and
+    firming leaves the formula at 0.32."""
+    manager, h = HypothesisManager(), _hypothesis(0.52)
+    _refutes(manager, h, _HEDGED)
+    manager.update_hypothesis_likelihood(h, 0.28, 2, "restated")
+    assert (h.likelihood, h.state) == (0.28, HypothesisState.ACTIVE)
+
+    manager.link_evidence(h, "ev_0", _REFUTES, 3, stance_confidence=_CONFIDENT)
+
+    assert h.state == HypothesisState.ACTIVE
+
+
+def test_a_confident_link_re_sent_confident_after_decay_stays_active():
+    manager, h = HypothesisManager(), _hypothesis(0.6)
+    _refutes(manager, h, _CONFIDENT)
+    _stagnate(manager, h, 2, 3)
+
+    manager.link_evidence(h, "ev_0", _REFUTES, 4, stance_confidence=_CONFIDENT)
+
+    assert h.state == HypothesisState.ACTIVE
+
+
+def test_a_confident_restatement_is_never_a_firming():
+    """Held at 0.1, raised to 0.4, both links firmed (0.4 does not retire),
+    then decayed to 0.289: the formula reads 0.1, but re-sending a confident
+    link confidently is restatement, not a retirement trigger."""
+    manager, h = _held()
+    manager.update_hypothesis_likelihood(h, 0.4, 3, "raised")
+    for evidence_id in ("ev_0", "ev_1"):
+        manager.link_evidence(h, evidence_id, _REFUTES, 3, stance_confidence=0.9)
+    assert h.state == HypothesisState.ACTIVE
+    _stagnate(manager, h, 4, 5)
+
+    manager.link_evidence(h, "ev_0", _REFUTES, 6, stance_confidence=_CONFIDENT)
+
+    assert h.state == HypothesisState.ACTIVE
 
 
 @pytest.mark.parametrize("confidence, material", [(_CONFIDENT, False), (_HEDGED, True)])

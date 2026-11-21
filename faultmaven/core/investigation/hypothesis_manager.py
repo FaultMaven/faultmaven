@@ -18,9 +18,10 @@ Hypothesis Lifecycle (matches HypothesisState enum):
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
   checked when a likelihood update lands (decay alone never transitions)
 - RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
-  lands; age-driven retirement goes only through anti-anchoring and the age-out
+  lands or a REFUTES link firms, as investigation-data-models.md §3 states;
+  age-driven retirement goes only through anti-anchoring and the age-out
   of an ignored prior, ``retire_if_aged_out``) or manual abandonment without
-  disproof; never on self-hedged REFUTES links alone (#2154)
+  disproof
 
 Confidence Management:
 - Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)
@@ -105,10 +106,10 @@ STAGNATION_DECAY_FLOOR = 0.1
 # the age-out all act once a hypothesis has gone this many stagnant iterations.
 STAGNATION_HORIZON_ITERATIONS = 3
 
-# Below this likelihood a hypothesis is retired: on a likelihood update
+# Below this likelihood a hypothesis is retired: on a likelihood update or a
+# firmed REFUTES link, as the RETIRED row of investigation-data-models.md §3 states
 # (``check_state_transition``), or, for an ignored prior past the stagnation
-# horizon, by the age-out (``retire_if_aged_out``). When an update retires one:
-# the low-confidence RETIRED row of investigation-data-models.md §3.
+# horizon, by the age-out (``retire_if_aged_out``).
 LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
 
 SUPPORT_LIKELIHOOD_STEP = 0.15
@@ -429,6 +430,8 @@ class HypothesisManager:
             and stance == EvidenceStance.REFUTES
             and stance_declared_confident(link)
             and not hold_state
+            and _evidence_likelihood(hypothesis, confident_refutes_only=True)
+            < LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
         ):  # firmed past the hedge bar: a retirement it held may now stand
             self._retire_if_low_confidence(hypothesis)
         return material
