@@ -132,8 +132,8 @@ def _resolve_declined_emphasis(declined: Optional[ResolveDeclined]) -> str:
 
     ``RESOLVE_DECLINED_ACTIONS`` (point the user at "Mark it resolved" and
     "Close without resolving") follows the line only when the projection builds
-    those chips (``project_offers(case).reopen_chip``, #2472): no offer open,
-    the problem not on hold. While a check the model asked for after the fix
+    those chips (``project_offers``, #2472): no offer open (``OfferView``), the
+    record's problem not on hold. While a check the model asked for after the fix
     holds the case (the record's ``resolution.pending_check_need_id``) it
     points at "Close without resolving" only (``resolve_declined_actions``,
     #1906 D5.2). The prompt predicts the reply's chips from the case as the

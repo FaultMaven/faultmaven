@@ -117,6 +117,7 @@ from faultmaven.core.investigation.cause_assurance import (
     resolution_confirmation_rows,
 )
 from faultmaven.core.investigation.cause_identification import cause_identification_leg
+from faultmaven.core.investigation.narration.offer_view import OfferView
 from faultmaven.modules.case.contracts import (
     AnswerKind,
     AnswerVia,
@@ -340,6 +341,21 @@ def standing_deferred_decline(case: "Case") -> Optional[OfferAnswer]:
 def standing_false_alarm_decline(case: "Case") -> Optional[OfferAnswer]:
     """The newest standing decline of a close on the false-alarm finding."""
     return _standing(case, _FALSE_ALARM)
+
+
+def offer_view(case: "Case") -> OfferView:
+    """The offer facts as the narrators read them, the one builder of
+    ``OfferView`` (#2811 S2b-2d, ruling (a) of 2026-11-20): the record stays
+    their owner, and the standing declines are read here, by its grammar."""
+    record = case.offer_record
+    false_alarm = standing_false_alarm_decline(case)
+    resolve = standing_resolve_decline(case)
+    return OfferView(
+        open_proposal_id=None if record.open is None else record.open.proposal_id,
+        answers=tuple((a.proposal_id, a.answer) for a in record.answers),
+        false_alarm_decline_turn=None if false_alarm is None else false_alarm.at_turn,
+        resolve_decline_turn=None if resolve is None else resolve.at_turn,
+    )
 
 
 def revision_declined(case: "Case", wording_key: str) -> bool:
