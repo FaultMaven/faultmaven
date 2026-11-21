@@ -411,8 +411,7 @@ def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
     assert requested == [
         m
         for m in requested
-        if "STRUCTURED_OUTPUT_PROVIDER and investigation (DA→CHAT) model anthropic/"
-        in m
+        if "STRUCTURED_OUTPUT_PROVIDER and investigation model anthropic/" in m
     ]
     assert len(requested) == 1
     assert any("BEST_EFFORT" in m for m in messages)
@@ -505,7 +504,7 @@ def test_da_override_checks_both_roles_separately(caplog):
         warn_best_effort_enforcement(settings, registry)
     warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
     assert len(warnings) == 1
-    assert "investigation (DA→CHAT)" in warnings[0].message
+    assert warnings[0].message.startswith("investigation model ")
     assert "fireworks" in warnings[0].message
 
 
@@ -595,7 +594,7 @@ def test_pinned_da_provider_is_not_compensated_by_structured_output_override(cap
 
     warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
     assert len(warnings) == 1
-    assert "investigation (DA→CHAT)" in warnings[0].message
+    assert warnings[0].message.startswith("investigation model ")
     # Never the "acceptable" line — that is the false clear.
     assert not [r for r in caplog.records if r.levelno == _logging.INFO]
 

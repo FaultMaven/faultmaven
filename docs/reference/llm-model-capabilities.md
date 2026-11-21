@@ -31,8 +31,8 @@ a cheaper `OPENAI_CLASSIFIER_MODEL` for the classifier).
 | Role env key | Routes which function | Ships as | Notes |
 |---|---|---|---|
 | `CHAT_PROVIDER` | Everything by default: investigation engine turns, all conversation | `gemini` (the anchor) | A provider ships as the default; a CREDENTIAL never does — boot refuses when the resolved provider's API key is missing |
-| `DA_PROVIDER` | Directed Analysis tool loop — the evidence-gathering iterations (`search_file`, `deep_analysis`, KB lookups) inside investigation turns | `CHAT_PROVIDER` | The startup tool-calling gate validates the resolved DA→CHAT (provider, model) |
-| `STRUCTURED_OUTPUT_PROVIDER` | Schema-bound engine calls (the response-schema tool / structured output) | `CHAT_PROVIDER` | The escape hatch for a best-effort chat provider: force just the schema-bound calls onto a STRICT-capable provider. A DA override gets first dibs on the tool path |
+| `DA_PROVIDER` | Directed Analysis tool loop — the evidence-gathering iterations (`search_file`, `deep_analysis`, KB lookups) inside investigation turns | `CHAT_PROVIDER` | The startup tool-calling gate validates the investigation route's (provider, model) (`resolve_investigation_route`) |
+| `STRUCTURED_OUTPUT_PROVIDER` | Schema-bound engine calls (the response-schema tool / structured output) | `CHAT_PROVIDER` | The escape hatch for a best-effort chat provider: force just the schema-bound calls onto a STRICT-capable provider. Without `DA_PROVIDER` it also carries the tool loop, so it then needs tool calling |
 | `CLASSIFIER_PROVIDER` | Intent resolver (typed replies vs. offered suggestions) + document triage in knowledge preprocessing | **`gemini`** (pinned, on `gemini-3.5-flash-lite`) | Best-effort models are acceptable here (small, enum-like outputs). A static pin: it does NOT move with `CHAT_PROVIDER`, and needs `GEMINI_API_KEY` regardless of the anchor |
 | `SYNTHESIS_PROVIDER` | QA sub-agent answer synthesis — `kb_qa` (one tool, scoped by filters) / `case_evidence_search` (the case-evidence adapter) answers | **`gemini`** (pinned, on `gemini-3.5-flash-lite`) | Best-effort acceptable here too. Static pin, as above. The call declares `reasoning_intent=EXTRACTION`, which caps thinking on any Gemini tier — the shape default alone would not on a pre-3.7 model |
 | `KNOWLEDGE_PROVIDER` | Document→runbook conversion (failure-mode analysis + runbook drafting) | `CHAT_PROVIDER` | |
@@ -46,7 +46,8 @@ Two per-role **model** keys need a caveat the table above does not carry:
   (`milestone_engine.generation.StructuredOutputGenerator._tool_augmented_generate`
   sets `model` under `if self.deps.da_model and self.deps.da_provider`), so
   setting only `OPENAI_DA_MODEL`
-  leaves the base `OPENAI_MODEL` running, silently. Every other role passes its
+  leaves the base `OPENAI_MODEL` (or the `STRUCTURED_OUTPUT_PROVIDER` model,
+  when set) running, silently. Every other role passes its
   model unconditionally. Set `DA_PROVIDER` alongside it — it may name the same
   provider as `CHAT_PROVIDER`.
 - `{PROVIDER}_CHAT_MODEL` is **dead config surface**, alongside
@@ -65,7 +66,7 @@ A/B comparison of the anchor a controlled one.
 Role routing is **static assignment**, not fallback: an explicitly-set role
 provider is routed deterministically (no fallback chain for that call) and
 needs its own `*_API_KEY` configured. Startup checks evaluate the resolved
-per-role models: tool calling (hard gate, DA→CHAT), engine-schema capacity
+per-role models: tool calling (hard gate, on the investigation route), engine-schema capacity
 (hard gate, STRUCTURED_OUTPUT→CHAT), and schema-enforcement class (warning
 when investigation/chat resolve to a BEST_EFFORT model; classifier/synthesis
 exempt by design).

@@ -94,6 +94,11 @@ class InvestigationCapability:
     reason: Optional[str] = None
 
 
+_SO_ROUTE_SOURCE = (
+    "STRUCTURED_OUTPUT_PROVIDER (carries the tool loop when no DA_PROVIDER is set)"
+)
+
+
 def resolve_investigation_route(llm: Any) -> tuple[str, str, str]:
     """``(provider, model, source)`` the investigation tool loop sends to.
 
@@ -112,8 +117,7 @@ def resolve_investigation_route(llm: Any) -> tuple[str, str, str]:
         return (
             _provider_name(so_provider),
             llm.get_structured_output_model(),
-            "STRUCTURED_OUTPUT_PROVIDER (carries the tool loop when no "
-            "DA_PROVIDER is set)",
+            _SO_ROUTE_SOURCE,
         )
     return (
         _provider_name(llm.get_da_provider()),
@@ -337,6 +341,14 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
             "(no search_file/deep_analysis; responses limited to "
             "structural-index summaries)."
         )
+    elif cap.source == _SO_ROUTE_SOURCE:
+        remedy = (
+            "Use a tool-capable STRUCTURED_OUTPUT_PROVIDER model — or set "
+            "DA_PROVIDER to take the investigation tool loop — or "
+            "set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
     else:
         remedy = (
             "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or "
@@ -361,8 +373,7 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
         return
 
     raise InvestigationToolingError(
-        f"Investigation model {cap.provider}/{cap.model} does not support tool "
-        f"calling (resolved from {cap.source}). The investigation engine needs "
+        f"Investigation model check failed: {cap.reason}. The investigation engine needs "
         f"tool calling to gather evidence (search_file, deep_analysis); without "
         f"it, it would draw conclusions without reaching the evidence. " + remedy
     )
@@ -535,7 +546,7 @@ def resolve_enforcement_classes(
         llm = settings.llm
 
         route_provider, route_model, _ = resolve_investigation_route(llm)
-        investigation = ("investigation (DA→CHAT)", route_provider, route_model)
+        investigation = ("investigation", route_provider, route_model)
         chat_provider_name = _provider_name(llm.provider)
         chat = ("chat", chat_provider_name, _base_model(llm, chat_provider_name))
 
@@ -613,6 +624,10 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
     model that only requests forced tool use (#1755), unless compensated.
     """
     resolved = resolve_enforcement_classes(settings, registry)
+    try:
+        so_route = resolve_investigation_route(settings.llm)[2] == _SO_ROUTE_SOURCE
+    except Exception:  # advisory — never raises
+        so_route = False
     requested_only: dict = {}  # (provider, model) -> labels: one warning each
     if resolved.structured_output_forcing_requested_only:
         requested_only[
@@ -663,13 +678,18 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
                 "dropped/renamed required fields silently degrade recorded "
                 "investigation state. Best-effort is fine for "
                 "classifier/synthesis roles, not here — use a "
-                "schema-enforcing provider for this role, or set "
-                "STRUCTURED_OUTPUT_PROVIDER to route just the schema-bound "
-                "calls to one (note: a pinned DA_PROVIDER takes precedence "
-                "over that override on the tool path, so it does not "
-                "compensate a best-effort DA_PROVIDER).",
+                "schema-enforcing provider for this role, or %s",
                 role.role,
                 role.provider,
                 role.model,
                 (role.enforcement or "").upper(),
+                (
+                    "change STRUCTURED_OUTPUT_PROVIDER, the route this role "
+                    "runs on, or set DA_PROVIDER to take the tool loop."
+                    if so_route and role.role.startswith("investigation")
+                    else "set STRUCTURED_OUTPUT_PROVIDER to route just the "
+                    "schema-bound calls to one (note: a pinned DA_PROVIDER "
+                    "takes precedence over that override on the tool path, "
+                    "so it does not compensate a best-effort DA_PROVIDER)."
+                ),
             )

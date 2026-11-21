@@ -1,8 +1,8 @@
 """The investigation model the startup checks judge is the model the turn sends (#2142).
 
 `create_da_provider` returns `(None, None)` unless `DA_PROVIDER` is set, and
-the tool loop's router path then sends no `model`, so the chat provider's base
-`{PROVIDER}_MODEL` answers. `get_da_model()` resolved `{PROVIDER}_DA_MODEL`
+the tool loop then takes the router path (`resolve_investigation_route`).
+`get_da_model()` resolved `{PROVIDER}_DA_MODEL`
 regardless, so the tool-calling gate and the enforcement resolver judged a
 model no turn ever sent: a deployment whose base model cannot call tools
 passed the fail-fast gate on a `FIREWORKS_DA_MODEL` that never ran.
@@ -19,6 +19,7 @@ from faultmaven.config.investigation_capability import (
     resolve_enforcement_classes,
     resolve_investigation_capability,
     validate_investigation_tooling,
+    warn_best_effort_enforcement,
 )
 from faultmaven.config.role_routing import resolve_role_routing
 from faultmaven.config.settings import LLMSettings
@@ -136,8 +137,28 @@ def test_a_tool_incapable_structured_output_model_fails_the_gate(env):
     env.setenv("CHAT_PROVIDER", "openai")
     env.setenv("OPENAI_MODEL", "gpt-x")
     env.setenv("STRUCTURED_OUTPUT_PROVIDER", "fireworks")
-    with pytest.raises(InvestigationToolingError, match="minimax-m2p7"):
+    with pytest.raises(InvestigationToolingError, match="minimax-m2p7") as exc:
         validate_investigation_tooling(NS(llm=LLMSettings()), _Registry())
+    assert "STRUCTURED_OUTPUT_PROVIDER" in str(exc.value)
+    assert "CHAT_PROVIDER" not in str(exc.value)
+
+
+def test_an_uninitialized_structured_output_provider_is_named_as_such(env):
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    with pytest.raises(InvestigationToolingError) as exc:
+        validate_investigation_tooling(NS(llm=LLMSettings()), NS(get_provider={}.get))
+    assert "'openai' is not initialized" in str(exc.value)
+    assert "does not support tool calling" not in str(exc.value)
+
+
+def test_best_effort_structured_output_route_names_it_as_the_route(env, caplog):
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    with caplog.at_level("WARNING"):
+        warn_best_effort_enforcement(NS(llm=LLMSettings()), _Registry())
+    [warning] = [
+        r.message for r in caplog.records if "investigation model" in r.message
+    ]
+    assert "change STRUCTURED_OUTPUT_PROVIDER, the route this role runs on" in warning
 
 
 class _ClassProvider:
@@ -152,9 +173,9 @@ class _ClassProvider:
     ("chat_class", "so_class", "degraded"),
     [
         ("strict", "strict", []),
-        ("strict", "best_effort", ["investigation (DA→CHAT)"]),
+        ("strict", "best_effort", ["investigation"]),
         ("best_effort", "strict", []),
-        ("best_effort", "best_effort", ["investigation (DA→CHAT)", "chat"]),
+        ("best_effort", "best_effort", ["investigation", "chat"]),
     ],
 )
 def test_enforcement_verdict_judges_the_structured_output_route(

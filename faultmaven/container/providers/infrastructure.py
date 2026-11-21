@@ -79,7 +79,8 @@ def create_da_provider() -> tuple[Any | None, str | None]:
 
     Only activates when DA_PROVIDER is explicitly set in .env.
     When not set, returns (None, None) — the DA tool loop uses the default
-    LLM router, which inherits the user's configured model (e.g. GEMINI_MODEL).
+    LLM router: the STRUCTURED_OUTPUT_PROVIDER model when that is set, else the
+    chat provider's base model (e.g. GEMINI_MODEL).
 
     Returns:
         Tuple of (provider_instance, model_name) or (None, None).

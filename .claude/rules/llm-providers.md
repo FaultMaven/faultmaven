@@ -355,8 +355,8 @@ a tool-incapable model can't gather evidence yet would still conclude — the
 premature-conclusion failure FaultMaven guards against. A **startup fail-fast
 gate** (`config/investigation_capability.py`, `validate_investigation_tooling`,
 called from the lifespan beside the deployment-coherence and credential gates)
-**refuses to boot** when the resolved investigation model (`DA_PROVIDER` →
-`CHAT_PROVIDER`) can't do tool calling — unless
+**refuses to boot** when the investigation route's model
+(`resolve_investigation_route`) can't do tool calling — unless
 `ALLOW_TOOLLESS_INVESTIGATION=true` (knowing opt-in to degraded/offline mode;
 `/health` then reports `degraded`). The per-turn runtime fallback in
 `milestone_engine` still covers transient tool failures on an otherwise-capable
