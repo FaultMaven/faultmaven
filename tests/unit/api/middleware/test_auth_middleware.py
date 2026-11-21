@@ -259,7 +259,6 @@ class TestGetCurrentUser:
             TokenRevocationError(),
             AuthenticationError("Token has expired", error_code="TOKEN_EXPIRED"),
             AuthenticationError("Token decode error", error_code="DECODE_ERROR"),
-            RuntimeError("store unreachable"),
         ]
 
         for failure in failures:

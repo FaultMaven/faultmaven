@@ -64,8 +64,8 @@ _FINAL_STAMP_ATTEMPTS = 3
 #: in our own code, and reporting one to a caller as "we could not read the
 #: revocation store" sends them — and whoever is paged — after the wrong thing.
 #: A programming error therefore propagates unclassified, which still REFUSES
-#: the request (the callers' own catch-alls answer 401); what it does not do is
-#: get counted, or named, as a storage fault.
+#: the request (as a 500, #2165); what it does not do is get counted, or named,
+#: as a storage fault.
 #:
 #: What actually reaches here, traced per deployment:
 #:
@@ -852,8 +852,8 @@ class AuthService:
         **The catch is narrow on purpose** — see ``STORE_READ_FAILURES``. A bug
         in our own code (a ``TypeError``, an ``AttributeError`` from a store
         that does not implement the interface) propagates unclassified: it
-        still refuses the request, via the callers' own handlers, but it is not
-        reported to anyone as a storage fault.
+        still refuses the request (a 500, #2165), but it is not reported to
+        anyone as a storage fault.
 
         A stored watermark that cannot be parsed IS classified, and is the one
         case worth spelling out because it looks like the exception to that
@@ -867,8 +867,8 @@ class AuthService:
         the cost of labelling every arithmetic bug in the package the same
         way; catching at the parse buys the label without the cost.
 
-        Refresh-token validation in the generators already failed CLOSED
-        (store error => invalid), so the two paths now agree.
+        Refresh-token validation in the generators fails closed too: a store
+        error propagates out of it and the refresh answers 500 (#2165).
 
         Args:
             claims: Verified token claims (``jti``, ``sub`` and ``iat`` are

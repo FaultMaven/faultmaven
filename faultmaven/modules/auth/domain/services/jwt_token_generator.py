@@ -1233,7 +1233,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT access token
 
         Returns:
-            Token payload if valid, None otherwise
+            Token payload if valid, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
             # Decode and verify token
@@ -1290,9 +1292,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "JWT validation failed: invalid token", extra={"error": str(e)}
             )
             return None
-        except Exception as e:
-            logger.error(f"Token validation error: {e}")
-            return None
 
     async def validate_refresh_token(self, token: str) -> Optional[Dict]:
         """Validate refresh token using public key.
@@ -1307,7 +1306,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT refresh token
 
         Returns:
-            Token payload if valid and not revoked, None otherwise
+            Token payload if valid and not revoked, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
             # Decode and verify token
@@ -1369,9 +1370,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.warning(
                 "JWT validation failed: invalid refresh token", extra={"error": str(e)}
             )
-            return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
     def _decode_for_revocation(self, token: str) -> Dict:
@@ -1995,7 +1993,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT access token
 
         Returns:
-            Token payload if valid, None otherwise
+            Token payload if valid, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
             # Decode and verify token
@@ -2051,9 +2051,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 "JWT validation failed: invalid access token", extra={"error": str(e)}
             )
             return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
-            return None
 
     async def validate_refresh_token(self, token: str) -> Optional[Dict]:
         """Validate refresh token and check revocation status.
@@ -2062,7 +2059,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT refresh token
 
         Returns:
-            Token payload if valid and not revoked, None otherwise
+            Token payload if valid and not revoked, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
             # Decode and verify token
@@ -2126,9 +2125,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.warning(
                 "JWT validation failed: invalid refresh token", extra={"error": str(e)}
             )
-            return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
     def _decode_for_revocation(self, token: str) -> Dict:

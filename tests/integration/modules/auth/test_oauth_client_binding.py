@@ -11,6 +11,9 @@ naming none is bound at its first OAuth refresh, but only to a known client
 A refresh token is redeemed once on both paths, also under concurrency (#2764):
 of two concurrent refreshes exactly one receives a pair, so a token never forks
 into two chains or two clients.
+
+A store read fault while validating a refresh token answers 500 on both paths
+and revokes nothing (#2165).
 """
 
 import asyncio
@@ -552,3 +555,22 @@ async def test_a_token_that_expires_during_the_mint_still_gets_its_pair(
     response = await _redeem(env, path, token)
     assert response.status_code == 200, response.text
     assert await env.revocations.is_revoked(_claims(token)["jti"])
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_store_read_fault_while_validating_answers_500(env, monkeypatch, path):
+    """#2165: the token was never judged, so no 401 (auth) or 400 (oauth),
+    and nothing was revoked: it still redeems."""
+    token = await _bound_refresh_token(env.client)
+
+    async def unreadable(*_args):
+        raise ConnectionError("store-fault-2165")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.revocations, "revocation_state", unreadable)
+        response = await _redeem(env, path, token)
+
+    assert response.status_code == 500, response.text
+    assert "www-authenticate" not in response.headers
+    assert "store-fault-2165" not in response.text
+    assert (await _redeem(env, path, token)).status_code == 200

@@ -133,6 +133,8 @@ async def get_current_user(
             authentication failure is a 401 — a credential this endpoint will
             not accept is not a 403, which is reserved for a valid credential
             lacking permission (see the revocation handler below).
+        Exception: Any unexpected exception during verification propagates
+            and answers 500, never a credential verdict (#2165).
     """
     # Extract token from header
     token = _extract_token(request.headers.get("authorization"), credentials)
@@ -197,26 +199,14 @@ async def get_current_user(
         )
 
     except RevocationStateUnknownError as e:
-        # 503 with its own error code, NOT the 401 above and NOT the catch-all
-        # below (#1478). The store could not be read, so this token was never
-        # judged — telling the caller "invalid token" would send the copilot
-        # into the tear-down-and-re-authenticate path over a database blip that
-        # a retry clears, and would make a revoked token and an unreadable
-        # store indistinguishable to whoever is paged.
-        #
-        # Placed above `except Exception` deliberately: that handler answers
-        # 401, so without this clause the distinct code would exist and never
-        # reach anybody.
+        # 503 with its own error code, NOT the 401 above (#1478). The store
+        # could not be read, so this token was never judged — telling the
+        # caller "invalid token" would send the copilot into the
+        # tear-down-and-re-authenticate path over a database blip that a retry
+        # clears, and would make a revoked token and an unreadable store
+        # indistinguishable to whoever is paged.
         logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
         raise revocation_state_unknown_http_exception()
-
-    except Exception as e:
-        logger.error(f"Unexpected authentication error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication failed. Please try again.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 async def get_current_user_optional(
@@ -243,6 +233,8 @@ async def get_current_user_optional(
             statement as "no credential was presented", and degrading it to
             anonymous would hide a storage fault behind whatever the route
             does for an unauthenticated caller.
+        Exception: Any unexpected exception during verification propagates
+            and answers 500, never ``None`` (#2165).
     """
     token = _extract_token(request.headers.get("authorization"), credentials)
 
@@ -256,9 +248,6 @@ async def get_current_user_optional(
     except RevocationStateUnknownError as e:
         logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
         raise revocation_state_unknown_http_exception()
-    except Exception as e:
-        logger.warning(f"Optional authentication error: {e}")
-        return None
 
 
 async def require_platform_admin(
