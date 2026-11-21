@@ -56,7 +56,9 @@ def _rejected_key(body: str) -> bool:
     if not isinstance(details, list):
         return False
     return any(
-        isinstance(detail, dict) and detail.get("reason") in _REJECTED_KEY_REASONS
+        isinstance(detail, dict)
+        and isinstance(detail.get("reason"), str)
+        and detail["reason"] in _REJECTED_KEY_REASONS
         for detail in details
     )
 

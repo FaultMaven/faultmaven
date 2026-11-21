@@ -91,3 +91,18 @@ async def test_another_400_is_not_auth_failed(body):
     assert error.error_code != PROVIDER_AUTH_FAILED
     result = await LLMErrorHandler().handle_error(error, 0)
     assert result.error_code != "AUTH_FAILED"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [["API_KEY_INVALID"], {"code": "API_KEY_INVALID"}],
+    ids=["list-reason", "dict-reason"],
+)
+async def test_an_unhashable_reason_is_still_a_400(reason):
+    """A detail whose reason is not a string names no rejected key, and the
+    400 is still raised as itself, not as a TypeError."""
+    error = await _raised(_body(reason=reason))
+    assert error.status_code == 400
+    assert error.error_code != PROVIDER_AUTH_FAILED
+    result = await LLMErrorHandler().handle_error(error, 0)
+    assert result.error_code != "AUTH_FAILED"
