@@ -111,19 +111,30 @@ def test_a_child_that_cannot_install_the_guard_does_not_run(tmp_path):
     assert "tests/child_site/sitecustomize.py" in completed.stderr
 
 
-#: Starts a grandchild with its environment, as the boot's migration
-#: subprocess does, then ends as ``{end}`` says.
+#: Starts a grandchild running ``{grandchild}`` with its environment, as the
+#: boot's migration subprocess does, then ends as ``{end}`` says.
 _WITH_GRANDCHILD = """
 import os, subprocess, sys
 from tests import network_guard
 
-subprocess.run([sys.executable, "-c", "pass"], check=True)
+subprocess.run([sys.executable, "-c", {grandchild!r}], check=True)
 {end}
 """
 
+#: A refusal the code swallows (the guard's policy: nothing is looked up).
+_SWALLOW = (
+    "from tests import network_guard\n"
+    "try:\n"
+    "    network_guard.GUARD.check_lookup('huggingface.co', 'probe')\n"
+    "except Exception:\n"
+    "    pass\n"
+)
 
-def _with_grandchild(end: str, tmp_path) -> subprocess.CompletedProcess:
-    code = _WITH_GRANDCHILD.format(end=end)
+
+def _with_grandchild(
+    end: str, tmp_path, grandchild: str = "pass"
+) -> subprocess.CompletedProcess:
+    code = _WITH_GRANDCHILD.format(end=end, grandchild=grandchild)
     return subprocess.run(
         [sys.executable, "-c", code],
         cwd=tmp_path,
@@ -136,13 +147,7 @@ def _with_grandchild(end: str, tmp_path) -> subprocess.CompletedProcess:
 
 @guarded_parent
 def test_a_grandchilds_report_does_not_mask_the_childs_refusal(tmp_path):
-    swallow = (
-        "try:\n"
-        "    network_guard.GUARD.check_lookup('huggingface.co', 'probe')\n"
-        "except Exception:\n"
-        "    pass\n"
-    )
-    completed = _with_grandchild(swallow, tmp_path)
+    completed = _with_grandchild(_SWALLOW, tmp_path)
 
     assert completed.returncode == 0, completed.stderr[-3000:]
     assert completed.stderr.count(REFUSALS_MARKER) == 2
@@ -158,6 +163,17 @@ def test_a_grandchilds_report_does_not_stand_in_for_the_childs(tmp_path):
     assert completed.stderr.count(REFUSALS_MARKER) == 1
     with pytest.raises(AssertionError, match="reported 0 times"):
         child_refusals(completed.stderr)
+
+
+@guarded_parent
+def test_a_grandchilds_refusal_fails_the_test(tmp_path):
+    """The grandchild reports first and the child, refusing nothing, last."""
+    completed = _with_grandchild("", tmp_path, grandchild=_SWALLOW)
+
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    assert completed.stderr.count(REFUSALS_MARKER) == 2
+    with pytest.raises(AssertionError, match="huggingface.co"):
+        assert_no_child_refusals(completed.stderr)
 
 
 def test_control_an_unguarded_parent_starts_an_unguarded_child(tmp_path, monkeypatch):
