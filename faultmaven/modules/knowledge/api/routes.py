@@ -98,7 +98,10 @@ from faultmaven.modules.knowledge.taxonomy import (
     render_vocabulary,
     vocabulary,
 )
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import (
+    exception_class_name,
+    exception_log_name,
+)
 from faultmaven.utils.line_endings import decode_text
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
@@ -864,7 +867,7 @@ async def list_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to list documents: {e}")
+        logger.error(f"Failed to list documents: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Failed to list documents")
 
 
@@ -908,9 +911,11 @@ async def get_document(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to retrieve document {document_id}: {e}")
+        logger.error(
+            f"Failed to retrieve document {document_id}: {exception_log_name(e)}"
+        )
         # No str(e) in the response: raw exception text is an internal detail
-        # (#867). The log line above keeps the diagnostic.
+        # (#867). The log line above names the exception's class.
         raise HTTPException(status_code=500, detail="Failed to retrieve document")
 
 
@@ -1012,7 +1017,7 @@ async def get_document_snippet(
             except Exception as snippet_error:
                 logger.warning(
                     "Relevance-based snippet extraction failed, falling back "
-                    f"to line-based: {snippet_error}"
+                    f"to line-based: {exception_log_name(snippet_error)}"
                 )
                 # Fallback to line-based extraction
                 snippet = "\n".join(lines[line_start - 1 : line_start - 1 + max_lines])
@@ -1047,7 +1052,9 @@ async def get_document_snippet(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get snippet for document {document_id}: {e}")
+        logger.error(
+            f"Failed to get snippet for document {document_id}: {exception_log_name(e)}"
+        )
         # No str(e) in the response (#867) — see get_document.
         raise HTTPException(status_code=500, detail="Failed to get document snippet")
 
@@ -1113,7 +1120,9 @@ async def delete_document(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete document {document_id}: {e}")
+        logger.error(
+            f"Failed to delete document {document_id}: {exception_log_name(e)}"
+        )
         # See update_document — no internal exception text to the widened
         # audience (#834).
         raise HTTPException(status_code=500, detail="Failed to delete document")
@@ -1186,7 +1195,7 @@ async def search_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Search failed: {e}")
+        logger.error(f"Search failed: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Search failed")
 
 
@@ -1326,7 +1335,7 @@ async def fulltext_search_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Full-text search failed: {e}")
+        logger.error(f"Full-text search failed: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
@@ -1442,7 +1451,9 @@ async def update_document(
         # chunks are written under a new generation and nothing is deleted
         # before the row moves (#2388), so the chunks the row served before
         # the update are still the ones served.
-        logger.error(f"Failed to re-index document {document_id}: {e}")
+        logger.error(
+            f"Failed to re-index document {document_id}: {exception_log_name(e)}"
+        )
         searchable_state = (
             "The document is unchanged, and so is what search serves for it."
         )
@@ -1455,10 +1466,12 @@ async def update_document(
             ),
         )
     except Exception as e:
-        logger.error(f"Failed to update document {document_id}: {e}")
+        logger.error(
+            f"Failed to update document {document_id}: {exception_log_name(e)}"
+        )
         # No str(e) in the response: this route is now reachable by any
         # authenticated user (#834), and raw exception text is an internal
-        # detail. The log line above keeps the diagnostic.
+        # detail. The log line above names the exception's class.
         raise HTTPException(status_code=500, detail="Failed to update document")
 
 
@@ -1526,7 +1539,7 @@ async def bulk_update_documents(
         # handler's 422.
         raise
     except Exception as e:
-        logger.error(f"Bulk update failed: {e}")
+        logger.error(f"Bulk update failed: {exception_log_name(e)}")
         # No str(e) in the response (#866) — see update_document.
         raise HTTPException(status_code=500, detail="Bulk update failed")
 
@@ -1575,7 +1588,7 @@ async def bulk_delete_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Bulk delete failed: {e}")
+        logger.error(f"Bulk delete failed: {exception_log_name(e)}")
         # No str(e) in the response (#866) — see update_document.
         raise HTTPException(status_code=500, detail="Bulk delete failed")
 
@@ -1599,7 +1612,7 @@ async def get_knowledge_stats(
         return stats
 
     except Exception as e:
-        logger.error(f"Failed to get knowledge stats: {e}")
+        logger.error(f"Failed to get knowledge stats: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Failed to get statistics")
 
 
@@ -1620,5 +1633,5 @@ async def get_search_analytics(
         return analytics
 
     except Exception as e:
-        logger.error(f"Failed to get search analytics: {e}")
+        logger.error(f"Failed to get search analytics: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Failed to get analytics")
