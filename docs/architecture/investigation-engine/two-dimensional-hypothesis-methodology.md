@@ -990,8 +990,8 @@ where it is only *bearing* (a node with nothing else reads INCONCLUSIVE) and so
 neither refutes a node nor holds a grounded one out of VALIDATED, and not M6's
 evidence arm below or the conclusion retraction (`cause_refuted_by_evidence`).
 The flat likelihood update (`update_likelihood_from_evidence`) still counts it,
-and can retire an ACTIVE hypothesis on hedged refutes alone; whether the floor
-covers that path is open (#2154). The engine's own M6 links carry no declared
+but it never retires a hypothesis by itself (#2154; the low-confidence `RETIRED`
+row of `investigation-data-models.md` §3). The engine's own M6 links carry no declared
 confidence and are decisive by construction.
 
 **M6 establishes its preconditions; it does not infer them (INV-42, #987).**

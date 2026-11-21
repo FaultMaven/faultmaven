@@ -381,7 +381,12 @@ def _refutation_refused(params: dict, outcome, log) -> list:
         and e["params"]["hypothesis_id"] == h_id
         for e in log
     )
-    if params["retired"]:
+    if params["retired"] and params["hedged"]:
+        where = (
+            " It was already below the retirement bar without its self-hedged "
+            "links, so it is set aside (RETIRED), which is not a disproof."
+        )
+    elif params["retired"]:
         where = (
             " Its links lowered its likelihood enough to set it aside (RETIRED), "
             "which is not a disproof."

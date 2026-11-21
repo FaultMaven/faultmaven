@@ -463,8 +463,8 @@ def counterfactual_link_decisive(link) -> bool:
     cause or a node (#2106): the node tally's ``refutes > supports``, M6's
     evidence arm and the conclusion retraction (``cause_refuted_by_evidence``)
     leave it out, so there it is only bearing. The flat likelihood update
-    (``update_likelihood_from_evidence``) still counts it (#2154, open).
-    ``None`` reads as unset → full
+    (``update_likelihood_from_evidence``) still counts it, but it never retires
+    a hypothesis by itself (#2154). ``None`` reads as unset → full
     confidence (the engine's own M6 links carry no declared confidence and are
     decisive by construction); an EXPLICIT 0.0 stays filtered."""
     return stance_declared_confident(link)
@@ -479,6 +479,15 @@ def stance_declared_confident(link) -> bool:
     if confidence is None:
         confidence = 1.0
     return confidence >= CAUSAL_STANCE_CONFIDENCE_MIN
+
+
+def has_hedged_refutes(hypothesis) -> bool:
+    """The hypothesis carries a self-hedged REFUTES link
+    (``stance_declared_confident`` false)."""
+    return any(
+        link.stance == EvidenceStance.REFUTES and not stance_declared_confident(link)
+        for link in hypothesis.evidence_links
+    )
 
 
 def deepened_past_root_ids(case: "Case") -> set[str]:
