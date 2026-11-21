@@ -16,7 +16,9 @@ is driven through the method that holds it, its collaborator stubbed to raise.
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock
 
+import pypdf
 import pytest
+from pypdf.errors import LimitReachedError
 from sqlalchemy.exc import IntegrityError
 
 from faultmaven.infrastructure import worker_process
@@ -27,6 +29,7 @@ from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.persistence.models import ConversionDraftModel
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services import runbook_gate
+from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -135,6 +138,29 @@ async def test_a_failed_draft_ingestion_is_named_by_class(
             created["conversion_id"], created["draft"].draft_id, "u1"
         )
     _named(lines(), "Ingestion failed for draft", "RuntimeError")
+
+
+# ── modules/knowledge/domain/services/document_parser.py ──────────────────
+
+
+class _Page:
+    def __init__(self, text=None):
+        self._text = text
+
+    def extract_text(self):
+        if self._text is None:
+            raise LimitReachedError(f"budget {MARKER}")
+        return self._text
+
+
+def test_a_refused_pdf_page_is_named_by_class(lines, tmp_path, monkeypatch):
+    """The refused pages' line joins what it collected per page: a page
+    pypdf's budget refuses is named by its class, never its text."""
+    reader = MagicMock(pages=[_Page("some text"), _Page()])
+    monkeypatch.setattr(pypdf, "PdfReader", MagicMock(return_value=reader))
+    parsed = DocumentParser()._extract_pdf(tmp_path / "x.pdf")
+    assert parsed.skipped_pages == (2,)
+    _named(lines(), "pypdf refused 1 of 2 pages", "LimitReachedError")
 
 
 # ── modules/knowledge/domain/services/runbook_gate.py ─────────────────────

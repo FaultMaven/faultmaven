@@ -825,7 +825,8 @@ def test_a_site_is_found(source):
         "    log.warning('x %s', reason)",
         "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
         "    log.warning(f'{paths}')",
-        "def f(failure):\n    cancelled = _arrived_cancelled(failure)\n"
+        "try:\n    g()\nexcept Exception as failure:\n"
+        "    cancelled = _arrived_cancelled(failure)\n"
         "    log.warning('%s', 'a' if cancelled else 'b')",
         "def f(e):\n    log.error('item %s', e.item_id)",
     ],

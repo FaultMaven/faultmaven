@@ -915,7 +915,7 @@ async def get_document(
             f"Failed to retrieve document {document_id}: {exception_log_name(e)}"
         )
         # No str(e) in the response: raw exception text is an internal detail
-        # (#867). The log line above keeps the diagnostic.
+        # (#867). The log line above names the exception's class.
         raise HTTPException(status_code=500, detail="Failed to retrieve document")
 
 
@@ -1471,7 +1471,7 @@ async def update_document(
         )
         # No str(e) in the response: this route is now reachable by any
         # authenticated user (#834), and raw exception text is an internal
-        # detail. The log line above keeps the diagnostic.
+        # detail. The log line above names the exception's class.
         raise HTTPException(status_code=500, detail="Failed to update document")
 
 

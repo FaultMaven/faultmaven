@@ -171,9 +171,11 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
     except worker_process.WorkerNotStarted as e:
         cause = e.__cause__
         logger.error(
-            "conversion failed: the preparation worker of %s could not start: %s",
+            "conversion failed: the preparation worker of %s could not start: "
+            "%s (errno %s)",
             file_path.name,
             exception_log_name(cause),
+            getattr(cause, "errno", None),
         )
         raise PreparationFailed("the preparation worker could not start") from cause
     except worker_process.WorkerFailed as e:

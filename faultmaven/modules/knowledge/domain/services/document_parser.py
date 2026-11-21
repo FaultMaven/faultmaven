@@ -168,8 +168,9 @@ class DocumentParser:
         except Exception as e:
             if _out_of_memory(e):
                 raise MemoryError(f"parsing {file_path.name}") from e
-            # The library's text goes to the log, never to the caller: the
-            # preprocessor turns this message into ``/convert``'s 422 detail.
+            # The log line and the caller get the class, never the library's
+            # text: the preprocessor turns this message into ``/convert``'s 422
+            # detail.
             logger.warning(
                 "document extraction failed for %s: %s",
                 file_path,
@@ -254,7 +255,7 @@ class DocumentParser:
                 if not _is_budget(file_path, e):
                     raise
                 skipped.append(index + 1)
-                bounds.add(str(e))
+                bounds.add(exception_log_name(e))
                 continue
             if text and text.strip():
                 pages.append(text)

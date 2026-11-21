@@ -1312,8 +1312,7 @@ class ConversionService:
             # failure in this method returns its ``ConversionError`` above, so
             # what lands here is foreign: a provider error, whose text is the
             # provider's. ``error`` is returned in ``/convert``'s warnings and
-            # persisted with the job, so the detail goes to the log line
-            # instead.
+            # persisted with the job. The log line names the class.
             logger.error(
                 f"Conversion failed for {failure_mode.id}: {exception_log_name(e)}"
             )
@@ -2081,7 +2080,7 @@ class ConversionService:
                 # sentences and keep them. What lands here is anything else: a
                 # missing file's ``FileNotFoundError`` names its absolute path,
                 # and an ingestion failure carries the vector store's own
-                # message. The detail goes to the log line.
+                # message. The log line names the class.
                 logger.error(
                     f"Batch verify failed for {draft_id}: {exception_log_name(e)}"
                 )

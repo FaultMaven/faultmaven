@@ -238,7 +238,9 @@ async def _scan_for_runbooks_impl(
             )
         except RunbookPathEscape as exc:
             logger.warning(
-                "skipping a scanned file outside the tree: %s", exception_log_name(exc)
+                "skipping a scanned file outside the tree: %s (%s)",
+                md_file.name,
+                exception_log_name(exc),
             )
             skipped += 1
             continue
@@ -249,7 +251,7 @@ async def _scan_for_runbooks_impl(
         except Exception as e:
             # The file's NAME and the exception's CLASS, never the exception's
             # text (#836): an ``OSError`` names the file's server path, and
-            # ``errors`` is returned to the client. The detail goes to the log.
+            # ``errors`` is returned to the client. The log line names the class.
             logger.warning("scan cannot read %s: %s", md_file, exception_log_name(e))
             errors.append(f"{md_file.name}: cannot read ({type(e).__name__})")
             continue
