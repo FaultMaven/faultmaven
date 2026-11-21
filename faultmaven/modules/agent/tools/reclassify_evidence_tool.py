@@ -181,7 +181,7 @@ class ReclassifyEvidenceTool(AgentTool):
         except NotFoundError as e:
             # Not ``str(e)``: the storage read raises ``NotFoundError("File",
             # <storage key>)``, an internal key (#2332). Named by the tool's
-            # own argument instead; the text goes to the log.
+            # own argument instead; the log names its class (#2889).
             logger.warning(
                 "reclassify_evidence: not found for %s: %s",
                 evidence_id,
