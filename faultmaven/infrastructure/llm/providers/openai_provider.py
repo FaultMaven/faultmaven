@@ -11,11 +11,12 @@ from typing import Any, Dict, List, Optional, Set
 
 import aiohttp
 
-from faultmaven.exceptions import LLMErrorCategory, LLMException
+from faultmaven.exceptions import LLMErrorCategory, LLMException, declared_llm_category
 from faultmaven.infrastructure.llm.prompt_cache import cache_boundary_parts
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .base import (
     BaseLLMProvider,
@@ -857,9 +858,13 @@ class OpenAIProvider(BaseLLMProvider):
             self._cache_breakpoint_refused.add(effective_model)
             self.logger.warning(
                 f"{self.provider_name} refused 'prompt_cache_breakpoint' on "
-                f"{effective_model} ({rejected}) — re-sending without it; "
-                f"learned for the life of this provider instance, so its "
-                f"durable prefix is not cached across turns."
+                f"{effective_model} ({exception_log_name(rejected)}) — re-sending "
+                f"without it; learned for the life of this provider instance, so "
+                f"its durable prefix is not cached across turns.",
+                extra={
+                    "status": rejected.status_code,
+                    "category": declared_llm_category(rejected),
+                },
             )
             payload["messages"] = unmarked
             try:
@@ -928,7 +933,12 @@ class OpenAIProvider(BaseLLMProvider):
         """
         self.logger.warning(
             f"{self.provider_name} refused 'temperature' on {effective_model} "
-            f"({rejected}) — re-sending once with the model's default."
+            f"({exception_log_name(rejected)}) — re-sending once with the model's "
+            f"default.",
+            extra={
+                "status": rejected.status_code,
+                "category": declared_llm_category(rejected),
+            },
         )
         del payload["temperature"]
         try:
@@ -998,8 +1008,13 @@ class OpenAIProvider(BaseLLMProvider):
         alternative = self._other_token_param(sent_param)
         self.logger.warning(
             f"{self.provider_name} rejected '{sent_param}' on {effective_model} "
-            f"({rejected}) — re-sending once with '{alternative}'. The static "
-            f"expectation for this model is wrong; the endpoint's answer wins."
+            f"({exception_log_name(rejected)}) — re-sending once with "
+            f"'{alternative}'. The static expectation for this model is wrong; the "
+            f"endpoint's answer wins.",
+            extra={
+                "status": rejected.status_code,
+                "category": declared_llm_category(rejected),
+            },
         )
         # Move the value rather than re-deriving it: the re-send must differ
         # from the rejected request in the KEY and in nothing else. ``pop``

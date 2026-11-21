@@ -23,6 +23,7 @@ from faultmaven.exceptions import (
     CallShapeUnsupported,
     LLMOutputFloorError,
     RawModelContentRefused,
+    declared_llm_category,
 )
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
@@ -41,6 +42,7 @@ from faultmaven.infrastructure.shims import (
 )
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
@@ -993,9 +995,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 (time.monotonic() - request_started) * 1000.0,
                 success=False,
             )
+            status = getattr(e, "status_code", None)
             self.logger.error(
-                f"❌ LLM Router: All providers failed: {type(e).__name__}: {e}",
+                f"❌ LLM Router: All providers failed: {exception_log_name(e)}",
                 exc_info=True,
+                extra={"category": declared_llm_category(e), "status": status},
             )
             raise
 
@@ -1017,7 +1021,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             opik_sdk.update_current_span(metadata=owner)
         except Exception as e:
-            self.logger.warning(f"Failed to tag Opik trace: {e}")
+            self.logger.warning(
+                f"Failed to tag Opik trace: {exception_log_name(e)}", exc_info=True
+            )
 
     def _update_opik_span(
         self,
@@ -1106,7 +1112,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 usage=usage,
             )
         except Exception as e:
-            self.logger.warning(f"Failed to update Opik span: {e}")
+            self.logger.warning(
+                f"Failed to update Opik span: {exception_log_name(e)}", exc_info=True
+            )
 
     def get_provider_status(self):
         """Get status of all providers"""

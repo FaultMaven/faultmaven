@@ -47,6 +47,7 @@ from faultmaven.infrastructure.shims import (
     llm_provider_calls,
     llm_unpriced_calls,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +290,11 @@ def record_provider_call(
             },
         )
     except Exception as exc:  # metering must never break a request
-        logger.warning("record_provider_call failed (non-fatal): %s", exc)
+        logger.warning(
+            "record_provider_call failed (non-fatal): %s",
+            exception_log_name(exc),
+            exc_info=True,
+        )
 
 
 def record_investigation_call(
@@ -323,4 +328,8 @@ def record_investigation_call(
                     token_type=token_type,
                 ).inc(amount)
     except Exception as exc:  # metering must never break a request
-        logger.warning("record_investigation_call failed (non-fatal): %s", exc)
+        logger.warning(
+            "record_investigation_call failed (non-fatal): %s",
+            exception_log_name(exc),
+            exc_info=True,
+        )

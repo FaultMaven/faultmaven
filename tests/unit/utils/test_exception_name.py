@@ -1,14 +1,28 @@
 """``exception_class_name``: the class name, or ``Exception`` for an odd one;
 ``exception_class_chain``: those of an exception's cause chain (#2587);
 ``exception_frames``: the frames a traceback would show, without a message (#2844),
-into a group's members as far as ``traceback`` goes (#2888)."""
+into a group's members as far as ``traceback`` goes (#2888);
+``exception_log_name``: the chain with each first-party ``error_code`` (#2889)."""
+
+import subprocess
+from enum import Enum
 
 import pytest
 
+from faultmaven.core.investigation.milestone_engine.errors import (
+    MilestoneEngineError,
+)
+from faultmaven.exceptions import (
+    CircuitBreakerError,
+    ConflictError,
+    LLMException,
+    ServiceException,
+)
 from faultmaven.utils.exception_name import (
     exception_class_chain,
     exception_class_name,
     exception_frames,
+    exception_log_name,
 )
 
 
@@ -137,3 +151,131 @@ def test_a_member_shown_already_is_listed_as_shown_above():
         "ExceptionGroup:",
         "[1] KeyError (shown above)",
     ]
+
+
+# ── exception_log_name (#2889) ────────────────────────────────────────────
+
+MARKER = "zqxmarker2889"
+
+
+class ThirdPartyError(Exception):
+    """A vendor's exception: its ``error_code`` is the vendor's text."""
+
+    def __init__(self):
+        super().__init__(MARKER)
+        self.error_code = f"sk_live_{MARKER}"
+
+
+def _first_party(name: str = "FirstPartyError", **attributes) -> type:
+    cls = type(name, (Exception,), attributes)
+    cls.__module__ = "faultmaven.modules.example"
+    return cls
+
+
+class _Code(str, Enum):
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+
+
+class _Formatted(str):
+    def __format__(self, spec):
+        return f"{MARKER} any text"
+
+
+class _RaisingCode(Exception):
+    @property
+    def error_code(self):
+        raise RuntimeError(MARKER)
+
+
+_RaisingCode.__module__ = "faultmaven.modules.example"
+
+
+def _with_code(code, module="faultmaven.modules.example"):
+    cls = _first_party()
+    cls.__module__ = module
+    error = cls(MARKER)
+    error.error_code = code
+    return error
+
+
+@pytest.mark.parametrize(
+    "error, named",
+    [
+        (ValueError(f"case text {MARKER}"), "ValueError"),
+        (
+            _raised(RuntimeError(MARKER), cause=KeyError(MARKER)),
+            "RuntimeError <- KeyError",
+        ),
+        (_raised(ValueError(MARKER), context=KeyError(MARKER)), "ValueError"),
+        (ThirdPartyError(), "ThirdPartyError"),
+        (
+            CircuitBreakerError(MARKER, error_code=f"{MARKER} text"),
+            "CircuitBreakerError",
+        ),
+        (
+            CircuitBreakerError(MARKER, error_code=ThirdPartyError().error_code),
+            "CircuitBreakerError",
+        ),
+        (
+            MilestoneEngineError(MARKER, error_code=ThirdPartyError().error_code),
+            "MilestoneEngineError",
+        ),
+        (type("has space", (Exception,), {})(MARKER), "Exception"),
+        (subprocess.CalledProcessError(1, ["x"], MARKER, MARKER), "CalledProcessError"),
+        (_with_code(_Code.FILE_TOO_LARGE), "FirstPartyError"),
+        (_with_code(_Formatted("OK_CODE")), "FirstPartyError"),
+        (_with_code("CODE\n"), "FirstPartyError"),
+        (_with_code("A" * 65), "FirstPartyError"),
+        (_with_code(401), "FirstPartyError"),
+        (
+            _with_code("CLOUD_CODE", module="faultmaven_cloud.billing"),
+            "FirstPartyError",
+        ),
+        (_with_code("CODE", module=None), "FirstPartyError"),
+        (_RaisingCode(MARKER), "_RaisingCode"),
+    ],
+)
+def test_a_log_name_holds_no_text_and_no_unchecked_code(error, named):
+    assert exception_log_name(error) == named
+
+
+@pytest.mark.parametrize(
+    "error, named",
+    [
+        (LLMException(MARKER, status_code=401), "LLMException[PROVIDER_AUTH_FAILED]"),
+        (
+            _raised(
+                ServiceException(MARKER), cause=LLMException(MARKER, status_code=401)
+            ),
+            "ServiceException <- LLMException[PROVIDER_AUTH_FAILED]",
+        ),
+        (
+            ConflictError(MARKER, error_code="TEAM_NAME_TAKEN"),
+            "ConflictError[TEAM_NAME_TAKEN]",
+        ),
+        (ServiceException(MARKER), "ServiceException"),
+        (_with_code("A" * 64), "FirstPartyError[" + "A" * 64 + "]"),
+    ],
+)
+def test_a_first_party_code_is_named_beside_its_class(error, named):
+    assert exception_log_name(error) == named
+
+
+def test_a_code_copied_from_a_third_party_is_written_when_it_matches():
+    """``CircuitBreakerError``'s latch (``infrastructure/base_client.py``) and
+    ``MilestoneEngineError`` (``milestone_engine/engine.py``) copy another
+    exception's ``error_code``: an upper-case one is written, as the docstring
+    says. The pattern bounds what can reach the line, not where it came from."""
+
+    class VendorError(Exception):
+        error_code = "VENDOR_QUOTA_HIT"
+
+    copied = getattr(VendorError(MARKER), "error_code", None)
+    assert (
+        exception_log_name(CircuitBreakerError(MARKER, error_code=copied))
+        == "CircuitBreakerError[VENDOR_QUOTA_HIT]"
+    )
+    assert (
+        exception_log_name(MilestoneEngineError(MARKER, error_code=copied))
+        == "MilestoneEngineError[VENDOR_QUOTA_HIT]"
+    )

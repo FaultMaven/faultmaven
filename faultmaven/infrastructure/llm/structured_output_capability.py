@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,7 +141,7 @@ def create_strategy_for_capability(
                 "strict_schema_unavailable: %s falls back to unenforced "
                 "json_schema (%s)",
                 schema.get("title", "Response"),
-                exc,
+                exception_log_name(exc),
             )
             strict_schema = schema
             strict = False

@@ -19,6 +19,7 @@ from faultmaven.exceptions import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .base import (
     BaseLLMProvider,
@@ -530,7 +531,10 @@ class LocalProvider(BaseLLMProvider):
                     if response.status != 200:
                         error_text = await response.text()
                         error_msg = f"Local OpenAI-compatible API error {response.status}: {error_text}"
-                        self.logger.error(f"HTTP Error: {error_msg}")
+                        self.logger.error(
+                            f"HTTP Error: status={response.status}, "
+                            f"body_len={len(error_text)}"
+                        )
                         raise LLMException(
                             error_msg,
                             status_code=response.status,
@@ -578,7 +582,10 @@ class LocalProvider(BaseLLMProvider):
                                 f"Validated content: content_len={len(content)}"
                             )
                         except Exception as e:
-                            self.logger.error(f"Content validation failed: {e}")
+                            self.logger.error(
+                                f"Content validation failed: {exception_log_name(e)}",
+                                exc_info=True,
+                            )
                             raise
 
                     # Extract token usage (OpenAI-compatible; prompt_tokens is
@@ -632,9 +639,10 @@ class LocalProvider(BaseLLMProvider):
 
             except Exception as e:
                 response_time = self._get_response_time_ms()
-                self.logger.error(f"Request failed after {response_time}ms")
-                self.logger.error(f"Error type: {type(e).__name__}")
-                self.logger.error(f"Error details: {e}")
+                self.logger.error(
+                    f"Request failed after {response_time}ms: {exception_log_name(e)}",
+                    exc_info=True,
+                )
                 raise
 
     async def _call_llamacpp_api(

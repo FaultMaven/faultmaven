@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 
 from faultmaven.infrastructure.logging.config import get_logger
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = get_logger(__name__)
 
@@ -57,13 +58,15 @@ class LocalLLMServiceManager:
                                 )
                                 return True
                     except Exception as e:
-                        logger.debug(f"Health check failed on {endpoint}: {e}")
+                        logger.debug(
+                            f"Health check failed on {endpoint}: {exception_log_name(e)}"
+                        )
                         continue
 
                 return False
 
         except Exception as e:
-            logger.debug(f"Service health check failed: {e}")
+            logger.debug(f"Service health check failed: {exception_log_name(e)}")
             return False
 
     def _run_script_command(
@@ -94,7 +97,11 @@ class LocalLLMServiceManager:
         )
 
         if result.returncode != 0:
-            logger.error(f"Script command failed: {result.stderr}", exc_info=True)
+            logger.error(
+                f"Script command failed: exit={result.returncode}, "
+                f"stderr_len={len(result.stderr or '')}",
+                exc_info=True,
+            )
             raise subprocess.CalledProcessError(
                 result.returncode, cmd, result.stdout, result.stderr
             )
@@ -113,7 +120,10 @@ class LocalLLMServiceManager:
 
             # Start the service using the script
             result = self._run_script_command("start", model_name)
-            logger.info(f"Service start script output: {result.stdout}")
+            logger.info(
+                f"Service start script output: exit={result.returncode}, "
+                f"stdout_len={len(result.stdout or '')}"
+            )
 
             # Wait for the service to become healthy
             start_time = time.time()
@@ -132,12 +142,15 @@ class LocalLLMServiceManager:
 
         except subprocess.CalledProcessError as e:
             logger.error(
-                f"Failed to start local LLM service: {e.stderr}", exc_info=True
+                f"Failed to start local LLM service: exit={e.returncode}, "
+                f"stderr_len={len(e.stderr or '')}",
+                exc_info=True,
             )
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error starting local LLM service: {e}", exc_info=True
+                f"Unexpected error starting local LLM service: {exception_log_name(e)}",
+                exc_info=True,
             )
             return False
 
@@ -146,15 +159,23 @@ class LocalLLMServiceManager:
         try:
             logger.info("Stopping local LLM service")
             result = self._run_script_command("stop")
-            logger.info(f"Service stop script output: {result.stdout}")
+            logger.info(
+                f"Service stop script output: exit={result.returncode}, "
+                f"stdout_len={len(result.stdout or '')}"
+            )
             return True
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to stop local LLM service: {e.stderr}", exc_info=True)
+            logger.error(
+                f"Failed to stop local LLM service: exit={e.returncode}, "
+                f"stderr_len={len(e.stderr or '')}",
+                exc_info=True,
+            )
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error stopping local LLM service: {e}", exc_info=True
+                f"Unexpected error stopping local LLM service: {exception_log_name(e)}",
+                exc_info=True,
             )
             return False
 
@@ -188,7 +209,10 @@ class LocalLLMServiceManager:
         try:
             logger.info("Checking and fixing local LLM service model consistency...")
             result = self._run_script_command("check")
-            logger.info(f"Service check completed: {result.stdout}")
+            logger.info(
+                f"Service check completed: exit={result.returncode}, "
+                f"stdout_len={len(result.stdout or '')}"
+            )
 
             # Verify the fix actually worked by checking if warnings are gone
             status_result = self._run_script_command("status")
@@ -202,10 +226,17 @@ class LocalLLMServiceManager:
                 return True
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to check/fix service: {e.stderr}", exc_info=True)
+            logger.error(
+                f"Failed to check/fix service: exit={e.returncode}, "
+                f"stderr_len={len(e.stderr or '')}",
+                exc_info=True,
+            )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error checking service: {e}", exc_info=True)
+            logger.error(
+                f"Unexpected error checking service: {exception_log_name(e)}",
+                exc_info=True,
+            )
             return False
 
     async def ensure_service_running(self, model_name: str) -> bool:
@@ -297,5 +328,8 @@ async def check_and_start_local_llm_service(
         return success
 
     except Exception as e:
-        logger.error(f"Error checking/starting local LLM service: {e}", exc_info=True)
+        logger.error(
+            f"Error checking/starting local LLM service: {exception_log_name(e)}",
+            exc_info=True,
+        )
         return False
