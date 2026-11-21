@@ -684,11 +684,13 @@ class LLMSettings(BaseSettings):
         return v
 
     def get_model(self, task: str = "chat") -> str:
-        """Get model for current provider and specific task
+        """Get model for current provider and specific task ('da': ``get_da_model``)
 
         Args:
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da', 'knowledge')
         """
+        if task == "da":
+            return self.get_da_model()
         return self._get_model_for_provider_and_task(self.provider, task)
 
     def explicit_role_provider(self, role: str) -> Optional[str]:
@@ -775,9 +777,10 @@ class LLMSettings(BaseSettings):
         return self.da_provider or self.provider
 
     def get_da_model(self) -> str:
-        """The model investigation turns send: ``{PROVIDER}_DA_MODEL`` applies
-        only with ``DA_PROVIDER`` set, otherwise the chat provider's base model
-        answers, since the router path sends no model (#2142)."""
+        """The DA role's model: ``{PROVIDER}_DA_MODEL`` applies only with
+        ``DA_PROVIDER`` set, else the chat provider's base model (#2142). The
+        model a turn sends is ``investigation_capability``'s route, which also
+        honours ``STRUCTURED_OUTPUT_PROVIDER``."""
         if self.da_provider is None:
             return self._get_base_model_for_provider(self.provider)
         return self._get_model_for_provider_and_task(self.da_provider, "da")
@@ -819,6 +822,9 @@ class LLMSettings(BaseSettings):
         the base model is used for all tasks. Set a per-task override only
         when you need a different model for that specific capability.
         """
+        if provider == LLMProvider.LOCAL:
+            return self._get_base_model_for_provider(provider)
+
         # Per-task override: {provider_name}_{task}_model attribute
         task_field = f"{provider.value}_{task}_model"
         per_task = getattr(self, task_field, None)

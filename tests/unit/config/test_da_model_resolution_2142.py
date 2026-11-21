@@ -15,9 +15,12 @@ import pytest
 
 from faultmaven.config import settings as settings_module
 from faultmaven.config.investigation_capability import (
+    InvestigationToolingError,
     resolve_enforcement_classes,
     resolve_investigation_capability,
+    validate_investigation_tooling,
 )
+from faultmaven.config.role_routing import resolve_role_routing
 from faultmaven.config.settings import LLMSettings
 from faultmaven.container.providers.infrastructure import create_da_provider
 from faultmaven.infrastructure.llm.providers.fireworks_provider import (
@@ -77,6 +80,9 @@ def test_issue_reproduction_judges_the_base_model_the_turn_sends(env):
 
     assert _investigation_row(llm).model == FW_BASE
 
+    [da_row] = [r for r in resolve_role_routing(llm) if r.role == "da"]
+    assert (da_row.model, da_row.model_key) == (FW_BASE, "FIREWORKS_MODEL")
+
     # The tool loop's decider: no DA provider, so it sends no `model` and the
     # router's provider answers with the base model it was built with.
     env.setattr(settings_module, "get_settings", lambda: NS(llm=llm))
@@ -103,6 +109,7 @@ def test_every_da_combination_judges_the_sent_model(
     llm = LLMSettings()
 
     assert llm.get_da_model() == expected
+    assert llm.get_model("da") == expected
     assert resolve_investigation_capability(NS(llm=llm), _Registry()).model == expected
     assert _investigation_row(llm).model == expected
 
@@ -111,3 +118,55 @@ def test_local_without_da_provider_judges_local_model(env):
     env.setenv("CHAT_PROVIDER", "local")
     env.setenv("LOCAL_LLM_MODEL", "qwen3:32b")
     assert LLMSettings().get_da_model() == "qwen3:32b"
+
+
+def test_structured_output_provider_carries_the_tool_loop(env):
+    """Without DA_PROVIDER the tool loop sends `provider_override` and the
+    structured-output model, so that is the model the gate judges."""
+    env.setenv("FIREWORKS_DA_MODEL", FW_DA)
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    env.setenv("OPENAI_MODEL", "gpt-x")
+    capability = resolve_investigation_capability(NS(llm=LLMSettings()), _Registry())
+    assert (capability.provider, capability.model) == ("openai", "gpt-x")
+    assert capability.tool_capable is True
+    assert capability.source.startswith("STRUCTURED_OUTPUT_PROVIDER")
+
+
+def test_a_tool_incapable_structured_output_model_fails_the_gate(env):
+    env.setenv("CHAT_PROVIDER", "openai")
+    env.setenv("OPENAI_MODEL", "gpt-x")
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "fireworks")
+    with pytest.raises(InvestigationToolingError, match="minimax-m2p7"):
+        validate_investigation_tooling(NS(llm=LLMSettings()), _Registry())
+
+
+class _ClassProvider:
+    def __init__(self, value):
+        self._value = value
+
+    def get_structured_output_capability(self, model=None):
+        return NS(value=self._value)
+
+
+@pytest.mark.parametrize(
+    ("chat_class", "so_class", "degraded"),
+    [
+        ("strict", "strict", []),
+        ("strict", "best_effort", ["investigation (DA→CHAT)"]),
+        ("best_effort", "strict", []),
+        ("best_effort", "best_effort", ["investigation (DA→CHAT)", "chat"]),
+    ],
+)
+def test_enforcement_verdict_judges_the_structured_output_route(
+    env, chat_class, so_class, degraded
+):
+    env.setenv("FIREWORKS_MODEL", FW_DA)
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    env.setenv("OPENAI_MODEL", "gpt-x")
+    providers = {
+        "fireworks": _ClassProvider(chat_class),
+        "openai": _ClassProvider(so_class),
+    }
+    registry = NS(get_provider=providers.get)
+    resolved = resolve_enforcement_classes(NS(llm=LLMSettings()), registry)
+    assert [r.role for r in resolved.degraded_roles] == degraded

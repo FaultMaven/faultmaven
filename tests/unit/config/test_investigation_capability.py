@@ -397,7 +397,8 @@ def _opus_registry(**others):
 def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
     """#1755 review: chat on fireworks, STRUCTURED_OUTPUT_PROVIDER on
     anthropic opus-5-5. The override only requests its schema tool, so it does
-    not compensate the best-effort chat model, and nothing calls it native."""
+    not compensate the best-effort chat model, and nothing calls it native.
+    It also carries the tool loop (#2142), so it is the investigation row."""
     registry = _opus_registry(fireworks=_EnforcementProvider("best_effort"))
     settings = _enforcement_settings(
         so_provider_name="anthropic", so_model="claude-opus-5-5"
@@ -408,7 +409,10 @@ def test_requested_only_forcing_on_the_structured_output_route_is_named(caplog):
     assert not [m for m in messages if "acceptable" in m]
     requested = [m for m in messages if "requested by instruction" in m]
     assert requested == [
-        m for m in requested if "STRUCTURED_OUTPUT_PROVIDER model anthropic/" in m
+        m
+        for m in requested
+        if "STRUCTURED_OUTPUT_PROVIDER and investigation (DA→CHAT) model anthropic/"
+        in m
     ]
     assert len(requested) == 1
     assert any("BEST_EFFORT" in m for m in messages)
@@ -444,7 +448,8 @@ def test_one_requested_only_warning_per_model(caplog):
 def test_a_compensated_requested_only_model_is_reported_at_info(caplog):
     """#1755 delta: a strict STRUCTURED_OUTPUT_PROVIDER carries the schema-bound
     calls of a chat model that only requests forcing, as it does for an
-    unenforced one: INFO, acceptable. Uncompensated, it still warns."""
+    unenforced one: INFO, acceptable. Uncompensated, it still warns. The
+    override also carries the tool loop (#2142), so only chat is reported."""
     opus = "claude-opus-5-5"
     settings = _enforcement_settings("anthropic", opus, so_provider_name="openai")
     registry = _opus_registry(openai=_EnforcementProvider("strict"))
@@ -452,7 +457,7 @@ def test_a_compensated_requested_only_model_is_reported_at_info(caplog):
         warn_best_effort_enforcement(settings, registry)
     assert not [r for r in caplog.records if r.levelno >= _logging.WARNING]
     [info] = [r.message for r in caplog.records if r.levelno == _logging.INFO]
-    assert f"investigation/chat model anthropic/{opus}" in info
+    assert info.startswith(f"chat model anthropic/{opus}")
     assert "acceptable" in info
     assert not resolve_enforcement_classes(settings, registry).degraded_roles
 

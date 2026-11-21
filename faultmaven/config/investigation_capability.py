@@ -12,7 +12,8 @@ conclusion* FaultMaven guarantees against (inadequate data → keep engaging and
 name the gap, never conclude early).
 
 So this gate refuses to boot when the **resolved investigation model**
-(``DA_PROVIDER`` → falling back to ``CHAT_PROVIDER``) is tool-incapable —
+(``DA_PROVIDER``, else ``STRUCTURED_OUTPUT_PROVIDER``, else ``CHAT_PROVIDER``:
+``resolve_investigation_route``) is tool-incapable —
 *unless* the operator explicitly opts in via ``ALLOW_TOOLLESS_INVESTIGATION``
 (a knowing choice to run degraded/offline, e.g. a local model — never an
 accident). When opted in, the gate logs a loud warning instead of failing; the
@@ -25,7 +26,7 @@ checks called from the lifespan.
 
 This module gates two independent axes, each with its own resolved provider:
 
-1. **Tool calling** on the DA→CHAT investigation model
+1. **Tool calling** on the investigation route's model
    (``validate_investigation_tooling``) — can the engine *reach* the evidence.
 2. **Response-schema capacity** on the STRUCTURED_OUTPUT→CHAT model
    (``validate_structured_output_capacity``) — can the engine *record what it
@@ -39,10 +40,9 @@ schema is only sent once a case reaches that stage, so an incompatible model
 serves several turns of a live investigation and *then* fails every remaining
 turn. Boot is the honest place to say "this model cannot run this engine".
 
-What is deliberately NOT gated: whether the structured-output provider supports
-*tool calling*. Structured output uses ``json_schema`` / ``response_format``,
-which does not require it, so a tool-incapable structured-output provider is not
-a problem — that is why axis 1 resolves the DA→CHAT provider and not this one.
+The structured-output provider's *tool calling* is gated only where it carries
+the tool loop (no ``DA_PROVIDER``, #2142). Its schema-bound calls use
+``json_schema`` / ``response_format``, which does not require tool calling.
 
 The registry is passed in (not imported) so this config-layer module stays free
 of an infrastructure import; the gate is skipped in test environments, matching
@@ -80,10 +80,10 @@ class StructuredOutputCapacityError(RuntimeError):
 
 @dataclass(frozen=True)
 class InvestigationCapability:
-    """Resolved tool-calling capability of the investigation (DA→CHAT) model.
+    """Resolved tool-calling capability of the investigation route's model.
 
     ``tool_capable`` is the load-bearing field. ``source`` records where the
-    provider was resolved from (DA override vs. CHAT fallback) so messages are
+    provider was resolved from (``resolve_investigation_route``) so messages are
     actionable; ``reason`` is a human-readable explanation when not capable.
     """
 
@@ -92,6 +92,34 @@ class InvestigationCapability:
     model: str
     source: str
     reason: Optional[str] = None
+
+
+def resolve_investigation_route(llm: Any) -> tuple[str, str, str]:
+    """``(provider, model, source)`` the investigation tool loop sends to.
+
+    Mirrors ``milestone_engine`` (#2142): a set ``DA_PROVIDER`` is called
+    directly; without one the router path applies ``STRUCTURED_OUTPUT_PROVIDER``
+    when set, and otherwise the chat provider answers with its base model.
+    """
+    if llm.da_provider is not None:
+        return (
+            _provider_name(llm.get_da_provider()),
+            llm.get_da_model(),
+            "DA_PROVIDER",
+        )
+    so_provider = getattr(llm, "structured_output_provider", None)
+    if so_provider is not None:
+        return (
+            _provider_name(so_provider),
+            llm.get_structured_output_model(),
+            "STRUCTURED_OUTPUT_PROVIDER (carries the tool loop when no "
+            "DA_PROVIDER is set)",
+        )
+    return (
+        _provider_name(llm.get_da_provider()),
+        llm.get_da_model(),
+        "CHAT_PROVIDER (no DA_PROVIDER override set)",
+    )
 
 
 def resolve_investigation_capability(
@@ -103,17 +131,7 @@ def resolve_investigation_capability(
     ``registry`` is any object exposing ``get_provider(name)`` returning a
     provider with ``supports_tool_calling(model)`` (or ``None`` if uninitialized).
     """
-    llm = settings.llm
-    da_provider = llm.get_da_provider()
-    model = llm.get_da_model()
-    provider_name = (
-        da_provider.value if hasattr(da_provider, "value") else str(da_provider)
-    )
-    source = (
-        "DA_PROVIDER"
-        if llm.da_provider is not None
-        else "CHAT_PROVIDER (no DA_PROVIDER override set)"
-    )
+    provider_name, model, source = resolve_investigation_route(settings.llm)
 
     provider = None
     try:
@@ -516,11 +534,8 @@ def resolve_enforcement_classes(
     try:
         llm = settings.llm
 
-        investigation = (
-            "investigation (DA→CHAT)",
-            _provider_name(llm.get_da_provider()),
-            llm.get_da_model(),
-        )
+        route_provider, route_model, _ = resolve_investigation_route(llm)
+        investigation = ("investigation (DA→CHAT)", route_provider, route_model)
         chat_provider_name = _provider_name(llm.provider)
         chat = ("chat", chat_provider_name, _base_model(llm, chat_provider_name))
 
