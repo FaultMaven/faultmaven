@@ -277,7 +277,8 @@ class LLMSettings(BaseSettings):
     # can't reach the evidence yet still emits conclusions, which risks the
     # premature/incorrect conclusion FaultMaven guarantees against. So the
     # startup gate (config/investigation_capability.py) refuses to boot when the
-    # resolved investigation model (DA → CHAT) is tool-incapable, UNLESS this is
+    # investigation route's model (resolve_investigation_route) is tool-incapable,
+    # UNLESS this is
     # explicitly set — a knowing opt-in to degraded/offline mode (e.g. a local
     # model), never an accident. The per-turn runtime fallback still applies.
     allow_toolless_investigation: bool = Field(
@@ -684,11 +685,13 @@ class LLMSettings(BaseSettings):
         return v
 
     def get_model(self, task: str = "chat") -> str:
-        """Get model for current provider and specific task
+        """Get model for current provider and specific task ('da': ``get_da_model``)
 
         Args:
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da', 'knowledge')
         """
+        if task == "da":
+            return self.get_da_model()
         return self._get_model_for_provider_and_task(self.provider, task)
 
     def explicit_role_provider(self, role: str) -> Optional[str]:
@@ -775,9 +778,13 @@ class LLMSettings(BaseSettings):
         return self.da_provider or self.provider
 
     def get_da_model(self) -> str:
-        """Get model for DA provider using task-specific configuration"""
-        provider = self.get_da_provider()
-        return self._get_model_for_provider_and_task(provider, "da")
+        """The DA role's model: ``{PROVIDER}_DA_MODEL`` applies only with
+        ``DA_PROVIDER`` set, else the chat provider's base model (#2142). The
+        model a turn sends is ``investigation_capability``'s route, which also
+        honours ``STRUCTURED_OUTPUT_PROVIDER``."""
+        if self.da_provider is None:
+            return self._get_base_model_for_provider(self.provider)
+        return self._get_model_for_provider_and_task(self.da_provider, "da")
 
     def get_knowledge_provider(self) -> LLMProvider:
         """Get knowledge provider for document conversion (falls back to chat provider if not set)"""
@@ -817,6 +824,18 @@ class LLMSettings(BaseSettings):
         when you need a different model for that specific capability.
         """
         if provider == LLMProvider.LOCAL:
+            return self._get_base_model_for_provider(provider)
+
+        # Per-task override: {provider_name}_{task}_model attribute
+        task_field = f"{provider.value}_{task}_model"
+        per_task = getattr(self, task_field, None)
+
+        return per_task or self._get_base_model_for_provider(provider)
+
+    def _get_base_model_for_provider(self, provider: LLMProvider) -> str:
+        """The provider's base ``{PROVIDER}_MODEL`` (``LOCAL_LLM_MODEL`` for
+        local), or ``""``: the model the registry builds the provider with."""
+        if provider == LLMProvider.LOCAL:
             return self.local_model or ""
 
         # Base model per provider (the single source of truth from .env)
@@ -831,14 +850,7 @@ class LLMSettings(BaseSettings):
             LLMProvider.GROQ: self.groq_model,
             LLMProvider.AZURE: self.azure_model,
         }
-
-        base = base_models.get(provider, "")
-
-        # Per-task override: {provider_name}_{task}_model attribute
-        task_field = f"{provider.value}_{task}_model"
-        per_task = getattr(self, task_field, None)
-
-        return per_task or base or ""
+        return base_models.get(provider, "") or ""
 
     def get_multimodal_base_url(self) -> str:
         """Get base URL for multimodal provider"""

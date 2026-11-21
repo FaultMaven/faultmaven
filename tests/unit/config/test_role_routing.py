@@ -138,6 +138,9 @@ class TestReportedValuesMatchTheRealGetters:
             "DA_PROVIDER": "openai",
             "OPENAI_DA_MODEL": "gpt-5.4-mini",
         },
+        # A per-task DA model with no DA_PROVIDER never reaches the wire, so
+        # the role reports the anchor's base model (#2142).
+        {"CHAT_PROVIDER": "openai", "OPENAI_DA_MODEL": "gpt-5.4-mini"},
         # A role pinned to local while the anchor is not: local resolves its
         # model from LOCAL_LLM_MODEL and ignores per-task keys entirely.
         {

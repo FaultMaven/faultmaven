@@ -103,7 +103,8 @@ def validate_configuration(settings: Any, *, advisories: bool = True) -> None:
     # an opaque error.
     validate_llm_provider_credentials(settings)
 
-    # The resolved investigation model (DA -> CHAT) can call tools: the engine
+    # The investigation route's model (resolve_investigation_route) can call
+    # tools: the engine
     # needs them to gather evidence (search_file, deep_analysis), and
     # concluding without reaching the evidence is the premature-conclusion
     # failure we guarantee against. Explicit opt-out:

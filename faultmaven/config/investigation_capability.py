@@ -12,7 +12,8 @@ conclusion* FaultMaven guarantees against (inadequate data → keep engaging and
 name the gap, never conclude early).
 
 So this gate refuses to boot when the **resolved investigation model**
-(``DA_PROVIDER`` → falling back to ``CHAT_PROVIDER``) is tool-incapable —
+(``DA_PROVIDER``, else ``STRUCTURED_OUTPUT_PROVIDER``, else ``CHAT_PROVIDER``:
+``resolve_investigation_route``) is tool-incapable —
 *unless* the operator explicitly opts in via ``ALLOW_TOOLLESS_INVESTIGATION``
 (a knowing choice to run degraded/offline, e.g. a local model — never an
 accident). When opted in, the gate logs a loud warning instead of failing; the
@@ -25,7 +26,7 @@ checks called from the lifespan.
 
 This module gates two independent axes, each with its own resolved provider:
 
-1. **Tool calling** on the DA→CHAT investigation model
+1. **Tool calling** on the investigation route's model
    (``validate_investigation_tooling``) — can the engine *reach* the evidence.
 2. **Response-schema capacity** on the STRUCTURED_OUTPUT→CHAT model
    (``validate_structured_output_capacity``) — can the engine *record what it
@@ -39,10 +40,9 @@ schema is only sent once a case reaches that stage, so an incompatible model
 serves several turns of a live investigation and *then* fails every remaining
 turn. Boot is the honest place to say "this model cannot run this engine".
 
-What is deliberately NOT gated: whether the structured-output provider supports
-*tool calling*. Structured output uses ``json_schema`` / ``response_format``,
-which does not require it, so a tool-incapable structured-output provider is not
-a problem — that is why axis 1 resolves the DA→CHAT provider and not this one.
+The structured-output provider's *tool calling* is gated only where it carries
+the tool loop (no ``DA_PROVIDER``, #2142). Its schema-bound calls use
+``json_schema`` / ``response_format``, which does not require tool calling.
 
 The registry is passed in (not imported) so this config-layer module stays free
 of an infrastructure import; the gate is skipped in test environments, matching
@@ -54,6 +54,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
+
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import Settings
@@ -80,10 +82,10 @@ class StructuredOutputCapacityError(RuntimeError):
 
 @dataclass(frozen=True)
 class InvestigationCapability:
-    """Resolved tool-calling capability of the investigation (DA→CHAT) model.
+    """Resolved tool-calling capability of the investigation route's model.
 
     ``tool_capable`` is the load-bearing field. ``source`` records where the
-    provider was resolved from (DA override vs. CHAT fallback) so messages are
+    provider was resolved from (``resolve_investigation_route``) so messages are
     actionable; ``reason`` is a human-readable explanation when not capable.
     """
 
@@ -92,6 +94,38 @@ class InvestigationCapability:
     model: str
     source: str
     reason: Optional[str] = None
+
+
+_SO_ROUTE_SOURCE = (
+    "STRUCTURED_OUTPUT_PROVIDER (carries the tool loop when no DA_PROVIDER is set)"
+)
+
+
+def resolve_investigation_route(llm: Any) -> tuple[str, str, str]:
+    """``(provider, model, source)`` the investigation tool loop sends to.
+
+    Mirrors ``milestone_engine`` (#2142): a set ``DA_PROVIDER`` is called
+    directly; without one the router path applies ``STRUCTURED_OUTPUT_PROVIDER``
+    when set, and otherwise the chat provider answers with its base model.
+    """
+    if llm.da_provider is not None:
+        return (
+            _provider_name(llm.get_da_provider()),
+            llm.get_da_model(),
+            "DA_PROVIDER",
+        )
+    so_provider = getattr(llm, "structured_output_provider", None)
+    if so_provider is not None:
+        return (
+            _provider_name(so_provider),
+            llm.get_structured_output_model(),
+            _SO_ROUTE_SOURCE,
+        )
+    return (
+        _provider_name(llm.get_da_provider()),
+        llm.get_da_model(),
+        "CHAT_PROVIDER (no DA_PROVIDER override set)",
+    )
 
 
 def resolve_investigation_capability(
@@ -103,17 +137,7 @@ def resolve_investigation_capability(
     ``registry`` is any object exposing ``get_provider(name)`` returning a
     provider with ``supports_tool_calling(model)`` (or ``None`` if uninitialized).
     """
-    llm = settings.llm
-    da_provider = llm.get_da_provider()
-    model = llm.get_da_model()
-    provider_name = (
-        da_provider.value if hasattr(da_provider, "value") else str(da_provider)
-    )
-    source = (
-        "DA_PROVIDER"
-        if llm.da_provider is not None
-        else "CHAT_PROVIDER (no DA_PROVIDER override set)"
-    )
+    provider_name, model, source = resolve_investigation_route(settings.llm)
 
     provider = None
     try:
@@ -124,7 +148,10 @@ def resolve_investigation_capability(
             provider=provider_name,
             model=model,
             source=source,
-            reason=f"could not resolve provider {provider_name!r}: {exc}",
+            reason=(
+                f"could not resolve provider {provider_name!r} "
+                f"({exception_log_name(exc)}); model {model}, resolved from {source}"
+            ),
         )
 
     if provider is None:
@@ -135,7 +162,8 @@ def resolve_investigation_capability(
             source=source,
             reason=(
                 f"provider {provider_name!r} is not initialized "
-                "(missing credential, or the provider failed to initialize)"
+                "(missing credential, or the provider failed to initialize); "
+                f"model {model}, resolved from {source}"
             ),
         )
 
@@ -300,12 +328,12 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     # The remedy is provider-shaped: a self-hosted endpoint is the operator's
     # own infrastructure, so "adopt a cloud vendor" is not a remedy there — it
     # is an instruction to abandon the deployment model FaultMaven advertises
-    # as supported (#1356). A `local` provider can only reach this gate two
-    # ways now, and both have a fix on the operator's side of the wire.
+    # as supported (#1356). Two causes have a fix on the operator's side of the
+    # wire.
     if cap.provider == "local":
         remedy = (
             "For a self-hosted endpoint the fix is on your side of the wire, "
-            "and there are exactly two ways to get here. (1) LOCAL_LLM_URL ends "
+            "and two causes are yours to fix. (1) LOCAL_LLM_URL ends "
             "in /api, /api/chat or /api/generate, which names Ollama's native API — "
             "FaultMaven's transport for it does not carry tool calls, so no "
             "model can do tool calling over it. Drop the suffix (use http://HOST:11434, or "
@@ -319,6 +347,23 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
             "(no search_file/deep_analysis; responses limited to "
             "structural-index summaries)."
         )
+    elif cap.source == _SO_ROUTE_SOURCE:
+        remedy = (
+            "Use a tool-capable STRUCTURED_OUTPUT_PROVIDER model — or set "
+            "DA_PROVIDER to take the investigation tool loop — or "
+            "set ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode "
+            "(no search_file/deep_analysis; responses limited to "
+            "structural-index summaries)."
+        )
+    elif cap.source == "DA_PROVIDER":
+        remedy = (
+            "Use a tool-capable DA_PROVIDER model, or unset DA_PROVIDER so the "
+            "investigation runs on its next route (STRUCTURED_OUTPUT_PROVIDER "
+            "when set, else CHAT_PROVIDER) — or set "
+            "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode (no "
+            "search_file/deep_analysis; responses limited to structural-index "
+            "summaries)."
+        )
     else:
         remedy = (
             "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or "
@@ -331,20 +376,17 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     if settings.llm.allow_toolless_investigation:
         # Knowing opt-in — boot, but loudly, and /health will report degraded.
         logger.warning(
-            "Investigation model %s/%s does not support tool calling (resolved "
-            "from %s); ALLOW_TOOLLESS_INVESTIGATION is set, so booting in "
+            "Investigation model check failed: %s; ALLOW_TOOLLESS_INVESTIGATION "
+            "is set, so booting in "
             "DEGRADED mode: Directed Analysis (search_file, deep_analysis) is "
             "unavailable and investigations are limited to structural-index "
             "summaries.",
-            cap.provider,
-            cap.model,
-            cap.source,
+            cap.reason,
         )
         return
 
     raise InvestigationToolingError(
-        f"Investigation model {cap.provider}/{cap.model} does not support tool "
-        f"calling (resolved from {cap.source}). The investigation engine needs "
+        f"Investigation model check failed: {cap.reason}. The investigation engine needs "
         f"tool calling to gather evidence (search_file, deep_analysis); without "
         f"it, it would draw conclusions without reaching the evidence. " + remedy
     )
@@ -516,11 +558,8 @@ def resolve_enforcement_classes(
     try:
         llm = settings.llm
 
-        investigation = (
-            "investigation (DA→CHAT)",
-            _provider_name(llm.get_da_provider()),
-            llm.get_da_model(),
-        )
+        route_provider, route_model, _ = resolve_investigation_route(llm)
+        investigation = ("investigation", route_provider, route_model)
         chat_provider_name = _provider_name(llm.provider)
         chat = ("chat", chat_provider_name, _base_model(llm, chat_provider_name))
 
@@ -598,6 +637,10 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
     model that only requests forced tool use (#1755), unless compensated.
     """
     resolved = resolve_enforcement_classes(settings, registry)
+    try:
+        so_route = resolve_investigation_route(settings.llm)[2] == _SO_ROUTE_SOURCE
+    except Exception:  # advisory — never raises
+        so_route = False
     requested_only: dict = {}  # (provider, model) -> labels: one warning each
     if resolved.structured_output_forcing_requested_only:
         requested_only[
@@ -648,13 +691,18 @@ def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
                 "dropped/renamed required fields silently degrade recorded "
                 "investigation state. Best-effort is fine for "
                 "classifier/synthesis roles, not here — use a "
-                "schema-enforcing provider for this role, or set "
-                "STRUCTURED_OUTPUT_PROVIDER to route just the schema-bound "
-                "calls to one (note: a pinned DA_PROVIDER takes precedence "
-                "over that override on the tool path, so it does not "
-                "compensate a best-effort DA_PROVIDER).",
+                "schema-enforcing provider for this role, or %s",
                 role.role,
                 role.provider,
                 role.model,
                 (role.enforcement or "").upper(),
+                (
+                    "change STRUCTURED_OUTPUT_PROVIDER, the route this role "
+                    "runs on, or set DA_PROVIDER to take the tool loop."
+                    if so_route and role.role.startswith("investigation")
+                    else "set STRUCTURED_OUTPUT_PROVIDER to route just the "
+                    "schema-bound calls to one (note: a pinned DA_PROVIDER "
+                    "takes precedence over that override on the tool path, "
+                    "so it does not compensate a best-effort DA_PROVIDER)."
+                ),
             )
