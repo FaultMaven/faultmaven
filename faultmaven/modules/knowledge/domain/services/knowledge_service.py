@@ -3625,7 +3625,7 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body by
         ``POST /knowledge/documents/bulk-update``, which any authenticated
         caller may reach (#866), so per-target entries never carry exception
-        text — the diagnostic stays in the log line.
+        text — the log line names the class.
         """
         if "content" in updates:
             # Metadata only (#2055): content re-indexes, one document per
@@ -3670,7 +3670,7 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body (see
         ``bulk_update_documents``), so neither the raised exception nor the
         per-document ``error`` field — both of which carry driver text — is
-        echoed; the diagnostic stays in the log line. Each entry is the
+        echoed; the log line names the class. Each entry is the
         constant "delete failed" per id. A document counted as deleted has no
         chunk retrievable through a KB door: :meth:`delete_document` reports
         success once its row change commits, and a vector delete that fails

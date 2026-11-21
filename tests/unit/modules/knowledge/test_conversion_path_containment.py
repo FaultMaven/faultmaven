@@ -223,4 +223,6 @@ class TestTheScanWalkRefusesASymlinkOutOfTheTree:
         assert (
             "secret-runbook" not in minted
         ), "a symlink out of the tree was read and minted as a draft"
-        assert any("outside the tree" in r.getMessage() for r in caplog.records)
+        assert any(
+            "outside the tree: innocent.md (" in r.getMessage() for r in caplog.records
+        )
