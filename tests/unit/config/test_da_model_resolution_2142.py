@@ -151,6 +151,23 @@ def test_an_uninitialized_structured_output_provider_is_named_as_such(env):
     assert "does not support tool calling" not in str(exc.value)
 
 
+def test_opt_in_warning_names_an_uninitialized_provider_as_such(env, caplog):
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    env.setenv("ALLOW_TOOLLESS_INVESTIGATION", "true")
+    with caplog.at_level("WARNING"):
+        validate_investigation_tooling(NS(llm=LLMSettings()), NS(get_provider={}.get))
+    assert "'openai' is not initialized" in caplog.text
+    assert "does not support tool calling" not in caplog.text
+
+
+def test_a_tool_incapable_da_provider_names_da_provider(env):
+    env.setenv("DA_PROVIDER", "fireworks")
+    with pytest.raises(InvestigationToolingError, match="minimax-m2p7") as exc:
+        validate_investigation_tooling(NS(llm=LLMSettings()), _Registry())
+    assert "Use a tool-capable DA_PROVIDER model" in str(exc.value)
+    assert "tool-capable CHAT_PROVIDER" not in str(exc.value)
+
+
 def test_best_effort_structured_output_route_names_it_as_the_route(env, caplog):
     env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
     with caplog.at_level("WARNING"):

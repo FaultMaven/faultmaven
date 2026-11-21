@@ -322,12 +322,12 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     # The remedy is provider-shaped: a self-hosted endpoint is the operator's
     # own infrastructure, so "adopt a cloud vendor" is not a remedy there — it
     # is an instruction to abandon the deployment model FaultMaven advertises
-    # as supported (#1356). A `local` provider can only reach this gate two
-    # ways now, and both have a fix on the operator's side of the wire.
+    # as supported (#1356). Two causes have a fix on the operator's side of the
+    # wire.
     if cap.provider == "local":
         remedy = (
             "For a self-hosted endpoint the fix is on your side of the wire, "
-            "and there are exactly two ways to get here. (1) LOCAL_LLM_URL ends "
+            "and two causes are yours to fix. (1) LOCAL_LLM_URL ends "
             "in /api, /api/chat or /api/generate, which names Ollama's native API — "
             "FaultMaven's transport for it does not carry tool calls, so no "
             "model can do tool calling over it. Drop the suffix (use http://HOST:11434, or "
@@ -349,6 +349,14 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
             "(no search_file/deep_analysis; responses limited to "
             "structural-index summaries)."
         )
+    elif cap.source == "DA_PROVIDER":
+        remedy = (
+            "Use a tool-capable DA_PROVIDER model, or unset DA_PROVIDER so the "
+            "investigation runs on CHAT_PROVIDER — or set "
+            "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode (no "
+            "search_file/deep_analysis; responses limited to structural-index "
+            "summaries)."
+        )
     else:
         remedy = (
             "Use a tool-capable CHAT_PROVIDER (anthropic, openai, gemini) — or "
@@ -361,14 +369,12 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     if settings.llm.allow_toolless_investigation:
         # Knowing opt-in — boot, but loudly, and /health will report degraded.
         logger.warning(
-            "Investigation model %s/%s does not support tool calling (resolved "
-            "from %s); ALLOW_TOOLLESS_INVESTIGATION is set, so booting in "
+            "Investigation model check failed: %s; ALLOW_TOOLLESS_INVESTIGATION "
+            "is set, so booting in "
             "DEGRADED mode: Directed Analysis (search_file, deep_analysis) is "
             "unavailable and investigations are limited to structural-index "
             "summaries.",
-            cap.provider,
-            cap.model,
-            cap.source,
+            cap.reason,
         )
         return
 
