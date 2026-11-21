@@ -263,6 +263,25 @@ def _declared_http_status(exc: BaseException) -> Optional[int]:
     return None
 
 
+def _first_declaration(
+    error: BaseException,
+) -> Tuple[Optional[int], bool]:
+    """What the first declaring cursor on the ``__cause__`` chain declared.
+
+    The one chain rule for AUTH_FAILED and MODEL_NOT_FOUND (#2138): the first
+    cursor that declares an HTTP status or ``error_code ==
+    PROVIDER_AUTH_FAILED`` settles both questions, as the nearest raiser that
+    saw a response. Returns ``(status, auth_failed)`` for that cursor, or
+    ``(None, False)`` when no cursor declares either. Never the message text.
+    """
+    for cursor in walk_cause_chain(error):
+        status = _declared_http_status(cursor)
+        auth_failed = getattr(cursor, "error_code", None) == PROVIDER_AUTH_FAILED
+        if status is not None or auth_failed:
+            return status, auth_failed
+    return None, False
+
+
 def _transient_by_structure(error: BaseException) -> bool:
     """Last-resort retryability for an exception that declared none.
 
@@ -474,26 +493,18 @@ class LLMErrorHandler:
         return is_billing_error(error)
 
     def is_auth_error(self, error: Exception) -> bool:
-        """Check if error is authentication-related."""
-        error_str = str(error).lower()
-        return any(
-            pattern in error_str
-            for pattern in ("auth", "api key", "unauthorized", "401", "403")
-        )
+        """A rejected credential: the first declaring cursor (see
+        :func:`_first_declaration`) carries ``PROVIDER_AUTH_FAILED`` or a
+        401/403."""
+        status, auth_failed = _first_declaration(error)
+        return auth_failed or status in (401, 403)
 
     def is_model_not_found_error(self, error: Exception) -> bool:
-        """Check if error is related to model not found (404)."""
-        error_str = str(error).lower()
-        return any(
-            pattern in error_str
-            for pattern in (
-                "model not found",
-                "not_found",
-                "404",
-                "inaccessible",
-                "not deployed",
-            )
-        )
+        """A missing model: the first declaring cursor (see
+        :func:`_first_declaration`) carries a 404 and not
+        ``PROVIDER_AUTH_FAILED``."""
+        status, auth_failed = _first_declaration(error)
+        return status == 404 and not auth_failed
 
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if an error is a context-window overflow.
@@ -569,11 +580,8 @@ class LLMErrorHandler:
             )
 
         # Output truncation is a typed signal the engine raised about its OWN
-        # generation cap, so it is dispatched first — before any of the
-        # phrase-matching classifiers below get to read a message that belongs
-        # to the provider or to the JSON decoder. (A provider's truncation text
-        # names its model; letting `is_model_not_found_error` see it would
-        # report a recoverable cut as a MODEL_NOT_FOUND configuration failure.)
+        # generation cap, so it is dispatched first, ahead of every classifier
+        # below.
         if isinstance(error, OutputTruncationError):
             if error.cap_reached:
                 # Nothing left to raise, so an identical retry cannot finish.
@@ -709,14 +717,13 @@ class LLMErrorHandler:
         # declaration divert an overflow onto the ladder, where it would spend
         # every attempt re-sending the same oversized prompt.
         #
-        # Safe to put ahead of the gate, unlike the classifiers below it: this
-        # one reads a category the PROVIDER declared about its own failure
-        # (#509), so nothing about the message text — a ``host:port``, the
-        # engine's own wording, a JSON decoder's complaint — can reach it. That
-        # difference is the whole reason the ordering splits here rather than
-        # moving every classifier to one side. (``is_auth_error`` and
-        # ``is_model_not_found_error`` below still match text, which is why
-        # they stay behind the gate; narrowing those is out of scope here.)
+        # Safe to put ahead of the gate: this one reads a category the
+        # PROVIDER declared about its own failure (#509), so nothing about the
+        # message text — a ``host:port``, the engine's own wording, a JSON
+        # decoder's complaint — can reach it. (``is_auth_error`` and
+        # ``is_model_not_found_error`` read declarations too since #2138; they
+        # stay behind the gate because a declared transient failure must reach
+        # the ladder first.)
         if self.is_token_limit_error(error):
             return ErrorResult(
                 action=ErrorAction.FAIL,
@@ -725,13 +732,13 @@ class LLMErrorHandler:
                 retry_count=retry_count,
             )
 
-        # A DECLARED transient failure goes straight to the ladder, without
-        # passing under the prose classifiers below (#1287 follow-up).
+        # A DECLARED transient failure goes straight to the ladder, ahead of
+        # the auth and model-not-found classifiers below (#1287 follow-up).
         #
-        # This is where "a declaration outranks prose" actually has to hold.
+        # This is where "a declaration outranks prose" first had to hold.
         # Putting that rule only inside ``is_retryable_error`` was not enough:
-        # ``handle_error`` reaches THREE substring classifiers first, and each
-        # matches bare numbers anywhere in the message — ``is_auth_error`` on
+        # ``handle_error`` then reached substring classifiers first, which
+        # matched bare numbers anywhere in the message — ``is_auth_error`` on
         # "401"/"403", ``is_model_not_found_error`` on "404". Typing the
         # transport raise sites made every provider fold aiohttp's raw text
         # into the message, and that text carries ``host:port``. Measured
@@ -743,9 +750,13 @@ class LLMErrorHandler:
         #
         # all with ``retryable=True`` declared and discarded. Any local model
         # server or proxy on a port containing 404/401/403 became permanently
-        # unavailable on its first connect failure. Sanitising the message
-        # would only trade one prose dependency for another; the ordering is
-        # the fix.
+        # unavailable on its first connect failure.
+        #
+        # Since #2138 neither classifier reads the message at all: each reads
+        # the first status or ``PROVIDER_AUTH_FAILED`` declared on the
+        # ``__cause__`` chain, so no text can decide either code. The gate
+        # stays ahead of them: a raiser that declared its failure transient is
+        # retried even when its chain also carries a 4xx status.
         #
         # Only ``True`` short-circuits. A declared NON-retryable error still
         # falls through, because the classifiers below carry SEMANTICS the flag
