@@ -273,6 +273,21 @@ def _password_reset_claims(
     }
 
 
+def refuse_non_ascii_token(token: str) -> None:
+    """Refuse a token that is not ASCII as malformed, before PyJWT reads it.
+
+    A compact JWS is ASCII. PyJWT 2.15.1 encodes a ``str`` token to UTF-8
+    outside its own ``try`` (``api_jws.py`` ``_load``), so a lone surrogate
+    raises ``UnicodeEncodeError``, which no ``InvalidTokenError`` clause judges:
+    an unauthenticated 500 on the refresh routes (#2165).
+
+    Raises:
+        jwt.DecodeError: The token is not ASCII.
+    """
+    if isinstance(token, str) and not token.isascii():
+        raise jwt.DecodeError("Token is not ASCII")
+
+
 def _require_password_reset_type(claims: Dict) -> Dict:
     """Refuse a verified token that was not minted as a reset token.
 
@@ -800,8 +815,9 @@ class IJWTTokenGenerator(ABC):
             The verified claims.
 
         Raises:
-            jwt.InvalidTokenError: Bad signature, wrong issuer/audience,
-                expired, or not a ``password_reset`` token.
+            jwt.InvalidTokenError: Malformed (not ASCII included), bad
+                signature, wrong issuer/audience, expired, or not a
+                ``password_reset`` token.
         """
         ...
 
@@ -813,7 +829,8 @@ class IJWTTokenGenerator(ABC):
             token: JWT access token
 
         Returns:
-            Token payload if valid, None otherwise
+            Token payload if valid, None otherwise. A store read failure or
+            any other unexpected exception propagates, never ``None`` (#2165).
         """
         ...
 
@@ -825,7 +842,9 @@ class IJWTTokenGenerator(ABC):
             token: JWT refresh token
 
         Returns:
-            Token payload if valid and not revoked, None otherwise
+            Token payload if valid and not revoked, None otherwise. A store
+            read failure or any other unexpected exception propagates, never
+            ``None`` (#2165).
         """
         ...
 
@@ -1211,6 +1230,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Raises:
             jwt.InvalidTokenError: Token is not a valid reset token.
         """
+        refuse_non_ascii_token(token)
         claims = jwt.decode(
             token,
             self.public_key,
@@ -1233,9 +1253,12 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT access token
 
         Returns:
-            Token payload if valid, None otherwise
+            Token payload if valid, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
+            refuse_non_ascii_token(token)
             # Decode and verify token
             payload = jwt.decode(
                 token,
@@ -1290,9 +1313,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "JWT validation failed: invalid token", extra={"error": str(e)}
             )
             return None
-        except Exception as e:
-            logger.error(f"Token validation error: {e}")
-            return None
 
     async def validate_refresh_token(self, token: str) -> Optional[Dict]:
         """Validate refresh token using public key.
@@ -1307,9 +1327,12 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT refresh token
 
         Returns:
-            Token payload if valid and not revoked, None otherwise
+            Token payload if valid and not revoked, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
+            refuse_non_ascii_token(token)
             # Decode and verify token
             payload = jwt.decode(
                 token,
@@ -1369,9 +1392,6 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.warning(
                 "JWT validation failed: invalid refresh token", extra={"error": str(e)}
             )
-            return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
     def _decode_for_revocation(self, token: str) -> Dict:
@@ -1972,6 +1992,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Raises:
             jwt.InvalidTokenError: Token is not a valid reset token.
         """
+        refuse_non_ascii_token(token)
         claims = jwt.decode(
             token,
             self.secret_key,
@@ -1995,9 +2016,12 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT access token
 
         Returns:
-            Token payload if valid, None otherwise
+            Token payload if valid, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
+            refuse_non_ascii_token(token)
             # Decode and verify token
             payload = jwt.decode(
                 token,
@@ -2051,9 +2075,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 "JWT validation failed: invalid access token", extra={"error": str(e)}
             )
             return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
-            return None
 
     async def validate_refresh_token(self, token: str) -> Optional[Dict]:
         """Validate refresh token and check revocation status.
@@ -2062,9 +2083,12 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token: JWT refresh token
 
         Returns:
-            Token payload if valid and not revoked, None otherwise
+            Token payload if valid and not revoked, None otherwise.
+            A store read failure or any other unexpected exception
+            propagates, never ``None`` (#2165).
         """
         try:
+            refuse_non_ascii_token(token)
             # Decode and verify token
             payload = jwt.decode(
                 token,
@@ -2126,9 +2150,6 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             logger.warning(
                 "JWT validation failed: invalid refresh token", extra={"error": str(e)}
             )
-            return None
-        except Exception as e:
-            logger.error("JWT validation error", extra={"error": str(e)}, exc_info=True)
             return None
 
     def _decode_for_revocation(self, token: str) -> Dict:

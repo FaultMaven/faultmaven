@@ -193,6 +193,8 @@ async def get_current_user_optional(
 
     Notes:
         - Does not raise exceptions for missing/invalid/revoked tokens
+        - An unexpected exception during verification propagates and answers
+          500, never "no user" (#2165)
         - Logs validation failures at debug level
         - Used for endpoints that work both authenticated and unauthenticated
     """
@@ -243,14 +245,9 @@ async def get_current_user_optional(
         # it DROPS the predicate — ``case_scope_where("")`` returns None and
         # ``list_sessions("")`` returns every session.
         # ``.get``, not ``["sub"]``. A subscript raises KeyError on an ABSENT
-        # claim, and the catch-all at the bottom of this function turns that
-        # into a WARNING — so the absent case never reached
-        # the guard below, the ``not isinstance`` arm was unreachable for it,
-        # and the test covering this layer was green through the catch-all
-        # rather than through the check it names. Measured: absent ->
-        # ``WARNING Unexpected error in JWT validation: 'sub'``; ``""`` and
-        # ``None`` -> ``DEBUG JWT rejected``. Same spelling as the other two
-        # readers of this claim, which is the point (#1447 review).
+        # claim, so the absent case would never reach the guard below. Same
+        # spelling as the other two readers of this claim, which is the point
+        # (#1447 review).
         subject = claims.get("sub")
         if not isinstance(subject, str) or not subject.strip():
             logger.debug("JWT rejected: the `sub` claim names no subject")
@@ -293,13 +290,6 @@ async def get_current_user_optional(
         # establishes that those are raised rather than swallowed.
         logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
         raise revocation_state_unknown_http_exception()
-    except HTTPException:
-        # Re-raise service availability errors (from get_auth_service)
-        raise
-    except Exception as e:
-        # Log unexpected errors but don't fail the request for optional auth
-        logger.warning(f"Unexpected error in JWT validation: {e}")
-        return None
 
 
 async def require_authentication(

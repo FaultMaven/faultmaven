@@ -574,3 +574,49 @@ class TestWithoutASignerTheFlowRefuses:
 
         deactivated = await user_service.deactivate_user(user.user_id)
         assert deactivated.is_active is False
+
+
+def _unusable_reset_token(generator, real_token, kind):
+    """A reset token the generator judges, by kind (#2165)."""
+    if kind == "not-ascii":
+        return "a\ud800.b.c"
+    claims = pyjwt.decode(real_token, options={"verify_signature": False})
+    algorithm = pyjwt.get_unverified_header(real_token)["alg"]
+    key = getattr(generator, "private_key", None) or generator.secret_key
+    if kind == "forged":
+        key = "a-different-secret-entirely-not-this-deployments"
+        algorithm = "HS256"
+    elif kind == "expired":
+        claims["exp"] = 1
+    else:
+        claims["type"] = "access"
+    return pyjwt.encode(claims, key, algorithm=algorithm)
+
+
+@pytest.mark.parametrize("algorithm", ["HS256", "RS256"])
+class TestRedemptionRefusesOnlyAJudgedToken:
+    """The refusal is the generator's judgement, never a server fault (#2165)."""
+
+    @pytest.mark.parametrize("kind", ["not-ascii", "forged", "expired", "wrong-type"])
+    async def test_an_unusable_token_gets_the_refusal(self, algorithm, kind):
+        user_service, _user = await _build(algorithm)
+        real = await user_service.request_password_reset(email=EMAIL)
+        token = _unusable_reset_token(user_service.token_generator, real, kind)
+
+        with pytest.raises(AuthenticationError) as refusal:
+            await user_service.reset_password(token, NEW_PASSWORD)
+
+        assert refusal.value.error_code == RESET_REFUSED_CODE
+
+    async def test_a_fault_while_verifying_propagates(self, algorithm):
+        user_service, _user = await _build(algorithm)
+        real = await user_service.request_password_reset(email=EMAIL)
+        generator = user_service.token_generator
+
+        with patch.object(
+            type(generator),
+            "verify_password_reset_token",
+            side_effect=RuntimeError("verifier-fault-2165"),
+        ):
+            with pytest.raises(RuntimeError, match="verifier-fault-2165"):
+                await user_service.reset_password(real, NEW_PASSWORD)

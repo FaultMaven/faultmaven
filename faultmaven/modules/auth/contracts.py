@@ -320,7 +320,8 @@ class IOAuthService(ABC):
             token: Access token from Authorization header
 
         Returns:
-            user_id if token valid, None otherwise
+            user_id if token valid, None otherwise. A store read failure or any
+            other unexpected exception propagates, never ``None`` (#2165).
         """
         ...
 
@@ -338,7 +339,9 @@ class IOAuthService(ABC):
             New access token and rotated refresh token
 
         Raises:
-            InvalidGrantError: If refresh token invalid, expired, or revoked
+            InvalidGrantError: If refresh token invalid, expired, or revoked.
+                A store read failure or any other unexpected exception
+                propagates (#2165).
         """
         ...
 
@@ -416,7 +419,8 @@ class ILocalAuthService(ABC):
             token: Access token from Authorization header
 
         Returns:
-            user_id if token valid, None otherwise
+            user_id if token valid, None otherwise. A store read failure or any
+            other unexpected exception propagates, never ``None`` (#2165).
         """
         ...
 
@@ -430,7 +434,9 @@ class ILocalAuthService(ABC):
             New access token and rotated refresh token
 
         Raises:
-            InvalidGrantError: If refresh token invalid or expired
+            InvalidGrantError: If refresh token invalid or expired. A store
+                read failure or any other unexpected exception propagates
+                (#2165).
         """
         ...
 

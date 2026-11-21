@@ -251,9 +251,10 @@ binder answer as **503 `REVOCATION_STATE_UNKNOWN`** (`x-error-code`,
 `Retry-After: 5`) — a distinct code, because "your token was revoked" (401)
 and "we could not find out" are different statements with different remedies,
 and the refusal is counted as
-`faultmaven_auth_revocation_state_unknown_total{kind}`. Refresh-token
-validation in the generators fails closed as it always did (a store outage
-cannot mint new credentials from a revoked token), and revocation *writes*
+`faultmaven_auth_revocation_state_unknown_total{kind}`. A store error while
+the generators validate a refresh token propagates and answers each refresh
+route's 500, still failing closed (a store outage cannot mint new credentials
+from a revoked token; #2165, and #2973 for the missing 503), and revocation *writes*
 propagate store errors so revoke endpoints never report success while the
 token remains usable.
 

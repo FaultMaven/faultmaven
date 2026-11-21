@@ -16,8 +16,8 @@ These tests pin the unified contract with the PRODUCTION store class
 2. A token revoked through a generator is rejected by the request-path check
    in AuthService when both share the store instance — the core #767 claim.
 3. The store honours the configured single key prefix.
-4. Failure posture: validation fails CLOSED on store errors; revocation
-   writes propagate store errors; logout surfaces write failures.
+4. Failure posture: validation and revocation writes both propagate store
+   errors (#2165); logout surfaces write failures.
 """
 
 from __future__ import annotations
@@ -177,9 +177,9 @@ class TestGeneratorRevocationVisibleToRequestPath:
 
 
 class TestFailurePosture:
-    """Documented split: validate fails CLOSED, writes propagate errors."""
+    """Validate and writes both propagate a store error (#2165)."""
 
-    async def test_validate_fails_closed_on_store_error(self):
+    async def test_validate_propagates_a_store_error(self):
         store = _store(_fake_redis())
         generator = _generator(store)
         access = await generator.generate_access_token(
@@ -194,8 +194,12 @@ class TestFailurePosture:
 
         store.is_revoked = boom
 
-        assert await generator.validate_access_token(access) is None
-        assert await generator.validate_refresh_token(refresh) is None
+        # Never ``None``: that is the verdict on a token, and the store was
+        # not read, so the token was never judged.
+        with pytest.raises(ConnectionError):
+            await generator.validate_access_token(access)
+        with pytest.raises(ConnectionError):
+            await generator.validate_refresh_token(refresh)
 
     async def test_revoke_propagates_store_write_error(self):
         store = _store(_fake_redis())

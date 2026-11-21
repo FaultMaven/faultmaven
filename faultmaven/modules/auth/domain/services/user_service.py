@@ -26,6 +26,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Collection, Dict, List, Optional, Tuple
 
+import jwt
+
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import AuditEventType
 from faultmaven.utils.serialization import to_json_compatible
@@ -560,12 +562,13 @@ class UserService(BaseService):
         # every unusable link produces. With no signer at all there is nothing
         # to verify against, and `_signer` refuses before the token is read:
         # accepting one on a deployment that cannot sign is not a thing to do
-        # quietly.
+        # quietly. Only that judgement is a refusal: anything else the
+        # verification raises is a server fault and propagates (#2165).
         signer = self._signer()
 
         try:
             claims = await signer.verify_password_reset_token(reset_token)
-        except Exception as e:
+        except jwt.InvalidTokenError as e:
             raise self._refuse_reset("token_unverifiable", error=str(e))
 
         user_id = claims.get("sub")
