@@ -16,10 +16,10 @@ The fresh inputs are what the record does not hold: ``mitigation.verified``
 (ruling Q1 (a) keeps it fresh until stage S3; the record drops it after a
 bound relapse), the symptom's currency (the wall clock), and the offer facts,
 which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
-2026-11-20: whether an offer is open, the standing declines' turns). Each is
-a reader, asked only where the line it selects prints, as ``main`` read it;
-the prompt assembly's ``NarrationFold`` reads each at most once
-(``NarrationFold.fresh``).
+2026-11-20: whether an offer is open, and each standing decline's turn, a
+reader of its own). Each is a reader, asked only where the line it selects
+prints, as ``main`` read it; the prompt assembly's ``NarrationFold`` reads
+each at most once (``NarrationFold.fresh``).
 """
 
 from dataclasses import dataclass
@@ -75,7 +75,8 @@ class PromptStateFresh:
     symptom_stale: Callable[[], bool]
     """The symptom's last observation is STALE (``assess_symptom_currency``)."""
     offers: Callable[[], OfferView]
-    """The offer facts (``offers.offer_view``, #2811 S2b-2d)."""
+    """The offer facts (``offers.offer_view``, #2811 S2b-2d); each decline's
+    turn is read where its line asks for it."""
 
 
 class MilestoneStatus(NamedTuple):
@@ -144,7 +145,7 @@ def problem_hold(
         return ProblemHold(HoldKind.REVISION)
     if status == ProblemStatus.INVALIDATED:
         return ProblemHold(
-            HoldKind.FALSE_ALARM, fresh.offers().false_alarm_decline_turn
+            HoldKind.FALSE_ALARM, fresh.offers().false_alarm_decline_turn()
         )
     return None
 
@@ -205,7 +206,7 @@ def resolve_declined(
     return ResolveDeclined(
         actions=actions,
         held=actions and resolution.pending_check_need_id is not None,
-        this_turn=offers.resolve_decline_turn == current_turn,
+        this_turn=offers.resolve_decline_turn() == current_turn,
     )
 
 

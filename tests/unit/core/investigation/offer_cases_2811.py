@@ -2,7 +2,7 @@
 
 Two narrators read the offer record: the prompt's focus selection (the false
 alarm's declined close, the resolve decline's turn and its chips) and the
-turn's narration (``_offer_stands``, ``_engine_offer_stands``, ``_lapsed``).
+turn's narration (``_engine_offer_stands``, ``_lapsed``).
 ``render_all`` renders, through entry points that exist on ``main`` and on
 the branch:
 
