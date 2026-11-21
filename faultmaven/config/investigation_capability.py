@@ -55,6 +55,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import Settings
 
@@ -146,7 +148,10 @@ def resolve_investigation_capability(
             provider=provider_name,
             model=model,
             source=source,
-            reason=f"could not resolve provider {provider_name!r}: {exc}",
+            reason=(
+                f"could not resolve provider {provider_name!r} "
+                f"({exception_log_name(exc)}); model {model}, resolved from {source}"
+            ),
         )
 
     if provider is None:
@@ -157,7 +162,8 @@ def resolve_investigation_capability(
             source=source,
             reason=(
                 f"provider {provider_name!r} is not initialized "
-                "(missing credential, or the provider failed to initialize)"
+                "(missing credential, or the provider failed to initialize); "
+                f"model {model}, resolved from {source}"
             ),
         )
 
@@ -352,7 +358,8 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
     elif cap.source == "DA_PROVIDER":
         remedy = (
             "Use a tool-capable DA_PROVIDER model, or unset DA_PROVIDER so the "
-            "investigation runs on CHAT_PROVIDER — or set "
+            "investigation runs on its next route (STRUCTURED_OUTPUT_PROVIDER "
+            "when set, else CHAT_PROVIDER) — or set "
             "ALLOW_TOOLLESS_INVESTIGATION=true to run in degraded mode (no "
             "search_file/deep_analysis; responses limited to structural-index "
             "summaries)."

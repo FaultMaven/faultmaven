@@ -153,11 +153,28 @@ def test_an_uninitialized_structured_output_provider_is_named_as_such(env):
 
 def test_opt_in_warning_names_an_uninitialized_provider_as_such(env, caplog):
     env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    env.setenv("OPENAI_MODEL", "gpt-x")
     env.setenv("ALLOW_TOOLLESS_INVESTIGATION", "true")
     with caplog.at_level("WARNING"):
         validate_investigation_tooling(NS(llm=LLMSettings()), NS(get_provider={}.get))
     assert "'openai' is not initialized" in caplog.text
     assert "does not support tool calling" not in caplog.text
+    assert "model gpt-x, resolved from STRUCTURED_OUTPUT_PROVIDER" in caplog.text
+
+
+def test_a_registry_error_is_named_by_class_never_by_text(env, caplog):
+    def _raise(name):
+        raise RuntimeError("zqxmarker-2142")
+
+    env.setenv("ALLOW_TOOLLESS_INVESTIGATION", "true")
+    settings = NS(llm=LLMSettings())
+    cap = resolve_investigation_capability(settings, NS(get_provider=_raise))
+    assert "RuntimeError" in cap.reason
+    assert "zqxmarker" not in cap.reason
+    with caplog.at_level("WARNING"):
+        validate_investigation_tooling(settings, NS(get_provider=_raise))
+    assert caplog.records
+    assert not [r for r in caplog.records if "zqxmarker" in r.getMessage()]
 
 
 def test_a_tool_incapable_da_provider_names_da_provider(env):
@@ -166,6 +183,17 @@ def test_a_tool_incapable_da_provider_names_da_provider(env):
         validate_investigation_tooling(NS(llm=LLMSettings()), _Registry())
     assert "Use a tool-capable DA_PROVIDER model" in str(exc.value)
     assert "tool-capable CHAT_PROVIDER" not in str(exc.value)
+
+
+def test_the_da_remedy_names_the_next_route(env):
+    env.setenv("DA_PROVIDER", "fireworks")
+    env.setenv("STRUCTURED_OUTPUT_PROVIDER", "openai")
+    with pytest.raises(InvestigationToolingError) as exc:
+        validate_investigation_tooling(NS(llm=LLMSettings()), _Registry())
+    assert (
+        "its next route (STRUCTURED_OUTPUT_PROVIDER when set, else CHAT_PROVIDER)"
+        in str(exc.value)
+    )
 
 
 def test_best_effort_structured_output_route_names_it_as_the_route(env, caplog):
