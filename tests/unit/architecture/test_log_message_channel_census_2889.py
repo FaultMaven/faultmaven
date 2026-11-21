@@ -381,6 +381,8 @@ def _not_exception_results(targets, value: ast.AST) -> set:
         return set()
     if not isinstance(targets[0], ast.Tuple):
         return set()
+    if any(isinstance(elt, ast.Starred) for elt in targets[0].elts):
+        return set()  # a starred target shifts the positions: exempt nothing
     positions = NOT_EXCEPTION_RESULTS.get(_callee(value), frozenset())
     return {
         elt.id
@@ -780,6 +782,10 @@ def _found(source: str) -> List[Site]:
         "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, detail=str(e))",
         "try:\n    pass\nexcept Exception as e:\n    helper.log_error('op', e)",
         "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
+        "def f(c, e, s):\n    obj, *_, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
+        "def f(c, e, s):\n    *_, rest = _prune_invalid_sub_records(c, e, s)\n"
         "    log.warning(f'{rest}')",
     ],
 )

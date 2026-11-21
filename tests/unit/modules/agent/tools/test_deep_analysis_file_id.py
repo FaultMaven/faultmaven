@@ -205,7 +205,7 @@ async def test_the_evidence_arm_reads_the_files_type_too(stored, expected):
 
 @pytest.mark.asyncio
 async def test_a_failed_analysis_names_its_class_not_its_text(caplog):
-    """#2332: the model reads the class; the server log, the text."""
+    """#2332: the model reads the class; the log names the class (#2889)."""
     tier2 = _fake_tier2()
     tier2.analyze.side_effect = leaky_error()
     case = _case_with_orphan_file()

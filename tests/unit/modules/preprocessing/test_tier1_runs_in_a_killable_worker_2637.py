@@ -318,7 +318,8 @@ async def test_a_slot_frees_after_more_kills_than_there_are_slots(monkeypatch, s
 
 async def test_a_failure_in_the_worker_is_kept_as_the_error(spawned, caplog):
     """The extractor's own exception reaches the metadata, as when it ran on
-    a thread: ``str(e)[:200]``. The log names its class (#2889)."""
+    a thread: ``str(e)[:200]``. The log names it as Tier1WorkerFailed with its
+    code (#2889)."""
     result = await _service()._extract_with_timeout(
         stubs.AnswersAString(), _CONTENT, "x.log", principal="u1"
     )

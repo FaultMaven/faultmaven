@@ -199,7 +199,7 @@ class TestVectorization:
         self, tool, mock_settings, caplog
     ):
         """#2332: the model reads the class and what it may conclude; the
-        server log, the text. The case read cannot fail in production, where
+        log names the class (#2889). The case read cannot fail in production, where
         the context carries the turn's case; this pins the catch-all's text
         for a defect that reaches it (the store catches everything itself)."""
         repo = MagicMock()
