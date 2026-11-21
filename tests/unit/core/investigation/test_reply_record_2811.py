@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.milestone_engine import (
     terminal_replies as replies_module,
 )
@@ -77,7 +78,8 @@ def test_each_leg_and_solution_text_is_shown_by_a_fixture():
         (ORACLE[n]["params"]["no_evidence"], ORACLE[n]["params"]["no_commands"])
         for n in CASES
     }
-    assert hints == {(True, True), (True, False), (False, True)}
+    assert hints == {(True, True), (True, False), (False, True), (False, False)}
+    assert "Is this correct?" in ORACLE["C:evidence_commands"]["confirmation"]
     assert any(ORACLE[n]["params"]["record_lines"] for n in CASES)
     assert ORACLE["T:mitigation_sufficient:line:written"]["terminal"] != (
         _CLOSED_REPLIES[ClosureReason.MITIGATION_SUFFICIENT]
@@ -246,7 +248,8 @@ def test_a_resolve_renders_whatever_the_closure():
 
 
 # ---------------------------------------------------------------------------
-# Fold failure: counted once, logged once, never raised
+# Fold failure: counted once and logged once; the confirmation's fallback
+# re-raises a failure inside its own two derivations, as main did
 # ---------------------------------------------------------------------------
 
 
@@ -281,6 +284,8 @@ def _logged(caplog) -> list:
 async def test_a_failed_fold_confirms_from_the_deciders_read(
     monkeypatch, failures, caplog, name
 ):
+    """A fold failure outside the confirmation's two derivations renders
+    from the decider's read."""
     case = await build(name)
     monkeypatch.setattr(replies_module, "narration_outcome", _raise)
     with caplog.at_level(logging.ERROR, logger=replies_module.__name__):
@@ -290,6 +295,24 @@ async def test_a_failed_fold_confirms_from_the_deciders_read(
     assert failures == [WritePoint.NARRATION]
     (record,) = _logged(caplog)
     assert record.exc_info is not None
+
+
+async def test_a_failure_inside_a_derivation_the_fallback_reads_raises_as_on_main(
+    monkeypatch, failures
+):
+    """``resolution_record_lines`` raising fails the fold, which is counted,
+    and raises again from the fallback, which reads it too: the exception
+    propagates, as the decider's read did on ``main``."""
+    case = await build("held_check")
+
+    def _broken(_case):
+        raise LookupError("record lines")
+
+    monkeypatch.setattr(outcome_module, "resolution_record_lines", _broken)
+    monkeypatch.setattr(replies_module, "resolution_record_lines", _broken)
+    with pytest.raises(LookupError, match="record lines"):
+        resolution_confirmation_params(case)
+    assert failures == [WritePoint.NARRATION]
 
 
 async def test_a_failed_terminal_write_and_fold_states_the_reason_alone(

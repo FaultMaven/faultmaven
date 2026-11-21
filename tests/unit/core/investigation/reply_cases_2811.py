@@ -178,6 +178,12 @@ CONFIRMATIONS = {
         ("lower the pool", {}), ("raise max_connections", _FIX)
     ),
     "C:solution_long_title": lambda: _with_solutions(("raise it " * 30, {})),
+    "C:evidence_commands": lambda: _with_solutions(
+        (
+            "raise max_connections",
+            {"commands": ["ALTER SYSTEM SET max_connections = 100"]},
+        )
+    ),
     "C:no_evidence_no_commands": lambda: _bare(),
     "C:no_evidence_commands": lambda: _bare(
         commands=["ALTER SYSTEM SET max_connections = 100"]

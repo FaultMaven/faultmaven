@@ -65,7 +65,10 @@ def _reply_outcome(case) -> Optional[CaseOutcome]:
 
 def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
     """The confirmation's two record facts, derived from the case, when the
-    fold raised: the decider's decide-time read (A4), removed at stage S3."""
+    fold raised: the decider's decide-time read (A4), removed at stage S3.
+    The fold derives them through these same two functions, so a failure
+    inside one of them raises again here, as the decider's read did on
+    ``main``; only a fold failure outside them renders from this fallback."""
     return cause_identification_leg(case), resolution_record_lines(case)
 
 
@@ -75,7 +78,11 @@ def resolution_confirmation_params(case) -> dict:
     A4): whether a cause is identified and the rows that confirm the
     resolution from the record folded at that moment (#2811 S2b-2b), and the
     root cause, the solution and which optional details would improve the
-    documentation from the case's content (``ResolutionContent``).
+    documentation from the case's content (``ResolutionContent``). A fold
+    failure outside ``cause_identification_leg`` and
+    ``resolution_record_lines`` renders from the decider's read
+    (``_confirmation_outcome_fresh``); a failure inside them raises, as on
+    ``main``.
     """
     outcome = _reply_outcome(case)
     if outcome is None:

@@ -54,6 +54,17 @@
    "solution": "Not yet documented"
   }
  },
+ "C:evidence_commands": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: raise max_connections\n\nIs this correct? Once you confirm, I'll mark the case as resolved.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": false,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "raise max_connections"
+  }
+ },
  "C:leg_chain": {
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: No root cause established\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
