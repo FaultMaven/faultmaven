@@ -21,14 +21,18 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
   which prints its message, by the same test; ``print``'s ``end=`` and ``sep=``
   are read too.
 * **Subprocess output** (``.stderr`` or ``.stdout`` on anything but ``sys``) in a
-  log call's or a print's arguments, other than through a safe form.
+  log call's or a print's arguments, or in an exit's code (below), other than
+  through a safe form.
 * **A call** to ``format_exc``, ``format_exception``, ``format_exception_only``,
   ``print_exc`` or ``print_exception``, or ``.format()`` on a
   ``TracebackException(...)`` or ``TracebackException.from_exception(...)``.
-* **``SystemExit(<code>)``** and **``sys.exit(<code>)``** whose code may be text
-  (:func:`_may_be_text`: an f-string, a ``+`` or ``%``, a ``str``/``format``/
-  ``repr`` call, or a read of an exception name): the interpreter prints a
-  non-integer code (§7's outputs table, the ``SystemExit`` row).
+* **``SystemExit(<code>)``** and **``sys.exit(<code>)``** whose first positional
+  argument may be text (:func:`_may_be_text`): an f-string, a ``+`` or ``%``
+  operation, a ``str``/``format``/``repr`` call, or an expression that reads an
+  exception name or subprocess output other than through a safe form; an
+  ``if``-expression counts when either branch does, and its test is not read.
+  The interpreter prints a non-integer code (§7's outputs table, the
+  ``SystemExit`` row). A literal is our text, and is not a site.
 
 **Exception names** are the names bound by ``except ... as N``, a function's
 parameters annotated ``...Error``/``...Exception`` or unannotated and named
@@ -60,10 +64,14 @@ and the census counts no call to it (:data:`NOT_SITES`).
 through two names (``a = str(e); b = a``), a container, or a parameter typed
 ``str`` (``error: str`` holding a caller's ``str(e)``); the worker child's
 ``failure`` frame, whose text arrives as data; a payload that is not an
-exception or a subprocess's output (a response body); an exit whose code is a
-bare name, an attribute, or a call other than ``str``/``format``/``repr``,
-holding text the census does not otherwise track (``sys.exit(msg)``,
-``sys.exit(self.message)``, ``sys.exit("\\n".join(problems))``). The
+exception or a subprocess's output (a response body); an exit code of any
+other expression, holding text that reads no exception name and no subprocess
+output, such as a bare name (``sys.exit(msg)``), an attribute, a subscript, a
+boolean expression (``sys.exit(msg or f"bad {path}")``), any other call
+(``sys.exit("\\n".join(problems))``), even one wrapping an f-string, another
+operator (``"=" * width``), a starred argument or an assignment expression;
+and an exit spelled otherwise (the ``exit``/``quit`` builtins,
+``from sys import exit``). The
 allowlist counts sites per file, so switching one site and adding another in
 the same file leaves the count, and the guard, unchanged. **Over-counts**: an
 alias is any name assigned from an exception, so one holding a flag or a count
@@ -738,6 +746,9 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    sys.exit(e)",
         "sys.exit('refusing: {}'.format(path))",
         "sys.exit('refusing: ' + path)",
+        "sys.exit('refusing: %s' % path)",
+        "def f(e):\n    for line in str(e.exceptions[0]).splitlines():\n"
+        "        log.warning('x', line=line)",
         "def f():\n    r = run()\n    sys.exit(r.stderr)",
         "sys.exit(f'bad {p}' if c else 0)",
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
@@ -786,6 +797,9 @@ def test_a_site_is_found(source):
         "sys.exit(main())",
         "sys.exit(0 if ok else 1)",
         "sys.exit(base | 1)",
+        "def f(e):\n    sys.exit(1 if e else 0)",
+        "def f(e, names):\n    for n, m in zip(names, e.exceptions):\n"
+        "        log.warning('x', error=m)",
         "def f(e):\n    for m in e.exceptions:\n        log.warning('x', error=m)",
         "def f(e):\n    for i, m in enumerate(e.exceptions):\n        log.warning('x', error=m)",
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
