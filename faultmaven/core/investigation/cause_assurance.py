@@ -482,8 +482,7 @@ def stance_declared_confident(link) -> bool:
 
 
 def has_hedged_refutes(hypothesis) -> bool:
-    """The hypothesis carries a self-hedged REFUTES link
-    (``stance_declared_confident`` false)."""
+    """The hypothesis carries a self-hedged REFUTES link."""
     return any(
         link.stance == EvidenceStance.REFUTES and not stance_declared_confident(link)
         for link in hypothesis.evidence_links

@@ -18,9 +18,9 @@ Hypothesis Lifecycle (matches HypothesisState enum):
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
   checked when a likelihood update lands (decay alone never transitions)
 - RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
-  lands, never on self-hedged REFUTES links alone (#2154); age-driven retirement
-  goes only through anti-anchoring and the age-out of an ignored prior,
-  ``retire_if_aged_out``) or manual abandonment without disproof
+  lands; age-driven retirement goes only through anti-anchoring and the age-out
+  of an ignored prior, ``retire_if_aged_out``) or manual abandonment without
+  disproof; never on self-hedged REFUTES links alone (#2154)
 
 Confidence Management:
 - Evidence-ratio based: initial + (0.15 × supporting) - (0.20 × refuting)
@@ -106,12 +106,11 @@ STAGNATION_DECAY_FLOOR = 0.1
 STAGNATION_HORIZON_ITERATIONS = 3
 
 # Below this likelihood a hypothesis is retired: on a likelihood update
-# (``check_state_transition``; when, see the low-confidence RETIRED row of
-# investigation-data-models.md §3), or, for an ignored prior past the stagnation
-# horizon, by the age-out (``retire_if_aged_out``).
+# (``check_state_transition``), or, for an ignored prior past the stagnation
+# horizon, by the age-out (``retire_if_aged_out``). When an update retires one:
+# the low-confidence RETIRED row of investigation-data-models.md §3.
 LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
 
-# The evidence formula's steps (``_evidence_likelihood``).
 SUPPORT_LIKELIHOOD_STEP = 0.15
 REFUTE_LIKELIHOOD_STEP = 0.20
 
@@ -159,23 +158,17 @@ def _stance_confidence(link) -> float:
 
 
 def _evidence_likelihood(hypothesis, *, confident_refutes_only: bool = False) -> float:
-    """``initial + 0.15 × SUPPORTS − 0.20 × REFUTES``, clamped to [0, 1]. With
-    ``confident_refutes_only`` the self-hedged REFUTES links are left out: the
-    likelihood the low-confidence retirement must also find below the bar."""
+    """``initial + 0.15 × SUPPORTS − 0.20 × REFUTES`` in [0, 1]; with
+    ``confident_refutes_only``, self-hedged REFUTES links are left out."""
     links = hypothesis.evidence_links
-    supporting = sum(1 for link in links if link.stance == EvidenceStance.SUPPORTS)
-    refuting = sum(
-        1
-        for link in links
-        if link.stance == EvidenceStance.REFUTES
+    supports = sum(link.stance == EvidenceStance.SUPPORTS for link in links)
+    refutes = sum(
+        link.stance == EvidenceStance.REFUTES
         and (stance_declared_confident(link) or not confident_refutes_only)
+        for link in links
     )
-    likelihood = (
-        hypothesis.initial_likelihood
-        + (SUPPORT_LIKELIHOOD_STEP * supporting)
-        - (REFUTE_LIKELIHOOD_STEP * refuting)
-    )
-    return max(0.0, min(1.0, likelihood))
+    raw = hypothesis.initial_likelihood + SUPPORT_LIKELIHOOD_STEP * supports
+    return max(0.0, min(1.0, raw - REFUTE_LIKELIHOOD_STEP * refutes))
 
 
 def _confident_causal_support(links, categories: dict) -> bool:
@@ -388,20 +381,13 @@ class HypothesisManager:
             stance_confidence=stance_confidence,
         )
         stance_changed = True
-        firmed_refutes = False
         if existing_idx is not None:
             prior = hypothesis.evidence_links[existing_idx]
             # Compare BEFORE the overwrite, or the old assertion is gone.
             stance_changed = prior.stance != stance
-            firmed_refutes = (
-                stance == EvidenceStance.REFUTES
-                and not stance_changed
-                and not stance_declared_confident(prior)
-                and stance_declared_confident(link)
-            )
             material = stance_changed or (
-                (prior.stance_confidence or 0.0) >= CAUSAL_STANCE_CONFIDENCE_MIN
-            ) != (stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN)
+                stance_declared_confident(prior) != stance_declared_confident(link)
+            )
             hypothesis.evidence_links[existing_idx] = link
             if material:
                 logger.info(
@@ -434,12 +420,17 @@ class HypothesisManager:
         # record that as progress. A new link that leaves belief unmoved (a
         # NEUTRAL finding) still counts: it is a test the line did not pass.
         # NEUTRAL links are stored for audit trail but do not affect confidence.
-        # A REFUTES link that crosses the hedge bar upwards also recomputes: a
-        # retirement its hedge held may now be supported (#2154).
-        if stance_changed or (firmed_refutes and not hold_state):
+        if stance_changed:
             self.update_likelihood_from_evidence(
                 hypothesis, turn, hold_state=hold_state
             )
+        elif (
+            material
+            and stance == EvidenceStance.REFUTES
+            and stance_declared_confident(link)
+            and not hold_state
+        ):  # firmed past the hedge bar: a retirement it held may now stand
+            self._retire_if_low_confidence(hypothesis)
         return material
 
     def update_likelihood_from_evidence(
@@ -536,12 +527,12 @@ class HypothesisManager:
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
         hypothesis.likelihood = capped
-        restated = abs(capped - old_likelihood) < 0.05
+        lowered = capped <= old_likelihood - 0.05
         # Progress is judged on the APPLIED value (consistent with
         # update_likelihood_from_evidence): a capped re-request of the same
         # over-cap number is a no-op, not progress — it must not reset the
         # stagnation/decay counters.
-        if not restated:  # 5% threshold
+        if abs(capped - old_likelihood) >= 0.05:  # 5% threshold
             hypothesis.last_updated_turn = current_turn
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
@@ -564,10 +555,9 @@ class HypothesisManager:
                 f"{capped:.2f} — neither progress nor stagnation"
             )
 
-        # A restatement echoes a number the links produced, so a self-hedged
-        # REFUTES does not retire through it; a real change is the model's own.
+        # Only the model's own lowering retires past a self-hedged REFUTES hold.
         self.check_state_transition(
-            hypothesis, current_turn, hold_hedged_retirement=restated
+            hypothesis, current_turn, hold_hedged_retirement=not lowered
         )
 
         return hypothesis
@@ -689,8 +679,8 @@ class HypothesisManager:
         Args:
             hypothesis: Hypothesis to check
             turn: Current turn number
-            hold_hedged_retirement: Apply that row's self-hedged REFUTES hold;
-                False for a model update that really changed the likelihood.
+            hold_hedged_retirement: Apply that row's self-hedged REFUTES hold
+                (False for a model update lowering it by 0.05 or more).
         """
         if hypothesis.state != HypothesisState.ACTIVE:
             # Only active hypotheses can be auto-transitioned
@@ -712,29 +702,34 @@ class HypothesisManager:
                     "likelihood": hypothesis.likelihood,
                 },
             )
-
-        # Check for retirement due to low confidence
-        elif (
-            hypothesis.likelihood < LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
-            and hypothesis.state != HypothesisState.RETIRED
-        ):
-            if (
-                hold_hedged_retirement
-                and has_hedged_refutes(hypothesis)
-                and _evidence_likelihood(hypothesis, confident_refutes_only=True)
-                >= LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
-            ):
-                logger.debug(
-                    "Hypothesis %s low-confidence retirement held: hedged "
-                    "refutation only",
-                    hypothesis.hypothesis_id,
-                )
-                return
-            hypothesis.state = HypothesisState.RETIRED
-            hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
-            logger.info(
-                f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)"
+        else:
+            self._retire_if_low_confidence(
+                hypothesis, hold_hedged_retirement=hold_hedged_retirement
             )
+
+    def _retire_if_low_confidence(
+        self, hypothesis: Hypothesis, *, hold_hedged_retirement: bool = True
+    ) -> None:
+        """The low-confidence RETIRED transition, with its self-hedged hold."""
+        if (
+            hypothesis.state != HypothesisState.ACTIVE
+            or hypothesis.likelihood >= LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
+        ):
+            return
+        if (
+            hold_hedged_retirement
+            and has_hedged_refutes(hypothesis)
+            and _evidence_likelihood(hypothesis, confident_refutes_only=True)
+            >= LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD
+        ):
+            logger.debug(
+                "Hypothesis %s low-confidence retirement held: hedged refutation only",
+                hypothesis.hypothesis_id,
+            )
+            return
+        hypothesis.state = HypothesisState.RETIRED
+        hypothesis.rationale = "Low confidence after testing"  # Mapped retirement_reason to rationale or logging
+        logger.info(f"Hypothesis {hypothesis.hypothesis_id} RETIRED (likelihood < 30%)")
 
     def advance_stagnation_if_ignored(
         self,

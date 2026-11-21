@@ -2,11 +2,11 @@
 
 Owner ruling 2026-10-22, option (b): a REFUTES link below
 ``CAUSAL_STANCE_CONFIDENCE_MIN`` still lowers likelihood by the same step, but
-the low-confidence retirement (``check_state_transition``) fires through an
-evidence link, a restated model likelihood or a link crossing the hedge bar
-only when the evidence likelihood with the hedged refutes left out is also
-below 0.30. A real model lowering, and a hypothesis with no hedged REFUTES
-link, transition as before; the age-out is unchanged.
+the low-confidence retirement fires through an evidence link, a model update
+that restates or raises the likelihood, or a link crossing the hedge bar only
+when the evidence likelihood with the hedged refutes left out is also below
+0.30. A model lowering by 0.05 or more, and a hypothesis with no hedged
+REFUTES link, transition as before; the age-out is unchanged.
 """
 
 from uuid import uuid4
@@ -162,6 +162,38 @@ def test_hedged_links_re_emitted_confident_retire():
     assert h.state == HypothesisState.RETIRED
 
 
+def test_firming_re_checks_only_the_retirement():
+    """Firming a hedged REFUTES leaves the formula where it was: no recompute,
+    so no stagnant iteration and no INCONCLUSIVE, and 0.4 does not retire."""
+    manager, h = HypothesisManager(), _hypothesis(0.6)
+    _refutes(manager, h, _HEDGED)
+    h.iterations_without_progress = 2
+    before = (h.likelihood, h.iterations_without_progress, h.last_updated_turn)
+
+    manager.link_evidence(h, "ev_0", _REFUTES, 5, stance_confidence=_CONFIDENT)
+
+    assert h.state == HypothesisState.ACTIVE
+    assert (h.likelihood, h.iterations_without_progress, h.last_updated_turn) == (
+        before
+    )
+
+
+@pytest.mark.parametrize("confidence, material", [(_CONFIDENT, False), (_HEDGED, True)])
+def test_a_stored_unset_confidence_reads_confident_for_materiality(
+    confidence, material
+):
+    """``None`` reads as full confidence (``stance_declared_confident``):
+    re-sent confident it is restatement, re-sent hedged it crosses the bar."""
+    manager, h = HypothesisManager(), _hypothesis()
+    manager.link_evidence(h, "ev_0", _REFUTES, 1)
+    h.evidence_links[0].stance_confidence = None
+
+    assert (
+        manager.link_evidence(h, "ev_0", _REFUTES, 2, stance_confidence=confidence)
+        is material
+    )
+
+
 def test_a_crossing_under_hold_state_leaves_the_transition_to_the_caller():
     manager, h = _held()
 
@@ -180,6 +212,14 @@ def test_a_restated_model_likelihood_does_not_retire_a_held_hypothesis(restated)
     manager.update_hypothesis_likelihood(h, restated, 3, "restated")
 
     assert h.state == HypothesisState.ACTIVE
+
+
+def test_a_model_raise_still_below_the_bar_keeps_the_hold():
+    manager, h = _held()
+
+    manager.update_hypothesis_likelihood(h, 0.2, 3, "raised")
+
+    assert (h.likelihood, h.state) == (0.2, HypothesisState.ACTIVE)
 
 
 def test_a_real_model_lowering_retires_as_on_main():
