@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import faultmaven
+from tests.child_process import child_env
 from tests.integration.mock_servers import get_free_port
 
 pytestmark = pytest.mark.integration
@@ -71,15 +72,12 @@ def _child(argv: list[str], database_url: str, prepare=None):
         cwd.mkdir()
         before = set(prepare(cwd)) if prepare else set()
         env = {
-            "HOME": str(root),
-            "PATH": "/usr/bin:/bin",
-            "PYTHONPATH": str(TREE),
+            **child_env(root),
             "DEPLOYMENT_MODE": "standalone",
             "AUTH_MODE": "local",
             "ENVIRONMENT": "development",
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-            "FAULTMAVEN_SKIP_DOTENV": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": database_url.format(port=get_free_port()),
         }

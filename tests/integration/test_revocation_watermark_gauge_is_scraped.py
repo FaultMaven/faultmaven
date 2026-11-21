@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-import faultmaven
+from tests.child_process import child_env
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -124,10 +124,11 @@ def _boot(root: Path) -> dict:
     run_dir.mkdir()
     db = run_dir / "data" / "faultmaven.db"
 
+    # The base (``child_env``) runs the child offline: the lifespan preloads
+    # the embedding model, which then loads from the cache and asks the hub
+    # nothing, as the image runs it (Dockerfile).
     env = {
-        "HOME": os.environ.get("HOME", str(root)),
-        "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": str(Path(faultmaven.__file__).parent.parent),
+        **child_env(os.environ.get("HOME", str(root))),
         "DATABASE_URL": f"sqlite+aiosqlite:///{db}",
         "DEPLOYMENT_MODE": "standalone",
         "AUTH_MODE": "local",
@@ -162,10 +163,6 @@ def _boot(root: Path) -> dict:
         "OPIK_ENABLED": "false",
         "OPIK_API_KEY": "",
         "OPIK_URL_OVERRIDE": "",
-        # The lifespan preloads the embedding model; offline, as the image runs
-        # it (Dockerfile), it loads from the cache and asks the hub nothing.
-        "HF_HUB_OFFLINE": "1",
-        "TRANSFORMERS_OFFLINE": "1",
     }
 
     completed = subprocess.run(

@@ -21,11 +21,10 @@ from pathlib import Path
 
 import pytest
 
-import faultmaven
+from tests.child_process import child_env
 
 pytestmark = pytest.mark.integration
 
-TREE = Path(faultmaven.__file__).resolve().parent.parent
 MESSAGE = "PyJWT refuses it as an HMAC secret"
 JWK_SET = json.dumps({"keys": [{"kty": "oct", "k": "Qm9va1806Jwk"}]})
 PEM = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN1806PemBody\n-----END PUBLIC KEY-----"
@@ -56,15 +55,12 @@ def _child(code: str, secret: str) -> subprocess.CompletedProcess:
         cwd = root / "run"
         cwd.mkdir()
         env = {
-            "HOME": str(root),
-            "PATH": "/usr/bin:/bin",
-            "PYTHONPATH": str(TREE),
+            **child_env(root),
             "DEPLOYMENT_MODE": "standalone",
             "AUTH_MODE": "local",
             "ENVIRONMENT": "development",
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-            "FAULTMAVEN_SKIP_DOTENV": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": "sqlite+aiosqlite:///./fm1806.db",
             "JWT_SECRET_KEY": secret,

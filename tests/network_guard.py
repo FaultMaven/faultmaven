@@ -86,7 +86,9 @@ asyncio's ``getaddrinfo``, checked in the caller before it hands the lookup to
 a worker thread so the record names the caller, and c-ares' ``pycares.Channel``
 lookups: aiohttp's default resolver when aiodns is installed, as the lockfile
 has it, and c-ares resolves below the ``socket`` module. Not covered: a child
-process (it has its own interpreter); uvloop's native connect and its
+process (it has its own interpreter), unless its environment comes from
+``tests/child_process.child_env``, whose ``sitecustomize`` installs this guard
+there (#2975); uvloop's native connect and its
 ``getaddrinfo``; UDP ``sendto`` with no ``connect``; a name handed to ``bind``
 or to ``sendto``, which the C socket resolves itself, below these patches;
 gRPC's C-core resolver; and dnspython's resolver (its own UDP;

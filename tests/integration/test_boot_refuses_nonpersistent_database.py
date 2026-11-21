@@ -51,6 +51,7 @@ from faultmaven.config.persistent_database import (
     DEFAULT_DATABASE_URL,
     NonPersistentDatabaseError,
 )
+from tests.child_process import child_env
 
 _MARKER = "RESULT "
 
@@ -100,9 +101,11 @@ def _boot_in_child(database_env: dict[str, str]) -> dict:
         script = root / "boot_probe.py"
         script.write_text(_CHILD, encoding="utf-8")
         env = {
-            "HOME": str(root),
-            "PATH": "/usr/bin:/bin",
-            "PYTHONPATH": str(Path(faultmaven.__file__).parent.parent),
+            # Hermetic and offline: the run directory holds no .env and the
+            # base's skip flag reads none, so no JWT_SECRET_KEY or DATABASE_URL
+            # but this test's can decide the case; and the lifespan's model
+            # preload asks the hub nothing (#2975).
+            **child_env(root),
             **database_env,
             "DEPLOYMENT_MODE": "standalone",
             "AUTH_MODE": "local",
@@ -110,10 +113,6 @@ def _boot_in_child(database_env: dict[str, str]) -> dict:
             # The LLM credential gate is live when the predicate is false.
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
-            # Hermetic: the run directory holds no .env and the project's
-            # skip flag reads none, so no JWT_SECRET_KEY or DATABASE_URL but
-            # this test's can decide the case.
-            "FAULTMAVEN_SKIP_DOTENV": "1",
         }
         completed = subprocess.run(
             [sys.executable, str(script)],

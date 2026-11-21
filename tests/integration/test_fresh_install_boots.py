@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-import faultmaven
+from tests.child_process import child_env
 
 #: What the child prints. Anything else on stdout is log noise.
 _MARKER = "RESULT "
@@ -37,14 +37,12 @@ _MARKER = "RESULT "
 _CHILD = textwrap.dedent("""
     import json, os, sys
 
-    # The suite's network guard, in this interpreter too: the child runs
-    # outside the test process, so nothing else stops it reaching the network.
-    # It downloaded BGE-M3 (~2 GB) from huggingface.co on every CI run, and a
-    # stalled download hung the boot past the 600 s timeout. Its refusals are
-    # reported below, and the test requires there are none.
+    # The suite's network guard, installed in this interpreter too by
+    # ``child_env``'s sitecustomize. Unguarded, this child downloaded BGE-M3
+    # (~2 GB) from huggingface.co on every CI run, and a stalled download hung
+    # the boot past the 600 s timeout. Its refusals are reported below, and the
+    # test requires there are none.
     from tests import network_guard
-
-    network_guard.install()
 
     from fastapi.testclient import TestClient
 
@@ -105,9 +103,7 @@ def _boot_a_fresh_install(root: Path) -> dict:
     script.write_text(_CHILD, encoding="utf-8")
 
     env = {
-        "HOME": os.environ.get("HOME", str(root)),
-        "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": str(Path(faultmaven.__file__).parent.parent),
+        **child_env(os.environ.get("HOME", str(root))),
         "DATABASE_URL": f"sqlite+aiosqlite:///{db}",
         "FM_PROBE_DB": str(db),
         "DEPLOYMENT_MODE": "standalone",
@@ -123,11 +119,9 @@ def _boot_a_fresh_install(root: Path) -> dict:
         # it is not what this probe tests. The app's own opt-out; the value
         # is JSON, so an empty string would fail settings construction.
         "PRELOAD_MODELS": "[]",
-        # And if anything else loads a model: offline, as the shipped image
-        # runs (its Dockerfile's runtime ENV), from an empty cache, so the
-        # load fails fast and the boot is the same on every machine.
-        "HF_HUB_OFFLINE": "1",
-        "TRANSFORMERS_OFFLINE": "1",
+        # And if anything else loads a model: offline (``child_env``), from
+        # an empty cache, so the load fails fast and the boot is the same on
+        # every machine.
         "HF_HOME": str(root / "hf-home"),
         # The parent's Redis, which the suite's steps leave empty
         # (tests/conftest.py): otherwise the client resolves the default host

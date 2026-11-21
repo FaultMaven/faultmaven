@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.child_process import child_env
+
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 # `prometheus-client` is a cloud extra (`requirements/cloud.txt` only), and
@@ -132,7 +134,9 @@ print("@@RESULT@@" + json.dumps({
 @pytest.fixture(scope="module")
 def scraped() -> dict:
     """Boot the app as it ships with metrics on, and read both surfaces."""
-    env = dict(os.environ)
+    # The parent's environment on the base (``child_env``): offline, guarded,
+    # and reading no .env from the checkout it runs in (#2975).
+    env = {**os.environ, **child_env(Path.home())}
     env.update(
         {
             "METRICS_EXPORTER": "prometheus_http",
