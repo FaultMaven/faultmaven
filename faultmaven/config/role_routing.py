@@ -94,6 +94,7 @@ def _resolve_model(
     that matters on this surface: the dashboard can write ``{provider}_model``
     and cannot write ``{provider}_{task}_model``, so a role holding a per-task
     value does not move when an admin changes that provider's model.
+    ``{PROVIDER}_DA_MODEL`` applies only with ``DA_PROVIDER`` set (#2142).
     """
     if provider == LLMProvider.LOCAL.value:
         # Local ignores per-task keys entirely (see _get_model_for_provider_and_task).
@@ -103,6 +104,8 @@ def _resolve_model(
         return (model, "LOCAL_LLM_MODEL", sources.get("local_model", SOURCE_ENV))
 
     per_task = getattr(llm, f"{provider}_{role}_model", None)
+    if role == "da" and llm.da_provider is None:
+        per_task = None
     if per_task:
         # Per-task keys are not in _ALLOWED_OVERRIDES, so environment only.
         return (per_task, f"{provider}_{role}_model".upper(), SOURCE_ENV)
