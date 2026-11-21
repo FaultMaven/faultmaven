@@ -624,7 +624,7 @@ ALLOWED = {
     "jobs/run.py": 4,
     "main.py": 27,
     "modules/auth/api/auth.py": 14,
-    "modules/auth/api/oauth.py": 8,
+    "modules/auth/api/oauth.py": 7,
     "modules/auth/api/session.py": 15,
     "modules/auth/contracts.py": 1,
     "modules/auth/domain/services/auth_service.py": 3,

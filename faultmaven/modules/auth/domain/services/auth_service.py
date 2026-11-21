@@ -43,6 +43,7 @@ from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     CorruptRevocationEntry,
     max_revocation_entry_ttl,
+    refuse_non_ascii_token,
     revocation_entry_ttl,
     revocation_reason,
 )
@@ -480,6 +481,7 @@ class AuthService:
             AuthenticationError: Invalid token, expired, wrong type, etc.
         """
         try:
+            refuse_non_ascii_token(token)
             # Determine signing key based on algorithm
             if self._algorithm == "RS256" and self._public_key:
                 key = self._public_key

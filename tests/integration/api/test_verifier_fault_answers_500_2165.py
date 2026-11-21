@@ -29,6 +29,7 @@ from unittest.mock import AsyncMock, patch
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware import auth as middleware_auth
@@ -40,8 +41,10 @@ from tests.integration._app_rebuild import rebuild_app_under
 from tests.utils import (
     InMemoryRevocationStore,
     forge_access_token,
+    forge_refresh_token,
     in_memory_session_service,
     request_with_authorization,
+    sign_claims_for,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.security]
@@ -175,19 +178,44 @@ async def test_the_middleware_optional_verifier_propagates_the_fault():
 
 def _judged(served, kind):
     """A bearer each verifier judges, by kind; ``None`` sends no header."""
+    service = served.service
     if kind == "absent":
         return None
     if kind == "malformed":
         return "Bearer not-a-jwt"
     if kind == "expired":
-        return f"Bearer {_token(served.service, expires_in_minutes=-5)}"
-    token = _token(served.service)
+        return f"Bearer {_token(service, expires_in_minutes=-5)}"
+    if kind == "wrong-type":
+        token = forge_refresh_token(service, user_id="u", enterprise_id="e")
+        return f"Bearer {token}"
+    token = _token(service)
     claims = jwt.decode(token, options={"verify_signature": False})
-    asyncio.run(served.service.revoke_token(claims["jti"], claims["exp"]))
+    if kind == "another-key":
+        key = (
+            rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            if service._algorithm == "RS256"
+            else "another-deployment-secret-0123456789abcdef"
+        )
+        return f"Bearer {jwt.encode(claims, key, algorithm=service._algorithm)}"
+    if kind == "no-sub":
+        del claims["sub"]
+        return f"Bearer {sign_claims_for(service, claims)}"
+    asyncio.run(service.revoke_token(claims["jti"], claims["exp"]))
     return f"Bearer {token}"
 
 
-@pytest.mark.parametrize("kind", ["absent", "malformed", "expired", "revoked"])
+JUDGED = [
+    "absent",
+    "malformed",
+    "expired",
+    "revoked",
+    "wrong-type",
+    "another-key",
+    "no-sub",
+]
+
+
+@pytest.mark.parametrize("kind", JUDGED)
 @pytest.mark.parametrize("route", ROUTES.values(), ids=ROUTES.keys())
 def test_a_judged_bearer_keeps_its_verdict(served, route, kind):
     response = _send(served, route, _judged(served, kind))

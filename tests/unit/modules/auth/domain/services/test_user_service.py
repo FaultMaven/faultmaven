@@ -13,6 +13,7 @@ Coverage target: 90%+
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 
 from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
@@ -456,7 +457,7 @@ class TestResetPassword:
             "verify_password_reset_token",
             new_callable=AsyncMock,
         ) as mock_verify:
-            mock_verify.side_effect = Exception("Invalid token")
+            mock_verify.side_effect = jwt.InvalidTokenError("Invalid token")
 
             with pytest.raises(AuthenticationError) as excinfo:
                 await user_service.reset_password(
