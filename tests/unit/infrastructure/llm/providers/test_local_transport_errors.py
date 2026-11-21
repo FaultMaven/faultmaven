@@ -431,3 +431,96 @@ async def test_a_5xx_whose_body_mentions_404_does_not_reach_the_fallback():
     )
     assert exc_info.value.status_code == 503
     assert exc_info.value.retryable is True
+
+
+def _fallback_session(second):
+    """First POST 404s (selecting the llama.cpp fallback); the second is
+    ``second()``."""
+    posted: list = []
+
+    def _session_factory(*args, **kwargs):
+        def _post(url, *a, **kw):
+            posted.append(url)
+            return _status_ctx(404, "not found") if len(posted) == 1 else second()
+
+        session = MagicMock()
+        session.post = MagicMock(side_effect=_post)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        return session
+
+    return _session_factory, posted
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_permanent_composite_declares_its_404_as_model_not_found():
+    """#2138: the engine reads MODEL_NOT_FOUND off a declared 404 only. The
+    composite's cause is the llama.cpp leg, so over a llama.cpp 400 the 404
+    that sent the call there is declared on the composite itself."""
+    from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
+
+    factory, posted = _fallback_session(lambda: _status_ctx(400, "bad request"))
+    provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        with pytest.raises(LLMException) as exc_info:
+            await send_to_model(provider, prompt=vetted("hello"))
+
+    assert len(posted) == 2 and posted[1].endswith("/completion"), posted
+    assert exc_info.value.retryable is False
+    assert exc_info.value.status_code == 404
+    result = await LLMErrorHandler().handle_error(exc_info.value, 0)
+    assert result.error_code == "MODEL_NOT_FOUND"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auth_status", [401, 403])
+async def test_a_composite_over_a_llamacpp_auth_failure_reads_auth_failed(
+    auth_status,
+):
+    """A llama.cpp 401/403 declares PROVIDER_AUTH_FAILED, so the composite
+    declares no 404 over it and the handler reads the leg's AUTH_FAILED."""
+    from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
+
+    factory, posted = _fallback_session(
+        lambda: _status_ctx(auth_status, "unauthorized")
+    )
+    provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        with pytest.raises(LLMException) as exc_info:
+            await send_to_model(provider, prompt=vetted("hello"))
+
+    assert len(posted) == 2 and posted[1].endswith("/completion"), posted
+    assert exc_info.value.retryable is False
+    assert exc_info.value.status_code is None
+    result = await LLMErrorHandler().handle_error(exc_info.value, 0)
+    assert result.error_code == "AUTH_FAILED"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_transient_composite_declares_no_status_and_is_retried():
+    """The other half: a transient llama.cpp leg keeps the composite
+    status-less, so it reads as transient everywhere, and the declared-retryable
+    gate retries it."""
+    from faultmaven.core.investigation.llm_error_handler import (
+        ErrorAction,
+        LLMErrorHandler,
+        RetryConfig,
+    )
+
+    factory, posted = _fallback_session(
+        lambda: _raising_ctx(aiohttp.ServerDisconnectedError())
+    )
+    provider = LocalProvider(_config("http://localhost:8080/v1", "llama-model"))
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        with pytest.raises(LLMException) as exc_info:
+            await send_to_model(provider, prompt=vetted("hello"))
+
+    assert len(posted) == 2 and posted[1].endswith("/completion"), posted
+    assert exc_info.value.retryable is True
+    assert exc_info.value.status_code is None
+    handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.01))
+    result = await handler.handle_error(exc_info.value, 0)
+    assert result.action == ErrorAction.RETRY

@@ -51,7 +51,7 @@ This document defines error handling and recovery strategies for the FaultMaven 
 
 ### 1.2 Non-Retryable Client Errors (Fail Fast)
 
-- Invalid API key (HTTP 401)
+- Invalid API key (HTTP 401/403; Gemini answers 400 with reason `API_KEY_INVALID`, which its adapter declares as `PROVIDER_AUTH_FAILED`)
 - Malformed request / invalid model (HTTP 400, 404)
 - Tool calling incompatibility (e.g., DeepSeek proprietary tokens)
 

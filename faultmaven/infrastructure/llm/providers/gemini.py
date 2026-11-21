@@ -14,7 +14,11 @@ from uuid import uuid4
 
 import aiohttp
 
-from faultmaven.exceptions import LLMErrorCategory, LLMException
+from faultmaven.exceptions import (
+    PROVIDER_AUTH_FAILED,
+    LLMErrorCategory,
+    LLMException,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -30,6 +34,33 @@ from .base import (
     normalize_stop_reason,
     post_waiting_out_rate_limits,
 )
+
+# The ``google.rpc.ErrorInfo`` reasons Gemini gives a rejected API key. It
+# answers an invalid key with HTTP 400 INVALID_ARGUMENT, not 401/403, so the
+# status alone cannot declare PROVIDER_AUTH_FAILED (#2138).
+_REJECTED_KEY_REASONS = frozenset({"API_KEY_INVALID"})
+
+
+def _rejected_key(body: str) -> bool:
+    """Whether an error body's ``error.details[].reason`` names a rejected key.
+
+    Read off the parsed JSON, never the prose. A body that is not JSON, or
+    carries no such detail, is not a rejected key.
+    """
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return False
+    return any(
+        isinstance(detail, dict)
+        and isinstance(detail.get("reason"), str)
+        and detail["reason"] in _REJECTED_KEY_REASONS
+        for detail in details
+    )
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -690,6 +721,13 @@ class GeminiProvider(BaseLLMProvider):
                             f"Gemini API request failed: {response.status} - {error_text}",
                             status_code=response.status,
                             provider_error_code=extract_provider_error_code(error_text),
+                            # A rejected key is account-scoped: declaring it
+                            # opens the LLM breaker, as a 401/403 does.
+                            error_code=(
+                                PROVIDER_AUTH_FAILED
+                                if _rejected_key(error_text)
+                                else None
+                            ),
                         )
 
                     response_data = await response.json()

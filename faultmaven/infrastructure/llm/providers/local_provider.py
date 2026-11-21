@@ -11,7 +11,11 @@ from typing import List, Optional
 
 import aiohttp
 
-from faultmaven.exceptions import CallShapeUnsupported, LLMException
+from faultmaven.exceptions import (
+    PROVIDER_AUTH_FAILED,
+    CallShapeUnsupported,
+    LLMException,
+)
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -330,14 +334,24 @@ class LocalProvider(BaseLLMProvider):
                     llamacpp_error, (asyncio.TimeoutError, aiohttp.ClientError)
                 ):
                     llamacpp_error = self._transport_error("llama.cpp", llamacpp_error)
+                retryable = (
+                    getattr(openai_error, "retryable", None) is True
+                    or getattr(llamacpp_error, "retryable", None) is True
+                )
+                # A non-retryable composite declares the 404 that sent it here
+                # (#2138), unless the llama.cpp leg declared
+                # PROVIDER_AUTH_FAILED. Otherwise it declares no status.
+                declares_404 = (
+                    not retryable
+                    and getattr(llamacpp_error, "error_code", None)
+                    != PROVIDER_AUTH_FAILED
+                )
                 raise LLMException(
                     f"Local LLM server failed with both API formats. "
                     f"OpenAI-compatible: {openai_error}. "
                     f"Raw llama.cpp: {llamacpp_error}",
-                    retryable=(
-                        getattr(openai_error, "retryable", None) is True
-                        or getattr(llamacpp_error, "retryable", None) is True
-                    ),
+                    status_code=404 if declares_404 else None,
+                    retryable=retryable,
                 ) from llamacpp_error
 
     def _transport_error(self, transport: str, error: BaseException) -> LLMException:
