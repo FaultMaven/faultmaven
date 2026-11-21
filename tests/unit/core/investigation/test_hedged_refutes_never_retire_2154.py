@@ -163,14 +163,20 @@ def test_hedged_links_re_emitted_confident_retire():
 
 
 def test_firming_re_checks_only_the_retirement():
-    """Firming a hedged REFUTES leaves the formula where it was: no recompute,
-    so no stagnant iteration and no INCONCLUSIVE, and 0.4 does not retire."""
-    manager, h = HypothesisManager(), _hypothesis(0.6)
-    _refutes(manager, h, _HEDGED)
-    h.iterations_without_progress = 3
+    """Held at 0.1, raised by the model to 0.5, then three stagnant turns
+    (about 0.307, three stagnant iterations: the INCONCLUSIVE band). Firming
+    the first link leaves the formula at 0.3 and skips the re-check; firming
+    the second takes it to 0.1 and enters it. That re-check is retirement
+    only: 0.307 does not retire, nothing is recomputed, and the stagnant
+    hypothesis is not set INCONCLUSIVE."""
+    manager, h = _held()
+    manager.update_hypothesis_likelihood(h, 0.5, 3, "raised")
+    _stagnate(manager, h, 4, 5, 6)
+    assert round(h.likelihood, 4) == 0.3071 and h.iterations_without_progress == 3
+    manager.link_evidence(h, "ev_0", _REFUTES, 7, stance_confidence=_CONFIDENT)
     before = (h.likelihood, h.iterations_without_progress, h.last_updated_turn)
 
-    manager.link_evidence(h, "ev_0", _REFUTES, 5, stance_confidence=_CONFIDENT)
+    manager.link_evidence(h, "ev_1", _REFUTES, 7, stance_confidence=_CONFIDENT)
 
     assert h.state == HypothesisState.ACTIVE
     assert (h.likelihood, h.iterations_without_progress, h.last_updated_turn) == (
