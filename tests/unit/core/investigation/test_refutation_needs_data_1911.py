@@ -297,8 +297,9 @@ async def test_a_low_prior_competitor_is_refuted_not_retired_by_its_own_link():
 
 async def test_a_hedged_refutes_link_does_not_refute_and_the_held_retire_lands():
     """A self-hedged REFUTES link is not a disproof. The refutation is refused,
-    and the soft transition the link pass held then applies: at 0.0 the
-    competitor is set aside (RETIRED), and the feedback says so."""
+    and the soft transition the link pass held then applies: the competitor's
+    0.2 prior is below the bar without the hedged link (#2154), so it is set
+    aside (RETIRED), and the feedback says so."""
     eng, case = _engine(), _case()
     h_id = _standing(case, likelihood=0.2)
     reason_row = _on_record(case, "gateway rejects with token is not valid yet")
@@ -316,7 +317,9 @@ async def test_a_hedged_refutes_link_does_not_refute_and_the_held_retire_lands()
     assert h.state == HypothesisState.RETIRED
     assert h.refutation_reason is None
     assert "self-hedged" in "\n".join(meta["system_notices"])
-    assert "set it aside (RETIRED)" in "\n".join(meta["system_notices"])
+    notices = "\n".join(meta["system_notices"])
+    assert "already below the retirement bar without its self-hedged" in notices
+    assert "set aside (RETIRED)" in notices
 
 
 async def test_a_held_transition_without_a_refutation_is_not_held():

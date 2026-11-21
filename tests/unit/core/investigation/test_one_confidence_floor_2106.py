@@ -1,5 +1,5 @@
 """One confidence floor for demoting a cause or a node (#2106, design D4 + 3(a);
-the likelihood update is open, #2154).
+retirement through the likelihood update is #2154).
 
 M6's evidence arm and the conclusion retraction used to weigh the hypothesis's
 OWN links at any confidence, so one self-hedged REFUTES against no direct

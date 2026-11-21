@@ -9,7 +9,7 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     absence_row_link_refused,
-    stance_declared_confident,
+    has_hedged_refutes,
 )
 from faultmaven.core.investigation.confidence_repair import (
     ConfidenceAction,
@@ -25,7 +25,6 @@ from faultmaven.core.investigation.milestone_engine.turn_records import _resolve
 from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.modules.case.contracts import (
     Case,
-    EvidenceStance,
     HypothesisState,
 )
 
@@ -339,15 +338,6 @@ def _refutation_grounds(case: "Case", hypothesis) -> tuple[list[str], bool]:
     return [], failed_fix_of(case, hypothesis) is not None
 
 
-def _has_hedged_refutes(hypothesis) -> bool:
-    """The hypothesis carries a self-hedged REFUTES link: the reason a
-    refutation the model did link evidence for can still be refused."""
-    return any(
-        link.stance == EvidenceStance.REFUTES and not stance_declared_confident(link)
-        for link in hypothesis.evidence_links
-    )
-
-
 def _apply_pending_refutations(
     hypothesis_manager,
     case: "Case",
@@ -403,7 +393,7 @@ def _apply_pending_refutations(
             metadata,
             NoticeCode.REFUTATION_REFUSED,
             hypothesis_id=h_id,
-            hedged=_has_hedged_refutes(hypothesis),
+            hedged=has_hedged_refutes(hypothesis),
             retired=hypothesis.state == HypothesisState.RETIRED,
         )
 
