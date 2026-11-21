@@ -9,9 +9,10 @@ readers of turns), built in production code only by ``offers.offer_view``
 from the case the narrator renders. The open offer and the recorded answers
 are read when the view is built; each standing decline's turn is read only
 when it is first asked, its value or its failure kept, so a narrator that
-never asks for it never derives it. The prompt state builds one view per
-prompt assembly (``NarrationFold.fresh``); the turn's narration builds one
-where it reads an offer and never asks for a decline. Pin 2 exempts it
+never asks for it never derives it. The prompt state builds at most one
+view per prompt assembly, where a line first asks for it
+(``NarrationFold.fresh``); the turn's narration builds one where it reads an
+offer and never asks for a decline. Pin 2 exempts it
 permanently, with its field set asserted, and it is not a census row.
 """
 

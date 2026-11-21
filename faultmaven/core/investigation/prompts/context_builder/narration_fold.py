@@ -108,8 +108,8 @@ class NarrationFold:
 
     def fresh(self) -> PromptStateFresh:
         """The prompt state's fresh inputs (#2811 S2b-1c-i), the offer facts
-        among them (``offer_view``, S2b-2d: one view, each decline's turn
-        read on its first ask). Each reads the case only when a selector asks
+        among them (``offer_view``, S2b-2d: at most one view, each decline's
+        turn read on its first ask). Each reads the case only when a selector asks
         for it, where ``main`` read it, and at most once per assembly; a
         raise is kept and raised to every asker, whose block renders its
         omission (``fail``)."""
