@@ -401,10 +401,10 @@ def test_layer_one_a_token_naming_no_subject_authenticates_nobody(caplog):
     # this is asserted on the log rather than only on the return value. All
     # three shapes return None either way — an ABSENT ``sub`` used to raise
     # KeyError from ``claims["sub"]`` and land in the function's bottom
-    # ``except Exception``, which also returns None. So this test was green
-    # while the check it names was unreachable for that case. The guard logs at
-    # DEBUG, the catch-all at WARNING; asserting no WARNING is what tells them
-    # apart (#1447 review).
+    # ``except Exception``, which also returned None (removed by #2165). So
+    # this test was green while the check it names was unreachable for that
+    # case. The guard logs at DEBUG and the catch-all logged at WARNING, so
+    # asserting no WARNING told them apart (#1447 review).
     for subject in SUBJECTLESS:
         with caplog.at_level(
             logging.DEBUG, logger="faultmaven.api.v1.auth_dependencies"

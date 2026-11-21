@@ -354,12 +354,11 @@ class AuthenticatedUser:
             # contract the two methods ending in this call publish:
             # ``AuthService.extract_user_from_token`` and
             # ``…_with_revocation_check`` both document ``Raises:
-            # AuthenticationError``. A ``ValueError`` landed closed only
-            # because two middleware callers happen to catch ``Exception``; a
-            # caller written to the documented contract would have got a 500
-            # where it asked for a 401. Same class and the same
-            # ``error_code`` the verifier's own subject refusal uses, so the
-            # two are indistinguishable to a handler (#1447 review).
+            # AuthenticationError``. A ``ValueError`` would reach a caller
+            # written to that contract as a 500 where it asked for a 401. Same
+            # class and the same ``error_code`` the verifier's own subject
+            # refusal uses, so the two are indistinguishable to a handler
+            # (#1447 review).
             #
             # From the auth module's own exceptions LEAF, not from
             # ``auth_service``. Reaching for the service's class — which is

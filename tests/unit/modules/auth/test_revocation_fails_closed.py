@@ -30,8 +30,8 @@ What this module pins, in the order the failure travels:
    are not the same answer.
 3. **A programming error is NOT laundered into it.** A ``TypeError`` in our own
    code must not be reported to a caller — or to whoever is paged — as
-   "revocation state unknown". It still refuses, via the callers' catch-alls;
-   it is simply not named or counted as a storage fault.
+   "revocation state unknown". It still refuses, as a 500 (#2165); it is
+   simply not named or counted as a storage fault.
 4. **It is counted**, so the frequency is measured rather than inferred from
    logs that roll.
 5. **Every request path that checks revocation answers 503 with the distinct
@@ -616,9 +616,10 @@ class TestTheRefusalIsDistinguishable:
 class TestAProgrammingErrorIsNotLaundered:
     """A bug in our own code must not be reported as a storage fault.
 
-    It still refuses the request — the callers' catch-alls see to that, and the
-    accompanying request-path test pins it — but it is not named, and not
-    counted, as something an operator should go and look at the database about.
+    It still refuses the request — it propagates to a 500, which
+    ``test_verifier_fault_answers_500_2165.py`` pins (#2165) — but it is not
+    named, and not counted, as something an operator should go and look at the
+    database about.
     """
 
     @pytest.mark.parametrize(

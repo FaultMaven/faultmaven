@@ -626,7 +626,8 @@ class OAuthServiceImpl(IOAuthService):
 
         Raises:
             InvalidGrantError: If refresh token invalid, expired, or revoked,
-                or issued to another client
+                or issued to another client. A store read failure or any other
+                unexpected exception propagates (#2165).
         """
         # #831: before the presented token's validation and the user load, as
         # POST /auth/refresh does. No leg-1 instant to merge here: the
@@ -850,7 +851,8 @@ class OAuthServiceImpl(IOAuthService):
             token: Access token from Authorization header
 
         Returns:
-            user_id if token valid, None otherwise
+            user_id if token valid, None otherwise. A store read failure or any
+            other unexpected exception propagates, never ``None`` (#2165).
         """
         payload = await self.token_generator.validate_access_token(token)
 

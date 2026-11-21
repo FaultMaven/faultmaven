@@ -11,11 +11,16 @@ naming none is bound at its first OAuth refresh, but only to a known client
 A refresh token is redeemed once on both paths, also under concurrency (#2764):
 of two concurrent refreshes exactly one receives a pair, so a token never forks
 into two chains or two clients.
+
+A store read fault while validating a refresh token answers 500 on both paths
+and revokes nothing, and a token that is not ASCII or not a JWS is refused, never
+a 500 (#2165).
 """
 
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -27,6 +32,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from httpx import ASGITransport, AsyncClient
 
 from tests.integration._app_rebuild import rebuild_app_under
+from tests.integration.api.test_verifier_fault_answers_500_2165 import HOSTILE
 from tests.utils import InMemoryRevocationStore
 
 OAUTH_ENVIRONMENT = {
@@ -552,3 +558,60 @@ async def test_a_token_that_expires_during_the_mint_still_gets_its_pair(
     response = await _redeem(env, path, token)
     assert response.status_code == 200, response.text
     assert await env.revocations.is_revoked(_claims(token)["jti"])
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+async def test_a_store_read_fault_while_validating_answers_500(env, monkeypatch, path):
+    """#2165: the token was never judged, so no 401 (auth) or 400 (oauth),
+    and nothing was revoked: it still redeems."""
+    token = await _bound_refresh_token(env.client)
+
+    async def unreadable(*_args):
+        raise ConnectionError("store-fault-2165")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.revocations, "revocation_state", unreadable)
+        response = await _redeem(env, path, token)
+
+    assert response.status_code == 500, response.text
+    assert "www-authenticate" not in response.headers
+    assert "store-fault-2165" not in response.text
+    assert (await _redeem(env, path, token)).status_code == 200
+
+
+#: The token as JSON escapes it, so the server parses a lone surrogate, which
+#: PyJWT 2.15.1 encodes outside its own ``try`` (#2165 review).
+SURROGATE = '"a\\ud800.b.c"'
+
+
+def _raw_json(**fields):
+    """A JSON body with every value spliced in verbatim, as raw bytes."""
+    pairs = ", ".join(f'"{name}": {value}' for name, value in fields.items())
+    return {
+        "content": "{" + pairs + "}",
+        "headers": {"Content-Type": "application/json"},
+    }
+
+
+@pytest.mark.parametrize("path", ["oauth", "auth"])
+@pytest.mark.parametrize(
+    "token",
+    [SURROGATE, *(json.dumps(t) for t in HOSTILE.values())],
+    ids=["surrogate", *HOSTILE],
+)
+async def test_an_unusable_refresh_token_is_refused_not_a_500(env, path, token):
+    if path == "oauth":
+        response = await env.client.post(
+            TOKEN,
+            **_raw_json(
+                grant_type='"refresh_token"',
+                refresh_token=token,
+                client_id=f'"{COPILOT}"',
+            ),
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["error"] == "invalid_grant"
+    else:
+        response = await env.client.post(REFRESH, **_raw_json(refresh_token=token))
+        assert response.status_code == 401, response.text
+        assert "invalid, expired, or revoked" in response.text
