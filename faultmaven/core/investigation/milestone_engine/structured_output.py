@@ -224,10 +224,13 @@ def _validate_with_degradation(content_obj, schema_model):
             try:
                 parsed, repairs = _validate(pruned)
                 logger.warning(
-                    "structured_output_degraded: pruned invalid sub-record(s) "
-                    f"{dropped} from {schema_model.__name__} and continued "
+                    f"structured_output_degraded: pruned {len(dropped)} invalid "
+                    f"sub-record(s) from {schema_model.__name__} and continued "
                     "(parse-time validator). Turn preserved.",
-                    extra={"schema": schema_model.__name__, "pruned": dropped},
+                    extra={
+                        "schema": schema_model.__name__,
+                        "pruned_count": len(dropped),
+                    },
                 )
                 _record("pruned")
                 return _account_confidence(parsed, repairs, original_error)

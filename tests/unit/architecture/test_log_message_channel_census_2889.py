@@ -35,8 +35,9 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
   ``SystemExit`` row). A literal is our text, and is not a site.
 
 **Exception names** are the names bound by ``except ... as N``, a function's
-parameters annotated ``...Error``/``...Exception`` or unannotated and named
-``e``/``err``/``error``/``exc``/``exception``, and, one level deep, the names
+parameters annotated ``...Error``/``...Exception``/``...ExceptionGroup`` or
+unannotated and named ``e``/``err``/``error``/``exc``/``exception``, and, one
+level deep, the names
 assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
 from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
@@ -76,7 +77,7 @@ file leaves the count, and the guard, unchanged.
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
 switched site shrinks its row, and the last sub-stage deletes the table. No
-file under ``faultmaven/infrastructure/llm/`` is listed (S3a, #2889).
+file under a prefix in :data:`SWITCHED_PREFIXES` is listed.
 """
 
 from __future__ import annotations
@@ -116,6 +117,7 @@ SAFE_CALLS = frozenset(
         "exception_frames",
         "logged_exception",
         "declared_llm_category",
+        "classify_token_limit_reason",
     }
 )
 
@@ -544,8 +546,6 @@ ALLOWED = {
     "container/providers/services.py": 12,
     "container/providers/tools.py": 6,
     "container/utils.py": 2,
-    "core/investigation/milestone_engine/generation.py": 1,
-    "core/investigation/milestone_engine/structured_output.py": 1,
     "infrastructure/auth/database_user_store.py": 8,
     "infrastructure/auth/user_store.py": 15,
     "infrastructure/base_client.py": 4,
@@ -642,6 +642,18 @@ ALLOWED = {
 }
 
 
+#: The areas S3 has switched (#2889): no file under one is on :data:`ALLOWED`.
+SWITCHED_PREFIXES = (
+    "infrastructure/llm/",
+    "core/investigation/",
+    "modules/agent/",
+    "modules/evidence/",
+    "modules/preprocessing/",
+    "core/preprocessing/",
+    "core/processing/",
+)
+
+
 RULE = (
     "Principles §7 rule 1: a log line or print names an exception by "
     "exception_log_name(e) (faultmaven.utils.exception_name), never its text, "
@@ -672,9 +684,9 @@ def test_each_file_holds_exactly_its_allowed_sites():
 
 
 def test_the_switched_area_is_not_on_the_list():
-    """S3a switched every site under ``infrastructure/llm/``: a site there is
+    """S3 switched every site under :data:`SWITCHED_PREFIXES`: a site there is
     never allowed, so reverting one fails the census as an unlisted file."""
-    assert not [path for path in ALLOWED if path.startswith("infrastructure/llm/")]
+    assert not [path for path in ALLOWED if path.startswith(SWITCHED_PREFIXES)]
     assert all(count > 0 for count in ALLOWED.values())
 
 
@@ -777,6 +789,8 @@ def test_a_site_is_found(source):
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
         "    for r in rs:\n        log.warning('x', error=r)",
         "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, key=k)",
+        "def f(e):\n    reason = classify_token_limit_reason(e)\n"
+        "    log.warning('x %s', reason)",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
