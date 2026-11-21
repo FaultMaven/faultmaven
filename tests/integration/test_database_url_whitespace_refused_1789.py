@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import faultmaven
-from tests.child_process import child_env
+from tests.child_process import assert_no_child_refusals, child_env
 from tests.integration.mock_servers import get_free_port
 
 pytestmark = pytest.mark.integration
@@ -71,6 +71,8 @@ def _child(argv: list[str], database_url: str, prepare=None):
         cwd = root / "run"
         cwd.mkdir()
         before = set(prepare(cwd)) if prepare else set()
+        # Bound before ``child_env``, which allows the child the ports bound.
+        url = database_url.format(port=get_free_port())
         env = {
             **child_env(root),
             "DEPLOYMENT_MODE": "standalone",
@@ -79,7 +81,7 @@ def _child(argv: list[str], database_url: str, prepare=None):
             "CHAT_PROVIDER": "gemini",
             "GEMINI_API_KEY": "dummy-key-for-boot-probe",
             "PYTHONDONTWRITEBYTECODE": "1",
-            "DATABASE_URL": database_url.format(port=get_free_port()),
+            "DATABASE_URL": url,
         }
         completed = subprocess.run(
             [sys.executable, *argv],
@@ -90,6 +92,7 @@ def _child(argv: list[str], database_url: str, prepare=None):
             stdin=subprocess.DEVNULL,
             timeout=600,
         )
+        assert_no_child_refusals(completed.stderr)
         left = sorted(str(p.relative_to(cwd)) for p in cwd.rglob("*"))
         return completed, [entry for entry in left if entry not in before]
     finally:

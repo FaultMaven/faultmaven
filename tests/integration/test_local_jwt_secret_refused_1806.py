@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.child_process import child_env
+from tests.child_process import assert_no_child_refusals, child_env
 
 pytestmark = pytest.mark.integration
 
@@ -65,7 +65,7 @@ def _child(code: str, secret: str) -> subprocess.CompletedProcess:
             "DATABASE_URL": "sqlite+aiosqlite:///./fm1806.db",
             "JWT_SECRET_KEY": secret,
         }
-        return subprocess.run(
+        completed = subprocess.run(
             [sys.executable, "-c", code],
             cwd=cwd,
             env=env,
@@ -74,6 +74,8 @@ def _child(code: str, secret: str) -> subprocess.CompletedProcess:
             stdin=subprocess.DEVNULL,
             timeout=600,
         )
+        assert_no_child_refusals(completed.stderr)
+        return completed
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

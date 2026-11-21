@@ -8,35 +8,48 @@ every run: ~256 s of a 316 s boot, under a 600 s timeout.
 
 ``child_env`` is the one base: offline, as the image runs, no ``.env``, this
 tree's ``faultmaven``; and, while the test process runs guarded, the
-``sitecustomize`` in ``tests/child_site/`` installs the same guard in the child,
-with the allowances its environment names. The ``-m real_llm`` lane runs both
-unguarded.
+``sitecustomize`` in ``tests/child_site/`` installs the same guard in the child
+and the offline tiktoken loader, as ``tests/conftest.py`` does. The child's
+guard allows what its environment names and the ports this process had bound
+when ``child_env`` was called (``BOUND_PORTS_ENV``). It reports its refusals at
+exit, behind ``REFUSALS_MARKER`` on stderr, and the test asserts there are none
+(``assert_no_child_refusals``): a refusal the child's code swallowed fails the
+test, as in this process. The ``-m real_llm`` lane runs both unguarded.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-import faultmaven
 from tests import network_guard
 
 #: The tree the test process imports ``faultmaven`` (and ``tests``) from.
-REPO_ROOT = Path(faultmaven.__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: Holds the ``sitecustomize`` that installs the network guard in the child.
 GUARDED_SITE = Path(__file__).resolve().parent / "child_site"
+
+#: Ports this process bound, comma-separated: the child's guard allows them.
+BOUND_PORTS_ENV = "FM_TEST_PARENT_BOUND_PORTS"
+
+#: Starts the stderr line on which the child's guard lists its refusals at exit.
+REFUSALS_MARKER = "FM-CHILD-NETWORK-REFUSALS "
 
 
 def child_env(home: Path | str, **overrides: str) -> dict[str, str]:
     """A child's whole environment: the base, then the caller's ``overrides``.
 
     Nothing is inherited from ``os.environ``; a caller that wants the parent's
-    variables passes them.
+    variables passes them. Bind a port before calling this to allow it.
     """
     path = [str(REPO_ROOT)]
+    guarded = {}
     if network_guard.GUARD is not None:
         path.append(str(GUARDED_SITE))
+        ports = sorted(network_guard.GUARD.bound_ports)
+        guarded[BOUND_PORTS_ENV] = ",".join(map(str, ports))
     return {
         "HOME": str(home),
         "PATH": "/usr/bin:/bin",
@@ -44,5 +57,33 @@ def child_env(home: Path | str, **overrides: str) -> dict[str, str]:
         "FAULTMAVEN_SKIP_DOTENV": "1",
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
+        # The parent's Redis, which the suite's steps leave empty
+        # (tests/conftest.py): unset, the client connects to the default host
+        # (faultmaven-redis-master) first.
+        "REDIS_HOST": os.environ.get("REDIS_HOST", ""),
+        **guarded,
         **overrides,
     }
+
+
+def child_refusals(stderr: str) -> list[str]:
+    """What the child's guard refused, read from its stderr.
+
+    Fails when the child ran guarded and did not report: it died before exit,
+    or its guard was never installed.
+    """
+    for line in stderr.splitlines():
+        if line.startswith(REFUSALS_MARKER):
+            return json.loads(line[len(REFUSALS_MARKER) :])
+    assert network_guard.GUARD is None, (
+        "the child's network guard did not report at exit:\n" + stderr[-3000:]
+    )
+    return []
+
+
+def assert_no_child_refusals(stderr: str) -> None:
+    """A child's refused connect or lookup fails the test, even if it was caught."""
+    refusals = child_refusals(stderr)
+    assert (
+        refusals == []
+    ), "a test's child process attempted network connections:\n" + "\n".join(refusals)

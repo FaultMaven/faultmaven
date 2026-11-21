@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.child_process import child_env
+from tests.child_process import assert_no_child_refusals, child_env
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -134,8 +134,9 @@ print("@@RESULT@@" + json.dumps({
 @pytest.fixture(scope="module")
 def scraped() -> dict:
     """Boot the app as it ships with metrics on, and read both surfaces."""
-    # The parent's environment on the base (``child_env``): offline, guarded,
-    # and reading no .env from the checkout it runs in (#2975).
+    # The base (``child_env``) over the parent's environment: offline, guarded,
+    # reading no .env from the checkout it runs in, and with the base's PATH
+    # and PYTHONPATH, not the parent's (#2975).
     env = {**os.environ, **child_env(Path.home())}
     env.update(
         {
@@ -156,6 +157,7 @@ def scraped() -> dict:
         text=True,
         timeout=300,
     )
+    assert_no_child_refusals(completed.stderr)
     marker = "@@RESULT@@"
     assert marker in completed.stdout, (
         f"child produced no result (rc={completed.returncode})\n"

@@ -51,7 +51,7 @@ from faultmaven.config.persistent_database import (
     DEFAULT_DATABASE_URL,
     NonPersistentDatabaseError,
 )
-from tests.child_process import child_env
+from tests.child_process import assert_no_child_refusals, child_env
 
 _MARKER = "RESULT "
 
@@ -122,6 +122,7 @@ def _boot_in_child(database_env: dict[str, str]) -> dict:
             text=True,
             timeout=600,
         )
+        assert_no_child_refusals(completed.stderr)
         for line in completed.stdout.splitlines():
             if line.startswith(_MARKER):
                 result = json.loads(line[len(_MARKER) :])

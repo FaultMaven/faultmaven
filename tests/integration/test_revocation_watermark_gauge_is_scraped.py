@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.child_process import child_env
+from tests.child_process import assert_no_child_refusals, child_env
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -173,6 +173,7 @@ def _boot(root: Path) -> dict:
         text=True,
         timeout=300,
     )
+    assert_no_child_refusals(completed.stderr)
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
             return json.loads(line[len(_MARKER) :])

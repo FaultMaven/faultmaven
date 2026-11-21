@@ -29,7 +29,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.child_process import child_env
+from tests import network_guard
+from tests.child_process import assert_no_child_refusals, child_env
 
 #: What the child prints. Anything else on stdout is log noise.
 _MARKER = "RESULT "
@@ -38,10 +39,10 @@ _CHILD = textwrap.dedent("""
     import json, os, sys
 
     # The suite's network guard, installed in this interpreter too by
-    # ``child_env``'s sitecustomize. Unguarded, this child downloaded BGE-M3
-    # (~2 GB) from huggingface.co on every CI run, and a stalled download hung
-    # the boot past the 600 s timeout. Its refusals are reported below, and the
-    # test requires there are none.
+    # ``child_env``'s sitecustomize, which reports its refusals on stderr at
+    # exit. Unguarded, this child downloaded BGE-M3 (~2 GB) from huggingface.co
+    # on every CI run, and a stalled download hung the boot past the 600 s
+    # timeout. The test requires it ran guarded and refused nothing.
     from tests import network_guard
 
     from fastapi.testclient import TestClient
@@ -52,7 +53,10 @@ _CHILD = textwrap.dedent("""
 
     from faultmaven.infrastructure.llm.usage_ledger import get_installed_usage_ledger
 
-    result = {"gate_live": not _is_test_environment(get_settings())}
+    result = {
+        "gate_live": not _is_test_environment(get_settings()),
+        "guarded": network_guard.GUARD is not None,
+    }
     try:
         with TestClient(app) as client:
             result["health_status"] = client.get("/health").status_code
@@ -81,7 +85,6 @@ _CHILD = textwrap.dedent("""
         result["token_revocations_exists"] = False
         result["llm_usage_tables"] = []
         result["table_count"] = 0
-    result["network_refusals"] = network_guard.drain_refusals()
     print("RESULT " + json.dumps(result))
     """)
 
@@ -123,10 +126,6 @@ def _boot_a_fresh_install(root: Path) -> dict:
         # an empty cache, so the load fails fast and the boot is the same on
         # every machine.
         "HF_HOME": str(root / "hf-home"),
-        # The parent's Redis, which the suite's steps leave empty
-        # (tests/conftest.py): otherwise the client resolves the default host
-        # (faultmaven-redis-master) first.
-        "REDIS_HOST": os.environ.get("REDIS_HOST", ""),
     }
 
     try:
@@ -155,7 +154,7 @@ def _boot_a_fresh_install(root: Path) -> dict:
         ) from exc
     for line in completed.stdout.splitlines():
         if line.startswith(_MARKER):
-            return json.loads(line[len(_MARKER) :])
+            return {**json.loads(line[len(_MARKER) :]), "stderr": completed.stderr}
     raise AssertionError(
         "the child never reported:\n"
         f"stdout tail:\n{completed.stdout[-2000:]}\n"
@@ -204,9 +203,12 @@ class TestAFirstEverInstallBoots:
         """A fresh install boots offline: the image runs with HF_HUB_OFFLINE
         and the model baked in, and a test reaches no network (CLAUDE.md).
         The child runs the suite's guard; anything it refused is listed."""
-        # Refusals first: when a refused call is what broke the boot, they
+        if network_guard.GUARD is None:
+            pytest.skip("the suite runs unguarded, so its children do too")
+        assert fresh_boot["guarded"] is True, fresh_boot.get("error")
+        # Refusals next: when a refused call is what broke the boot, they
         # name its call sites, which `error` alone does not.
-        assert fresh_boot["network_refusals"] == [], fresh_boot.get("error")
+        assert_no_child_refusals(fresh_boot["stderr"])
         assert fresh_boot["booted"] is True, fresh_boot.get("error")
 
     def test_the_usage_ledger_lives_as_long_as_the_app(self, fresh_boot):
