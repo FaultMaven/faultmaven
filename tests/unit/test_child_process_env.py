@@ -19,6 +19,7 @@ import pytest
 from tests import network_guard
 from tests.child_process import (
     GUARDED_SITE,
+    REFUSALS_MARKER,
     assert_no_child_refusals,
     child_env,
     child_refusals,
@@ -108,6 +109,55 @@ def test_a_child_that_cannot_install_the_guard_does_not_run(tmp_path):
     assert completed.returncode == 97, completed.stderr[-3000:]
     assert completed.stdout == ""
     assert "tests/child_site/sitecustomize.py" in completed.stderr
+
+
+#: Starts a grandchild with its environment, as the boot's migration
+#: subprocess does, then ends as ``{end}`` says.
+_WITH_GRANDCHILD = """
+import os, subprocess, sys
+from tests import network_guard
+
+subprocess.run([sys.executable, "-c", "pass"], check=True)
+{end}
+"""
+
+
+def _with_grandchild(end: str, tmp_path) -> subprocess.CompletedProcess:
+    code = _WITH_GRANDCHILD.format(end=end)
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=child_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+@guarded_parent
+def test_a_grandchilds_report_does_not_mask_the_childs_refusal(tmp_path):
+    swallow = (
+        "try:\n"
+        "    network_guard.GUARD.check_lookup('huggingface.co', 'probe')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+    completed = _with_grandchild(swallow, tmp_path)
+
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    assert completed.stderr.count(REFUSALS_MARKER) == 2
+    with pytest.raises(AssertionError, match="huggingface.co"):
+        assert_no_child_refusals(completed.stderr)
+
+
+@guarded_parent
+def test_a_grandchilds_report_does_not_stand_in_for_the_childs(tmp_path):
+    completed = _with_grandchild("os._exit(0)  # no atexit: no report", tmp_path)
+
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    assert completed.stderr.count(REFUSALS_MARKER) == 1
+    with pytest.raises(AssertionError, match="reported 0 times"):
+        child_refusals(completed.stderr)
 
 
 def test_control_an_unguarded_parent_starts_an_unguarded_child(tmp_path, monkeypatch):

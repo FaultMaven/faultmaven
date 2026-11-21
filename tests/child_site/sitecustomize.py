@@ -4,7 +4,8 @@
 ``PYTHONPATH`` while the test process runs guarded, and Python imports
 ``sitecustomize`` at start-up, before the child's own code. It also installs
 the offline tiktoken loader, allows the ports the parent bound, and reports the
-guard's refusals on stderr at exit (``tests/child_process.py``).
+guard's refusals on stderr at exit, marked nested in a process the child started
+with its environment (``tests/child_process.py``).
 
 It fails closed: CPython reports a failed ``sitecustomize`` and runs the child
 anyway, unguarded, so any failure here ends the child with status 97 instead.
@@ -19,7 +20,7 @@ def _install() -> None:
     import json
 
     from tests import network_guard, offline_tiktoken
-    from tests.child_process import BOUND_PORTS_ENV, REFUSALS_MARKER
+    from tests.child_process import BOUND_PORTS_ENV, NESTED_ENV, REFUSALS_MARKER
 
     guard = network_guard.install()
     if guard is None:
@@ -27,10 +28,12 @@ def _install() -> None:
     for port in filter(None, os.environ.get(BOUND_PORTS_ENV, "").split(",")):
         guard.note_bound(int(port))
     offline_tiktoken.install()
+    nested = bool(os.environ.get(NESTED_ENV))
+    os.environ[NESTED_ENV] = "1"  # inherited: what this process starts is nested
 
     def report() -> None:
-        sys.stderr.write(REFUSALS_MARKER + json.dumps(guard.drain_refusals()) + "\n")
-        sys.stderr.flush()
+        body = {"nested": nested, "refusals": guard.drain_refusals()}
+        os.write(2, (REFUSALS_MARKER + json.dumps(body) + "\n").encode())
 
     atexit.register(report)
 

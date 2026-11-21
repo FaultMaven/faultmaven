@@ -14,7 +14,10 @@ guard allows what its environment names and the ports this process had bound
 when ``child_env`` was called (``BOUND_PORTS_ENV``). It reports its refusals at
 exit, behind ``REFUSALS_MARKER`` on stderr, and the test asserts there are none
 (``assert_no_child_refusals``): a refusal the child's code swallowed fails the
-test, as in this process. The ``-m real_llm`` lane runs both unguarded.
+test, as in this process. A process the child starts with its environment (the
+boot's migration subprocess) loads the same hook and reports too, tagged as
+nested (``NESTED_ENV``); every report counts, and the child's own must be there.
+The ``-m real_llm`` lane runs both unguarded.
 """
 
 from __future__ import annotations
@@ -34,8 +37,11 @@ GUARDED_SITE = Path(__file__).resolve().parent / "child_site"
 #: Ports this process bound, comma-separated: the child's guard allows them.
 BOUND_PORTS_ENV = "FM_TEST_PARENT_BOUND_PORTS"
 
-#: Starts the stderr line on which the child's guard lists its refusals at exit.
+#: Starts the stderr line on which a guard lists its refusals at exit.
 REFUSALS_MARKER = "FM-CHILD-NETWORK-REFUSALS "
+
+#: Set by the hook for the processes the child starts: their reports are nested.
+NESTED_ENV = "FM_TEST_CHILD_GUARD_NESTED"
 
 
 def child_env(home: Path | str, **overrides: str) -> dict[str, str]:
@@ -67,18 +73,22 @@ def child_env(home: Path | str, **overrides: str) -> dict[str, str]:
 
 
 def child_refusals(stderr: str) -> list[str]:
-    """What the child's guard refused, read from its stderr.
+    """What the child's guard, and those of the processes it started, refused.
 
-    Fails when the child ran guarded and did not report: it died before exit,
-    or its guard was never installed.
+    Fails unless the child itself reported exactly once when it ran guarded: a
+    missing report means it died before exit or its guard was never installed.
     """
-    for line in stderr.splitlines():
-        if line.startswith(REFUSALS_MARKER):
-            return json.loads(line[len(REFUSALS_MARKER) :])
-    assert network_guard.GUARD is None, (
-        "the child's network guard did not report at exit:\n" + stderr[-3000:]
+    reports = [
+        json.loads(line[len(REFUSALS_MARKER) :])
+        for line in stderr.splitlines()
+        if line.startswith(REFUSALS_MARKER)
+    ]
+    own = sum(1 for report in reports if not report["nested"])
+    assert own == (0 if network_guard.GUARD is None else 1), (
+        f"the child's network guard reported {own} times at exit, not once:\n"
+        + stderr[-3000:]
     )
-    return []
+    return [refusal for report in reports for refusal in report["refusals"]]
 
 
 def assert_no_child_refusals(stderr: str) -> None:
