@@ -40,6 +40,7 @@ from faultmaven.modules.knowledge.exceptions import (
     GateUnavailable,
     RunbookQualityError,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -236,7 +237,9 @@ async def _run(
         logger.warning("runbook checks %s answered past the output limit", names)
         raise GateOutputTooLarge() from None
     except (worker_process.WorkerFailed, ValueError) as e:
-        logger.error("runbook checks %s did not answer: %s", names, e)
+        logger.error(
+            "runbook checks %s did not answer: %s", names, exception_log_name(e)
+        )
         raise GateUnavailable() from e
     finally:
         slots.release(*slot_key)

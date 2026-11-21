@@ -111,7 +111,10 @@ from faultmaven.modules.knowledge.exceptions import (
     KbReceiptExistsError,
     RunbookQualityError,
 )
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import (
+    exception_class_name,
+    exception_log_name,
+)
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
@@ -656,7 +659,7 @@ class KnowledgeService:
                 # A deployment without a store is not a failed search: every
                 # turn would log it as one.
                 if not is_knowledge_store_unavailable(e):
-                    logger.error(f"Search failed: {e}")
+                    logger.error(f"Search failed: {exception_log_name(e)}")
                 raise
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
@@ -846,7 +849,7 @@ class KnowledgeService:
                             "is computed from knowledge_items rows — but remain "
                             "in resource_shares until removed by hand.",
                             document_id,
-                            share_error,
+                            exception_log_name(share_error),
                         )
 
                 logger.info(f"{action} document {document_id}")
@@ -861,7 +864,9 @@ class KnowledgeService:
             except ValidationException:
                 raise
             except Exception as e:
-                logger.error(f"Failed to remove document {document_id}: {e}")
+                logger.error(
+                    f"Failed to remove document {document_id}: {exception_log_name(e)}"
+                )
                 raise RuntimeError(f"Document removal failed: {str(e)}") from e
 
     async def _erase_conversion_traces(
@@ -933,7 +938,7 @@ class KnowledgeService:
                     "vector_store_enabled": self._vector_store is not None,
                 }
             except Exception as e:
-                logger.error(f"Failed to get statistics: {e}")
+                logger.error(f"Failed to get statistics: {exception_log_name(e)}")
                 raise
 
     @staticmethod
@@ -1241,7 +1246,9 @@ class KnowledgeService:
             # a typed raise a handler swallows one frame later is not a fix.
             raise
         except Exception as e:
-            logger.error(f"Failed to index document in vector store: {e}")
+            logger.error(
+                f"Failed to index document in vector store: {exception_log_name(e)}"
+            )
             raise KnowledgeBaseError(
                 f"Vector indexing failed for {document.document_id}: {e}",
                 error_code="KNOWLEDGE_INDEXING_FAILED",
@@ -1972,7 +1979,9 @@ class KnowledgeService:
             # one more model load (once: repaired rows persist). Two failures
             # in a row are systemic (a model that will not load, a hung
             # host): the rows not yet tried are deferred.
-            logger.warning(f"reindex_missing_vectors: one encode failed ({e}); per row")
+            logger.warning(
+                f"reindex_missing_vectors: one encode failed ({exception_log_name(e)}); per row"
+            )
             if len(repairs) == 1:  # the row alone just failed: no second try
                 counts[repairs[0][0]] = 0
                 return counts
@@ -1998,7 +2007,7 @@ class KnowledgeService:
                 )
             except Exception as e:  # deliberate, documented tolerance: per row
                 logger.warning(
-                    f"reindex_missing_vectors: repair failed for {item_id}: {e} "
+                    f"reindex_missing_vectors: repair failed for {item_id}: {exception_log_name(e)} "
                     "— leaving the row orphaned for a later boot to retry"
                 )
                 counts[item_id] = 0
@@ -2063,7 +2072,7 @@ class KnowledgeService:
                 )
         except (KnowledgeBaseError, ValueError) as e:
             logger.error(
-                f"reindex_missing_vectors: repair refused for {item_id}: {e} — "
+                f"reindex_missing_vectors: repair refused for {item_id}: {exception_log_name(e)} — "
                 "leaving it orphaned"
             )
             return None
@@ -2631,7 +2640,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Failed to list documents: {e}")
+            logger.error(f"Failed to list documents: {exception_log_name(e)}")
             # Degraded-but-successful return: callers key on `error` being
             # present, so the shape is kept — but the value is a static
             # message, never the exception text (#866). A driver raises with
@@ -2719,7 +2728,9 @@ class KnowledgeService:
             return self._document_dto(item)
 
         except Exception as e:
-            logger.error(f"Failed to get document {document_id}: {e}")
+            logger.error(
+                f"Failed to get document {document_id}: {exception_log_name(e)}"
+            )
             return None
 
     async def get_document_visible(
@@ -2771,7 +2782,9 @@ class KnowledgeService:
             return self._document_dto(item)
 
         except Exception as e:
-            logger.error(f"Failed to get visible document {document_id}: {e}")
+            logger.error(
+                f"Failed to get visible document {document_id}: {exception_log_name(e)}"
+            )
             return None
 
     async def visible_document_ids(
@@ -2812,7 +2825,9 @@ class KnowledgeService:
                 )
 
         except Exception as e:
-            logger.error(f"Failed to resolve visible document ids: {e}")
+            logger.error(
+                f"Failed to resolve visible document ids: {exception_log_name(e)}"
+            )
             return set()
 
     async def admitted_generations(self, document_ids: Sequence[str]) -> Dict[str, str]:
@@ -2990,7 +3005,9 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Failed to get relevant snippet for {document_id}: {e}")
+            logger.error(
+                f"Failed to get relevant snippet for {document_id}: {exception_log_name(e)}"
+            )
             return None
 
     async def search_documents(
@@ -3117,7 +3134,7 @@ class KnowledgeService:
             # shows "no results" for a search that never ran. The shape is
             # unchanged (no contract break); only the error text now says which
             # of the two happened.
-            logger.error(f"Semantic search unavailable: {e}")
+            logger.error(f"Semantic search unavailable: {exception_log_name(e)}")
             return {
                 "query": query,
                 "total_results": 0,
@@ -3128,7 +3145,7 @@ class KnowledgeService:
                 ),
             }
         except Exception as e:
-            logger.error(f"Semantic search failed: {e}")
+            logger.error(f"Semantic search failed: {exception_log_name(e)}")
             # Static `error` value — see list_documents (#866).
             return {
                 "query": query,
@@ -3294,7 +3311,7 @@ class KnowledgeService:
             }
 
         except Exception as e:
-            logger.error(f"Full-text search failed: {e}")
+            logger.error(f"Full-text search failed: {exception_log_name(e)}")
             # Static `error` value — see list_documents (#866).
             return {
                 "query": query,
@@ -3593,7 +3610,9 @@ class KnowledgeService:
             # ``upload_document`` does.
             raise
         except Exception as e:
-            logger.error(f"Failed to update document {document_id}: {e}")
+            logger.error(
+                f"Failed to update document {document_id}: {exception_log_name(e)}"
+            )
             raise
 
     async def bulk_update_documents(
@@ -3606,7 +3625,7 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body by
         ``POST /knowledge/documents/bulk-update``, which any authenticated
         caller may reach (#866), so per-target entries never carry exception
-        text — the diagnostic stays in the log line.
+        text — the log line names the class.
         """
         if "content" in updates:
             # Metadata only (#2055): content re-indexes, one document per
@@ -3630,7 +3649,9 @@ class KnowledgeService:
                     errors.append(f"Document {doc_id} not found")
             except Exception as e:
                 errors.append(f"Document {doc_id}: update failed")
-                logger.error(f"Failed to update document {doc_id}: {e}")
+                logger.error(
+                    f"Failed to update document {doc_id}: {exception_log_name(e)}"
+                )
 
         logger.info(
             f"Bulk update completed: {updated_count}/{len(document_ids)} documents updated"
@@ -3649,7 +3670,7 @@ class KnowledgeService:
         ``errors`` is returned verbatim to the caller in a 200 body (see
         ``bulk_update_documents``), so neither the raised exception nor the
         per-document ``error`` field — both of which carry driver text — is
-        echoed; the diagnostic stays in the log line. Each entry is the
+        echoed; the log line names the class. Each entry is the
         constant "delete failed" per id. A document counted as deleted has no
         chunk retrievable through a KB door: :meth:`delete_document` reports
         success once its row change commits, and a vector delete that fails
@@ -3676,7 +3697,9 @@ class KnowledgeService:
                     )
             except Exception as e:
                 errors.append(f"Document {doc_id}: delete failed")
-                logger.error(f"Failed to delete document {doc_id}: {e}")
+                logger.error(
+                    f"Failed to delete document {doc_id}: {exception_log_name(e)}"
+                )
 
         logger.info(
             f"Bulk delete completed: {deleted_count}/{len(document_ids)} documents deleted"

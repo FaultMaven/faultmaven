@@ -72,6 +72,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItemType,
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
@@ -546,7 +547,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             await self.db.rollback()
             msg = str(e.orig if e.orig is not None else e).lower()
             if "foreign key" in msg or "violates foreign key" in msg:
-                logger.error(f"Knowledge item {item.item_id} FK violation: {e.orig}")
+                logger.error(
+                    f"Knowledge item {item.item_id} FK violation: {exception_log_name(e.orig)}"
+                )
                 raise KnowledgeItemRepositoryException(
                     f"Failed to create knowledge item {item.item_id}: "
                     f"foreign key violation ({e.orig})"
@@ -556,7 +559,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             await self.db.rollback()
-            logger.error(f"Failed to create knowledge item: {e}")
+            logger.error(f"Failed to create knowledge item: {exception_log_name(e)}")
             raise KnowledgeItemRepositoryException(
                 f"Failed to create knowledge item: {e}"
             ) from e
@@ -576,7 +579,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return self._to_domain(item_model)
 
         except Exception as e:
-            logger.error(f"Failed to get knowledge item {item_id}: {e}")
+            logger.error(
+                f"Failed to get knowledge item {item_id}: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get knowledge item {item_id}: {e}"
             ) from e
@@ -608,7 +613,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             await self.db.rollback()
-            logger.error(f"Failed to update knowledge item {item_id}: {e}")
+            logger.error(
+                f"Failed to update knowledge item {item_id}: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to update knowledge item {item_id}: {e}"
             ) from e
@@ -646,7 +653,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             await self.db.rollback()
-            logger.error(f"Failed to delete knowledge item {item_id}: {e}")
+            logger.error(
+                f"Failed to delete knowledge item {item_id}: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to delete knowledge item {item_id}: {e}"
             ) from e
@@ -682,7 +691,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         try:
             await self.db.commit()
         except Exception as e:
-            logger.error(f"Failed to commit knowledge item changes: {e}")
+            logger.error(
+                f"Failed to commit knowledge item changes: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to commit knowledge item changes: {e}"
             ) from e
@@ -795,7 +806,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to list inventory for enterprise {enterprise_id}: {e}"
+                f"Failed to list inventory for enterprise {enterprise_id}: {exception_log_name(e)}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to list inventory for enterprise {enterprise_id}: {e}"
@@ -843,7 +854,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return self._to_domain(item_model)
 
         except Exception as e:
-            logger.error(f"Failed to get visible knowledge item {item_id}: {e}")
+            logger.error(
+                f"Failed to get visible knowledge item {item_id}: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get visible knowledge item {item_id}: {e}"
             ) from e
@@ -876,7 +889,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return set(result.scalars().all())
 
         except Exception as e:
-            logger.error(f"Failed to resolve visible knowledge item ids: {e}")
+            logger.error(
+                f"Failed to resolve visible knowledge item ids: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to resolve visible knowledge item ids: {e}"
             ) from e
@@ -900,7 +915,9 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return {item_id: generation for item_id, generation in result.all()}
 
         except Exception as e:
-            logger.error(f"Failed to resolve admitted knowledge item ids: {e}")
+            logger.error(
+                f"Failed to resolve admitted knowledge item ids: {exception_log_name(e)}"
+            )
             raise KnowledgeItemRepositoryException(
                 f"Failed to resolve admitted knowledge item ids: {e}"
             ) from e
@@ -955,7 +972,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to search by tags for enterprise {enterprise_id}: {e}"
+                f"Failed to search by tags for enterprise {enterprise_id}: {exception_log_name(e)}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to search by tags for enterprise {enterprise_id}: {e}"
@@ -993,7 +1010,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to get items without embeddings for enterprise {enterprise_id}: {e}"
+                f"Failed to get items without embeddings for enterprise {enterprise_id}: {exception_log_name(e)}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get items without embeddings: {e}"
@@ -1034,7 +1051,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
 
         except Exception as e:
             logger.error(
-                f"Failed to get most helpful items for enterprise {enterprise_id}: {e}"
+                f"Failed to get most helpful items for enterprise {enterprise_id}: {exception_log_name(e)}"
             )
             raise KnowledgeItemRepositoryException(
                 f"Failed to get most helpful items: {e}"
