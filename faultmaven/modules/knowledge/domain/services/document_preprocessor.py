@@ -50,6 +50,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     TriageResult,
 )
 from faultmaven.modules.knowledge.domain.services import preparation_worker
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -170,9 +171,9 @@ async def _run_worker(file_path: Path, content_type: str) -> Any:
     except worker_process.WorkerNotStarted as e:
         cause = e.__cause__
         logger.error(
-            "conversion failed: the preparation worker of %s could not start: %r",
+            "conversion failed: the preparation worker of %s could not start: %s",
             file_path.name,
-            cause,
+            exception_log_name(cause),
         )
         raise PreparationFailed("the preparation worker could not start") from cause
     except worker_process.WorkerFailed as e:
@@ -399,7 +400,9 @@ class DocumentPreprocessor:
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.warning(f"Content triage failed, proceeding anyway: {e}")
+            logger.warning(
+                f"Content triage failed, proceeding anyway: {exception_log_name(e)}"
+            )
             return None
 
         messages = await model_boundary_redacted(
@@ -466,5 +469,7 @@ class DocumentPreprocessor:
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.warning(f"Content triage failed, proceeding anyway: {e}")
+            logger.warning(
+                f"Content triage failed, proceeding anyway: {exception_log_name(e)}"
+            )
             return None

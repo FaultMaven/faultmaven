@@ -19,6 +19,7 @@ from pypdf.errors import LimitReachedError
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     mask_html_comments,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.line_endings import normalize_line_endings
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,9 @@ def _is_budget(file_path: Path, error: LimitReachedError) -> bool:
     """Whether pypdf refused for one of its budgets, not for corruption."""
     if str(error).startswith(_CORRUPTION_MESSAGES):
         logger.warning(
-            "PDF %s: pypdf limit error read as corruption: %s", file_path.name, error
+            "PDF %s: pypdf limit error read as corruption: %s",
+            file_path.name,
+            exception_log_name(error),
         )
         return False
     return True
@@ -167,7 +170,11 @@ class DocumentParser:
                 raise MemoryError(f"parsing {file_path.name}") from e
             # The library's text goes to the log, never to the caller: the
             # preprocessor turns this message into ``/convert``'s 422 detail.
-            logger.warning("document extraction failed for %s: %s", file_path, e)
+            logger.warning(
+                "document extraction failed for %s: %s",
+                file_path,
+                exception_log_name(e),
+            )
             raise ValueError(
                 f"Failed to parse {file_path.name} ({type(e).__name__})"
             ) from e
@@ -233,7 +240,11 @@ class DocumentParser:
         except LimitReachedError as e:
             if not _is_budget(file_path, e):
                 raise
-            logger.warning("PDF %s: pypdf refused the document: %s", file_path.name, e)
+            logger.warning(
+                "PDF %s: pypdf refused the document: %s",
+                file_path.name,
+                exception_log_name(e),
+            )
             raise DocumentTooComplex(_TOO_COMPLEX) from e
         pages, skipped, bounds = [], [], set()
         for index in range(page_count):

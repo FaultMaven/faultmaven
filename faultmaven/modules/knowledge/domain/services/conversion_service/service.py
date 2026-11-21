@@ -150,6 +150,7 @@ from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
     requested_tenant_provider,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
@@ -1287,7 +1288,10 @@ class ConversionService:
             # about retrying frees the id.
             logger.warning(
                 "conversion_draft_id_taken",
-                extra={"failure_mode_id": failure_mode.id, "reason": str(exc)},
+                extra={
+                    "failure_mode_id": failure_mode.id,
+                    "reason": exception_log_name(exc),
+                },
             )
             return ConversionError(
                 failure_mode_id=failure_mode.id, error=str(exc), retryable=False
@@ -1310,7 +1314,9 @@ class ConversionService:
             # provider's. ``error`` is returned in ``/convert``'s warnings and
             # persisted with the job, so the detail goes to the log line
             # instead.
-            logger.error(f"Conversion failed for {failure_mode.id}: {e}")
+            logger.error(
+                f"Conversion failed for {failure_mode.id}: {exception_log_name(e)}"
+            )
             return ConversionError(
                 failure_mode_id=failure_mode.id,
                 error=f"Runbook generation failed ({type(e).__name__})",
@@ -2076,7 +2082,9 @@ class ConversionService:
                 # missing file's ``FileNotFoundError`` names its absolute path,
                 # and an ingestion failure carries the vector store's own
                 # message. The detail goes to the log line.
-                logger.error(f"Batch verify failed for {draft_id}: {e}")
+                logger.error(
+                    f"Batch verify failed for {draft_id}: {exception_log_name(e)}"
+                )
                 results.append(
                     {
                         "conversion_id": conversion_id,
@@ -2399,7 +2407,9 @@ class ConversionService:
             # docstring states the failure contract. The caller gets a 500 and
             # can retry, which mints a fresh id; an `IngestOutcomeUnknown`
             # tells it to look first.
-            logger.error(f"Ingestion failed for draft {draft_id}: {e}")
+            logger.error(
+                f"Ingestion failed for draft {draft_id}: {exception_log_name(e)}"
+            )
             raise
 
         return VerifyResponse(

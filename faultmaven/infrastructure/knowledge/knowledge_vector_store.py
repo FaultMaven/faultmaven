@@ -71,6 +71,7 @@ from faultmaven.models.interfaces import (
 )
 from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.modules.knowledge.taxonomy import RunbookStatus
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -483,7 +484,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             return True
         except Exception as e:  # noqa: BLE001
             self.logger.warning(
-                f"KB write token not moved for '{collection_name}': {e} — other "
+                f"KB write token not moved for '{collection_name}': {exception_log_name(e)} — other "
                 f"stores keep their term index until the collection next changes"
             )
             return False
@@ -610,7 +611,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
                 return None
         except Exception as e:  # noqa: BLE001
             self.logger.warning(
-                f"KB term index unavailable for '{collection_name}': {e} — "
+                f"KB term index unavailable for '{collection_name}': {exception_log_name(e)} — "
                 f"reranking falls back to unweighted term overlap"
             )
             return None
@@ -647,7 +648,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             return collection
         except Exception as e:
             self.logger.error(
-                f"Failed to get/create KB collection {collection_name}: {e}"
+                f"Failed to get/create KB collection {collection_name}: {exception_log_name(e)}"
             )
             raise
 
@@ -1096,7 +1097,7 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             except Exception as e:
                 logger.debug(
                     f"Keyword-constrained search in {collection_name} "
-                    f"(keyword_len={len(keyword)}) failed: {e}"
+                    f"(keyword_len={len(keyword)}) failed: {exception_log_name(e)}"
                 )
 
         return all_results

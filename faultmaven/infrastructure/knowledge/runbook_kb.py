@@ -38,6 +38,7 @@ from faultmaven.infrastructure.vector_similarity import cosine_from_chroma_dista
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces import AdmitParents, require_admit
 from faultmaven.models.report import RunbookMatch
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     top_k=fetch,
                 )
             except Exception as e:
-                logger.error(f"ChromaDB runbook query failed: {e}")
+                logger.error(f"ChromaDB runbook query failed: {exception_log_name(e)}")
                 raise KnowledgeBaseError(
                     f"Runbook similarity search failed: {e}",
                     error_code="RUNBOOK_SEARCH_FAILED",
@@ -435,7 +436,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 unreadable_scores.append(similarity)
                 logger.warning(
                     f"Runbook chunk {chunk_id} carries no usable identity "
-                    f"({e!r}), skipping it",
+                    f"({exception_log_name(e)}), skipping it",
                     extra={
                         "chunk_id": chunk_id,
                         "similarity": similarity,

@@ -334,7 +334,7 @@ class TestTheDraftDelete:
 
         assert answered.status_code == 500
         assert answered.json()["detail"] == "Failed to delete draft"
-        assert "llm_traces for conversion conv_a: ConnectError" in caplog.text
+        assert "ServiceException <- ConnectError" in caplog.text
         assert BODY not in caplog.text and BODY not in answered.text
         assert (await _state(kb.factory))[0] == {"d1": "draft"}
 
@@ -402,7 +402,7 @@ class TestTheDocumentDelete:
 
         assert answered.status_code == 500
         assert answered.json()["detail"] == "Failed to delete document"
-        assert "llm_traces for conversion conv_a: ConnectError" in caplog.text
+        assert "ServiceException <- ConnectError" in caplog.text
         assert BODY not in caplog.text and BODY not in answered.text
         assert await _state(kb.factory) == ({"d_conv_a": "verified"}, {item_id})
 

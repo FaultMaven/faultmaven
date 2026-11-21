@@ -666,7 +666,7 @@ def test_a_worker_failure_not_the_documents_answers_the_global_500(
     assert "error_code" not in body
     if cause == "cannot-start":
         assert [
-            m for m in caplog.messages if "could not start: BlockingIOError(11" in m
+            m for m in caplog.messages if m.endswith("could not start: BlockingIOError")
         ]
 
 

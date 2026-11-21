@@ -141,6 +141,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication as _requi
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 # Every route below declares the gate TWICE: once on the decorator's
 # ``dependencies=[...]``, where FastAPI solves it ahead of every handler
@@ -379,7 +380,7 @@ async def convert_document(
         # translation instead of being swallowed into a 500 below. The LLM's
         # own deadline is the one with no handler: answered here (#1632).
         if isinstance(e, ExternalCallTimeout) and is_llm_failure(e):
-            logger.error(f"Conversion failed: {e}", exc_info=True)
+            logger.error(f"Conversion failed: {exception_log_name(e)}", exc_info=True)
             raise global_service_exception_http_exception(e) from e
         raise
 
@@ -431,7 +432,7 @@ async def convert_document(
         # the request id and no advice (#2622).
         raise
     except Exception as e:
-        logger.error(f"Conversion failed: {e}", exc_info=True)
+        logger.error(f"Conversion failed: {exception_log_name(e)}", exc_info=True)
         # The LLM failures that are not FaultMavenExceptions (#1632). The LLM
         # layer's configuration error, raised or latched by the open LLM
         # breaker, is Step 0's refusal in either state; anything else on an
@@ -757,7 +758,7 @@ async def delete_draft(
             is_platform_admin=current_user.is_platform_admin(),
         )
     except ServiceException as e:
-        logger.error(f"Failed to delete draft {draft_id}: {e}")
+        logger.error(f"Failed to delete draft {draft_id}: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Failed to delete draft")
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")
@@ -861,7 +862,9 @@ async def create_runbook_manually(
         # team-publishing unavailable) map to 403/422, not 500.
         raise
     except Exception as e:
-        logger.error(f"Manual runbook creation failed: {e}", exc_info=True)
+        logger.error(
+            f"Manual runbook creation failed: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Runbook creation failed")
 
 

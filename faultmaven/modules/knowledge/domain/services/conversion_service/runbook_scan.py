@@ -53,6 +53,7 @@ from faultmaven.modules.knowledge.exceptions import (
     GateRefused,
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, member_value
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
@@ -236,7 +237,9 @@ async def _scan_for_runbooks_impl(
                 root=knowledge_dir,
             )
         except RunbookPathEscape as exc:
-            logger.warning("skipping a scanned file outside the tree: %s", exc)
+            logger.warning(
+                "skipping a scanned file outside the tree: %s", exception_log_name(exc)
+            )
             skipped += 1
             continue
 
@@ -247,7 +250,7 @@ async def _scan_for_runbooks_impl(
             # The file's NAME and the exception's CLASS, never the exception's
             # text (#836): an ``OSError`` names the file's server path, and
             # ``errors`` is returned to the client. The detail goes to the log.
-            logger.warning("scan cannot read %s: %s", md_file, e)
+            logger.warning("scan cannot read %s: %s", md_file, exception_log_name(e))
             errors.append(f"{md_file.name}: cannot read ({type(e).__name__})")
             continue
 
@@ -420,7 +423,7 @@ async def _scan_for_runbooks_impl(
             logger.warning(
                 "skipping a scanned runbook whose id is already taken: %s (%s)",
                 md_file.name,
-                exc,
+                exception_log_name(exc),
             )
             errors.append(
                 f"{md_file.name}: runbook id {runbook_id!r} is already held "

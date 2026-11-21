@@ -48,8 +48,10 @@ or such a ``gather``, and texts over any other read of those names
 (``e.args``, ``str(e).splitlines()``, ``str(results[0]).splitlines()``).
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
-``type(e)``, ``len(result.stderr)``, ...); an attribute in :data:`SAFE_ATTRS`
-(``e.status_code``, ``e.returncode``, ...), or read by name
+``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)``, which returns a
+``bool``, ...); an attribute in :data:`SAFE_ATTRS` (``e.status_code``,
+``e.returncode``, ``e.item_id``, the knowledge item id our code sets on
+``IngestOutcomeUnknown``, ...), or read by name
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
@@ -120,6 +122,7 @@ SAFE_CALLS = frozenset(
         "logged_exception",
         "declared_llm_category",
         "classify_token_limit_reason",
+        "_arrived_cancelled",
     }
 )
 
@@ -135,6 +138,7 @@ SAFE_ATTRS = frozenset(
         "sqlstate",
         "__class__",
         "__name__",
+        "item_id",
     }
 )
 
@@ -585,8 +589,6 @@ ALLOWED = {
     "infrastructure/health/component_monitor.py": 4,
     "infrastructure/index_slot.py": 1,
     "infrastructure/jobs/job_service.py": 7,
-    "infrastructure/knowledge/knowledge_vector_store.py": 4,
-    "infrastructure/knowledge/runbook_kb.py": 2,
     "infrastructure/logging/helpers.py": 1,
     "infrastructure/model_cache.py": 2,
     "infrastructure/observability/alerting.py": 4,
@@ -650,15 +652,6 @@ ALLOWED = {
     "modules/case/infrastructure/sqlite_case_repository/loading.py": 3,
     "modules/case/infrastructure/sqlite_case_repository/repository.py": 1,
     "modules/case/infrastructure/sqlite_case_repository/rows.py": 2,
-    "modules/knowledge/api/conversion_routes.py": 4,
-    "modules/knowledge/api/routes.py": 13,
-    "modules/knowledge/domain/services/conversion_service/runbook_scan.py": 3,
-    "modules/knowledge/domain/services/conversion_service/service.py": 5,
-    "modules/knowledge/domain/services/document_parser.py": 3,
-    "modules/knowledge/domain/services/document_preprocessor.py": 3,
-    "modules/knowledge/domain/services/knowledge_service.py": 20,
-    "modules/knowledge/domain/services/runbook_gate.py": 1,
-    "modules/knowledge/infrastructure/persistence/knowledge_item_repository.py": 13,
     "modules/report/api/routes.py": 7,
     "modules/report/domain/services/report_generation_service.py": 1,
     "modules/report/domain/services/report_recommendation_service.py": 1,
@@ -680,6 +673,8 @@ SWITCHED_PREFIXES = (
     "modules/preprocessing/",
     "core/preprocessing/",
     "core/processing/",
+    "modules/knowledge/",
+    "infrastructure/knowledge/",
 )
 
 
@@ -787,6 +782,7 @@ def _found(source: str) -> List[Site]:
         "    log.warning(f'{rest}')",
         "def f(c, e, s):\n    *_, rest = _prune_invalid_sub_records(c, e, s)\n"
         "    log.warning(f'{rest}')",
+        "def f(e):\n    log.error('%s', e.message)",
     ],
 )
 def test_a_site_is_found(source):
@@ -829,6 +825,9 @@ def test_a_site_is_found(source):
         "    log.warning('x %s', reason)",
         "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
         "    log.warning(f'{paths}')",
+        "def f(failure):\n    cancelled = _arrived_cancelled(failure)\n"
+        "    log.warning('%s', 'a' if cancelled else 'b')",
+        "def f(e):\n    log.error('item %s', e.item_id)",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
