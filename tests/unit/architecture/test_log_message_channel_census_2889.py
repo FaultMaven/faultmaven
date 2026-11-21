@@ -126,8 +126,8 @@ SAFE_CALLS = frozenset(
     }
 )
 
-#: Attributes of an exception or a finished process that hold a number, a flag
-#: or a fixed code, never text a third party chose.
+#: Attributes of an exception or a finished process that hold a number, a flag,
+#: a fixed code or an identifier our code set, never text a third party chose.
 SAFE_ATTRS = frozenset(
     {
         "status_code",
