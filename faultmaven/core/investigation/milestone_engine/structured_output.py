@@ -252,7 +252,7 @@ def _validate_with_degradation(content_obj, schema_model):
                 # fallback is self-diagnosing (was it correctly non-prunable,
                 # or a prune gap?). Reference: S4 backstop observability.
                 non_prunable = [
-                    (list(e.get("loc", ())), e.get("msg", "")) for e in unhandled
+                    (list(e.get("loc", ())), e.get("type", "")) for e in unhandled
                 ]
                 logger.warning(
                     "structured_output_degraded: dropped all state_updates from "

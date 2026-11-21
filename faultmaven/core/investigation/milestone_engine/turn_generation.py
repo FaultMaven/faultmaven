@@ -23,6 +23,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     InvestigationStage,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .stage_gates import (
     _route_toolless_turn_single_shot,
@@ -117,7 +118,7 @@ async def _generate_turn_response(
         logger.warning(
             "Entity highlights prefetch failed for case %s (non-fatal): %s",
             case.case_id,
-            exc,
+            exception_log_name(exc),
         )
 
     # Build the prompt for the tools this turn gives the model (#1939): every

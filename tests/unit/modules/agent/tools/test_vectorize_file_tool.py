@@ -199,7 +199,7 @@ class TestVectorization:
         self, tool, mock_settings, caplog
     ):
         """#2332: the model reads the class and what it may conclude; the
-        server log, the text. The case read cannot fail in production, where
+        log names the class (#2889). The case read cannot fail in production, where
         the context carries the turn's case; this pins the catch-all's text
         for a defect that reaches it (the store catches everything itself)."""
         repo = MagicMock()
@@ -219,7 +219,7 @@ class TestVectorization:
 
         assert result.success is False
         assert "says nothing about its contents" in result.error
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "vectorize_file failed")
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):

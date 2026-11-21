@@ -35,8 +35,9 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
   ``SystemExit`` row). A literal is our text, and is not a site.
 
 **Exception names** are the names bound by ``except ... as N``, a function's
-parameters annotated ``...Error``/``...Exception`` or unannotated and named
-``e``/``err``/``error``/``exc``/``exception``, and, one level deep, the names
+parameters annotated ``...Error``/``...Exception``/``...ExceptionGroup`` or
+unannotated and named ``e``/``err``/``error``/``exc``/``exception``, and, one
+level deep, the names
 assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
 from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
@@ -54,7 +55,11 @@ or such a ``gather``, and texts over any other read of those names
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
 exception (not a name that also holds its text) passed bare as a keyword field
 (``error=e``, an ``extra`` value), are not sites: rule 4's processor renders
-those as class chains (``infrastructure/logging/config.py``).
+those as class chains (``infrastructure/logging/config.py``). An exception
+passed bare as ``self.log_error``'s ``error`` argument is not a site either:
+``BaseService.log_error`` renders it as a class chain and frames. The pruned
+paths ``_prune_invalid_sub_records`` returns (position 1 of its tuple) are
+schema locations our code built, not text: :data:`NOT_EXCEPTION_RESULTS`.
 
 ``exit_refusing(str(exc))`` (``cli/_database_gate.py``) is not a site: §7 names
 its shape, a refusal on stderr whose text our code chose, as the compliant one,
@@ -74,7 +79,7 @@ file leaves the count, and the guard, unchanged.
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
 switched site shrinks its row, and the last sub-stage deletes the table. No
-file under ``faultmaven/infrastructure/llm/`` is listed (S3a, #2889).
+file under a prefix in :data:`SWITCHED_PREFIXES` is listed.
 """
 
 from __future__ import annotations
@@ -114,6 +119,7 @@ SAFE_CALLS = frozenset(
         "exception_frames",
         "logged_exception",
         "declared_llm_category",
+        "classify_token_limit_reason",
     }
 )
 
@@ -135,10 +141,14 @@ SAFE_ATTRS = frozenset(
 #: Callees whose text §7 names as compliant.
 NOT_SITES = frozenset({"exit_refusing"})
 
+#: Calls whose tuple result holds, at the listed positions, no exception text:
+#: a name unpacked there is not tracked; every other position is.
+NOT_EXCEPTION_RESULTS = {"_prune_invalid_sub_records": frozenset({1})}
+
 #: The names an unannotated parameter holding an exception goes by.
 EXCEPTION_PARAM_NAMES = frozenset({"e", "err", "error", "exc", "exception"})
 
-_EXCEPTION_ANNOTATION = re.compile(r"(Error|Exception|BaseException)\b")
+_EXCEPTION_ANNOTATION = re.compile(r"(Error|Exception|ExceptionGroup)\b")
 _LOGGING_KEYWORDS = frozenset({"exc_info", "stack_info", "stacklevel"})
 _PRINT_KEYWORDS = frozenset({"file", "flush"})
 _TRACEBACK_TEXT = frozenset(
@@ -270,11 +280,21 @@ def _reads(node: ast.AST, names: FrozenSet[str]) -> _Reads:
     return reads
 
 
+def _on_self(call: ast.Call) -> bool:
+    """``self.method(...)``: the receiver is the bare name ``self``."""
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+    return isinstance(receiver, ast.Name) and receiver.id == "self"
+
+
 def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
     """The argument expressions a line's text is built from. A name passed bare
     as a field is skipped only when it is an exception and never its text."""
     exceptions = names.exceptions - names.texts
-    yield from call.args
+    for position, arg in enumerate(call.args):
+        if position == 1 and _callee(call) == "log_error" and _on_self(call):
+            if isinstance(arg, ast.Name) and arg.id in exceptions:
+                continue  # ``BaseService.log_error``: a class chain and frames
+        yield arg
     for keyword in call.keywords:
         if keyword.arg in _LOGGING_KEYWORDS:
             continue
@@ -354,6 +374,23 @@ def _iterates_exceptions(it: ast.AST, exceptions: FrozenSet[str], gathered: set)
     )
 
 
+def _not_exception_results(targets, value: ast.AST) -> set:
+    """The names a tuple unpacks, from a call in :data:`NOT_EXCEPTION_RESULTS`,
+    at the positions it lists."""
+    if not (isinstance(value, ast.Call) and len(targets) == 1):
+        return set()
+    if not isinstance(targets[0], ast.Tuple):
+        return set()
+    if any(isinstance(elt, ast.Starred) for elt in targets[0].elts):
+        return set()  # a starred target shifts the positions: exempt nothing
+    positions = NOT_EXCEPTION_RESULTS.get(_callee(value), frozenset())
+    return {
+        elt.id
+        for i, elt in enumerate(targets[0].elts)
+        if i in positions and isinstance(elt, ast.Name)
+    }
+
+
 def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
     """The names assigned, anywhere in ``scope`` outside a nested function,
     from an exception name in force where the assignment stands, then the
@@ -372,7 +409,7 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
             assigned = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
             if not loops and isinstance(child, assigned) and child.value:
                 targets = getattr(child, "targets", None) or [child.target]
-                bound = _bound(targets)
+                bound = _bound(targets) - _not_exception_results(targets, child.value)
                 if _is_exception_valued(child.value, here.exceptions):
                     exceptions.update(bound)
                 elif any(_is_gather_of_exceptions(n) for n in ast.walk(child.value)):
@@ -538,24 +575,6 @@ ALLOWED = {
     "container/providers/services.py": 12,
     "container/providers/tools.py": 6,
     "container/utils.py": 2,
-    "core/investigation/case_telemetry.py": 3,
-    "core/investigation/llm_error_handler.py": 7,
-    "core/investigation/milestone_engine/engine.py": 2,
-    "core/investigation/milestone_engine/generation.py": 9,
-    "core/investigation/milestone_engine/runbook_creation.py": 4,
-    "core/investigation/milestone_engine/statement_revision.py": 1,
-    "core/investigation/milestone_engine/structured_output.py": 1,
-    "core/investigation/milestone_engine/terminal_turns.py": 2,
-    "core/investigation/milestone_engine/tool_messages.py": 1,
-    "core/investigation/milestone_engine/turn_application.py": 2,
-    "core/investigation/milestone_engine/turn_generation.py": 1,
-    "core/investigation/milestone_engine/vectorization.py": 3,
-    "core/investigation/prompts/context_builder/entity_highlights.py": 1,
-    "core/investigation/terminal_transitions.py": 1,
-    "core/preprocessing/tier2/local_service.py": 1,
-    "core/preprocessing/vector_storage.py": 1,
-    "core/processing/log_analyzer.py": 4,
-    "core/processing/pattern_learner.py": 3,
     "infrastructure/auth/database_user_store.py": 8,
     "infrastructure/auth/user_store.py": 15,
     "infrastructure/base_client.py": 4,
@@ -604,18 +623,6 @@ ALLOWED = {
     "jobs/llm_usage_retention.py": 1,
     "jobs/run.py": 4,
     "main.py": 27,
-    "modules/agent/domain/services/investigation_service/attachments.py": 1,
-    "modules/agent/domain/services/investigation_service/service.py": 2,
-    "modules/agent/domain/services/investigation_service/turn_settlement.py": 2,
-    "modules/agent/jobs/storage_cleanup.py": 3,
-    "modules/agent/tools/base.py": 1,
-    "modules/agent/tools/deep_analysis_tool.py": 1,
-    "modules/agent/tools/find_entity_tool.py": 1,
-    "modules/agent/tools/kb_tool_adapter.py": 2,
-    "modules/agent/tools/list_top_entities_tool.py": 1,
-    "modules/agent/tools/reclassify_evidence_tool.py": 2,
-    "modules/agent/tools/search_file_tool.py": 2,
-    "modules/agent/tools/vectorize_file_tool.py": 1,
     "modules/auth/api/auth.py": 14,
     "modules/auth/api/oauth.py": 8,
     "modules/auth/api/session.py": 15,
@@ -643,7 +650,6 @@ ALLOWED = {
     "modules/case/infrastructure/sqlite_case_repository/loading.py": 3,
     "modules/case/infrastructure/sqlite_case_repository/repository.py": 1,
     "modules/case/infrastructure/sqlite_case_repository/rows.py": 2,
-    "modules/evidence/domain/services/file_storage_service.py": 7,
     "modules/knowledge/api/conversion_routes.py": 4,
     "modules/knowledge/api/routes.py": 13,
     "modules/knowledge/domain/services/conversion_service/runbook_scan.py": 3,
@@ -653,7 +659,6 @@ ALLOWED = {
     "modules/knowledge/domain/services/knowledge_service.py": 20,
     "modules/knowledge/domain/services/runbook_gate.py": 1,
     "modules/knowledge/infrastructure/persistence/knowledge_item_repository.py": 13,
-    "modules/preprocessing/preprocessing_service.py": 2,
     "modules/report/api/routes.py": 7,
     "modules/report/domain/services/report_generation_service.py": 1,
     "modules/report/domain/services/report_recommendation_service.py": 1,
@@ -664,6 +669,18 @@ ALLOWED = {
     "utils/schema_converter.py": 1,
     "utils/token_estimation.py": 3,
 }
+
+
+#: The areas S3 has switched (#2889): no file under one is on :data:`ALLOWED`.
+SWITCHED_PREFIXES = (
+    "infrastructure/llm/",
+    "core/investigation/",
+    "modules/agent/",
+    "modules/evidence/",
+    "modules/preprocessing/",
+    "core/preprocessing/",
+    "core/processing/",
+)
 
 
 RULE = (
@@ -696,9 +713,9 @@ def test_each_file_holds_exactly_its_allowed_sites():
 
 
 def test_the_switched_area_is_not_on_the_list():
-    """S3a switched every site under ``infrastructure/llm/``: a site there is
+    """S3 switched every site under :data:`SWITCHED_PREFIXES`: a site there is
     never allowed, so reverting one fails the census as an unlisted file."""
-    assert not [path for path in ALLOWED if path.startswith("infrastructure/llm/")]
+    assert not [path for path in ALLOWED if path.startswith(SWITCHED_PREFIXES)]
     assert all(count > 0 for count in ALLOWED.values())
 
 
@@ -760,6 +777,16 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    retire_parser.error(f'{e}')",
         "def f(e):\n    print('x', end=str(e))",
         "def f(e):\n    print('x', sep=f'{e}')",
+        "def f(group: ExceptionGroup):\n    log.warning(f'{group}')",
+        "def f(group: BaseExceptionGroup):\n    log.warning(f'{group}')",
+        "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, detail=str(e))",
+        "try:\n    pass\nexcept Exception as e:\n    helper.log_error('op', e)",
+        "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
+        "def f(c, e, s):\n    obj, *_, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
+        "def f(c, e, s):\n    *_, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
     ],
 )
 def test_a_site_is_found(source):
@@ -797,6 +824,11 @@ def test_a_site_is_found(source):
         "def f(e):\n    for i, m in enumerate(e.exceptions):\n        log.warning('x', error=m)",
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
         "    for r in rs:\n        log.warning('x', error=r)",
+        "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, key=k)",
+        "def f(e):\n    reason = classify_token_limit_reason(e)\n"
+        "    log.warning('x %s', reason)",
+        "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{paths}')",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):

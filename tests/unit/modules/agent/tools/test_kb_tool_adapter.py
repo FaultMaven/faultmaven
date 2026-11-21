@@ -157,16 +157,21 @@ class TestCaseEvidenceQAAdapter:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "adapter_cls, guidance",
+    "adapter_cls, guidance, event",
     [
-        (KBToolAdapter, "draw no conclusion about what it holds"),
-        (CaseEvidenceQAAdapter, "draw no conclusion about the case's evidence"),
+        (KBToolAdapter, "draw no conclusion about what it holds", "KB query failed"),
+        (
+            CaseEvidenceQAAdapter,
+            "draw no conclusion about the case's evidence",
+            "Case evidence search failed",
+        ),
     ],
 )
 async def test_a_failed_search_names_its_class_and_keeps_its_guidance(
-    adapter_cls, guidance, context, caplog
+    adapter_cls, guidance, event, context, caplog
 ):
-    """#2332: the class and the #943 guidance reach the model, the text the log."""
+    """#2332: the class and the #943 guidance reach the model; the log names
+    the class (#2889)."""
     wrapped = AsyncMock()
     wrapped._arun = AsyncMock(side_effect=leaky_error())
     wrapped.answer = AsyncMock(side_effect=leaky_error())
@@ -178,4 +183,4 @@ async def test_a_failed_search_names_its_class_and_keeps_its_guidance(
 
     assert result.success is False
     assert guidance in result.error
-    assert_reported_by_class(result.error, caplog.text)
+    assert_reported_by_class(result.error, caplog.records, event)

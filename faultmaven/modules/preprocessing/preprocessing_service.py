@@ -67,6 +67,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     extract_time_range_ts,
     unparsed_preview,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     pass
@@ -115,6 +116,20 @@ _EXTRACTION_WORKER = extraction_worker.__name__
 _tier1_slots_state: Optional[
     tuple[asyncio.AbstractEventLoop, worker_process.FairSlots]
 ] = None
+
+
+class Tier1WorkerFailed(RuntimeError):
+    """A Tier 1 worker that gave no extract. ``error_code`` names the cause,
+    so a log line names it without the text (#2889)."""
+
+    MEMORY_LIMIT = "TIER1_MEMORY_LIMIT"
+    PHASE_BOUND = "TIER1_PHASE_BOUND"
+    NO_RESULT = "TIER1_NO_RESULT"
+    WORK_FAILED = "TIER1_WORK_FAILED"
+
+    def __init__(self, message: str, error_code: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 def tier1_limits(upload_mb: int) -> tuple[worker_process.Phases, int, int]:
@@ -1258,7 +1273,7 @@ class PreprocessingService:
                 logger.warning(
                     "Entity extraction failed for %s: %s",
                     detailed_data_type.value,
-                    exc,
+                    exception_log_name(exc),
                 )
                 observations = []
 
@@ -1424,19 +1439,26 @@ class PreprocessingService:
                 )
                 return preview(timeout_fallback=True)
             if end.timed_out:
-                raise RuntimeError(
-                    f"the extraction worker ran past its {end.phase} bound"
+                raise Tier1WorkerFailed(
+                    f"the extraction worker ran past its {end.phase} bound",
+                    Tier1WorkerFailed.PHASE_BOUND,
                 )
             if end.result is None:
                 if end.code == worker_process.OUT_OF_MEMORY_EXIT:
-                    raise RuntimeError("the extraction worker passed its memory limit")
-                raise RuntimeError(
-                    end.failure or f"the extraction worker exited {end.code}"
+                    raise Tier1WorkerFailed(
+                        "the extraction worker passed its memory limit",
+                        Tier1WorkerFailed.MEMORY_LIMIT,
+                    )
+                if end.failure:
+                    raise Tier1WorkerFailed(end.failure, Tier1WorkerFailed.WORK_FAILED)
+                raise Tier1WorkerFailed(
+                    f"the extraction worker exited {end.code}",
+                    Tier1WorkerFailed.NO_RESULT,
                 )
             extract_result_json, file_extract = end.result
         except Exception as e:
             logger.error(
-                f"Tier 1 extraction failed for {filename}: {e}. "
+                f"Tier 1 extraction failed for {filename}: {exception_log_name(e)}. "
                 f"Falling back to TEXT preview."
             )
             return preview(error_fallback=True, error=str(e)[:200])

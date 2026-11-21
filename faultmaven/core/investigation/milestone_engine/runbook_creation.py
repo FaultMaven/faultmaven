@@ -17,6 +17,7 @@ from faultmaven.modules.case.contracts import (
     MessageRowKind,
     append_message_row,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .terminal_replies import (
     _generate_runbook_anyway_suggestion,
@@ -176,7 +177,7 @@ class RunbookCreator:
         except Exception as e:
             existing = None
             logger.warning(
-                f"Existing-conversion check failed for case {case.case_id}: {e}. "
+                f"Existing-conversion check failed for case {case.case_id}: {exception_log_name(e)}. "
                 "Proceeding to generate.",
                 extra={"case_id": case.case_id},
             )
@@ -300,7 +301,7 @@ class RunbookCreator:
             )
         except Exception as e:
             logger.warning(
-                f"Failed to initiate runbook creation for case {case.case_id}: {e}",
+                f"Failed to initiate runbook creation for case {case.case_id}: {exception_log_name(e)}",
                 extra={"case_id": case.case_id},
             )
             agent_response = (
@@ -463,7 +464,7 @@ class RunbookCreator:
                 )
         except Exception as e:
             logger.error(
-                f"Background runbook creation failed for case {request.case_id}: {e}",
+                f"Background runbook creation failed for case {request.case_id}: {exception_log_name(e)}",
                 extra={"case_id": request.case_id},
                 exc_info=True,
             )
@@ -504,7 +505,7 @@ class RunbookCreator:
         except Exception as e:
             logger.warning(
                 f"Failed to write runbook completion notification for case "
-                f"{request.case_id}: {e}",
+                f"{request.case_id}: {exception_log_name(e)}",
                 extra={"case_id": request.case_id},
                 exc_info=True,
             )

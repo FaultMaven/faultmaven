@@ -46,6 +46,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.utils.exception_name import exception_log_name
 
 
 class PatternType(Enum):
@@ -262,7 +263,7 @@ class PatternLearner:
             )
 
         except Exception as e:
-            self.logger.error(f"Pattern learning failed: {e}")
+            self.logger.error(f"Pattern learning failed: {exception_log_name(e)}")
             errors.append(str(e))
             return LearningResult(
                 patterns_learned=0,
@@ -333,7 +334,7 @@ class PatternLearner:
 
                 except re.error as e:
                     self.logger.warning(
-                        f"Invalid regex pattern {pattern.pattern_id}: {e}"
+                        f"Invalid regex pattern {pattern.pattern_id}: {exception_log_name(e)}"
                     )
                     continue
 
@@ -351,7 +352,7 @@ class PatternLearner:
             }
 
         except Exception as e:
-            self.logger.error(f"Pattern application failed: {e}")
+            self.logger.error(f"Pattern application failed: {exception_log_name(e)}")
             return {"matches": [], "confidence": 0.0, "patterns_applied": 0}
 
     def get_pattern_statistics(self) -> Dict[str, Any]:

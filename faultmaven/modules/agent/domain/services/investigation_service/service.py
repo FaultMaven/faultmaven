@@ -125,6 +125,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     earned_edge_refusal,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -675,7 +676,9 @@ class InvestigationService:
                     f"The database did not answer while a turn on case "
                     f"{case_id} was being prepared: {e}"
                 ) from e
-            logger.error(f"Failed to process turn for case {case_id}: {e}")
+            logger.error(
+                f"Failed to process turn for case {case_id}: {exception_log_name(e)}"
+            )
             # Preserve a typed error_code (e.g. QUOTA_EXHAUSTED billing) through
             # the wrap so the route handler can map it to a precise HTTP status
             # instead of a generic 500.
@@ -757,7 +760,9 @@ class InvestigationService:
         except (StaleCaseException, TurnReceiptExistsError):
             raise
         except Exception as e:
-            logger.error(f"Failed to commit turn for case {prepared.case.case_id}: {e}")
+            logger.error(
+                f"Failed to commit turn for case {prepared.case.case_id}: {exception_log_name(e)}"
+            )
             # Each passes through as itself, found on the chain the session and
             # the repository wrapped it in, so the route can say whether the
             # turn may have been saved; never as the ``ServiceException`` below,

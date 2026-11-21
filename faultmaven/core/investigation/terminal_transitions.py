@@ -111,6 +111,7 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
     WritePoint,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 # INV-26 substantive-input bound: a typed reply longer than this cannot be a
 # bare consent to a pending terminal transition. Shared by every consumer of
@@ -2240,7 +2241,7 @@ async def evaluate_runbook_suggestion(
             dedup_failed = True
             dedup_unreadable = getattr(e, "error_code", None) == RESULTS_UNREADABLE_CODE
             logger.warning(
-                f"Runbook deduplication check failed for case {case.case_id}: {e}.",
+                f"Runbook deduplication check failed for case {case.case_id}: {exception_log_name(e)}.",
                 extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
             )
 

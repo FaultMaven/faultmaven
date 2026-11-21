@@ -227,7 +227,9 @@ class TestReclassifierDelegation:
                 context=_ctx(),
             )
         assert result.success is False
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(
+            result.error, caplog.records, "reclassify_evidence tool failed"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

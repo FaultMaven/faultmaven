@@ -523,7 +523,7 @@ class TestASuccessfulUploadTurn:
         assert response.agent_response.startswith("Looked at")
         assert storage.marked() == storage.stored, "positive control: it was tried"
         assert any(
-            "mark_linked failed" in r.getMessage() and "s3 timeout" in r.getMessage()
+            "mark_linked failed" in r.getMessage() and "RuntimeError" in r.getMessage()
             for r in caplog.records
         )
         [row] = (await world.committed()).uploaded_files

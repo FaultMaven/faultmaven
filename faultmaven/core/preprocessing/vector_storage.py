@@ -23,6 +23,7 @@ from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.embedding_guard import embed_texts_or_raise
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,7 @@ async def store_in_vector_db_background(
         return VectorIndexOutcome.INDEXED
     except Exception as e:
         logger.error(
-            f"Failed to store in vector DB for {evidence_id}: {e}. "
+            f"Failed to store in vector DB for {evidence_id}: {exception_log_name(e)}. "
             f"Evidence is still available via the Evidence record, "
             f"but semantic search will not find this file."
         )

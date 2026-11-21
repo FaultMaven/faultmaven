@@ -878,12 +878,15 @@ class TestStructuredOutputDegradation:
 
     def test_fallback_logs_non_prunable_errors(self, caplog):
         # A NON-prunable error forces the conversational fallback; that branch
-        # must log the offending loc/msg so each fallback is self-diagnosing
+        # must log the offending loc/type so each fallback is self-diagnosing
         # (S4 observability). Every error INSIDE a state_updates object is
         # placed by a prune rung (an invalid state field costs only that field,
         # fm#1803), so the trigger here is state_updates itself being the wrong
         # TYPE -> loc ('state_updates',) names no entry, sub-object or field.
+        import json
         import logging
+
+        from pydantic import ValidationError
 
         from faultmaven.core.investigation.schemas import (
             InvestigationResponse_Diagnosis,
@@ -907,4 +910,13 @@ class TestStructuredOutputDegradation:
         assert degraded, "fallback must emit a degraded warning"
         non_prunable = getattr(degraded[0], "non_prunable_errors", None)
         assert non_prunable, "fallback must log the non-prunable errors"
-        assert any(loc == ["state_updates"] for loc, _msg in non_prunable)
+        assert any(loc == ["state_updates"] for loc, error_type in non_prunable)
+        with pytest.raises(ValidationError) as raised:
+            InvestigationResponse_Diagnosis.model_validate_json(json.dumps(content))
+        messages = [
+            e["msg"] for e in raised.value.errors() if e["loc"] == ("state_updates",)
+        ]
+        assert messages, "positive control: the validator's message"
+        for _loc, error_type in non_prunable:
+            assert isinstance(error_type, str) and error_type
+            assert not any(message in error_type for message in messages)

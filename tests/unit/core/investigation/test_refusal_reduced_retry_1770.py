@@ -579,7 +579,7 @@ async def test_the_reissues_own_failure_is_named_and_logged(tools, caplog):
         r.name == generation.__name__
         and r.levelname == "WARNING"
         and "re-issue failed" in r.getMessage()
-        and "SENTINEL-1770" in r.getMessage()
+        and "LLMException" in r.getMessage()
         for r in caplog.records
     )
 

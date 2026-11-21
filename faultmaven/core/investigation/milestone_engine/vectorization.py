@@ -9,6 +9,7 @@ from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     append_vectorization_advisory,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ class EvidenceVectorizer:
             logger.warning(
                 "Vectorization failed for %s: %s",
                 evidence_id,
-                e,
+                exception_log_name(e),
                 exc_info=True,
             )
             return False
@@ -193,7 +194,7 @@ class EvidenceVectorizer:
                 logger.debug(
                     "Failed to persist vectorized flag for %s: %s",
                     evidence_id,
-                    e,
+                    exception_log_name(e),
                 )
 
         # Flip the flag on the in-memory snapshot so the current turn's
@@ -253,7 +254,7 @@ class EvidenceVectorizer:
                     logger.warning(
                         "Proactive vectorization task failed for %s: %s",
                         evidence_id,
-                        exc,
+                        exception_log_name(exc),
                     )
                 else:
                     # The advisory decision lives in the helper, not in this

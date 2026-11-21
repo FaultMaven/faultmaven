@@ -23,6 +23,7 @@ from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
 from faultmaven.modules.agent.tools.search_file_tool import (
     format_searchable_alternatives,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ class KBToolAdapter(AgentTool):
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.error(f"KB query failed: {e}")
+            logger.error(f"KB query failed: {exception_log_name(e)}")
             # Report the failure, and ONLY the failure. The previous text
             # ("The KB may not be populated yet") guessed at a cause the
             # adapter cannot know, turning an infrastructure fault into a
@@ -219,7 +220,7 @@ class CaseEvidenceQAAdapter(AgentTool):
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.error(f"Case evidence search failed: {e}")
+            logger.error(f"Case evidence search failed: {exception_log_name(e)}")
             # Same rule as KBToolAdapter above: a failed search says nothing
             # about whether evidence exists. "may not be vectorized yet" was a
             # guess that reads as a finding about the case (#943).

@@ -8,6 +8,7 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.prompts.templates.tool_text import tools_line
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
         logger.debug(
             "Structured-output capability unavailable (%s); schema tool "
             "stays unenforced",
-            exc,
+            exception_log_name(exc),
         )
         return pydantic_to_openai_tools(schema_model)
 

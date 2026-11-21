@@ -36,6 +36,7 @@ from faultmaven.modules.agent.tools.search_file_tool import (
     resolve_case_id,
     upload_without_its_row,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +181,12 @@ class ReclassifyEvidenceTool(AgentTool):
         except NotFoundError as e:
             # Not ``str(e)``: the storage read raises ``NotFoundError("File",
             # <storage key>)``, an internal key (#2332). Named by the tool's
-            # own argument instead; the text goes to the log.
-            logger.warning("reclassify_evidence: not found for %s: %s", evidence_id, e)
+            # own argument instead; the log names its class (#2889).
+            logger.warning(
+                "reclassify_evidence: not found for %s: %s",
+                evidence_id,
+                exception_log_name(e),
+            )
             if e.resource_type != "Evidence":
                 error = f"Evidence {evidence_id} has no stored file to re-extract."
             elif resolve_case_id(in_flight_case, evidence_id).outcome is (
@@ -225,7 +230,9 @@ class ReclassifyEvidenceTool(AgentTool):
         except ServiceException as e:
             return ToolResult(success=False, data=None, error=str(e))
         except Exception as e:
-            logger.exception("reclassify_evidence tool failed: %s", e)
+            logger.exception(
+                "reclassify_evidence tool failed: %s", exception_log_name(e)
+            )
             return tool_failure("Reclassification failed", e)
 
         return ToolResult(

@@ -33,6 +33,7 @@ from faultmaven.modules.agent.domain.services.query_classifier import (
 )
 from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.domain.models.evidence import UploadedFile
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -729,7 +730,7 @@ async def _mark_turn_uploads_linked(
                 "asks the database, so the file is safe — but a sidecar "
                 "write just failed): %s",
                 storage_ref,
-                e,
+                exception_log_name(e),
             )
 
 

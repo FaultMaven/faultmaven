@@ -373,7 +373,7 @@ class TestToolRegistry:
     async def test_registry_execute_tool_handles_exception(
         self, fresh_registry, sample_context, caplog
     ):
-        """A raising tool fails by its class; its text goes to the log (#2332)."""
+        """A raising tool fails by its class; the log names the class (#2332, #2889)."""
 
         class FailingTool(AgentTool):
             @property
@@ -403,7 +403,7 @@ class TestToolRegistry:
 
         assert result.success is False
         assert result.error == "Tool execution failed (RuntimeError)."
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "execution failed")
 
     def test_registry_clear(self, fresh_registry):
         """Test clearing all registered tools."""

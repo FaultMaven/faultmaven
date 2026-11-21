@@ -175,7 +175,7 @@ def _refusal(checks: List[str], end: worker_process.WorkerEnd) -> Exception:
         # The check raised: a defect in it, which no retry changes. A failure
         # before the work (the request read, the bounds set) is a worker that
         # could not start, below.
-        logger.error("runbook checks %s failed: %s", checks, end.failure)
+        logger.error("runbook checks %s failed", checks)
         return GateFailed()
     # The wall-clock backstop in any phase, a kill (the OOM killer's included),
     # or a worker that could not start: load, never the input alone.

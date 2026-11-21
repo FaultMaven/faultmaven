@@ -155,4 +155,4 @@ class TestExecute:
         repo.find_entity.side_effect = leaky_error()
         result = await tool.execute_with_context({"entity_value": "10.0.0.5"}, _ctx())
         assert result.success is False
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "find_entity failed")

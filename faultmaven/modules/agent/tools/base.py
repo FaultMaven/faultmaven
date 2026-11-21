@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from faultmaven.exceptions import RawModelContentRefused, walk_cause_chain
 from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
 from faultmaven.models.interfaces import BaseTool, IAgentToolRegistry, ToolResult
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import exception_class_name, exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -424,7 +424,9 @@ class AgentToolRegistry(IAgentToolRegistry):
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.exception(f"Tool '{tool_name}' execution failed: {e}")
+            logger.exception(
+                f"Tool '{tool_name}' execution failed: {exception_log_name(e)}"
+            )
             return tool_failure("Tool execution failed", e)
 
     def clear(self) -> None:
