@@ -403,7 +403,7 @@ class TestToolRegistry:
 
         assert result.success is False
         assert result.error == "Tool execution failed (RuntimeError)."
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "execution failed")
 
     def test_registry_clear(self, fresh_registry):
         """Test clearing all registered tools."""

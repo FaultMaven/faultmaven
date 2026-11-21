@@ -215,4 +215,4 @@ async def test_a_failed_analysis_names_its_class_not_its_text(caplog):
     )
 
     assert result.success is False
-    assert_reported_by_class(result.error, caplog.text)
+    assert_reported_by_class(result.error, caplog.records, "Deep analysis failed")

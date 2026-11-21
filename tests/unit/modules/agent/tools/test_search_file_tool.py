@@ -1181,7 +1181,7 @@ class TestNonFileBackedEvidenceGuard:
             "(RuntimeError). Available file-backed evidence in this case: "
             "ev_actual (system.log)."
         )
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "retrieve_file failed")
 
     @pytest.mark.asyncio
     async def test_an_unreadable_upload_says_why(self, tool):
@@ -1368,18 +1368,27 @@ class TestSyntheticFilenameNotReported:
 
 
 class TestFailureNamesItsClassNotItsText:
-    """#2332: the model reads the class; the text and the storage key, the log."""
+    """#2332: the model reads the class and not the storage key; the log names
+    the class (#2889)."""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "raising, reported",
+        "raising, reported, event",
         [
-            ("find_uploaded_file", "Search failed (RuntimeError)."),
-            ("retrieve_file", "could not be retrieved (RuntimeError)."),
+            (
+                "find_uploaded_file",
+                "Search failed (RuntimeError).",
+                "search_file failed",
+            ),
+            (
+                "retrieve_file",
+                "could not be retrieved (RuntimeError).",
+                "retrieve_file failed",
+            ),
         ],
     )
-    async def test_the_model_reads_the_class_and_the_log_the_text(
-        self, tool, context, raising, reported, caplog
+    async def test_the_model_and_the_log_name_the_class(
+        self, tool, context, raising, reported, event, caplog
     ):
         if raising == "retrieve_file":
             tool.storage_service.retrieve_file.side_effect = leaky_error()
@@ -1393,4 +1402,4 @@ class TestFailureNamesItsClassNotItsText:
         assert result.success is False
         assert reported in result.error
         assert "evidence/case_123/app.log" not in result.error
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, event)

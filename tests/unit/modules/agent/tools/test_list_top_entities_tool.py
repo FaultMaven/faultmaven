@@ -131,4 +131,6 @@ class TestExecute:
         repo.list_top_entities.side_effect = leaky_error()
         result = await tool.execute_with_context({"entity_type": "ip"}, _ctx())
         assert result.success is False
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(
+            result.error, caplog.records, "list_top_entities failed"
+        )

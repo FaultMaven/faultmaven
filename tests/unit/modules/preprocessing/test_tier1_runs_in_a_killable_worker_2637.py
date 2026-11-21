@@ -325,7 +325,11 @@ async def test_a_failure_in_the_worker_is_kept_as_the_error(spawned, caplog):
 
     error = "Extractor AnswersAString returned str, expected ExtractResult"
     assert result.metadata == {"error_fallback": True, "error": error}
-    assert [m for m in caplog.messages if "RuntimeError" in m and "x.log" in m]
+    assert [
+        m
+        for m in caplog.messages
+        if "Tier1WorkerFailed[TIER1_WORK_FAILED]" in m and "x.log" in m
+    ]
     assert spawned[0].returncode == 1
 
 

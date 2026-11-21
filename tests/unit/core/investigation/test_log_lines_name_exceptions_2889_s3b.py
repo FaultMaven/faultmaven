@@ -21,10 +21,14 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel, field_validator
 
 from faultmaven.core.investigation import case_telemetry
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
+from faultmaven.core.investigation.milestone_engine.structured_output import (
+    _validate_with_degradation,
+)
 from faultmaven.core.processing.log_analyzer import EnhancedLogProcessor
 from faultmaven.exceptions import LLMException
 from faultmaven.infrastructure import worker_process
@@ -104,6 +108,30 @@ def test_a_dropped_telemetry_field_is_named_by_class(lines):
     _named(lines(), "case telemetry dropped field", "ValueError")
 
 
+# ── core/investigation/milestone_engine/structured_output.py ────────────────
+
+
+class _Body(BaseModel):
+    agent_response: str = ""
+    state_updates: dict = {}
+
+    @field_validator("state_updates", mode="before")
+    @classmethod
+    def _refuses(cls, value):
+        if value:
+            raise ValueError(f"rejected {MARKER}")
+        return value
+
+
+def test_the_conversational_fallback_names_each_error_by_loc_and_type(lines):
+    parsed = _validate_with_degradation(
+        {"agent_response": "hi", "state_updates": {"x": 1}}, _Body
+    )
+    assert parsed.agent_response == "hi"
+    fallback = _named(lines(), "conversational fallback", "value_error")
+    assert fallback["non_prunable_errors"] == [[["state_updates"], "value_error"]]
+
+
 # ── modules/agent/tools/search_file_tool.py ───────────────────────────────
 
 
@@ -158,8 +186,21 @@ async def test_a_failed_log_processing_is_named_by_class(lines):
 
 
 def _failed_worker(monkeypatch, failure: str) -> None:
-    end = worker_process.WorkerEnd(phase="work", failure=failure)
+    _worker_ends(monkeypatch, worker_process.WorkerEnd(phase="work", failure=failure))
+
+
+def _worker_ends(monkeypatch, end: worker_process.WorkerEnd) -> None:
     monkeypatch.setattr(worker_process, "run", AsyncMock(return_value=end))
+
+
+async def _extract(monkeypatch):
+    monkeypatch.setattr(ps, "_tier1_slots_state", None)
+    service = ps.PreprocessingService(
+        classifier=MagicMock(), logs_extractor=stubs.CrimeScene()
+    )
+    return await service._extract_with_timeout(
+        stubs.CrimeScene(), "content", "x.log", principal="u1"
+    )
 
 
 async def test_a_failed_runbook_check_logs_no_failure_text(lines, monkeypatch):
@@ -173,16 +214,30 @@ async def test_a_failed_runbook_check_logs_no_failure_text(lines, monkeypatch):
 async def test_a_failed_tier1_extraction_logs_no_failure_text(lines, monkeypatch):
     """The frame's text stays Tier 1's ``metadata.error``, a stored value, not
     a log line."""
-    monkeypatch.setattr(ps, "_tier1_slots_state", None)
     _failed_worker(monkeypatch, f"bad extract {MARKER}")
-    service = ps.PreprocessingService(
-        classifier=MagicMock(), logs_extractor=stubs.CrimeScene()
-    )
-    result = await service._extract_with_timeout(
-        stubs.CrimeScene(), "content", "x.log", principal="u1"
-    )
+    result = await _extract(monkeypatch)
     assert result.metadata == {
         "error_fallback": True,
         "error": f"bad extract {MARKER}",
     }
-    _named(lines(), "Tier 1 extraction failed", "RuntimeError")
+    _named(lines(), "Tier 1 extraction failed", "Tier1WorkerFailed[TIER1_WORK_FAILED]")
+
+
+@pytest.mark.parametrize(
+    "end, named",
+    [
+        (
+            worker_process.WorkerEnd(code=worker_process.OUT_OF_MEMORY_EXIT),
+            "Tier1WorkerFailed[TIER1_MEMORY_LIMIT]",
+        ),
+        (
+            worker_process.WorkerEnd(timed_out=True, phase="start"),
+            "Tier1WorkerFailed[TIER1_PHASE_BOUND]",
+        ),
+    ],
+    ids=["memory-limit", "phase-bound"],
+)
+async def test_a_tier1_cause_is_named_by_class_and_code(lines, monkeypatch, end, named):
+    _worker_ends(monkeypatch, end)
+    assert (await _extract(monkeypatch)).metadata["error_fallback"] is True
+    _named(lines(), "Tier 1 extraction failed", named)

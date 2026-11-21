@@ -56,8 +56,10 @@ or such a ``gather``, and texts over any other read of those names
 exception (not a name that also holds its text) passed bare as a keyword field
 (``error=e``, an ``extra`` value), are not sites: rule 4's processor renders
 those as class chains (``infrastructure/logging/config.py``). An exception
-passed bare as ``log_error``'s ``error`` argument is not a site either:
-``BaseService.log_error`` renders it as a class chain and frames.
+passed bare as ``self.log_error``'s ``error`` argument is not a site either:
+``BaseService.log_error`` renders it as a class chain and frames. The pruned
+paths ``_prune_invalid_sub_records`` returns (position 1 of its tuple) are
+schema locations our code built, not text: :data:`NOT_EXCEPTION_RESULTS`.
 
 ``exit_refusing(str(exc))`` (``cli/_database_gate.py``) is not a site: §7 names
 its shape, a refusal on stderr whose text our code chose, as the compliant one,
@@ -138,6 +140,10 @@ SAFE_ATTRS = frozenset(
 
 #: Callees whose text §7 names as compliant.
 NOT_SITES = frozenset({"exit_refusing"})
+
+#: Calls whose tuple result holds, at the listed positions, no exception text:
+#: a name unpacked there is not tracked; every other position is.
+NOT_EXCEPTION_RESULTS = {"_prune_invalid_sub_records": frozenset({1})}
 
 #: The names an unannotated parameter holding an exception goes by.
 EXCEPTION_PARAM_NAMES = frozenset({"e", "err", "error", "exc", "exception"})
@@ -274,12 +280,18 @@ def _reads(node: ast.AST, names: FrozenSet[str]) -> _Reads:
     return reads
 
 
+def _on_self(call: ast.Call) -> bool:
+    """``self.method(...)``: the receiver is the bare name ``self``."""
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
+    return isinstance(receiver, ast.Name) and receiver.id == "self"
+
+
 def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
     """The argument expressions a line's text is built from. A name passed bare
     as a field is skipped only when it is an exception and never its text."""
     exceptions = names.exceptions - names.texts
     for position, arg in enumerate(call.args):
-        if position == 1 and _callee(call) == "log_error":
+        if position == 1 and _callee(call) == "log_error" and _on_self(call):
             if isinstance(arg, ast.Name) and arg.id in exceptions:
                 continue  # ``BaseService.log_error``: a class chain and frames
         yield arg
@@ -362,6 +374,21 @@ def _iterates_exceptions(it: ast.AST, exceptions: FrozenSet[str], gathered: set)
     )
 
 
+def _not_exception_results(targets, value: ast.AST) -> set:
+    """The names a tuple unpacks, from a call in :data:`NOT_EXCEPTION_RESULTS`,
+    at the positions it lists."""
+    if not (isinstance(value, ast.Call) and len(targets) == 1):
+        return set()
+    if not isinstance(targets[0], ast.Tuple):
+        return set()
+    positions = NOT_EXCEPTION_RESULTS.get(_callee(value), frozenset())
+    return {
+        elt.id
+        for i, elt in enumerate(targets[0].elts)
+        if i in positions and isinstance(elt, ast.Name)
+    }
+
+
 def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
     """The names assigned, anywhere in ``scope`` outside a nested function,
     from an exception name in force where the assignment stands, then the
@@ -380,7 +407,7 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
             assigned = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)
             if not loops and isinstance(child, assigned) and child.value:
                 targets = getattr(child, "targets", None) or [child.target]
-                bound = _bound(targets)
+                bound = _bound(targets) - _not_exception_results(targets, child.value)
                 if _is_exception_valued(child.value, here.exceptions):
                     exceptions.update(bound)
                 elif any(_is_gather_of_exceptions(n) for n in ast.walk(child.value)):
@@ -751,6 +778,9 @@ def _found(source: str) -> List[Site]:
         "def f(group: ExceptionGroup):\n    log.warning(f'{group}')",
         "def f(group: BaseExceptionGroup):\n    log.warning(f'{group}')",
         "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, detail=str(e))",
+        "try:\n    pass\nexcept Exception as e:\n    helper.log_error('op', e)",
+        "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{rest}')",
     ],
 )
 def test_a_site_is_found(source):
@@ -791,6 +821,8 @@ def test_a_site_is_found(source):
         "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, key=k)",
         "def f(e):\n    reason = classify_token_limit_reason(e)\n"
         "    log.warning('x %s', reason)",
+        "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    log.warning(f'{paths}')",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):

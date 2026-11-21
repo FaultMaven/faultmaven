@@ -219,7 +219,7 @@ class TestVectorization:
 
         assert result.success is False
         assert "says nothing about its contents" in result.error
-        assert_reported_by_class(result.error, caplog.text)
+        assert_reported_by_class(result.error, caplog.records, "vectorize_file failed")
 
     @pytest.mark.asyncio
     async def test_no_preprocessed_content(self, tool, mock_settings):

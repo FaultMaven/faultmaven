@@ -224,13 +224,10 @@ def _validate_with_degradation(content_obj, schema_model):
             try:
                 parsed, repairs = _validate(pruned)
                 logger.warning(
-                    f"structured_output_degraded: pruned {len(dropped)} invalid "
-                    f"sub-record(s) from {schema_model.__name__} and continued "
+                    "structured_output_degraded: pruned invalid sub-record(s) "
+                    f"{dropped} from {schema_model.__name__} and continued "
                     "(parse-time validator). Turn preserved.",
-                    extra={
-                        "schema": schema_model.__name__,
-                        "pruned_count": len(dropped),
-                    },
+                    extra={"schema": schema_model.__name__, "pruned": dropped},
                 )
                 _record("pruned")
                 return _account_confidence(parsed, repairs, original_error)
@@ -255,7 +252,7 @@ def _validate_with_degradation(content_obj, schema_model):
                 # fallback is self-diagnosing (was it correctly non-prunable,
                 # or a prune gap?). Reference: S4 backstop observability.
                 non_prunable = [
-                    (list(e.get("loc", ())), e.get("msg", "")) for e in unhandled
+                    (list(e.get("loc", ())), e.get("type", "")) for e in unhandled
                 ]
                 logger.warning(
                     "structured_output_degraded: dropped all state_updates from "

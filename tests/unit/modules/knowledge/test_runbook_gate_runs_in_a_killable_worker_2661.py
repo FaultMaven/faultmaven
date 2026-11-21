@@ -592,6 +592,9 @@ async def test_a_check_that_raises_in_its_worker_is_a_500_at_upload(
         and getattr(r, "frames", "").startswith("RuntimeError")
         for r in caplog.records
     )
+    [gate] = [r for r in caplog.records if r.getMessage().startswith("runbook checks")]
+    assert gate.levelno == logging.ERROR
+    assert "a check that failed" not in gate.getMessage()
     assert await _state(session_factory) == []
 
 
