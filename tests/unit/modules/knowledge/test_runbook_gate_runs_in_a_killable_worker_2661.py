@@ -587,7 +587,9 @@ async def test_a_check_that_raises_in_its_worker_is_a_500_at_upload(
     assert "Retry-After" not in response.headers
     assert [p.returncode for p in spawned] == [1]
     assert any(
-        r.levelno == logging.ERROR and "a check that failed" in r.getMessage()
+        r.levelno == logging.ERROR
+        and "check failed" in r.getMessage()
+        and getattr(r, "frames", "").startswith("RuntimeError")
         for r in caplog.records
     )
     assert await _state(session_factory) == []

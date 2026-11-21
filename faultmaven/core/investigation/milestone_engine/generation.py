@@ -94,6 +94,7 @@ from faultmaven.infrastructure.security.model_content import (
     model_output,
     non_case_text,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.schema_converter import omit_schema_properties
 
 from .affordances import (
@@ -585,7 +586,9 @@ class StructuredOutputGenerator:
                     redaction_ctx,
                 )
             except Exception as exc:  # never break the turn on a rebuild
-                logger.warning("tool-loop base re-assembly failed: %s", exc)
+                logger.warning(
+                    "tool-loop base re-assembly failed: %s", exception_log_name(exc)
+                )
                 resized = None
         if resized:
             resized_msg = {**base_msg, "content": resized}
@@ -1029,7 +1032,7 @@ class StructuredOutputGenerator:
                     iteration,
                     provider_name,
                     model_info,
-                    e,
+                    exception_log_name(e),
                 )
                 raise ToolCallingUnsupportedError(
                     message=(
@@ -1072,7 +1075,9 @@ class StructuredOutputGenerator:
                     raise
                 except Exception as exc:
                     failure = f"{type(exc).__name__}: {exc}"
-                    logger.warning("Tool loop: the re-issue failed: %s", failure)
+                    logger.warning(
+                        "Tool loop: the re-issue failed: %s", exception_log_name(exc)
+                    )
                     raise _refused(f"re-issue failed: {failure}") from None
                 if not is_final and not ceiling_reached and _crosses_turn_ceiling():
                     ceiling_reached = True
@@ -1111,7 +1116,7 @@ class StructuredOutputGenerator:
                             logger.warning(
                                 "Tool loop: text content after forced-schema "
                                 "iteration not parseable as schema (%s)",
-                                parse_err,
+                                exception_log_name(parse_err),
                             )
                     logger.warning(
                         "Tool loop: provider %s ignored tool_choice=required "
@@ -1844,7 +1849,7 @@ class StructuredOutputGenerator:
                     "fallback prompt. Original error: %s",
                     getattr(case, "case_id", "?"),
                     reason,
-                    exc,
+                    exception_log_name(exc),
                 )
                 # Observability half of the degrade: the log line carries the case
                 # id, this carries the rate. A SUSTAINED rate means turns are
@@ -1978,7 +1983,7 @@ class StructuredOutputGenerator:
                     logger.warning(
                         "Tool calling failed at runtime: %s. "
                         "Falling back to non-tool structured output path.",
-                        e,
+                        exception_log_name(e),
                     )
                     # The fallback ladder below starts fresh: a hung provider's
                     # tool-loop attempt is paid here, outside it, and the
@@ -2006,7 +2011,7 @@ class StructuredOutputGenerator:
                         except Exception as rebuild_exc:  # never break the fallback
                             logger.warning(
                                 "fallback_prompt_builder failed (non-fatal): %s",
-                                rebuild_exc,
+                                exception_log_name(rebuild_exc),
                             )
 
         schema = schema_model.model_json_schema()
@@ -2077,7 +2082,7 @@ class StructuredOutputGenerator:
                     "to the minimal-prompt degrade instead of retrying at the "
                     "same size. Underlying error: %s",
                     old_max,
-                    exc,
+                    exception_log_name(exc),
                 )
                 return OutputTruncationError(
                     f"Response truncated at the max_tokens ceiling ({old_max}): {exc}",
@@ -2375,7 +2380,8 @@ class StructuredOutputGenerator:
                     except Exception as exc:
                         failure = f"{type(exc).__name__}: {exc}"
                         logger.warning(
-                            "Structured output: re-issue failed: %s", failure
+                            "Structured output: re-issue failed: %s",
+                            exception_log_name(exc),
                         )
                         if isinstance(exc, ProviderRefusalError):
                             raise

@@ -31,6 +31,7 @@ from faultmaven.infrastructure.llm.truncation import (
     generate_with_truncation_retry,
 )
 from faultmaven.infrastructure.security.model_content import case_redacted_messages
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class LocalTier2Service:
             # A refusal is a programming error, never a fallback (#1998).
             raise
         except Exception as e:
-            logger.error(f"Local LLM analysis failed: {e}")
+            logger.error(f"Local LLM analysis failed: {exception_log_name(e)}")
             answer = f"LLM analysis failed. Raw excerpts below:\n\n" + "\n---\n".join(
                 s["text"][:500] for s in relevant_sections
             )

@@ -36,6 +36,7 @@ from faultmaven.modules.case.contracts import (
     TurnOutcome,
     WritePoint,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .affordances import engine_owned_affordances
 from .progress import restatement_stall_notice, score_progress
@@ -399,7 +400,7 @@ async def _apply_turn_response(
         logger.warning(
             "Inferred-need sweep failed on case %s: %s",
             case_updated.case_id,
-            sweep_err,
+            exception_log_name(sweep_err),
         )
 
     # The final recompute (#2615 Q8 (a), #2636): the pool every decider above
@@ -535,7 +536,7 @@ async def _apply_turn_response(
             logger.warning(
                 "Evidence-need linking failed on case %s: %s",
                 case_updated.case_id,
-                link_err,
+                exception_log_name(link_err),
             )
             try:
                 evidence_suggestion_unlinked_total.labels(resolution="error").inc()

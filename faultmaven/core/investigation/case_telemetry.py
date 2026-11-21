@@ -94,6 +94,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Mapping
 
 from faultmaven.core.investigation.kb_push import visible_kb_context
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from faultmaven.modules.case.domain.models.case import Case
@@ -338,7 +339,10 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
                     bucket[str(k)] = _scalar(v)
                 except ValueError as exc:
                     _diag.warning(
-                        "case telemetry dropped %r bucket %r: %s", key, str(k), exc
+                        "case telemetry dropped %r bucket %r: %s",
+                        key,
+                        str(k),
+                        exception_log_name(exc),
                     )
             clean[key] = bucket
         elif isinstance(value, (list, tuple)):
@@ -366,14 +370,16 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
                         "case telemetry dropped %r element %r: %s",
                         key,
                         str(element)[:32],
-                        exc,
+                        exception_log_name(exc),
                     )
             clean[key] = items
         else:
             try:
                 clean[key] = _scalar(value)
             except ValueError as exc:
-                _diag.warning("case telemetry dropped field %r: %s", key, exc)
+                _diag.warning(
+                    "case telemetry dropped field %r: %s", key, exception_log_name(exc)
+                )
     return clean
 
 

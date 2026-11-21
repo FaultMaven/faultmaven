@@ -167,6 +167,7 @@ from faultmaven.jobs.reference_set import (
 from faultmaven.modules.evidence.domain.services.file_storage_service import (
     FileStorageService,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +428,11 @@ async def cleanup_orphaned_files(
             # Corrupt payload, or the backend failed to answer. Either way we
             # do not know this file's state, and unknown state is never a
             # licence to delete.
-            logger.warning("Unreadable sidecar for %s — skipping: %s", storage_key, e)
+            logger.warning(
+                "Unreadable sidecar for %s — skipping: %s",
+                storage_key,
+                exception_log_name(e),
+            )
             result["errors"] += 1
             continue
 
@@ -512,7 +517,9 @@ async def cleanup_orphaned_files(
                 uploaded_at_str,
             )
         except Exception as e:
-            logger.error("Failed to delete orphan %s: %s", storage_key, e)
+            logger.error(
+                "Failed to delete orphan %s: %s", storage_key, exception_log_name(e)
+            )
             result["errors"] += 1
 
     logger.info(
@@ -628,7 +635,7 @@ async def run(
             "refs from the database (%s). Nothing was deleted — a sweep that "
             "cannot ask the authority must not fall back to the sidecar, which "
             "is exactly the failure issue #1232 closes.",
-            e,
+            exception_log_name(e),
         )
         # "failed", not "skipped": see the module docstring. Exiting 0 here
         # would make an unreachable authority indistinguishable from a clean

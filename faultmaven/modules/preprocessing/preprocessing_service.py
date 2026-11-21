@@ -67,6 +67,7 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     extract_time_range_ts,
     unparsed_preview,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     pass
@@ -1258,7 +1259,7 @@ class PreprocessingService:
                 logger.warning(
                     "Entity extraction failed for %s: %s",
                     detailed_data_type.value,
-                    exc,
+                    exception_log_name(exc),
                 )
                 observations = []
 
@@ -1436,7 +1437,7 @@ class PreprocessingService:
             extract_result_json, file_extract = end.result
         except Exception as e:
             logger.error(
-                f"Tier 1 extraction failed for {filename}: {e}. "
+                f"Tier 1 extraction failed for {filename}: {exception_log_name(e)}. "
                 f"Falling back to TEXT preview."
             )
             return preview(error_fallback=True, error=str(e)[:200])

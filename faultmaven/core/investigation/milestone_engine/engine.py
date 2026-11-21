@@ -120,6 +120,7 @@ from faultmaven.modules.case.domain.services.case_action_manager import (
     earned_edge_refusal,
 )
 from faultmaven.modules.knowledge.contracts import IKnowledgeService
+from faultmaven.utils.exception_name import exception_log_name
 
 from .affordances import _gate1_is_pending, gate1_statement_is_confirmable
 from .stage_gates import _add_system_feedback
@@ -1451,12 +1452,12 @@ class MilestoneEngine:
 
             if is_external:
                 logger.warning(
-                    f"External service error for case {case.case_id}: {str(e)[:200]}",
+                    f"External service error for case {case.case_id}: {exception_log_name(e)}",
                     extra={"case_id": case.case_id, "turn": case.current_turn},
                 )
             else:
                 logger.error(
-                    f"Error processing turn for case {case.case_id}: {e}",
+                    f"Error processing turn for case {case.case_id}: {exception_log_name(e)}",
                     exc_info=True,
                     extra={"case_id": case.case_id, "turn": case.current_turn},
                 )

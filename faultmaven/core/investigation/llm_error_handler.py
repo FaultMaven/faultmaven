@@ -40,6 +40,7 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -621,7 +622,9 @@ class LLMErrorHandler:
         # can tell the user to top up rather than uselessly retry. Checked first
         # because it must not be mistaken for a transient 429/5xx.
         if self.is_billing_error(error):
-            logger.error(f"LLM provider billing/quota exhausted: {error}")
+            logger.error(
+                f"LLM provider billing/quota exhausted: {exception_log_name(error)}"
+            )
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message=(
@@ -687,7 +690,7 @@ class LLMErrorHandler:
             latched = getattr(error, "error_code", None)
             if latched == PROVIDER_AUTH_FAILED:
                 logger.error(
-                    f"LLM circuit breaker open on rejected credential: {error}"
+                    f"LLM circuit breaker open on rejected credential: {exception_log_name(error)}"
                 )
                 return ErrorResult(
                     action=ErrorAction.FAIL,
@@ -695,7 +698,7 @@ class LLMErrorHandler:
                     error_code="AUTH_FAILED",
                     retry_count=retry_count,
                 )
-            logger.error(f"LLM circuit breaker open: {error}")
+            logger.error(f"LLM circuit breaker open: {exception_log_name(error)}")
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message=(
@@ -782,7 +785,7 @@ class LLMErrorHandler:
         # with a Retry-After. Read the ``error_code`` its raiser already sets
         # rather than adding a fourth substring test.
         if self._first_error_code(error) == LLM_CONFIG_ERROR:
-            logger.error(f"LLM configuration error: {error}")
+            logger.error(f"LLM configuration error: {exception_log_name(error)}")
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message=f"FaultMaven's AI provider is not configured: {error}",
@@ -792,7 +795,7 @@ class LLMErrorHandler:
 
         # Check for auth errors (non-retryable)
         if self.is_auth_error(error):
-            logger.error(f"Authentication error: {error}")
+            logger.error(f"Authentication error: {exception_log_name(error)}")
             return ErrorResult(
                 action=ErrorAction.FAIL,
                 message="System configuration error. Please contact support.",
@@ -801,7 +804,7 @@ class LLMErrorHandler:
 
         # Check for model not found errors (non-retryable configuration issue)
         if self.is_model_not_found_error(error):
-            logger.error(f"Model not found error: {error}")
+            logger.error(f"Model not found error: {exception_log_name(error)}")
             # Extract more details from the error for better diagnostics
             error_details = str(error)[:300]  # First 300 chars for context
             return ErrorResult(
@@ -821,7 +824,7 @@ class LLMErrorHandler:
 
         # Unknown error — fail fast and surface details for diagnostics.
         logger.error(
-            f"Unknown LLM error (retry {retry_count}): {type(error).__name__}: {str(error)}",
+            f"Unknown LLM error (retry {retry_count}): {exception_log_name(error)}",
             exc_info=True,
         )
 

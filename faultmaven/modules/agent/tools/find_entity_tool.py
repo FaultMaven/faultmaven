@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.case.domain.models.evidence import EntityType
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class FindEntityTool(AgentTool):
                 "find_entity failed for case %s value_len=%d: %s",
                 context.case_id,
                 len(entity_value),
-                e,
+                exception_log_name(e),
             )
             return tool_failure("Entity lookup failed", e)
 

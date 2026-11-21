@@ -54,7 +54,9 @@ or such a ``gather``, and texts over any other read of those names
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
 exception (not a name that also holds its text) passed bare as a keyword field
 (``error=e``, an ``extra`` value), are not sites: rule 4's processor renders
-those as class chains (``infrastructure/logging/config.py``).
+those as class chains (``infrastructure/logging/config.py``). An exception
+passed bare as ``log_error``'s ``error`` argument is not a site either:
+``BaseService.log_error`` renders it as a class chain and frames.
 
 ``exit_refusing(str(exc))`` (``cli/_database_gate.py``) is not a site: §7 names
 its shape, a refusal on stderr whose text our code chose, as the compliant one,
@@ -138,7 +140,7 @@ NOT_SITES = frozenset({"exit_refusing"})
 #: The names an unannotated parameter holding an exception goes by.
 EXCEPTION_PARAM_NAMES = frozenset({"e", "err", "error", "exc", "exception"})
 
-_EXCEPTION_ANNOTATION = re.compile(r"(Error|Exception|BaseException)\b")
+_EXCEPTION_ANNOTATION = re.compile(r"(Error|Exception|ExceptionGroup)\b")
 _LOGGING_KEYWORDS = frozenset({"exc_info", "stack_info", "stacklevel"})
 _PRINT_KEYWORDS = frozenset({"file", "flush"})
 _TRACEBACK_TEXT = frozenset(
@@ -274,7 +276,11 @@ def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
     """The argument expressions a line's text is built from. A name passed bare
     as a field is skipped only when it is an exception and never its text."""
     exceptions = names.exceptions - names.texts
-    yield from call.args
+    for position, arg in enumerate(call.args):
+        if position == 1 and _callee(call) == "log_error":
+            if isinstance(arg, ast.Name) and arg.id in exceptions:
+                continue  # ``BaseService.log_error``: a class chain and frames
+        yield arg
     for keyword in call.keywords:
         if keyword.arg in _LOGGING_KEYWORDS:
             continue
@@ -538,24 +544,8 @@ ALLOWED = {
     "container/providers/services.py": 12,
     "container/providers/tools.py": 6,
     "container/utils.py": 2,
-    "core/investigation/case_telemetry.py": 3,
-    "core/investigation/llm_error_handler.py": 7,
-    "core/investigation/milestone_engine/engine.py": 2,
-    "core/investigation/milestone_engine/generation.py": 9,
-    "core/investigation/milestone_engine/runbook_creation.py": 4,
-    "core/investigation/milestone_engine/statement_revision.py": 1,
+    "core/investigation/milestone_engine/generation.py": 1,
     "core/investigation/milestone_engine/structured_output.py": 1,
-    "core/investigation/milestone_engine/terminal_turns.py": 2,
-    "core/investigation/milestone_engine/tool_messages.py": 1,
-    "core/investigation/milestone_engine/turn_application.py": 2,
-    "core/investigation/milestone_engine/turn_generation.py": 1,
-    "core/investigation/milestone_engine/vectorization.py": 3,
-    "core/investigation/prompts/context_builder/entity_highlights.py": 1,
-    "core/investigation/terminal_transitions.py": 1,
-    "core/preprocessing/tier2/local_service.py": 1,
-    "core/preprocessing/vector_storage.py": 1,
-    "core/processing/log_analyzer.py": 4,
-    "core/processing/pattern_learner.py": 3,
     "infrastructure/auth/database_user_store.py": 8,
     "infrastructure/auth/user_store.py": 15,
     "infrastructure/base_client.py": 4,
@@ -604,18 +594,6 @@ ALLOWED = {
     "jobs/llm_usage_retention.py": 1,
     "jobs/run.py": 4,
     "main.py": 27,
-    "modules/agent/domain/services/investigation_service/attachments.py": 1,
-    "modules/agent/domain/services/investigation_service/service.py": 2,
-    "modules/agent/domain/services/investigation_service/turn_settlement.py": 2,
-    "modules/agent/jobs/storage_cleanup.py": 3,
-    "modules/agent/tools/base.py": 1,
-    "modules/agent/tools/deep_analysis_tool.py": 1,
-    "modules/agent/tools/find_entity_tool.py": 1,
-    "modules/agent/tools/kb_tool_adapter.py": 2,
-    "modules/agent/tools/list_top_entities_tool.py": 1,
-    "modules/agent/tools/reclassify_evidence_tool.py": 2,
-    "modules/agent/tools/search_file_tool.py": 2,
-    "modules/agent/tools/vectorize_file_tool.py": 1,
     "modules/auth/api/auth.py": 14,
     "modules/auth/api/oauth.py": 8,
     "modules/auth/api/session.py": 15,
@@ -643,7 +621,6 @@ ALLOWED = {
     "modules/case/infrastructure/sqlite_case_repository/loading.py": 3,
     "modules/case/infrastructure/sqlite_case_repository/repository.py": 1,
     "modules/case/infrastructure/sqlite_case_repository/rows.py": 2,
-    "modules/evidence/domain/services/file_storage_service.py": 7,
     "modules/knowledge/api/conversion_routes.py": 4,
     "modules/knowledge/api/routes.py": 13,
     "modules/knowledge/domain/services/conversion_service/runbook_scan.py": 3,
@@ -653,7 +630,6 @@ ALLOWED = {
     "modules/knowledge/domain/services/knowledge_service.py": 20,
     "modules/knowledge/domain/services/runbook_gate.py": 1,
     "modules/knowledge/infrastructure/persistence/knowledge_item_repository.py": 13,
-    "modules/preprocessing/preprocessing_service.py": 2,
     "modules/report/api/routes.py": 7,
     "modules/report/domain/services/report_generation_service.py": 1,
     "modules/report/domain/services/report_recommendation_service.py": 1,
@@ -760,6 +736,9 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    retire_parser.error(f'{e}')",
         "def f(e):\n    print('x', end=str(e))",
         "def f(e):\n    print('x', sep=f'{e}')",
+        "def f(group: ExceptionGroup):\n    log.warning(f'{group}')",
+        "def f(group: BaseExceptionGroup):\n    log.warning(f'{group}')",
+        "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, detail=str(e))",
     ],
 )
 def test_a_site_is_found(source):
@@ -797,6 +776,7 @@ def test_a_site_is_found(source):
         "def f(e):\n    for i, m in enumerate(e.exceptions):\n        log.warning('x', error=m)",
         "async def f():\n    rs = await gather(a(), return_exceptions=True)\n"
         "    for r in rs:\n        log.warning('x', error=r)",
+        "try:\n    pass\nexcept Exception as e:\n    self.log_error('op', e, key=k)",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):

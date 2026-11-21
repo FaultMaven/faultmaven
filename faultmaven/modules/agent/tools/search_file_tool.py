@@ -25,6 +25,7 @@ from typing import Any
 
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.host_port import HOST_PORT_RE
 
 logger = logging.getLogger(__name__)
@@ -467,7 +468,9 @@ class SearchFileTool(AgentTool):
             return ToolResult(success=True, data=data)
 
         except Exception as e:
-            logger.exception("search_file failed for %s: %s", evidence_id, e)
+            logger.exception(
+                "search_file failed for %s: %s", evidence_id, exception_log_name(e)
+            )
             return tool_failure("Search failed", e)
 
     def _execute_count_format(
@@ -684,7 +687,7 @@ class SearchFileTool(AgentTool):
                     "evidence %s (storage_ref=%s): %s",
                     evidence_id,
                     storage_ref,
-                    e,
+                    exception_log_name(e),
                 )
                 alts = format_searchable_alternatives(
                     all_evidence, evidence_id, case, excluded_file_id=file_meta.file_id

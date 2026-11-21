@@ -31,6 +31,7 @@ from faultmaven.modules.agent.tools.search_file_tool import (
     resolve_case_id,
     upload_without_its_row,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +325,9 @@ class VectorizeFileTool(AgentTool):
             )
 
         except Exception as e:
-            logger.exception(f"vectorize_file failed for {evidence_id}: {e}")
+            logger.exception(
+                f"vectorize_file failed for {evidence_id}: {exception_log_name(e)}"
+            )
             return tool_failure(
                 "Vectorization failed",
                 e,

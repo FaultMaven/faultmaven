@@ -22,6 +22,7 @@ from typing import Any, Dict
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.case.domain.models.evidence import EntityType
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ class ListTopEntitiesTool(AgentTool):
                 "list_top_entities failed for case %s type %s: %s",
                 context.case_id,
                 raw_type,
-                e,
+                exception_log_name(e),
             )
             return tool_failure("Top-entity query failed", e)
 

@@ -54,6 +54,7 @@ from faultmaven.modules.agent.domain.services.investigation_service.turn_message
     _emit_committed_turn,
 )
 from faultmaven.modules.case.contracts import Case, ICaseRepository
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,9 @@ def _spawn_post_commit(coro, *, what: str, case: inflight.CaseKey) -> None:
     def _done(finished: "asyncio.Task[None]") -> None:
         if not finished.cancelled() and finished.exception() is not None:
             logger.warning(
-                "Post-commit step failed (%s): %r", what, finished.exception()
+                "Post-commit step failed (%s): %s",
+                what,
+                exception_log_name(finished.exception()),
             )
 
     task.add_done_callback(_done)
@@ -235,7 +238,7 @@ def _settlement_finished(task: "asyncio.Task[None]") -> None:
         return
     error = task.exception()
     if error is not None:
-        logger.info("Turn settlement ended in error: %r", error)
+        logger.info("Turn settlement ended in error: %s", exception_log_name(error))
 
 
 async def run_settlement_shielded(

@@ -19,6 +19,7 @@ from faultmaven.modules.agent.tools.search_file_tool import (
     enumerate_readable_files,
     resolve_case_id,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +265,7 @@ class DeepAnalysisTool(AgentTool):
             raise
         except Exception as e:
             logger.warning(
-                f"Deep analysis failed for evidence {evidence_id}: {e}",
+                f"Deep analysis failed for evidence {evidence_id}: {exception_log_name(e)}",
                 exc_info=True,
                 extra={"case_id": context.case_id, "evidence_id": evidence_id},
             )

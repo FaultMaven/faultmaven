@@ -5,6 +5,7 @@ from typing import Any, Optional, Sequence
 from faultmaven.core.investigation.prompts.fence import PromptFence
 from faultmaven.core.investigation.prompts.templates.tool_text import GivenTools, has
 from faultmaven.modules.case.contracts import EntityType
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ async def fetch_entity_highlights(
                 "fetch_entity_highlights failed for %s on case %s: %s",
                 entity_type.value,
                 case_id,
-                exc,
+                exception_log_name(exc),
             )
             continue
         if not rows:

@@ -51,6 +51,7 @@ from faultmaven.models.interfaces import (
     ConversationContext,
     ILogProcessor,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 
 @dataclass
@@ -351,7 +352,9 @@ class EnhancedLogProcessor(ILogProcessor):
             )
 
         except Exception as e:
-            self.logger.error(f"Enhanced log processing failed: {e}")
+            self.logger.error(
+                f"Enhanced log processing failed: {exception_log_name(e)}"
+            )
             return EnhancedProcessingResult(
                 insights={"error": str(e), "processing_error": True},
                 anomalies=[],
@@ -1057,7 +1060,9 @@ class EnhancedLogProcessor(ILogProcessor):
                                 }
                             )
                 except Exception as e:
-                    self.logger.warning(f"Performance anomaly detection failed: {e}")
+                    self.logger.warning(
+                        f"Performance anomaly detection failed: {exception_log_name(e)}"
+                    )
 
         return anomalies
 
@@ -1225,7 +1230,7 @@ class LogProcessor(ILogProcessor):
             return insights
 
         except Exception as e:
-            self.logger.error(f"Log processing failed: {e}")
+            self.logger.error(f"Log processing failed: {exception_log_name(e)}")
             return {"error": str(e), "processing_error": True, "total_entries": 0}
 
     def _parse_logs_to_dataframe(self, content: str) -> pd.DataFrame:
@@ -1559,7 +1564,9 @@ class LogProcessor(ILogProcessor):
                                 }
                             )
                 except Exception as e:
-                    self.logger.warning(f"Performance anomaly detection failed: {e}")
+                    self.logger.warning(
+                        f"Performance anomaly detection failed: {exception_log_name(e)}"
+                    )
 
         # 3. HTTP status anomalies
         if "http_status" in df.columns:

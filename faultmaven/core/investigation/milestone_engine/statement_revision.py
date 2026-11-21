@@ -38,6 +38,7 @@ from faultmaven.modules.case.contracts import (
     ProblemStatus,
     WritePoint,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .stage_gates import (
     CARRIED_FIX_KEY,
@@ -166,7 +167,7 @@ async def confirm_revision(
                 "and was dropped: %s",
                 case.case_id,
                 bundle.turn,
-                exc,
+                exception_log_name(exc),
             )
             metadata.setdefault("validation_repairs", []).append(
                 f"Staged cause work from turn {bundle.turn} could not be replayed"

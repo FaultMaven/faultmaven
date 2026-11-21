@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 from .response_synthesis import (
     is_agent_response_synthesized,
@@ -236,7 +237,7 @@ class TerminalTurnHandler:
             return None, False
         except Exception as e:
             logger.warning(
-                f"Auto-summary generation failed for case {case.case_id}: {e}",
+                f"Auto-summary generation failed for case {case.case_id}: {exception_log_name(e)}",
                 extra={"case_id": case.case_id},
             )
             terminal_summary_total.labels(
@@ -390,7 +391,7 @@ class TerminalTurnHandler:
             )
         except Exception as e:
             logger.warning(
-                f"Report regeneration failed for case {case.case_id}: {e}",
+                f"Report regeneration failed for case {case.case_id}: {exception_log_name(e)}",
                 extra={"case_id": case.case_id},
             )
             agent_response = (
