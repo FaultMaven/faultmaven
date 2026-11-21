@@ -111,12 +111,13 @@ decline stands and the problem is not on hold).
 import logging
 import secrets
 from enum import StrEnum
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from faultmaven.core.investigation.cause_assurance import (
     resolution_confirmation_rows,
 )
 from faultmaven.core.investigation.cause_identification import cause_identification_leg
+from faultmaven.core.investigation.narration.offer_view import OfferView
 from faultmaven.modules.case.contracts import (
     AnswerKind,
     AnswerVia,
@@ -340,6 +341,29 @@ def standing_deferred_decline(case: "Case") -> Optional[OfferAnswer]:
 def standing_false_alarm_decline(case: "Case") -> Optional[OfferAnswer]:
     """The newest standing decline of a close on the false-alarm finding."""
     return _standing(case, _FALSE_ALARM)
+
+
+def offer_view(case: "Case") -> OfferView:
+    """The offer facts as the narrators read them, the one builder of
+    ``OfferView`` in production code (#2811 S2b-2d, ruling (a) of
+    2026-11-20): the record stays their owner. The open offer and the answers
+    are read now; each standing decline's turn is read by this module's
+    grammar only when the narrator first asks for it."""
+    record = case.offer_record
+
+    def turn(standing) -> Callable[[], Optional[int]]:
+        def read() -> Optional[int]:
+            answer = standing(case)
+            return None if answer is None else answer.at_turn
+
+        return read
+
+    return OfferView(
+        open_proposal_id=None if record.open is None else record.open.proposal_id,
+        answers=tuple((a.proposal_id, a.answer) for a in record.answers),
+        _false_alarm_turn=turn(standing_false_alarm_decline),
+        _resolve_turn=turn(standing_resolve_decline),
+    )
 
 
 def revision_declined(case: "Case", wording_key: str) -> bool:

@@ -18,6 +18,8 @@ milestones and resolution, from the record (S2b-1c-i), whose texts stay with
 their templates; ``replies`` renders the resolve confirmation's facts and the
 closed reply's status line from the record (S2b-2b), the texts the
 confirmation names from the case's content (``replies.ResolutionContent``).
+The prompt state and the turn's narration read the offer facts, which the
+offer record owns, through ``offer_view.OfferView`` (S2b-2d).
 The
 ``.importlinter`` contract "Narrators render the outcome, never derive it"
 forbids imports of ``cause_assurance``, ``causal_graph.disconfirmation`` and

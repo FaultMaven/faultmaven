@@ -209,9 +209,7 @@ def test_the_fresh_inputs_are_the_plans():
     assert {f.name for f in dataclasses.fields(PromptStateFresh)} == {
         "mitigation_verified",
         "symptom_stale",
-        "false_alarm_declined_at",
-        "resolve_decline_turn",
-        "reopen_chip",
+        "offers",
     }
 
 
@@ -359,7 +357,8 @@ async def test_the_exclusion_rule_folds_only_where_it_is_decided(
 
 #: Each fresh input, and fixtures where ``main`` did not read the case for
 #: it: no Zone 2 on DIAGNOSIS (Zone 1, Zone 3, Zone 3 pending, a hold, no
-#: zone); no false alarm; no standing resolve decline.
+#: zone); for the offer facts, no false alarm and no standing resolve
+#: decline.
 _NOT_ASKED = {
     "_symptom_stale": [
         "gate_one",
@@ -368,9 +367,13 @@ _NOT_ASKED = {
         "R:other_cause",
         "P:false_alarm_declined",
     ],
-    "_false_alarm_declined_at": ["gate_one", "P:revision_hypotheses", "P:stale"],
-    "_resolve_decline_turn": ["gate_one", "R:other_cause", "N:held_pending"],
-    "_reopen_chip": ["gate_one", "R:other_cause", "N:held_pending"],
+    "offer_view": [
+        "gate_one",
+        "P:revision_hypotheses",
+        "P:stale",
+        "R:other_cause",
+        "N:held_pending",
+    ],
 }
 
 
@@ -415,8 +418,7 @@ async def test_each_input_is_read_once_per_assembly(monkeypatch):
         "narration_outcome",
         "_stored_mitigation_verified",
         "_symptom_stale",
-        "_resolve_decline_turn",
-        "_reopen_chip",
+        "offer_view",
         "_currency_note",
         "_fix_confirmed",
     )
@@ -499,14 +501,9 @@ async def test_a_fold_failure_prints_the_declared_lines_once_counted(
 #: fails the build, as on ``main``.
 _FRESH_FAILURES = [
     ("_stored_mitigation_verified", "2609_relapsed_mitigation", {"milestones"}, 2),
-    ("_false_alarm_declined_at", "P:false_alarm_declined", {"focus"}, 1),
-    (
-        "_resolve_decline_turn",
-        "P:declined_earlier",
-        {"focus", "focus_knowledge_query"},
-        2,
-    ),
-    ("_reopen_chip", "offer_answered_at_0b", {"focus", "focus_knowledge_query"}, 2),
+    ("offer_view", "P:false_alarm_declined", {"focus"}, 1),
+    ("offer_view", "P:declined_earlier", {"focus", "focus_knowledge_query"}, 2),
+    ("offer_view", "offer_answered_at_0b", {"focus", "focus_knowledge_query"}, 2),
 ]
 
 
@@ -621,9 +618,7 @@ def _fresh(*, stale: bool = False) -> PromptStateFresh:
     return PromptStateFresh(
         mitigation_verified=never,
         symptom_stale=lambda: stale,
-        false_alarm_declined_at=never,
-        resolve_decline_turn=never,
-        reopen_chip=never,
+        offers=never,
     )
 
 

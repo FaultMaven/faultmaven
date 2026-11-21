@@ -18,6 +18,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.core.investigation.narration.needs import NeedsView
 from faultmaven.core.investigation.narration.prompt_state import PromptStateFresh
+from faultmaven.core.investigation.offers import offer_view
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import Case, CaseOutcome, WritePoint
 
@@ -43,25 +44,6 @@ def _symptom_stale(case: Case) -> bool:
     return assess_symptom_currency(case) == SymptomCurrency.STALE
 
 
-def _false_alarm_declined_at(case: Case) -> Optional[int]:
-    from faultmaven.core.investigation.problem_status import (
-        false_alarm_close_declined_at,
-    )
-
-    return false_alarm_close_declined_at(case)
-
-
-def _resolve_decline_turn(case: Case) -> Optional[int]:
-    """The turn of the standing resolve decline, the one the reopen chip
-    names (stage S2b-2 moves the offers)."""
-    from faultmaven.core.investigation.terminal_transitions import (
-        declined_resolve_entry,
-    )
-
-    entry = declined_resolve_entry(case)
-    return entry.at_turn if entry is not None else None
-
-
 def _currency_note(case: Case) -> str:
     """The currency note on ``- symptom_verified`` (``_symptom_currency_note``,
     declared fresh since S2b-1a: it reads the wall clock)."""
@@ -76,13 +58,6 @@ def _fix_confirmed(case: Case) -> bool:
     from .causal_graph_block import fix_confirmed
 
     return fix_confirmed(case)
-
-
-def _reopen_chip(case: Case) -> bool:
-    """The reply carries the reopen chip, as the projection builds it."""
-    from faultmaven.core.investigation.offer_projection import project_offers
-
-    return project_offers(case).reopen_chip is not None
 
 
 class NarrationFold:
@@ -132,17 +107,17 @@ class NarrationFold:
         return self._needs
 
     def fresh(self) -> PromptStateFresh:
-        """The prompt state's fresh inputs (#2811 S2b-1c-i). Each reads the
-        case only when a selector asks for it, where ``main`` read it, and at
-        most once per assembly; a raise is kept and raised to every asker,
-        whose block renders its omission (``fail``)."""
+        """The prompt state's fresh inputs (#2811 S2b-1c-i), the offer facts
+        among them (``offer_view``, S2b-2d: at most one view, each decline's
+        turn read on its first ask). Each reads the case only when a selector asks
+        for it, where ``main`` read it, and at most once per assembly; a
+        raise is kept and raised to every asker, whose block renders its
+        omission (``fail``)."""
         if self._fresh is None:
             self._fresh = PromptStateFresh(
                 mitigation_verified=self._once(_stored_mitigation_verified),
                 symptom_stale=self._once(_symptom_stale),
-                false_alarm_declined_at=self._once(_false_alarm_declined_at),
-                resolve_decline_turn=self._once(_resolve_decline_turn),
-                reopen_chip=self._once(_reopen_chip),
+                offers=self._once(offer_view),
             )
         return self._fresh
 

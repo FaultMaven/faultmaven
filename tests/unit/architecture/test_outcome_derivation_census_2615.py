@@ -194,8 +194,8 @@ DERIVATIONS: dict[str, str] = {
     "bindable_rows": _CA,
     # #2811 S2b-1c-i: whether the problem takes cause work, which the
     # exclusion rule now reads off the record (``problem.status``), and the
-    # false-alarm close declined, a fresh input of the focus emphasis until
-    # stage S2b-2 moves the offers.
+    # false-alarm close declined, which the focus emphasis reads off the offer
+    # record (``OfferView``, S2b-2d).
     "cause_work_accepted": _PROBLEM,
     "cause_work_staged": _PROBLEM,
     "false_alarm_close_declined_at": _PROBLEM,
@@ -590,13 +590,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # assembly's one fold, and the one window list its fresh verdicts (ruling
     # Q1 (a)) read, until stage S3; the held need is the record's.
     (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
-    # #2811 S2b-1c-i: the focus emphasis selects its lines from the record;
-    # the resolve decline's turn and the false-alarm close declined are fresh
-    # inputs (``PromptStateFresh``) until stage S2b-2 moves the offers.
-    (_CB + "narration_fold.py", "_resolve_decline_turn"): {"declined_resolve_entry": 1},
-    (_CB + "narration_fold.py", "_false_alarm_declined_at"): {
-        "false_alarm_close_declined_at": 1
-    },
     (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
     # #2811 S2b-2a: not the predicate but the record's field of the same
     # name, ``outcome.cause.held_open_root_ids``, which a census of names

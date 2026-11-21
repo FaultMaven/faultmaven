@@ -14,11 +14,12 @@ rendering (pin 6's model half, ruling Q2 (a)), which is the value itself.
 
 The fresh inputs are what the record does not hold: ``mitigation.verified``
 (ruling Q1 (a) keeps it fresh until stage S3; the record drops it after a
-bound relapse), the symptom's currency (the wall clock), and the offer facts
-until stage S2b-2 moves the offers (the false-alarm close declined, the
-resolve decline's turn, the reopen chip). Each is a reader, asked only where
-the line it selects prints, as ``main`` read it; the prompt assembly's
-``NarrationFold`` reads each at most once (``NarrationFold.fresh``).
+bound relapse), the symptom's currency (the wall clock), and the offer facts,
+which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
+2026-11-20: whether an offer is open, and each standing decline's turn, a
+reader of its own). Each is a reader, asked only where the line it selects
+prints, as ``main`` read it; the prompt assembly's ``NarrationFold`` reads
+each at most once (``NarrationFold.fresh``).
 """
 
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from faultmaven.modules.case.contracts import (
     ClosureReason,
     ProblemStatus,
 )
+
+from .offer_view import OfferView
 
 #: The milestone status's one line when the record or a fresh input could not
 #: be read this turn, in place of both of its tags; and the fallback prompt's
@@ -44,6 +47,11 @@ PROGRESS_OMITTED = "The case's progress could not be read this turn."
 #: The fallback prompt's resolution line when the record could not be read
 #: this turn, in place of "Solution verified", the closure reason or "Closed".
 RESOLUTION_OMITTED = "The case's resolution could not be read this turn."
+
+#: The problem statuses that put the case on hold, under which the reply
+#: carries no reopen chip: ``problem_status.problem_on_hold`` is the
+#: deciders' twin of this set (stage S3).
+ON_HOLD = (ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED)
 
 #: The stage gates, in the order the prompt lists them.
 GATES = (
@@ -66,12 +74,9 @@ class PromptStateFresh:
     """``progress.mitigation.verified`` as stored (ruling Q1 (a))."""
     symptom_stale: Callable[[], bool]
     """The symptom's last observation is STALE (``assess_symptom_currency``)."""
-    false_alarm_declined_at: Callable[[], Optional[int]]
-    """The turn the false-alarm close was declined, while it binds."""
-    resolve_decline_turn: Callable[[], Optional[int]]
-    """The turn of the standing resolve decline."""
-    reopen_chip: Callable[[], bool]
-    """The reply carries the reopen chip (``project_offers``)."""
+    offers: Callable[[], OfferView]
+    """The offer facts (``offers.offer_view``, #2811 S2b-2d); each decline's
+    turn is read where its line asks for it."""
 
 
 class MilestoneStatus(NamedTuple):
@@ -139,7 +144,9 @@ def problem_hold(
     if status == ProblemStatus.REVISION_PENDING:
         return ProblemHold(HoldKind.REVISION)
     if status == ProblemStatus.INVALIDATED:
-        return ProblemHold(HoldKind.FALSE_ALARM, fresh.false_alarm_declined_at())
+        return ProblemHold(
+            HoldKind.FALSE_ALARM, fresh.offers().false_alarm_decline_turn()
+        )
     return None
 
 
@@ -187,15 +194,19 @@ def resolve_declined(
 ) -> Optional[ResolveDeclined]:
     """The standing resolve decline (``resolution.declined_stands``), or
     None; whether a check holds the case is the record's
-    (``resolution.pending_check_need_id``)."""
+    (``resolution.pending_check_need_id``). The reply carries the reopen chip
+    while no offer is open and the record's problem is not on hold
+    (``ON_HOLD``), as ``project_offers`` builds it; the decline's turn is the
+    offer record's."""
     resolution = outcome.resolution
     if not resolution.declined_stands:
         return None
-    actions = fresh.reopen_chip()
+    offers = fresh.offers()
+    actions = offers.open_proposal_id is None and outcome.problem.status not in ON_HOLD
     return ResolveDeclined(
         actions=actions,
         held=actions and resolution.pending_check_need_id is not None,
-        this_turn=fresh.resolve_decline_turn() == current_turn,
+        this_turn=offers.resolve_decline_turn() == current_turn,
     )
 
 

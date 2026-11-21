@@ -39,7 +39,7 @@ from faultmaven.core.investigation.narration.notices import (
     unbound_lines,
 )
 from faultmaven.core.investigation.narration.offers import render_offer
-from faultmaven.core.investigation.offers import summarize_offer
+from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
 
@@ -165,11 +165,9 @@ def _count(code: str, what: str, decided: Any, recorded: Any) -> None:
 
 def _lapsed(case: Any, proposal_id: Optional[str]) -> bool:
     """Whether the offer ``proposal_id`` names was answered LAPSED: for an
-    offer code's, in the cycle that opened it."""
-    return proposal_id is not None and any(
-        a.proposal_id == proposal_id and a.answer == AnswerKind.LAPSED
-        for a in case.offer_record.answers
-    )
+    offer code's, in the cycle that opened it (``OfferView``, #2811 S2b-2d;
+    it asks for no decline)."""
+    return proposal_id is not None and offer_view(case).lapsed(proposal_id)
 
 
 def _narrate_offer(case: Any, metadata: dict, code: str, params: dict) -> None:
@@ -192,20 +190,16 @@ def _narrate_offer(case: Any, metadata: dict, code: str, params: dict) -> None:
         )
 
 
-def _offer_stands(case: Any, proposal_id: str) -> bool:
-    open_offer = case.offer_record.open
-    return open_offer is not None and open_offer.proposal_id == proposal_id
-
-
 def _engine_offer_stands(case: Any, metadata: dict, params: dict) -> dict:
     """``params`` with whether the engine's offer still stands at narration,
-    and the compliance flags of an offer that lapsed after the drop (B3)."""
+    and the compliance flags of an offer that lapsed after the drop (B3),
+    read from one view of the offer record (``OfferView``, #2811 S2b-2d),
+    which asks for no decline."""
     proposal_id = params["proposal_id"]
-    if _offer_stands(case, proposal_id):
+    view = offer_view(case)
+    if view.offer_stands(proposal_id):
         return {**params, "stands": True}
-    answers = [
-        str(a.answer) for a in case.offer_record.answers if a.proposal_id == proposal_id
-    ]
+    answers = [str(a) for a in view.answers_for(proposal_id)]
     if AnswerKind.LAPSED not in answers:
         message = (
             f"offer {proposal_id} closed after the drop, not lapsed (answers "
