@@ -254,7 +254,7 @@ and the refusal is counted as
 `faultmaven_auth_revocation_state_unknown_total{kind}`. A store error while
 the generators validate a refresh token propagates and answers each refresh
 route's 500, still failing closed (a store outage cannot mint new credentials
-from a revoked token; #2165, and #2973 for the missing 503), and revocation *writes*
+from a revoked token; #2165), and revocation *writes*
 propagate store errors so revoke endpoints never report success while the
 token remains usable.
 
