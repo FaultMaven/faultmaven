@@ -1,20 +1,16 @@
 """The environment of a child process a test starts to import ``faultmaven`` (#2975).
 
-"No test reaches a network or a model server" (CLAUDE.md), but the guard that
-enforces it (``tests/network_guard.py``) patches the pytest process only: a
-child has its own interpreter. And each test that booted the app in a child
-built that child's environment by hand, so they disagreed. The default-database
-boot probe had no ``HF_HUB_OFFLINE``, ran with an empty ``HOME``, and so the
-lifespan's BGE-M3 preload downloaded the model from huggingface.co on every run:
-~256 s of a 316 s boot, inside a 600 s timeout a CI runner overran.
+"No test reaches a network or a model server" (CLAUDE.md), but its guard
+(``tests/network_guard.py``) patches the pytest process only, and each
+child-boot test built its child's environment by hand. One lacked
+``HF_HUB_OFFLINE``, so its lifespan downloaded BGE-M3 from huggingface.co on
+every run: ~256 s of a 316 s boot, under a 600 s timeout.
 
-``child_env`` is the one base. The child runs offline, as the image does (its
-Dockerfile's runtime ``ENV``), reads no ``.env``, and imports ``faultmaven`` from
-this tree. While the test process runs guarded, the child does too: the
-``sitecustomize`` in ``tests/child_site/``, on its ``PYTHONPATH``, installs the
-same guard before the child's own code runs, with the allowances the
-environment the caller passes names (``DATABASE_URL``, ``REDIS_HOST``). The
-opt-in ``-m real_llm`` lane runs the parent unguarded, and its children with it.
+``child_env`` is the one base: offline, as the image runs, no ``.env``, this
+tree's ``faultmaven``; and, while the test process runs guarded, the
+``sitecustomize`` in ``tests/child_site/`` installs the same guard in the child,
+with the allowances its environment names. The ``-m real_llm`` lane runs both
+unguarded.
 """
 
 from __future__ import annotations
