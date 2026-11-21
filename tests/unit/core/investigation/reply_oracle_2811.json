@@ -1,0 +1,797 @@
+{
+ "2582_cited_failure_re_rooted": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "2595_unkinded_failure_rebound": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n- **The cause** — no root cause on record: pgbouncer pool_size now reads 100 (turn 11)\n- **The problem** — checkout returns 503 on every request, re-checked: checkout answers 200 (turn 12)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — no root cause on record: pgbouncer pool_size now reads 100 (turn 11)\n- **The problem** — checkout returns 503 on every request, re-checked: checkout answers 200 (turn 12)",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "2609_relapsed_mitigation": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:chain_beside_a_working_conclusion": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: the checkout pool is capped at 20 connections\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "the checkout pool is capped at 20 connections",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:chain_beside_an_early_stage_conclusion": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: No root cause established\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "No root cause established",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:evidence_commands": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: raise max_connections\n\nIs this correct? Once you confirm, I'll mark the case as resolved.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": false,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "raise max_connections"
+  }
+ },
+ "C:leg_chain": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: No root cause established\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "No root cause established",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:leg_none": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
+   "root": "no root cause on record",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "C:leg_rcc": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is 20\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "rcc",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
+   "root": "max_connections is 20",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "C:leg_working_conclusion": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: the checkout pool is capped at 20 connections\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "working_conclusion",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
+   "root": "the checkout pool is capped at 20 connections",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "C:long_root": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: the pool waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits o...\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "the pool waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits on a full server waits o...",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:no_evidence_commands": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: raise max_connections to 100\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": false,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "raise max_connections to 100"
+  }
+ },
+ "C:no_evidence_no_commands": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "C:no_evidence_steps": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: raise max_connections to 100\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": false,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "raise max_connections to 100"
+  }
+ },
+ "C:solution_enum_title": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: set max_connections to 100\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "set max_connections to 100"
+  }
+ },
+ "C:solution_enum_title_alone": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Solution: SolutionType.CONFIG_CHANGE\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "Solution: SolutionType.CONFIG_CHANGE"
+  }
+ },
+ "C:solution_immediate_only": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: restart pgbouncer\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "restart pgbouncer"
+  }
+ },
+ "C:solution_latest_of_two": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: raise max_connections\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "raise max_connections"
+  }
+ },
+ "C:solution_long_title": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it ra...\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it raise it ra..."
+  }
+ },
+ "C:solution_longterm_only": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: set max_connections to 100\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "set max_connections to 100"
+  }
+ },
+ "C:solution_title": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: raise max_connections\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "raise max_connections"
+  }
+ },
+ "T:closed_false_alarm:bare:copied": {
+  "composed": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary."
+ },
+ "T:closed_false_alarm:bare:written": {
+  "composed": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary."
+ },
+ "T:closed_false_alarm:line:copied": {
+  "composed": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary."
+ },
+ "T:closed_false_alarm:line:written": {
+  "composed": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed as a false alarm — the reported problem was not present. The evidence is preserved in the closure summary."
+ },
+ "T:closed_insufficient_evidence:bare:copied": {
+  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary."
+ },
+ "T:closed_insufficient_evidence:bare:written": {
+  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary."
+ },
+ "T:closed_insufficient_evidence:line:copied": {
+  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:closed_insufficient_evidence:line:written": {
+  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:closed_rca_infeasible:bare:copied": {
+  "composed": "Case closed — the root cause is not reachable for this problem.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the root cause is not reachable for this problem.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the root cause is not reachable for this problem."
+ },
+ "T:closed_rca_infeasible:bare:written": {
+  "composed": "Case closed — the root cause is not reachable for this problem.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the root cause is not reachable for this problem.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the root cause is not reachable for this problem."
+ },
+ "T:closed_rca_infeasible:line:copied": {
+  "composed": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:closed_rca_infeasible:line:written": {
+  "composed": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the root cause is not reachable for this problem. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:closed_restatement_held:bare:copied": {
+  "composed": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary."
+ },
+ "T:closed_restatement_held:bare:written": {
+  "composed": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary."
+ },
+ "T:closed_restatement_held:line:copied": {
+  "composed": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:closed_restatement_held:line:written": {
+  "composed": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a cause was supported by the evidence but never stated distinctly from the problem. The candidates and what the cause still needs are preserved in the closure summary. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:inquiry_only:bare:copied": {
+  "composed": "Case closed without investigation.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed without investigation.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed without investigation."
+ },
+ "T:inquiry_only:bare:written": {
+  "composed": "Case closed without investigation.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed without investigation.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed without investigation."
+ },
+ "T:inquiry_only:line:copied": {
+  "composed": "Case closed without investigation.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed without investigation.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed without investigation."
+ },
+ "T:inquiry_only:line:written": {
+  "composed": "Case closed without investigation.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed without investigation.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed without investigation."
+ },
+ "T:mitigation_sufficient:bare:copied": {
+  "composed": "Case closed — a mitigation was applied; root-cause analysis was deferred.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a mitigation was applied; root-cause analysis was deferred.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a mitigation was applied; root-cause analysis was deferred."
+ },
+ "T:mitigation_sufficient:bare:written": {
+  "composed": "Case closed — a mitigation was applied; root-cause analysis was deferred.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a mitigation was applied; root-cause analysis was deferred.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — a mitigation was applied; root-cause analysis was deferred."
+ },
+ "T:mitigation_sufficient:line:copied": {
+  "composed": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred."
+ },
+ "T:mitigation_sufficient:line:written": {
+  "composed": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the problem was observed relieved after the mitigation (turn 7); root-cause analysis was deferred."
+ },
+ "T:resolution_declined:bare:copied": {
+  "composed": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the fix was confirmed to work; you chose not to mark it resolved."
+ },
+ "T:resolution_declined:bare:written": {
+  "composed": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the fix was confirmed to work; you chose not to mark it resolved."
+ },
+ "T:resolution_declined:line:copied": {
+  "composed": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the fix was confirmed to work; you chose not to mark it resolved."
+ },
+ "T:resolution_declined:line:written": {
+  "composed": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — the fix was confirmed to work; you chose not to mark it resolved.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — the fix was confirmed to work; you chose not to mark it resolved."
+ },
+ "T:resolved": {
+  "composed": "Case resolved.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case resolved.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)",
+   "root": "The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.",
+   "solution": "Correct the OIDC provider client ID"
+  },
+  "terminal": "Case resolved."
+ },
+ "T:solution_deferred:bare:copied": {
+  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band."
+ },
+ "T:solution_deferred:bare:written": {
+  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band."
+ },
+ "T:solution_deferred:line:copied": {
+  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "T:solution_deferred:line:written": {
+  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7)."
+ },
+ "gate_one": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": true,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "held_check": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "rcc",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
+   "root": "The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "held_check_on_a_false_alarm": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
+   "root": "no root cause on record",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "held_check_then_interception": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "rcc",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "hypothesis_action": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "Not yet documented"
+  }
+ },
+ "menu_close": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": null,
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "no root cause on record",
+   "solution": "Not yet documented"
+  }
+ },
+ "offer_answered_at_0b": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "rcc",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)",
+   "root": "The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.",
+   "solution": "Correct the OIDC provider client ID"
+  }
+ },
+ "terminal_qa": {
+  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "Not yet documented"
+  },
+  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary."
+ },
+ "told_then_committed": {
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "params": {
+   "identification_leg": "chain",
+   "no_commands": true,
+   "no_evidence": false,
+   "record_lines": "",
+   "root": "max_connections is set to 20, below the checkout pool size",
+   "solution": "Not yet documented"
+  }
+ }
+}

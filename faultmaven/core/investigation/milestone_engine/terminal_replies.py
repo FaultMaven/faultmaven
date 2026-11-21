@@ -1,62 +1,94 @@
-from typing import Mapping
+import logging
+from typing import Optional
 
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
 from faultmaven.core.investigation.cause_identification import cause_identification_leg
-from faultmaven.core.investigation.narration.offers import (
-    confirmation_message,
-    mitigation_sentence,
+from faultmaven.core.investigation.lifecycle_metrics import (
+    case_outcome_write_failures_total,
 )
+from faultmaven.core.investigation.narration.offers import confirmation_message
+from faultmaven.core.investigation.narration.replies import (
+    _CLOSED_REPLIES,
+    ResolutionContent,
+    confirmation_params,
+    confirmation_params_of,
+    terminal_status_line,
+)
+from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
-from faultmaven.core.investigation.terminal_transitions import (
-    mitigation_closure_line,
-    resolution_record_lines,
-)
-from faultmaven.modules.case.contracts import (
-    CaseState,
-    ClosureReason,
-    closure_reason_table,
-)
+from faultmaven.core.investigation.terminal_transitions import resolution_record_lines
+from faultmaven.modules.case.contracts import CaseOutcome, CaseState, WritePoint
 
 from .cause_state import (
     _get_root_cause_summary,
     _get_solution_summary,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def resolution_content(case) -> ResolutionContent:
+    """The case content the resolve confirmation names (ruling of
+    2026-11-21): built here, not in ``narration``, whose import contract
+    ``cause_state`` would break (it imports ``cause_assurance``)."""
+    return ResolutionContent(
+        root_cause=_get_root_cause_summary(case),
+        solution=_get_solution_summary(case),
+        has_evidence=bool(case.evidence),
+        has_commands=any(
+            getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
+            for s in case.solutions or ()
+        ),
+    )
+
+
+def _reply_outcome(case) -> Optional[CaseOutcome]:
+    """The record folded for the moment the reply narrates
+    (``narration_outcome``), stored nowhere; None when the fold raised, which
+    is logged with its traceback and counted on
+    ``case_outcome_write_failures_total{at="narration"}``, once per call."""
+    try:
+        return narration_outcome(case)
+    except Exception:  # noqa: BLE001 — the reply renders from its fallback
+        logger.exception(
+            "Case %s: the record could not be read for the reply (#2811)",
+            getattr(case, "case_id", None),
+        )
+        try:
+            case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
+        except Exception:  # noqa: BLE001 — a metrics error never fails a reply
+            logger.exception("case_outcome_write_failures_total not counted")
+        return None
+
+
+def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
+    """The confirmation's two record facts, derived from the case, when the
+    fold raised: the decider's decide-time read (A4), removed at stage S3.
+    The fold derives them through these same two functions, so a failure
+    inside one of them raises again here, as the decider's read did on
+    ``main``; only a fold failure outside them renders from this fallback."""
+    return cause_identification_leg(case), resolution_record_lines(case)
+
 
 def resolution_confirmation_params(case) -> dict:
     """The facts the resolve confirmation states (``narration.offers.
-    resolution_confirmation``), read from the case where the confirmation is
-    decided (#2636, A4): what is on record (root cause, solution, and the rows
-    that confirm the resolution, ``resolution_record_lines``), and which
-    optional details would improve the resolution documentation and any
-    runbook generated from it.
-
-    It never asks how the fix was verified (#2428): the record lines show
-    that, and ``Solution.verification_method`` is written by no investigation
-    path.
+    resolution_confirmation``), read where the confirmation is decided (#2636,
+    A4): whether a cause is identified and the rows that confirm the
+    resolution from the record folded at that moment (#2811 S2b-2b), and the
+    root cause, the solution and which optional details would improve the
+    documentation from the case's content (``ResolutionContent``). A fold
+    failure outside ``cause_identification_leg`` and
+    ``resolution_record_lines`` renders from the decider's read
+    (``_confirmation_outcome_fresh``); a failure inside them raises, as on
+    ``main``.
     """
-    # One source for the cause on every line (#1906 D5.1): with no
-    # cause-identification leg, no conclusion is named as the root cause.
-    leg = cause_identification_leg(case)
-    root = (
-        _get_root_cause_summary(case) if leg is not None else "no root cause on record"
-    )
-    has_commands = any(
-        getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
-        for s in case.solutions or ()
-    )
-    return {
-        "root": root,
-        "solution": _get_solution_summary(case),
-        "record_lines": resolution_record_lines(case),
-        # Enrichment that improves the docs but does not block resolution.
-        "no_evidence": not case.evidence,
-        "no_commands": not has_commands,
-        # The identification decided on, for the narration's conflict count.
-        "identification_leg": leg,
-    }
+    outcome = _reply_outcome(case)
+    if outcome is None:
+        leg, record_lines = _confirmation_outcome_fresh(case)
+        return confirmation_params_of(leg, record_lines, resolution_content(case))
+    return confirmation_params(outcome, resolution_content(case))
 
 
 def _build_resolution_confirmation(case) -> str:
@@ -65,83 +97,33 @@ def _build_resolution_confirmation(case) -> str:
     return confirmation_message(resolution_confirmation_params(case))
 
 
-#: The status line a confirmed close opens its reply with, one per reason, so
-#: the user can tell at a glance what was preserved.
-_CLOSED_REPLIES: Mapping[ClosureReason, str] = closure_reason_table(
-    {
-        ClosureReason.INQUIRY_ONLY: "Case closed without investigation.",
-        ClosureReason.CLOSED_FALSE_ALARM: (
-            "Case closed as a false alarm — the reported problem was not "
-            "present. The evidence is preserved in the closure summary."
-        ),
-        ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE: (
-            "Case closed — insufficient evidence to ground a cause. "
-            "Residual candidates and the missing data are preserved in the "
-            "closure summary."
-        ),
-        ClosureReason.CLOSED_RESTATEMENT_HELD: (
-            "Case closed — a cause was supported by the evidence but never "
-            "stated distinctly from the problem. The candidates and what the "
-            "cause still needs are preserved in the closure summary."
-        ),
-        ClosureReason.RESOLUTION_DECLINED: (
-            "Case closed — the fix was confirmed to work; you chose not to "
-            "mark it resolved."
-        ),
-        ClosureReason.SOLUTION_DEFERRED: (
-            "Case closed — cause identified and fix documented; implementation "
-            "is deferred out-of-band."
-        ),
-        ClosureReason.CLOSED_RCA_INFEASIBLE: (
-            "Case closed — the root cause is not reachable for this problem."
-        ),
-        # The record-free fallback: a mitigation_sufficient case states its
-        # record instead (``_terminal_confirmation_response``).
-        ClosureReason.MITIGATION_SUFFICIENT: (
-            "Case closed — a mitigation was applied; root-cause analysis was "
-            "deferred."
-        ),
-    }
-)
-
-#: The reasons whose reply is followed by the mitigation's record when the
-#: case has one (#2100, C5). ``mitigation_sufficient`` states it in place of
-#: its own line; the others omit it: no record can exist before the
-#: investigation, a false alarm's problem was not present, and a declined
-#: resolution's fix was confirmed.
-_MITIGATION_LINE_FOLLOWS = frozenset(
-    {
-        ClosureReason.CLOSED_RCA_INFEASIBLE,
-        ClosureReason.SOLUTION_DEFERRED,
-        ClosureReason.CLOSED_RESTATEMENT_HELD,
-        ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE,
-    }
-)
+def _record_free_reply(case) -> str:
+    """The closed reply when no record can be read (the transition's write
+    failed and the fold raised): the reason's line alone, with no mitigation
+    sentence."""
+    return _CLOSED_REPLIES[case.closure_reason]
 
 
 def _terminal_confirmation_response(case) -> str:
-    """Deterministic status line after a transition is confirmed.
+    """Deterministic status line after a transition is confirmed
+    (``narration.replies.terminal_status_line``).
 
-    Closure-reason-aware so the user can tell at a glance what was preserved
-    (``_CLOSED_REPLIES``; a CLOSED case always carries a reason). What it
-    says about a mitigation is the record (``mitigation_closure_line``,
-    #2100): it replaces the ``mitigation_sufficient`` line and follows the
-    reasons in ``_MITIGATION_LINE_FOLLOWS``. The terminal reply is composed
-    by ``_compose_terminal_reply`` which appends the auto-generated summary
-    content (when produced).
+    The closure's reason and mitigation line are the record's (#2811
+    S2b-2b): the closure the terminal transition wrote, and a re-fold only
+    when that write failed (the stored record is not terminal). The terminal
+    reply is composed by ``_compose_terminal_reply`` which appends the
+    auto-generated summary content (when produced).
     """
     if case.state == CaseState.RESOLVED:
-        return "Case resolved."
-    reason = case.closure_reason
-    line = mitigation_closure_line(case)
-    if line is None or not (
-        reason == ClosureReason.MITIGATION_SUFFICIENT
-        or reason in _MITIGATION_LINE_FOLLOWS
-    ):
-        return _CLOSED_REPLIES[reason]
-    if reason == ClosureReason.MITIGATION_SUFFICIENT:
-        return f"Case closed — {line}; root-cause analysis was deferred."
-    return f"{_CLOSED_REPLIES[reason]} {mitigation_sentence(line)}"
+        return terminal_status_line(case.state, None, None)
+    stored = case.progress.outcome
+    if stored is None or not stored.folded_under.is_terminal:
+        stored = _reply_outcome(case)
+        if stored is None:
+            return _record_free_reply(case)
+    return terminal_status_line(
+        case.state, stored.closure.reason, stored.closure.statement
+    )
 
 
 def _compose_terminal_reply(case, summary_payload: str | None) -> str:
