@@ -14,6 +14,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from faultmaven.api.exception_handlers import internal_server_error_handler
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 from ...infrastructure.logging.coordinator import LoggingCoordinator
@@ -356,7 +357,9 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to record performance metrics: {e}")
+            self.logger.error(
+                f"Failed to record performance metrics: {exception_log_name(e)}"
+            )
 
     def get_middleware_statistics(self) -> Dict[str, Any]:
         """Get middleware performance statistics.
@@ -428,7 +431,9 @@ class PerformanceMetricsEndpoint:
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to get performance metrics: {e}")
+            self.logger.error(
+                f"Failed to get performance metrics: {exception_log_name(e)}"
+            )
             return {
                 # Static: this dict is returned VERBATIM by ``GET
                 # /metrics/performance``, and the arm is a broad ``except``.
@@ -471,7 +476,9 @@ class PerformanceMetricsEndpoint:
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to get real-time metrics: {e}")
+            self.logger.error(
+                f"Failed to get real-time metrics: {exception_log_name(e)}"
+            )
             return {
                 # Static, for the same reason as the sibling above. No route
                 # calls this method today — ``GET /metrics/realtime``

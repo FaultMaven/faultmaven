@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional, Union
 
 from fastapi import FastAPI
 
+from faultmaven.utils.exception_name import exception_log_name
+
 from ..config.protection import (
     PROTECTION_PROFILE_ENV_VAR,
     STAGING_REDIS_KEY_PREFIX,
@@ -305,11 +307,11 @@ def setup_protection_middleware(
         # settings would say nothing about *why* it is unprotected. The
         # ``setup_info`` write is moot on a raise — the caller never receives the
         # dict — but it keeps the two handlers' shapes identical.
-        logger.error(f"Failed to setup protection middleware: {e}")
+        logger.error(f"Failed to setup protection middleware: {exception_log_name(e)}")
         setup_info["error"] = str(e)
         raise
     except Exception as e:
-        logger.error(f"Failed to setup protection middleware: {e}")
+        logger.error(f"Failed to setup protection middleware: {exception_log_name(e)}")
         # Safe in place, and allowlisted as such in
         # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``: this
         # runs once during application bootstrap, and ``setup_info`` is
@@ -395,7 +397,9 @@ async def shutdown_protection(app: FastAPI) -> None:
         except asyncio.CancelledError as cancellation:
             cancelled = cancelled or cancellation
         except Exception as e:
-            logger.error(f"{type(middleware).__name__} shutdown failed: {e}")
+            logger.error(
+                f"{type(middleware).__name__} shutdown failed: {exception_log_name(e)}"
+            )
             failures.append(e)
     if cancelled is not None:
         raise cancelled

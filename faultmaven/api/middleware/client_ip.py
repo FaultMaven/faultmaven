@@ -60,6 +60,8 @@ from typing import Iterable, Optional, Tuple
 
 from fastapi import Request
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 TrustedProxies = Tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]
@@ -137,7 +139,7 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
                 "is corrected, requests arriving via that proxy are keyed on the "
                 "proxy's own address rather than the originating client.",
                 entry,
-                exc,
+                exception_log_name(exc),
             )
     return tuple(networks)
 

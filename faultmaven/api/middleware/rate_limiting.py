@@ -15,6 +15,8 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from faultmaven.utils.exception_name import exception_log_name
+
 from ...infrastructure.protection import RedisRateLimiter
 from ...models.protection import (
     LimitType,
@@ -355,7 +357,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             # Log the error cleanly without trying to serialize exception objects
             self.logger.error(
-                f"Rate limiting error: {type(e).__name__}: {str(e)}",
+                f"Rate limiting error: {exception_log_name(e)}",
                 exc_info=False,  # Avoid serialization issues
             )
             self.metrics["errors"] += 1
@@ -525,7 +527,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 # The underlying rate_limiter already logged the cause.
                 self.logger.warning(
                     "Rate limiter initialization failed (%s); retrying in %.0fs",
-                    e,
+                    exception_log_name(e),
                     INIT_RETRY_COOLDOWN_SECONDS,
                 )
                 # A failed *promotion* keeps the degraded client it already had.
@@ -797,7 +799,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
 
         except Exception as e:
-            self.logger.debug(f"Failed to add rate limit headers: {e}")
+            self.logger.debug(
+                f"Failed to add rate limit headers: {exception_log_name(e)}"
+            )
 
     def _create_rate_limit_response(
         self, error: RateLimitError, request: Request

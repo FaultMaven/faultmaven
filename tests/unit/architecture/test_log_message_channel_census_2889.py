@@ -49,9 +49,12 @@ or such a ``gather``, and texts over any other read of those names
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
 ``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)``, which returns a
-``bool``, ...); an attribute in :data:`SAFE_ATTRS` (``e.status_code``,
+``bool``, ``describe_request_body(exc.body)``, a body's type and size, ...); an
+attribute in :data:`SAFE_ATTRS` (``e.status_code``,
 ``e.returncode``, ``e.item_id``, the knowledge item id our code sets on
-``IngestOutcomeUnknown``, ...), or read by name
+``IngestOutcomeUnknown``, ``e.limit_type``, ``e.current_count``, ``e.limit`` and
+``e.retry_after``, the limit and counts our code sets on ``RateLimitError``,
+...), or read by name
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
@@ -123,6 +126,7 @@ SAFE_CALLS = frozenset(
         "declared_llm_category",
         "classify_token_limit_reason",
         "_arrived_cancelled",
+        "describe_request_body",
     }
 )
 
@@ -139,6 +143,10 @@ SAFE_ATTRS = frozenset(
         "__class__",
         "__name__",
         "item_id",
+        "limit_type",
+        "current_count",
+        "limit",
+        "retry_after",
     }
 )
 
@@ -532,22 +540,6 @@ def census() -> Tuple[Tuple[str, int, str], ...]:
 #: site shrinks its row; a row at zero is deleted.
 ALLOWED = {
     "_container_impl.py": 4,
-    "api/exception_handlers.py": 9,
-    "api/middleware/auth.py": 4,
-    "api/middleware/client_ip.py": 1,
-    "api/middleware/contract_probe.py": 2,
-    "api/middleware/deduplication.py": 4,
-    "api/middleware/idempotency.py": 6,
-    "api/middleware/logging.py": 3,
-    "api/middleware/performance.py": 3,
-    "api/middleware/rate_limiting.py": 4,
-    "api/middleware/tenant_scope.py": 1,
-    "api/operator_audit.py": 1,
-    "api/protection.py": 3,
-    "api/routes/admin.py": 7,
-    "api/routes/admin_cases.py": 1,
-    "api/routes/admin_config.py": 7,
-    "api/v1/auth_dependencies.py": 7,
     "bootstrap/composition.py": 4,
     "bootstrap/data_init.py": 8,
     "bootstrap/kb_generation_sweep.py": 3,
@@ -607,8 +599,6 @@ ALLOWED = {
     "infrastructure/persistence/case_vector_store.py": 4,
     "infrastructure/persistence/chromadb_store.py": 1,
     "infrastructure/persistence/pg_connection.py": 1,
-    "infrastructure/protection/rate_limiter.py": 8,
-    "infrastructure/protection/tenant_turn_cap.py": 1,
     "infrastructure/redis_client.py": 1,
     "infrastructure/security/case_redaction.py": 3,
     "infrastructure/security/pseudonym_key.py": 1,
@@ -624,7 +614,6 @@ ALLOWED = {
     "jobs/kb_vector_enterprise_backfill.py": 2,
     "jobs/llm_usage_retention.py": 1,
     "jobs/run.py": 4,
-    "main.py": 27,
     "modules/auth/api/auth.py": 14,
     "modules/auth/api/oauth.py": 7,
     "modules/auth/api/session.py": 15,
@@ -675,6 +664,9 @@ SWITCHED_PREFIXES = (
     "core/processing/",
     "modules/knowledge/",
     "infrastructure/knowledge/",
+    "api/",
+    "infrastructure/protection/",
+    "main.py",
 )
 
 
@@ -783,6 +775,10 @@ def _found(source: str) -> List[Site]:
         "def f(c, e, s):\n    *_, rest = _prune_invalid_sub_records(c, e, s)\n"
         "    log.warning(f'{rest}')",
         "def f(e):\n    log.error('%s', e.message)",
+        "def f(exc: RequestValidationError):\n    log.error('%s', exc.errors())",
+        "def f(error: RateLimitError):\n    log.warning('%s', error.message)",
+        "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
+        "    log.error('x', extra={'body': body})",
     ],
 )
 def test_a_site_is_found(source):
@@ -829,6 +825,14 @@ def test_a_site_is_found(source):
         "    cancelled = _arrived_cancelled(failure)\n"
         "    log.warning('%s', 'a' if cancelled else 'b')",
         "def f(e):\n    log.error('item %s', e.item_id)",
+        "def f(error: RateLimitError):\n    log.warning(f'{error.limit_type} "
+        "{error.current_count}/{error.limit} {error.retry_after}')",
+        "def f(exc: RequestValidationError):\n    raw_errors = exc.errors()\n"
+        "    body = getattr(exc, 'body', None)\n    logged = []\n"
+        "    for e, raw in zip(raw_errors, raw_errors):\n"
+        "        logged.append({'loc': e.get('loc'), 'input_len': len(raw)})\n"
+        "    log.error('x %s', logged, extra={'validation_errors': logged,"
+        " 'body': describe_request_body(body)})",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):

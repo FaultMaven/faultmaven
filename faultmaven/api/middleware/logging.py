@@ -62,6 +62,7 @@ from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
 from faultmaven.infrastructure.shims import request_counter, request_duration
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = get_logger(__name__)
 
@@ -452,11 +453,11 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         level="error",
                         message=f"Request failed: {request.method} {request.url.path}{session_info}"
                         f"{_attribution_suffix(bound_user_id, enterprise_id, principal_bound=principal_bound)} "
-                        f"after {duration:.3f}s: {str(e)}",
+                        f"after {duration:.3f}s: {exception_log_name(e)}",
                         method=request.method,
                         path=request.url.path,
                         duration_seconds=duration,
-                        error=str(e),
+                        error=exception_log_name(e),
                         error_type=type(e).__name__,
                         correlation_id=context.correlation_id,
                         claimed_session_id=claimed_session_id,
@@ -576,7 +577,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             # Log error but don't fail the request
-            logger.warning(f"Failed to extract session_id: {e}")
+            logger.warning(f"Failed to extract session_id: {exception_log_name(e)}")
 
         return None
 
@@ -629,7 +630,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                         pass
 
         except Exception as e:
-            logger.warning(f"Failed to extract the claimed case id: {e}")
+            logger.warning(
+                f"Failed to extract the claimed case id: {exception_log_name(e)}"
+            )
 
         return None
 

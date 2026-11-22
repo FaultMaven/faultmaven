@@ -469,9 +469,7 @@ class TestUnauthorizedBodyCarriesNoTokenText:
             for r in caplog.records
             if r.name == "faultmaven.api.middleware.auth" and r.levelno == logging.DEBUG
         ]
-        assert any(
-            "DECODE_ERROR" in m and "Not enough segments" in m for m in debug
-        ), debug
+        assert any("AuthenticationError[DECODE_ERROR]" in m for m in debug), debug
 
     def test_an_expired_token_keeps_its_own_static_detail(
         self, bearer_client, real_auth_service

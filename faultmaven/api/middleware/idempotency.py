@@ -32,6 +32,7 @@ from faultmaven.config.idempotency_key import (
     is_valid_idempotency_key,
 )
 from faultmaven.infrastructure.logging.coordinator import current_correlation_id
+from faultmaven.utils.exception_name import exception_log_name
 
 from .route_policy import (
     APP_STATE_POLICY_ATTR as APP_STATE_POLICY_ATTR_INTERNAL,
@@ -263,7 +264,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         try:
             await client.aclose()
         except Exception as e:
-            logger.debug(f"Closing the idempotency Redis client failed: {e}")
+            logger.debug(
+                f"Closing the idempotency Redis client failed: {exception_log_name(e)}"
+            )
 
     @property
     def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
@@ -420,7 +423,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 # for one client request — exactly what this middleware exists
                 # to prevent. Let the error surface to the error handlers.
                 raise
-            logger.error(f"Error in idempotency middleware: {e}")
+            logger.error(f"Error in idempotency middleware: {exception_log_name(e)}")
             # The failure happened before the request reached the route, so
             # degrading to a normal, uncached request is safe.
             return await call_next(request)
@@ -686,7 +689,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             # happens to span the boundary.
             return f"{subject}\x1f{enterprise}"
         except Exception as e:
-            logger.debug(f"Idempotency scope falling back to raw credential: {e}")
+            logger.debug(
+                f"Idempotency scope falling back to raw credential: {exception_log_name(e)}"
+            )
             return None
 
     async def _body_fingerprint(self, request: Request) -> str:
@@ -731,7 +736,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         try:
             body = await request.body()
         except Exception as e:  # pragma: no cover - defensive
-            logger.debug(f"Could not buffer request body for fingerprinting: {e}")
+            logger.debug(
+                f"Could not buffer request body for fingerprinting: {exception_log_name(e)}"
+            )
             return UNFINGERPRINTED_BODY
 
         return hashlib.sha256(body).hexdigest()
@@ -787,7 +794,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             if cached_data:
                 return json.loads(cached_data)
         except Exception as e:
-            logger.error(f"Error retrieving cached response: {e}")
+            logger.error(f"Error retrieving cached response: {exception_log_name(e)}")
         return None
 
     async def _cache_response(
@@ -847,7 +854,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             logger.info(f"Cached response for idempotency key: {idempotency_key}")
 
         except Exception as e:
-            logger.error(f"Error caching response: {e}")
+            logger.error(f"Error caching response: {exception_log_name(e)}")
         finally:
             # Always hand the drained body back to the client, whether or not
             # it was successfully cached. Caching is best-effort; delivering

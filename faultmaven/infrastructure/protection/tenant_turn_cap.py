@@ -81,6 +81,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Dict, Optional, Protocol, Tuple
 
 from faultmaven.infrastructure.protection.window_math import retry_after_seconds
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -592,12 +593,11 @@ class TurnCapService:
             standing = await self._ledger.usage(subject, day) if used is None else 0
         except Exception as exc:
             logger.error(
-                "turn cap: could not reserve a turn for %s %s (%s: %s); "
+                "turn cap: could not reserve a turn for %s %s (%s); "
                 "refusing the turn rather than serving it uncounted",
                 subject.kind,
                 subject.subject_id,
-                type(exc).__name__,
-                exc,
+                exception_log_name(exc),
             )
             raise TenantTurnCapUnavailable(str(exc)) from exc
 

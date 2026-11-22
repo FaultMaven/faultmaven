@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 from ...models.protection import (
     RateLimitConfig,
     RateLimitResult,
@@ -321,7 +323,8 @@ class RedisRateLimiter:
             # Issued against a client that has since been replaced. Counting it
             # would demote its successor for a predecessor's death.
             self.logger.debug(
-                f"Ignoring a rate limit check failure from a replaced client: {error}"
+                "Ignoring a rate limit check failure from a replaced client: "
+                f"{exception_log_name(error)}"
             )
             return
 
@@ -342,10 +345,10 @@ class RedisRateLimiter:
             self.logger.error(
                 "Rate limit check failed (%s consecutive): %s",
                 self._consecutive_check_failures,
-                error,
+                exception_log_name(error),
             )
         else:
-            self.logger.debug(f"Rate limit check failed: {error}")
+            self.logger.debug(f"Rate limit check failed: {exception_log_name(error)}")
 
         if crossed:
             self._client_declared_dead = True
@@ -369,7 +372,8 @@ class RedisRateLimiter:
             return True
         except Exception as e:
             self.logger.warning(
-                f"Shared Redis client did not answer ({e}); not re-adopting it"
+                f"Shared Redis client did not answer ({exception_log_name(e)}); "
+                "not re-adopting it"
             )
             return False
 
@@ -443,19 +447,23 @@ class RedisRateLimiter:
             if not self.fallback_enabled:
                 # The deployment asked to fail closed rather than approximate.
                 self.logger.error(
-                    f"Rate limiter Redis unavailable ({e}); the per-replica "
-                    "stand-in is disabled by policy, so no client is available"
+                    f"Rate limiter Redis unavailable ({exception_log_name(e)}); "
+                    "the per-replica stand-in is disabled by policy, so no client "
+                    "is available"
                 )
                 raise
             self.logger.error(
-                f"Rate limiter Redis unavailable ({e}); falling back to in-process "
-                "FakeRedis — rate limits are per-replica until Redis is reachable"
+                f"Rate limiter Redis unavailable ({exception_log_name(e)}); "
+                "falling back to in-process FakeRedis — rate limits are "
+                "per-replica until Redis is reachable"
             )
             # This loop's stand-in, shared with every other subsystem on it.
             await self._adopt(get_fakeredis_client(), owns=False, degraded=True)
             return
         except Exception as e:
-            self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
+            self.logger.error(
+                f"Failed to initialize Redis rate limiter: {exception_log_name(e)}"
+            )
             raise
 
         # The FakeRedis stand-in is shared with every other subsystem on this
@@ -587,7 +595,9 @@ class RedisRateLimiter:
             # A pool that is already dead is exactly the case this runs in, so a
             # failure to close it is expected and not worth surfacing — nothing
             # is waiting on the outcome, and the replacement is already serving.
-            self.logger.debug(f"Closing the replaced Redis client failed: {e}")
+            self.logger.debug(
+                f"Closing the replaced Redis client failed: {exception_log_name(e)}"
+            )
 
     async def close(self) -> None:
         """Let go of the Redis client, closing it only if this limiter opened it.

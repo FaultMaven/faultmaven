@@ -29,6 +29,7 @@ from faultmaven.models.interfaces_operator_audit import (
     OperatorAction,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ async def record_operator_access(
             extra={
                 "operator_user_id": operator.user_id,
                 "action": action.value,
-                "error": str(exc),
+                "error": exception_log_name(exc),
             },
         )
         raise HTTPException(
