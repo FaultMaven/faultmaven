@@ -159,8 +159,8 @@ _PREFIXES = {
 _HEADER_NAMES = tuple(name for names in _SCAN_WORDS.values() for name in names)
 # A credential header: the name, colour codes, any quoting a repr gave it (a
 # closing quote may be followed by "]" or ")": ``headers['Authorization'] =``),
-# colour codes, then ":" or "=", or a tab; ``_HEAD_TUPLE`` also takes a
-# tuple's "', '". Matched only at a candidate the scan found with str.find,
+# colour codes, then ":" or "=", or a tab; ``_HEAD_TUPLE``, tried where
+# ``_PAIR_OPEN`` holds, takes a pair's "', '" instead. Matched only at a candidate the scan found with str.find,
 # never by a scan of the whole line.
 _HEAD_NAME = (
     "(?:" + "|".join(_HEADER_NAMES) + r")(?![\w-])"
@@ -168,12 +168,15 @@ _HEAD_NAME = (
 )
 _HEAD = re.compile(_HEAD_NAME + r"(?:[ \t]*+[:=]|\t)", re.IGNORECASE)
 _HEAD_TUPLE = re.compile(_HEAD_NAME + r"(?<=['\"])[ \t]*+,", re.IGNORECASE)
-# A tuple's first item or a dict's value opens before the name: "(", "(b" or
-# ":", a quote (escaped in a repr of a repr), and a "_" or "." segment
-# (``('http_cookie', ``, ``{'name': 'Set-Cookie', ``). A flat list's
-# ``['authorization', 'cases:read']`` is not one: the table excludes flat
-# pairs and lists, which a scopes list cannot be told from.
-_PAIR_OPEN = re.compile(r"[(:][ \t]{0,8}b?\\{0,2}['\"](?:[\w.-]{0,64}[_.])?\Z")
+# A pair's first item or a dict's value opens before the name: "(", "(b",
+# a list inside a list ("[[", ", [") or ":", a quote (escaped in a repr of a
+# repr), and a "_" or "." segment (``('http_cookie', ``, ``{'name':
+# 'Set-Cookie', ``). A flat list's ``['authorization', 'cases:read']`` is not
+# one: the table excludes flat pairs and lists, which a scopes list cannot be
+# told from.
+_PAIR_OPEN = re.compile(
+    r"(?:[(:]|[\[,][ \t]{0,8}\[)[ \t]{0,8}b?\\{0,2}['\"](?:[\w.-]{0,64}[_.])?\Z"
+)
 # Before a name: no longer word (``x-cookie``), a "_" or "." segment boundary
 # (``session_cookie``, ``headers.cookie``: the JSON key rule's segments), the
 # shared escape grammar (``\n``, ``%0A``), or a ``\uXXXX`` escape.

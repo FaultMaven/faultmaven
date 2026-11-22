@@ -76,9 +76,10 @@ class TestEveryRenderedLine:
             lambda name: {"headers": [{"name": name, "value": "VALUE"}]},
             lambda name: {"headers": [(name, "VALUE"), ("accept", "kept")]},
             lambda name: {"headers": [(name.encode(), b"VALUE")]},
+            lambda name: {"headers": [["accept", "kept"], [name, "VALUE"]]},
             lambda name: {f"headers.{name}": "VALUE"},
         ],
-        ids=["dict", "record", "pair", "bytes-pair", "dotted-key"],
+        ids=["dict", "record", "pair", "bytes-pair", "list-pair", "dotted-key"],
     )
     def test_a_structured_value_is_blanked(self, rendered, name, fields_of):
         get_logger("faultmaven.p").error("call failed", **fields_of(name), later="ok")
@@ -166,6 +167,8 @@ class TestTheTextRule:
             ("HTTP_COOKIE=sid=VALUE", "HTTP_COOKIE=<redacted>"),
             ("[('x-api-key', 'VALUE')]", "[('x-api-key', <redacted>"),
             ("[(b'x-api-key', b'VALUE')]", "[(b'x-api-key', <redacted>"),
+            # A list of pairs, as a repr writes decoded JSON headers.
+            ("[['a', 'x'], ['cookie', 'VALUE']]", "[['a', 'x'], ['cookie', <redacted>"),
             # Prose naming a header with a separator loses the rest of its
             # line: the safe side, as with "authorization:".
             ("Invalid api-key: VALUE", "Invalid api-key: <redacted>"),

@@ -390,7 +390,7 @@ class TestTheCostIsLinear:
                 "added pair-dense",
                 lambda n: json.dumps({"e": [["x-auth-token", "x"]] * n}),
             ),
-            ("flat-list dense", lambda n: "['x-api-key', " * n),
+            ("flat-list dense", lambda n: "['" + "x-api-key', '" * n),
         ],
     )
     def test_each_dense_shape(self, label, payload_at):
