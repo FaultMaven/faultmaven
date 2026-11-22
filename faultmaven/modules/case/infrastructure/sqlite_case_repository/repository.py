@@ -86,6 +86,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.saving import
     _upsert_solutions,
     _upsert_uploaded_files,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 if TYPE_CHECKING:
@@ -579,7 +580,7 @@ class SQLiteCaseRepository(CaseRepository):
                     logger.error(
                         "Skipping case %s in list: deserialization failed: %s",
                         getattr(row, "case_id", "<unknown>"),
-                        e,
+                        exception_log_name(e),
                     )
                     continue
 

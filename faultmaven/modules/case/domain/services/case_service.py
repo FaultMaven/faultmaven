@@ -69,6 +69,7 @@ from faultmaven.modules.case.domain.services.case_driver import CaseDriverMixin
 from faultmaven.modules.case.domain.services.case_erasure import session_pointer_key
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
 from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -247,7 +248,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                         )
                     except Exception as e:
                         logger.warning(
-                            f"Failed to increment atomic counter (Redis): {e}"
+                            f"Failed to increment atomic counter (Redis): {exception_log_name(e)}"
                         )
 
                 # 2. Get Database Count (Persistence, Robustness)
@@ -258,7 +259,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                         owner_id.strip(), now.date()
                     )
                 except Exception as e:
-                    logger.error(f"Failed to count cases in DB: {e}")
+                    logger.error(
+                        f"Failed to count cases in DB: {exception_log_name(e)}"
+                    )
 
                 # 3. Hybrid Strategy: Max of both
                 # - If Redis is fresh (0) but DB has 5 cases, we start at 6.
@@ -326,7 +329,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                         ttl=86400,  # 24 hours
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to update session with case ID: {e}")
+                    logger.warning(
+                        f"Failed to update session with case ID: {exception_log_name(e)}"
+                    )
 
             # Save the case with its first outcome record: an INQUIRY case
             # holds nothing to mint, and its description is the statement in
@@ -352,7 +357,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            logger.error(f"Failed to create case: {e}")
+            logger.error(f"Failed to create case: {exception_log_name(e)}")
             raise ServiceException(f"Case creation failed: {str(e)}") from e
 
     @trace("case_service_get_turn_receipt")
@@ -432,7 +437,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             return case
 
         except Exception as e:
-            logger.error(f"Failed to get case {case_id}: {e}")
+            logger.error(f"Failed to get case {case_id}: {exception_log_name(e)}")
             return None
 
     async def _may_access(
@@ -680,7 +685,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             # what it is, never as a failed write.
             raise
         except Exception as e:
-            logger.error(f"Failed to update case {case_id}: {e}")
+            logger.error(f"Failed to update case {case_id}: {exception_log_name(e)}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
 
     async def _write_metadata(self, case_id: str, updates: Dict[str, Any]) -> None:
@@ -771,7 +776,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                             )
                             return existing_case_id
                 except Exception as e:
-                    logger.warning(f"Failed to get existing case for session: {e}")
+                    logger.warning(
+                        f"Failed to get existing case for session: {exception_log_name(e)}"
+                    )
 
             # Create new case - pass title as-is to trigger auto-generation when None
             case = await self.create_case(
@@ -787,7 +794,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            logger.error(f"Failed to get/create case for session {session_id}: {e}")
+            logger.error(
+                f"Failed to get/create case for session {session_id}: {exception_log_name(e)}"
+            )
             raise ServiceException(f"Case management failed: {str(e)}") from e
 
     @trace("case_service_link_session_to_case")
@@ -873,7 +882,10 @@ class CaseService(CaseDriverMixin, ICaseService):
                     ttl=86400,  # 24 hours
                 )
             except Exception as e:
-                logger.error(f"Failed to update session store: {e}")
+                logger.error(
+                    f"Failed to update session store: {exception_log_name(e)}",
+                    exc_info=e,
+                )
                 return False
 
             logger.info(f"Linked session {session_id} to case {case_id}")
@@ -887,7 +899,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             # should be a 404.
             raise
         except Exception as e:
-            logger.error(f"Failed to link session to case: {e}")
+            logger.error(
+                f"Failed to link session to case: {exception_log_name(e)}",
+                exc_info=e,
+            )
             return False
 
     @trace("case_service_get_conversation_context")
@@ -951,7 +966,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                     elif role == "system":
                         context_lines.append(f"{i}. [{timestamp}] System: {content}")
                 except Exception as e:
-                    logger.warning(f"Failed to format message {i} in context: {e}")
+                    logger.warning(
+                        f"Failed to format message {i} in context: {exception_log_name(e)}"
+                    )
                     continue
 
             if len(context_lines) > 1:  # More than just header
@@ -963,7 +980,7 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         except Exception as e:
             logger.warning(
-                f"Failed to get conversation context for case {case_id}: {e}"
+                f"Failed to get conversation context for case {case_id}: {exception_log_name(e)}"
             )
             return ""
 
@@ -1026,7 +1043,8 @@ class CaseService(CaseDriverMixin, ICaseService):
             raise
         except Exception as e:
             logger.error(
-                f"Failed to resume case {case_id} in session {session_id}: {e}"
+                f"Failed to resume case {case_id} in session {session_id}: {exception_log_name(e)}",
+                exc_info=e,
             )
             return False
 
@@ -1252,7 +1270,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         except Exception as e:  # noqa: BLE001
             if strict:
                 raise
-            logger.warning(f"Failed to resolve team ids for {user_id}: {e}")
+            logger.warning(
+                f"Failed to resolve team ids for {user_id}: {exception_log_name(e)}"
+            )
             return []
 
     @trace("case_service_list_user_cases")
@@ -1324,7 +1344,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         except Exception as e:  # noqa: BLE001
             if strict:
                 raise
-            logger.warning(f"Failed to resolve shared case ids for {user_id}: {e}")
+            logger.warning(
+                f"Failed to resolve shared case ids for {user_id}: {exception_log_name(e)}"
+            )
             return []
 
     async def _share_case_with_team(
@@ -1402,7 +1424,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                     created_by=case.user_id,
                 )
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Slack case auto-share failed for {case.case_id}: {e}")
+            logger.warning(
+                f"Slack case auto-share failed for {case.case_id}: {exception_log_name(e)}"
+            )
 
     async def list_user_cases(
         self, user_id: str, filters: Optional[CaseListFilter] = None
@@ -1501,7 +1525,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                     summaries.append(CaseSummary.from_case(case))
                 except Exception as e:
                     logger.error(
-                        f"Failed to convert case {case.case_id} to summary: {e}"
+                        f"Failed to convert case {case.case_id} to summary: {exception_log_name(e)}"
                     )
                     # Continue best effort? Or fail? Best effort for list
 
@@ -1518,7 +1542,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             return summaries, total
 
         except Exception as e:
-            logger.error(f"Failed to list cases for user {user_id}: {e}")
+            logger.error(
+                f"Failed to list cases for user {user_id}: {exception_log_name(e)}"
+            )
             return [], 0
 
     async def list_all_cases(
@@ -1569,7 +1595,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             try:
                 summaries.append(CaseSummary.from_case(case))
             except Exception as e:
-                logger.error(f"Failed to convert case {case.case_id} to summary: {e}")
+                logger.error(
+                    f"Failed to convert case {case.case_id} to summary: {exception_log_name(e)}"
+                )
 
         # Enrich with team shares (ADR-013 §D4) in one batched query, as the
         # per-user list does; empty where team sharing is unwired.
@@ -1645,7 +1673,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             return summaries
 
         except Exception as e:
-            logger.error(f"Failed to search cases: {e}")
+            logger.error(f"Failed to search cases: {exception_log_name(e)}")
             return []
 
     @trace("case_service_get_analytics")
@@ -1664,7 +1692,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             return await self.repository.get_analytics(case_id)
 
         except Exception as e:
-            logger.error(f"Failed to get analytics for case {case_id}: {e}")
+            logger.error(
+                f"Failed to get analytics for case {case_id}: {exception_log_name(e)}"
+            )
             return {}
 
     async def get_case_health_status(self) -> Dict[str, Any]:
@@ -1684,7 +1714,7 @@ class CaseService(CaseDriverMixin, ICaseService):
             }
 
         except Exception as e:
-            logger.error(f"Failed to get case service health: {e}")
+            logger.error(f"Failed to get case service health: {exception_log_name(e)}")
             return {"service_status": "unhealthy", "error": str(e)}
 
     # Message and Query Management Methods
@@ -1721,7 +1751,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         except ValidationException:
             raise
         except Exception as e:
-            logger.error(f"Failed to count cases for user {user_id}: {e}")
+            logger.error(
+                f"Failed to count cases for user {user_id}: {exception_log_name(e)}"
+            )
             return 0  # Graceful degradation for pagination
 
     @trace("case_service_get_case_messages_enhanced")
@@ -1816,7 +1848,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                             created_at_str = str(case_msg.created_at)
                     except Exception as e:
                         logger.warning(
-                            f"Failed to format created_at for message {case_msg.message_id}: {e}"
+                            f"Failed to format created_at for message {case_msg.message_id}: {exception_log_name(e)}"
                         )
                         created_at_str = str(case_msg.created_at)
 
@@ -1871,15 +1903,14 @@ class CaseService(CaseDriverMixin, ICaseService):
             except Exception as e:
                 message_parsing_errors += 1
                 logger.warning(
-                    "Failed to convert message %s of case %s: %s: %s",
+                    "Failed to convert message %s of case %s: %s",
                     (
                         row.get("message_id", "unknown")
                         if isinstance(row, dict)
                         else "unknown"
                     ),
                     case_id,
-                    type(e).__name__,
-                    e,
+                    exception_log_name(e),
                 )
                 if include_debug:
                     storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
@@ -1994,7 +2025,9 @@ class CaseService(CaseDriverMixin, ICaseService):
                 [s.case_id for s in summaries]
             )
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Failed to enrich cases with team shares: {e}")
+            logger.warning(
+                f"Failed to enrich cases with team shares: {exception_log_name(e)}"
+            )
             return
         for summary in summaries:
             summary.shared_team_ids = team_map.get(summary.case_id, [])

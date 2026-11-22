@@ -34,6 +34,7 @@ from faultmaven.modules.case.domain.models.driver import (
     CaseDriverChangeReason,
     DrivenCase,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,9 @@ class CaseDriverMixin:
             try:
                 found = await self.display_names_for(enterprise_id, user_ids)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Failed to resolve case display names: %s", e)
+                logger.warning(
+                    "Failed to resolve case display names: %s", exception_log_name(e)
+                )
                 continue
             for uid, name in found.items():
                 names[(enterprise_id, uid)] = name

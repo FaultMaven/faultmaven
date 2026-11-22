@@ -44,6 +44,7 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import CaseOutcome, CaseReport, ReportType
@@ -75,7 +76,9 @@ def get_repository_for_session(session):
             if bind:
                 dialect_name = bind.dialect.name
     except Exception as e:
-        logger.warning(f"Failed to detect database dialect, defaulting to SQLite: {e}")
+        logger.warning(
+            f"Failed to detect database dialect, defaulting to SQLite: {exception_log_name(e)}"
+        )
 
     if dialect_name == "postgresql":
         from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
@@ -167,19 +170,19 @@ class SessionlessCaseRepository(CaseRepository):
         except Exception as exc:
             if saved is not None:
                 logger.warning(
-                    "Case %s committed; closing its session then failed (%r). "
+                    "Case %s committed; closing its session then failed (%s). "
                     "The save stands.",
                     case.case_id,
-                    exc,
+                    exception_log_name(exc),
                 )
                 return saved
             if receipt is not None and await self._receipt_committed(case, receipt):
                 logger.warning(
-                    "Case %s: the commit raised (%r) but the turn's receipt is "
+                    "Case %s: the commit raised (%s) but the turn's receipt is "
                     "in the database under its key and turn %d, so the turn "
                     "committed.",
                     case.case_id,
-                    exc,
+                    exception_log_name(exc),
                     receipt.turn_number,
                 )
                 case.mark_persisted(by_receipt=True)
@@ -205,9 +208,9 @@ class SessionlessCaseRepository(CaseRepository):
         except Exception as probe_error:  # noqa: BLE001 - the commit's error wins
             logger.warning(
                 "Case %s: could not read the turn receipt back after a failed "
-                "commit (%r)",
+                "commit (%s)",
                 case.case_id,
-                probe_error,
+                exception_log_name(probe_error),
             )
             return False
         return stored is not None and stored.turn_number == receipt.turn_number

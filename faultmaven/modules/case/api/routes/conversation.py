@@ -286,7 +286,7 @@ async def get_case_messages_enhanced(
         logger.error(
             "Unexpected error in get_case_messages_enhanced for case %s: %s",
             case_id,
-            e,
+            exception_log_name(e),
             exc_info=True,
         )
         raise HTTPException(
@@ -389,7 +389,10 @@ async def resume_case_in_session(
             # `SessionException` and NOT from `ServiceException`. Catching one
             # made two spellings of "the gate could not be evaluated" answer
             # 503 and 500 respectively — the inconsistency this is fixing.
-            logger.warning(f"Cannot evaluate session ownership for {session_id}: {exc}")
+            logger.warning(
+                f"Cannot evaluate session ownership for {session_id}: {exception_log_name(exc)}",
+                exc_info=exc,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Session service unavailable",
@@ -442,7 +445,7 @@ async def resume_case_in_session(
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to resume case: {e}", exc_info=True)
+        logger.error(f"Failed to resume case: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to resume case (unexpected error)",
@@ -1068,7 +1071,9 @@ async def submit_turn(
                     # timeout of the turn: REQUEST_TIMEOUT would tell the client
                     # the same input will exhaust the ceiling again.
                     logger.error(
-                        "Turn on case %s not prepared: %s", case_id, unavailable
+                        "Turn on case %s not prepared: %s",
+                        case_id,
+                        exception_log_name(unavailable),
                     )
                     raise database_unavailable_http_exception() from unavailable
                 committed_elsewhere = False
@@ -1088,7 +1093,9 @@ async def submit_turn(
                     # unanswered COMMIT is ``CommitOutcomeUnknown``), so nothing
                     # committed: the preparation's 503 (#2813).
                     logger.error(
-                        "Turn on case %s not committed: %s", case_id, unavailable
+                        "Turn on case %s not committed: %s",
+                        case_id,
+                        exception_log_name(unavailable),
                     )
                     raise database_unavailable_http_exception() from unavailable
 
@@ -1138,9 +1145,10 @@ async def submit_turn(
                 # commit. The one send on this path, the auto-title, answers
                 # its own refusal for that reason (#1998).
                 logger.error(
-                    "Turn on case %s committed; answering it failed: %r",
+                    "Turn on case %s committed; answering it failed: %s",
                     case_id,
-                    failure,
+                    exception_log_name(failure),
+                    exc_info=failure,
                 )
                 raise _turn_outcome_unknown_http() from failure
 
@@ -1160,7 +1168,7 @@ async def submit_turn(
                 f"{turn_ceiling.ceiling_seconds}s "
                 f"(provider={turn_ceiling.provider or 'default'})"
                 + (
-                    f": {timed_out}"
+                    f": {exception_log_name(timed_out)}"
                     if isinstance(timed_out, TurnDeadlineExceeded)
                     else ""
                 )
@@ -1220,7 +1228,8 @@ async def submit_turn(
         # them away until midnight for a fault that may clear in seconds.
         logger.error(
             "Turn refused: the tenant turn cap could not be applied: %s",
-            unavailable,
+            exception_log_name(unavailable),
+            exc_info=unavailable,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -1252,11 +1261,17 @@ async def submit_turn(
     except HTTPException:
         raise
     except CommitOutcomeUnknown as unknown:
-        logger.error("Turn on case %s: outcome unknown: %s", case_id, unknown)
+        logger.error(
+            "Turn on case %s: outcome unknown: %s",
+            case_id,
+            exception_log_name(unknown),
+            exc_info=unknown,
+        )
         raise _turn_outcome_unknown_http() from unknown
     except ServiceException as e:
         logger.error(
-            f"Turn processing failed: {e}",
+            f"Turn processing failed: {exception_log_name(e)}",
+            exc_info=e,
         )
         # Classify off the typed provider metadata (LLMException.status_code /
         # retryable on the __cause__ chain), not the message string — see
@@ -1268,7 +1283,7 @@ async def submit_turn(
         raise
     except Exception as e:
         logger.error(
-            f"Unexpected error processing turn: {e}",
+            f"Unexpected error processing turn: {exception_log_name(e)}",
             exc_info=True,
         )
         # The Error ID is the request's own id: the ``X-Correlation-ID``

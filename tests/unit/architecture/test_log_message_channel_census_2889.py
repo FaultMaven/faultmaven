@@ -162,6 +162,8 @@ SAFE_ATTRS = frozenset(
         "limit",
         "retry_after",
         "lookup",
+        "expected_version",
+        "actual_version",
     }
 )
 
@@ -611,27 +613,6 @@ ALLOWED = {
     "jobs/kb_vector_enterprise_backfill.py": 2,
     "jobs/llm_usage_retention.py": 1,
     "jobs/run.py": 4,
-    "modules/case/api/routes/cases.py": 17,
-    "modules/case/api/routes/conversation.py": 12,
-    "modules/case/api/routes/data.py": 2,
-    "modules/case/api/routes/evidence.py": 4,
-    "modules/case/api/routes/reports.py": 6,
-    "modules/case/api/routes/sharing.py": 2,
-    "modules/case/api/title_generation.py": 7,
-    "modules/case/api/turn_idempotency.py": 1,
-    "modules/case/domain/services/case_data_ingestion_service.py": 11,
-    "modules/case/domain/services/case_driver.py": 1,
-    "modules/case/domain/services/case_service.py": 26,
-    "modules/case/infrastructure/case_metadata_reader.py": 1,
-    "modules/case/infrastructure/postgresql_hybrid_case_repository/loading.py": 2,
-    "modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py": 2,
-    "modules/case/infrastructure/sessionless_case_repository.py": 4,
-    "modules/case/infrastructure/sqlite_case_repository/loading.py": 3,
-    "modules/case/infrastructure/sqlite_case_repository/repository.py": 1,
-    "modules/case/infrastructure/sqlite_case_repository/rows.py": 2,
-    "modules/report/api/routes.py": 7,
-    "modules/report/domain/services/report_generation_service.py": 1,
-    "modules/report/domain/services/report_recommendation_service.py": 1,
     "server.py": 1,
     "services/base.py": 4,
     "utils/frontmatter.py": 1,
@@ -661,6 +642,8 @@ SWITCHED_PREFIXES = (
     "infrastructure/observability/",
     "infrastructure/health/",
     "infrastructure/logging/",
+    "modules/case/",
+    "modules/report/",
 )
 
 

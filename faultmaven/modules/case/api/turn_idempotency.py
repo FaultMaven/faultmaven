@@ -77,6 +77,7 @@ from faultmaven.infrastructure.concurrency.owned_claim import (
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.contracts import Case, TurnReceipt, TurnReceiptKey
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ def _answer_from_receipt(
             "TurnResponse: %s",
             case.case_id,
             receipt.turn_number,
-            invalid,
+            exception_log_name(invalid),
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

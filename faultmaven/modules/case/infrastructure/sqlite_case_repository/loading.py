@@ -30,6 +30,7 @@ from faultmaven.modules.case.infrastructure.sqlite_case_repository.rows import (
     _row_to_evidence,
     _row_to_evidence_need,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 
 async def _load_hypotheses(db, case_id: str) -> list[dict]:
@@ -448,7 +449,7 @@ async def _load_evidence_for_case(db, case: Case) -> None:
         logging.getLogger(__name__).warning(
             "Failed to load evidence for case %s: %s",
             case.case_id,
-            e,
+            exception_log_name(e),
         )
 
 
@@ -514,7 +515,7 @@ async def _load_evidence_needs_for_case(db, case: Case) -> None:
         logging.getLogger(__name__).warning(
             "Failed to load evidence_needs for case %s: %s",
             case.case_id,
-            e,
+            exception_log_name(e),
         )
 
 
@@ -769,7 +770,9 @@ async def _load_evidence_for_cases_bulk(db, cases: builtins.list[Case]) -> None:
                 by_case.setdefault(row[1], []).append(ev)
     except Exception as e:  # noqa: BLE001
         logging.getLogger(__name__).warning(
-            "Failed to bulk-load evidence for %d cases: %s", len(cases), e
+            "Failed to bulk-load evidence for %d cases: %s",
+            len(cases),
+            exception_log_name(e),
         )
         return
 

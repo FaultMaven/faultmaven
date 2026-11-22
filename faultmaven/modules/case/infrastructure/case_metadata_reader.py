@@ -28,6 +28,7 @@ from faultmaven.modules.case.domain.models.metadata import (
     CaseMetadataRefusedError,
     CaseMetadataUnavailableError,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class PostgreSQLCaseMetadataReader:
                 logger.error(
                     "case_metadata_read_refused: the database refused the "
                     "cross-enterprise case read although EXECUTE is granted: %s",
-                    driver_error(exc) or exc,
+                    exception_log_name(driver_error(exc) or exc),
                 )
                 raise CaseMetadataRefusedError(
                     "the database refused the cross-enterprise case read for a "

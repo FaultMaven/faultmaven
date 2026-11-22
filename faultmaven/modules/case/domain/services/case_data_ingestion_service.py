@@ -33,6 +33,7 @@ from faultmaven.models.interfaces import (
     IStorageBackend,
     ITracer,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -308,7 +309,9 @@ class CaseDataIngestionService:
                     "confidence_score": 0.5,
                 }
         except Exception as e:
-            logger.warning(f"Failed to extract detailed insights: {e}")
+            logger.warning(
+                f"Failed to extract detailed insights: {exception_log_name(e)}"
+            )
             detailed_insights = {
                 "processed": True,
                 "processing_timestamp": to_json_compatible(datetime.now(timezone.utc)),
@@ -369,7 +372,7 @@ class CaseDataIngestionService:
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to record data upload operation in session: {e}"
+                        f"Failed to record data upload operation in session: {exception_log_name(e)}"
                     )
             else:
                 logger.debug("Session service does not support data upload tracking")
@@ -553,7 +556,7 @@ class CaseDataIngestionService:
 
         except Exception as e:
             logger.error(
-                f"Enhanced data ingestion failed for session {session_id}: {e}"
+                f"Enhanced data ingestion failed for session {session_id}: {exception_log_name(e)}"
             )
             logger.info("Business event: enhanced_data_ingestion_failed")
             raise ServiceException(
@@ -636,7 +639,9 @@ class CaseDataIngestionService:
                 )
             except Exception as e:
                 # Wrap external processor exceptions in ServiceException
-                logger.error(f"Data analysis failed for {data_id}: {e}")
+                logger.error(
+                    f"Data analysis failed for {data_id}: {exception_log_name(e)}"
+                )
                 raise ServiceException(
                     f"Data analysis processing failed: {str(e)}",
                     details={
@@ -750,7 +755,9 @@ class CaseDataIngestionService:
                 results.append(result)
             except Exception as e:
                 # Log individual item failure but continue with batch
-                logger.error(f"Failed to process item {i+1} ({filename}): {e}")
+                logger.error(
+                    f"Failed to process item {i+1} ({filename}): {exception_log_name(e)}"
+                )
                 # Continue with other items - don't fail entire batch
 
         # Log batch completion metrics
@@ -995,7 +1002,7 @@ class CaseDataIngestionService:
                     )
 
         except Exception as e:
-            logger.warning(f"Anomaly detection failed: {e}")
+            logger.warning(f"Anomaly detection failed: {exception_log_name(e)}")
 
         return anomalies
 
@@ -1117,7 +1124,7 @@ class CaseDataIngestionService:
                 base_score += 0.05
 
         except Exception as e:
-            logger.warning(f"Confidence calculation failed: {e}")
+            logger.warning(f"Confidence calculation failed: {exception_log_name(e)}")
 
         return min(base_score, 1.0)
 
@@ -1342,7 +1349,7 @@ class CaseDataIngestionService:
             return learning_result
 
         except Exception as e:
-            logger.error(f"Learning from feedback failed: {e}")
+            logger.error(f"Learning from feedback failed: {exception_log_name(e)}")
             raise ServiceException(
                 f"Pattern learning failed: {str(e)}",
                 details={"data_id": data_id, "session_id": session_id},
@@ -1450,7 +1457,9 @@ class CaseDataIngestionService:
                     pattern_stats = self._pattern_learner.get_pattern_statistics()
                     insights["pattern_utilization"] = pattern_stats
                 except Exception as e:
-                    logger.warning(f"Failed to get pattern statistics: {e}")
+                    logger.warning(
+                        f"Failed to get pattern statistics: {exception_log_name(e)}"
+                    )
                     insights["pattern_utilization"] = {}
 
             # Generate recommendations
@@ -1461,7 +1470,7 @@ class CaseDataIngestionService:
             return insights
 
         except Exception as e:
-            logger.error(f"Failed to get processing insights: {e}")
+            logger.error(f"Failed to get processing insights: {exception_log_name(e)}")
             return {"error": str(e)}
 
     # Enhanced helper methods
@@ -1653,7 +1662,9 @@ class CaseDataIngestionService:
                 metadata=metadata,
             )
         except Exception as e:
-            logger.warning(f"Failed to record enhanced operation: {e}")
+            logger.warning(
+                f"Failed to record enhanced operation: {exception_log_name(e)}"
+            )
 
     def _generate_processing_recommendations(
         self, insights: Dict[str, Any], processing_history: List[Dict[str, Any]]

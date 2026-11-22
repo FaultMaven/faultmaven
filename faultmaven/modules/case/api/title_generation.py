@@ -47,6 +47,7 @@ from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.modules.case.domain.models.evidence import (
     is_default_case_title as _is_default_case_title,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -1023,10 +1024,10 @@ async def _generate_and_persist_title(
         )
     except Exception as e:
         logger.warning(
-            f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
+            f"Failed to get conversation context for case {case_id}, using fallback: {exception_log_name(e)}",
             extra={
                 "case_id": case_id,
-                "error": str(e),
+                "error": exception_log_name(e),
                 "error_type": type(e).__name__,
             },
         )
@@ -1197,8 +1198,9 @@ async def _generate_and_persist_title(
     except ServiceException as e:
         # Handle service-level exceptions with proper error detail
         logger.error(
-            f"Service error persisting generated title: {e}",
+            f"Service error persisting generated title: {exception_log_name(e)}",
             extra={"case_id": case_id},
+            exc_info=e,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1207,8 +1209,9 @@ async def _generate_and_persist_title(
     except Exception as e:
         # Handle unexpected exceptions
         logger.error(
-            f"Unexpected error persisting generated title: {e}",
+            f"Unexpected error persisting generated title: {exception_log_name(e)}",
             extra={"case_id": case_id},
+            exc_info=e,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1309,7 +1312,7 @@ async def _auto_title_case_if_default(
         # The gate working, not a fault: the case is genuinely too thin to name
         # yet. Expected on early turns; the next turn tries again.
         logger.debug(
-            f"Auto-titling skipped for case {case_id}: {e}",
+            f"Auto-titling skipped for case {case_id}: {exception_log_name(e)}",
             extra={"case_id": case_id},
         )
     except asyncio.TimeoutError:
@@ -1338,7 +1341,7 @@ async def _auto_title_case_if_default(
         # DEBUG alongside the gate would make a systematically broken titler
         # indistinguishable from a stream of ordinary thin cases.
         logger.warning(
-            f"Auto-titling failed for case {case_id}: {e}",
+            f"Auto-titling failed for case {case_id}: {exception_log_name(e)}",
             extra={"case_id": case_id, "error_type": type(e).__name__},
         )
 
@@ -1712,7 +1715,9 @@ async def _generate_title_with_llm(
         # A refusal is a programming error, never a fallback (#1998).
         raise
     except Exception as e:
-        logger.warning(f"LLM title generation failed, trying fallback: {e}")
+        logger.warning(
+            f"LLM title generation failed, trying fallback: {exception_log_name(e)}"
+        )
         fallback = await _gated_fallback(
             user_signals, context_text, case, max_words, sanitizer, verdicts
         )
@@ -1721,7 +1726,7 @@ async def _generate_title_with_llm(
         logger.info(
             f"Title generation: LLM exception, using fallback",
             extra={
-                "error": str(e),
+                "error": exception_log_name(e),
                 "case_id": case_id,
                 "title_length": len(fallback),
             },

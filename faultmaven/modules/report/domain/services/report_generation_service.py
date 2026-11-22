@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     established_by_for_display,
     mechanism_for_display,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -294,7 +295,7 @@ class ReportGenerationService:
                 details={"error_code": QUOTA_EXHAUSTED},
             ) from error
         logger.error(
-            f"Failed to generate {report_type.value} report: {error}",
+            f"Failed to generate {report_type.value} report: {exception_log_name(error)}",
             extra={"case_id": case.case_id},
             exc_info=True,
         )

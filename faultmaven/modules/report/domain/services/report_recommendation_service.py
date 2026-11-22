@@ -36,6 +36,7 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     build_kb_scope_filter,
     resolve_shared_kb_ids,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ class ReportRecommendationService:
             )
         except Exception as e:
             logger.warning(
-                f"Requester scope resolution failed for runbook dedup: {e}",
+                f"Requester scope resolution failed for runbook dedup: {exception_log_name(e)}",
                 exc_info=True,
             )
             raise KnowledgeBaseError(

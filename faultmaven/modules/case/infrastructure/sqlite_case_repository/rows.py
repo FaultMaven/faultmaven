@@ -40,6 +40,7 @@ from faultmaven.modules.case.contracts import (
     WorkingConclusion,
     normalize_stored_report_content,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ def _row_to_evidence(row: Any) -> Optional[Evidence]:
         )
     except Exception as ev_err:  # noqa: BLE001
         logging.getLogger(__name__).warning(
-            "Failed to load evidence %s: %s", row[0], ev_err
+            "Failed to load evidence %s: %s", row[0], exception_log_name(ev_err)
         )
         return None
 
@@ -220,7 +221,7 @@ def _row_to_evidence_need(
         )
     except Exception as need_err:  # noqa: BLE001
         logging.getLogger(__name__).warning(
-            "Failed to load evidence_need %s: %s", row[0], need_err
+            "Failed to load evidence_need %s: %s", row[0], exception_log_name(need_err)
         )
         return None
 

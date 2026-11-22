@@ -76,6 +76,7 @@ from faultmaven.modules.case.contracts import (
     ReportStatus,
     ReportType,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Create router
@@ -459,8 +460,12 @@ async def generate_report(
         # and table names, and ``host:port`` on a Redis failure. Every other
         # 500 in this router already answers with a static sentence; this arm
         # was the holdout, and it was also the one arm that never logged, so
-        # the text is recorded here rather than discarded.
-        logger.error(f"Error generating reports for case {case_id}: {e}", exc_info=True)
+        # the failure is recorded here, by class and frames, rather than
+        # discarded.
+        logger.error(
+            f"Error generating reports for case {case_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
@@ -520,7 +525,9 @@ async def get_report(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting report {report_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error getting report {report_id}: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to retrieve report")
 
 
@@ -630,7 +637,9 @@ async def update_report(
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Error updating report {report_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error updating report {report_id}: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to update report")
 
 
@@ -712,7 +721,9 @@ async def delete_report(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting report {report_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error deleting report {report_id}: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to delete report")
 
 
@@ -796,7 +807,10 @@ async def list_reports_for_case(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error listing reports for case {case_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error listing reports for case {case_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to list reports")
 
 
@@ -879,7 +893,8 @@ async def get_report_versions(
         raise
     except Exception as e:
         logger.error(
-            f"Error getting versions for report {report_id}: {e}", exc_info=True
+            f"Error getting versions for report {report_id}: {exception_log_name(e)}",
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Failed to get report versions")
 
@@ -986,7 +1001,10 @@ async def link_report_to_case_closure(
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Error linking report {report_id} to closure: {e}", exc_info=True)
+        logger.error(
+            f"Error linking report {report_id} to closure: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=500, detail="Failed to link report to case closure"
         )
