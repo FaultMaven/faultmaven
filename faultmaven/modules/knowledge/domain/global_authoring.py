@@ -22,8 +22,9 @@ form, ``is_global_authoring_allowed``, is public in
 global content is authored:
 
 * the ``convert`` / ``runbooks/create`` / ``documents`` (upload) routes, where
-  the scope is a request field known at the API layer (via :mod:`faultmaven.modules.knowledge.api.platform_tier`,
-  which reuses :data:`GLOBAL_AUTHORING_MULTI_MSG` from here); and
+  the scope is a request field: each takes the multi arm from
+  :mod:`faultmaven.modules.knowledge.api.platform_tier` and restates the
+  ``platform_admin`` check inline; and
 * the ``verify_draft`` / ``verify_batch`` / ``scan`` service methods, where a
   draft's scope is only known once the conversion-job row is loaded (or the
   on-disk file's directory is inspected) — so the gate lives at the service

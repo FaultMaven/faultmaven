@@ -161,11 +161,11 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         body=r"""`global` is listed exactly when the caller may author global content:
 under a single tenant, a platform admin; under multi-tenant, nobody (global
 content is seeded by the audited `kb_seed` path). A multi-tenant platform
-admin used to get `["personal", "global"]` and now gets `["personal"]`, or
-`["personal", "team"]` with a Team; every other answer is unchanged.
+admin used to get the same list with `global` appended and now gets
+`["personal"]`, or `["personal", "team"]` with a Team; nothing else changes.
 
 MINOR because the list keeps its type and a client survives a shorter one:
-the dashboard renders the list as given, so it stops offering a target the
+the dashboard renders `global` as given, so it stops offering a target the
 server always refused.""",
     ),
     ContractChange(

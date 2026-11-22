@@ -147,9 +147,17 @@ class TestGlobalScopeIsOperatorOnly:
         _patch_provider(monkeypatch, BUILTIN_MULTI)
         response = await _get_scopes(operator_user, team_service=None)
         assert response.status_code == status.HTTP_200_OK
-        scopes = response.json()["scopes"]
-        assert "personal" in scopes
-        assert "global" not in scopes
+        assert response.json()["scopes"] == ["personal"]
+
+    async def test_multi_tenant_platform_admin_on_a_team_gets_team_not_global(
+        self, monkeypatch, operator_user
+    ):
+        _patch_provider(monkeypatch, BUILTIN_MULTI)
+        team_service = AsyncMock()
+        team_service.list_all_user_team_ids = AsyncMock(return_value=["team_a"])
+        response = await _get_scopes(operator_user, team_service=team_service)
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["scopes"] == ["personal", "team"]
 
     async def test_ordering_stays_narrowest_to_widest(self, operator_user):
         """An operator who is also on a team gets all three, in order."""

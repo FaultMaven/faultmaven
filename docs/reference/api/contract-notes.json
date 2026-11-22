@@ -2,7 +2,7 @@
   "contractVersion": "15.9.0",
   "entries": [
     {
-      "body": "`global` is listed exactly when the caller may author global content:\nunder a single tenant, a platform admin; under multi-tenant, nobody (global\ncontent is seeded by the audited `kb_seed` path). A multi-tenant platform\nadmin used to get `[\"personal\", \"global\"]` and now gets `[\"personal\"]`, or\n`[\"personal\", \"team\"]` with a Team; every other answer is unchanged.\n\nMINOR because the list keeps its type and a client survives a shorter one:\nthe dashboard renders the list as given, so it stops offering a target the\nserver always refused.",
+      "body": "`global` is listed exactly when the caller may author global content:\nunder a single tenant, a platform admin; under multi-tenant, nobody (global\ncontent is seeded by the audited `kb_seed` path). A multi-tenant platform\nadmin used to get the same list with `global` appended and now gets\n`[\"personal\"]`, or `[\"personal\", \"team\"]` with a Team; nothing else changes.\n\nMINOR because the list keeps its type and a client survives a shorter one:\nthe dashboard renders `global` as given, so it stops offering a target the\nserver always refused.",
       "level": "MINOR",
       "title": "`GET /api/v1/auth/me/available-scopes` no longer lists `global` under `TENANT_PROVIDER=multi`, where every global publish was refused 403 (#2335). No schema moves.",
       "version": "15.9.0"

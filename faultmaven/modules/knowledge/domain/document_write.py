@@ -10,8 +10,8 @@ could not edit or delete it. This policy makes them ownership-aware:
   any tenant session under multi, ``platform_admin`` single-tenant).
 * **personal / team** — the document's owner may write it. A non-owner may
   only when they are the single-tenant platform operator (the deployment
-  admin), expressed as :func:`is_global_authoring_allowed` — under multi there
-  is deliberately NO operator override here (operator access to tenant content
+  admin), expressed as ``contracts.is_global_authoring_allowed`` — under multi
+  there is deliberately NO operator override (operator access to tenant content
   is the break-glass path, ADR-012, never a standing bypass). Team-scope
   shares grant read visibility (ADR-013 §D4), not write.
 

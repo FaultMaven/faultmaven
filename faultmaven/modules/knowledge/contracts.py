@@ -19,11 +19,6 @@ from typing import (
     Set,
 )
 
-from faultmaven.exceptions import AuthorizationError
-from faultmaven.modules.knowledge.domain.global_authoring import (
-    ensure_global_authoring_allowed,
-)
-
 if TYPE_CHECKING:
     from faultmaven.models.api import Source
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
@@ -308,13 +303,15 @@ def describe_troubleshooting_scope() -> str:
 
 
 def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
-    """Whether a caller may author global-scope content: the public query form
-    of the global-tier policy that ``domain/global_authoring.py`` states.
+    """Whether the caller may author global-scope content: a platform admin
+    under a single tenant, nobody under ``TENANT_PROVIDER=multi``. The query
+    form of ``domain/global_authoring.py``'s policy; it is also the
+    single-tenant operator override of the KB document write policy."""
+    from faultmaven.exceptions import AuthorizationError
+    from faultmaven.modules.knowledge.domain.global_authoring import (
+        ensure_global_authoring_allowed,
+    )
 
-    A mixed-scope operation (a disk scan) uses it to SKIP the global items a
-    caller may not author, and ``GET /auth/me/available-scopes`` to decide
-    whether to offer ``global`` at all.
-    """
     try:
         ensure_global_authoring_allowed(is_platform_admin)
         return True
