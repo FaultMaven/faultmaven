@@ -11,9 +11,9 @@ before the request is answered with a 5xx carries that exception's frames
 Each case drives one site with :data:`MARKER` in the exception's message,
 captures every record at DEBUG, and renders each through the real chain's
 formatter (``build_log_formatter``). The marker is on no rendered line, frames
-included, and the class name is on the site's line. Each of the area's 14
-lines that log an unexpected failure before a 5xx has its own case, which also
-asserts the line carries the exception's frames. How each site is driven is
+included, and the class name is on the site's line. Each of the 17 arms S3f
+gave frames (``exc_info``), because each logs an unexpected failure before a
+5xx, has its own case, which also asserts the line carries those frames. How each site is driven is
 stated on its case, with the answer the caller gets beside it, unchanged.
 """
 
@@ -309,6 +309,78 @@ async def test_an_unevaluable_session_gate_on_resume_carries_its_frames(lines):
         lines(), "Cannot evaluate session ownership for s-1", ": ServiceException"
     )
     assert refused["frames"].startswith("ServiceException:")
+
+
+def _resuming_service(**repository_calls) -> CaseService:
+    """The real ``CaseService`` over a repository holding the owner's case (with
+    ``repository_calls`` replacing its methods) and a session store, for
+    ``resume_case_in_session`` and ``link_session_to_case`` to run as written."""
+    repository = MagicMock()
+    repository.get = AsyncMock(return_value=_case())
+    repository.update_activity_timestamp = AsyncMock()
+    for name, call in repository_calls.items():
+        setattr(repository, name, call)
+    return CaseService(case_repository=repository, session_store=AsyncMock())
+
+
+async def _resume(service: CaseService) -> httpx.Response:
+    """``POST /cases/sessions/s-1/resume/{id}`` as the case's owner, whose
+    session it is."""
+    sessions = SimpleNamespace(
+        get_session=AsyncMock(return_value=SimpleNamespace(user_id=OWNER))
+    )
+    return await _call_case_route(
+        service,
+        "POST",
+        f"/cases/sessions/s-1/resume/{CASE_ID}",
+        session_service=sessions,
+    )
+
+
+async def test_a_session_store_refusing_the_link_carries_its_frames(lines):
+    """The resume route over the real service, whose session store refuses the
+    pointer write: the route's 500, and the store failure's line with frames."""
+    service = _resuming_service()
+    service.session_store.set = AsyncMock(
+        side_effect=ConnectionError(f"redis said {MARKER}")
+    )
+
+    answer = await _resume(service)
+
+    assert answer.status_code == 500
+    assert answer.json()["detail"] == "Failed to resume case"
+    failed = _named(lines(), "Failed to update session store", "store: ConnectionError")
+    assert failed["frames"].startswith("ConnectionError:")
+
+
+async def test_a_failed_link_carries_its_frames(lines):
+    """The resume route over the real service, whose repository's activity
+    write raises: the route's 500, and the link's line with frames."""
+    service = _resuming_service(
+        update_activity_timestamp=AsyncMock(side_effect=RuntimeError(f"db {MARKER}"))
+    )
+
+    answer = await _resume(service)
+
+    assert answer.status_code == 500
+    failed = _named(lines(), "Failed to link session to case", "case: RuntimeError")
+    assert failed["frames"].startswith("RuntimeError:")
+
+
+async def test_a_failed_resume_carries_its_frames(lines):
+    """The resume route over the real service, with its link step (stubbed)
+    raising past its own handler: the route's 500, and the resume's line with
+    frames."""
+    service = _resuming_service()
+    service.link_session_to_case = AsyncMock(side_effect=RuntimeError(f"link {MARKER}"))
+
+    answer = await _resume(service)
+
+    assert answer.status_code == 500
+    failed = _named(
+        lines(), f"Failed to resume case {CASE_ID} in session s-1", ": RuntimeError"
+    )
+    assert failed["frames"].startswith("RuntimeError:")
 
 
 async def test_an_unclassified_turn_failure_carries_its_frames(lines):

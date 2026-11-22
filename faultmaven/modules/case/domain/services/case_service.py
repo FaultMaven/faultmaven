@@ -882,7 +882,10 @@ class CaseService(CaseDriverMixin, ICaseService):
                     ttl=86400,  # 24 hours
                 )
             except Exception as e:
-                logger.error(f"Failed to update session store: {exception_log_name(e)}")
+                logger.error(
+                    f"Failed to update session store: {exception_log_name(e)}",
+                    exc_info=e,
+                )
                 return False
 
             logger.info(f"Linked session {session_id} to case {case_id}")
@@ -896,7 +899,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             # should be a 404.
             raise
         except Exception as e:
-            logger.error(f"Failed to link session to case: {exception_log_name(e)}")
+            logger.error(
+                f"Failed to link session to case: {exception_log_name(e)}",
+                exc_info=e,
+            )
             return False
 
     @trace("case_service_get_conversation_context")
@@ -1037,7 +1043,8 @@ class CaseService(CaseDriverMixin, ICaseService):
             raise
         except Exception as e:
             logger.error(
-                f"Failed to resume case {case_id} in session {session_id}: {exception_log_name(e)}"
+                f"Failed to resume case {case_id} in session {session_id}: {exception_log_name(e)}",
+                exc_info=e,
             )
             return False
 
