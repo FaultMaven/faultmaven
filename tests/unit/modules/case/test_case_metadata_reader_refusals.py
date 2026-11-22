@@ -84,8 +84,9 @@ async def test_42501_with_execute_is_a_refusal_of_another_kind(caplog):
         with pytest.raises(CaseMetadataRefusedError) as caught:
             await _read(session)
     assert not isinstance(caught.value, CaseMetadataNotGrantedError)
-    # The database's own message, verbatim, for the operator.
-    assert "database says 42501" in caplog.text
+    # The driver's error, by class: its text may not reach a log line (#2889).
+    assert "EXECUTE is granted: _DriverError" in caplog.text
+    assert "database says" not in caplog.text
 
 
 async def test_a_missing_function_is_unavailable_without_a_probe():

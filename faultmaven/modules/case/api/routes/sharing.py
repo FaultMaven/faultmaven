@@ -21,6 +21,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     case_not_found_http,
     check_case_service_available,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -78,7 +79,10 @@ async def share_case_with_team(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error sharing case {case_id} with team: {e}", exc_info=True)
+        logger.error(
+            f"Error sharing case {case_id} with team: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to share case with team",
@@ -134,7 +138,10 @@ async def unshare_case_from_team(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error unsharing case {case_id} from team: {e}", exc_info=True)
+        logger.error(
+            f"Error unsharing case {case_id} from team: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to unshare case from team",

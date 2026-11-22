@@ -71,6 +71,7 @@ from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.ro
     _row_to_evidence,
     _row_to_evidence_need,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ async def _load_evidence_for_case(db, case: Case) -> None:
         logger.warning(
             "Failed to load evidence for case %s: %s",
             case.case_id,
-            e,
+            exception_log_name(e),
         )
 
 
@@ -172,7 +173,11 @@ async def _load_evidence_needs_for_case(db, case: Case) -> None:
                 needs.append(need)
         case.evidence_needs = needs
     except Exception as e:
-        logger.warning("Failed to load evidence_needs for case %s: %s", case.case_id, e)
+        logger.warning(
+            "Failed to load evidence_needs for case %s: %s",
+            case.case_id,
+            exception_log_name(e),
+        )
 
 
 async def _load_hypothesis_evidence_links(

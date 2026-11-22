@@ -4,7 +4,7 @@ Any reader of a case may set ``include_debug`` on ``GET /cases/{id}/messages``,
 and ``debug_info.storage_errors`` carried ``str(e)`` of whatever failed: a row
 that would not convert, or the read itself. The text was built a service hop
 from the route, where the route-scanning error-text guards do not look. Each
-entry is now ``CODE: ExceptionClass`` and the text goes to the log. The model
+entry is now ``CODE: ExceptionClass``, and the log names the class too (#2889). The model
 itself refuses any other entry. A failed read is no longer an entry at all: it
 answers an error status (#2333), whose body carries no text either.
 """
@@ -51,12 +51,12 @@ def _service(repo) -> CaseService:
 
 
 def _logged(caplog, exc) -> logging.LogRecord:
-    """The WARNING-or-worse record naming the exception's class and its text."""
+    """The WARNING-or-worse record naming the exception by its class."""
     return next(
         r
         for r in caplog.records
         if r.levelno >= logging.WARNING
-        and f"{type(exc).__name__}: {exc}" in r.getMessage()
+        and r.getMessage().endswith(f": {type(exc).__name__}")
     )
 
 
@@ -66,7 +66,7 @@ async def _get(build_app, call_api, service, **params):
 
 
 @pytest.mark.parametrize("exc", FAILURES)
-async def test_the_route_returns_a_code_and_logs_the_text(
+async def test_the_route_returns_a_code_and_logs_the_class(
     build_app, call_api, caplog, exc
 ):
     caplog.set_level(logging.WARNING)
@@ -79,6 +79,7 @@ async def test_the_route_returns_a_code_and_logs_the_text(
     assert debug["message_parsing_errors"] == 1
     assert "hunter2" not in response.text
     record = _logged(caplog, exc)
+    assert "hunter2" not in record.getMessage()
     assert CASE_ID in record.getMessage()
     assert "m-1" in record.getMessage()
 

@@ -32,6 +32,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
 from faultmaven.modules.case.contracts import ReportGenerationRequest
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.infrastructure.case_repository import CaseRepository
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -209,7 +210,7 @@ async def get_report_recommendations(
         # — no text leaks — but the refusal is erased: the caller loses both the
         # 503 and the remediation this handler chooses below.)
         logger.warning(
-            f"Report recommendations unavailable for case {case_id}: {e}",
+            f"Report recommendations unavailable for case {case_id}: {exception_log_name(e)}",
             extra={"case_id": case_id},
             exc_info=True,
         )
@@ -223,7 +224,7 @@ async def get_report_recommendations(
         )
     except Exception as e:
         logger.error(
-            f"Failed to get report recommendations for case {case_id}: {e}",
+            f"Failed to get report recommendations for case {case_id}: {exception_log_name(e)}",
             exc_info=True,
         )
         raise HTTPException(
@@ -285,7 +286,9 @@ async def generate_case_reports(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Report generation failed: {e}", exc_info=True)
+        logger.error(
+            f"Report generation failed: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
@@ -369,7 +372,8 @@ async def get_case_reports(
         raise
     except Exception as e:
         logger.error(
-            f"Failed to retrieve reports for case {case_id}: {e}", exc_info=True
+            f"Failed to retrieve reports for case {case_id}: {exception_log_name(e)}",
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Failed to retrieve reports")
 
@@ -487,7 +491,10 @@ async def download_case_report(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to download report {report_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to download report {report_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to download report")
 
 
@@ -581,7 +588,7 @@ async def close_case(
 
         except Exception as e:
             logger.warning(
-                f"Failed to link reports to closure, case is already closed: {e}",
+                f"Failed to link reports to closure, case is already closed: {exception_log_name(e)}",
                 extra={"case_id": case_id},
             )
             # The close itself committed; report linking is best-effort.

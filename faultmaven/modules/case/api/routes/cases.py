@@ -82,7 +82,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
-from faultmaven.utils.exception_name import exception_class_chain
+from faultmaven.utils.exception_name import exception_class_chain, exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -237,12 +237,14 @@ async def delete_case(
             },
         )
     except CaseDeleteUnavailable as unavailable:
-        # The cause is the lease store client's error: logged by class only, as
-        # its text can carry the client's output (#2587); never sent.
+        # The cause is the lease store client's error: logged by class and
+        # frames only, as its text can carry the client's output (#2587); never
+        # sent.
         cause = unavailable.__cause__
         logger.error(
             f"Refused delete of case {case_id}: "
-            f"{exception_class_chain(cause) if cause is not None else 'no cause'}"
+            f"{exception_class_chain(cause) if cause is not None else 'no cause'}",
+            exc_info=unavailable,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -261,7 +263,7 @@ async def delete_case(
     except AuthorizationError as e:
         # Authorization errors should not be treated as idempotent success
         logger.warning(
-            f"Authorization error in delete_case: {e}",
+            f"Authorization error in delete_case: {exception_log_name(e)}",
         )
         error_response = ErrorResponse(
             schema_version="3.1.0", error=ErrorDetail(code="FORBIDDEN", message=str(e))
@@ -278,10 +280,11 @@ async def delete_case(
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as e:
-        # By class only: a store's or repository's error interpolates its
-        # client's text (#2587).
+        # By class and frames only: a store's or repository's error
+        # interpolates its client's text (#2587).
         logger.error(
-            f"Unexpected error in delete_case {case_id}: {exception_class_chain(e)}"
+            f"Unexpected error in delete_case {case_id}: {exception_class_chain(e)}",
+            exc_info=e,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -368,7 +371,8 @@ async def create_case(
                 # because `SessionException` has no exception handler
                 # registered and nothing below catches it.
                 logger.warning(
-                    f"Cannot evaluate session ownership for {request.session_id}: {exc}",
+                    f"Cannot evaluate session ownership for {request.session_id}: {exception_log_name(exc)}",
+                    exc_info=exc,
                 )
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -437,7 +441,7 @@ async def create_case(
 
     except ValidationException as e:
         logger.error(
-            f"Validation error in create_case: {e}",
+            f"Validation error in create_case: {exception_log_name(e)}",
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -449,7 +453,7 @@ async def create_case(
         )
     except ServiceException as e:
         logger.error(
-            f"Service error in create_case: {e}",
+            f"Service error in create_case: {exception_log_name(e)}",
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -651,7 +655,7 @@ async def list_cases(
         # Service-level errors
         logger = logging.getLogger(__name__)
         logger.error(
-            f"Service error in list_cases: {e}",
+            f"Service error in list_cases: {exception_log_name(e)}",
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -669,7 +673,8 @@ async def list_cases(
         # Unexpected errors
         logger = logging.getLogger(__name__)
         logger.error(
-            f"Unexpected error in list_cases: {e}",
+            f"Unexpected error in list_cases: {exception_log_name(e)}",
+            exc_info=e,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -712,7 +717,9 @@ async def get_case_service_health(
         }
 
     except Exception as e:
-        logger.error(f"Case service health check failed: {e}", exc_info=True)
+        logger.error(
+            f"Case service health check failed: {exception_log_name(e)}", exc_info=True
+        )
         return {
             "service": "case_management",
             "status": "unhealthy",
@@ -770,7 +777,8 @@ async def get_case(
         raise
     except Exception as e:
         logger.error(
-            f"Unexpected error in get_case: {e}",
+            f"Unexpected error in get_case: {exception_log_name(e)}",
+            exc_info=e,
         )
         # Restored from old implementation - proper error response format
         error_response = ErrorResponse(
@@ -851,7 +859,8 @@ async def get_case_ui(
         raise
     except Exception as e:
         logger.error(
-            f"Unexpected error in get_case_ui: {e}",
+            f"Unexpected error in get_case_ui: {exception_log_name(e)}",
+            exc_info=e,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -950,15 +959,15 @@ async def update_case(
         raise
     except NotFoundError as e:
         logger.warning(
-            f"Case not found in update_case: {e}",
+            f"Case not found in update_case: {exception_log_name(e)}",
         )
         raise case_not_found_http() from e
     except CaseNotDriverError as e:
-        logger.warning(f"Update of case {case_id} refused: {e}")
+        logger.warning(f"Update of case {case_id} refused: {exception_log_name(e)}")
         raise case_not_driver_http(str(e)) from e
     except AuthorizationError as e:
         logger.warning(
-            f"Authorization error in update_case: {e}",
+            f"Authorization error in update_case: {exception_log_name(e)}",
         )
         error_response = ErrorResponse(
             schema_version="3.1.0", error=ErrorDetail(code="FORBIDDEN", message=str(e))
@@ -969,7 +978,7 @@ async def update_case(
         )
     except ValidationException as e:
         logger.error(
-            f"Validation error in update_case: {e}",
+            f"Validation error in update_case: {exception_log_name(e)}",
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
@@ -981,7 +990,7 @@ async def update_case(
         )
     except Exception as e:
         logger.error(
-            f"Unexpected error in update_case: {e}",
+            f"Unexpected error in update_case: {exception_log_name(e)}",
             exc_info=True,
         )
         error_response = ErrorResponse(
@@ -1166,7 +1175,8 @@ async def generate_case_title(
         raise
     except Exception as e:
         logger.error(
-            f"Unexpected error in generate_case_title: {e}",
+            f"Unexpected error in generate_case_title: {exception_log_name(e)}",
+            exc_info=e,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1202,7 +1212,7 @@ async def search_cases(
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"Case search failed: {e}", exc_info=True)
+        logger.error(f"Case search failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Search failed",
@@ -1239,7 +1249,9 @@ async def get_case_analytics(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get case analytics: {e}", exc_info=True)
+        logger.error(
+            f"Failed to get case analytics: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get case analytics",

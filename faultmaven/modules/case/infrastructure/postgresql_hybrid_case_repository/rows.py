@@ -41,6 +41,7 @@ from faultmaven.modules.case.domain.models.solution import (
 )
 from faultmaven.modules.case.domain.owned_models.report import CaseReport
 from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +224,9 @@ def _row_to_evidence(row: Any) -> Optional[Evidence]:
             coverage_source=row[20] if len(row) > 20 else None,
         )
     except Exception as ev_err:  # noqa: BLE001
-        logger.warning("Failed to load evidence %s: %s", row[0], ev_err)
+        logger.warning(
+            "Failed to load evidence %s: %s", row[0], exception_log_name(ev_err)
+        )
         return None
 
 
@@ -291,7 +294,9 @@ def _row_to_evidence_need(
             engine_inferred=bool(row[13]) if len(row) > 13 else False,
         )
     except Exception as need_err:  # noqa: BLE001
-        logger.warning("Failed to load evidence_need %s: %s", row[0], need_err)
+        logger.warning(
+            "Failed to load evidence_need %s: %s", row[0], exception_log_name(need_err)
+        )
         return None
 
 

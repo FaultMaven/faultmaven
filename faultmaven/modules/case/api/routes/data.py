@@ -25,6 +25,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     check_case_service_available,
     resolve_case,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -122,7 +123,9 @@ async def get_case_data(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to retrieve case data: {e}", exc_info=True)
+        logger.error(
+            f"Failed to retrieve case data: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to retrieve case data")
 
 
@@ -184,5 +187,7 @@ async def delete_case_data(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete case data: {e}", exc_info=True)
+        logger.error(
+            f"Failed to delete case data: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to delete case data")

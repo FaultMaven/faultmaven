@@ -35,6 +35,7 @@ from faultmaven.modules.case.api.routes.dependencies import (
     check_case_service_available,
     resolve_case,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -142,7 +143,9 @@ async def list_uploaded_files(
     except PermissionDeniedException as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to list uploaded files: {e}", exc_info=True)
+        logger.error(
+            f"Failed to list uploaded files: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to list uploaded files")
 
 
@@ -252,7 +255,9 @@ async def get_uploaded_file_details(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get file details: {e}", exc_info=True)
+        logger.error(
+            f"Failed to get file details: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get file details")
 
 
@@ -361,7 +366,7 @@ async def list_case_evidence(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to list evidence: {e}", exc_info=True)
+        logger.error(f"Failed to list evidence: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list evidence")
 
 
@@ -406,7 +411,9 @@ async def get_evidence_details(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get evidence details: {e}", exc_info=True)
+        logger.error(
+            f"Failed to get evidence details: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get evidence details")
 
 
