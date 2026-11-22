@@ -151,8 +151,9 @@ _CLOSED_REPLIES: Mapping[ClosureReason, str] = closure_reason_table(
             "Case closed — the fix was confirmed to work; you chose not to "
             "mark it resolved."
         ),
-        # The record-free fallback: the record says whether the fix was
-        # carried out (``closed_line``).
+        # The record-free fallback, and the line when a fix carried out was
+        # seen failing: else the record says whether the fix was carried out
+        # (``closed_line``).
         ClosureReason.SOLUTION_DEFERRED: (
             "Case closed — cause identified and a fix is on record."
         ),
@@ -201,11 +202,18 @@ def closed_line(
     interception (an unkinded attempt reads as a remediation). A
     ``closed_insufficient_evidence`` close with an identification leg and no
     SUCCEEDED window says the cause was identified and what was carried out;
-    ``solution_deferred`` says whether its fix was carried out. Every other
-    shape is the reason's line (``_CLOSED_REPLIES``)."""
+    ``solution_deferred`` says whether its fix was carried out, or only its
+    first sentence when a carried-out fix's window FAILED: the record holds
+    accepted attempts alone, so it cannot tell a failed fix from the deferred
+    one. Every other shape is the reason's line (``_CLOSED_REPLIES``)."""
     accepted = [a for a in attempts if a.action_id is not None]
     fixes = [a for a in accepted if a.kind != "interception"]
     if reason == ClosureReason.SOLUTION_DEFERRED:
+        if any(
+            f.window is not None and f.window.state == FixWindowState.FAILED
+            for f in fixes
+        ):
+            return _CLOSED_REPLIES[reason]
         done = (
             f"It was carried out{_turn_clause(fixes)}."
             if fixes

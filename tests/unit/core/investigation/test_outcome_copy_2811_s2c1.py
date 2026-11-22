@@ -110,6 +110,22 @@ def test_a_failed_fix_with_no_newer_one_names_the_turns_the_record_holds(
     assert no_window_text(window) == text
 
 
+@pytest.mark.parametrize(
+    "window, text",
+    [
+        (NoConfirmingWindow(kind=NoWindowKind.FAILED),
+         "the fix done outside the case was seen failing; only a new fix can "
+         "confirm"),
+        (NoConfirmingWindow(kind=NoWindowKind.FAILED, fix_turn=3, newer_fix_turn=6),
+         "the fix executed at turn 3 was seen failing; the newer fix (executed "
+         "turn 6) is not re-checked yet"),
+    ],
+    ids=["window_zero", "newer_fix_pending"],
+)  # fmt: skip
+def test_a_failure_turn_the_record_does_not_hold_is_not_printed(window, text):
+    assert no_window_text(window) == text
+
+
 def test_a_failed_window_zero_keeps_its_line():
     window = NoConfirmingWindow(kind=NoWindowKind.FAILED, failure_turn=5)
     assert no_window_text(window) == (
@@ -275,7 +291,8 @@ _MITIGATION = "the problem was observed relieved after the mitigation (turn 7)"
 async def _closed(reason, *, leg, attempts, statement=None):
     """A closed case whose stored terminal record holds ``reason``, ``leg``,
     ``attempts`` and the mitigation ``statement``; read through a case on
-    which every field but the record and the identity raises (pin 2)."""
+    which every field but the record, the identity and the proposed actions
+    raises (pin 2)."""
     case = await replies.build("T:solution_deferred:bare:written")
     stored = case.progress.outcome
     assert stored.folded_under.is_terminal, "premise: the record is terminal"
@@ -376,6 +393,23 @@ async def test_2421_case_360fea23ebff_states_the_fix_carried_out():
         _DEFERRED, leg="chain", attempts=[_fix("a", 7, _window(7, _UNKNOWN))]
     )
     assert reply == f"{_ON_RECORD} It was carried out (turn 7)."
+
+
+@pytest.mark.parametrize(
+    "attempts",
+    [
+        [_fix("a", 5, _window(5, _FAILED))],
+        # A failed fix, then a later one that held: still not told apart from
+        # a failed fix beside the deferred one.
+        [_fix("a", 5, _window(5, _FAILED)), _fix("b", 8, _window(8, _SUCCEEDED))],
+    ],
+    ids=["failed", "failed_then_succeeded"],
+)
+async def test_2421_a_failed_fix_carried_out_leaves_the_first_sentence(attempts):
+    """The record holds accepted attempts alone: a failed fix and a pending
+    deferred one read the same, so the reply claims neither."""
+    reply = await _closed(_DEFERRED, leg="chain", attempts=attempts)
+    assert reply == _ON_RECORD
 
 
 @pytest.mark.parametrize(

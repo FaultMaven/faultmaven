@@ -98,15 +98,18 @@ async def test_a_written_close_stores_a_terminal_record_and_a_copied_one_does_no
 
 
 # ---------------------------------------------------------------------------
-# Pin 2: the adapters read the record, the identity and ResolutionContent
+# Pin 2: the adapters read the record, the identity, ResolutionContent and
+# the proposed actions the text accessor reads
 # ---------------------------------------------------------------------------
 
 
 class _Poisoned:
     """A case on which every attribute read raises but ``state``,
-    ``case_id`` and ``progress.outcome``."""
+    ``case_id``, ``progress.outcome`` and ``proposed_actions``, which the
+    text accessor (``content_by_id``) reads for the confirming attempt's
+    description."""
 
-    _ALLOWED = {"state", "case_id"}
+    _ALLOWED = {"state", "case_id", "proposed_actions"}
 
     def __init__(self, case) -> None:
         object.__setattr__(self, "_case", case)
@@ -128,11 +131,6 @@ async def test_the_adapters_read_no_case_field(monkeypatch, name):
     outcome, content = narration_outcome(case), resolution_content(case)
     monkeypatch.setattr(replies_module, "narration_outcome", lambda _c: outcome)
     monkeypatch.setattr(replies_module, "resolution_content", lambda _c: content)
-    # The text accessor reads the case itself, as ``resolution_content`` does.
-    real = replies_module.content_by_id
-    monkeypatch.setattr(
-        replies_module, "content_by_id", lambda _c, item_id: real(case, item_id)
-    )
     poisoned = _Poisoned(case)
     want = ORACLE[name]
     assert resolution_confirmation_params(poisoned) == want["params"]
