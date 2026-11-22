@@ -19,6 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from faultmaven.infrastructure.logging.config import get_logger
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = get_logger(__name__)
 
@@ -141,7 +142,9 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
                         response
                     )
             except Exception as e:
-                logger.debug(f"Could not analyze response shape: {e}")
+                logger.debug(
+                    f"Could not analyze response shape: {exception_log_name(e)}"
+                )
 
         # Detect contract violations
         violations = self._detect_violations(probe_data, path, method, query_params)
@@ -165,14 +168,15 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
                 # Body content analysis would require more complex middleware setup
             }
         except Exception as e:
-            logger.debug(f"Response shape analysis failed: {e}")
+            logger.debug(f"Response shape analysis failed: {exception_log_name(e)}")
             # Safe in place, and allowlisted as such in
             # ``tests/unit/api/test_api_surface_error_text_not_echoed.py``:
             # the dict this lands in is ``probe_data``, whose only consumer is
             # ``_log_contract_probe``. Nothing in this middleware writes to the
             # response — ``dispatch`` returns the downstream ``response``
-            # object untouched — so this text reaches the log and nowhere else.
-            return {"analysis_error": str(e)}
+            # object untouched — and it holds the class chain, never the
+            # text, because that consumer logs it (principles §7 rule 1).
+            return {"analysis_error": exception_log_name(e)}
 
     def _detect_violations(
         self,

@@ -78,6 +78,7 @@ from faultmaven.modules.auth.contracts import (
     effective_roles,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -224,7 +225,7 @@ async def list_users(
         )
 
     except Exception as e:
-        logger.error(f"Failed to list users: {e}")
+        logger.error(f"Failed to list users: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list users",
@@ -496,7 +497,7 @@ async def get_user_details(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get user details: {e}")
+        logger.error(f"Failed to get user details: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get user details",
@@ -563,7 +564,7 @@ async def deactivate_user(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Failed to deactivate user: {e}")
+        logger.error(f"Failed to deactivate user: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to deactivate user",
@@ -621,7 +622,7 @@ async def activate_user(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Failed to activate user: {e}")
+        logger.error(f"Failed to activate user: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to activate user",
@@ -703,7 +704,7 @@ async def assign_role(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Failed to assign role: {e}")
+        logger.error(f"Failed to assign role: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to assign role",
@@ -777,7 +778,7 @@ async def remove_role(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Failed to remove role: {e}")
+        logger.error(f"Failed to remove role: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to remove role",
@@ -839,7 +840,7 @@ async def get_llm_routing_health(
         }
 
     except Exception as e:
-        logger.error(f"Failed to get LLM routing health: {e}")
+        logger.error(f"Failed to get LLM routing health: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get LLM routing health",

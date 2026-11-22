@@ -114,7 +114,8 @@ def test_an_exception_logging_middleware_never_saw_is_logged_once_by_the_handler
     naming_the_fault = [
         record
         for record in caplog.records
-        if record.name.startswith("faultmaven") and FAULT in record.getMessage()
+        if record.name.startswith("faultmaven")
+        and "RuntimeError" in record.getMessage()
     ]
     assert len(naming_the_fault) == 1, [r.getMessage() for r in naming_the_fault]
     (record,) = naming_the_fault

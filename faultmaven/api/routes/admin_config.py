@@ -38,6 +38,7 @@ from faultmaven.api.v1.dependencies import get_llm_provider
 from faultmaven.config.llm_validation import missing_required_vars
 from faultmaven.exceptions import RawModelContentRefused
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +214,7 @@ async def get_llm_config(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get LLM config: {e}")
+        logger.error(f"Failed to get LLM config: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get LLM configuration",
@@ -320,7 +321,7 @@ async def update_llm_config(
                     "Skipping schema-capacity check for %s/%s: %s",
                     request.provider_name,
                     request.model,
-                    exc,
+                    exception_log_name(exc),
                 )
             probe = getattr(provider_obj, "supports_engine_response_schemas", None)
             # Fails OPEN when capacity is unknown, matching the startup gate: an
@@ -369,7 +370,7 @@ async def update_llm_config(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to update LLM config: {e}")
+        logger.error(f"Failed to update LLM config: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update LLM configuration",
@@ -470,7 +471,9 @@ async def check_llm_connection(
         elapsed_ms = (
             int((time.monotonic() - start_time) * 1000) if "start_time" in dir() else 0
         )
-        logger.warning(f"Connection test failed for {provider_name}: {e}")
+        logger.warning(
+            f"Connection test failed for {provider_name}: {exception_log_name(e)}"
+        )
         return LLMConnectionTestResponse(
             provider=provider_name,
             connected=False,
@@ -891,7 +894,9 @@ def _web_search_is_effective(app) -> bool:
     try:
         return bool(tool.is_available())
     except Exception as exc:  # pragma: no cover - a tool that cannot answer
-        logger.debug(f"Composed web search tool could not report availability: {exc}")
+        logger.debug(
+            f"Composed web search tool could not report availability: {exception_log_name(exc)}"
+        )
         return False
 
 
@@ -925,7 +930,7 @@ def _web_search_api_key_configured(settings) -> bool:
         #
         # ``getattr(..., None)`` does not cover this on its own; it swallows
         # AttributeError and nothing else.
-        logger.debug(f"Web search credential probe failed: {exc}")
+        logger.debug(f"Web search credential probe failed: {exception_log_name(exc)}")
         return False
 
 
@@ -1455,7 +1460,7 @@ async def get_env_config_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to get env config status: {e}")
+        logger.error(f"Failed to get env config status: {exception_log_name(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get configuration status",

@@ -39,6 +39,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     RevocationStateUnknownError,
     TokenRevocationError,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,9 @@ def set_auth_service(
             request.app.state.auth_service = service
             logger.debug("AuthService set in app.state")
         except Exception as e:
-            logger.warning(f"Failed to set AuthService in app.state: {e}")
+            logger.warning(
+                f"Failed to set AuthService in app.state: {exception_log_name(e)}"
+            )
     else:
         # Set module-level test service for backward compatibility
         global _test_auth_service
@@ -152,7 +155,7 @@ async def get_current_user(
         return user
 
     except AuthenticationError as e:
-        logger.debug(f"Authentication failed: {e.message} ({e.error_code})")
+        logger.debug(f"Authentication failed: {exception_log_name(e)}")
 
         if e.error_code == "TOKEN_EXPIRED":
             raise HTTPException(
@@ -205,7 +208,10 @@ async def get_current_user(
         # tear-down-and-re-authenticate path over a database blip that a retry
         # clears, and would make a revoked token and an unreadable store
         # indistinguishable to whoever is paged.
-        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        logger.warning(
+            "Revocation state unknown (%s): refusing the request",
+            exception_log_name(e),
+        )
         raise revocation_state_unknown_http_exception()
 
 
@@ -246,7 +252,10 @@ async def get_current_user_optional(
     except (AuthenticationError, TokenRevocationError):
         return None
     except RevocationStateUnknownError as e:
-        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        logger.warning(
+            "Revocation state unknown (%s): refusing the request",
+            exception_log_name(e),
+        )
         raise revocation_state_unknown_http_exception()
 
 

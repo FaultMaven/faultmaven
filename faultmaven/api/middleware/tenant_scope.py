@@ -105,6 +105,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
 # force — including under a test that overrides it.
 from faultmaven.providers.tenancy import factory as tenancy_factory
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,10 @@ async def bind_request_enterprise_context(
         # Explicit rather than left to propagate: an uncaught exception out of
         # a global dependency is a 500, which says "FaultMaven is broken"
         # about a storage condition that clears itself.
-        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        logger.warning(
+            "Revocation state unknown (%s): refusing the request",
+            exception_log_name(e),
+        )
         raise revocation_state_unknown_http_exception()
 
     # Fail closed: a verified user without a usable tenant must never fall

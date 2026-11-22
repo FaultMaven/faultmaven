@@ -96,6 +96,7 @@ from faultmaven.modules.knowledge.exceptions import (
     IngestOutcomeUnknown,
     ItemTitleScrubUnavailable,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -538,7 +539,8 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
     #    is a wrapper whose message carries whatever it wrapped (SQLAlchemy
     #    statements, ``host:port``), and once this mapping became the global
     #    ``ServiceException`` handler (#552) that fallback answers for every
-    #    route, not only ``/turns``. The text is logged by the caller.
+    #    route, not only ``/turns``. The body never carries the text; logging
+    #    the failure is the caller's.
     return _llm_http(
         500,
         "SERVICE_ERROR",
@@ -742,7 +744,7 @@ async def not_found_exception_handler(
         "Resource not found: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
     )
 
     body = {
@@ -787,7 +789,7 @@ async def authorization_exception_handler(
         "Authorization denied: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
     )
 
     # A refusal that names its reason carries it (``CaseNotDriverError``:
@@ -823,7 +825,7 @@ async def validation_exception_handler(
         "Validation error: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
     )
 
     return JSONResponse(
@@ -868,7 +870,7 @@ async def conflict_exception_handler(
         "Conflict error: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
     )
 
     body = {
@@ -973,7 +975,7 @@ async def service_error_handler(
         "Service error: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
         exc_info=True,
     )
 
@@ -1205,11 +1207,10 @@ async def service_exception_handler(
     Exception`` arm ahead of any typed arm (#1632).
     """
     logger.error(
-        "Unhandled %s: %s %s - %s",
-        type(exc).__name__,
+        "Unhandled %s: %s %s",
+        exception_log_name(exc),
         request.method,
         request.url.path,
-        str(exc),
         exc_info=exc,
     )
     return await http_exception_handler(
@@ -1232,7 +1233,7 @@ async def model_content_refused_handler(
         "Model call refused: %s %s - %s",
         request.method,
         request.url.path,
-        str(exc),
+        exception_log_name(exc),
         exc_info=exc,
     )
     return await http_exception_handler(request, model_content_refused_http_exception())
@@ -1305,7 +1306,7 @@ async def internal_server_error_handler(
             "Internal server error on %s %s: %s",
             request.method,
             request.url.path,
-            exc,
+            exception_log_name(exc),
             exc_info=exc,
             extra={"request_id": request_id} if request_id else {},
         )

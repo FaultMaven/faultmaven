@@ -158,7 +158,9 @@ def _assert_the_500_names_the_requests_id(lines, headers, body) -> None:
 
     # Logged once, under that id: the layer that answers does not log the
     # exception a second time, under no id.
-    naming_the_fault = [line for line in lines if FAULT in str(line.get("event"))]
+    naming_the_fault = [
+        line for line in lines if "RuntimeError" in str(line.get("event"))
+    ]
     assert [line["event"].split(":")[0] for line in naming_the_fault] == [
         "Request failed"
     ], [line.get("event") for line in naming_the_fault]

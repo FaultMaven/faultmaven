@@ -55,6 +55,7 @@ from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.api.middleware.tenant_scope import bind_request_enterprise_context
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
@@ -285,7 +286,9 @@ try:
     else:
         logger.info("ℹ️ OAuth endpoints disabled (using dev-login mode)")
 except Exception as e:
-    logger.warning(f"OAuth router initialization failed (non-critical): {e}")
+    logger.warning(
+        f"OAuth router initialization failed (non-critical): {exception_log_name(e)}"
+    )
 
 # SSO hosted-login router (ADR-015) — only when WorkOS is fully configured in
 # oauth mode. Mirrors the OAuth router gate above; standalone never mounts it.
@@ -301,7 +304,9 @@ try:
     else:
         logger.info("ℹ️ SSO endpoints disabled (WorkOS not configured)")
 except Exception as e:
-    logger.warning(f"SSO router initialization failed (non-critical): {e}")
+    logger.warning(
+        f"SSO router initialization failed (non-critical): {exception_log_name(e)}"
+    )
 
 # Prometheus metrics endpoint (PR #5 - observability neutrality)
 # Only mounted when METRICS_EXPORTER=prometheus_http
@@ -339,7 +344,8 @@ try:
         )
 except Exception as e:
     logger.warning(
-        f"Prometheus metrics endpoint initialization failed (non-critical): {e}"
+        "Prometheus metrics endpoint initialization failed (non-critical): "
+        f"{exception_log_name(e)}"
     )
 
 
@@ -547,7 +553,7 @@ if _is_debug_enabled(settings=_debug_settings):
                 "available_presets": list_available_presets(),
             }
         except Exception as e:
-            logger.error(f"Failed to get configuration info: {e}")
+            logger.error(f"Failed to get configuration info: {exception_log_name(e)}")
             return {
                 "error": "Failed to get configuration",
                 "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -617,7 +623,9 @@ if _is_debug_enabled(settings=_debug_settings):
                     "matched_registry_key": rb.matched_key,
                 }
             except Exception as budget_exc:  # pragma: no cover - best effort
-                logger.warning(f"Prompt budget unavailable: {budget_exc}")
+                logger.warning(
+                    f"Prompt budget unavailable: {exception_log_name(budget_exc)}"
+                )
                 prompt_budget = {"error": "Prompt budget unavailable"}
 
             return {
@@ -631,7 +639,7 @@ if _is_debug_enabled(settings=_debug_settings):
             }
 
         except Exception as e:
-            logger.error(f"Failed to get LLM provider status: {e}")
+            logger.error(f"Failed to get LLM provider status: {exception_log_name(e)}")
             return {
                 "error": "Failed to get LLM provider status",
                 "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -923,7 +931,7 @@ async def health_check():
             }
 
     except Exception as e:
-        logger.error(f"Enhanced health check failed: {e}")
+        logger.error(f"Enhanced health check failed: {exception_log_name(e)}")
         # This arm is the one place `/health` and `component_health_status`
         # can disagree, and nothing in the `try` above can reach it today.
         # Measured rather than argued (#1568 item 2). The `try` holds FIVE
@@ -989,7 +997,7 @@ async def health_check():
                     container_instance, "_initializing", False
                 )
     except Exception as e:
-        logger.warning(f"Failed to get DI container health: {e}")
+        logger.warning(f"Failed to get DI container health: {exception_log_name(e)}")
         health_status["services"]["di_container"] = "unknown"
 
     # Investigation tool-calling capability. Normally the startup gate
@@ -1014,7 +1022,9 @@ async def health_check():
                 health_status["status"] = "degraded"
     except Exception as e:
         # Health must never crash on a best-effort capability probe.
-        logger.debug(f"Could not resolve investigation capability for health: {e}")
+        logger.debug(
+            f"Could not resolve investigation capability for health: {exception_log_name(e)}"
+        )
 
     return health_status
 
@@ -1063,7 +1073,9 @@ async def health_check_dependencies():
                     "response_time_ms": round((time.time() - service_start) * 1000, 2),
                 }
             except Exception as e:
-                logger.warning(f"Service probe failed for {service_name}: {e}")
+                logger.warning(
+                    f"Service probe failed for {service_name}: {exception_log_name(e)}"
+                )
                 service_tests[service_name] = {
                     "available": False,
                     "error": "Service probe failed",
@@ -1085,7 +1097,9 @@ async def health_check_dependencies():
                     component_name
                 )
             except Exception as e:
-                logger.warning(f"Failed to get SLA details for {component_name}: {e}")
+                logger.warning(
+                    f"Failed to get SLA details for {component_name}: {exception_log_name(e)}"
+                )
                 sla_details[component_name] = {"error": "SLA details unavailable"}
 
         return {
@@ -1116,7 +1130,9 @@ async def health_check_dependencies():
             },
         }
     except Exception as e:
-        logger.error(f"Enhanced dependency health check failed: {e}")
+        logger.error(
+            f"Enhanced dependency health check failed: {exception_log_name(e)}"
+        )
         return {
             "error": "Enhanced dependency health check failed",
             "container_available": False,
@@ -1163,7 +1179,7 @@ async def readiness(response: Response):
     except Exception as e:
         # A probe that cannot run says so, and fails OPEN. A bug in the check
         # must not be able to empty the Service.
-        logger.warning(f"Readiness probe failed: {e}")
+        logger.warning(f"Readiness probe failed: {exception_log_name(e)}")
         return {"status": "ready", "reason": "readiness_check_unavailable"}
 
     if ready:
@@ -1200,7 +1216,7 @@ async def logging_health_check():
 
         return health_status
     except Exception as e:
-        logger.error(f"Logging health check failed: {e}")
+        logger.error(f"Logging health check failed: {exception_log_name(e)}")
         return {
             "status": "error",
             "error": "Logging health check failed",
@@ -1225,7 +1241,9 @@ async def health_check_sla():
                     component_name
                 )
             except Exception as e:
-                logger.warning(f"Failed to get SLA details for {component_name}: {e}")
+                logger.warning(
+                    f"Failed to get SLA details for {component_name}: {exception_log_name(e)}"
+                )
                 detailed_sla[component_name] = {"error": "SLA details unavailable"}
 
         return {
@@ -1235,7 +1253,7 @@ async def health_check_sla():
         }
 
     except Exception as e:
-        logger.error(f"SLA health check failed: {e}")
+        logger.error(f"SLA health check failed: {exception_log_name(e)}")
         return {
             "error": "SLA health check failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1263,7 +1281,9 @@ async def health_check_component(component_name: str):
         try:
             sla_details = sla_tracker.get_component_sla_details(component_name)
         except Exception as e:
-            logger.warning(f"Failed to get SLA details for {component_name}: {e}")
+            logger.warning(
+                f"Failed to get SLA details for {component_name}: {exception_log_name(e)}"
+            )
             sla_details = {"error": "SLA details unavailable"}
 
         return {
@@ -1287,7 +1307,9 @@ async def health_check_component(component_name: str):
         }
 
     except Exception as e:
-        logger.error(f"Component health check failed for {component_name}: {e}")
+        logger.error(
+            f"Component health check failed for {component_name}: {exception_log_name(e)}"
+        )
         return {
             "error": "Component health check failed",
             "component_name": component_name,
@@ -1330,7 +1352,7 @@ async def health_check_error_patterns():
             }
 
     except Exception as e:
-        logger.error(f"Error patterns health check failed: {e}")
+        logger.error(f"Error patterns health check failed: {exception_log_name(e)}")
         return {
             "error": "Error patterns health check failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1370,7 +1392,7 @@ async def get_performance_metrics():
             }
 
     except Exception as e:
-        logger.error(f"Performance metrics endpoint failed: {e}")
+        logger.error(f"Performance metrics endpoint failed: {exception_log_name(e)}")
         return {
             "error": "Performance metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1410,7 +1432,7 @@ async def get_realtime_metrics(time_window_minutes: int = 5):
         }
 
     except Exception as e:
-        logger.error(f"Real-time metrics endpoint failed: {e}")
+        logger.error(f"Real-time metrics endpoint failed: {exception_log_name(e)}")
         return {
             "error": "Real-time metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1452,7 +1474,7 @@ async def get_alert_status():
         }
 
     except Exception as e:
-        logger.error(f"Alert status endpoint failed: {e}")
+        logger.error(f"Alert status endpoint failed: {exception_log_name(e)}")
         return {
             "error": "Alert status failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1475,7 +1497,9 @@ async def get_system_optimization_metrics():
                 ):
                     resource_metrics = await resource_service.get_resource_usage_stats()
         except Exception as e:
-            logger.warning(f"Failed to get resource optimization metrics: {e}")
+            logger.warning(
+                f"Failed to get resource optimization metrics: {exception_log_name(e)}"
+            )
 
         # Get LLM router optimization metrics if available
         llm_optimization_metrics = {}
@@ -1486,7 +1510,9 @@ async def get_system_optimization_metrics():
             if hasattr(llm_provider, "get_optimization_metrics"):
                 llm_optimization_metrics = llm_provider.get_optimization_metrics()
         except Exception as e:
-            logger.warning(f"Failed to get LLM optimization metrics: {e}")
+            logger.warning(
+                f"Failed to get LLM optimization metrics: {exception_log_name(e)}"
+            )
 
         return {
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1520,7 +1546,9 @@ async def get_system_optimization_metrics():
         }
 
     except Exception as e:
-        logger.error(f"System optimization metrics endpoint failed: {e}")
+        logger.error(
+            f"System optimization metrics endpoint failed: {exception_log_name(e)}"
+        )
         return {
             "error": "System optimization metrics failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),
@@ -1595,7 +1623,7 @@ async def trigger_system_cleanup():
                         await resource_service.trigger_resource_cleanup(aggressive=True)
                     )
         except Exception as e:
-            logger.warning(f"Resource cleanup failed: {e}")
+            logger.warning(f"Resource cleanup failed: {exception_log_name(e)}")
             cleanup_results["resource_cleanup"] = {"error": "Resource cleanup failed"}
 
         # Trigger manual garbage collection
@@ -1613,7 +1641,7 @@ async def trigger_system_cleanup():
         return cleanup_results
 
     except Exception as e:
-        logger.error(f"System cleanup trigger failed: {e}")
+        logger.error(f"System cleanup trigger failed: {exception_log_name(e)}")
         return {
             "error": "System cleanup failed",
             "timestamp": to_json_compatible(datetime.now(UTC)),

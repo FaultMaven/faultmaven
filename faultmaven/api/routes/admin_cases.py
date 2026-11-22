@@ -84,6 +84,7 @@ from faultmaven.providers.tenancy.factory import (
     BUILTIN_MULTI,
     requested_tenant_provider,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +331,7 @@ def _project_case_metadata(metadata: List[CaseMetadata]) -> List[AdminCaseMetada
             logger.error(
                 "Failed to project case %s to operator metadata: %s",
                 case.case_id,
-                exc,
+                exception_log_name(exc),
             )
     return rows
 

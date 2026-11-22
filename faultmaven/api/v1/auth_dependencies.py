@@ -52,7 +52,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
 from faultmaven.modules.auth.domain.services.service_account_provisioning import (
     SLACK_SERVICE_CHANNEL,
 )
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import exception_class_name, exception_log_name
 
 # Initialize logger and security scheme
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ async def get_user_store(request: Request):
                     f"Container has user_store attr: {hasattr(container, 'user_store')}"
                 )
             except Exception as e:
-                logger.error(f"Failed to check container: {e}")
+                logger.error(f"Failed to check container: {exception_log_name(e)}")
             raise HTTPException(
                 status_code=503,
                 detail="User management service unavailable. Please check server startup logs.",
@@ -119,13 +119,15 @@ async def get_user_store(request: Request):
     except HTTPException:
         raise
     except AttributeError as e:
-        logger.error(f"User store attribute not found in app.state: {e}")
+        logger.error(
+            f"User store attribute not found in app.state: {exception_log_name(e)}"
+        )
         raise HTTPException(
             status_code=503,
             detail="User management service not initialized. Please check server startup logs.",
         )
     except Exception as e:
-        logger.error(f"Failed to get user store: {e}")
+        logger.error(f"Failed to get user store: {exception_log_name(e)}")
         raise HTTPException(status_code=503, detail="User management service error")
 
 
@@ -279,7 +281,7 @@ async def get_current_user_optional(
         logger.debug("JWT rejected: token has been revoked")
         return None
     except AuthenticationError as e:
-        logger.debug(f"JWT validation failed: {e.message} ({e.error_code})")
+        logger.debug(f"JWT validation failed: {exception_log_name(e)}")
         return None
     except RevocationStateUnknownError as e:
         # NOT `return None` (#1478). Returning None here would make the
@@ -288,7 +290,10 @@ async def get_current_user_optional(
         # the caller — and to whoever is paged — as "not signed in". This is a
         # service-availability refusal, and the clause above already
         # establishes that those are raised rather than swallowed.
-        logger.warning("Revocation state unknown (%s): refusing the request", e.kind)
+        logger.warning(
+            "Revocation state unknown (%s): refusing the request",
+            exception_log_name(e),
+        )
         raise revocation_state_unknown_http_exception()
 
 
@@ -470,10 +475,11 @@ async def check_auth_services_health(request: Request) -> dict:
     except Exception as e:
         # ``GET /auth/health`` is UNAUTHENTICATED and returns
         # ``health_status["authentication"]`` verbatim on its success path, so
-        # whatever this broad arm writes here goes to any caller. The text goes
-        # to the log instead — and it has to be logged, because it was never
-        # logged before: the body was its only record.
-        logger.warning(f"Token revocation store probe failed: {e}")
+        # whatever this broad arm writes here goes to any caller. The failure
+        # is logged instead, by its class chain; its text goes nowhere — and it
+        # has to be logged, because it was never logged before: the body was
+        # its only record.
+        logger.warning(f"Token revocation store probe failed: {exception_log_name(e)}")
         health_status["authentication"]["services"]["token_revocation_store"] = {
             "status": "error",
             "error": "Probe failed",
@@ -487,7 +493,7 @@ async def check_auth_services_health(request: Request) -> dict:
             "type": type(user_store).__name__ if user_store else None,
         }
     except Exception as e:
-        logger.warning(f"User store probe failed: {e}")
+        logger.warning(f"User store probe failed: {exception_log_name(e)}")
         health_status["authentication"]["services"]["user_store"] = {
             "status": "error",
             "error": "Probe failed",

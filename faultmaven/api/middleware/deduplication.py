@@ -17,6 +17,8 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from faultmaven.utils.exception_name import exception_log_name
+
 from ...infrastructure.logging.coordinator import current_correlation_id
 from ...infrastructure.protection import RequestHasher
 from ...models.protection import (
@@ -177,7 +179,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
         except Exception as e:
             self.logger.error(
-                f"Deduplication error: {type(e).__name__}: {str(e)}",
+                f"Deduplication error: {exception_log_name(e)}",
                 exc_info=False,
             )
             self.metrics["errors"] += 1
@@ -217,7 +219,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             )
         except Exception as e:
             self.logger.warning(
-                f"Releasing a deduplication claim failed: {type(e).__name__}: {e}"
+                f"Releasing a deduplication claim failed: {exception_log_name(e)}"
             )
             self.metrics["errors"] += 1
 
@@ -317,7 +319,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         try:
             await client.aclose()
         except Exception as e:
-            self.logger.debug(f"Closing the deduplication Redis client failed: {e}")
+            self.logger.debug(
+                f"Closing the deduplication Redis client failed: {exception_log_name(e)}"
+            )
 
     @property
     def owned_client_loop(self) -> Optional[asyncio.AbstractEventLoop]:
@@ -437,7 +441,9 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to generate request hash: {e}")
+            self.logger.error(
+                f"Failed to generate request hash: {exception_log_name(e)}"
+            )
             return None
 
     async def _get_request_body(self, request: Request) -> Optional[bytes]:
