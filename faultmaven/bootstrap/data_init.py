@@ -39,6 +39,7 @@ from typing import Any, Optional
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.infrastructure.concurrency.bounded import wait_within
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE_SET
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,15 @@ def resolve_evidence_storage_dir(settings: Any) -> Path:
     return resolve_data_dir(settings.evidence_storage, "evidence_storage_root")
 
 
+#: The setting each resolver reads, as the operator spells it: the refusal line
+#: names it beside the error's class, which carries no text (#2889).
+_RESOLVER_SETTINGS = {
+    resolve_kb_chroma_dir: "CHROMADB_KB_PERSIST_DIR",
+    resolve_evidence_chroma_dir: "CHROMADB_EVIDENCE_PERSIST_DIR",
+    resolve_evidence_storage_dir: "EVIDENCE_STORAGE_ROOT",
+}
+
+
 def _extend(directories: list, resolver: Any, settings: Any) -> None:
     """Append ``resolver(settings)``, or log why that directory has no path.
 
@@ -211,7 +221,11 @@ def _extend(directories: list, resolver: Any, settings: Any) -> None:
     try:
         directories.append(resolver(settings))
     except UnusableDataDirError as exc:
-        logger.error("Not creating a data directory: %s", exc)
+        logger.error(
+            "Not creating a data directory for %s: %s",
+            _RESOLVER_SETTINGS.get(resolver, getattr(resolver, "__name__", "?")),
+            exception_log_name(exc),
+        )
 
 
 def ensure_data_directories() -> None:
@@ -292,12 +306,11 @@ def ensure_data_directories() -> None:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             logger.error(
-                "Could not create data directory %s: %s: %s. Startup "
+                "Could not create data directory %s: %s. Startup "
                 "continues; whatever reads this path will fail on its own if "
                 "it genuinely needs it.",
                 path,
-                type(exc).__name__,
-                exc,
+                exception_log_name(exc),
             )
         else:
             logger.info(f"Created data directory: {path}")
@@ -568,9 +581,8 @@ def _stamped_remedy(stamped: frozenset[str]) -> str:
         except Exception as exc:  # the refusal stands; only its advice narrows
             heads = known = None
             logger.warning(
-                "Could not read the migration scripts (%s: %s)",
-                type(exc).__name__,
-                exc,
+                "Could not read the migration scripts (%s)",
+                exception_log_name(exc),
             )
     if heads is None or known is None:
         return (
@@ -630,10 +642,9 @@ async def _schema_already_at_head() -> bool:
         heads = alembic_script_heads()
     except Exception as exc:
         logger.warning(
-            "Could not tell whether the schema is at head (%s: %s); running "
+            "Could not tell whether the schema is at head (%s); running "
             "the Alembic migration subprocess.",
-            type(exc).__name__,
-            exc,
+            exception_log_name(exc),
         )
         return False
     if current != heads:
@@ -743,13 +754,17 @@ def run_alembic_migrations() -> bool:
         # A dev environment without alembic: no migration runs, and the schema
         # check next decides whether the database holds what the models declare.
         logger.warning(
-            f"⚠️ Alembic command not found ({e}); no migration ran, and the schema "
+            "⚠️ Alembic command not found ("
+            f"{exception_log_name(e)}); no migration ran, and the schema "
             "check next decides whether the database holds every declared table "
             "and column."
         )
         return False
     except Exception as e:
-        logger.error(f"❌ Alembic migration failed with exception: {e}", exc_info=True)
+        logger.error(
+            f"❌ Alembic migration failed with exception: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise RuntimeError(f"Alembic migration failed: {e}") from e
 
 
@@ -882,7 +897,7 @@ async def assign_operator_roles(
         logger.error(
             f"operator_role_grant_unaudited: granted {missing} to "
             f"'{user.username}' via {invoked_via}, but the audit record failed: "
-            f"{exc}"
+            f"{exception_log_name(exc)}"
         )
 
     return user, missing, audit_error
@@ -929,7 +944,9 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         return None
 
     except Exception as e:
-        logger.warning(f"Could not create default admin: {e}", exc_info=True)
+        logger.warning(
+            f"Could not create default admin: {exception_log_name(e)}", exc_info=True
+        )
         return None
 
 

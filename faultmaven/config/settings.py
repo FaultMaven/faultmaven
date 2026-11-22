@@ -40,6 +40,7 @@ from faultmaven.config.secret_file import (
     prepare_secret_file_for_read,
     publish_secret_once,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 # =============================================================================
 # ENVIRONMENT AND LOGGING ENUMS
@@ -1783,7 +1784,7 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
                 "Could not generate/persist a local JWT secret at %s (%s); set "
                 "JWT_SECRET_KEY in .env if local auth fails to start.",
                 secret_path,
-                exc,
+                exception_log_name(exc),
             )
             return
         # Nothing is written without a persistent database; an unreadable file

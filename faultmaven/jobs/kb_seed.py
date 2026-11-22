@@ -51,6 +51,7 @@ import logging
 from typing import Any, Dict, Optional, Sequence
 
 from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +178,9 @@ async def run(
             logger.info(f"KB seed completed: {bootstrap_result!r}")
 
     except Exception as e:
-        logger.error(f"KB seed job failed: {e}", exc_info=True)
+        logger.error(f"KB seed job failed: {exception_log_name(e)}", exc_info=True)
         result["status"] = "failed"
-        result["error"] = str(e)
+        result["error"] = exception_log_name(e)
 
     return result
 

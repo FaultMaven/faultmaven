@@ -35,6 +35,8 @@ import re
 import sys
 from typing import Any
 
+from faultmaven.utils.exception_name import exception_log_name
+
 # ``module.path:attribute`` -- the import-string form uvicorn resolves.
 _APP_IMPORT_STRING_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*"
@@ -172,9 +174,12 @@ def _prepare_workers(settings: Any) -> None:
     try:
         validate_configuration(settings, advisories=False)
     except Exception as error:
-        # With its traceback in the same record: a refusal is one line of
-        # reason, and a bug inside a gate is not lost.
-        logger.error(f"Configuration initialization failed: {error}", exc_info=True)
+        # With its frames in the same record: a refusal is one line naming
+        # its class, and a bug inside a gate is not lost.
+        logger.error(
+            f"Configuration initialization failed: {exception_log_name(error)}",
+            exc_info=True,
+        )
         sys.exit(STARTUP_FAILURE)
     if settings.run_startup_migrations and serving_processes(settings) > 1:
         from faultmaven.bootstrap.data_init import migrate_before_workers

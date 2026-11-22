@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, List
 
+from faultmaven.utils.exception_name import exception_log_name
+
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
     from faultmaven.container.base import BaseDIContainer
@@ -66,7 +68,7 @@ def create_registry_tools(
                 logger.debug("Web search tool skipped (no search provider configured)")
     except Exception as e:
         web_search = None
-        logger.warning(f"Web search tool creation failed: {e}")
+        logger.warning(f"Web search tool creation failed: {exception_log_name(e)}")
 
     return tools
 
@@ -125,7 +127,7 @@ def create_document_qa_tools(
         logger.info("✅ Created document Q&A tools (case evidence, unified KB)")
 
     except Exception as e:
-        logger.warning(f"Document Q&A tools creation failed: {e}")
+        logger.warning(f"Document Q&A tools creation failed: {exception_log_name(e)}")
 
     return result
 
@@ -288,7 +290,7 @@ def register_tools(container: BaseDIContainer) -> None:
         container.tools.append(search_file_tool)
         logger.info("Search file tool registered (mechanical search)")
     except Exception as e:
-        logger.warning(f"Search file tool registration failed: {e}")
+        logger.warning(f"Search file tool registration failed: {exception_log_name(e)}")
 
     # Vectorize file tool (on-demand vectorization)
     case_vector_store = (
@@ -307,7 +309,9 @@ def register_tools(container: BaseDIContainer) -> None:
         container.tools.append(vectorize_file_tool)
         logger.info("Vectorize file tool registered (auto-triggered on DA failure)")
     except Exception as e:
-        logger.warning(f"Vectorize file tool registration failed: {e}")
+        logger.warning(
+            f"Vectorize file tool registration failed: {exception_log_name(e)}"
+        )
 
     # Phase 1.5 — the evidence reclassifier the PATCH route and the
     # ``reclassify_evidence`` tool share (#1941), built whatever the flag says.
@@ -324,7 +328,9 @@ def register_tools(container: BaseDIContainer) -> None:
         if reclassify_evidence_tool is not None:
             container.tools.append(reclassify_evidence_tool)
     except Exception as e:
-        logger.warning(f"Reclassify evidence tool registration failed: {e}")
+        logger.warning(
+            f"Reclassify evidence tool registration failed: {exception_log_name(e)}"
+        )
 
     # Phase 4c — entity registry tools. ``find_entity`` and
     # ``list_top_entities`` expose the ``case_entities`` table built by
@@ -370,6 +376,8 @@ def register_tools(container: BaseDIContainer) -> None:
                 "(FAULTMAVEN_ENTITY_REGISTRY=false)"
             )
     except Exception as e:
-        logger.warning(f"Entity registry tool registration failed: {e}")
+        logger.warning(
+            f"Entity registry tool registration failed: {exception_log_name(e)}"
+        )
 
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")

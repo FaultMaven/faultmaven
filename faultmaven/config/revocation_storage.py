@@ -42,6 +42,7 @@ import logging
 from dataclasses import dataclass
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -119,9 +120,8 @@ async def probe_revocation_storage(store) -> StorageFault | None:
         await store.is_revoked(_PROBE_JTI)
     except Exception as exc:  # noqa: BLE001 - any failure to read is the finding
         logger.error(
-            "Token revocation storage is unreadable: %s: %s",
-            type(exc).__name__,
-            exc,
+            "Token revocation storage is unreadable: %s",
+            exception_log_name(exc),
         )
         return StorageFault(
             kind=type(exc).__name__, detail=f"{type(exc).__name__}: {exc}"

@@ -102,7 +102,7 @@ async def test_a_raising_bootstrap_is_logged_not_raised(caplog):
         for r in caplog.records
         if r.name == _LOGGER and r.levelno == logging.ERROR
     ]
-    assert errors == ["KB bootstrap raised (non-fatal): boom"]
+    assert errors == ["KB bootstrap raised (non-fatal): RuntimeError"]
 
 
 async def test_multi_tenancy_skips_before_the_store_is_read(caplog):

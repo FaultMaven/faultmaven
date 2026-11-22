@@ -269,7 +269,7 @@ class TestCaseCleanupReferenceSetGuard:
         result = await run(settings=mock_settings, container=container)
 
         assert result["status"] == "failed"
-        assert "Database error" in result["error"]
+        assert result["error"] == "Exception"
 
     def test_job_metadata_exists(self):
         """Test job module has required metadata."""
@@ -364,7 +364,7 @@ class TestKbSeedJob:
             result = await run(settings=mock_settings, container=mock_container)
 
         assert result["status"] == "failed"
-        assert "pack unreadable" in result["error"]
+        assert result["error"] == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_kb_seed_forwards_the_sweep_flags_and_reports_the_sweep(
@@ -947,10 +947,10 @@ class TestJobsPathBootGates:
 
         mock_container.initialize.assert_not_called()
 
-    def test_cli_exits_nonzero_naming_the_default(
+    def test_cli_exits_nonzero_naming_the_refusal_by_class(
         self, mock_container, monkeypatch, capsys
     ):
-        """Through ``main()``: exit 1, and the operator is told the fix."""
+        """Through ``main()``: exit 1, and the refusal is named by class."""
         from faultmaven.config.settings import reset_settings
         from faultmaven.jobs import run as run_module
 
@@ -970,8 +970,7 @@ class TestJobsPathBootGates:
 
         assert exit_code == 1
         err = capsys.readouterr().err
-        assert "sqlite+aiosqlite:///./data/faultmaven.db" in err
-        assert "needs a database" in err
+        assert "Error: NonPersistentDatabaseError" in err
         mock_container.initialize.assert_not_called()
 
     @pytest.mark.asyncio

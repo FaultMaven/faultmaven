@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -297,7 +298,9 @@ def create_milestone_engine(
         logger.debug("MilestoneEngine initialized with investigation tools")
         return engine
     except Exception as e:
-        logger.warning(f"MilestoneEngine initialization failed: {e}")
+        logger.warning(
+            f"MilestoneEngine initialization failed: {exception_log_name(e)}"
+        )
         return None
 
 
@@ -457,7 +460,9 @@ def create_investigation_service(
         logger.debug("InvestigationService initialized")
         return service
     except Exception as e:
-        logger.warning(f"InvestigationService initialization failed: {e}")
+        logger.warning(
+            f"InvestigationService initialization failed: {exception_log_name(e)}"
+        )
         return None
 
 
@@ -595,7 +600,8 @@ def create_organization_repository() -> Any | None:
         return repository
     except Exception as e:
         logger.warning(
-            f"OrganizationRepository initialization failed: {e}", exc_info=True
+            f"OrganizationRepository initialization failed: {exception_log_name(e)}",
+            exc_info=True,
         )
         return None
 
@@ -691,7 +697,8 @@ def create_enterprise_repository() -> Any | None:
         return repository
     except Exception as e:
         logger.warning(
-            f"EnterpriseRepository initialization failed: {e}", exc_info=True
+            f"EnterpriseRepository initialization failed: {exception_log_name(e)}",
+            exc_info=True,
         )
         return None
 
@@ -714,7 +721,10 @@ def create_team_repository() -> Any | None:
         logger.debug("TeamRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"TeamRepository initialization failed: {e}", exc_info=True)
+        logger.warning(
+            f"TeamRepository initialization failed: {exception_log_name(e)}",
+            exc_info=True,
+        )
         return None
 
 
@@ -804,7 +814,10 @@ def create_share_repository() -> Any | None:
         logger.debug("ShareRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        logger.warning(f"ShareRepository initialization failed: {e}", exc_info=True)
+        logger.warning(
+            f"ShareRepository initialization failed: {exception_log_name(e)}",
+            exc_info=True,
+        )
         return None
 
 
@@ -938,7 +951,7 @@ def create_user_service(
         logger.info("✅ UserService initialized with proper DI")
         return service
     except Exception as e:
-        logger.warning(f"UserService initialization failed: {e}")
+        logger.warning(f"UserService initialization failed: {exception_log_name(e)}")
         return None
 
 
@@ -993,7 +1006,10 @@ def create_tenant_provider(
         # workers, not just the web lifespan that also runs the coherence gate).
         raise
     except Exception as e:
-        logger.warning(f"TenantProvider initialization failed: {e}", exc_info=True)
+        logger.warning(
+            f"TenantProvider initialization failed: {exception_log_name(e)}",
+            exc_info=True,
+        )
         return None
 
 
@@ -1016,7 +1032,9 @@ def create_report_generation_service(
         logger.debug("ReportGenerationService initialized")
         return service
     except Exception as e:
-        logger.warning(f"ReportGenerationService initialization failed: {e}")
+        logger.warning(
+            f"ReportGenerationService initialization failed: {exception_log_name(e)}"
+        )
         return None
 
 
@@ -1469,7 +1487,7 @@ def register_services(container: BaseDIContainer) -> None:
         # The same misconfiguration already breaks sign-in, which reports it at
         # the request the operator is looking at. Named here so the cause is in
         # the startup log too, rather than only surfacing as an absent service.
-        logger.error("JWT signing key unavailable: %s", e)
+        logger.error("JWT signing key unavailable: %s", exception_log_name(e))
         signing_generator = None
         # Assigned, not left unset: every other service on this container is
         # read as an attribute somewhere, and an unset name raises
@@ -1520,7 +1538,7 @@ def register_services(container: BaseDIContainer) -> None:
             # with them turns one unusable auth mode into a CrashLoop. The
             # OAuth dependency answers 503 when the service is absent, which is
             # the failure the operator can act on.
-            logger.error("OAuth JWT generator unavailable: %s", e)
+            logger.error("OAuth JWT generator unavailable: %s", exception_log_name(e))
             jwt_token_generator = None
 
         container.jwt_token_generator = jwt_token_generator
@@ -1692,7 +1710,8 @@ def register_services(container: BaseDIContainer) -> None:
         )
     except Exception as conv_err:
         logger.warning(
-            f"Document conversion service not available: {conv_err}",
+            "Document conversion service not available: "
+            f"{exception_log_name(conv_err)}",
             exc_info=True,
         )
         conversion_service = None

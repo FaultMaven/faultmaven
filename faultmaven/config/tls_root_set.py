@@ -77,6 +77,7 @@ from faultmaven.config.settings import (
     load_settings_dotenv,
     set_env_var,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 #: The operator's one setting: a PEM file of CA certificates added to the OS bundle.
 EXTRA_CA_FILE_SETTING = "TLS_EXTRA_CA_FILE"
@@ -289,7 +290,7 @@ def _set_directory() -> str:
 
 def _tmpdir_refusal(error: OSError) -> SystemExit:
     return SystemExit(
-        f"TLS root set: cannot write the set's file ({error}); "
+        f"TLS root set: cannot write the set's file ({exception_log_name(error)}); "
         "TMPDIR must name a writable directory."
     )
 

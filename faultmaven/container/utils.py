@@ -8,6 +8,8 @@ import logging
 from functools import wraps
 from typing import Any, Callable, Generic, TypeVar
 
+from faultmaven.utils.exception_name import exception_log_name
+
 T = TypeVar("T")
 
 
@@ -185,7 +187,11 @@ def log_service_status(
                     logger.info(msg)
                 return result
             except Exception as e:
-                msg = failure_msg or f"❌ {service_name} initialization failed: {e}"
+                msg = (
+                    failure_msg
+                    or f"❌ {service_name} initialization failed: "
+                    f"{exception_log_name(e)}"
+                )
                 logger.warning(msg)
                 raise
 

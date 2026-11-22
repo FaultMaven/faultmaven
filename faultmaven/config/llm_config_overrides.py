@@ -23,6 +23,8 @@ from typing import Optional
 
 from pydantic import SecretStr
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 # Redis key holding a monotonic counter that is bumped on every config write.
@@ -98,7 +100,10 @@ async def get_config_source_map(is_cloud: bool) -> dict[str, str]:
 
             db_overrides = await get_all_overrides()
         except Exception as e:  # DB may be unavailable; treat as no overrides
-            logger.debug(f"Could not read config overrides for provenance: {e}")
+            logger.debug(
+                "Could not read config overrides for provenance: "
+                f"{exception_log_name(e)}"
+            )
 
     return {
         key: ("admin-override" if key in db_overrides else "env-default")
@@ -120,7 +125,7 @@ async def apply_overrides_to_settings(settings) -> None:
         overrides = await get_all_overrides()
     except Exception as e:
         # DB may not be ready (first startup, migrations pending)
-        logger.debug(f"Could not read LLM config overrides: {e}")
+        logger.debug(f"Could not read LLM config overrides: {exception_log_name(e)}")
         return
 
     if not overrides:
@@ -149,7 +154,9 @@ async def apply_overrides_to_settings(settings) -> None:
                 object.__setattr__(llm, attr_name, value)
             applied.append(key)
         except Exception as e:
-            logger.warning(f"Failed to apply LLM config override {key}: {e}")
+            logger.warning(
+                f"Failed to apply LLM config override {key}: {exception_log_name(e)}"
+            )
 
     if applied:
         logger.info(f"Applied LLM config overrides: {applied}")
@@ -273,7 +280,7 @@ async def save_and_reload(
         logger.warning(
             "Applied config locally but could not bump the shared config "
             "version; other replicas may serve stale config until restart: %s",
-            e,
+            exception_log_name(e),
         )
 
 
@@ -296,7 +303,7 @@ async def watch_config_version(poll_interval: float = 10.0) -> None:
         logger.warning(
             "LLM config watcher could not reach Redis; runtime config changes "
             "will not propagate to this replica until restart: %s",
-            e,
+            exception_log_name(e),
         )
         return
 
@@ -327,4 +334,6 @@ async def watch_config_version(poll_interval: float = 10.0) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning("LLM config watch poll failed (will retry): %s", e)
+            logger.warning(
+                "LLM config watch poll failed (will retry): %s", exception_log_name(e)
+            )

@@ -37,6 +37,7 @@ from faultmaven.infrastructure.concurrency.teardown import (
     close_the_database,
     run_teardown,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -324,14 +325,15 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
                     watch_config_version()
                 )
             except Exception as e:
-                logger.debug(f"Config overrides skipped: {e}")
+                logger.debug(f"Config overrides skipped: {exception_log_name(e)}")
         else:
             logger.debug(
                 "Config overrides skipped (local mode — .env is source of truth)"
             )
     except Exception as e:
         logger.critical(
-            f"🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: {e}"
+            "🔥 BLOCKING STARTUP FAILURE: Application bootstrap failed: "
+            f"{exception_log_name(e)}"
         )
         # FAIL FAST: Re-raise to stop startup.
         # A broken bootstrap means DB or critical directories are missing.
@@ -548,7 +550,8 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
             logger.info("✅ Document conversion service initialized")
         except Exception as conv_err:
             logger.warning(
-                f"Document conversion service not available: {conv_err}",
+                "Document conversion service not available: "
+                f"{exception_log_name(conv_err)}",
                 exc_info=True,
             )
             app.state.conversion_service = None
@@ -682,7 +685,9 @@ async def compose_application(
             from faultmaven.config.worker_stores import refuse_partial_composition
 
             refuse_partial_composition(settings, e)
-            logger.error(f"Composition root failed: {e}", exc_info=True)
+            logger.error(
+                f"Composition root failed: {exception_log_name(e)}", exc_info=True
+            )
             logger.warning(
                 "Continuing with fallback service implementations — this deployment "
                 "permits a partial API (see settings.must_not_degrade)"
@@ -712,7 +717,9 @@ async def stop_config_watcher(app: FastAPI) -> None:
     error = await cancel_and_wait(task)
     del app.state.llm_config_watch_task
     if error is not None:
-        logger.warning(f"LLM config watcher ended with an error: {error}")
+        logger.warning(
+            f"LLM config watcher ended with an error: {exception_log_name(error)}"
+        )
 
 
 async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:

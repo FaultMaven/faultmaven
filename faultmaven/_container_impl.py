@@ -42,6 +42,7 @@ from faultmaven.infrastructure.concurrency.teardown import (
     run_teardown,
     teardown_step,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Import interfaces with graceful fallback for testing environments
@@ -58,7 +59,9 @@ try:
     # TD-001: IReportStore removed - reports now stored via CaseRepository
     INTERFACES_AVAILABLE = True
 except ImportError as e:
-    logging.getLogger(__name__).warning(f"Interfaces not available: {e}")
+    logging.getLogger(__name__).warning(
+        f"Interfaces not available: {exception_log_name(e)}"
+    )
     # Create placeholder types for testing environments
     ILLMProvider = Any
     ITracer = Any
@@ -142,7 +145,9 @@ class DIContainer(BaseDIContainer):
             self._register_service("settings", self.settings)
             logger.info("✅ Unified settings system initialized")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize settings system: {e}")
+            logger.error(
+                f"❌ Failed to initialize settings system: {exception_log_name(e)}"
+            )
             self._initializing = False
             raise InitializationError("Failed to initialize settings", cause=e)
 
@@ -163,7 +168,9 @@ class DIContainer(BaseDIContainer):
             logger.info("✅ DI Container initialized successfully")
 
         except Exception as e:
-            logger.error(f"❌ DI Container initialization failed: {e}")
+            logger.error(
+                f"❌ DI Container initialization failed: {exception_log_name(e)}"
+            )
             self._initializing = False
 
             # A tenancy configuration refusal (e.g. TENANT_PROVIDER=multi
@@ -731,7 +738,9 @@ class DIContainer(BaseDIContainer):
                 self._job_service = JobService(redis_client=redis_client)
                 logger.info("✅ Job service initialized")
             except Exception as e:
-                logger.warning(f"Job service initialization failed: {e}")
+                logger.warning(
+                    f"Job service initialization failed: {exception_log_name(e)}"
+                )
                 self._job_service = None
 
         return self._job_service

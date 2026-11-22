@@ -14,6 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -295,7 +296,7 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
             # refuses instead, and a fallback announcement followed by a
             # refusal reads as a contradiction in the Job logs.
             fallback_reason = f"{type(e).__name__}: {e}"
-            logger.warning(f"ChromaDB server unavailable ({fallback_reason})")
+            logger.warning(f"ChromaDB server unavailable ({exception_log_name(e)})")
 
     # Local: in-process persistent ChromaDB. Standalone only — under cloud
     # this raises ChromaUnavailableError instead of silently forking the
@@ -616,7 +617,7 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
                 "Failed to create database user store (%s); falling back to "
                 "Redis while UserService still reads the database — user rows "
                 "written from now on will not be visible to /auth/me",
-                e,
+                exception_log_name(e),
                 exc_info=True,
             )
             # Fall through to Redis
@@ -716,8 +717,11 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         # startup. Non-storage code paths (auth, KB-only queries) still work;
         # deep_analysis and search_file will surface "unavailable" to the
         # agent rather than crashing mid-turn.
-        logger.error(f"❌ Failed to create file storage service: {e}", exc_info=True)
-        container._register_failed("file_storage_service", str(e))
+        logger.error(
+            f"❌ Failed to create file storage service: {exception_log_name(e)}",
+            exc_info=True,
+        )
+        container._register_failed("file_storage_service", exception_log_name(e))
 
     # Deep analysis service (Tier 3 deep LLM analysis)
     storage_service = getattr(container, "file_storage_service", None)
@@ -764,8 +768,8 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         else:
             container._register_service("vector_store", vector_store)
     except Exception as e:
-        logger.warning(f"Vector store initialization failed: {e}")
-        container._register_failed("vector_store", str(e))
+        logger.warning(f"Vector store initialization failed: {exception_log_name(e)}")
+        container._register_failed("vector_store", exception_log_name(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
     register_knowledge_vector_store(container, kb_chromadb_client)
@@ -813,7 +817,9 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             )
             raise ValueError("User store registration failed - attribute not set")
     except Exception as e:
-        logger.error(f"❌ Failed to create user store: {e}", exc_info=True)
+        logger.error(
+            f"❌ Failed to create user store: {exception_log_name(e)}", exc_info=True
+        )
         raise
 
     # Case repository (database persistence for cases). One that cannot be

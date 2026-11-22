@@ -100,6 +100,7 @@ from faultmaven.infrastructure.persistence.share_repository import (
     PostgreSQLShareRepository,
 )
 from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +251,9 @@ async def bootstrap_kb(
 
             configured = get_settings().database.kb_pack_dir
         except Exception as exc:  # settings unavailable in some test contexts
-            logger.debug(f"Could not read KB_PACK_DIR from settings: {exc}")
+            logger.debug(
+                f"Could not read KB_PACK_DIR from settings: {exception_log_name(exc)}"
+            )
         pack_dir = resolve_pack_dir(root, configured)
 
     pack = KbPack.load(Path(pack_dir))
@@ -301,7 +304,7 @@ async def bootstrap_kb(
             else:  # "skipped"
                 result.skipped_unchanged.append(runbook.relpath)
         except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
+            reason = exception_log_name(exc)
             logger.error(
                 f"Bootstrap failed for {runbook.relpath}: {reason}",
                 exc_info=True,
@@ -689,7 +692,8 @@ async def _role_may_update(db_session_factory: Callable[[], Awaitable[Any]]) -> 
     except Exception as exc:
         logger.warning(
             "KB bootstrap: could not read this role's privileges on "
-            f"knowledge_items ({exc}); treating it as unable to UPDATE this pass."
+            "knowledge_items ("
+            f"{exception_log_name(exc)}); treating it as unable to UPDATE this pass."
         )
         return False
 
@@ -767,7 +771,10 @@ async def _prune_orphan_builtins(
             async with db_session_factory() as session:
                 deleted = await DatabaseKnowledgeItemRepository(session).delete(item_id)
         except Exception as exc:
-            logger.warning(f"Failed to prune built-in knowledge_item {item_id}: {exc}")
+            logger.warning(
+                f"Failed to prune built-in knowledge_item {item_id}: "
+                f"{exception_log_name(exc)}"
+            )
             continue
         if deleted:
             pruned.append(item_id)
@@ -786,7 +793,9 @@ async def _list_chunk_ids(knowledge_service: Any) -> Optional[Dict[str, List[str
     try:
         return await store.list_all_chunk_ids_by_parent()
     except Exception as exc:
-        logger.warning(f"KB bootstrap: could not list vector chunks: {exc}")
+        logger.warning(
+            f"KB bootstrap: could not list vector chunks: {exception_log_name(exc)}"
+        )
         return None
 
 
@@ -918,7 +927,10 @@ async def _reconcile_vectors(
     try:
         chunk_ids_by_parent = await vector_store.list_all_chunk_ids_by_parent()
     except Exception as exc:
-        logger.warning(f"Reconcile skipped: could not list vector parents: {exc}")
+        logger.warning(
+            "Reconcile skipped: could not list vector parents: "
+            f"{exception_log_name(exc)}"
+        )
         return nothing
 
     chroma_parents = set(chunk_ids_by_parent)
@@ -991,7 +1003,10 @@ async def _reconcile_vectors(
             vector_store, resolve_max_age() if max_age is None else max_age, now
         )
     except Exception as exc:
-        logger.warning(f"Reconcile: could not read chunk ages, deleting none: {exc}")
+        logger.warning(
+            "Reconcile: could not read chunk ages, deleting none: "
+            f"{exception_log_name(exc)}"
+        )
         return ReconcileResult([], [], unserved_rows)
     targeted = orphaned_vectors + unpublished_with_vectors
     spared = {p for p in targeted if young.intersection(chunk_ids_by_parent[p])}
@@ -1006,7 +1021,9 @@ async def _reconcile_vectors(
             await vector_store.delete_observed_chunk_ids(observed) if observed else []
         )
     except Exception as exc:
-        logger.warning(f"Reconcile: batched orphan delete failed: {exc}")
+        logger.warning(
+            f"Reconcile: batched orphan delete failed: {exception_log_name(exc)}"
+        )
         return ReconcileResult([], [], unserved_rows)
 
     # Report only parents with no chunk left: one younger than the floor was
@@ -1018,7 +1035,9 @@ async def _reconcile_vectors(
         try:
             remaining = await vector_store.list_all_chunk_ids_by_parent()
         except Exception as exc:
-            logger.warning(f"Reconcile: could not re-list after delete: {exc}")
+            logger.warning(
+                f"Reconcile: could not re-list after delete: {exception_log_name(exc)}"
+            )
             return ReconcileResult([], [], unserved_rows)
         survivors = {p for p in targeted if p not in spared and remaining.get(p)}
         for parent in sorted(survivors):
@@ -1100,7 +1119,9 @@ def _resolve_repair_bounds() -> tuple[int, int]:
         db = get_settings().database
         return int(db.kb_repair_max_rows), int(db.kb_repair_max_chunks)
     except Exception as exc:  # settings unavailable / misconfigured
-        logger.debug(f"Could not read KB repair bounds from settings: {exc}")
+        logger.debug(
+            f"Could not read KB repair bounds from settings: {exception_log_name(exc)}"
+        )
         return KB_REPAIR_MAX_ROWS, KB_REPAIR_MAX_CHUNKS
 
 
@@ -1180,7 +1201,7 @@ async def _repair_unserved_rows(
             unserved_rows, max_chunks=budget
         )
     except Exception as exc:
-        logger.warning(f"KB repair failed: {exc}")
+        logger.warning(f"KB repair failed: {exception_log_name(exc)}")
         return [], list(unserved_rows)
     repaired = [item_id for item_id in unserved_rows if counts.get(item_id, 0) > 0]
     still_unserved = [item_id for item_id in unserved_rows if item_id not in repaired]

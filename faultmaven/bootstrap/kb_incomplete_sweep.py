@@ -44,6 +44,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     SWEEP_REPORT_ONLY,
     read_sweep_gate,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,10 @@ def resolve_max_age() -> timedelta:
     try:
         hours = getattr(get_settings().database, MAX_AGE_FIELD)
     except Exception as exc:  # settings unavailable in some test contexts
-        logger.debug(f"KB incomplete-ingest sweep: settings unreadable ({exc})")
+        logger.debug(
+            "KB incomplete-ingest sweep: settings unreadable ("
+            f"{exception_log_name(exc)})"
+        )
         hours = DatabaseSettings.model_fields[MAX_AGE_FIELD].default
     return timedelta(hours=hours)
 
@@ -135,7 +139,7 @@ async def sweep_incomplete_ingests(
     try:
         stale = await _read_stale(db_session_factory, now - max_age)
     except Exception as exc:
-        logger.warning(f"KB incomplete-ingest sweep skipped: {exc}")
+        logger.warning(f"KB incomplete-ingest sweep skipped: {exception_log_name(exc)}")
         result.skipped = "error"
         return result
     result.would_delete = [item_id for item_id, _stamp in stale]
@@ -156,7 +160,8 @@ async def sweep_incomplete_ingests(
         except Exception as exc:
             result.unremoved += 1
             logger.warning(
-                f"KB incomplete-ingest sweep: removing {item_id} failed ({exc}); "
+                f"KB incomplete-ingest sweep: removing {item_id} failed ("
+                f"{exception_log_name(exc)}); "
                 "its row is kept for the next run."
             )
     if result.deleted:
