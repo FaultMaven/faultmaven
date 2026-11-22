@@ -81,9 +81,10 @@ argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
 argument in any other form, or an exit spelled any other way). The allowlist
 counts sites per file, so switching one site and adding another in the same
-file leaves the count, and the guard, unchanged. A value built outside a log
-call by a method call is not tracked: a projection that appends an exception's
-text (``logged.append(str(e))``) and is then logged is not counted.
+file leaves the count, and the guard, unchanged. A name filled in place, by a
+method call (``logged.append(str(e))``) or a subscript store
+(``d[k] = str(e)``), is not tracked, so a projection built that way and then
+logged is not counted.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a

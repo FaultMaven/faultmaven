@@ -539,8 +539,8 @@ def llm_service_error_http_exception(exc: BaseException) -> HTTPException:
     #    is a wrapper whose message carries whatever it wrapped (SQLAlchemy
     #    statements, ``host:port``), and once this mapping became the global
     #    ``ServiceException`` handler (#552) that fallback answers for every
-    #    route, not only ``/turns``. The caller logs the class chain; the text
-    #    goes nowhere.
+    #    route, not only ``/turns``. The body never carries the text; logging
+    #    the failure is the caller's.
     return _llm_http(
         500,
         "SERVICE_ERROR",
