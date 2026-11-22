@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope, vocabulary
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 logger = logging.getLogger(__name__)
@@ -321,7 +322,7 @@ class KbPack:
                         pack_dir,
                         rb.get("item_id"),
                         relpath,
-                        exc,
+                        exception_log_name(exc),
                     )
                     return None
                 content = content_path.read_text(encoding="utf-8")
@@ -476,6 +477,6 @@ class KbPack:
                 "Failed to load KB pack at %s (%s) — shipped runbooks will not "
                 "be ingested from a pack.",
                 pack_dir,
-                exc,
+                exception_log_name(exc),
             )
             return None

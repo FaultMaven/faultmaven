@@ -22,6 +22,7 @@ import logging
 from typing import Any, Dict
 
 from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,9 @@ async def run(
             turn_days,
         )
     except Exception as e:
-        logger.error(f"LLM usage retention job failed: {e}", exc_info=True)
+        logger.error(
+            f"LLM usage retention job failed: {exception_log_name(e)}", exc_info=True
+        )
         result["status"] = "failed"
         result["error"] = str(e)
     return result

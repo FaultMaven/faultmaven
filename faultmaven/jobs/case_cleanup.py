@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.jobs.reference_set import assess_reference_set
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,7 @@ async def run(
             logger.debug("Case cleanup completed: no orphaned collections found")
 
     except Exception as e:
-        logger.error(f"Case cleanup job failed: {e}", exc_info=True)
+        logger.error(f"Case cleanup job failed: {exception_log_name(e)}", exc_info=True)
         result["status"] = "failed"
         result["error"] = str(e)
 

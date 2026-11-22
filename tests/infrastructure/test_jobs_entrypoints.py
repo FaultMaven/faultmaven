@@ -950,7 +950,7 @@ class TestJobsPathBootGates:
     def test_cli_exits_nonzero_naming_the_default(
         self, mock_container, monkeypatch, capsys
     ):
-        """Through ``main()``: exit 1, and the operator is told the fix."""
+        """Through ``main()``: exit 1, and the refusal is named by class."""
         from faultmaven.config.settings import reset_settings
         from faultmaven.jobs import run as run_module
 
@@ -970,8 +970,7 @@ class TestJobsPathBootGates:
 
         assert exit_code == 1
         err = capsys.readouterr().err
-        assert "sqlite+aiosqlite:///./data/faultmaven.db" in err
-        assert "needs a database" in err
+        assert "Error: NonPersistentDatabaseError" in err
         mock_container.initialize.assert_not_called()
 
     @pytest.mark.asyncio

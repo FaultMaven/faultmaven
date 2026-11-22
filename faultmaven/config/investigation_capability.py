@@ -236,7 +236,9 @@ def resolve_schema_capacity(settings: "Settings", registry: Any) -> SchemaCapaci
     try:
         provider = registry.get_provider(provider_name)
     except Exception as exc:
-        return _inconclusive(f"could not resolve provider {provider_name!r}: {exc}")
+        return _inconclusive(
+            f"could not resolve provider {provider_name!r}: {exception_log_name(exc)}"
+        )
 
     if provider is None:
         return _inconclusive(
@@ -256,7 +258,8 @@ def resolve_schema_capacity(settings: "Settings", registry: Any) -> SchemaCapaci
         capable = bool(probe(model))
     except Exception as exc:
         return _inconclusive(
-            f"capacity probe raised for {provider_name}/{model}: {exc}"
+            f"capacity probe raised for {provider_name}/{model}: "
+            f"{exception_log_name(exc)}"
         )
 
     return SchemaCapacity(
@@ -456,7 +459,7 @@ def _forcing_requested_only(registry: Any, provider_name: str, model: str) -> bo
             "Could not tell whether %s/%s enforces forced tool use: %s",
             provider_name,
             model,
-            exc,
+            exception_log_name(exc),
         )
         return False
 
@@ -622,7 +625,9 @@ def resolve_enforcement_classes(
             structured_output_forcing_requested_only=so_requested_only,
         )
     except Exception as exc:  # advisory — resolution must never block boot
-        logger.debug("Enforcement-class resolution skipped: %s", exc)
+        logger.debug(
+            "Enforcement-class resolution skipped: %s", exception_log_name(exc)
+        )
         return EnforcementClasses()
 
 

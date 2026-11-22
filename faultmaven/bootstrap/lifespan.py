@@ -21,6 +21,7 @@ from faultmaven.bootstrap.composition import (
 )
 from faultmaven.infrastructure.concurrency.teardown import cancel_and_wait, run_teardown
 from faultmaven.infrastructure.observability import opik_sdk
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import FaultMavenSettings
@@ -88,7 +89,9 @@ async def _bootstrap_kb_step(app: FastAPI) -> None:
         else:
             logger.warning("KB bootstrap skipped: knowledge_service not available")
     except Exception as e:
-        logger.error(f"KB bootstrap raised (non-fatal): {e}", exc_info=True)
+        logger.error(
+            f"KB bootstrap raised (non-fatal): {exception_log_name(e)}", exc_info=True
+        )
 
 
 @asynccontextmanager
@@ -147,7 +150,7 @@ async def _serve(app: FastAPI):
 
         logger.info("Configuration validated successfully")
     except Exception as e:
-        logger.error(f"Configuration initialization failed: {e}")
+        logger.error(f"Configuration initialization failed: {exception_log_name(e)}")
         raise
 
     # The trace SDK's process policy, recorded before composition reads it: the
@@ -264,9 +267,11 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
                     else:
                         logger.warning(f"Unknown model for preloading: {model_name}")
                 except Exception as e:
-                    logger.warning(f"Failed to pre-load {model_name}: {e}")
+                    logger.warning(
+                        f"Failed to pre-load {model_name}: {exception_log_name(e)}"
+                    )
     except Exception as e:
-        logger.warning(f"ML model loading configuration error: {e}")
+        logger.warning(f"ML model loading configuration error: {exception_log_name(e)}")
 
     # Check and start local LLM services if needed
     try:
@@ -321,7 +326,9 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
             )
 
     except Exception as e:
-        logger.warning(f"Local LLM service check failed (non-critical): {e}")
+        logger.warning(
+            f"Local LLM service check failed (non-critical): {exception_log_name(e)}"
+        )
 
     # Initialize Phase 2 monitoring components
     try:
@@ -343,7 +350,10 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
         logger.info("✅ Phase 2 monitoring components initialized")
 
     except Exception as e:
-        logger.warning(f"Phase 2 monitoring initialization failed (non-critical): {e}")
+        logger.warning(
+            "Phase 2 monitoring initialization failed (non-critical): "
+            f"{exception_log_name(e)}"
+        )
 
     # In-process scheduler (opt-in via RUN_SCHEDULER=true)
     # Default: disabled for operational neutrality - use CLI jobs or external schedulers instead
@@ -369,7 +379,8 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
                 app.state.llm_usage_retention_task = llm_usage_retention_task
         except Exception as e:
             logger.warning(
-                f"LLM usage retention scheduler not started (non-critical): {e}"
+                "LLM usage retention scheduler not started (non-critical): "
+                f"{exception_log_name(e)}"
             )
         try:
             # Self-contained import: the container is composed in
@@ -408,7 +419,8 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
                 )
         except Exception as e:
             logger.warning(
-                f"Case cleanup scheduler initialization failed (non-critical): {e}"
+                "Case cleanup scheduler initialization failed (non-critical): "
+                f"{exception_log_name(e)}"
             )
     else:
         logger.info(
@@ -438,7 +450,9 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
             )
             logger.info("✅ Funnel metrics collector started (case-state projection)")
     except Exception as e:
-        logger.warning(f"Funnel metrics collector not started (non-fatal): {e}")
+        logger.warning(
+            f"Funnel metrics collector not started (non-fatal): {exception_log_name(e)}"
+        )
 
     # Revocation watermark keyspace gauge (#1479): how many live per-user
     # watermarks the revocation store holds. Same exporter gate and the same
@@ -456,7 +470,10 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
             )
             logger.info("✅ Revocation watermark gauge started")
     except Exception as e:
-        logger.warning(f"Revocation watermark gauge not started (non-fatal): {e}")
+        logger.warning(
+            "Revocation watermark gauge not started (non-fatal): "
+            f"{exception_log_name(e)}"
+        )
 
     # Event-loop lag (#2056): how late the loop wakes from each tick. Same
     # exporter gate and background-task shape as the collectors above.
@@ -471,7 +488,9 @@ async def _start_serving(app: FastAPI, settings: "FaultMavenSettings") -> None:
             )
             logger.info("✅ Event-loop lag monitor started")
     except Exception as e:
-        logger.warning(f"Event-loop lag monitor not started (non-fatal): {e}")
+        logger.warning(
+            f"Event-loop lag monitor not started (non-fatal): {exception_log_name(e)}"
+        )
 
     logger.info(
         "🚀 FaultMaven API server startup COMPLETE - ready to serve fast requests!"

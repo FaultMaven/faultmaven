@@ -266,7 +266,7 @@ def test_a_refusal_under_reload_exits_before_uvicorn_starts(monkeypatch):
                 run_server()
         assert exited.value.code == 3  # uvicorn's STARTUP_FAILURE
         (logged,) = logging.return_value.error.call_args.args
-        assert "retention bound" in logged
+        assert "TraceContentCaptureRefused" in logged
         migrate.assert_not_called()
         run.assert_not_called()
     finally:

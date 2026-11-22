@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,9 @@ async def bootstrap_application(container: Any) -> None:
                         f"Tier: {default_enterprise.plan_tier.value})"
                     )
             except Exception as e:
-                logger.error(f"Failed to create default enterprise: {e}")
+                logger.error(
+                    f"Failed to create default enterprise: {exception_log_name(e)}"
+                )
                 raise
 
             # Order: enterprise -> team. The team FK enterprise_id is NOT NULL,
@@ -94,7 +97,7 @@ async def bootstrap_application(container: Any) -> None:
                         f"(ID: {default_team.team_id})"
                     )
             except Exception as e:
-                logger.error(f"Failed to create default team: {e}")
+                logger.error(f"Failed to create default team: {exception_log_name(e)}")
                 raise
         else:
             logger.info("Multi-tenant mode: No default tenant created")

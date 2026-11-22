@@ -17,6 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from faultmaven.api.middleware.logging import LoggingMiddleware
 from faultmaven.bootstrap.composition import _is_test_environment
 from faultmaven.infrastructure.observability import opik_sdk
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,9 @@ def setup_middleware(app):
         if logging_enabled:
             logger.info("✅ Trailing slash middleware added")
     except Exception as e:
-        logger.warning(f"Failed to add trailing slash middleware: {e}")
+        logger.warning(
+            f"Failed to add trailing slash middleware: {exception_log_name(e)}"
+        )
 
     if logging_enabled:
         logger.info(
@@ -118,7 +121,7 @@ def setup_middleware(app):
                     "Skipping Idempotency middleware (SKIP_SERVICE_CHECKS=True)"
                 )
     except Exception as e:
-        logger.warning(f"Failed to add idempotency middleware: {e}")
+        logger.warning(f"Failed to add idempotency middleware: {exception_log_name(e)}")
 
     if logging_enabled:
         logger.info(
@@ -147,7 +150,7 @@ def setup_middleware(app):
                 )
 
     except Exception as e:
-        logger.warning(f"Failed to add request ID middleware: {e}")
+        logger.warning(f"Failed to add request ID middleware: {exception_log_name(e)}")
 
     if logging_enabled:
         logger.info(
@@ -198,7 +201,9 @@ def setup_middleware(app):
         # Never gated on ``logging_enabled``: a swallowed setup failure must not
         # be a zero-output event. Under the carve-out below this line is the only
         # trace that the app is running unprotected.
-        logger.warning(f"Failed to setup protection middleware: {e}")
+        logger.warning(
+            f"Failed to setup protection middleware: {exception_log_name(e)}"
+        )
         # The carve-out, named explicitly: **a development checkout only** —
         # which is also what an unset ``ENVIRONMENT`` reads as — deliberately
         # boots unprotected-with-a-warning when protection setup fails, so a
@@ -301,7 +306,9 @@ def setup_middleware(app):
                     "✅ Contract Probe middleware added for API compliance monitoring"
                 )
         except Exception as e:
-            logger.warning(f"Failed to add contract probe middleware: {e}")
+            logger.warning(
+                f"Failed to add contract probe middleware: {exception_log_name(e)}"
+            )
 
     # 10b. Request body size limit — registered immediately before CORS, so it
     # sits just INSIDE the outermost layer.

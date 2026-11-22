@@ -90,6 +90,7 @@ from faultmaven.infrastructure.concurrency.teardown import (
 from faultmaven.infrastructure.logging.config import install_log_handler
 from faultmaven.infrastructure.logging.process_outputs import install_process_outputs
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
+from faultmaven.utils.exception_name import exception_log_name
 
 # Valid JOB_TENANT_SCOPE declarations (see module docstring).
 TENANT_SCOPE_NEUTRAL = "tenant_neutral"
@@ -346,7 +347,9 @@ async def run_job(
     try:
         module = importlib.import_module(module_path)
     except ImportError as e:
-        logger.error(f"Failed to import job module {module_path}: {e}")
+        logger.error(
+            f"Failed to import job module {module_path}: {exception_log_name(e)}"
+        )
         raise
 
     # Get run function
@@ -436,7 +439,7 @@ async def run_job(
             logger.critical("Refusing to run job: container initialization failed")
             raise
         except Exception as e:
-            logger.warning(f"Container initialization warning: {e}")
+            logger.warning(f"Container initialization warning: {exception_log_name(e)}")
 
         # DB-role gate. Two mutually exclusive postures under multi:
         # - Regular jobs (org / tenant_neutral): same hard gate as the web
@@ -502,7 +505,7 @@ async def run_job(
             logger.info(f"Job completed: {result}")
             return result
         except Exception as e:
-            logger.error(f"Job failed: {e}", exc_info=True)
+            logger.error(f"Job failed: {exception_log_name(e)}", exc_info=True)
             return {"status": "failed", "error": str(e)}
     finally:
         # Whatever this run initialized is done, whether the job ran or a gate
@@ -739,7 +742,7 @@ def main(args: Optional[List[str]] = None) -> int:
             return 1
 
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"Error: {exception_log_name(e)}", file=sys.stderr)
         return 1
 
 

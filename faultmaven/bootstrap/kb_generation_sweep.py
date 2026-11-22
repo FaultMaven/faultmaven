@@ -61,6 +61,7 @@ from faultmaven.bootstrap.kb_orphan_sweep import (
     read_sweep_gate,
 )
 from faultmaven.infrastructure.knowledge.admission import chunk_generation_from_id
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,9 @@ def web_startup_generation_mode() -> str:
     try:
         external = is_external_chroma_configured(get_settings())
     except Exception as exc:  # settings unavailable in some test contexts
-        logger.debug(f"KB generation sweep: settings unreadable ({exc})")
+        logger.debug(
+            f"KB generation sweep: settings unreadable ({exception_log_name(exc)})"
+        )
         return SWEEP_REPORT_ONLY
     return SWEEP_REPORT_ONLY if external else SWEEP_ARMED
 
@@ -158,7 +161,7 @@ async def sweep_superseded_generations(
             store, resolve_max_age() if max_age is None else max_age, now
         )
     except Exception as exc:
-        logger.warning(f"KB generation sweep skipped: {exc}")
+        logger.warning(f"KB generation sweep skipped: {exception_log_name(exc)}")
         result.skipped = "error"
         return result
 
@@ -193,7 +196,7 @@ async def sweep_superseded_generations(
             result.unremoved += len(page)
             logger.warning(
                 f"KB generation sweep: deleting {len(page)} superseded chunk(s) "
-                f"raised ({exc}); they stay until the next run."
+                f"raised ({exception_log_name(exc)}); they stay until the next run."
             )
     if result.deleted:
         logger.info(

@@ -34,6 +34,8 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Callable, Iterator, Optional, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 #: ``os.link`` failing with one of these means the filesystem has no hard
@@ -193,7 +195,7 @@ def _unnamed_failed(path: Path, exc: OSError) -> None:
         "Could not publish the secret file %s as an unnamed file (%s); using a "
         "named temp file, which a kill mid-publish can leave beside it.",
         path,
-        errno.errorcode.get(exc.errno or 0, exc),
+        errno.errorcode.get(exc.errno or 0, exception_log_name(exc)),
     )
 
 
@@ -301,13 +303,15 @@ def _fsync_directory_chain(path: Path, parent_fd: Optional[int] = None) -> None:
                     os.close(fd)
         except OSError as exc:
             if device is not None or exc.errno in _NO_DIRECTORY_FSYNC:
-                logger.debug("Did not fsync directory %s: %s", directory, exc)
+                logger.debug(
+                    "Did not fsync directory %s: %s", directory, exception_log_name(exc)
+                )
             elif exc.errno != errno.ENOENT:
                 logger.warning(
                     "Could not fsync directory %s (%s), so the name of the "
                     "secret file %s may not survive a power loss.",
                     directory,
-                    errno.errorcode.get(exc.errno or 0, exc),
+                    errno.errorcode.get(exc.errno or 0, exception_log_name(exc)),
                     path.name,
                 )
             return
@@ -344,7 +348,7 @@ def prepare_secret_file_for_read(
         path.chmod(0o600)
         now = stat.S_IMODE(path.stat().st_mode)
     except OSError as exc:
-        outcome = f"it could not be made 0600 ({exc})"
+        outcome = f"it could not be made 0600 ({exception_log_name(exc)})"
     else:
         outcome = (
             "it is now 0600"

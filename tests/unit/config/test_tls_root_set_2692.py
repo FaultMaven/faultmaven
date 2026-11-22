@@ -619,5 +619,5 @@ def test_a_set_directory_another_user_owns_refuses(os_bundle, extra_file, monkey
     directory = Path(tempfile.gettempdir()) / f"faultmaven-tls-{other}"
     directory.mkdir(mode=0o700)
     monkeypatch.setattr(os, "getuid", lambda: other)
-    with pytest.raises(SystemExit, match="not this user's alone.*TMPDIR"):
+    with pytest.raises(SystemExit, match=r"set's file \(OSError\).*TMPDIR"):
         apply_root_set()

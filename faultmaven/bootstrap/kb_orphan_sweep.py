@@ -99,6 +99,7 @@ from typing import (
 from sqlalchemy import select, text
 
 from faultmaven.models.interfaces import IKnowledgeVectorStore
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.runbook_id import is_builtin_item_id
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ def read_sweep_gate(
         enabled = bool(getattr(db, enabled_field))
         configured_dry_run = bool(getattr(db, dry_run_field))
     except Exception as exc:  # settings unavailable in some test contexts
-        logger.debug(f"KB sweep gate: settings unreadable ({exc})")
+        logger.debug(f"KB sweep gate: settings unreadable ({exception_log_name(exc)})")
         return SWEEP_REPORT_ONLY
     return gate_sweep_mode(enabled, configured_dry_run, dry_run)
 
@@ -336,7 +337,8 @@ async def read_rows_if_complete(
             except Exception as exc:
                 logger.warning(
                     "KB authored-orphan sweep: could not ask whether row-level "
-                    f"security filters knowledge_items ({exc}); treating the "
+                    "security filters knowledge_items ("
+                    f"{exception_log_name(exc)}); treating the "
                     "row read as unproven."
                 )
                 await session.rollback()
@@ -349,7 +351,8 @@ async def read_rows_if_complete(
             except Exception as exc:
                 logger.warning(
                     "KB authored-orphan sweep: with row_security off the row "
-                    f"read was refused ({exc}) — a policy would have filtered "
+                    "read was refused ("
+                    f"{exception_log_name(exc)}) — a policy would have filtered "
                     "it; treating it as unproven."
                 )
                 await session.rollback()
@@ -450,7 +453,7 @@ async def sweep_authored_orphans(
             acknowledged=frozenset(allow_disjoint),
         )
     except Exception as exc:
-        logger.warning(f"KB authored-orphan sweep skipped: {exc}")
+        logger.warning(f"KB authored-orphan sweep skipped: {exception_log_name(exc)}")
         result.skipped = "error"
     return result
 
@@ -620,7 +623,8 @@ async def _delete(
         counts.unremoved = n_parents
         logger.warning(
             f"KB authored-orphan sweep: deleting {n_parents} orphan document(s) "
-            f"stamped {label} raised ({exc}); they stay until the next pass."
+            f"stamped {label} raised ("
+            f"{exception_log_name(exc)}); they stay until the next pass."
         )
         return
     counts.deleted = sorted({cid.rsplit("_chunk_", 1)[0] for cid in deleted})

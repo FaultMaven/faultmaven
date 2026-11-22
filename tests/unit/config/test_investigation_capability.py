@@ -481,7 +481,7 @@ def test_a_forcing_probe_that_raises_is_logged(caplog):
         warn_best_effort_enforcement(settings, registry)
     [warning] = caplog.records
     assert "anthropic/claude-x" in warning.message
-    assert "probe broke" in warning.message
+    assert "RuntimeError" in warning.message
 
 
 def test_da_override_checks_both_roles_separately(caplog):

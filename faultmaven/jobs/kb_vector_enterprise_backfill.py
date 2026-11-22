@@ -47,6 +47,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from faultmaven.config.settings import FaultMavenSettings
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,10 @@ async def run(
     try:
         await _backfill(store, get_db_session, result, dry_run=effective_dry_run)
     except Exception as exc:
-        logger.error(f"KB vector enterprise backfill failed: {exc}", exc_info=True)
+        logger.error(
+            f"KB vector enterprise backfill failed: {exception_log_name(exc)}",
+            exc_info=True,
+        )
         result.update(status="failed", error=str(exc))
     return result
 
@@ -169,7 +173,8 @@ async def _backfill(
             result["failed"] += len(ids)
             logger.warning(
                 f"KB vector enterprise backfill: restamping {len(ids)} chunk(s) "
-                f"of {parent} with {row} raised ({exc}); left for the next run."
+                f"of {parent} with {row} raised ("
+                f"{exception_log_name(exc)}); left for the next run."
             )
     if result["failed"]:
         result["status"] = "failed"
