@@ -917,7 +917,7 @@ async def test_the_config_watcher_is_stopped_once_and_taken_off_app_state(caplog
         await stop_config_watcher(app)
 
     assert "llm_config_watch_task" not in app.state
-    assert caplog.text.count("the watcher blew up") == 1
+    assert caplog.text.count("ended with an error: ValueError") == 1
 
 
 # ---------------------------------------------------------------------------

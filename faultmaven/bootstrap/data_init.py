@@ -200,6 +200,15 @@ def resolve_evidence_storage_dir(settings: Any) -> Path:
     return resolve_data_dir(settings.evidence_storage, "evidence_storage_root")
 
 
+#: The setting each resolver reads, as the operator spells it: the refusal line
+#: names it beside the error's class, which carries no text (#2889).
+_RESOLVER_SETTINGS = {
+    resolve_kb_chroma_dir: "CHROMADB_KB_PERSIST_DIR",
+    resolve_evidence_chroma_dir: "CHROMADB_EVIDENCE_PERSIST_DIR",
+    resolve_evidence_storage_dir: "EVIDENCE_STORAGE_ROOT",
+}
+
+
 def _extend(directories: list, resolver: Any, settings: Any) -> None:
     """Append ``resolver(settings)``, or log why that directory has no path.
 
@@ -212,7 +221,11 @@ def _extend(directories: list, resolver: Any, settings: Any) -> None:
     try:
         directories.append(resolver(settings))
     except UnusableDataDirError as exc:
-        logger.error("Not creating a data directory: %s", exception_log_name(exc))
+        logger.error(
+            "Not creating a data directory for %s: %s",
+            _RESOLVER_SETTINGS.get(resolver, getattr(resolver, "__name__", "?")),
+            exception_log_name(exc),
+        )
 
 
 def ensure_data_directories() -> None:

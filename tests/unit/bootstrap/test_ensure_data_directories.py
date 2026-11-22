@@ -204,7 +204,7 @@ def test_a_blank_vector_dir_creates_nothing_and_does_not_fault(
 
     assert not (tmp_path / "data" / "chroma-kb").exists(), "no default substitute"
     assert not (tmp_path / blank.strip()).exists() if blank.strip() else True
-    assert "UnusableDataDirError" in caplog.text
+    assert "for CHROMADB_KB_PERSIST_DIR: UnusableDataDirError" in caplog.text
     assert (tmp_path / "data" / "evidence").is_dir(), "the rest is still created"
 
 

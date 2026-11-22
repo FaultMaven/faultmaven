@@ -721,7 +721,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             f"❌ Failed to create file storage service: {exception_log_name(e)}",
             exc_info=True,
         )
-        container._register_failed("file_storage_service", str(e))
+        container._register_failed("file_storage_service", exception_log_name(e))
 
     # Deep analysis service (Tier 3 deep LLM analysis)
     storage_service = getattr(container, "file_storage_service", None)
@@ -769,7 +769,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             container._register_service("vector_store", vector_store)
     except Exception as e:
         logger.warning(f"Vector store initialization failed: {exception_log_name(e)}")
-        container._register_failed("vector_store", str(e))
+        container._register_failed("vector_store", exception_log_name(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
     register_knowledge_vector_store(container, kb_chromadb_client)

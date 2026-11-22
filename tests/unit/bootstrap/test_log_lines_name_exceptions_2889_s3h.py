@@ -14,6 +14,7 @@ print are read where the interpreter would write them. How each site is driven
 is stated on its case.
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,6 +23,7 @@ import pytest
 from fastapi import FastAPI
 
 from faultmaven.bootstrap import kb_init
+from faultmaven.bootstrap.composition import stop_config_watcher
 from faultmaven.bootstrap.lifespan import _bootstrap_kb_step
 from faultmaven.bootstrap.middleware import setup_middleware
 from faultmaven.config import tls_root_set
@@ -107,6 +109,22 @@ async def test_a_runbook_failure_reason_is_named_by_class(lines, tmp_path):
     )
     assert result.failed == [("global/example.md", "RuntimeError")]
     _named(lines(), "Bootstrap failed for global/example.md", ": RuntimeError")
+
+
+async def test_a_config_watcher_that_ended_with_an_error_is_named_by_class(lines):
+    """``stop_config_watcher`` with the watcher task already ended by a raise:
+    ``cancel_and_wait`` returns its exception, and the watcher is taken off
+    ``app.state``."""
+
+    async def _watch():
+        raise RuntimeError(f"redis gone {MARKER}")
+
+    app = FastAPI()
+    app.state.llm_config_watch_task = asyncio.ensure_future(_watch())
+    await asyncio.sleep(0)
+    await stop_config_watcher(app)
+    assert not hasattr(app.state, "llm_config_watch_task")
+    _named(lines(), "LLM config watcher ended with an error", ": RuntimeError")
 
 
 # ── container/ ────────────────────────────────────────────────────────────

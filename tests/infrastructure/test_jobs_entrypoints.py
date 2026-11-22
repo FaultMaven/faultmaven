@@ -947,7 +947,7 @@ class TestJobsPathBootGates:
 
         mock_container.initialize.assert_not_called()
 
-    def test_cli_exits_nonzero_naming_the_default(
+    def test_cli_exits_nonzero_naming_the_refusal_by_class(
         self, mock_container, monkeypatch, capsys
     ):
         """Through ``main()``: exit 1, and the refusal is named by class."""

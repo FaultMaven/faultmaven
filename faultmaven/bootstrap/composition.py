@@ -717,7 +717,9 @@ async def stop_config_watcher(app: FastAPI) -> None:
     error = await cancel_and_wait(task)
     del app.state.llm_config_watch_task
     if error is not None:
-        logger.warning(f"LLM config watcher ended with an error: {error}")
+        logger.warning(
+            f"LLM config watcher ended with an error: {exception_log_name(error)}"
+        )
 
 
 async def decompose_application(app: FastAPI, published: Mapping[str, Any]) -> None:
