@@ -304,9 +304,9 @@ async def bootstrap_kb(
             else:  # "skipped"
                 result.skipped_unchanged.append(runbook.relpath)
         except Exception as exc:
-            reason = f"{type(exc).__name__}: {exc}"
+            reason = exception_log_name(exc)
             logger.error(
-                f"Bootstrap failed for {runbook.relpath}: {exception_log_name(exc)}",
+                f"Bootstrap failed for {runbook.relpath}: {reason}",
                 exc_info=True,
             )
             result.failed.append((runbook.relpath, reason))

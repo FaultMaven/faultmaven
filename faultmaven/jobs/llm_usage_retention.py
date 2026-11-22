@@ -72,7 +72,7 @@ async def run(
             f"LLM usage retention job failed: {exception_log_name(e)}", exc_info=True
         )
         result["status"] = "failed"
-        result["error"] = str(e)
+        result["error"] = exception_log_name(e)
     return result
 
 

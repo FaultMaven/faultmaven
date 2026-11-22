@@ -378,13 +378,9 @@ async def test_bootstrap_fails_runbook_on_noncanonical_chunk_indices(
     assert len(result.failed) == 1
     failed_file, reason = result.failed[0]
     assert failed_file == "global/example.md"
-    # The refusal's text, pinned whole: it now comes from the predicate the
-    # pack gate shares (#2245).
-    assert reason == (
-        "RuntimeError: KB pack chunk ordering invalid for global/example.md: "
-        f"chunk_index sequence {list(bad_indices)} is not contiguous 0..2 in "
-        "list order — the pack is malformed (rebuild required)."
-    )
+    # The refusal, named by class: a failure reason holds no exception text
+    # (#2889 S3h).
+    assert reason == "RuntimeError"
     knowledge_service.ingest_runbook.assert_not_awaited()
 
 
@@ -442,7 +438,7 @@ async def test_bootstrap_empty_chunks_update_does_not_delete_existing_row(
 
     assert result.ingested == []
     assert len(result.failed) == 1
-    assert "no chunks" in result.failed[0][1]
+    assert result.failed[0][1] == "RuntimeError"
     # Rejected before the delete → the existing good row/vectors survive.
     knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
     knowledge_service.ingest_runbook.assert_not_awaited()
@@ -478,7 +474,7 @@ async def test_bootstrap_malformed_update_does_not_delete_existing_row(tmp_path:
 
     assert result.ingested == []
     assert len(result.failed) == 1
-    assert "chunk ordering invalid" in result.failed[0][1]
+    assert result.failed[0][1] == "RuntimeError"
     # The existing good row was NOT deleted (guard rejected before re-ingest).
     knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
     knowledge_service.ingest_runbook.assert_not_awaited()

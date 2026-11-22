@@ -109,7 +109,7 @@ async def run(
             f"KB vector enterprise backfill failed: {exception_log_name(exc)}",
             exc_info=True,
         )
-        result.update(status="failed", error=str(exc))
+        result.update(status="failed", error=exception_log_name(exc))
     return result
 
 

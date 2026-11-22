@@ -16,11 +16,12 @@ is stated on its case.
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 
+from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.lifespan import _bootstrap_kb_step
 from faultmaven.bootstrap.middleware import setup_middleware
 from faultmaven.config import tls_root_set
@@ -31,8 +32,10 @@ from faultmaven.config.investigation_capability import (
 from faultmaven.config.llm_config_overrides import apply_overrides_to_settings
 from faultmaven.config.settings import Environment, get_settings
 from faultmaven.container.providers.services import create_share_repository
+from faultmaven.jobs import case_cleanup
 from faultmaven.jobs import run as jobs_run
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
+from tests.unit.bootstrap.test_kb_init import _make_session_factory, _write_pack
 from tests.unit.infrastructure.llm.test_log_lines_name_exceptions_2889 import (
     MARKER,
     _named,
@@ -85,6 +88,25 @@ async def test_a_raising_kb_bootstrap_is_named_by_class(lines):
         await _bootstrap_kb_step(app)
     raised = _named(lines(), "KB bootstrap raised", ": RuntimeError")
     assert raised["frames"].startswith("RuntimeError")
+
+
+async def test_a_runbook_failure_reason_is_named_by_class(lines, tmp_path):
+    """``bootstrap_kb`` over a one-runbook pack whose ingest raises: the reason
+    in ``BootstrapResult.failed``, which the lifespan, ``kb_seed`` and
+    ``fm-reset-kb`` write out, is the class, and so is the line."""
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(
+        side_effect=RuntimeError(f"index refused {MARKER}")
+    )
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=None),
+        enterprise_id="ent-test",
+        project_root=tmp_path,
+        pack_dir=_write_pack(tmp_path),
+    )
+    assert result.failed == [("global/example.md", "RuntimeError")]
+    _named(lines(), "Bootstrap failed for global/example.md", ": RuntimeError")
 
 
 # ── container/ ────────────────────────────────────────────────────────────
@@ -205,3 +227,17 @@ def test_a_failed_job_run_prints_the_error_by_class(capsys, monkeypatch):
     captured = capsys.readouterr()
     assert MARKER not in captured.out + captured.err
     assert captured.err == "Error: RuntimeError\n"
+
+
+async def test_a_failed_job_result_names_the_error_by_class(lines):
+    """``case_cleanup.run`` with the case repository's read raising: the
+    result ``run_job`` logs whole ("Job completed: ...") holds the class."""
+    repository = AsyncMock()
+    repository.list_all_case_ids.side_effect = RuntimeError(f"db down {MARKER}")
+    container = SimpleNamespace(
+        case_vector_store=AsyncMock(), case_repository=repository
+    )
+    result = await case_cleanup.run(settings=MagicMock(), container=container)
+    assert (result["status"], result["error"]) == ("failed", "RuntimeError")
+    assert MARKER not in repr(result)
+    _named(lines(), "Case cleanup job failed", ": RuntimeError")

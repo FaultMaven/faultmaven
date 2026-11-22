@@ -180,7 +180,7 @@ async def run(
     except Exception as e:
         logger.error(f"KB seed job failed: {exception_log_name(e)}", exc_info=True)
         result["status"] = "failed"
-        result["error"] = str(e)
+        result["error"] = exception_log_name(e)
 
     return result
 

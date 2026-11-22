@@ -506,7 +506,7 @@ async def run_job(
             return result
         except Exception as e:
             logger.error(f"Job failed: {exception_log_name(e)}", exc_info=True)
-            return {"status": "failed", "error": str(e)}
+            return {"status": "failed", "error": exception_log_name(e)}
     finally:
         # Whatever this run initialized is done, whether the job ran or a gate
         # refused it: close what the container owns, then dispose the database

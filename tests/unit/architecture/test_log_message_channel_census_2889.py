@@ -623,6 +623,11 @@ SWITCHED_PREFIXES = (
     "_container_impl.py",
     "jobs/",
     "server.py",
+    "config/investigation_capability.py",
+    "config/llm_config_overrides.py",
+    "config/revocation_storage.py",
+    "config/secret_file.py",
+    "config/settings.py",
 )
 
 
