@@ -7,7 +7,9 @@ serves: the API's JSON and console lines, the jobs' formatter and a bytes
 renderer. ``www-authenticate``, a scopes list and a flat list are not.
 """
 
+import dataclasses
 import json
+import pprint
 
 import pytest
 
@@ -48,6 +50,13 @@ RAISERS = [
     lambda: _raise("401 with {'x-auth-token': 'VALUE'}"),
     lambda: _raise("401 with {'Set-Cookie2': 'VALUE'}"),
 ]
+
+
+@dataclasses.dataclass
+class Header:
+    name: str
+    value: str
+
 
 TEXT_NEGATIVES = [
     "www-authenticate: Bearer realm=x",
@@ -102,6 +111,26 @@ class TestEveryRenderedLine:
         get_logger("faultmaven.p").info(message)
         assert message in rendered.buffer.getvalue()
 
+    @pytest.mark.parametrize("name", ["authorization", "x-api-key"])
+    def test_a_keyword_form_record_is_blanked(self, rendered, name):
+        """A record whose fields are keywords: a grpc metadatum's repr in the
+        message, and a dataclass as a field (its repr under both renderers)."""
+        logger = get_logger("faultmaven.p")
+        logger.error(f"(_Metadatum(key='{name}', value='Bearer VALUE'),)")
+        logger.error("call failed", header=Header(name, "VALUE"))
+        lines = rendered.buffer.getvalue().splitlines()
+        assert len(lines) == 2
+        assert all("<redacted>" in line and SECRET not in line for line in lines)
+
+    def test_a_pprint_wrapped_list_of_pairs_is_blanked(self, rendered):
+        pairs = [["host", "example.com"], ["authorization", "Bearer VALUE"]]
+        headers = pprint.pformat(pairs, width=40)
+        assert "\n" in headers, "pprint did not wrap the list"
+        get_logger("faultmaven.p").error("call failed", headers=headers)
+        output = rendered.buffer.getvalue()
+        assert "call failed" in output
+        assert SECRET not in output
+
     def test_a_flat_list_is_written_unchanged(self, rendered):
         """The table excludes flat lists: a scopes list cannot be told from a
         header pair, so neither loses its second item."""
@@ -141,7 +170,7 @@ class TestJsonLines:
             # A "_" segment before the name, read as a key is (§7's table).
             *(
                 record
-                for name in ("HTTP_AUTHORIZATION", "HTTP_COOKIE", "HTTP_X-API-KEY")
+                for name in ("HTTP_AUTHORIZATION", "HTTP_COOKIE")
                 for record in (
                     {"e": [[name, "VALUE"]], "after": "kept"},
                     {"e": [{"name": name, "value": "VALUE"}], "after": "kept"},
@@ -153,6 +182,15 @@ class TestJsonLines:
         redacted = redact_log_line(json.dumps(record))
         assert SECRET not in redacted
         assert json.loads(redacted)["after"] == "kept"
+
+    def test_an_underscore_spelling_is_a_stated_gap(self):
+        # Underscore spellings are out of scope; no FaultMaven code logs a WSGI environ.
+        for record in (
+            {"e": [["HTTP_X_API_KEY", "VALUE"]]},
+            {"e": [{"name": "HTTP_X_API_KEY", "value": "VALUE"}]},
+        ):
+            line = json.dumps(record)
+            assert redact_log_line(line) == line
 
     def test_a_scopes_list_is_unchanged(self):
         line = json.dumps({"event": "e", "scopes": ["x-api-key", "authorization"]})
@@ -167,6 +205,12 @@ class TestTheTextRule:
             ("HTTP_COOKIE=sid=VALUE", "HTTP_COOKIE=<redacted>"),
             ("[('x-api-key', 'VALUE')]", "[('x-api-key', <redacted>"),
             ("[(b'x-api-key', b'VALUE')]", "[(b'x-api-key', <redacted>"),
+            # A "_" segment before a pair's name, and a repr of a repr.
+            ("[('HTTP_COOKIE', 'sid=VALUE')]", "[('HTTP_COOKIE', <redacted>"),
+            (
+                repr("[('authorization', \"Bearer VALUE\")]"),
+                "'[(\\'authorization\\', <redacted>",
+            ),
             # A list of pairs, as a repr writes decoded JSON headers.
             ("[['a', 'x'], ['cookie', 'VALUE']]", "[['a', 'x'], ['cookie', <redacted>"),
             # Prose naming a header with a separator loses the rest of its

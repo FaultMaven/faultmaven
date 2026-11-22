@@ -391,6 +391,9 @@ class TestTheCostIsLinear:
                 lambda n: json.dumps({"e": [["x-auth-token", "x"]] * n}),
             ),
             ("flat-list dense", lambda n: "['" + "x-api-key', '" * n),
+            # A pair opens before the name, and the pair's comma never comes.
+            ("pair quote run", lambda n: ("('x-api-key" + "'" * 200 + "x ") * n),
+            ("record value", lambda n: ":'x-api-key'x " * n),
         ],
     )
     def test_each_dense_shape(self, label, payload_at):
