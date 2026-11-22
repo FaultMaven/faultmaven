@@ -23,8 +23,10 @@ from typing import Callable, Optional
 
 from faultmaven.modules.case.contracts import (
     CaseOutcome,
+    CauseOutcome,
     MitigationRefusalReason,
     PendingCheckReason,
+    PoolEmptyReason,
     ProblemStatus,
 )
 
@@ -457,6 +459,55 @@ def _absence_in_failed(params: dict, outcome, log) -> list:
     ]
 
 
+#: Why the confirmation pool is empty, for the reasons that name roots: the
+#: record's ids each names (``CauseOutcome``) and its line (#2496).
+_EMPTY_POOL_BY_IDS = {
+    PoolEmptyReason.HELD_OPEN: (
+        "held_open_root_ids",
+        "none can confirm the cause while what produced {ids} is open; re-send "
+        "root_is_terminal true citing why it arose, then re-check it.",
+    ),
+    PoolEmptyReason.IDENTIFICATION_CONTESTED: (
+        "contested_root_ids",
+        "none can confirm the cause while {ids} contest it; discriminate "
+        "between them first.",
+    ),
+    PoolEmptyReason.FALLEN_WITH_OTHER_STANDING: (
+        "fallen_root_ids",
+        "none can confirm the fallen cause {ids} while another standing "
+        "hypothesis is rooted elsewhere; settle or retire it first.",
+    ),
+    PoolEmptyReason.FIX_TARGETS_OTHER_CAUSE: (
+        "fallen_root_ids",
+        "none can confirm the fallen cause {ids}: the latest fix acted on a "
+        "different cause.",
+    ),
+}
+
+
+def empty_pool_text(cause: CauseOutcome) -> Optional[str]:
+    """Why the confirmation pool is empty, as the record holds it
+    (``pool_empty_reason``, #2496), naming the first five of the ids the
+    reason names. None where the record says no more than that no row
+    supports the cause: no reason, a reason whose ids are empty, or
+    ``NO_CAUSE`` beside an identification leg."""
+    reason = cause.pool_empty_reason
+    if reason == PoolEmptyReason.ROOTLESS_VALIDATED_ONLY:
+        return (
+            "the validated hypothesis has no root node to re-check; attach it "
+            "to a root cause first."
+        )
+    if reason == PoolEmptyReason.NO_CAUSE:
+        if cause.identification_leg is not None:
+            return None
+        return "no root cause is on record that a re-check can confirm."
+    if reason not in _EMPTY_POOL_BY_IDS:
+        return None
+    field, line = _EMPTY_POOL_BY_IDS[reason]
+    ids = ", ".join(getattr(cause, field)[:5])
+    return line.format(ids=ids) if ids else None
+
+
 def unbound_lines(
     params: dict, outcome: Optional[CaseOutcome]
 ) -> list[tuple[str, list[str]]]:
@@ -465,7 +516,8 @@ def unbound_lines(
     unbound stretch (``narrated_turn`` None), whatever turn recorded it,
     while the record's problem is VERIFIED. What they could name, its ``why``
     and whether the confirmation pool has roots are the decider's params, as
-    it read them (decide-time, A4). One line for the rows their window binds
+    it read them (decide-time, A4); with no pool, why it is empty is the
+    record's (``empty_pool_text``). One line for the rows their window binds
     but the verdict does not cite, then one for the rows that name nothing
     that binds; five ids each, so a row not named stays to be told."""
     if outcome is None or outcome.problem.status != ProblemStatus.VERIFIED:
@@ -485,7 +537,9 @@ def unbound_lines(
             "it), then re-check one of them."
         )
     else:
-        cause_text = "none supports the root cause alone yet."
+        cause_text = (
+            empty_pool_text(outcome.cause) or "none supports the root cause alone yet."
+        )
     lines = []
     if uncited:
         lines.append(

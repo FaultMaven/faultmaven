@@ -6,6 +6,7 @@ from faultmaven.core.investigation.cause_identification import cause_identificat
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
 from faultmaven.core.investigation.narration.offers import confirmation_message
 from faultmaven.core.investigation.narration.replies import (
     _CLOSED_REPLIES,
@@ -78,7 +79,8 @@ def resolution_confirmation_params(case) -> dict:
     A4): whether a cause is identified and the rows that confirm the
     resolution from the record folded at that moment (#2811 S2b-2b), and the
     root cause, the solution and which optional details would improve the
-    documentation from the case's content (``ResolutionContent``). A fold
+    documentation from the case's content (``ResolutionContent``), the
+    confirming attempt's description by its id (``content_by_id``). A fold
     failure outside ``cause_identification_leg`` and
     ``resolution_record_lines`` renders from the decider's read
     (``_confirmation_outcome_fresh``); a failure inside them raises, as on
@@ -88,7 +90,9 @@ def resolution_confirmation_params(case) -> dict:
     if outcome is None:
         leg, record_lines = _confirmation_outcome_fresh(case)
         return confirmation_params_of(leg, record_lines, resolution_content(case))
-    return confirmation_params(outcome, resolution_content(case))
+    return confirmation_params(
+        outcome, resolution_content(case), lambda item_id: content_by_id(case, item_id)
+    )
 
 
 def _build_resolution_confirmation(case) -> str:
@@ -109,20 +113,25 @@ def _terminal_confirmation_response(case) -> str:
     (``narration.replies.terminal_status_line``).
 
     The closure's reason and mitigation line are the record's (#2811
-    S2b-2b): the closure the terminal transition wrote, and a re-fold only
+    S2b-2b), and so are the identification leg and the attempts its line
+    names (S2c-1): the closure the terminal transition wrote, and a re-fold only
     when that write failed (the stored record is not terminal). The terminal
     reply is composed by ``_compose_terminal_reply`` which appends the
     auto-generated summary content (when produced).
     """
     if case.state == CaseState.RESOLVED:
-        return terminal_status_line(case.state, None, None)
+        return terminal_status_line(case.state, None, None, leg=None, attempts=())
     stored = case.progress.outcome
     if stored is None or not stored.folded_under.is_terminal:
         stored = _reply_outcome(case)
         if stored is None:
             return _record_free_reply(case)
     return terminal_status_line(
-        case.state, stored.closure.reason, stored.closure.statement
+        case.state,
+        stored.closure.reason,
+        stored.closure.statement,
+        leg=stored.cause.identification_leg,
+        attempts=stored.attempts,
     )
 
 

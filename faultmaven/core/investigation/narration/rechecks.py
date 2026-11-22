@@ -30,8 +30,6 @@ _TEXTS = {
     ),
 }
 
-_LATEST_FAILED = "the latest fix was seen failing; only a new fix can confirm"
-
 
 def recheck_text(why: Optional[RecheckWhy]) -> Optional[str]:
     """The clause for ``why``, or None for a row that counts."""
@@ -90,7 +88,15 @@ def no_window_text(window: NoConfirmingWindow) -> str:
             return seen + pending
         if window.fix_turn is None:
             return f"{seen}; only a new fix can confirm"
-    return _LATEST_FAILED
+        # The turns the record holds, the failure's only when it is held.
+        failed_at = (
+            f" at turn {window.failure_turn}" if window.failure_turn is not None else ""
+        )
+        return f"{which} was seen failing{failed_at}; only a new fix can confirm"
+    # LATEST_FAILED: no fix window was observed (#2583).
+    return (
+        "no re-check after the latest fix is on record; re-check the cause " "after it"
+    )
 
 
 def uncited_text(uncited: UncitedRecheck) -> str:

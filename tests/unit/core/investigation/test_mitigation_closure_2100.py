@@ -435,18 +435,26 @@ _WITH_RECORD = {
 }
 
 
+def _reason_line(reason: ClosureReason) -> str:
+    """The reason's line on these cases, which hold no accepted fix: the
+    record's for ``solution_deferred`` (#2421), the table's otherwise."""
+    if reason == ClosureReason.SOLUTION_DEFERRED:
+        return f"{_CLOSED_REPLIES[reason]} It was not carried out in the case."
+    return _CLOSED_REPLIES[reason]
+
+
 @pytest.mark.parametrize("reason", list(ClosureReason))
 def test_each_reasons_reply_with_and_without_a_record(reason):
     case, _shown = _mitigation(attempt=6, relief=7)
     expected = _WITH_RECORD[reason]
     if expected is None:
-        expected = _CLOSED_REPLIES[reason]
+        expected = _reason_line(reason)
     elif expected == "follows":
-        expected = f"{_CLOSED_REPLIES[reason]} {_LINE}"
+        expected = f"{_reason_line(reason)} {_LINE}"
     reply = _terminal_confirmation_response(_closed(case, reason))
     assert reply == expected
     bare = _terminal_confirmation_response(_closed(_case(), reason))
-    assert bare == _CLOSED_REPLIES[reason]
+    assert bare == _reason_line(reason)
     assert "stabiliz" not in reply + bare
 
 

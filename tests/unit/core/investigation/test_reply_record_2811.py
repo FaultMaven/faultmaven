@@ -128,6 +128,11 @@ async def test_the_adapters_read_no_case_field(monkeypatch, name):
     outcome, content = narration_outcome(case), resolution_content(case)
     monkeypatch.setattr(replies_module, "narration_outcome", lambda _c: outcome)
     monkeypatch.setattr(replies_module, "resolution_content", lambda _c: content)
+    # The text accessor reads the case itself, as ``resolution_content`` does.
+    real = replies_module.content_by_id
+    monkeypatch.setattr(
+        replies_module, "content_by_id", lambda _c, item_id: real(case, item_id)
+    )
     poisoned = _Poisoned(case)
     want = ORACLE[name]
     assert resolution_confirmation_params(poisoned) == want["params"]
@@ -157,9 +162,12 @@ _CONTENT = ResolutionContent("the root", "the fix", True, False)
 
 
 def _record(case, *, leg, statement="- the crafted record line"):
+    """The case's record with ``leg`` and ``statement``, and no attempt, so
+    the solution named is ``ResolutionContent``'s."""
     outcome = narration_outcome(case)
     return outcome.model_copy(
         update={
+            "attempts": [],
             "cause": outcome.cause.model_copy(update={"identification_leg": leg}),
             "resolution": outcome.resolution.model_copy(
                 update={"statement": statement}
@@ -230,9 +238,18 @@ async def test_the_closed_reply_states_the_closure_the_transition_wrote():
 
 @pytest.mark.parametrize("reason", list(ClosureReason))
 def test_every_closure_reason_renders_with_and_without_a_line(reason):
-    bare = terminal_status_line(CaseState.CLOSED, reason, None)
-    assert bare == _CLOSED_REPLIES[reason] and bare.startswith("Case closed")
-    lined = terminal_status_line(CaseState.CLOSED, reason, "a line was seen")
+    """With no leg and no attempt on record: the table's line, but
+    ``solution_deferred``'s, which says its fix was not carried out (#2421)."""
+    bare = terminal_status_line(CaseState.CLOSED, reason, None, leg=None, attempts=())
+    table = _CLOSED_REPLIES[reason]
+    if reason == ClosureReason.SOLUTION_DEFERRED:
+        assert bare == f"{table} It was not carried out in the case."
+    else:
+        assert bare == table
+    assert bare.startswith("Case closed")
+    lined = terminal_status_line(
+        CaseState.CLOSED, reason, "a line was seen", leg=None, attempts=()
+    )
     if reason == ClosureReason.MITIGATION_SUFFICIENT:
         assert (
             lined == "Case closed — a line was seen; root-cause analysis was deferred."
@@ -244,7 +261,10 @@ def test_every_closure_reason_renders_with_and_without_a_line(reason):
 
 
 def test_a_resolve_renders_whatever_the_closure():
-    assert terminal_status_line(CaseState.RESOLVED, None, "x") == "Case resolved."
+    assert (
+        terminal_status_line(CaseState.RESOLVED, None, "x", leg="chain", attempts=())
+        == "Case resolved."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -285,13 +305,19 @@ async def test_a_failed_fold_confirms_from_the_deciders_read(
     monkeypatch, failures, caplog, name
 ):
     """A fold failure outside the confirmation's two derivations renders
-    from the decider's read."""
+    from the decider's read. With no record, no confirming attempt is named:
+    the solution is the latest one's text (#2811 S2c-1), and the rest is the
+    oracle's."""
     case = await build(name)
+    latest = resolution_content(case).solution
     monkeypatch.setattr(replies_module, "narration_outcome", _raise)
     with caplog.at_level(logging.ERROR, logger=replies_module.__name__):
         params = resolution_confirmation_params(case)
-    assert params == ORACLE[name]["params"]
-    assert confirmation_message(params) == ORACLE[name]["confirmation"]
+    want = ORACLE[name]["params"]
+    assert params == {**want, "solution": latest}
+    assert confirmation_message(params) == ORACLE[name]["confirmation"].replace(
+        f"- **Solution**: {want['solution']}\n", f"- **Solution**: {latest}\n"
+    )
     assert failures == [WritePoint.NARRATION]
     (record,) = _logged(caplog)
     assert record.exc_info is not None

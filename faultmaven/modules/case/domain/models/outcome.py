@@ -138,7 +138,7 @@ class NoWindowKind(StrEnum):
     NO_LONGER_IDENTIFIED = "no_longer_identified"
     """The latest observed fix acted on a cause no longer identified."""
     LATEST_FAILED = "latest_failed"
-    """None of the above: the latest fix was seen failing."""
+    """No fix window was observed."""
 
 
 class NoConfirmingWindow(BaseModel):

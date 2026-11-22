@@ -382,9 +382,9 @@ def test_an_uncited_pool_root_binds_nothing_until_the_verdict_is_re_sent():
     assert "RE-ROOT" in feedback
 
 
-def test_with_no_cause_in_the_pool_the_feedback_keeps_its_line():
+def test_with_no_cause_in_the_pool_the_feedback_says_why_it_is_empty():
     """No pool (the root has no verdict, nothing recorded): the unnamed row's
-    line says no row supports the root cause alone yet, as before."""
+    line says why, as the record holds it (#2496): the root's why is open."""
     case, root, _hyp = _identified_case()
     root.metadata = {}
     _recompute_at(case, 5)
@@ -395,7 +395,12 @@ def test_with_no_cause_in_the_pool_the_feedback_keeps_its_line():
     assert subject_index(case).subject(row, windows=True) == SUBJECT_UNBOUND
     feedback = _feedback(case)
     assert f"Post-fix row(s) {row.evidence_id} name nothing" in feedback
-    assert "none supports the root cause alone yet." in feedback
+    assert (
+        f"none can confirm the cause while what produced {root.node_id} is "
+        "open; re-send root_is_terminal true citing why it arose, then "
+        "re-check it."
+    ) in feedback
+    assert "none supports the root cause alone yet." not in feedback
     assert _NO_CITATION not in feedback
 
 

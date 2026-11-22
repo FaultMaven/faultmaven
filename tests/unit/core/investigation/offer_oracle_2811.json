@@ -2253,7 +2253,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: Post-mitigation row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
+      "SYSTEM: Post-mitigation row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: no root cause is on record that a re-check can confirm."
     ],
     "prose": {}
   },
@@ -2324,7 +2324,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
+      "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing why it arose, then re-check it."
     ],
     "prose": {}
   },
@@ -2409,7 +2409,7 @@
   "turn:offer:model_confirmation_no_cause": {
     "basis": "model",
     "prose": {},
-    "summary": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first."
+    "summary": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first."
   },
   "turn:offer:model_readiness": {
     "basis": "model",
