@@ -37,6 +37,9 @@ _CONFIG_VERSION_KEY = "faultmaven:llm_config:version"
 # it is the per-replica high-water mark compared against the shared Redis value.
 _last_applied_version: Optional[int] = None
 
+# The newest generation a reload has taken; only that reload installs (#2320).
+_reload_generation = 0
+
 # Maps override keys to (settings attribute path, type converter)
 # Only keys in this map are accepted — prevents arbitrary setting injection.
 _ALLOWED_OVERRIDES = {
@@ -158,7 +161,9 @@ async def reload_llm_config() -> None:
     Call after writing new overrides to the database. This:
     1. Builds fresh settings from the env vars, off the singleton
     2. Re-reads overrides from DB and applies them to those settings
-    3. Installs them as the singleton, in one step
+    3. Installs them as the singleton, in one step, unless a later reload has
+       started since step 1: the reload that started last installs, so an older
+       override read that returns last never overwrites a newer one
     4. Resets the provider registry (forces re-initialization)
 
     Until step 3 every reader, the router's per-call timeout included, sees the
@@ -169,9 +174,15 @@ async def reload_llm_config() -> None:
     from faultmaven.config.settings import build_settings, install_settings
     from faultmaven.infrastructure.llm.providers.registry import reset_registry
 
+    global _reload_generation
     settings = build_settings()
+    _reload_generation += 1
+    generation = _reload_generation
     await apply_overrides_to_settings(settings)
 
+    if generation != _reload_generation:
+        logger.debug("LLM config reload superseded by a newer reload")
+        return
     install_settings(settings)
     # Reset registry so it picks up the updated settings
     reset_registry()

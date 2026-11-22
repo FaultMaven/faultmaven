@@ -18,8 +18,9 @@ by switching the provider whose per-provider override applies; the base
 
 Read live, the router also sees whatever the reload installs while it runs, so
 the reload builds the next settings off the singleton and installs them in one
-step: a call during its override read keeps the previous ceiling, and a build
-that raises keeps the previous settings.
+step: a call during its override read keeps the previous ceiling, a build that
+raises keeps the previous settings, and of overlapping reloads the one that
+started last installs.
 """
 
 import asyncio
@@ -165,3 +166,40 @@ async def test_a_rebuild_that_raises_keeps_the_previous_settings(
 
     assert get_settings() is previous
     assert router._resolve_timeout() == pytest.approx(OVERRIDES["fireworks"])
+
+
+async def test_an_older_read_finishing_last_keeps_the_newer_state(
+    live_settings, monkeypatch
+):
+    """Reload A's override read begins before an admin write; reload B starts
+    after it and installs the newer state. A's stale read then returns: the
+    reload that started last keeps its state installed."""
+    a_reading, a_release = asyncio.Event(), asyncio.Event()
+    calls = {"n": 0}
+
+    async def store():
+        calls["n"] += 1
+        if calls["n"] == 1:  # reload A: its read began before the admin write
+            a_reading.set()
+            await a_release.wait()
+            return {"primary_provider": "fireworks"}  # the older state
+        return {"primary_provider": "anthropic"}  # the newer state (B)
+
+    monkeypatch.setattr(llm_config_repository, "get_all_overrides", store)
+    a = asyncio.create_task(llm_config_overrides.reload_llm_config())
+    await a_reading.wait()
+    await llm_config_overrides.reload_llm_config()  # B completes
+    a_release.set()
+    await a
+
+    assert get_settings().llm.provider.value == "anthropic"
+
+
+async def test_a_later_reload_that_does_not_overlap_installs(
+    live_settings, monkeypatch
+):
+    """With A finished before B starts, B's state is installed."""
+    await _reload_with(monkeypatch, {"primary_provider": "fireworks"})
+    await _reload_with(monkeypatch, {"primary_provider": "anthropic"})
+
+    assert get_settings().llm.provider.value == "anthropic"
