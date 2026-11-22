@@ -326,18 +326,22 @@ def resolve_chat_provider_name(settings) -> Optional[str]:
     return provider_name
 
 
+def _base_request_timeout(settings) -> float:
+    """The global per-request ceiling: ``LLM_REQUEST_TIMEOUT``, else the setting."""
+    return float(os.getenv("LLM_REQUEST_TIMEOUT", str(settings.llm.request_timeout)))
+
+
 def resolve_request_timeout(settings) -> float:
     """The per-request LLM timeout the active provider would be called with.
 
-    The instance method ``LLMRouter._resolve_timeout`` is what a real call uses;
-    this is the same arithmetic for callers that have settings but no router —
-    the configuration report on ``GET /admin/config/status``, which needs to
-    know what ONE attempt costs in order to say whether the retry ladder fits
-    inside the turn deadline.
+    The one statement of the rule: ``LLMRouter._resolve_timeout`` clamps this,
+    read from the live settings, to the turn; the configuration report on
+    ``GET /admin/config/status`` reads it to say whether the retry ladder fits
+    inside the turn deadline. One rule over one settings object, so the two
+    agree after a config reload (#2320).
     """
-    base = float(os.getenv("LLM_REQUEST_TIMEOUT", str(settings.llm.request_timeout)))
     override = settings.llm.timeout_for_provider(resolve_chat_provider_name(settings))
-    return float(max(override, base))
+    return float(max(override, _base_request_timeout(settings)))
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):
@@ -361,15 +365,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
 
-        # Get timeout from settings with environment variable override.
-        # Per-provider overrides (LLMSettings.provider_timeout_overrides /
-        # LLM_PROVIDER_TIMEOUT_OVERRIDES) are resolved at call time in
-        # ``_resolve_timeout`` below, since the chosen provider may differ
-        # from the configured default when fallback chains fire.
-        self.settings = get_settings()
-        self.request_timeout = float(
-            os.getenv("LLM_REQUEST_TIMEOUT", str(self.settings.llm.request_timeout))
-        )
+        # Settings and timeouts are read live (the ``settings`` and
+        # ``request_timeout`` properties), never snapshotted, so a config
+        # reload reaches the router (#2320).
 
         # Don't initialize registry immediately - wait for first use
         self.logger.info(
@@ -379,6 +377,20 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.logger.info("🔍 LLMRouter registry will be initialized on first use")
 
     @property
+    def settings(self):
+        """The live settings singleton, never a construction-time copy.
+
+        ``reload_llm_config`` replaces the singleton; a copy kept here would
+        leave the router on the old provider's timeout (#2320).
+        """
+        return get_settings()
+
+    @property
+    def request_timeout(self) -> float:
+        """The global per-request ceiling, from the live settings."""
+        return _base_request_timeout(get_settings())
+
+    @property
     def sanitizer(self) -> Any:
         """The sanitizer the outbound pass redacts with: the composition's.
 
@@ -386,8 +398,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         engine, the case title and the conversions redact with, so a
         composition builds one ``DataSanitizer`` and probes Presidio once
         (#2235). A router built outside the composition root (a script, a test)
-        has none injected; it builds one on first read, from the settings it
-        was built with, and says so, so a second construction is never silent
+        has none injected; it builds one on first read, from the live settings
+        at that read, and says so, so a second construction is never silent
         and the pass never runs with no sanitizer at all.
 
         Deleted, it reads like a deleted attribute: ``AttributeError``, so the
@@ -403,7 +415,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 "LLMRouter is redacting with a sanitizer it built itself, not "
                 "the composition's"
             )
-            sanitizer = self._sanitizer = DataSanitizer(settings=self.settings)
+            sanitizer = self._sanitizer = DataSanitizer(settings=get_settings())
         return sanitizer
 
     @sanitizer.setter
@@ -430,11 +442,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
     def _resolve_timeout(self) -> float:
         """Return the request timeout for the currently-active primary provider.
 
-        Looks up the configured CHAT_PROVIDER name and applies any per-
-        provider override from ``LLMSettings.provider_timeout_overrides``.
-        Falls back to ``self.request_timeout`` (the env-overridden default)
-        for unknown providers, so behaviour is unchanged when overrides
-        are empty (the common case).
+        ``resolve_request_timeout`` over the live settings: the configured
+        CHAT_PROVIDER's override from ``LLMSettings.provider_timeout_overrides``,
+        never below ``request_timeout`` (the env-overridden default). Read per
+        call, so a config reload that switches the primary provider moves it,
+        and it is the figure ``GET /admin/config/status`` reports (#2320).
 
         Provider-aware timeouts let slow models (Fireworks DeepSeek V4 Pro,
         local Ollama on CPU) exceed the global 30-90s ceiling without
@@ -459,13 +471,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Outside a turn (background jobs, the CLI, direct-call tests) the clamp
         is inert and the resolved ceiling is returned unchanged.
         """
-        override = self.settings.llm.timeout_for_provider(
-            resolve_chat_provider_name(self.settings)
-        )
-        # If the user has explicitly raised the env var above the override,
-        # respect that ceiling (env is the operator's last word).
-        resolved = float(max(override, self.request_timeout))
-        return clamp_to_turn_budget(resolved)
+        return clamp_to_turn_budget(resolve_request_timeout(get_settings()))
 
     @_opik_track_llm("llm_router_route")
     async def route(

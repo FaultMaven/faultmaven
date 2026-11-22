@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.config.settings import reset_settings
+from faultmaven.config.settings import get_settings, reset_settings
 from faultmaven.infrastructure.llm.router import LLMRouter
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from tests.utils import sanitizer_constructions
@@ -60,8 +60,8 @@ def test_a_router_given_none_builds_one_on_first_read_and_says_so(
     constructions, caplog
 ):
     """Built outside the composition root, the router still redacts, with one
-    sanitizer it builds once, from the settings the router was built with,
-    and the second construction is not silent."""
+    sanitizer it builds once, from the live settings at that first read
+    (#2320), and the second construction is not silent."""
     router = LLMRouter()
     assert constructions == [], "the router built its sanitizer before any read"
     reset_settings()  # the process settings move on before the first read
@@ -73,7 +73,7 @@ def test_a_router_given_none_builds_one_on_first_read_and_says_so(
     assert isinstance(first, DataSanitizer)
     assert second is first
     assert constructions == [first]
-    assert first._settings is router.settings
+    assert first._settings is get_settings()
     assert len(_self_built_warnings(caplog)) == 1
 
 
