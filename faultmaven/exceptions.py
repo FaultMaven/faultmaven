@@ -1248,8 +1248,9 @@ class UserLookupFailed(RepositoryError):
                 CLIs try several in sequence, so "which one broke" is the
                 difference between a typo and an outage.
             identifier: The value looked up. Echoed back to whoever supplied it,
-                never to a different party: it reaches CLI output, and the HTTP
-                path replaces the whole body with a generic message.
+                never to a different party: it reaches CLI output and structured
+                logs, and the HTTP path replaces the whole body with a generic
+                message.
         """
         super().__init__(message, details={"lookup": lookup, "identifier": identifier})
         self.lookup = lookup
