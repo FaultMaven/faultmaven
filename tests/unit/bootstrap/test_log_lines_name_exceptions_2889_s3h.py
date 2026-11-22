@@ -33,11 +33,13 @@ from faultmaven.config.investigation_capability import (
 )
 from faultmaven.config.llm_config_overrides import apply_overrides_to_settings
 from faultmaven.config.settings import Environment, get_settings
+from faultmaven.container.providers import infrastructure as infra_providers
 from faultmaven.container.providers.services import create_share_repository
 from faultmaven.jobs import case_cleanup
 from faultmaven.jobs import run as jobs_run
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 from tests.unit.bootstrap.test_kb_init import _make_session_factory, _write_pack
+from tests.unit.container.conftest import make_chroma_settings, make_private_container
 from tests.unit.infrastructure.llm.test_log_lines_name_exceptions_2889 import (
     MARKER,
     _named,
@@ -140,6 +142,57 @@ def test_a_factory_construction_failure_is_named_by_class(lines):
     ):
         create_share_repository()
     _named(lines(), "ShareRepository initialization failed", ": RuntimeError")
+
+
+class _Composed(BaseException):
+    """Ends ``register_infrastructure`` once the vector store is registered."""
+
+
+async def test_a_failed_service_record_is_named_by_class(lines, monkeypatch):
+    """``register_infrastructure`` on a private container, the factories before
+    the vector store stubbed, with ``FileStorageService`` and
+    ``create_vector_store`` raising and the composition ended just after. The
+    registry's record (``vector_store``'s is ``/health``'s ``last_error``) and
+    the ``Service ... failed`` line name the class."""
+    container = make_private_container()
+    container.settings = make_chroma_settings()
+    for factory in (
+        "create_sanitizer",
+        "create_tracer",
+        "create_llm_provider",
+        "create_log_processor",
+        "create_data_classifier",
+        "create_preprocessing_service",
+        "create_deep_analysis_service",
+        "create_kb_chromadb_client",
+        "create_evidence_chromadb_client",
+    ):
+        monkeypatch.setattr(infra_providers, factory, MagicMock())
+    monkeypatch.setattr(infra_providers, "create_extractors", lambda: {})
+    monkeypatch.setattr(
+        "faultmaven.modules.evidence.domain.services.file_storage_service."
+        "FileStorageService",
+        MagicMock(side_effect=OSError(f"storage root unwritable {MARKER}")),
+    )
+    monkeypatch.setattr(
+        infra_providers,
+        "create_vector_store",
+        MagicMock(side_effect=RuntimeError(f"chroma at db.internal {MARKER}")),
+    )
+    monkeypatch.setattr(
+        infra_providers,
+        "register_knowledge_vector_store",
+        MagicMock(side_effect=_Composed()),
+    )
+    with pytest.raises(_Composed):
+        await infra_providers.register_infrastructure(container)
+    assert dict(container.registry.get_failed_services()) == {
+        "file_storage_service": "OSError",
+        "vector_store": "RuntimeError",
+    }
+    rendered = lines()
+    _named(rendered, "Service file_storage_service failed", ": OSError")
+    _named(rendered, "Service vector_store failed", ": RuntimeError")
 
 
 # ── config/ ───────────────────────────────────────────────────────────────
