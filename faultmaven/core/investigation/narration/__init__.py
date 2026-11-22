@@ -8,9 +8,13 @@ its params (``offers``, ``notices``); the renderers of the decision log's
 notice codes (``codes``, ``notices.render_notice``) and of its offer codes
 (``offers.render_offer``) run after the cycle's last decider: B1b's also read
 the cycle's record, B1c's and B1d's render the facts their deciders read
-(#2636). ``fix_verification`` renders the prompt's ``<fix_verification>``
-block from the record (#2811 S2b-1a), its need lines from the needs pool's
-typed view (``needs.NeedsView``, S2b-1b-i); ``evidence_needs`` renders the
+(#2636), but the held check's and the offers' in ``offers.RECORD_PROSE``,
+which state the record where it agrees with the decision on every field it
+was decided from, and their deciders' facts where it does not (#2811 S2b-2c);
+the other offers wait for stage S3. ``fix_verification`` renders the prompt's
+``<fix_verification>`` block from the record (#2811 S2b-1a), its need lines
+from the needs pool's typed view (``needs.NeedsView``, S2b-1b-i);
+``evidence_needs`` renders the
 ``<evidence_needs>`` block from that view and the record (S2b-1b-ii);
 ``prompt_state`` selects the prompt's milestone status, exclusion rule,
 focus emphasis and state summary's verified line, and the fallback prompt's

@@ -6,10 +6,12 @@ holds its place in ``system_notices`` with a token. ``narrate_turn`` replaces
 each token with what the code renders (``narration.notices``): from the
 cycle's record for a code in ``READS_THE_RECORD``, from its params for every
 other but the unbound re-checks (below). Each offer code's prose is rendered
-(``narration.offers.render_offer``) from its params, with the outcome facts
-taken from the record for an offer in ``RECORD_PROSE`` (#2811 S2b-2c),
-published under its key (``PROSE_KEYS``) and written as the offer's summary
-(B1d). The request text of the need the record holds the resolution for is
+(``narration.offers.render_offer``) from its params, published under its key
+(``PROSE_KEYS``) and written as the offer's summary (B1d). The held check
+(``PENDING_CHECK``) and an offer in ``RECORD_PROSE`` state the record when it
+agrees with the decision on every field the decision was decided from
+(``_agreed_outcome``), and their decider's params when it does not (#2811
+S2b-2c). The request text of the need the record holds the resolution for is
 read once, through the narrators' text accessor (``content_by_id``), and
 handed to the renderers that state it. It runs once per
 turn, in ``_finalize_turn``, before the turn record copies the notices. A
@@ -43,7 +45,11 @@ from faultmaven.core.investigation.narration.notices import (
     render_notice,
     unbound_lines,
 )
-from faultmaven.core.investigation.narration.offers import record_params, render_offer
+from faultmaven.core.investigation.narration.offers import (
+    RECORD_PROSE,
+    record_params,
+    render_offer,
+)
 from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
@@ -68,13 +74,14 @@ UNBOUND_TOLD_KEY = "unbound_told"
 def _outcome(case: Any, metadata: dict, log: list) -> Optional[CaseOutcome]:
     """The record the cycle wrote; when its write failed, the outcome computed
     in memory for the narration alone, never stored (its fold counts nothing,
-    #2689), and only when a code in the log has a renderer that
-    reads the record (``READS_THE_RECORD``). None when no such code is logged,
-    or when that computation fails too: the renderers then fall back on the
-    facts their deciders recorded."""
+    #2689), and only when a decision in the log is rendered from the record:
+    a notice code in ``READS_THE_RECORD``, or an offer in ``RECORD_PROSE`` by
+    its code and composer. None when no such decision is logged, or when that
+    computation fails too: the renderers then fall back on the facts their
+    deciders recorded."""
     if metadata.get(OUTCOME_WRITTEN_KEY):
         return case.progress.outcome
-    if not any(entry["code"] in READS_THE_RECORD for entry in log):
+    if not any(_reads_the_record(e["code"], e["params"]) for e in log):
         return None
     try:
         return narration_outcome(case)
@@ -128,6 +135,45 @@ def _decided_as_recorded(params: dict, outcome: CaseOutcome, field: str) -> bool
     return _agrees(field, params[DECIDED_PARAMS[field]], _recorded(outcome, field))
 
 
+def _disagreements(code: str, params: dict, outcome: CaseOutcome) -> list[str]:
+    """Each field ``code``'s decision was decided from (``DECIDED_FROM``)
+    that ``outcome`` does not state as decided. A field that refines another
+    (``REFINES``) is compared only where its parent agrees, so a decision
+    lists a disagreement once. The one comparison of a decision with the
+    record: the conflict counter's and the narration's."""
+    fields = DECIDED_FROM.get((code, params.get("composer")), ())
+    found = []
+    for field in fields:
+        parent = REFINES.get(field)
+        if parent in fields and not _decided_as_recorded(params, outcome, parent):
+            continue
+        if not _decided_as_recorded(params, outcome, field):
+            found.append(field)
+    return found
+
+
+def _reads_the_record(code: str, params: dict) -> bool:
+    """Whether the decision renders from the record: a notice code in
+    ``READS_THE_RECORD``, or an offer in ``RECORD_PROSE``."""
+    return code in READS_THE_RECORD or (code, params.get("composer")) in RECORD_PROSE
+
+
+def _agreed_outcome(
+    code: str, params: dict, outcome: Optional[CaseOutcome]
+) -> Optional[CaseOutcome]:
+    """``outcome`` for a switched decision (``PENDING_CHECK``, an offer in
+    ``RECORD_PROSE``) the record agrees with on every field it was decided
+    from (``_disagreements``); None for one it disagrees with, which then
+    renders from its decider's params, as before #2811 S2b-2c (the conflict
+    is counted either way). Any other decision's ``outcome`` unchanged."""
+    if outcome is None or not (
+        code == NoticeCode.PENDING_CHECK
+        or (code, params.get("composer")) in RECORD_PROSE
+    ):
+        return outcome
+    return None if _disagreements(code, params, outcome) else outcome
+
+
 def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
     """The conflict labels (``narration.<code>``) of each field a decision was
     decided from (``DECIDED_FROM``) that the stored record does not state as
@@ -136,24 +182,19 @@ def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
     decision logged under two codes (step 2's pending check and its
     needs-info request) is one conflict, and a field that refines another
     (``REFINES``) is compared only where its parent agrees, so a decision
-    counts it at most once. Counted only after the turn commits (#2689). The
-    decision's text is rendered either way (A4); stage S3 switches the
-    deciders to the record."""
+    counts it at most once (``_disagreements``). Counted only after the turn
+    commits (#2689). A conflicting decision's text is its decider's (A4,
+    ``_agreed_outcome``); stage S3 switches the deciders to the record."""
     counted = set()
     found = []
     for entry in log:
         params = entry["params"]
-        fields = DECIDED_FROM.get((entry["code"], params.get("composer")), ())
-        for field in fields:
-            parent = REFINES.get(field)
-            if parent in fields and not _decided_as_recorded(params, outcome, parent):
-                continue
+        for field in _disagreements(entry["code"], params, outcome):
             decided = params[DECIDED_PARAMS[field]]
-            recorded = _recorded(outcome, field)
-            if _agrees(field, decided, recorded) or (field, decided) in counted:
+            if (field, decided) in counted:
                 continue
             counted.add((field, decided))
-            _count(entry["code"], field, decided, recorded)
+            _count(entry["code"], field, decided, _recorded(outcome, field))
             found.append(f"narration.{entry['code']}")
     return found
 
@@ -184,9 +225,10 @@ def _narrate_offer(
     request_text: Optional[str],
 ) -> None:
     """Publish the offer's prose under its key, and write it as the summary
-    of the offer it opened while that offer is open. The prose states the
-    cycle's ``outcome`` where an offer in ``RECORD_PROSE`` has one
-    (``record_params``), else its decider's params. An offer that lapsed in
+    of the offer it opened while that offer is open. The prose states
+    ``outcome``, the record where it agrees with the decision
+    (``_agreed_outcome``), for an offer in ``RECORD_PROSE`` (``record_params``),
+    else its decider's params. An offer that lapsed in
     the cycle that opened it shows nothing: no prose, so no confirmation pair
     (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
     if _lapsed(case, params.get("proposal_id")):
@@ -276,8 +318,9 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     request_text = content.text if content is not None else None
     for entry in log:
         code, params = entry["code"], entry["params"]
+        agreed = _agreed_outcome(code, params, outcome)
         if code in _OFFER_CODES:
-            _narrate_offer(case, metadata, code, params, outcome, request_text)
+            _narrate_offer(case, metadata, code, params, agreed, request_text)
             continue
         if entry["token"] is None:
             continue
@@ -290,5 +333,5 @@ def narrate_turn(case: Any, metadata: dict) -> None:
         if code == NoticeCode.UNBOUND_RECHECKS:
             texts = [line for line, _ids in told] if entry is unbound[0] else []
         else:
-            texts = render_notice(code, params, outcome, log)
+            texts = render_notice(code, params, agreed, log)
         _replace_token(metadata, entry["token"], texts)

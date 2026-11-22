@@ -1,15 +1,17 @@
 """The held check's notice and the offer prose state the cycle's record
-(#2811 S2b-2c, #2615 stage S2; ruling (a) of 2026-11-22).
+where it agrees with the decision (#2811 S2b-2c, #2615 stage S2; ruling (a)
+of 2026-11-22).
 
 Switched: ``PENDING_CHECK``, ``RCA_INFEASIBLE_CLOSE``, ``BACKSTOP_RESOLVE``,
 ``FALSE_ALARM_CLOSE``, ``DEFERRED_CLOSE``, ``NEEDS_INFO_UNMET_CLOSE``,
-``RESOLUTION_NEEDS_INFO`` and the model proposal's readiness ask: each takes
-the outcome facts its text states from ``case.progress.outcome``, the need's
-request text through the narrators' text accessor (``content_by_id``).
+``RESOLUTION_NEEDS_INFO`` and the model proposal's readiness ask. Where the
+record agrees with the decision on every field it was decided from
+(``DECIDED_FROM``, compared as the conflict counter compares them), each takes
+the facts its text states from ``case.progress.outcome``, the need's request
+text through the narrators' text accessor (``content_by_id``). Where it does
+not, the text is the decider's, as on ``main``, and the conflict is counted.
 Kept until stage S3: ``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the model
 proposal's confirmation and closure, which render their decider's params.
-Where the record and the decider agree the text is ``main``'s (the engine and
-narration suites, unchanged); the conflict counter counts as on ``main``.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import turn_narration
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
+    NARRATION_CONFLICTS_KEY,
     OUTCOME_WRITTEN_KEY,
     narrate_turn,
 )
@@ -28,7 +31,11 @@ from faultmaven.core.investigation.narration.codes import (
     NoticeCode,
     OfferCode,
 )
-from faultmaven.core.investigation.narration.notices import pending_check_feedback
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
+from faultmaven.core.investigation.narration.notices import (
+    pending_check_feedback,
+    render_notice,
+)
 from faultmaven.core.investigation.narration.offers import (
     readiness_message,
     render_offer,
@@ -112,12 +119,27 @@ def _stored(case, metadata: dict) -> None:
     assert metadata[OUTCOME_WRITTEN_KEY], "premise: the record was written"
 
 
+def _conflicts(metadata: dict) -> list[str]:
+    return metadata.get(NARRATION_CONFLICTS_KEY, [])
+
+
 def _held_notice(metadata: dict) -> list[str]:
     return [
         n
         for n in metadata.get("system_notices") or []
         if n.startswith(("RESOLUTION HELD", "RESOLVED NOT PROPOSED"))
     ]
+
+
+def _feedback(params: dict) -> str:
+    """The held check's notice from the decider's params."""
+    return pending_check_feedback(
+        params["need_id"],
+        params["request_text"],
+        pending_check_reason=params["pending_check_reason"],
+        proposed=params["proposed"],
+        declined_stands=params["declined_stands"],
+    )
 
 
 def _second_need(case, request_text: str = "the B check: billing p99 under 200ms"):
@@ -129,24 +151,20 @@ def _second_need(case, request_text: str = "the B check: billing p99 under 200ms
     return need
 
 
+def _edited(record, section: str, **fields):
+    setattr(record, section, getattr(record, section).model_copy(update=fields))
+
+
 # ---------------------------------------------------------------------------
 # Pin 2: the switched prose renders from the record on a poisoned case
 # ---------------------------------------------------------------------------
 
 
 class _Poisoned:
-    """A case on which every attribute read raises but the record, the
-    identity fields and ``content_by_id``'s reads (a proposed action's
-    description, a need's request text)."""
+    """A case on which every attribute read raises but the record and the
+    identity fields. ``content_by_id`` reads the case itself (``_unwrapped``)."""
 
-    _ALLOWED = {
-        "case_id",
-        "state",
-        "current_stage",
-        "current_turn",
-        "proposed_actions",
-        "evidence_needs",
-    }
+    _ALLOWED = {"case_id", "state", "current_stage", "current_turn"}
 
     def __init__(self, case) -> None:
         object.__setattr__(self, "_case", case)
@@ -162,11 +180,19 @@ class _Poisoned:
         raise AssertionError(f"the narration read case.{name}")
 
 
-#: A decider's params that disagree with the record on every fact the code's
-#: text states from it: the poisoned narration can state the record's only by
-#: reading it.
+def _unwrapped(case, item_id, **kwargs):
+    """The narrators' text accessor, the one way pin 2 lets a narrator read a
+    case's text (exempt permanently)."""
+    if isinstance(case, _Poisoned):
+        case = object.__getattribute__(case, "_case")
+    return content_by_id(case, item_id, **kwargs)
+
+
+#: A decider's params stale on every fact the code's text states from the
+#: record that the decision was not decided on: the poisoned narration can
+#: state the record's only by reading it. The decided fields agree, so the
+#: record is the one the narration renders from.
 _STALE_READINESS = {
-    "reason": ResolutionReason.FIX_FAILED,
     "missing": [],
     "gaps": [],
     "request_text": "a stale ask",
@@ -174,53 +200,55 @@ _STALE_READINESS = {
 }
 _STALE = {
     OfferCode.RCA_INFEASIBLE_CLOSE: {"closure_line": "a stale closure line"},
-    OfferCode.BACKSTOP_RESOLVE: {
-        "record_lines": "- a stale record line",
-        "identification_leg": None,
-        "reason": ResolutionReason.PENDING_CHECK,
-    },
-    OfferCode.FALSE_ALARM_CLOSE: {"problem_status": ProblemStatus.VERIFIED},
-    OfferCode.DEFERRED_CLOSE: {},
+    OfferCode.BACKSTOP_RESOLVE: {"record_lines": "- a stale record line"},
     OfferCode.NEEDS_INFO_UNMET_CLOSE: _STALE_READINESS,
     OfferCode.RESOLUTION_NEEDS_INFO: _STALE_READINESS,
     OfferCode.MODEL_PROPOSAL: _STALE_READINESS,
     NoticeCode.PENDING_CHECK: {
         "need_id": "eneed_stale",
         "request_text": "a stale ask",
-        "pending_check_reason": PendingCheckReason.FULFILLED_BEFORE_ASK,
         "declined_stands": True,
     },
 }
 
+#: Controls: their text states no record fact the decision was not decided
+#: on (the false-alarm close names the decider's rationale, the deferred close
+#: is fixed text, and the two SUGGEST_CLOSE readiness reasons, NOTHING_ON_RECORD
+#: here, state only the reason), so they pass on ``main`` by design; their
+#: record source is pinned by ``test_the_record_params_of_each_switched_code``.
+_CONTROLS = (
+    "false_alarm_close",
+    "deferred_close",
+    "needs_info_unmet_close",
+    "model_proposal_readiness",
+)
 
-@pytest.mark.parametrize("name", sorted(SWITCHED))
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(n, id=f"{n}-control" if n in _CONTROLS else n)
+        for n in sorted(SWITCHED)
+    ],
+)
 def test_the_switched_prose_renders_from_the_record_alone(monkeypatch, name):
-    """Pin 2: with the decider's facts stale, ``narrate_turn`` on a case that
-    lets it read only the record, the identity and ``content_by_id``'s reads
-    renders the text the agreeing decider would have: the record's. The offer
-    record is read through its own exempt accessor (``OfferView``, S2b-2d)
-    and written through ``summarize_offer``, both stubbed here.
-    ``FALSE_ALARM_CLOSE`` and ``DEFERRED_CLOSE`` state no record fact in
-    their text, so theirs is the same either way."""
+    """Pin 2: with the decider's undecided facts stale, ``narrate_turn`` on a
+    case that lets it read only the record, the identity and, through
+    ``content_by_id``, a need's text, renders the text the agreeing decider
+    would have: the record's. The offer record is read through its own
+    exempt accessor (``OfferView``, S2b-2d) and written through
+    ``summarize_offer``, both stubbed here."""
     case, metadata = SWITCHED[name]()
     _stored(case, metadata)
     view = offer_view(case)
     monkeypatch.setattr(turn_narration, "offer_view", lambda _case: view)
     monkeypatch.setattr(turn_narration, "summarize_offer", lambda *_a: True)
+    monkeypatch.setattr(turn_narration, "content_by_id", _unwrapped)
     rendered = _spy(monkeypatch)
     offer = _offer(metadata)
     want_prose = [(offer["code"], render_offer(offer["code"], offer["params"]))]
     held = [e for e in _entries(metadata) if e["code"] == _CODE]
-    want_notices = [
-        pending_check_feedback(
-            p["need_id"],
-            p["request_text"],
-            pending_check_reason=p["pending_check_reason"],
-            proposed=p["proposed"],
-            declined_stands=p["declined_stands"],
-        )
-        for p in (e["params"] for e in held)
-    ]
+    want_notices = [_feedback(e["params"]) for e in held]
     for entry in _entries(metadata):
         entry["params"] = {**entry["params"], **_STALE.get(entry["code"], {})}
 
@@ -229,15 +257,12 @@ def test_the_switched_prose_renders_from_the_record_alone(monkeypatch, name):
     assert rendered == want_prose
     assert _held_notice(metadata) == want_notices
     assert bool(held) == (name == "pending_check")
+    assert _conflicts(metadata) == []
 
 
 # ---------------------------------------------------------------------------
-# The record wins: a record that disagrees with the decider is stated
+# A fact the decision was not decided on: the record's
 # ---------------------------------------------------------------------------
-
-
-def _edited(record, section: str, **fields):
-    setattr(record, section, getattr(record, section).model_copy(update=fields))
 
 
 _RECORD_WINS = {
@@ -247,19 +272,10 @@ _RECORD_WINS = {
         f"{p['rationale']}, shall we close this case?",
     ),
     "backstop_resolve": (
-        lambda r: (
-            _edited(r, "resolution", statement="- the record's line"),
-            _edited(r, "cause", identification_leg=None),
-        ),
+        lambda r: _edited(r, "resolution", statement="- the record's line"),
         lambda p: "The record shows:\n\n- the record's line\n\nThe case is still "
-        "open until you confirm: marking it resolved writes up what happened. "
-        "Shall I mark this case resolved?",
-    ),
-    "needs_info_unmet_close": (
-        lambda r: _edited(
-            r, "resolution", reason=ResolutionReason.FIX_OFF_CAUSE, off_cause_turn=4
-        ),
-        lambda p: readiness_message(ResolutionReason.FIX_OFF_CAUSE, off_cause_turn=4),
+        "open until you confirm: marking it resolved records the attribution and "
+        "writes up the resolution summary. Shall I mark this case resolved?",
     ),
     "resolution_needs_info": (
         lambda r: _edited(
@@ -274,18 +290,14 @@ _RECORD_WINS = {
             gaps=[ConfirmationGap.NO_SYMPTOM_ROW],
         ),
     ),
-    "model_proposal_readiness": (
-        lambda r: _edited(r, "resolution", reason=ResolutionReason.FALSE_ALARM),
-        lambda p: readiness_message(ResolutionReason.FALSE_ALARM),
-    ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(_RECORD_WINS))
-def test_the_switched_prose_states_the_record_over_the_decider(monkeypatch, name):
-    """The stored record disagrees with what the decider read on a fact the
-    text states; the text states the record's. The conflict is still counted,
-    as on ``main``."""
+def test_an_undecided_fact_the_record_states_is_the_records(monkeypatch, name):
+    """The stored record agrees with the decision on what it was decided
+    from and differs on a fact the text states besides; the text states the
+    record's, and nothing is counted."""
     edit, want = _RECORD_WINS[name]
     case, metadata = SWITCHED[name]()
     entry = _offer(metadata)
@@ -295,6 +307,7 @@ def test_the_switched_prose_states_the_record_over_the_decider(monkeypatch, name
     narrate_turn(case, metadata)
     assert rendered == [(entry["code"], want(entry["params"]))]
     assert rendered[0][1] != render_offer(entry["code"], entry["params"]), "premise"
+    assert _conflicts(metadata) == []
 
 
 def test_the_readiness_ask_names_the_records_held_need(monkeypatch):
@@ -318,10 +331,77 @@ def test_the_readiness_ask_names_the_records_held_need(monkeypatch):
     ]
 
 
-def test_the_record_params_of_the_codes_whose_text_states_none():
-    """``FALSE_ALARM_CLOSE`` takes the problem's status from the record and
-    ``DEFERRED_CLOSE`` takes nothing; neither text states it, so neither
-    text can differ from the decider's."""
+# ---------------------------------------------------------------------------
+# A field the decision was decided from: on a disagreement, the decision's
+# ---------------------------------------------------------------------------
+
+
+_DECISION_WINS = {
+    "rca_infeasible_close": lambda r: (
+        _edited(r, "closure", eligibility=ClosureEligibility.TRIVIAL),
+        _edited(r, "closure", statement="the record's closure line"),
+    ),
+    "backstop_resolve": lambda r: (
+        _edited(r, "cause", identification_leg=None),
+        _edited(r, "resolution", statement="- the record's line"),
+    ),
+    "needs_info_unmet_close": lambda r: _edited(
+        r, "resolution", reason=ResolutionReason.FIX_OFF_CAUSE, off_cause_turn=4
+    ),
+    "model_proposal_readiness": lambda r: _edited(
+        r, "resolution", reason=ResolutionReason.FALSE_ALARM
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_DECISION_WINS))
+def test_a_decided_field_the_record_does_not_state_renders_the_decision(
+    monkeypatch, name
+):
+    """The record disagrees with the decision on a field it was decided
+    from: the text is the decider's, as on ``main``, and the conflict is
+    counted."""
+    case, metadata = SWITCHED[name]()
+    entry = _offer(metadata)
+    _stored(case, metadata)
+    _DECISION_WINS[name](case.progress.outcome)
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    assert "the record's" not in rendered[0][1]
+    assert _conflicts(metadata) == [f"narration.{entry['code']}"]
+
+
+def test_a_held_ask_the_record_reads_confirmed_renders_the_decision(monkeypatch):
+    """Review item 1: step 2 refused a held ``resolved`` and the record reads
+    CONFIRMED. The needs-info request is the decision's ask, never the empty
+    CONFIRMED message, and the held check's notice is the decision's; the one
+    decision logged under two codes counts one conflict."""
+    case, metadata = SWITCHED["pending_check"]()
+    entry = _offer(metadata)
+    (decided,) = [e["params"] for e in _entries(metadata) if e["code"] == _CODE]
+    assert entry["params"]["reason"] == ResolutionReason.PENDING_CHECK, "premise"
+    _stored(case, metadata)
+    _edited(
+        case.progress.outcome,
+        "resolution",
+        reason=ResolutionReason.CONFIRMED,
+        pending_check_need_id=None,
+        pending_check_reason=None,
+    )
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    assert rendered[0][1]
+    assert _held_notice(metadata) == [_feedback(decided)]
+    assert _conflicts(metadata) == [f"narration.{_CODE}"]
+
+
+def test_the_record_params_of_each_switched_code():
+    """What ``record_params`` takes from an agreeing record: the false-alarm
+    close the problem's status (its text states none), the deferred close
+    nothing, and a readiness ask the decision's request text where the
+    record's need has none."""
     from faultmaven.core.investigation.narration.offers import record_params
 
     case, _metadata = SWITCHED["false_alarm_close"]()
@@ -334,6 +414,9 @@ def test_the_record_params_of_the_codes_whose_text_states_none():
     }
     params = {"proposal_id": "p", "verdict": ClosureEligibility.HAS_SUBSTANCE}
     assert record_params(OfferCode.DEFERRED_CLOSE, params, record, "x") is params
+    params = {"reason": record.resolution.reason, "request_text": "the decision's"}
+    readiness = record_params(OfferCode.RESOLUTION_NEEDS_INFO, params, record, None)
+    assert readiness["request_text"] == "the decision's"
 
 
 # ---------------------------------------------------------------------------
@@ -387,18 +470,47 @@ def held():
     return case, metadata
 
 
-def test_a_record_holding_no_check_renders_no_notice(held):
+def test_a_record_holding_no_check_renders_the_decisions_notice(held):
+    """Review item 2: the model is still told why its resolution is held."""
     case, metadata = held
+    (decided,) = [e["params"] for e in _entries(metadata)]
     _stored(case, metadata)
     _edited(case.progress.outcome, "resolution", pending_check_need_id=None)
     narrate_turn(case, metadata)
-    assert _held_notice(metadata) == []
+    assert _held_notice(metadata) == [_feedback(decided)]
 
 
 def test_the_notice_names_the_need_the_record_holds(held):
-    """The decider named need A; the record holds need B: B is named, with
-    its request text, why it holds and whether a decline stands, all the
-    record's."""
+    """The decider named need A; the record, agreeing on the reason and why
+    the check holds, holds need B: B is named, with its request text and
+    whether a decline stands, both the record's."""
+    case, metadata = held
+    (decided,) = [e["params"] for e in _entries(metadata)]
+    need = _second_need(case)
+    _stored(case, metadata)
+    _edited(
+        case.progress.outcome,
+        "resolution",
+        pending_check_need_id=need.need_id,
+        declined_stands=True,
+    )
+    narrate_turn(case, metadata)
+    assert decided["need_id"] != need.need_id, "premise"
+    assert _held_notice(metadata) == [
+        pending_check_feedback(
+            need.need_id,
+            need.request_text,
+            pending_check_reason=decided["pending_check_reason"],
+            proposed=False,
+            declined_stands=True,
+        )
+    ]
+    assert _conflicts(metadata) == []
+
+
+def test_a_held_reason_the_record_does_not_state_renders_the_decisions_notice(
+    held,
+):
     case, metadata = held
     (decided,) = [e["params"] for e in _entries(metadata)]
     need = _second_need(case)
@@ -408,19 +520,21 @@ def test_the_notice_names_the_need_the_record_holds(held):
         "resolution",
         pending_check_need_id=need.need_id,
         pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
-        declined_stands=True,
     )
     narrate_turn(case, metadata)
-    assert decided["need_id"] != need.need_id, "premise"
-    assert _held_notice(metadata) == [
-        pending_check_feedback(
-            need.need_id,
-            need.request_text,
-            pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
-            proposed=False,
-            declined_stands=True,
-        )
-    ]
+    assert _held_notice(metadata) == [_feedback(decided)]
+    assert _conflicts(metadata) == [f"narration.{_CODE}"]
+
+
+def test_a_need_with_no_text_is_named_with_the_decisions(held):
+    """Review item 6: the record's need has no text the accessor finds; the
+    notice names the decision's request text, never "None"."""
+    case, metadata = held
+    (decided,) = [e["params"] for e in _entries(metadata)]
+    outcome = narration_outcome(case)
+    params = {**decided, "record_request_text": None}
+    (text,) = render_notice(_CODE, params, outcome, [])
+    assert text == _feedback(decided)
 
 
 def _no_outcome(monkeypatch) -> None:
@@ -440,23 +554,15 @@ def test_with_no_outcome_the_notice_and_prose_are_the_deciders(monkeypatch):
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
     assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
-    assert _held_notice(metadata) == [
-        pending_check_feedback(
-            decided["need_id"],
-            decided["request_text"],
-            pending_check_reason=decided["pending_check_reason"],
-            proposed=decided["proposed"],
-            declined_stands=decided["declined_stands"],
-        )
-    ]
+    assert _held_notice(metadata) == [_feedback(decided)]
 
 
 # ---------------------------------------------------------------------------
-# The failed write: the in-memory record (``READS_THE_RECORD``)
+# The failed write: the in-memory record, for a decision that reads it
 # ---------------------------------------------------------------------------
 
 
-def _in_memory(monkeypatch, edit) -> list:
+def _in_memory(monkeypatch, edit=lambda _r: None) -> list:
     """``narration_outcome`` returns the case's outcome edited by ``edit``;
     returns its calls."""
     calls: list = []
@@ -474,22 +580,39 @@ def _in_memory(monkeypatch, edit) -> list:
 def test_a_failed_write_renders_a_lone_offer_from_the_in_memory_record(
     monkeypatch,
 ):
-    """A cycle that logs only the model's readiness ask, its record write
+    """A cycle that logs only the needs-info request, its record write
     failed: the narration computes the record in memory and states it."""
-    case, metadata = SWITCHED["model_proposal_readiness"]()
+    case, metadata = SWITCHED["resolution_needs_info"]()
     entry = _offer(metadata)
     assert [e["code"] for e in _entries(metadata)] == [entry["code"]], "premise"
     metadata[OUTCOME_WRITTEN_KEY] = False
-    calls = _in_memory(
-        monkeypatch,
-        lambda r: _edited(r, "resolution", reason=ResolutionReason.FALSE_ALARM),
-    )
+    edit, want = _RECORD_WINS["resolution_needs_info"]
+    calls = _in_memory(monkeypatch, edit)
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
     assert calls == [1]
-    assert rendered == [
-        (entry["code"], readiness_message(ResolutionReason.FALSE_ALARM))
-    ]
+    assert rendered == [(entry["code"], want(entry["params"]))]
+
+
+@pytest.mark.parametrize(
+    ("name", "computed"),
+    [
+        ("model_proposal_readiness", [1]),
+        ("model_proposal_closure", []),
+        ("model_proposal_confirmation", []),
+    ],
+)
+def test_a_failed_write_folds_only_for_the_model_proposal_that_reads_it(
+    monkeypatch, name, computed
+):
+    """Review item 3: a model proposal reads the record by its composer, so a
+    failed write folds an in-memory record for the readiness ask alone."""
+    case, metadata = {**SWITCHED, **KEPT}[name]()
+    assert [e["code"] for e in _entries(metadata)] == [OfferCode.MODEL_PROPOSAL]
+    metadata[OUTCOME_WRITTEN_KEY] = False
+    calls = _in_memory(monkeypatch)
+    narrate_turn(case, metadata)
+    assert calls == computed
 
 
 def test_a_failed_write_renders_a_lone_held_check_from_the_in_memory_record(
@@ -504,12 +627,4 @@ def test_a_failed_write_renders_a_lone_held_check_from_the_in_memory_record(
     assert decided["declined_stands"] is False, "premise"
     narrate_turn(case, metadata)
     assert calls == [1]
-    assert _held_notice(metadata) == [
-        pending_check_feedback(
-            decided["need_id"],
-            decided["request_text"],
-            pending_check_reason=decided["pending_check_reason"],
-            proposed=False,
-            declined_stands=True,
-        )
-    ]
+    assert _held_notice(metadata) == [_feedback({**decided, "declined_stands": True})]
