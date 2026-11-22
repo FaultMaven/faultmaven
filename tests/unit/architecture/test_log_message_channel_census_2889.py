@@ -621,7 +621,7 @@ ALLOWED = {
     "modules/case/api/turn_idempotency.py": 1,
     "modules/case/domain/services/case_data_ingestion_service.py": 11,
     "modules/case/domain/services/case_driver.py": 1,
-    "modules/case/domain/services/case_service.py": 27,
+    "modules/case/domain/services/case_service.py": 26,
     "modules/case/infrastructure/case_metadata_reader.py": 1,
     "modules/case/infrastructure/postgresql_hybrid_case_repository/loading.py": 2,
     "modules/case/infrastructure/postgresql_hybrid_case_repository/rows.py": 2,

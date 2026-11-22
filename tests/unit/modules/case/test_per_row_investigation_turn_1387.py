@@ -330,17 +330,18 @@ class TestMessageRows:
         case = _case(*_MIXED, messages=_rows(1, 2, 3, 4, 5))
         service = self._service(case)
         with mock.patch(
-            "faultmaven.modules.case.domain.services.case_service._case_messages_from",
-            wraps=case_service_module._case_messages_from,
+            "faultmaven.modules.case.domain.services.case_service._case_message_from",
+            wraps=case_service_module._case_message_from,
         ) as convert:
             response = await service.get_case_messages_enhanced(
-                case_id=case.case_id, limit=4
+                case_id=case.case_id, offset=2, limit=4
             )
         assert response.total_count == 10
         assert response.retrieved_count == 4
-        # One call, and it was handed exactly the page.
-        assert convert.call_count == 1
-        assert len(convert.call_args.args[1]) == 4
+        # One call per row of the page, and only the page's rows.
+        assert convert.call_count == 4
+        converted = [call.args[1]["message_id"] for call in convert.call_args_list]
+        assert converted == [row["message_id"] for row in case.messages[2:6]]
 
     @pytest.mark.asyncio
     async def test_the_newest_row_agrees_with_the_case_level_count(self):
