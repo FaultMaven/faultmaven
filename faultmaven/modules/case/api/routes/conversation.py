@@ -175,8 +175,8 @@ _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
             f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database did not "
             "answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication "
             "every route requires could not read the token revocation store). "
-            "A 503 with neither header is an unlabelled one: the case service "
-            "or the authentication service is not available."
+            "A 503 with neither header is an unlabelled one: a service the "
+            "route depends on is not available."
         ),
         "headers": {
             "x-error-code": {
@@ -558,8 +558,7 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the "
             "authentication every route requires could not read the token "
             "revocation store). A 503 with neither header is an unlabelled "
-            "one: the case, investigation or authentication service is not "
-            "available."
+            "one: a service the route depends on is not available."
         ),
         "headers": {
             "x-error-code": {
