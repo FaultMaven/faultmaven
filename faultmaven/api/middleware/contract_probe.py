@@ -174,8 +174,9 @@ class ContractProbeMiddleware(BaseHTTPMiddleware):
             # the dict this lands in is ``probe_data``, whose only consumer is
             # ``_log_contract_probe``. Nothing in this middleware writes to the
             # response — ``dispatch`` returns the downstream ``response``
-            # object untouched — so this text reaches the log and nowhere else.
-            return {"analysis_error": str(e)}
+            # object untouched — and it holds the class chain, never the
+            # text, because that consumer logs it (principles §7 rule 1).
+            return {"analysis_error": exception_log_name(e)}
 
     def _detect_violations(
         self,

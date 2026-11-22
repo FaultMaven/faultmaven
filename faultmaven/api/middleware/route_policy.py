@@ -58,6 +58,8 @@ from typing import Dict, Mapping, NamedTuple, Optional
 
 from starlette.routing import compile_path
 
+from faultmaven.utils.exception_name import exception_log_name
+
 try:  # pragma: no cover - exercised on FastAPI >= 0.137.2; see _flattened_post_paths
     from fastapi.routing import iter_route_contexts
 except ImportError:
@@ -415,10 +417,9 @@ def _read_policy_map(declared) -> _PolicyMap:
     except Exception as exc:  # a declaration must never break the request path
         _report_once(
             f"policy-iter:{type(declared).__name__}",
-            "app.state.%s could not be read (%s: %s); route policy ignored",
+            "app.state.%s could not be read (%s); route policy ignored",
             APP_STATE_POLICY_ATTR,
-            type(exc).__name__,
-            exc,
+            exception_log_name(exc),
         )
         return _PolicyMap()
 
@@ -469,10 +470,9 @@ def _read_legacy_exclusions(declared) -> frozenset:
     except Exception as exc:
         _report_once(
             f"legacy-iter:{type(declared).__name__}",
-            "app.state.%s could not be read (%s: %s); those exclusions are ignored",
+            "app.state.%s could not be read (%s); those exclusions are ignored",
             LEGACY_IDEMPOTENCY_ATTR,
-            type(exc).__name__,
-            exc,
+            exception_log_name(exc),
         )
         return frozenset()
     unusable = [entry for entry in entries if not isinstance(entry, str)]

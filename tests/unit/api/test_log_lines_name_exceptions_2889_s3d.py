@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from faultmaven.api.exception_handlers import service_error_handler
+from faultmaven.api.middleware import route_policy
 from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
 from faultmaven.api.middleware.logging import LoggingMiddleware
 from faultmaven.api.operator_audit import record_operator_access
@@ -152,6 +153,23 @@ async def test_a_check_failing_past_the_threshold_is_named_by_class(lines):
         f"Rate limit check failed ({CHECK_FAILURE_DEMOTION_THRESHOLD} consecutive)",
         "ConnectionError",
     )
+
+
+# ── api/middleware/route_policy.py ────────────────────────────────────────
+
+
+class _Unreadable(dict):
+    def items(self):
+        raise RuntimeError(f"declaration {MARKER}")
+
+
+def test_an_unreadable_route_policy_is_named_by_class(lines, monkeypatch):
+    """``_read_policy_map``'s unreadable-declaration line, which reaches the log
+    through ``_report_once``. Driven through ``_read_policy_map`` with a mapping
+    whose ``items()`` raises."""
+    monkeypatch.setattr(route_policy, "_REPORTED_BAD_DECLARATIONS", set())
+    assert not route_policy._read_policy_map(_Unreadable())
+    _named(lines(), "could not be read (RuntimeError)", "RuntimeError")
 
 
 # ── api/middleware/idempotency.py ─────────────────────────────────────────

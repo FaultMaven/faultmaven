@@ -134,11 +134,11 @@ _ALLOWED: dict[tuple[str, str, str], str] = {
     (
         "faultmaven/api/middleware/contract_probe.py",
         "_analyze_response_shape",
-        "{'analysis_error': str(e)}",
+        "{'analysis_error': exception_log_name(e)}",
     ): (
-        "Not a response. The dict lands in `probe_data`, whose only consumer "
-        "is `_log_contract_probe`; `dispatch` returns the downstream response "
-        "object untouched."
+        "Not a response, and not the text. The dict lands in `probe_data`, "
+        "whose only consumer is `_log_contract_probe`; `dispatch` returns the "
+        "downstream response object untouched."
     ),
     (
         "faultmaven/api/middleware/performance.py",

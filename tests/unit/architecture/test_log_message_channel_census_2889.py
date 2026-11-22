@@ -13,7 +13,9 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
 * **A log call carrying an exception's text.** A log call is an attribute call
   whose method is in :data:`LOG_METHODS` or starts with ``log_``, on any
   receiver but those :func:`_not_a_log_call` names (``math.log``, an argparse
-  parser's ``error``, a task's or future's zero-argument ``.exception()``). It
+  parser's ``error``, a task's or future's zero-argument ``.exception()``), or a
+  call to a module function in :data:`LOG_HELPERS`, which forwards its
+  arguments to a logger (``_report_once(key, message, *args)``). It
   carries the text when a positional argument or a keyword value reads an
   exception name, or calls a zero-argument ``.exception()``, other than through
   a safe form.
@@ -79,7 +81,9 @@ argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
 argument in any other form, or an exit spelled any other way). The allowlist
 counts sites per file, so switching one site and adding another in the same
-file leaves the count, and the guard, unchanged.
+file leaves the count, and the guard, unchanged. A value built outside a log
+call by a method call is not tracked: a projection that appends an exception's
+text (``logged.append(str(e))``) and is then logged is not counted.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
@@ -109,6 +113,10 @@ LOG_METHODS = frozenset(
     {"debug", "info", "warning", "warn", "error", "exception", "critical", "log"}
     | {"fatal"}
 )
+
+#: Module functions that forward their arguments to a logger call
+#: (``api/middleware/route_policy.py``, ``infrastructure/concurrency/owned_claim.py``).
+LOG_HELPERS = frozenset({"_report_once"})
 
 #: Calls whose result names an exception, or measures a text, without its text.
 SAFE_CALLS = frozenset(
@@ -209,6 +217,8 @@ def _not_a_log_call(call: ast.Call) -> bool:
 
 def _is_log_call(call: ast.Call) -> bool:
     func = call.func
+    if isinstance(func, ast.Name):
+        return func.id in LOG_HELPERS
     if not isinstance(func, ast.Attribute):
         return False
     if func.attr not in LOG_METHODS and not func.attr.startswith("log_"):
@@ -777,6 +787,7 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    log.error('%s', e.message)",
         "def f(exc: RequestValidationError):\n    log.error('%s', exc.errors())",
         "def f(error: RateLimitError):\n    log.warning('%s', error.message)",
+        "try:\n    pass\nexcept Exception as exc:\n    _report_once('k', 'x (%s)', exc)",
         "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
         "    log.error('x', extra={'body': body})",
     ],
@@ -827,12 +838,9 @@ def test_a_site_is_found(source):
         "def f(e):\n    log.error('item %s', e.item_id)",
         "def f(error: RateLimitError):\n    log.warning(f'{error.limit_type} "
         "{error.current_count}/{error.limit} {error.retry_after}')",
-        "def f(exc: RequestValidationError):\n    raw_errors = exc.errors()\n"
-        "    body = getattr(exc, 'body', None)\n    logged = []\n"
-        "    for e, raw in zip(raw_errors, raw_errors):\n"
-        "        logged.append({'loc': e.get('loc'), 'input_len': len(raw)})\n"
-        "    log.error('x %s', logged, extra={'validation_errors': logged,"
-        " 'body': describe_request_body(body)})",
+        "try:\n    pass\nexcept Exception as exc:\n"
+        "    _report_once('k', 'x (%s)', exception_log_name(exc))",
+        "def f(exc):\n    _report_once('k', 'x %s', 'literal')",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
@@ -844,3 +852,31 @@ def test_a_file_that_does_not_parse_fails_the_scan(tmp_path):
     broken.write_text("def f(:\n")
     with pytest.raises(SyntaxError):
         scan_tree(parse_file(broken))
+
+
+#: The fm#1156 validation handler's shape (``api/exception_handlers.py``): a
+#: projection built from ``exc.errors()`` by ``logged.append(...)``, logged with
+#: the body's shape.
+_PROJECTION = (
+    "def f(exc: RequestValidationError):\n    raw_errors = exc.errors()\n"
+    "    body = getattr(exc, 'body', None)\n    logged = []\n"
+    "    for e, raw in zip(raw_errors, raw_errors):\n"
+    "        logged.append({0})\n"
+    "    log.error('x %s', logged, extra={{'validation_errors': logged,"
+    " 'body': describe_request_body(body)}})"
+)
+
+
+def test_describe_request_body_is_a_safe_call():
+    """``body`` is a text alias of ``exc``; read through
+    ``describe_request_body`` it is not a site, read bare it is."""
+    projection = _PROJECTION.format("{'loc': e.get('loc'), 'input_len': len(raw)}")
+    assert not _found(projection)
+    assert _found(projection.replace("describe_request_body(body)", "body"))
+
+
+def test_a_projection_appending_exception_text_is_a_blind_spot():
+    """The stated blind spot: ``logged.append(str(e))`` builds ``logged``
+    by a method call, which the scanner does not track, so the census does not
+    count it. A line like this is kept off by review, not by this guard."""
+    assert not _found(_PROJECTION.format("str(e)"))

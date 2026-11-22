@@ -475,9 +475,10 @@ async def check_auth_services_health(request: Request) -> dict:
     except Exception as e:
         # ``GET /auth/health`` is UNAUTHENTICATED and returns
         # ``health_status["authentication"]`` verbatim on its success path, so
-        # whatever this broad arm writes here goes to any caller. The text goes
-        # to the log instead — and it has to be logged, because it was never
-        # logged before: the body was its only record.
+        # whatever this broad arm writes here goes to any caller. The failure
+        # is logged instead, by its class chain; its text goes nowhere — and it
+        # has to be logged, because it was never logged before: the body was
+        # its only record.
         logger.warning(f"Token revocation store probe failed: {exception_log_name(e)}")
         health_status["authentication"]["services"]["token_revocation_store"] = {
             "status": "error",
