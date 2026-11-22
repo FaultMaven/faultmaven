@@ -6,8 +6,12 @@ holds its place in ``system_notices`` with a token. ``narrate_turn`` replaces
 each token with what the code renders (``narration.notices``): from the
 cycle's record for a code in ``READS_THE_RECORD``, from its params for every
 other but the unbound re-checks (below). Each offer code's prose is rendered
-from its params (``narration.offers.render_offer``), published under its key
-(``PROSE_KEYS``) and written as the offer's summary (B1d). It runs once per
+(``narration.offers.render_offer``) from its params, with the outcome facts
+taken from the record for an offer in ``RECORD_PROSE`` (#2811 S2b-2c),
+published under its key (``PROSE_KEYS``) and written as the offer's summary
+(B1d). The request text of the need the record holds the resolution for is
+read once, through the narrators' text accessor (``content_by_id``), and
+handed to the renderers that state it. It runs once per
 turn, in ``_finalize_turn``, before the turn record copies the notices. A
 statement-revision replay's offers are narrated there too: a turn that
 replays never leaves at a step-0 exit, so it always reaches it.
@@ -33,12 +37,13 @@ from faultmaven.core.investigation.narration.codes import (
     NoticeCode,
     OfferCode,
 )
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
 from faultmaven.core.investigation.narration.notices import (
     READS_THE_RECORD,
     render_notice,
     unbound_lines,
 )
-from faultmaven.core.investigation.narration.offers import render_offer
+from faultmaven.core.investigation.narration.offers import record_params, render_offer
 from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
@@ -170,14 +175,26 @@ def _lapsed(case: Any, proposal_id: Optional[str]) -> bool:
     return proposal_id is not None and offer_view(case).lapsed(proposal_id)
 
 
-def _narrate_offer(case: Any, metadata: dict, code: str, params: dict) -> None:
+def _narrate_offer(
+    case: Any,
+    metadata: dict,
+    code: str,
+    params: dict,
+    outcome: Optional[CaseOutcome],
+    request_text: Optional[str],
+) -> None:
     """Publish the offer's prose under its key, and write it as the summary
-    of the offer it opened while that offer is open. An offer that lapsed in
+    of the offer it opened while that offer is open. The prose states the
+    cycle's ``outcome`` where an offer in ``RECORD_PROSE`` has one
+    (``record_params``), else its decider's params. An offer that lapsed in
     the cycle that opened it shows nothing: no prose, so no confirmation pair
     (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
     if _lapsed(case, params.get("proposal_id")):
         return
-    text = render_offer(code, params)
+    if outcome is not None:
+        text = render_offer(code, record_params(code, params, outcome, request_text))
+    else:
+        text = render_offer(code, params)
     if code in PROSE_KEYS:
         metadata[PROSE_KEYS[code]] = text
     proposal_id = params.get("proposal_id")
@@ -254,13 +271,18 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     told = unbound_lines(unbound[-1]["params"], outcome) if stored and unbound else []
     if told:
         metadata[UNBOUND_TOLD_KEY] = told
+    need_id = outcome.resolution.pending_check_need_id if outcome is not None else None
+    content = content_by_id(case, need_id) if need_id is not None else None
+    request_text = content.text if content is not None else None
     for entry in log:
         code, params = entry["code"], entry["params"]
         if code in _OFFER_CODES:
-            _narrate_offer(case, metadata, code, params)
+            _narrate_offer(case, metadata, code, params, outcome, request_text)
             continue
         if entry["token"] is None:
             continue
+        if code == NoticeCode.PENDING_CHECK:
+            params = {**params, "record_request_text": request_text}
         if code == NoticeCode.MITIGATION_VERIFY_REFUSED:
             params = {**params, "stored_disposition": _disposition_before(case, log)}
         if code == NoticeCode.ENGINE_OFFER_STANDS:

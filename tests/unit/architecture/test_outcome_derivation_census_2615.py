@@ -719,6 +719,14 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "symptom rows where none verified, is read beside it from "
         "case.evidence (#2811 S2b-1b-ii)",
     ),
+    (_ME + "turn_narration.py", "narrate_turn"): (
+        {"content_by_id": 1},
+        "reads, through the narration's text accessor, the request text of "
+        "the need the cycle's record holds the resolution for "
+        "(resolution.pending_check_need_id), once per narration, for the held "
+        "check's notice and the readiness asks it renders from the record "
+        "(#2811 S2b-2c)",
+    ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl._answer"): (
         {"answer_offer": 1},
         "answers the open resolve or close offer declined or withdrawn, on a "

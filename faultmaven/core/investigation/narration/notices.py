@@ -12,9 +12,10 @@ reads the code's params and the cycle's record (``CaseOutcome``), never the
 case, after the cycle's last decider ran (``render_notice``). With no outcome
 at all (``None``), a renderer falls back on the facts its decider recorded.
 B1c's renderers read no record: their params carry the facts their deciders
-read (decide-time, A4), so each renders the text its decider composed. The
-unbound re-checks are the exception (B2, #2555): their rows are the record's,
-their pool the decider's.
+read (decide-time, A4), so each renders the text its decider composed. Two
+are the exception: the unbound re-checks (B2, #2555), their rows the
+record's, their pool the decider's; and the held check (``PENDING_CHECK``,
+#2811 S2b-2c), which states the record's.
 """
 
 from typing import Callable, Optional
@@ -27,6 +28,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .codes import NoticeCode
+from .offers import RECORD_PROSE_CODES
 
 #: What binds the model while a resolve decline stands (#1895): the ONE rule the
 #: step-2 refusal's feedback and the prompt line both state, whenever the
@@ -193,7 +195,9 @@ def license_notice(subject: str) -> str:
 Renderer = Callable[[dict, Optional[CaseOutcome], list], list[str]]
 _RENDERERS: dict[str, Renderer] = {}
 
-#: The codes whose renderers read the cycle's record (B1b's). Every other
+#: The codes whose renderers read the cycle's record: B1b's, the held check
+#: and the offers whose prose states the record (``RECORD_PROSE_CODES``, the
+#: model proposal's whatever its composer; #2811 S2b-2c). Every other
 #: renderer reads only its params and the log, so a cycle whose log holds none
 #: of these is narrated with no outcome computed (#2636).
 READS_THE_RECORD = frozenset(
@@ -201,6 +205,8 @@ READS_THE_RECORD = frozenset(
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
         NoticeCode.MITIGATION_VERIFY_REFUSED,
         NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+        NoticeCode.PENDING_CHECK,
+        *RECORD_PROSE_CODES,
     }
 )
 
@@ -526,14 +532,31 @@ def _failed_fix(params: dict, outcome, log) -> list:
 
 @_renders(NoticeCode.PENDING_CHECK)
 def _pending_check(params: dict, outcome, log) -> list:
-    """Whether a resolve decline stands is the decider's (A4)."""
+    """The held need, why it holds and whether a resolve decline stands are
+    the record's (#2811 S2b-2c), the need's request text the one
+    ``narrate_turn`` read for it (``record_request_text``): a record that
+    holds no check renders nothing. Whether the model proposed is the
+    decider's. With no outcome, all are the decider's (A4)."""
+    if outcome is None:
+        need_id, request_text = params["need_id"], params["request_text"]
+        reason, declined = params["pending_check_reason"], params["declined_stands"]
+    else:
+        resolution = outcome.resolution
+        if resolution.pending_check_need_id is None:
+            return []
+        need_id = resolution.pending_check_need_id
+        request_text = params["record_request_text"]
+        reason, declined = (
+            resolution.pending_check_reason,
+            resolution.declined_stands,
+        )
     return [
         pending_check_feedback(
-            params["need_id"],
-            params["request_text"],
-            pending_check_reason=params["pending_check_reason"],
+            need_id,
+            request_text,
+            pending_check_reason=reason,
             proposed=params["proposed"],
-            declined_stands=params["declined_stands"],
+            declined_stands=declined,
         )
     ]
 
