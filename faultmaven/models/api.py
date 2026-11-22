@@ -634,8 +634,7 @@ class Message(BaseModel):
 # and the exception's class name, never its text; the text goes to the server
 # log beside it (#2072).
 MESSAGE_PARSE_FAILED = "MESSAGE_PARSE_FAILED"
-STORAGE_READ_FAILED = "STORAGE_READ_FAILED"
-STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED, STORAGE_READ_FAILED)
+STORAGE_ERROR_CODES = (MESSAGE_PARSE_FAILED,)
 _STORAGE_ERROR_ENTRY = re.compile(
     rf"^({'|'.join(map(re.escape, STORAGE_ERROR_CODES))}): {CLASS_NAME_PATTERN}$"
 )
@@ -664,11 +663,10 @@ class MessageRetrievalDebugInfo(BaseModel):
         description=(
             "One entry per failure, as a fixed code and the exception's class "
             "name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: "
-            "ValueError`). Codes: `STORAGE_READ_FAILED` (the page could not be "
-            "read or loaded: a storage error, or a stored row that could not "
-            "be loaded), `MESSAGE_PARSE_FAILED` (a loaded message could not be "
-            "converted to the response format). The exception's text is in "
-            "the server log."
+            "ValueError`). Code: `MESSAGE_PARSE_FAILED` (a stored row that "
+            "could not be loaded or converted to the response format; it is "
+            "skipped). A read that fails as a whole answers an error status, "
+            "not an entry here. The exception's text is in the server log."
         ),
     )
     message_parsing_errors: int = Field(
@@ -690,7 +688,11 @@ class CaseMessagesResponse(BaseModel):
     messages: List[Message] = Field(..., description="Array of conversation messages")
     total_count: int = Field(..., description="Total number of messages in the case")
     retrieved_count: int = Field(
-        ..., description="Number of messages successfully retrieved"
+        ...,
+        description=(
+            "Number of messages returned on this page: fewer than the page "
+            "consumed when a stored row could not be loaded and was skipped"
+        ),
     )
     has_more: bool = Field(
         ..., description="Whether more messages are available for pagination"

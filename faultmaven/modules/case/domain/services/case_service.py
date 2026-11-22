@@ -74,37 +74,32 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
-def _case_messages_from(case: Case, rows: List[Dict[str, Any]]) -> List[CaseMessage]:
-    """Convert stored message dicts into ``CaseMessage`` objects.
+def _case_message_from(case: Case, row: Dict[str, Any]) -> CaseMessage:
+    """Convert one stored message dict into a ``CaseMessage``.
 
-    Takes the case as well as the rows because labelling each row with its
+    Takes the case as well as the row because labelling each row with its
     investigation turn needs ``turn_history`` (#1387), and the sole caller
     (``get_case_messages_enhanced``) must therefore load the case ONCE —
     reading it twice for the two halves of one answer is how the two come from
     different snapshots.
 
-    ``rows`` is the page to convert, and is required. It was optional while
-    this helper was shared with ``get_case_messages``, which passed the whole
-    case; #1412 retired that method, leaving one caller that always passes a
-    slice — so the default had become unreachable and is gone rather than left
-    as a second, untested way in.
+    One row, not a page: the caller converts each row of the page inside its
+    per-row guard, so a stored row this refuses is skipped and counted rather
+    than emptying the page (#2333).
     """
     # Per case-storage-design.md Section 4.7, use "created_at"
-    return [
-        CaseMessage(
-            message_id=msg_dict["message_id"],
-            case_id=case.case_id,
-            turn_number=msg_dict.get("turn_number", 0),
-            role=msg_dict.get("role", "user"),
-            content=msg_dict["content"],
-            created_at=msg_dict.get("created_at"),
-            author_id=msg_dict.get("author_id"),
-            token_count=msg_dict.get("token_count"),
-            metadata=msg_dict.get("metadata", {}),
-            attachments=msg_dict.get("attachments"),
-        )
-        for msg_dict in rows
-    ]
+    return CaseMessage(
+        message_id=row["message_id"],
+        case_id=case.case_id,
+        turn_number=row.get("turn_number", 0),
+        role=row.get("role", "user"),
+        content=row["content"],
+        created_at=row.get("created_at"),
+        author_id=row.get("author_id"),
+        token_count=row.get("token_count"),
+        metadata=row.get("metadata", {}),
+        attachments=row.get("attachments"),
+    )
 
 
 def _published_sources(stored: Any, *, message_id: str) -> Optional[List[Source]]:
@@ -1755,6 +1750,10 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Returns:
             CaseMessagesResponse with messages and metadata
+
+        Raises:
+            NotFoundError: the case is gone (deleted after the route's access
+                check). Any other failure of the read propagates as itself.
         """
         if not case_id:
             raise ValidationException("Case ID is required")
@@ -1764,7 +1763,6 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         from faultmaven.models.api import (
             MESSAGE_PARSE_FAILED,
-            STORAGE_READ_FAILED,
             CaseMessagesResponse,
             Message,
             MessageRetrievalDebugInfo,
@@ -1776,184 +1774,162 @@ class CaseService(CaseDriverMixin, ICaseService):
         storage_errors = []
         message_parsing_errors = 0
 
-        try:
-            # ONE load: the rows and ``turn_history`` are two halves of one
-            # answer here (#1387) — the per-row investigation turn is computed
-            # from the history — and two reads could return two snapshots.
-            case = await self.repository.get(case_id)
-            if not case:
-                # Caught below and answered as an EMPTY response, not a 500 —
-                # the shape this method has always had for a missing case, from
-                # when it delegated to a ``get_case_messages`` that raised the
-                # same thing (retired in #1412). Both routes 404 before
-                # reaching here, so it is defensive rather than reachable.
-                raise ServiceException(f"Case {case_id} not found")
+        # ONE load: the rows and ``turn_history`` are two halves of one
+        # answer here (#1387) — the per-row investigation turn is computed
+        # from the history — and two reads could return two snapshots.
+        #
+        # A failure of this read propagates as itself (#2333): a database
+        # timeout, a vanished case or any other failure is the route's error
+        # status, never an empty transcript answered 200.
+        case = await self.repository.get(case_id)
+        if not case:
+            # Deleted between the route's access check and this read.
+            raise NotFoundError("Case", case_id)
 
-            # Count from the stored rows and convert only the PAGE. Converting
-            # everything just to take a length built and validated a pydantic
-            # model for every message in the case on every page a client
-            # scrolled — 2000 of them at ``limit=50`` to keep 50.
-            total_count = len(case.messages)
-            paginated_messages = _case_messages_from(
-                case, case.messages[offset : offset + limit]
-            )
-            retrieved_count = len(paginated_messages)
+        # Count from the stored rows and convert only the PAGE. Converting
+        # everything just to take a length built and validated a pydantic
+        # model for every message in the case on every page a client
+        # scrolled — 2000 of them at ``limit=50`` to keep 50.
+        total_count = len(case.messages)
+        page_rows = case.messages[offset : offset + limit]
 
-            # Built once for the whole page rather than per row: each lookup
-            # bisects it, and rebuilding it per row would walk the history
-            # again for every message.
-            aside_turns = case.out_of_band_turns
+        # Built once for the whole page rather than per row: each lookup
+        # bisects it, and rebuilding it per row would walk the history
+        # again for every message.
+        aside_turns = case.out_of_band_turns
 
-            # Convert CaseMessage objects to API Message format
-            messages = []
-            for case_msg in paginated_messages:
-                try:
-                    # CaseMessage already has 'role' field, use it directly
-                    # No need to map from message_type (that field doesn't exist in CaseMessage)
-                    role = case_msg.role if hasattr(case_msg, "role") else "system"
+        # Convert each stored row to the API Message format. A row that cannot
+        # be loaded or converted is skipped and counted, not the whole page.
+        messages = []
+        for row in page_rows:
+            try:
+                case_msg = _case_message_from(case, row)
+                # CaseMessage already has 'role' field, use it directly
+                # No need to map from message_type (that field doesn't exist in CaseMessage)
+                role = case_msg.role if hasattr(case_msg, "role") else "system"
 
-                    # Format created_at
-                    created_at_str = None
-                    if case_msg.created_at:
-                        try:
-                            if hasattr(case_msg.created_at, "isoformat"):
-                                created_at_str = to_json_compatible(case_msg.created_at)
-                            else:
-                                created_at_str = str(case_msg.created_at)
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to format created_at for message {case_msg.message_id}: {e}"
-                            )
+                # Format created_at
+                created_at_str = None
+                if case_msg.created_at:
+                    try:
+                        if hasattr(case_msg.created_at, "isoformat"):
+                            created_at_str = to_json_compatible(case_msg.created_at)
+                        else:
                             created_at_str = str(case_msg.created_at)
-
-                    # Create API Message object
-                    # Per case-storage-design.md Section 4.7, use "created_at" field
-                    # The ordinal a client prints as "Turn N" (#1387).
-                    # Derived from ``turn_history``, the same source
-                    # ``Case.investigation_turn_count`` uses, so the label a
-                    # client shows on the live row and the one it shows for
-                    # that row after a reload cannot disagree.
-                    #
-                    # None for a ``system`` row, which owns no turn: those are
-                    # background-job notices (runbook conversion), stamped with
-                    # whichever turn happened to be OPEN when the job finished
-                    # — so a number on them asserts membership in an exchange
-                    # they had no part in. Both clients suppress that today in
-                    # their own code (``ChatWindow`` calls its formatter
-                    # without a turn; the Dashboard's ``transcriptTurnNumbers``
-                    # returns null), which is the duplicated rule a
-                    # server-computed field exists to remove.
-                    investigation_turn = (
-                        None
-                        if role == "system"
-                        else case.investigation_turn_at(
-                            case_msg.turn_number, asides=aside_turns
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to format created_at for message {case_msg.message_id}: {e}"
                         )
+                        created_at_str = str(case_msg.created_at)
+
+                # Create API Message object
+                # Per case-storage-design.md Section 4.7, use "created_at" field
+                # The ordinal a client prints as "Turn N" (#1387).
+                # Derived from ``turn_history``, the same source
+                # ``Case.investigation_turn_count`` uses, so the label a
+                # client shows on the live row and the one it shows for
+                # that row after a reload cannot disagree.
+                #
+                # None for a ``system`` row, which owns no turn: those are
+                # background-job notices (runbook conversion), stamped with
+                # whichever turn happened to be OPEN when the job finished
+                # — so a number on them asserts membership in an exchange
+                # they had no part in. Both clients suppress that today in
+                # their own code (``ChatWindow`` calls its formatter
+                # without a turn; the Dashboard's ``transcriptTurnNumbers``
+                # returns null), which is the duplicated rule a
+                # server-computed field exists to remove.
+                investigation_turn = (
+                    None
+                    if role == "system"
+                    else case.investigation_turn_at(
+                        case_msg.turn_number, asides=aside_turns
                     )
-
-                    # The KB context this turn's prompt carried is published
-                    # typed, as ``sources``, and not a second time inside
-                    # ``metadata``.
-                    row_metadata = dict(case_msg.metadata)
-                    kb_sources = _published_sources(
-                        row_metadata.pop(MESSAGE_METADATA_KB_SOURCES, None),
-                        message_id=case_msg.message_id,
-                    )
-
-                    api_message = Message(
-                        message_id=case_msg.message_id,
-                        turn_number=case_msg.turn_number,
-                        investigation_turn=investigation_turn,
-                        role=role,
-                        content=case_msg.content,
-                        created_at=created_at_str,
-                        author_id=case_msg.author_id,
-                        token_count=case_msg.token_count,
-                        metadata=row_metadata,
-                        sources=kb_sources,
-                    )
-                    messages.append(api_message)
-
-                except Exception as e:
-                    message_parsing_errors += 1
-                    logger.warning(
-                        "Failed to convert message %s of case %s: %s: %s",
-                        getattr(case_msg, "message_id", "unknown"),
-                        case_id,
-                        type(e).__name__,
-                        e,
-                    )
-                    if include_debug:
-                        storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
-
-            # Calculate performance metrics
-            processing_time_ms = int((time.time() - start_time) * 1000)
-
-            # Create debug info if requested.
-            #
-            # The fields are ``MessageRetrievalDebugInfo``'s own. They used to
-            # be a different set entirely — ``storage_backend``,
-            # ``total_messages_in_storage``, ``messages_requested``,
-            # ``offset_used``, ``processing_time_ms`` — none of which the model
-            # declares, and none of which is the REQUIRED
-            # ``redis_operation_time_ms``. Pydantic ignored the extras and
-            # refused the omission, so ``include_debug=true`` raised a
-            # ValidationError here, the handler below rebuilt the same object
-            # and raised again from inside its own ``except``, and a documented
-            # query parameter answered 500.
-            if include_debug:
-                debug_info = MessageRetrievalDebugInfo(
-                    redis_key=f"case:{case_id}:messages",
-                    redis_operation_time_ms=processing_time_ms,
-                    storage_errors=storage_errors,
-                    message_parsing_errors=message_parsing_errors,
                 )
 
-            # Determine if there are more messages
-            has_more = (offset + retrieved_count) < total_count
-
-            # Create and return response
-            response = CaseMessagesResponse(
-                messages=messages,
-                total_count=total_count,
-                retrieved_count=retrieved_count,
-                has_more=has_more,
-                debug_info=debug_info,
-            )
-
-            logger.debug(
-                f"Retrieved {retrieved_count}/{total_count} messages for case {case_id} "
-                f"in {processing_time_ms}ms"
-            )
-
-            return response
-
-        except ValidationException:
-            raise
-        except Exception as e:
-            logger.error(
-                "Failed to get enhanced messages for case %s: %s: %s",
-                case_id,
-                type(e).__name__,
-                e,
-                exc_info=True,
-            )
-            # Return empty response with error info for graceful degradation
-            if include_debug:
-                debug_info = MessageRetrievalDebugInfo(
-                    redis_key=f"case:{case_id}:messages",
-                    redis_operation_time_ms=int((time.time() - start_time) * 1000),
-                    storage_errors=[debug_error(STORAGE_READ_FAILED, e)],
-                    message_parsing_errors=0,
+                # The KB context this turn's prompt carried is published
+                # typed, as ``sources``, and not a second time inside
+                # ``metadata``.
+                row_metadata = dict(case_msg.metadata)
+                kb_sources = _published_sources(
+                    row_metadata.pop(MESSAGE_METADATA_KB_SOURCES, None),
+                    message_id=case_msg.message_id,
                 )
 
-            return CaseMessagesResponse(
-                messages=[],
-                total_count=0,
-                retrieved_count=0,
-                has_more=False,
-                debug_info=debug_info,
+                api_message = Message(
+                    message_id=case_msg.message_id,
+                    turn_number=case_msg.turn_number,
+                    investigation_turn=investigation_turn,
+                    role=role,
+                    content=case_msg.content,
+                    created_at=created_at_str,
+                    author_id=case_msg.author_id,
+                    token_count=case_msg.token_count,
+                    metadata=row_metadata,
+                    sources=kb_sources,
+                )
+                messages.append(api_message)
+
+            except Exception as e:
+                message_parsing_errors += 1
+                logger.warning(
+                    "Failed to convert message %s of case %s: %s: %s",
+                    (
+                        row.get("message_id", "unknown")
+                        if isinstance(row, dict)
+                        else "unknown"
+                    ),
+                    case_id,
+                    type(e).__name__,
+                    e,
+                )
+                if include_debug:
+                    storage_errors.append(debug_error(MESSAGE_PARSE_FAILED, e))
+
+        # Calculate performance metrics
+        processing_time_ms = int((time.time() - start_time) * 1000)
+
+        # Create debug info if requested.
+        #
+        # The fields are ``MessageRetrievalDebugInfo``'s own. They used to
+        # be a different set entirely — ``storage_backend``,
+        # ``total_messages_in_storage``, ``messages_requested``,
+        # ``offset_used``, ``processing_time_ms`` — none of which the model
+        # declares, and none of which is the REQUIRED
+        # ``redis_operation_time_ms``. Pydantic ignored the extras and
+        # refused the omission, so ``include_debug=true`` raised a
+        # ValidationError here and a documented query parameter answered 500.
+        if include_debug:
+            debug_info = MessageRetrievalDebugInfo(
+                redis_key=f"case:{case_id}:messages",
+                redis_operation_time_ms=processing_time_ms,
+                storage_errors=storage_errors,
+                message_parsing_errors=message_parsing_errors,
             )
+
+        # ``retrieved_count`` is the rows returned; ``has_more`` and
+        # ``next_offset`` count the rows the page CONSUMED, skipped ones
+        # included, so the next page neither repeats nor drops a row.
+        retrieved_count = len(messages)
+        consumed = offset + len(page_rows)
+        has_more = consumed < total_count
+
+        # Create and return response
+        response = CaseMessagesResponse(
+            messages=messages,
+            total_count=total_count,
+            retrieved_count=retrieved_count,
+            has_more=has_more,
+            next_offset=consumed if has_more else None,
+            debug_info=debug_info,
+        )
+
+        logger.debug(
+            f"Retrieved {retrieved_count}/{total_count} messages for case {case_id} "
+            f"in {processing_time_ms}ms"
+        )
+
+        return response
 
     # ============================================================
     # Case Team-Sharing Operations (ADR-013 §D4)

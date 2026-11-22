@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.7.0
+**Version:** 15.8.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2187,6 +2187,7 @@ Supports pagination and includes metadata about message retrieval status.
 - `200` — Successful Response ([`CaseMessagesResponse`](#casemessagesresponse))
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).
 
 ---
 
@@ -5230,7 +5231,7 @@ Enhanced response model for case message retrieval with debugging support.
 - `has_more` (boolean, required) — Whether more messages are available for pagination
 - `messages` (array, required) — Array of conversation messages
 - `next_offset` (object, optional) — Offset for next page (null if no more pages)
-- `retrieved_count` (integer, required) — Number of messages successfully retrieved
+- `retrieved_count` (integer, required) — Number of messages returned on this page: fewer than the page consumed when a stored row could not be loaded and was skipped
 - `total_count` (integer, required) — Total number of messages in the case
 
 ---
@@ -6262,7 +6263,7 @@ Debug information for message retrieval operations.
 - `message_parsing_errors` (integer, optional) — Number of messages that failed to parse
 - `redis_key` (string, required) — Redis key used for message storage
 - `redis_operation_time_ms` (number, required) — Time taken for Redis operation
-- `storage_errors` (array, optional) — One entry per failure, as a fixed code and the exception's class name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: ValueError`). Codes: `STORAGE_READ_FAILED` (the page could not be read or loaded: a storage error, or a stored row that could not be loaded), `MESSAGE_PARSE_FAILED` (a loaded message could not be converted to the response format). The exception's text is in the server log.
+- `storage_errors` (array, optional) — One entry per failure, as a fixed code and the exception's class name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: ValueError`). Code: `MESSAGE_PARSE_FAILED` (a stored row that could not be loaded or converted to the response format; it is skipped). A read that fails as a whole answers an error status, not an entry here. The exception's text is in the server log.
 
 ---
 

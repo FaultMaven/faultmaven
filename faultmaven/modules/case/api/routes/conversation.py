@@ -106,6 +106,7 @@ from faultmaven.modules.case.api.turn_idempotency import (
 from faultmaven.modules.case.contracts import TurnReceiptExistsError
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.knowledge.contracts import gate_kb_sources
+from faultmaven.utils.exception_name import exception_log_name
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -159,10 +160,39 @@ async def _turn_gated_for_viewer(
     return turn.model_copy(update={"sources": sources or []})
 
 
+#: The 503 a transcript read answers when the database does not answer (#2333).
+MESSAGES_UNAVAILABLE_DETAIL = (
+    "The database did not answer in time, so the conversation could not be "
+    "loaded. Please retry shortly."
+)
+
+_MESSAGES_UNAVAILABLE_RESPONSE: dict = {
+    503: {
+        "description": (
+            "Unavailable; the conversation could not be read, and a retry "
+            "after `Retry-After` seconds is safe. Told apart by "
+            f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database did not "
+            "answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication "
+            "every route requires could not read the token revocation store)."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Which dependency was unavailable.",
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": "Seconds; sent with every 503 this route answers.",
+                "schema": {"type": "integer"},
+            },
+        },
+    },
+}
+
+
 @router.get(
     "/{case_id}/messages",
     response_model=CaseMessagesResponse,
-    responses=CASE_NOT_FOUND_RESPONSE,
+    responses={**CASE_NOT_FOUND_RESPONSE, **_MESSAGES_UNAVAILABLE_RESPONSE},
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_get_case_messages_enhanced")
@@ -196,10 +226,13 @@ async def get_case_messages_enhanced(
         # Verify user has access to the case
         await resolve_case(case_service, case_id, current_user.user_id)
 
-        # Use the enhanced message retrieval method
-        message_response = await case_service.get_case_messages_enhanced(
-            case_id=case_id, limit=limit, offset=offset, include_debug=include_debug
-        )
+        try:
+            message_response = await case_service.get_case_messages_enhanced(
+                case_id=case_id, limit=limit, offset=offset, include_debug=include_debug
+            )
+        except NotFoundError as absent:
+            # Deleted between the access check above and the service's read.
+            raise case_not_found_http() from absent
         # Stored runbook excerpts are checked against THIS viewer (#1919).
         await _gate_page_sources(request, current_user, message_response)
 
@@ -211,21 +244,42 @@ async def get_case_messages_enhanced(
         response.headers["X-Message-Count"] = str(message_response.total_count)
         response.headers["X-Retrieved-Count"] = str(message_response.retrieved_count)
 
-        # Determine storage status
-        storage_status = "success"
-        if message_response.debug_info and message_response.debug_info.storage_errors:
-            storage_status = (
-                "error" if message_response.retrieved_count == 0 else "partial"
-            )
+        # The page's status, with or without ``include_debug`` (#2333): the
+        # rows the page holds against the rows returned, so a skipped stored
+        # row reads ``partial``, and a page whose every row failed ``error``.
+        page_len = max(0, min(limit, message_response.total_count - offset))
+        skipped = page_len - message_response.retrieved_count
+        if skipped == 0:
+            storage_status = "success"
+        elif message_response.retrieved_count == 0:
+            storage_status = "error"
+        else:
+            storage_status = "partial"
         response.headers["X-Storage-Status"] = storage_status
 
         return message_response
 
     except HTTPException:
         raise
+    except DatabaseTimeout as unavailable:
+        # The access check's read or the service's: either way nothing could be
+        # read, which is a retryable 503, never an empty transcript (#2333).
+        logger.error(
+            "Messages of case %s not read: %s",
+            case_id,
+            exception_log_name(unavailable),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=MESSAGES_UNAVAILABLE_DETAIL,
+            headers={"x-error-code": DATABASE_UNAVAILABLE, "Retry-After": "5"},
+        ) from unavailable
     except Exception as e:
         logger.error(
-            f"Unexpected error in get_case_messages_enhanced: {e}",
+            "Unexpected error in get_case_messages_enhanced for case %s: %s",
+            case_id,
+            e,
+            exc_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -1856,7 +1856,7 @@
             "title": "Next Offset"
           },
           "retrieved_count": {
-            "description": "Number of messages successfully retrieved",
+            "description": "Number of messages returned on this page: fewer than the page consumed when a stored row could not be loaded and was skipped",
             "title": "Retrieved Count",
             "type": "integer"
           },
@@ -5305,7 +5305,7 @@
             "type": "number"
           },
           "storage_errors": {
-            "description": "One entry per failure, as a fixed code and the exception's class name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: ValueError`). Codes: `STORAGE_READ_FAILED` (the page could not be read or loaded: a storage error, or a stored row that could not be loaded), `MESSAGE_PARSE_FAILED` (a loaded message could not be converted to the response format). The exception's text is in the server log.",
+            "description": "One entry per failure, as a fixed code and the exception's class name (`CODE: ExceptionClass`, e.g. `MESSAGE_PARSE_FAILED: ValueError`). Code: `MESSAGE_PARSE_FAILED` (a stored row that could not be loaded or converted to the response format; it is skipped). A read that fails as a whole answers an error status, not an entry here. The exception's text is in the server log.",
             "items": {
               "type": "string"
             },
@@ -8076,7 +8076,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.7.0"
+    "version": "15.8.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12194,6 +12194,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds; sent with every 503 this route answers.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "Which dependency was unavailable.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
