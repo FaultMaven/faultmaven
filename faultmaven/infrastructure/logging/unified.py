@@ -23,7 +23,10 @@ from faultmaven.infrastructure.logging.coordinator import (
     RequestContext,
     request_context,
 )
-from faultmaven.utils.exception_name import exception_class_chain
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_class_name,
+)
 
 
 class UnifiedLogger:
@@ -207,7 +210,7 @@ class UnifiedLogger:
                         event_type="operation_error",
                         operation_key=operation_key,
                         error_message=exception_class_chain(error),
-                        error_type=type(error).__name__,
+                        error_type=exception_class_name(error),
                         duration_seconds=duration,
                         **filtered_context,
                     )
@@ -351,7 +354,7 @@ class UnifiedLogger:
                         event_type="operation_error",
                         operation_key=operation_key,
                         error_message=exception_class_chain(error),
-                        error_type=type(error).__name__,
+                        error_type=exception_class_name(error),
                         duration_seconds=duration,
                         **filtered_context,
                     )
@@ -558,7 +561,7 @@ class UnifiedLogger:
 
         if error is not None:
             error_data["error_message"] = exception_class_chain(error)
-            error_data["error_type"] = type(error).__name__
+            error_data["error_type"] = exception_class_name(error)
 
         # Check for error cascade prevention
         request_ctx = request_context.get()
@@ -578,7 +581,7 @@ class UnifiedLogger:
 
         if error is not None:
             error_data["error_message"] = exception_class_chain(error)
-            error_data["error_type"] = type(error).__name__
+            error_data["error_type"] = exception_class_name(error)
 
         # Check for error cascade prevention
         request_ctx = request_context.get()

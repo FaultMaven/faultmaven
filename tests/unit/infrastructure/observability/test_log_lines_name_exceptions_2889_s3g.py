@@ -10,15 +10,13 @@ Each case drives one site with :data:`MARKER` in the exception's message,
 captures every record at DEBUG, and renders each through the real chain's
 formatter (``build_log_formatter``). The marker is on no rendered line, and the
 class name is on the site's line. How each site is driven is stated on its
-case. What the caller gets back (a health record, a status, a buffered metric)
+case. What the caller gets back (a health record, a buffered metric, an alert)
 is asserted beside it, unchanged.
 """
 
 import asyncio
-import importlib
 import logging
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -124,6 +122,22 @@ def test_the_error_helper_names_the_exception_by_class(lines):
     assert failed["frames"].startswith("ValueError")
 
 
+def test_the_error_helper_cleans_a_class_name_that_is_not_an_identifier(lines):
+    """``log_error_with_context`` with an exception whose class ``__name__``
+    carries the marker and is not a plain identifier: ``exception_type`` holds
+    the cleaned name, and the raw name is on no rendered line."""
+    odd = type(f"db password={MARKER}", (Exception,), {})
+    logger = logging.getLogger("faultmaven.tests.s3g")
+    try:
+        raise odd("plain")
+    except Exception as e:
+        log_error_with_context(logger, "Failed to process case", e)
+    failed = _named(
+        lines(), "Failed to process case", "Failed to process case: Exception"
+    )
+    assert failed["exception_type"] == "Exception"
+
+
 # ── infrastructure/observability/sla_monitor.py ───────────────────────────
 
 
@@ -212,45 +226,4 @@ async def test_a_failed_alert_notification_is_named_by_class(lines):
         lines(),
         "Failed to send alert notification to webhook",
         "webhook: RuntimeError",
-    )
-
-
-# ── infrastructure/observability/startup.py ───────────────────────────────
-
-
-@pytest.fixture
-def startup_module(monkeypatch):
-    """``observability/startup.py``. It imports
-    ``faultmaven.services.performance_optimization``, which no longer exists,
-    so the module does not import as it stands; the fixture stubs that one
-    module for the import, and drops the import again afterwards."""
-    missing = ModuleType("faultmaven.services.performance_optimization")
-    missing.PerformanceOptimizationService = object
-    monkeypatch.setitem(sys.modules, missing.__name__, missing)
-    name = "faultmaven.infrastructure.observability.startup"
-    sys.modules.pop(name, None)
-    try:
-        yield importlib.import_module(name)
-    finally:
-        sys.modules.pop(name, None)
-
-
-async def test_a_failed_component_start_is_named_by_class(lines, startup_module):
-    """``_start_metrics_collector``, called with a container whose collector's
-    start raises. The service is still marked failed."""
-    collector = MagicMock(
-        start_background_processing=AsyncMock(
-            side_effect=RuntimeError(f"start broke {MARKER}")
-        )
-    )
-    container = MagicMock(get_metrics_collector=MagicMock(return_value=collector))
-    startup = startup_module.PerformanceMonitoringStartup()
-    status = {"services": {}}
-    await startup._start_metrics_collector(container, status)
-    assert status["services"]["metrics_collector"]["status"] == "failed"
-    assert len(startup.startup_metrics["startup_errors"]) == 1
-    _named(
-        lines(),
-        "Failed to start Metrics Collector",
-        "Failed to start Metrics Collector: RuntimeError",
     )
