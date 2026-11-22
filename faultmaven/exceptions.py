@@ -1,7 +1,7 @@
 """Custom exceptions for FaultMaven application."""
 
 from enum import Enum
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Mapping, Optional
 
 
 def walk_cause_chain(exc: BaseException) -> Iterator[BaseException]:
@@ -455,6 +455,15 @@ class LLMErrorCategory(str, Enum):
     #: into one of them — "no signal" and "signal says no" are different
     #: answers, and a consumer that cannot tell them apart fails open.
     UNKNOWN = "unknown"
+
+
+#: The categories that are a verdict on the REQUEST, remedied by the caller
+#: changing it (a smaller prompt, a bigger cap), never by retrying or by
+#: another provider: a fallback chain ranks them first (#2833), and a 504
+#: carrying one spent no provider's deadline (#2319).
+CALLER_REMEDY_CATEGORIES = frozenset(
+    {LLMErrorCategory.CONTEXT_OVERFLOW, LLMErrorCategory.OUTPUT_TRUNCATION}
+)
 
 
 # Machine-readable error codes providers publish in their error bodies, mapped
@@ -957,6 +966,10 @@ class ToolCallingUnsupportedError(LLMException):
     This signals to the orchestration layer that tool calling failed due to
     model incompatibility (not a transient error), and it should fall back
     to a non-tool generation path.
+
+    ``deadlines_spent`` is what the tool loop's failing send spent, as
+    deadlines per provider configuration (the dispatch's key: label and
+    model); the fallback ladders count it (#2319).
     """
 
     def __init__(
@@ -964,9 +977,12 @@ class ToolCallingUnsupportedError(LLMException):
         message: str = "Model does not support tool calling",
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        *,
+        deadlines_spent: Optional[Mapping[str, int]] = None,
     ):
         self.provider = provider
         self.model = model
+        self.deadlines_spent: Dict[str, int] = dict(deadlines_spent or {})
         super().__init__(
             message,
             retryable=False,
@@ -1236,9 +1252,8 @@ class UserLookupFailed(RepositoryError):
     JIT path) keep working unchanged — an absent user still returns ``None``;
     what changes is that they now fail loudly instead of proceeding on a guess.
 
-    Over HTTP this is a ``ServiceError``, so it becomes a generic 500 and the
-    identifier stays in the log (``service_error_handler``). The message is
-    written for the operator reading that log, or the CLI printing it.
+    Over HTTP this is a ``ServiceError``, so it becomes a generic 500, logged by
+    class (``service_error_handler``). The message is for the CLI printing it.
     """
 
     def __init__(self, message: str, *, lookup: str, identifier: str):

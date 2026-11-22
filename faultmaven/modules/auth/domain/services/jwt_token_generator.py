@@ -32,6 +32,7 @@ import jwt
 
 from faultmaven.exceptions import InactiveAccountError
 from faultmaven.modules.auth.domain.models.user import User
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -1310,7 +1311,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid token", extra={"error": str(e)}
+                "JWT validation failed: invalid token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -1390,7 +1392,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
+                "JWT validation failed: invalid refresh token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -1511,7 +1514,7 @@ async def _revoke_token_by_jti(
     except Exception as e:
         logger.warning(
             "JWT revocation skipped: token could not be verified",
-            extra={"token_kind": token_kind, "error": str(e)},
+            extra={"token_kind": token_kind, "error": exception_log_name(e)},
         )
         return
 
@@ -2072,7 +2075,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid access token", extra={"error": str(e)}
+                "JWT validation failed: invalid access token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -2148,7 +2152,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
+                "JWT validation failed: invalid refresh token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -2407,10 +2412,9 @@ class CorruptRevocationEntry(Exception):
       only ``ValueError`` would leave that half falling through unclassified,
       which is the bug this class was introduced to close.
 
-    Carries the offending value's type and a truncated repr, for the log line.
-    The API body never shows either: the request path answers a fixed sentence
-    (``REVOCATION_STATE_UNKNOWN``), and on the Redis arm the raw body can be
-    attacker-influenced, which is why it is truncated rather than passed on.
+    Its message carries the offending value's type and a truncated repr: on the
+    Redis arm the raw body can be attacker-influenced. The log names it by class,
+    and the request path answers a fixed sentence (``REVOCATION_STATE_UNKNOWN``).
     """
 
     def __init__(self, raw, *, field: str):

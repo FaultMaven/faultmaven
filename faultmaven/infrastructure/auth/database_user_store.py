@@ -31,6 +31,7 @@ from faultmaven.modules.auth.domain.display_name import (
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class DatabaseUserStore:
         try:
             user = await self.user_repository.get(user_id)
         except Exception as e:
-            logger.error(f"Failed to get user {user_id}: {e}")
+            logger.error(f"Failed to get user {user_id}: {exception_log_name(e)}")
             raise UserLookupFailed(
                 f"Could not look up user id {user_id!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -152,7 +153,9 @@ class DatabaseUserStore:
         try:
             user = await self.user_repository.get_by_username(username)
         except Exception as e:
-            logger.error(f"Failed to get user by username {username}: {e}")
+            logger.error(
+                f"Failed to get user by username {username}: {exception_log_name(e)}"
+            )
             raise UserLookupFailed(
                 f"Could not look up username {username!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -182,7 +185,9 @@ class DatabaseUserStore:
         try:
             user = await self.user_repository.get_by_email(email)
         except Exception as e:
-            logger.error(f"Failed to get user by email {email}: {e}")
+            logger.error(
+                f"Failed to get user by email {email}: {exception_log_name(e)}"
+            )
             raise UserLookupFailed(
                 f"Could not look up email {email!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -310,7 +315,7 @@ class DatabaseUserStore:
             return self._user_to_devuser(saved_user)
 
         except Exception as e:
-            logger.error(f"Failed to create user {username}: {e}")
+            logger.error(f"Failed to create user {username}: {exception_log_name(e)}")
             raise
 
     async def update_user(self, user: DevUser) -> DevUser:
@@ -355,7 +360,9 @@ class DatabaseUserStore:
             return self._user_to_devuser(saved_user)
 
         except Exception as e:
-            logger.error(f"Failed to update user {user.user_id}: {e}")
+            logger.error(
+                f"Failed to update user {user.user_id}: {exception_log_name(e)}"
+            )
             raise
 
     async def record_login(self, user_id: str) -> None:
@@ -410,7 +417,7 @@ class DatabaseUserStore:
             logger.warning(f"Refused to delete user {user_id}: it created cases")
             raise AccountOwnsCasesError(user_id) from e
         except Exception as e:
-            logger.error(f"Failed to delete user {user_id}: {e}")
+            logger.error(f"Failed to delete user {user_id}: {exception_log_name(e)}")
             return False
 
     async def list_users(
@@ -447,7 +454,7 @@ class DatabaseUserStore:
                 users, _ = await self.user_repository.list(limit=limit, offset=offset)
             return [self._user_to_devuser(user) for user in users]
         except Exception as e:
-            logger.error(f"Failed to list users: {e}")
+            logger.error(f"Failed to list users: {exception_log_name(e)}")
             return []
 
     async def count_users(self, enterprise_id: Optional[str] = None) -> int:
@@ -464,7 +471,7 @@ class DatabaseUserStore:
         try:
             return await self.user_repository.count_users(enterprise_id)
         except Exception as e:
-            logger.error(f"Failed to count users: {e}")
+            logger.error(f"Failed to count users: {exception_log_name(e)}")
             return 0
 
     def _validate_username(self, username: str) -> bool:

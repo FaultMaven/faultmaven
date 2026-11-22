@@ -30,6 +30,7 @@ import jwt
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import AuditEventType
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Redis type is for DI signatures only — the actual client is injected at runtime
@@ -293,7 +294,7 @@ class UserService(BaseService):
             self.logger.error(
                 f"role_change_audit_failed: the {role!r} change to user "
                 f"{user_id} by {admin_user_id} IS in force but was not "
-                f"recorded: {exc}"
+                f"recorded: {exception_log_name(exc)}"
             )
 
     def _signer(self) -> Any:
@@ -397,7 +398,7 @@ class UserService(BaseService):
             # Re-raise conflict errors
             raise
         except Exception as e:
-            self.logger.error(f"Failed to register user: {e}")
+            self.logger.error(f"Failed to register user: {exception_log_name(e)}")
             raise
 
     # ============================================================
@@ -569,7 +570,7 @@ class UserService(BaseService):
         try:
             claims = await signer.verify_password_reset_token(reset_token)
         except jwt.InvalidTokenError as e:
-            raise self._refuse_reset("token_unverifiable", error=str(e))
+            raise self._refuse_reset("token_unverifiable", error=exception_log_name(e))
 
         user_id = claims.get("sub")
         jti = claims.get("jti")

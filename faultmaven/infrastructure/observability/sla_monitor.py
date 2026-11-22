@@ -43,6 +43,7 @@ from faultmaven.infrastructure.observability.dashboard_service import (
 )
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.models.interfaces import ITracer
+from faultmaven.utils.exception_name import exception_log_name
 
 
 @dataclass
@@ -487,7 +488,7 @@ class SLAMonitor(BaseExternalClient):
 
                 except Exception as e:
                     self.logger.error(
-                        f"Failed to calculate compliance for SLA {sla_id}: {e}"
+                        f"Failed to calculate compliance for SLA {sla_id}: {exception_log_name(e)}"
                     )
                     sla_status["sla_details"][sla_id] = {"error": str(e)}
 
@@ -517,7 +518,7 @@ class SLAMonitor(BaseExternalClient):
             return sla_status
 
         except Exception as e:
-            self.logger.error(f"Failed to get SLA status: {e}")
+            self.logger.error(f"Failed to get SLA status: {exception_log_name(e)}")
             raise
 
     async def create_custom_sla(self, sla_definition: Dict[str, Any]) -> str:
@@ -578,7 +579,7 @@ class SLAMonitor(BaseExternalClient):
             return sla_id
 
         except Exception as e:
-            self.logger.error(f"Failed to create custom SLA: {e}")
+            self.logger.error(f"Failed to create custom SLA: {exception_log_name(e)}")
             raise
 
     async def get_sla_compliance_report(
@@ -686,7 +687,9 @@ class SLAMonitor(BaseExternalClient):
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to generate SLA compliance report: {e}")
+            self.logger.error(
+                f"Failed to generate SLA compliance report: {exception_log_name(e)}"
+            )
             raise
 
     # Background monitoring tasks
@@ -705,10 +708,12 @@ class SLAMonitor(BaseExternalClient):
                     try:
                         await self._evaluate_sla(sla)
                     except Exception as e:
-                        self.logger.error(f"Failed to evaluate SLA {sla_id}: {e}")
+                        self.logger.error(
+                            f"Failed to evaluate SLA {sla_id}: {exception_log_name(e)}"
+                        )
 
             except Exception as e:
-                self.logger.error(f"Error in SLA monitor task: {e}")
+                self.logger.error(f"Error in SLA monitor task: {exception_log_name(e)}")
 
     async def _evaluate_sla(self, sla: SLADefinition):
         """Evaluate a specific SLA for violations"""
@@ -745,7 +750,9 @@ class SLAMonitor(BaseExternalClient):
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to evaluate SLA {sla.sla_id}: {e}")
+            self.logger.error(
+                f"Failed to evaluate SLA {sla.sla_id}: {exception_log_name(e)}"
+            )
 
     async def _handle_sla_violation(
         self, sla: SLADefinition, current_value: float, severity: str
@@ -842,7 +849,9 @@ class SLAMonitor(BaseExternalClient):
                 self._sla_metrics["alerts_sent_24h"] += 1
 
         except Exception as e:
-            self.logger.error(f"Failed to send violation alert: {e}")
+            self.logger.error(
+                f"Failed to send violation alert: {exception_log_name(e)}"
+            )
 
     async def _send_alert_to_channel(
         self, channel: AlertChannel, message: Dict[str, Any]
@@ -863,7 +872,9 @@ class SLAMonitor(BaseExternalClient):
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to send alert to {channel.channel_id}: {e}")
+            self.logger.error(
+                f"Failed to send alert to {channel.channel_id}: {exception_log_name(e)}"
+            )
 
     async def _send_email_alert(self, channel: AlertChannel, message: Dict[str, Any]):
         """Send email alert"""
@@ -897,7 +908,7 @@ Please investigate and resolve this issue promptly.
             self.logger.info(f"Email alert sent to {channel.endpoint}: {subject}")
 
         except Exception as e:
-            self.logger.error(f"Failed to send email alert: {e}")
+            self.logger.error(f"Failed to send email alert: {exception_log_name(e)}")
 
     async def _send_slack_alert(self, channel: AlertChannel, message: Dict[str, Any]):
         """Send Slack alert"""
@@ -952,7 +963,7 @@ Please investigate and resolve this issue promptly.
             self.logger.info(f"Slack alert sent to {channel.endpoint}")
 
         except Exception as e:
-            self.logger.error(f"Failed to send Slack alert: {e}")
+            self.logger.error(f"Failed to send Slack alert: {exception_log_name(e)}")
 
     async def _send_webhook_alert(self, channel: AlertChannel, message: Dict[str, Any]):
         """Send webhook alert"""
@@ -961,7 +972,7 @@ Please investigate and resolve this issue promptly.
             self.logger.info(f"Webhook alert sent to {channel.endpoint}")
 
         except Exception as e:
-            self.logger.error(f"Failed to send webhook alert: {e}")
+            self.logger.error(f"Failed to send webhook alert: {exception_log_name(e)}")
 
     async def _send_pagerduty_alert(
         self, channel: AlertChannel, message: Dict[str, Any]
@@ -972,7 +983,9 @@ Please investigate and resolve this issue promptly.
             self.logger.info(f"PagerDuty alert sent for {message['sla_name']}")
 
         except Exception as e:
-            self.logger.error(f"Failed to send PagerDuty alert: {e}")
+            self.logger.error(
+                f"Failed to send PagerDuty alert: {exception_log_name(e)}"
+            )
 
     # Helper methods
 
@@ -1026,7 +1039,9 @@ Please investigate and resolve this issue promptly.
                 return 0.0
 
         except Exception as e:
-            self.logger.error(f"Failed to get metric value for {sla.sla_id}: {e}")
+            self.logger.error(
+                f"Failed to get metric value for {sla.sla_id}: {exception_log_name(e)}"
+            )
             return self._get_mock_metric_value(sla)
 
     def _get_mock_metric_value(self, sla: SLADefinition) -> float:
@@ -1109,7 +1124,7 @@ Please investigate and resolve this issue promptly.
                 compliance_scores.append(compliance.get("compliance_percentage", 100.0))
             except Exception as e:
                 self.logger.error(
-                    f"Failed to calculate compliance for {sla.sla_id}: {e}"
+                    f"Failed to calculate compliance for {sla.sla_id}: {exception_log_name(e)}"
                 )
                 compliance_scores.append(100.0)  # Assume compliant if calculation fails
 
@@ -1156,7 +1171,7 @@ Please investigate and resolve this issue promptly.
 
         except Exception as e:
             self.logger.error(
-                f"Failed to calculate SLA compliance for {sla.sla_id}: {e}"
+                f"Failed to calculate SLA compliance for {sla.sla_id}: {exception_log_name(e)}"
             )
             return {
                 "current_value": 0.0,
@@ -1226,7 +1241,9 @@ Please investigate and resolve this issue promptly.
                 # Implementation would update compliance metrics
                 pass
             except Exception as e:
-                self.logger.error(f"Error in compliance calculator task: {e}")
+                self.logger.error(
+                    f"Error in compliance calculator task: {exception_log_name(e)}"
+                )
 
     async def _violation_resolver_task(self):
         """Check for violation resolution"""
@@ -1236,7 +1253,9 @@ Please investigate and resolve this issue promptly.
                 # Implementation would check if violations are resolved
                 pass
             except Exception as e:
-                self.logger.error(f"Error in violation resolver task: {e}")
+                self.logger.error(
+                    f"Error in violation resolver task: {exception_log_name(e)}"
+                )
 
     async def _alert_consolidator_task(self):
         """Consolidate and deduplicate alerts"""
@@ -1246,7 +1265,9 @@ Please investigate and resolve this issue promptly.
                 # Implementation would consolidate similar alerts
                 pass
             except Exception as e:
-                self.logger.error(f"Error in alert consolidator task: {e}")
+                self.logger.error(
+                    f"Error in alert consolidator task: {exception_log_name(e)}"
+                )
 
     # Placeholder implementations for complex methods
 

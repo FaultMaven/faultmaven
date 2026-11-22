@@ -52,6 +52,7 @@ from faultmaven.api.operator_grants import (
     validate_identifier,
 )
 from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import CASE_NOT_FOUND
 from faultmaven.models.api_models import (
     AdminCaseContentResponse,
     AdminCaseListResponse,
@@ -388,7 +389,31 @@ async def open_case_content(
     )
 
 
-@router.get("/cases/{case_id}/messages", response_model=AdminCaseMessagesResponse)
+#: The transcript's two 404s (#2333): its existence check finding no case, and
+#: the case gone by the transcript's own read, which the ``NotFoundError``
+#: handler labels.
+_TRANSCRIPT_NOT_FOUND_RESPONSE: dict = {
+    404: {
+        "description": (
+            "The case does not exist or the operator's read scope cannot see "
+            f"it. Carries `x-error-code: {CASE_NOT_FOUND}` when the case was "
+            "deleted after the existence check, and no `x-error-code` otherwise."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": "Present when the case was deleted mid-read.",
+                "schema": {"type": "string", "enum": [CASE_NOT_FOUND]},
+            }
+        },
+    },
+}
+
+
+@router.get(
+    "/cases/{case_id}/messages",
+    response_model=AdminCaseMessagesResponse,
+    responses=_TRANSCRIPT_NOT_FOUND_RESPONSE,
+)
 async def open_case_transcript(
     case_id: str,
     current_user: AuthenticatedUser = Depends(require_platform_admin),

@@ -151,6 +151,43 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.8.0",
+        level="MINOR",
+        title=(
+            "`GET /cases/{case_id}/messages` and `GET "
+            "/admin/cases/{case_id}/messages` answer 200 only with the page "
+            "they read: a failed read is an error status, never an empty "
+            "transcript, and `next_offset` is set (#2333). MINOR: a newly "
+            "documented 503 on a route that already answered 503s and 500s; "
+            "no request or schema shape changes."
+        ),
+        body=r"""Both routes read the case through `CaseService.get_case_messages_enhanced`,
+which answered every failure of its read as a 200 with an empty page. Now:
+
+* a database timeout answers `GET /cases/{case_id}/messages` **503**
+  `x-error-code: DATABASE_UNAVAILABLE`, `Retry-After: 5` (newly documented),
+  whether the access check's read (`resolve_case`) or the transcript's own read
+  timed out; a retry is safe;
+* a case deleted between the access check and the read answers **404**
+  `CASE_NOT_FOUND`; any other read failure answers **500**;
+* on `GET /admin/cases/{case_id}/messages` a case gone after `get_case`
+  answers the `NotFoundError` handler's labelled **404**, and a database
+  timeout on the transcript's read answers **500**.
+
+A stored row that cannot be loaded is skipped and counted, like one that
+cannot be converted: `debug_info.storage_errors` names it `MESSAGE_PARSE_FAILED`
+(`STORAGE_READ_FAILED` is gone, having no producer), and `retrieved_count` is
+the rows returned. `X-Storage-Status`, an undeclared header, is now computed
+with or without `include_debug`: `success` when the page skipped no row,
+`partial` when it skipped some, `error` when it returned none of a non-empty
+page.
+
+`next_offset` is now set (it was always null): the page's offset plus the rows
+it consumed, skipped rows included, while `has_more`. A short page is not the
+last page: a client pages by `has_more` / `next_offset`, never by a page
+shorter than `limit`.""",
+    ),
+    ContractChange(
         version="15.7.0",
         level="MINOR",
         title=(

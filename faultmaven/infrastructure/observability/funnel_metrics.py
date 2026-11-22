@@ -51,6 +51,7 @@ from sqlalchemy import DateTime, bindparam, text
 from faultmaven.infrastructure.shims.metrics import Gauge
 from faultmaven.modules.case.contracts import ClosureReason
 from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,10 @@ class FunnelMetricsCollector:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # a query hiccup must not kill the loop
-                logger.warning("Funnel metrics refresh failed (non-fatal): %s", e)
+                logger.warning(
+                    "Funnel metrics refresh failed (non-fatal): %s",
+                    exception_log_name(e),
+                )
             await asyncio.sleep(interval)
 
 

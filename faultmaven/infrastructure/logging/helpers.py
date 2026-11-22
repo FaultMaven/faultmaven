@@ -8,6 +8,11 @@ with full context and stack traces across the FaultMaven codebase.
 import logging
 from typing import Any, Dict, Optional
 
+from faultmaven.utils.exception_name import (
+    exception_class_name,
+    exception_log_name,
+)
+
 
 def log_error_with_context(
     logger: logging.Logger, message: str, error: Exception, **context: Any
@@ -37,11 +42,11 @@ def log_error_with_context(
         ...     )
     """
     # Add exception type to context for searchability
-    context["exception_type"] = type(error).__name__
+    context["exception_type"] = exception_class_name(error)
 
     # Log with full stack trace
     logger.error(
-        f"{message}: {type(error).__name__}: {error}", exc_info=True, extra=context
+        f"{message}: {exception_log_name(error)}", exc_info=True, extra=context
     )
 
 

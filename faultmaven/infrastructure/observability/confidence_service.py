@@ -53,6 +53,7 @@ from faultmaven.models.contracts.core_contracts import (
     ConfidenceResponse,
 )
 from faultmaven.models.interfaces import IGlobalConfidenceService
+from faultmaven.utils.exception_name import exception_log_name
 
 
 class GlobalConfidenceService(IGlobalConfidenceService):
@@ -251,7 +252,9 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                 )
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize default model: {e}")
+            self._logger.error(
+                f"Failed to initialize default model: {exception_log_name(e)}"
+            )
             self._raw_model = None
             self._calibrated_model = None
 
@@ -325,7 +328,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
         except ValidationException:
             raise
         except Exception as e:
-            self._logger.error(f"Confidence scoring failed: {e}")
+            self._logger.error(f"Confidence scoring failed: {exception_log_name(e)}")
             raise ServiceException(f"Confidence scoring failed: {str(e)}") from e
 
     async def _predict_with_model(self, features: np.ndarray) -> Tuple[float, float]:
@@ -500,7 +503,9 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                 return feature_importance
 
         except Exception as e:
-            self._logger.warning(f"Failed to calculate feature importance: {e}")
+            self._logger.warning(
+                f"Failed to calculate feature importance: {exception_log_name(e)}"
+            )
             return {}
 
     def _calculate_uncertainty(self, score: float) -> float:
@@ -586,7 +591,7 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                 return model_info
 
         except Exception as e:
-            self._logger.error(f"Failed to get model info: {e}")
+            self._logger.error(f"Failed to get model info: {exception_log_name(e)}")
             raise ServiceException(f"Model info retrieval failed: {str(e)}") from e
 
     @trace("confidence_service_update_model")
@@ -642,11 +647,13 @@ class GlobalConfidenceService(IGlobalConfidenceService):
                     self._calibration_metrics = backup["metrics"]
                     self._model_version = backup["version"]
 
-                    self._logger.error(f"Model update failed, restored backup: {e}")
+                    self._logger.error(
+                        f"Model update failed, restored backup: {exception_log_name(e)}"
+                    )
                     return False
 
         except Exception as e:
-            self._logger.error(f"Model update failed: {e}")
+            self._logger.error(f"Model update failed: {exception_log_name(e)}")
             return False
 
     async def health_check(self) -> Dict[str, Any]:

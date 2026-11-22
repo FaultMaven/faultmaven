@@ -7,9 +7,13 @@ the codes after the decision cycle's record is written
 own emission, what the engine did this turn, and the facts a renderer falls
 back on when no record can be read. B1b's codes read the verdicts their texts
 state from the record at render time; B1c's carry them as their decider read
-them (decide-time facts, A4), so each text is the one the decider composed.
-B1d's ``OfferCode`` names an offer (or a request) a decider opened, its
-params the facts its prose states, as the decider read them (A4).
+them (decide-time facts, A4), so each text is the one the decider composed,
+but ``PENDING_CHECK``'s, which states the record when no switched decision
+of the cycle disagrees with it (#2811 S2b-2c). B1d's ``OfferCode`` names an
+offer (or a request) a decider opened, its params the facts its prose states,
+as the decider read them (A4); for an offer in
+``narration.offers.RECORD_PROSE`` the narration takes them from the record on
+the same condition.
 
 The log is turn-local metadata and never stored (a turn record holds rendered
 text), so member order has no runtime meaning. ``NoticeCode`` is APPEND-ONLY
@@ -48,7 +52,9 @@ class NoticeCode(StrEnum):
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
     # B1c: each rendered from its params alone, the facts its decider read
-    # (decide-time, A4); stage S3 switches the deciders to the record.
+    # (decide-time, A4), but PENDING_CHECK, rendered from the record when no
+    # switched decision of the cycle disagrees with it (#2811 S2b-2c); stage
+    # S3 switches the deciders to the record.
     ABSENCE_IN_FAILED_WINDOW = "absence_in_failed_window"
     UNBOUND_RECHECKS = "unbound_rechecks"
     FAILED_FIX_NOT_REREGISTERED = "failed_fix_not_reregistered"

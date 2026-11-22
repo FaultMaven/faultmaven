@@ -5,7 +5,8 @@ and ``debug_info.storage_errors`` carried ``str(e)`` of whatever failed: a row
 that would not convert, or the read itself. The text was built a service hop
 from the route, where the route-scanning error-text guards do not look. Each
 entry is now ``CODE: ExceptionClass`` and the text goes to the log. The model
-itself refuses any other entry.
+itself refuses any other entry. A failed read is no longer an entry at all: it
+answers an error status (#2333), whose body carries no text either.
 """
 
 import asyncio
@@ -16,8 +17,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from faultmaven.models.api import (
+    MESSAGE_PARSE_FAILED,
     STORAGE_ERROR_CODES,
-    STORAGE_READ_FAILED,
     MessageRetrievalDebugInfo,
     debug_error,
 )
@@ -65,40 +66,63 @@ async def _get(build_app, call_api, service, **params):
 
 
 @pytest.mark.parametrize("exc", FAILURES)
-@pytest.mark.parametrize("arm", ["MESSAGE_PARSE_FAILED", "STORAGE_READ_FAILED"])
 async def test_the_route_returns_a_code_and_logs_the_text(
-    build_app, call_api, caplog, arm, exc
+    build_app, call_api, caplog, exc
 ):
     caplog.set_level(logging.WARNING)
-    case = _case()
-    # The route's access check reads the case; the service's own read is next.
-    second = exc if arm == "STORAGE_READ_FAILED" else case
-    repo = AsyncMock(get=AsyncMock(side_effect=[case, second]))
+    repo = AsyncMock(get=AsyncMock(return_value=_case()))
     with patch("faultmaven.models.api.Message", side_effect=exc):
         response = await _get(build_app, call_api, _service(repo), include_debug=1)
 
     debug = response.json()["debug_info"]
-    assert debug["storage_errors"] == [f"{arm}: {type(exc).__name__}"]
-    assert debug["message_parsing_errors"] == int(arm == "MESSAGE_PARSE_FAILED")
+    assert debug["storage_errors"] == [f"MESSAGE_PARSE_FAILED: {type(exc).__name__}"]
+    assert debug["message_parsing_errors"] == 1
     assert "hunter2" not in response.text
     record = _logged(caplog, exc)
     assert CASE_ID in record.getMessage()
-    if arm == "STORAGE_READ_FAILED":
-        assert record.exc_info is not None
-    else:
-        assert "m-1" in record.getMessage()
+    assert "m-1" in record.getMessage()
 
 
-async def test_a_stored_row_the_loader_rejects_is_a_read_failure(build_app, call_api):
-    """The page is loaded outside the per-row arm (#2333), so a stored row the
-    loader rejects is ``STORAGE_READ_FAILED``, which is what the field says."""
+@pytest.mark.parametrize("exc", FAILURES)
+async def test_a_failed_read_answers_500_and_logs_the_case(
+    build_app, call_api, caplog, exc
+):
+    """The service's read failing is the route's 500, not an empty page with a
+    ``STORAGE_READ_FAILED`` entry (#2333). A bare ``asyncio.TimeoutError`` is
+    not a ``DatabaseTimeout``, so it is the generic 500, not the 503."""
+    caplog.set_level(logging.WARNING)
+    # The route's access check reads the case; the service's own read is next.
+    repo = AsyncMock(get=AsyncMock(side_effect=[_case(), exc]))
+
+    response = await _get(build_app, call_api, _service(repo), include_debug=1)
+
+    assert response.status_code == 500
+    assert "hunter2" not in response.text
+    record = next(
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and CASE_ID in r.getMessage()
+    )
+    assert record.exc_info is not None
+
+
+async def test_a_stored_row_the_loader_rejects_is_skipped_and_counted(
+    build_app, call_api
+):
+    """Each row is loaded inside the per-row arm (#2333), so a stored row the
+    loader rejects is skipped and counted as ``MESSAGE_PARSE_FAILED``."""
     repo = InMemoryCaseRepository()
     await repo.save(_case(token_count=SECRET))  # stored; ``CaseMessage`` refuses it
 
     response = await _get(build_app, call_api, _service(repo), include_debug=1)
 
-    errors = ["STORAGE_READ_FAILED: ValidationError"]
-    assert response.json()["debug_info"]["storage_errors"] == errors
+    body = response.json()
+    assert body["debug_info"]["storage_errors"] == [
+        "MESSAGE_PARSE_FAILED: ValidationError"
+    ]
+    assert body["debug_info"]["message_parsing_errors"] == 1
+    assert body["messages"] == []
+    assert response.headers["X-Storage-Status"] == "error"
     assert "hunter2" not in response.text
 
 
@@ -122,7 +146,7 @@ def _debug_info(*entries: str) -> MessageRetrievalDebugInfo:
     [
         f"Storage error: {SECRET}",
         # A valid code and class, then text: the class half is pinned too.
-        f"{debug_error(STORAGE_READ_FAILED, ValueError('x'))}: {SECRET}",
+        f"{debug_error(MESSAGE_PARSE_FAILED, ValueError('x'))}: {SECRET}",
     ],
 )
 def test_the_model_refuses_an_entry_that_is_not_coded(entry):
@@ -138,7 +162,7 @@ def test_debug_error_produces_only_entries_the_model_accepts():
     # one that ``str.isidentifier`` would accept and the model refuses.
     for odd_name in ("pkg.Odd", "Ошибка"):
         odd = type(odd_name, (Exception,), {})()
-        entry = debug_error(STORAGE_READ_FAILED, odd)
-        assert _debug_info(entry).storage_errors == ["STORAGE_READ_FAILED: Exception"]
+        entry = debug_error(MESSAGE_PARSE_FAILED, odd)
+        assert _debug_info(entry).storage_errors == ["MESSAGE_PARSE_FAILED: Exception"]
     with pytest.raises(ValueError):
         debug_error("NOT_A_CODE", ValueError())

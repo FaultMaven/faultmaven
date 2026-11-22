@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import ITracer
+from faultmaven.utils.exception_name import exception_log_name
 
 
 @dataclass
@@ -245,7 +246,7 @@ class MetricsCollector(BaseExternalClient):
             self._check_performance_thresholds(metric)
 
         except Exception as e:
-            self.logger.error(f"Failed to record metric: {e}")
+            self.logger.error(f"Failed to record metric: {exception_log_name(e)}")
 
     @contextmanager
     def measure_operation(
@@ -357,7 +358,7 @@ class MetricsCollector(BaseExternalClient):
                     )
 
         except Exception as e:
-            self.logger.error(f"Failed to record cache event: {e}")
+            self.logger.error(f"Failed to record cache event: {exception_log_name(e)}")
 
     def record_user_pattern(
         self,
@@ -401,7 +402,7 @@ class MetricsCollector(BaseExternalClient):
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to record user pattern: {e}")
+            self.logger.error(f"Failed to record user pattern: {exception_log_name(e)}")
 
     def record_workflow_metrics(
         self,
@@ -478,7 +479,9 @@ class MetricsCollector(BaseExternalClient):
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to record workflow metrics: {e}")
+            self.logger.error(
+                f"Failed to record workflow metrics: {exception_log_name(e)}"
+            )
 
     async def get_service_performance_summary(
         self, service: str, time_window_minutes: int = 60
@@ -607,7 +610,9 @@ class MetricsCollector(BaseExternalClient):
             return performance_summary
 
         except Exception as e:
-            self.logger.error(f"Failed to get service performance summary: {e}")
+            self.logger.error(
+                f"Failed to get service performance summary: {exception_log_name(e)}"
+            )
             return {"service": service, "status": "error", "error": str(e)}
 
     async def get_system_performance_dashboard(self) -> Dict[str, Any]:
@@ -665,7 +670,7 @@ class MetricsCollector(BaseExternalClient):
 
                 except Exception as e:
                     self.logger.error(
-                        f"Failed to get summary for service {service}: {e}"
+                        f"Failed to get summary for service {service}: {exception_log_name(e)}"
                     )
                     dashboard_data["services"][service] = {
                         "status": "error",
@@ -700,7 +705,9 @@ class MetricsCollector(BaseExternalClient):
             return dashboard_data
 
         except Exception as e:
-            self.logger.error(f"Failed to generate performance dashboard: {e}")
+            self.logger.error(
+                f"Failed to generate performance dashboard: {exception_log_name(e)}"
+            )
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "status": "error",
@@ -760,7 +767,9 @@ class MetricsCollector(BaseExternalClient):
             return recommendations
 
         except Exception as e:
-            self.logger.error(f"Failed to get optimization recommendations: {e}")
+            self.logger.error(
+                f"Failed to get optimization recommendations: {exception_log_name(e)}"
+            )
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e),
@@ -791,7 +800,9 @@ class MetricsCollector(BaseExternalClient):
                 )
 
         except Exception as e:
-            self.logger.error(f"Failed to update real-time analytics: {e}")
+            self.logger.error(
+                f"Failed to update real-time analytics: {exception_log_name(e)}"
+            )
 
     def _check_performance_thresholds(self, metric: MetricData) -> None:
         """Check metric against performance thresholds and generate alerts"""
@@ -840,7 +851,9 @@ class MetricsCollector(BaseExternalClient):
                 self._active_alerts.discard(alert_key)
 
         except Exception as e:
-            self.logger.error(f"Failed to check performance thresholds: {e}")
+            self.logger.error(
+                f"Failed to check performance thresholds: {exception_log_name(e)}"
+            )
 
     def _setup_optimization_rules(self) -> None:
         """Setup performance optimization rules"""
@@ -879,7 +892,7 @@ class MetricsCollector(BaseExternalClient):
                     )
             except Exception as e:
                 self.logger.error(
-                    f"Failed to evaluate optimization rule {rule['name']}: {e}"
+                    f"Failed to evaluate optimization rule {rule['name']}: {exception_log_name(e)}"
                 )
 
         return recommendations
@@ -953,7 +966,9 @@ class MetricsCollector(BaseExternalClient):
                 self._service_profiles[service] = profile
 
         except Exception as e:
-            self.logger.error(f"Failed to update service profile for {service}: {e}")
+            self.logger.error(
+                f"Failed to update service profile for {service}: {exception_log_name(e)}"
+            )
 
     async def _analyze_cross_service_performance(self) -> Dict[str, Any]:
         """Analyze performance correlations across services"""
@@ -1030,7 +1045,7 @@ class MetricsCollector(BaseExternalClient):
                         # Metrics would be persisted here
 
             except Exception as e:
-                self.logger.error(f"Error in periodic flush: {e}")
+                self.logger.error(f"Error in periodic flush: {exception_log_name(e)}")
 
     async def _analytics_processor(self):
         """Process analytics data in background"""
@@ -1046,7 +1061,9 @@ class MetricsCollector(BaseExternalClient):
                             pass
 
             except Exception as e:
-                self.logger.error(f"Error in analytics processor: {e}")
+                self.logger.error(
+                    f"Error in analytics processor: {exception_log_name(e)}"
+                )
 
     async def _performance_monitor(self):
         """Monitor system performance and generate alerts"""
@@ -1059,7 +1076,9 @@ class MetricsCollector(BaseExternalClient):
                 # Update optimization recommendations
 
             except Exception as e:
-                self.logger.error(f"Error in performance monitor: {e}")
+                self.logger.error(
+                    f"Error in performance monitor: {exception_log_name(e)}"
+                )
 
     async def health_check(self) -> Dict[str, Any]:
         """Check health of metrics collector"""

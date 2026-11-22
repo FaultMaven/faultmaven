@@ -12,9 +12,11 @@ reads the code's params and the cycle's record (``CaseOutcome``), never the
 case, after the cycle's last decider ran (``render_notice``). With no outcome
 at all (``None``), a renderer falls back on the facts its decider recorded.
 B1c's renderers read no record: their params carry the facts their deciders
-read (decide-time, A4), so each renders the text its decider composed. The
-unbound re-checks are the exception (B2, #2555): their rows are the record's,
-their pool the decider's.
+read (decide-time, A4), so each renders the text its decider composed. Two
+are the exception: the unbound re-checks (B2, #2555), their rows the
+record's, their pool the decider's; and the held check (``PENDING_CHECK``,
+#2811 S2b-2c), which states the record when no switched decision of the
+cycle disagrees with it, and its decider's params when one does.
 """
 
 from typing import Callable, Optional
@@ -193,14 +195,16 @@ def license_notice(subject: str) -> str:
 Renderer = Callable[[dict, Optional[CaseOutcome], list], list[str]]
 _RENDERERS: dict[str, Renderer] = {}
 
-#: The codes whose renderers read the cycle's record (B1b's). Every other
-#: renderer reads only its params and the log, so a cycle whose log holds none
-#: of these is narrated with no outcome computed (#2636).
+#: The notice codes whose renderers read the cycle's record: B1b's and the
+#: held check (#2811 S2b-2c). Every other renderer reads only its params and
+#: the log, so a cycle whose log holds none of these, and no offer in
+#: ``offers.RECORD_PROSE``, is narrated with no outcome computed (#2636).
 READS_THE_RECORD = frozenset(
     {
         NoticeCode.SOLUTION_OFFER_WITHDRAWN,
         NoticeCode.MITIGATION_VERIFY_REFUSED,
         NoticeCode.MITIGATION_DISPOSITION_REFUSED,
+        NoticeCode.PENDING_CHECK,
     }
 )
 
@@ -526,14 +530,34 @@ def _failed_fix(params: dict, outcome, log) -> list:
 
 @_renders(NoticeCode.PENDING_CHECK)
 def _pending_check(params: dict, outcome, log) -> list:
-    """Whether a resolve decline stands is the decider's (A4)."""
+    """``outcome`` is the record when no switched decision of the cycle
+    disagrees with it (``turn_narration._switched_outcome``), else None
+    (#2811 S2b-2c). With a record that holds a check, the held need,
+    why it holds and whether a resolve decline stands are the record's, the
+    need's request text the one ``narrate_turn`` read for it
+    (``record_request_text``, else the decision's). With none, or a record
+    that holds no check, all are the decider's (A4). Whether the model
+    proposed is always the decider's."""
+    resolution = outcome.resolution if outcome is not None else None
+    if resolution is None or resolution.pending_check_need_id is None:
+        need_id, request_text = params["need_id"], params["request_text"]
+        reason, declined = params["pending_check_reason"], params["declined_stands"]
+    else:
+        need_id = resolution.pending_check_need_id
+        request_text = params["record_request_text"]
+        if request_text is None:
+            request_text = params["request_text"]
+        reason, declined = (
+            resolution.pending_check_reason,
+            resolution.declined_stands,
+        )
     return [
         pending_check_feedback(
-            params["need_id"],
-            params["request_text"],
-            pending_check_reason=params["pending_check_reason"],
+            need_id,
+            request_text,
+            pending_check_reason=reason,
             proposed=params["proposed"],
-            declined_stands=params["declined_stands"],
+            declined_stands=declined,
         )
     ]
 

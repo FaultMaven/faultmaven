@@ -8,27 +8,19 @@ value and stays valid JSON. Every positive below reached the line unchanged
 before this rule existed.
 """
 
-import io
 import json
-import logging
-import types
 
 import pytest
 import structlog
 
-import faultmaven.infrastructure.logging.config as logging_config
-from faultmaven.infrastructure.logging.config import (
-    FaultMavenLogger,
-    LoggingConfig,
-    build_log_formatter,
-    get_logger,
-)
+from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.url_redaction import (
     redact_credential_headers,
     redact_log_line,
     redact_log_line_bytes,
     redacting_renderer,
 )
+from tests.unit.infrastructure.logging.conftest import _job_line, _json_lines
 from tests.wallclock import assert_linear_growth
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -103,40 +95,6 @@ JSON_NEGATIVES = [
     },
     {"event": "e", "cookies": 3, "x-cookie": "v", "cookie_count": 2},
 ]
-
-
-@pytest.fixture(params=["json", "console"])
-def rendered(request, monkeypatch):
-    """What the real ``configure_structlog`` handler writes, as JSON and as
-    coloured console, every global restored (``written`` in
-    ``test_url_query_redaction.py`` says why each one)."""
-    root = logging.getLogger()
-    saved_singleton = logging_config._logger_config
-    get_logger("faultmaven.test.warmup")
-    saved = structlog.get_config(), root.level, list(root.handlers)
-    if request.param == "console":
-        tty = types.SimpleNamespace(isatty=lambda: True)
-        monkeypatch.setattr(logging_config, "sys", types.SimpleNamespace(stderr=tty))
-    config = LoggingConfig()
-    config.LOG_FORMAT, config.LOG_HUMAN_READABLE = request.param, False
-    FaultMavenLogger(config).configure_structlog()
-    root.setLevel(logging.INFO)
-    buffer = io.StringIO()
-    marker = FaultMavenLogger._ROOT_HANDLER_MARKER
-    next(h for h in root.handlers if getattr(h, marker, False)).setStream(buffer)
-    try:
-        yield types.SimpleNamespace(buffer=buffer, mode=request.param)
-        if request.param == "console" and buffer.getvalue():
-            assert "\x1b[" in buffer.getvalue(), "the console case was not coloured"
-    finally:
-        structlog.configure(**saved[0])
-        root.setLevel(saved[1])
-        root.handlers[:] = saved[2]
-        logging_config._logger_config = saved_singleton
-
-
-def _json_lines(output):
-    return [json.loads(row) for row in output.splitlines() if row.startswith('{"')]
 
 
 class TestEveryRenderedLine:
@@ -226,13 +184,6 @@ class TestEveryRenderedLine:
             data = line.encode("utf-8", "surrogateescape")
             assert redact_log_line_bytes(data) == redact_log_line(line).encode()
         assert SECRET.encode() not in redact_log_line_bytes(b"\xff cookie: VALUE")
-
-
-def _job_line(log_format, message):
-    """``message`` as a job writes it, through the formatter its handler
-    (``install_log_handler``) builds (#2888)."""
-    record = logging.LogRecord("job", logging.ERROR, __file__, 1, message, (), None)
-    return build_log_formatter(log_format, False, io.StringIO()).format(record)
 
 
 class TestTheJobsFormatter:
@@ -415,6 +366,37 @@ class TestTheCostIsLinear:
             (
                 "nested key",
                 lambda n: json.dumps({"e": [{"r": {"h": {"authorization": 1}}}] * n}),
+            ),
+            # The names #2891 added: each scan word, a prefix that is no name,
+            # a quote run after a prefixed name, and a flat list's comma.
+            ("added names", lambda n: "x-api-key api-key x-auth-token " * n),
+            (
+                "added in-string dense",
+                lambda n: json.dumps(
+                    {"e": ("x-goog-api-key: " + "x" * 100 + "\n") * n}
+                ),
+            ),
+            ("set-cookie2", lambda n: "set-cookie2 " * n),
+            ("prefix run", lambda n: "x-x-x-x-api-key " * n),
+            ("prefix mix", lambda n: "x-goog-x-api-key " * n),
+            ("quote run", lambda n: ("_x-goog-api-key" + "'" * 200 + " ") * n),
+            (
+                "units of each word",
+                lambda n: "cookie: a\nauthorization: b\napi-key: c\nx-auth-token: d\n"
+                * n,
+            ),
+            ("added key-dense", lambda n: json.dumps({"e": [{"x-api-key": 1}] * n})),
+            (
+                "added pair-dense",
+                lambda n: json.dumps({"e": [["x-auth-token", "x"]] * n}),
+            ),
+            ("flat-list dense", lambda n: "['" + "x-api-key', '" * n),
+            # A pair opens before the name, and the pair's comma never comes.
+            ("pair quote run", lambda n: ("('x-api-key" + "'" * 200 + "x ") * n),
+            ("record value", lambda n: ":'x-api-key'x " * n),
+            (
+                "blanks past the old window",
+                lambda n: ("," + " " * 72 + "'cookie'x ") * n,
             ),
         ],
     )

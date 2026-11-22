@@ -39,6 +39,7 @@ from faultmaven.infrastructure.caching.intelligent_cache import IntelligentCache
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.models.interfaces import ITracer
 from faultmaven.services.base import BaseService
+from faultmaven.utils.exception_name import exception_log_name
 
 
 @dataclass
@@ -238,7 +239,9 @@ class AnalyticsDashboardService(BaseService):
             return dashboard_data
 
         except Exception as e:
-            self.logger.error(f"Failed to generate system overview dashboard: {e}")
+            self.logger.error(
+                f"Failed to generate system overview dashboard: {exception_log_name(e)}"
+            )
             raise ServiceException(f"Dashboard generation failed: {str(e)}") from e
 
     async def _generate_system_overview(
@@ -363,7 +366,7 @@ class AnalyticsDashboardService(BaseService):
             raise
         except Exception as e:
             self.logger.error(
-                f"Failed to generate service dashboard for {service_name}: {e}"
+                f"Failed to generate service dashboard for {service_name}: {exception_log_name(e)}"
             )
             raise ServiceException(
                 f"Service dashboard generation failed: {str(e)}"
@@ -457,7 +460,9 @@ class AnalyticsDashboardService(BaseService):
             return dashboard_data
 
         except Exception as e:
-            self.logger.error(f"Failed to generate user analytics dashboard: {e}")
+            self.logger.error(
+                f"Failed to generate user analytics dashboard: {exception_log_name(e)}"
+            )
             raise ServiceException(f"User analytics generation failed: {str(e)}") from e
 
     async def _generate_user_analytics(
@@ -539,7 +544,9 @@ class AnalyticsDashboardService(BaseService):
             return dashboard_data
 
         except Exception as e:
-            self.logger.error(f"Failed to generate workflow analytics dashboard: {e}")
+            self.logger.error(
+                f"Failed to generate workflow analytics dashboard: {exception_log_name(e)}"
+            )
             raise ServiceException(
                 f"Workflow analytics generation failed: {str(e)}"
             ) from e
@@ -649,7 +656,9 @@ class AnalyticsDashboardService(BaseService):
             return results
 
         except Exception as e:
-            self.logger.error(f"Failed to execute custom analytics query: {e}")
+            self.logger.error(
+                f"Failed to execute custom analytics query: {exception_log_name(e)}"
+            )
             raise ServiceException(f"Custom query execution failed: {str(e)}") from e
 
     async def _execute_custom_query(
@@ -900,7 +909,9 @@ class AnalyticsDashboardService(BaseService):
                 await self._update_cached_dashboard_data()
 
             except Exception as e:
-                self.logger.error(f"Error in dashboard data processor: {e}")
+                self.logger.error(
+                    f"Error in dashboard data processor: {exception_log_name(e)}"
+                )
 
     async def _trend_analyzer(self):
         """Analyze performance trends in background"""
@@ -912,7 +923,7 @@ class AnalyticsDashboardService(BaseService):
                 await self._analyze_performance_trends()
 
             except Exception as e:
-                self.logger.error(f"Error in trend analyzer: {e}")
+                self.logger.error(f"Error in trend analyzer: {exception_log_name(e)}")
 
     async def _alert_processor(self):
         """Process alerts in background"""
@@ -924,7 +935,7 @@ class AnalyticsDashboardService(BaseService):
                 await self._process_new_alerts()
 
             except Exception as e:
-                self.logger.error(f"Error in alert processor: {e}")
+                self.logger.error(f"Error in alert processor: {exception_log_name(e)}")
 
     async def _update_cached_dashboard_data(self):
         """Update cached dashboard data"""

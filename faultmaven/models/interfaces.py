@@ -13,6 +13,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Tuple,
 )
 
 from pydantic import BaseModel, Field
@@ -636,6 +637,14 @@ class IKnowledgeVectorStore(ABC):
         Raises:
             ValueError: An empty parent or generation.
         """
+        pass
+
+    @abstractmethod
+    async def get_generation_chunks(
+        self, parent_document_id: str, generation: str
+    ) -> List[Tuple[int, str, List[float]]]:
+        """One parent's chunks of one generation as ``(chunk_index, text,
+        embedding)``, in chunk order: the pack bootstrap's compare (#2244)."""
         pass
 
     @abstractmethod

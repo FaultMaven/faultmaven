@@ -26,6 +26,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.routes.admin_cases import (
     get_case_service,
@@ -33,6 +34,7 @@ from faultmaven.api.routes.admin_cases import (
     get_operator_grant_repository,
     router,
 )
+from faultmaven.exceptions import DatabaseTimeout
 from faultmaven.models.api import CaseMessagesResponse
 from faultmaven.models.interfaces_operator_audit import OperatorAction
 from faultmaven.models.interfaces_operator_grant import (
@@ -41,6 +43,7 @@ from faultmaven.models.interfaces_operator_grant import (
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.models.case import Case
+from faultmaven.modules.case.domain.services.case_service import CaseService
 from tests.case_builders import inquiry_case
 
 # A realistic case id: the domain model pins these at exactly 17 characters, so
@@ -498,3 +501,46 @@ class TestRlsIsReboundNotBypassed:
         client.get(CONTENT_PATHS[0])
 
         assert bound == []
+
+
+@pytest.mark.unit
+class TestTranscriptReadFailuresAreErrors:
+    """#2333: the operator transcript reads through the same service, so a read
+    that fails after ``get_case`` answers an error status, never a 200 envelope
+    holding an empty transcript."""
+
+    @staticmethod
+    def _client(audit_repo, grant_repo, *reads) -> TestClient:
+        service = CaseService(
+            case_repository=AsyncMock(get=AsyncMock(side_effect=list(reads))),
+            session_store=AsyncMock(),
+            max_cases_per_user=50,
+        )
+        app = FastAPI()
+        for exc_type, handler in get_exception_handlers().items():
+            app.add_exception_handler(exc_type, handler)
+        app.include_router(router)
+        app.dependency_overrides[require_platform_admin] = _operator
+        app.dependency_overrides[get_operator_audit_repository] = lambda: audit_repo
+        app.dependency_overrides[get_operator_grant_repository] = lambda: grant_repo
+        app.dependency_overrides[get_case_service] = lambda: service
+        return TestClient(app, raise_server_exceptions=False)
+
+    def test_a_case_gone_after_get_case_is_404(self, audit_repo, grant_repo):
+        # The first read is ``get_case``'s; the service's own read is next.
+        client = self._client(audit_repo, grant_repo, _case(), None)
+
+        resp = client.get(CONTENT_PATHS[1])
+
+        assert resp.status_code == 404
+        assert resp.headers["x-error-code"] == "CASE_NOT_FOUND"
+        assert resp.json()["resource_type"] == "Case"
+        audit_repo.record_access.assert_awaited_once()
+
+    def test_a_database_timeout_on_the_read_is_500(self, audit_repo, grant_repo):
+        client = self._client(audit_repo, grant_repo, _case(), DatabaseTimeout())
+
+        resp = client.get(CONTENT_PATHS[1])
+
+        assert resp.status_code == 500
+        audit_repo.record_access.assert_awaited_once()

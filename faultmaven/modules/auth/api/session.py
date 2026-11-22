@@ -53,6 +53,7 @@ from faultmaven.modules.auth.domain.services.auth_session_service import (
     validate_client_session_metadata,
 )
 from faultmaven.modules.auth.infrastructure.metrics import session_metrics
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/sessions", tags=["session_management"])
@@ -419,7 +420,9 @@ async def create_session(
     except SessionWriteConflict:
         raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
-        logger.error(f"Failed to create session: {e}", exc_info=True)
+        logger.error(
+            f"Failed to create session: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to create session")
 
 
@@ -542,7 +545,10 @@ async def get_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get session {session_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to get session {session_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to get session")
 
 
@@ -623,7 +629,7 @@ async def list_sessions(
                         filtered_sessions.append(session)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to get session metadata for {session.session_id}: {e}"
+                        f"Failed to get session metadata for {session.session_id}: {exception_log_name(e)}"
                     )
                     # Include session if we can't determine its type and filter is for default type
                     if session_type == "troubleshooting":
@@ -658,7 +664,7 @@ async def list_sessions(
                     )
             except Exception as e:
                 logger.warning(
-                    f"Failed to get session metadata for display {session.session_id}: {e}"
+                    f"Failed to get session metadata for display {session.session_id}: {exception_log_name(e)}"
                 )
 
             sessions_response.append(
@@ -683,7 +689,7 @@ async def list_sessions(
             "offset": offset,
         }
     except Exception as e:
-        logger.error(f"Failed to list sessions: {e}", exc_info=True)
+        logger.error(f"Failed to list sessions: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list sessions")
 
 
@@ -740,7 +746,10 @@ async def delete_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete session {session_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to delete session {session_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to delete session")
 
 
@@ -808,25 +817,29 @@ async def session_heartbeat(
             # Handle specific runtime errors from session service
             if "Session store unavailable" in str(e):
                 logger.error(
-                    f"Session store connection issue during heartbeat for {session_id}: {e}"
+                    f"Session store connection issue during heartbeat for {session_id}: {exception_log_name(e)}"
                 )
                 raise HTTPException(
                     status_code=503, detail="Session store temporarily unavailable"
                 )
             elif "Activity update operation failed" in str(e):
-                logger.error(f"Session activity update failed for {session_id}: {e}")
+                logger.error(
+                    f"Session activity update failed for {session_id}: {exception_log_name(e)}"
+                )
                 raise HTTPException(
                     status_code=500, detail="Failed to update session activity"
                 )
             else:
                 logger.error(
-                    f"Unexpected runtime error during heartbeat for {session_id}: {e}"
+                    f"Unexpected runtime error during heartbeat for {session_id}: {exception_log_name(e)}"
                 )
                 raise HTTPException(status_code=500, detail="Internal server error")
         except SessionWriteConflict:
             raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
         except Exception as e:
-            logger.error(f"Unexpected error during heartbeat for {session_id}: {e}")
+            logger.error(
+                f"Unexpected error during heartbeat for {session_id}: {exception_log_name(e)}"
+            )
             raise HTTPException(status_code=500, detail="Internal server error")
 
         if not result:
@@ -848,7 +861,9 @@ async def session_heartbeat(
             if session and session.last_activity:
                 last_activity = _safe_datetime_to_utc_string(session.last_activity)
         except Exception as e:
-            logger.warning(f"Failed to get updated session info for {session_id}: {e}")
+            logger.warning(
+                f"Failed to get updated session info for {session_id}: {exception_log_name(e)}"
+            )
 
         return {
             "session_id": session_id,
@@ -861,7 +876,9 @@ async def session_heartbeat(
         raise
     except Exception as e:
         # Catch-all for unexpected errors
-        logger.error(f"Unexpected error in heartbeat for session {session_id}: {e}")
+        logger.error(
+            f"Unexpected error in heartbeat for session {session_id}: {exception_log_name(e)}"
+        )
         raise HTTPException(
             status_code=500, detail="Internal server error during heartbeat operation"
         )
@@ -942,7 +959,10 @@ async def update_session(
     except SessionWriteConflict:
         raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
-        logger.error(f"Failed to update session {session_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to update session {session_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to update session")
 
 
@@ -1012,7 +1032,9 @@ async def search_sessions(
         return {"sessions": sessions_response, "total": len(sessions)}
 
     except Exception as e:
-        logger.error(f"Failed to search sessions: {e}", exc_info=True)
+        logger.error(
+            f"Failed to search sessions: {exception_log_name(e)}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to search sessions")
 
 
@@ -1076,5 +1098,8 @@ async def archive_session(
     except SessionWriteConflict:
         raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
     except Exception as e:
-        logger.error(f"Failed to archive session {session_id}: {e}", exc_info=True)
+        logger.error(
+            f"Failed to archive session {session_id}: {exception_log_name(e)}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to archive session")

@@ -52,11 +52,13 @@ offline without rebuilding the app image.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope, vocabulary
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
@@ -99,6 +101,29 @@ class PackRunbook:
     # The pack's per-runbook ``causes`` record (the toolkit's v4 graph record)
     # is deliberately NOT loaded: its only runtime reader, the KB cause seeder,
     # was removed in fm#1295. The toolkit still emits it; it is ignored here.
+
+    @property
+    def pack_digest(self) -> str:
+        """``"<fields>:<chunks>"`` of what was loaded, not app metadata (#2244)."""
+        chunks = ((c.chunk_index, c.text, c.embedding) for c in self.chunks)
+        return f"{fields_digest(self)}:{chunks_digest(chunks)}"
+
+
+def fields_digest(source: Any, owner_id: Optional[str] = None) -> str:
+    """Pack-written columns as stored; ``owner_id`` stands in for a NULL one."""
+    title, tags = str(source.title), [t for t in map(str, source.tags or []) if t]
+    owner = source.owner_id or owner_id
+    fields = [source.content, title, tags, source.source_url, owner]
+    return hashlib.sha256(json.dumps(fields).encode("utf-8")).hexdigest()
+
+
+def chunks_digest(chunks: Iterable[Tuple[int, str, Sequence[float]]]) -> str:
+    """Each ``(index, text, vector)``, length-prefixed, the vector float32 LE."""
+    digest = hashlib.sha256()
+    for index, text, vector in chunks:
+        data, row = text.encode("utf-8"), struct.pack(f"<{len(vector)}f", *vector)
+        digest.update(f"{index}:{len(data)}:{len(row)}:".encode("ascii") + data + row)
+    return digest.hexdigest()
 
 
 def baseline_pack_dir(project_root: Path) -> Path:

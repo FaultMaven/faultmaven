@@ -20,6 +20,7 @@ import logging
 from typing import Iterable, Optional
 
 from faultmaven.infrastructure.shims.metrics import Counter, Histogram, is_real
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +248,9 @@ class OAuthMetricsRecorder:
                 oauth_codes_generated.labels(client_id=client_id).inc()
 
         except Exception as e:
-            logger.error(f"Failed to record authorization request metric: {e}")
+            logger.error(
+                f"Failed to record authorization request metric: {exception_log_name(e)}"
+            )
 
     def record_token_exchange(
         self,
@@ -290,7 +293,9 @@ class OAuthMetricsRecorder:
                     ).inc()
 
         except Exception as e:
-            logger.error(f"Failed to record token exchange metric: {e}")
+            logger.error(
+                f"Failed to record token exchange metric: {exception_log_name(e)}"
+            )
 
     def record_token_refresh(
         self, client_id: str, success: bool, error_code: Optional[str] = None
@@ -316,7 +321,9 @@ class OAuthMetricsRecorder:
                 ).inc()
 
         except Exception as e:
-            logger.error(f"Failed to record token refresh metric: {e}")
+            logger.error(
+                f"Failed to record token refresh metric: {exception_log_name(e)}"
+            )
 
     def record_token_revocation(self, token_type: str) -> None:
         """Record OAuth token revocation.
@@ -330,7 +337,9 @@ class OAuthMetricsRecorder:
         try:
             oauth_tokens_revoked.labels(token_type=token_type).inc()
         except Exception as e:
-            logger.error(f"Failed to record token revocation metric: {e}")
+            logger.error(
+                f"Failed to record token revocation metric: {exception_log_name(e)}"
+            )
 
     def record_pkce_failure(self, client_id: str) -> None:
         """Record PKCE verification failure.
@@ -346,7 +355,9 @@ class OAuthMetricsRecorder:
                 client_id=self.client_label(client_id)
             ).inc()
         except Exception as e:
-            logger.error(f"Failed to record PKCE failure metric: {e}")
+            logger.error(
+                f"Failed to record PKCE failure metric: {exception_log_name(e)}"
+            )
 
     def record_code_replay_attempt(self, client_id: str) -> None:
         """Record authorization code replay attempt.
@@ -362,7 +373,9 @@ class OAuthMetricsRecorder:
                 client_id=self.client_label(client_id)
             ).inc()
         except Exception as e:
-            logger.error(f"Failed to record code replay attempt metric: {e}")
+            logger.error(
+                f"Failed to record code replay attempt metric: {exception_log_name(e)}"
+            )
 
     def record_invalid_client(self) -> None:
         """Record a request whose client_id is not a configured client.
@@ -378,7 +391,9 @@ class OAuthMetricsRecorder:
                 attempted_client_id=_UNKNOWN_CLIENT
             ).inc()
         except Exception as e:
-            logger.error(f"Failed to record invalid client metric: {e}")
+            logger.error(
+                f"Failed to record invalid client metric: {exception_log_name(e)}"
+            )
 
     def record_redirect_uri_mismatch(self, client_id: str) -> None:
         """Record redirect URI mismatch.
@@ -394,7 +409,9 @@ class OAuthMetricsRecorder:
                 client_id=self.client_label(client_id)
             ).inc()
         except Exception as e:
-            logger.error(f"Failed to record redirect URI mismatch metric: {e}")
+            logger.error(
+                f"Failed to record redirect URI mismatch metric: {exception_log_name(e)}"
+            )
 
     def record_code_expired(self, client_id: str) -> None:
         """Record expired authorization code exchange attempt.
@@ -408,4 +425,6 @@ class OAuthMetricsRecorder:
         try:
             oauth_codes_expired.labels(client_id=self.client_label(client_id)).inc()
         except Exception as e:
-            logger.error(f"Failed to record code expired metric: {e}")
+            logger.error(
+                f"Failed to record code expired metric: {exception_log_name(e)}"
+            )

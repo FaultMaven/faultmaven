@@ -43,6 +43,7 @@ from faultmaven.modules.auth.domain.display_name import (
     usable_display_name,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from redis import Redis
@@ -120,7 +121,7 @@ class RedisUserStore:
             return DevUser.from_dict(user_dict)
 
         except Exception as e:
-            logger.error(f"Failed to get user {user_id}: {e}")
+            logger.error(f"Failed to get user {user_id}: {exception_log_name(e)}")
             raise UserLookupFailed(
                 f"Could not look up user id {user_id!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -153,7 +154,9 @@ class RedisUserStore:
             username_key = self.username_key_pattern.format(username.lower())
             user_id = await self._redis_get(username_key)
         except Exception as e:
-            logger.error(f"Failed to get user by username {username}: {e}")
+            logger.error(
+                f"Failed to get user by username {username}: {exception_log_name(e)}"
+            )
             raise UserLookupFailed(
                 f"Could not look up username {username!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -187,7 +190,9 @@ class RedisUserStore:
             email_key = self.email_key_pattern.format(email.lower())
             user_id = await self._redis_get(email_key)
         except Exception as e:
-            logger.error(f"Failed to get user by email {email}: {e}")
+            logger.error(
+                f"Failed to get user by email {email}: {exception_log_name(e)}"
+            )
             raise UserLookupFailed(
                 f"Could not look up email {email!r}: {e}. This is NOT "
                 "'no such user' — the lookup itself failed, so the account's "
@@ -327,7 +332,7 @@ class RedisUserStore:
         except (ValidationException, ConflictError):
             raise
         except Exception as e:
-            logger.error(f"Failed to create user '{username}': {e}")
+            logger.error(f"Failed to create user '{username}': {exception_log_name(e)}")
             raise Exception(f"User creation failed: {str(e)}")
 
     async def update_user(self, user: DevUser) -> DevUser:
@@ -393,7 +398,9 @@ class RedisUserStore:
             # the global handler to map them to 404/422/409.
             raise
         except Exception as e:
-            logger.error(f"Failed to update user {user.user_id}: {e}")
+            logger.error(
+                f"Failed to update user {user.user_id}: {exception_log_name(e)}"
+            )
             raise Exception(f"User update failed: {str(e)}")
 
     async def record_login(self, user_id: str) -> None:
@@ -455,7 +462,7 @@ class RedisUserStore:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to delete user {user_id}: {e}")
+            logger.error(f"Failed to delete user {user_id}: {exception_log_name(e)}")
             return False
 
     async def list_users(
@@ -496,7 +503,7 @@ class RedisUserStore:
             return users
 
         except Exception as e:
-            logger.error(f"Failed to list users: {e}")
+            logger.error(f"Failed to list users: {exception_log_name(e)}")
             return []
 
     async def count_users(self) -> int:
@@ -508,7 +515,7 @@ class RedisUserStore:
         try:
             return await self._redis_scard(self.user_list_key)
         except Exception as e:
-            logger.error(f"Failed to count users: {e}")
+            logger.error(f"Failed to count users: {exception_log_name(e)}")
             return 0
 
     def _validate_username(self, username: str) -> bool:
@@ -536,7 +543,7 @@ class RedisUserStore:
         try:
             return await self.redis.set(key, value)
         except Exception as e:
-            logger.error(f"Redis SET failed for key {key}: {e}")
+            logger.error(f"Redis SET failed for key {key}: {exception_log_name(e)}")
             raise
 
     async def _redis_get(self, key: str) -> Optional[str]:
@@ -557,7 +564,7 @@ class RedisUserStore:
             result = await self.redis.get(key)
             return result if result else None
         except Exception as e:
-            logger.error(f"Redis GET failed for key {key}: {e}")
+            logger.error(f"Redis GET failed for key {key}: {exception_log_name(e)}")
             raise
 
     async def _redis_delete(self, key: str) -> None:
@@ -565,21 +572,21 @@ class RedisUserStore:
         try:
             return await self.redis.delete(key)
         except Exception as e:
-            logger.error(f"Redis DELETE failed for key {key}: {e}")
+            logger.error(f"Redis DELETE failed for key {key}: {exception_log_name(e)}")
 
     async def _redis_sadd(self, key: str, value: str) -> None:
         """Add to Redis set"""
         try:
             return await self.redis.sadd(key, value)
         except Exception as e:
-            logger.error(f"Redis SADD failed for key {key}: {e}")
+            logger.error(f"Redis SADD failed for key {key}: {exception_log_name(e)}")
 
     async def _redis_srem(self, key: str, value: str) -> None:
         """Remove from Redis set"""
         try:
             return await self.redis.srem(key, value)
         except Exception as e:
-            logger.error(f"Redis SREM failed for key {key}: {e}")
+            logger.error(f"Redis SREM failed for key {key}: {exception_log_name(e)}")
 
     async def _redis_smembers(self, key: str) -> List[str]:
         """Get Redis set members"""
@@ -587,7 +594,9 @@ class RedisUserStore:
             members = await self.redis.smembers(key)
             return [str(member) for member in members]
         except Exception as e:
-            logger.error(f"Redis SMEMBERS failed for key {key}: {e}")
+            logger.error(
+                f"Redis SMEMBERS failed for key {key}: {exception_log_name(e)}"
+            )
             return []
 
     async def _redis_scard(self, key: str) -> int:
@@ -595,5 +604,5 @@ class RedisUserStore:
         try:
             return await self.redis.scard(key)
         except Exception as e:
-            logger.error(f"Redis SCARD failed for key {key}: {e}")
+            logger.error(f"Redis SCARD failed for key {key}: {exception_log_name(e)}")
             return 0

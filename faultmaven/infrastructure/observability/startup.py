@@ -26,6 +26,7 @@ from faultmaven.infrastructure.observability.dashboard_service import (
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.infrastructure.observability.sla_monitor import SLAMonitor
 from faultmaven.services.performance_optimization import PerformanceOptimizationService
+from faultmaven.utils.exception_name import exception_log_name
 
 
 class PerformanceMonitoringStartup:
@@ -122,7 +123,7 @@ class PerformanceMonitoringStartup:
 
         except Exception as e:
             self.logger.error(
-                f"Critical error during performance monitoring initialization: {e}"
+                f"Critical error during performance monitoring initialization: {exception_log_name(e)}"
             )
             return {
                 "overall_status": "failed",
@@ -161,7 +162,9 @@ class PerformanceMonitoringStartup:
                 self.logger.warning("❌ Metrics Collector not available")
 
         except Exception as e:
-            self.logger.error(f"Failed to start Metrics Collector: {e}")
+            self.logger.error(
+                f"Failed to start Metrics Collector: {exception_log_name(e)}"
+            )
             status["services"]["metrics_collector"] = {
                 "status": "failed",
                 "error": str(e),
@@ -201,7 +204,9 @@ class PerformanceMonitoringStartup:
                 self.logger.warning("❌ Intelligent Cache not available")
 
         except Exception as e:
-            self.logger.error(f"Failed to start Intelligent Cache: {e}")
+            self.logger.error(
+                f"Failed to start Intelligent Cache: {exception_log_name(e)}"
+            )
             status["services"]["intelligent_cache"] = {
                 "status": "failed",
                 "error": str(e),
@@ -243,7 +248,9 @@ class PerformanceMonitoringStartup:
                 self.logger.warning("❌ Analytics Dashboard Service not available")
 
         except Exception as e:
-            self.logger.error(f"Failed to start Analytics Dashboard Service: {e}")
+            self.logger.error(
+                f"Failed to start Analytics Dashboard Service: {exception_log_name(e)}"
+            )
             status["services"]["analytics_dashboard_service"] = {
                 "status": "failed",
                 "error": str(e),
@@ -287,7 +294,9 @@ class PerformanceMonitoringStartup:
                 self.logger.warning("❌ Performance Optimization Service not available")
 
         except Exception as e:
-            self.logger.error(f"Failed to start Performance Optimization Service: {e}")
+            self.logger.error(
+                f"Failed to start Performance Optimization Service: {exception_log_name(e)}"
+            )
             status["services"]["performance_optimization_service"] = {
                 "status": "failed",
                 "error": str(e),
@@ -327,7 +336,7 @@ class PerformanceMonitoringStartup:
                 self.logger.warning("❌ SLA Monitor not available")
 
         except Exception as e:
-            self.logger.error(f"Failed to start SLA Monitor: {e}")
+            self.logger.error(f"Failed to start SLA Monitor: {exception_log_name(e)}")
             status["services"]["sla_monitor"] = {"status": "failed", "error": str(e)}
             self.startup_metrics["startup_errors"].append(f"SLA Monitor: {str(e)}")
 
@@ -374,7 +383,9 @@ class PerformanceMonitoringStartup:
             return shutdown_status
 
         except Exception as e:
-            self.logger.error(f"Error during performance monitoring shutdown: {e}")
+            self.logger.error(
+                f"Error during performance monitoring shutdown: {exception_log_name(e)}"
+            )
             shutdown_status["overall_status"] = "error"
             shutdown_status["error"] = str(e)
             return shutdown_status
@@ -388,7 +399,7 @@ class PerformanceMonitoringStartup:
                 status["services"]["sla_monitor"] = {"status": "stopped"}
                 self.logger.info("✅ SLA Monitor stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping SLA Monitor: {e}")
+            self.logger.error(f"Error stopping SLA Monitor: {exception_log_name(e)}")
             status["services"]["sla_monitor"] = {"status": "error", "error": str(e)}
 
     async def _shutdown_performance_optimization_service(
@@ -404,7 +415,9 @@ class PerformanceMonitoringStartup:
                 }
                 self.logger.info("✅ Performance Optimization Service stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping Performance Optimization Service: {e}")
+            self.logger.error(
+                f"Error stopping Performance Optimization Service: {exception_log_name(e)}"
+            )
             status["services"]["performance_optimization_service"] = {
                 "status": "error",
                 "error": str(e),
@@ -423,7 +436,9 @@ class PerformanceMonitoringStartup:
                 }
                 self.logger.info("✅ Analytics Dashboard Service stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping Analytics Dashboard Service: {e}")
+            self.logger.error(
+                f"Error stopping Analytics Dashboard Service: {exception_log_name(e)}"
+            )
             status["services"]["analytics_dashboard_service"] = {
                 "status": "error",
                 "error": str(e),
@@ -438,7 +453,9 @@ class PerformanceMonitoringStartup:
                 status["services"]["intelligent_cache"] = {"status": "stopped"}
                 self.logger.info("✅ Intelligent Cache stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping Intelligent Cache: {e}")
+            self.logger.error(
+                f"Error stopping Intelligent Cache: {exception_log_name(e)}"
+            )
             status["services"]["intelligent_cache"] = {
                 "status": "error",
                 "error": str(e),
@@ -453,7 +470,9 @@ class PerformanceMonitoringStartup:
                 status["services"]["metrics_collector"] = {"status": "stopped"}
                 self.logger.info("✅ Metrics Collector stopped")
         except Exception as e:
-            self.logger.error(f"Error stopping Metrics Collector: {e}")
+            self.logger.error(
+                f"Error stopping Metrics Collector: {exception_log_name(e)}"
+            )
             status["services"]["metrics_collector"] = {
                 "status": "error",
                 "error": str(e),
@@ -523,7 +542,9 @@ async def on_startup():
         return initialization_status
 
     except Exception as e:
-        logger.error(f"Critical error starting Performance Monitoring System: {e}")
+        logger.error(
+            f"Critical error starting Performance Monitoring System: {exception_log_name(e)}"
+        )
         raise
 
 
@@ -545,5 +566,7 @@ async def on_shutdown():
         return shutdown_status
 
     except Exception as e:
-        logger.error(f"Error during Performance Monitoring System shutdown: {e}")
+        logger.error(
+            f"Error during Performance Monitoring System shutdown: {exception_log_name(e)}"
+        )
         # Don't raise exception during shutdown to avoid blocking other cleanup

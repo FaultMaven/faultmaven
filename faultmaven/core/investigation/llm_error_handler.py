@@ -15,16 +15,31 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
+from types import MappingProxyType
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from faultmaven.core.investigation.turn_budget import (
     backstop_turn_budget,
     can_afford_next_attempt,
+    collect_model_failures,
     spendable_turn_budget,
 )
 from faultmaven.exceptions import (
+    CALLER_REMEDY_CATEGORIES,
     LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
@@ -328,6 +343,42 @@ def is_deadline_shaped(error: BaseException) -> bool:
         if _declared_http_status(cursor) in _DEADLINE_STATUSES:
             return True
     return False
+
+
+def spent_a_deadline(failure: BaseException) -> bool:
+    """Whether one recorded send failure spent its provider a deadline (#2319).
+
+    A cancellation (the router's ceiling or a ``wait_for`` cut the send), or a
+    deadline-shaped failure (``is_deadline_shaped``) that is not a verdict on
+    the request: an overflow or truncation 504 asks the caller to change the
+    request, and says nothing about the provider.
+    """
+    if isinstance(failure, asyncio.CancelledError):
+        return True
+    return (
+        is_deadline_shaped(failure)
+        and declared_llm_category(failure) not in CALLER_REMEDY_CATEGORIES
+    )
+
+
+@contextmanager
+def deadlines_spent_into(counts: Dict[str, int]) -> Iterator[None]:
+    """Bind a collector around one judged model call (#2319).
+
+    On exit, adds to ``counts``, per send key (``label/model``, the provider
+    configuration the dispatch names), the recorded failures that
+    spent a deadline (``spent_a_deadline``), and keeps no exception.
+    """
+    failures: Dict[str, List[BaseException]] = {}
+    try:
+        with collect_model_failures(failures):
+            yield
+    finally:
+        for key, recorded in failures.items():
+            spent = sum(map(spent_a_deadline, recorded))
+            if spent:
+                counts[key] = counts.get(key, 0) + spent
+        failures.clear()
 
 
 class ErrorAction(str, Enum):
@@ -659,8 +710,9 @@ class LLMErrorHandler:
         # attempt a timeout) reaches two breaker failures of three on a
         # ladder-only turn: that turn ends RETRY_EXHAUSTED, and the next
         # ladder's first attempt pays one timeout and opens the breaker, so its
-        # retry lands here. A turn with tools reaches three (the tool loop's
-        # attempt, then the ladder's two) and opens it in its first turn. Where
+        # retry lands here. A turn with tools reaches two (the tool loop's send,
+        # then the ladder's one attempt, #2319), and the next turn's tool send
+        # opens it. Where
         # the turn affords fewer attempts (T = 120, A = 240), each turn pays
         # fewer and the breaker opens a turn or two later. A provider that
         # fails fast (a refused connection) is status-shaped, and opens it
@@ -992,6 +1044,7 @@ class LLMErrorHandler:
     async def with_retry(
         self,
         operation: Callable[[], Awaitable[T]],
+        prior_deadlines: Mapping[str, int] = MappingProxyType({}),
     ) -> Tuple[Optional[T], Optional[ErrorResult]]:
         """
         Execute operation with automatic retry on transient errors.
@@ -1025,8 +1078,20 @@ class LLMErrorHandler:
         ``max_deadline_retries`` times in this ladder; every other retryable
         failure keeps the ``max_retries`` ladder (#1294).
 
+        ``prior_deadlines`` is what the turn's tool loop handed off: the
+        deadlines its failing send spent, by provider configuration (the
+        dispatch's ``label/model`` key, #2319). A failed attempt counts toward
+        this ladder's deadline cap the least ``prior_deadlines`` holds for the
+        providers that SPENT A DEADLINE in that attempt (``spent_a_deadline``);
+        a provider that failed it fast, with a status error, is not among them,
+        and an attempt where none spent one counts nothing extra. So a provider
+        that hung in the tool loop is not granted that retry again, and a
+        failure on another provider configuration never spends it. Empty,
+        every attempt counts exactly as it always has.
+
         Args:
             operation: Async operation to execute
+            prior_deadlines: Deadlines already spent, by send key
 
         Returns:
             Tuple of (result, error_result) where result is None if all attempts failed
@@ -1074,6 +1139,8 @@ class LLMErrorHandler:
                 return None, exhausted
 
             started = time.monotonic()
+            # This attempt's deadline-spending failures, by send key.
+            attempt_deadlines: Dict[str, int] = {}
             try:
                 # BACKSTOP only. A router-borne call is already bounded by
                 # LLMRouter._resolve_timeout, whose clamp expires ~0.75s
@@ -1083,10 +1150,11 @@ class LLMErrorHandler:
                 # paths that reach a provider WITHOUT the router; when it fires
                 # it cancels the coroutine, which no handler below can observe.
                 backstop = backstop_turn_budget()
-                if backstop is None:
-                    result = await operation()
-                else:
-                    result = await asyncio.wait_for(operation(), timeout=backstop)
+                with deadlines_spent_into(attempt_deadlines):
+                    if backstop is None:
+                        result = await operation()
+                    else:
+                        result = await asyncio.wait_for(operation(), timeout=backstop)
                 return result, None
             except RawModelContentRefused:
                 # A refusal is a programming error, never a fallback (#1998).
@@ -1099,7 +1167,11 @@ class LLMErrorHandler:
                     e,
                     retry_count,
                     worst_attempt_seconds,
-                    deadline_retries_spent=deadline_retries_spent,
+                    deadline_retries_spent=deadline_retries_spent
+                    + min(
+                        (prior_deadlines.get(key, 0) for key in attempt_deadlines),
+                        default=0,
+                    ),
                 )
                 # Preserve the triggering exception so the caller can surface its
                 # real message (see ErrorResult.original_exception — callers fold
