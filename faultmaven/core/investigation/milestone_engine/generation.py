@@ -818,7 +818,7 @@ class StructuredOutputGenerator:
         # calls, which would immediately reset force_schema_next).
         ceiling_reached = False
         prose_nudged = False  # keep_tools spent (#1755); reset on a tool call
-        # The deadlines the last send spent, by provider label, while it is the
+        # The deadlines the last send spent, by send key, while it is the
         # send that failed: emptied when a send starts and when one answers.
         failed_send: dict[str, int] = {}
 
@@ -2000,7 +2000,8 @@ class StructuredOutputGenerator:
                     )
                     # The tool loop's send was paid outside any ladder: the
                     # fallback ladders count the deadlines it spent, per
-                    # provider (``with_retry``'s ``prior_deadlines``, #2319).
+                    # provider configuration (``with_retry``'s
+                    # ``prior_deadlines``, #2319).
                     tool_loop_deadlines = MappingProxyType(dict(e.deadlines_spent))
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file

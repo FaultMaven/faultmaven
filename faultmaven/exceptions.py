@@ -457,6 +457,15 @@ class LLMErrorCategory(str, Enum):
     UNKNOWN = "unknown"
 
 
+#: The categories that are a verdict on the REQUEST, remedied by the caller
+#: changing it (a smaller prompt, a bigger cap), never by retrying or by
+#: another provider: a fallback chain ranks them first (#2833), and a 504
+#: carrying one spent no provider's deadline (#2319).
+CALLER_REMEDY_CATEGORIES = frozenset(
+    {LLMErrorCategory.CONTEXT_OVERFLOW, LLMErrorCategory.OUTPUT_TRUNCATION}
+)
+
+
 # Machine-readable error codes providers publish in their error bodies, mapped
 # to what they MEAN. This is the authoritative tier: a code is part of a
 # provider's API contract in a way a sentence is not.
@@ -959,7 +968,8 @@ class ToolCallingUnsupportedError(LLMException):
     to a non-tool generation path.
 
     ``deadlines_spent`` is what the tool loop's failing send spent, as
-    deadlines per provider label; the fallback ladders count it (#2319).
+    deadlines per provider configuration (the dispatch's key: label and
+    model); the fallback ladders count it (#2319).
     """
 
     def __init__(

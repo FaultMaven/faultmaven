@@ -39,6 +39,7 @@ from faultmaven.core.investigation.turn_budget import (
     spendable_turn_budget,
 )
 from faultmaven.exceptions import (
+    CALLER_REMEDY_CATEGORIES,
     LLM_BREAKER_SERVICE,
     LLM_CONFIG_ERROR,
     PROVIDER_AUTH_FAILED,
@@ -54,7 +55,6 @@ from faultmaven.exceptions import (
     is_billing_error,
     walk_cause_chain,
 )
-from faultmaven.infrastructure.llm.providers.registry import _CALLER_REMEDY_CATEGORIES
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
@@ -357,7 +357,7 @@ def spent_a_deadline(failure: BaseException) -> bool:
         return True
     return (
         is_deadline_shaped(failure)
-        and declared_llm_category(failure) not in _CALLER_REMEDY_CATEGORIES
+        and declared_llm_category(failure) not in CALLER_REMEDY_CATEGORIES
     )
 
 
@@ -365,7 +365,8 @@ def spent_a_deadline(failure: BaseException) -> bool:
 def deadlines_spent_into(counts: Dict[str, int]) -> Iterator[None]:
     """Bind a collector around one judged model call (#2319).
 
-    On exit, adds to ``counts``, per provider label, the recorded failures that
+    On exit, adds to ``counts``, per send key (``label/model``, the provider
+    configuration the dispatch names), the recorded failures that
     spent a deadline (``spent_a_deadline``), and keeps no exception.
     """
     failures: Dict[str, List[BaseException]] = {}
@@ -373,10 +374,10 @@ def deadlines_spent_into(counts: Dict[str, int]) -> Iterator[None]:
         with collect_model_failures(failures):
             yield
     finally:
-        for label, recorded in failures.items():
+        for key, recorded in failures.items():
             spent = sum(map(spent_a_deadline, recorded))
             if spent:
-                counts[label] = counts.get(label, 0) + spent
+                counts[key] = counts.get(key, 0) + spent
         failures.clear()
 
 
@@ -1078,16 +1079,19 @@ class LLMErrorHandler:
         failure keeps the ``max_retries`` ladder (#1294).
 
         ``prior_deadlines`` is what the turn's tool loop handed off: the
-        deadlines its failing send spent, by provider label (#2319). An attempt
-        whose recorded failures spent deadlines on ``labels`` counts
-        ``min(prior_deadlines.get(label, 0))`` over them toward this ladder's
-        deadline cap, so a provider that hung in the tool loop is not granted
-        that retry again, and a failure on another provider never spends it.
-        Empty, every attempt counts exactly as it always has.
+        deadlines its failing send spent, by provider configuration (the
+        dispatch's ``label/model`` key, #2319). A failed attempt counts toward
+        this ladder's deadline cap the least ``prior_deadlines`` holds for the
+        providers that SPENT A DEADLINE in that attempt (``spent_a_deadline``);
+        a provider that failed it fast, with a status error, is not among them,
+        and an attempt where none spent one counts nothing extra. So a provider
+        that hung in the tool loop is not granted that retry again, and a
+        failure on another provider configuration never spends it. Empty,
+        every attempt counts exactly as it always has.
 
         Args:
             operation: Async operation to execute
-            prior_deadlines: Deadlines already spent, by provider label
+            prior_deadlines: Deadlines already spent, by send key
 
         Returns:
             Tuple of (result, error_result) where result is None if all attempts failed
@@ -1135,7 +1139,7 @@ class LLMErrorHandler:
                 return None, exhausted
 
             started = time.monotonic()
-            # This attempt's deadline-spending failures, by provider label.
+            # This attempt's deadline-spending failures, by send key.
             attempt_deadlines: Dict[str, int] = {}
             try:
                 # BACKSTOP only. A router-borne call is already bounded by
@@ -1165,7 +1169,7 @@ class LLMErrorHandler:
                     worst_attempt_seconds,
                     deadline_retries_spent=deadline_retries_spent
                     + min(
-                        (prior_deadlines.get(label, 0) for label in attempt_deadlines),
+                        (prior_deadlines.get(key, 0) for key in attempt_deadlines),
                         default=0,
                     ),
                 )

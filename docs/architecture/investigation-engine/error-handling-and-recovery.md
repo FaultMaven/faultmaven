@@ -366,10 +366,13 @@ still reports `TURN_BUDGET_EXHAUSTED`: a paid attempt was lost.
 **A turn with tools pays the tool loop's send first, and the fallback ladders
 count it (#2319).** The tool loop's send fails outside any ladder (the loop
 raises `ToolCallingUnsupportedError` chained from the provider's failure); it
-hands the deadlines that send spent, per provider label, to both fallback
-ladders, which count them toward the deadline cap. So a hung provider pays `T`
-in the tool loop and one ladder attempt, never its retry again; a different
-provider keeps its own retry. The rule — what records, what spends a deadline,
+hands the deadlines that send spent, per provider configuration (label and
+model), to both fallback ladders. A failed attempt counts toward the deadline
+cap the least of them over the providers that spent a deadline in that attempt;
+a provider that failed it fast with a status error is not one. So a hung
+provider pays `T` in the tool loop and one ladder attempt, never its retry
+again; a different provider configuration (another vendor, or the same vendor on
+another model) keeps its own retry. The rule — what records, what spends a deadline,
 how an attempt counts it — is stated once in `.claude/rules/llm-providers.md`
 §"The retry ladder is budgeted against the turn deadline". The retry a grant
 makes is recorded on the `ErrorResult` (`deadline_retry`), and `with_retry`

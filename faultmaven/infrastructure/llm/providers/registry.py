@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Dict, List, Mapping, Optional, Type, Union
 
 from faultmaven.exceptions import (
+    CALLER_REMEDY_CATEGORIES,
     SERVICE_SCOPED_ERROR_CODES,
     CallShapeUnsupported,
     LLMErrorCategory,
@@ -120,11 +121,6 @@ class ProviderState:
         self.avg_latency_ms = sum(self._latency_window) / len(self._latency_window)
 
 
-_CALLER_REMEDY_CATEGORIES = frozenset(
-    {LLMErrorCategory.CONTEXT_OVERFLOW, LLMErrorCategory.OUTPUT_TRUNCATION}
-)
-
-
 def _failure_read(exc: BaseException) -> BaseException:
     """The failure both predicates read: the first ``LLMException`` on the
     ``__cause__`` chain, past any wrapper that is not one, else ``exc``."""
@@ -152,7 +148,7 @@ def chain_failure_rank(exc: BaseException) -> int:
     failure = _failure_read(exc)
     if isinstance(failure, CallShapeUnsupported):
         return 1
-    if declared_llm_category(failure) in _CALLER_REMEDY_CATEGORIES:
+    if declared_llm_category(failure) in CALLER_REMEDY_CATEGORIES:
         return 6
     if getattr(failure, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
         return 5

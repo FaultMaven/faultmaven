@@ -51,7 +51,8 @@ made it. ``test_model_dispatch_lexical_1998.py`` (rule S) flags ``.route``
 read anywhere else.
 
 A send that ``_generate`` fails, or that is cancelled while it runs, is
-recorded (``record_model_failure``: the provider's label and the exception) for
+recorded (``record_model_failure``: the send's key, ``label/model``, and the
+exception) for
 whatever judged model call has bound a collector around it, and re-raised
 unchanged; the dispatch records nothing else (#2319).
 
@@ -201,6 +202,31 @@ def _provider_label(provider: Any) -> str:
     return _TYPE_NAME.__get__(cls)
 
 
+def _own_attribute(obj: Any, name: str) -> Any:
+    """``obj``'s own instance attribute ``name``, or ``None``: read from its
+    instance namespace only, never through its class, so no property runs."""
+    try:
+        namespace = vars(obj)
+    except TypeError:
+        return None
+    return namespace.get(name) if type(namespace) is dict else None
+
+
+def _send_key(provider: Any, model: Any) -> str:
+    """The provider configuration a send targets, as ``label/model`` (#2319).
+
+    The model is the ``model`` keyword the send passed, else the instance's
+    configured default (``provider.config.default_model``, read from instance
+    namespaces only); the label alone when neither is known. Two providers of
+    one class on different models are two keys. ``provider_name`` and every
+    other property are never read (:func:`_provider_label`).
+    """
+    if type(model) is not str or not model:
+        model = _own_attribute(_own_attribute(provider, "config"), "default_model")
+    label = _provider_label(provider)
+    return f"{label}/{model}" if type(model) is str and model else label
+
+
 async def send_to_model(
     provider: Any,
     *,
@@ -251,17 +277,19 @@ async def send_to_model(
         value = kwargs.get(key)
         if type(value) is list or type(value) is tuple:
             kwargs[key] = type(value)(plain_text(item) for item in value)
+    model = kwargs.pop("model", None)
     try:
         return await provider._generate(
             prompt=plain_text(prompt),
-            model=kwargs.pop("model", None),
+            model=model,
             max_tokens=kwargs.pop("max_tokens", 1000),
             temperature=kwargs.pop("temperature", 0.7),
             **kwargs,
         )
     except (CancelledError, Exception) as exc:
-        # Which provider failed, with what: a fact for the binder (#2319).
-        record_model_failure(_provider_label(provider), exc)
+        # Which provider configuration failed, with what: a fact for the
+        # binder (#2319).
+        record_model_failure(_send_key(provider, model), exc)
         raise
 
 

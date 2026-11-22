@@ -1,15 +1,15 @@
 """The dispatch records a failed send for the judged call bound around it (#2319).
 
 ``send_to_model`` is the one writer: when ``_generate`` raises, or is cancelled
-while it runs, it records the provider's label and the exception for whatever
-collector is bound (``turn_budget.collect_model_failures``) and re-raises
-unchanged. The binder reduces what it collected to spent deadlines per label
+while it runs, it records the send's key (the provider's label and the model
+the send targets, ``label/model``) and the exception for whatever collector is
+bound (``turn_budget.collect_model_failures``) and re-raises unchanged. The
+binder reduces what it collected to spent deadlines per key
 (``llm_error_handler.deadlines_spent_into``, ``spent_a_deadline``) and keeps no
 exception. Every test here observes through a binding; none patches the writer.
 """
 
 import asyncio
-import contextvars
 
 import pytest
 
@@ -25,6 +25,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
 )
 from faultmaven.infrastructure.llm.dispatch import send_to_model
+from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from tests.model_content import vetted
 from tests.unit.architecture.test_model_dispatch_lexical_1998 import dispatch_names
 
@@ -60,7 +61,7 @@ async def test_a_send_cut_inside_wait_for_is_visible_to_the_binder():
     assert [type(e) for e in failures["hangs"]] == [asyncio.CancelledError]
 
 
-async def test_a_failure_is_recorded_with_its_label_and_re_raised_unchanged():
+async def test_a_failure_is_recorded_with_its_key_and_re_raised_unchanged():
     error = LLMException("upstream 503", status_code=503)
     failures = {}
     with collect_model_failures(failures):
@@ -71,21 +72,74 @@ async def test_a_failure_is_recorded_with_its_label_and_re_raised_unchanged():
     assert failures == {"fails": [error]}
 
 
-async def test_unbound_a_send_records_nothing():
-    """A send outside every binding (the triage, intent, a tool's answerer)
-    reaches no collector, even one bound around the code that started it."""
+async def test_a_send_from_a_task_started_before_the_binding_records_nothing():
+    """The out-of-band triage is a task the turn starts before any judged call
+    binds a collector, and it sends while one is bound in the parent. Its task
+    runs on the context it was created with, so the binding never sees its
+    send: it records nowhere."""
     error = LLMException("upstream 503", status_code=503)
+    go = asyncio.Event()
+
+    async def triage():
+        await go.wait()
+        await send_to_model(_Fails(error), prompt=vetted("p"))
+
+    task = asyncio.create_task(triage())
     failures = {}
     with collect_model_failures(failures):
-        task = asyncio.create_task(
-            send_to_model(_Fails(error), prompt=vetted("p")),
-            context=contextvars.Context(),
-        )
+        go.set()
         with pytest.raises(LLMException) as raised:
             await task
 
     assert raised.value is error
     assert failures == {}
+
+
+class _Configured:
+    """An adapter as the registry builds one: its default model on its
+    ``config``."""
+
+    LABEL = "gemini"
+
+    def __init__(self, default_model, error):
+        self.config = ProviderConfig(name="gemini", default_model=default_model)
+        self.error = error
+
+    @property
+    def provider_name(self):  # pragma: no cover - must never be read
+        raise AssertionError("the dispatch read a property")
+
+    async def _generate(self, **_):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "default_model,sent_model,key",
+    [
+        ("gemini-flash", None, "gemini/gemini-flash"),
+        ("gemini-flash", "gemini-flash", "gemini/gemini-flash"),
+        ("gemini-flash", "gemini-pro", "gemini/gemini-pro"),
+        (None, None, "gemini"),
+    ],
+    ids=["default", "named-default", "named-other", "label-only"],
+)
+async def test_a_failure_is_keyed_by_the_provider_configuration(
+    default_model, sent_model, key
+):
+    """The label and the model the send targets: the ``model`` it names, else
+    the instance's configured default, read without running a property. A
+    routed send (no model) and a send naming the default share a key; one
+    vendor on another model is another key."""
+    error = LLMException("timed out", status_code=504)
+    failures = {}
+    model = {} if sent_model is None else {"model": sent_model}
+    with collect_model_failures(failures):
+        with pytest.raises(LLMException):
+            await send_to_model(
+                _Configured(default_model, error), prompt=vetted("p"), **model
+            )
+
+    assert failures == {key: [error]}
 
 
 async def test_a_refused_call_records_nothing():

@@ -308,13 +308,19 @@ fallback ladders count what it spent (#2319): the dispatch records each failed
 send (`record_model_failure`) for the judged call bound around it — the tool
 loop's send, each `with_retry` attempt, never the sends between them (triage,
 intent, a tool's answerer) — and the tool loop hands its failing send's spent
-deadlines, per provider label, to both fallback ladders (`with_retry`'s
-`prior_deadlines`, the #2802 re-issue's included). A deadline was spent by a
-cancelled send or a deadline-shaped failure that is not an overflow or
-truncation verdict (`spent_a_deadline`). An attempt whose failing providers all
-spent their `max_deadline_retries` in the tool loop is not retried (it counts
-the least any of them spent); a failure on one provider never spends another's,
-and a ladder handed nothing is unchanged. Measured on a virtual clock against a
+deadlines, per provider configuration (the dispatch's key: the adapter's label
+and the model the send targets, so one vendor on two models is two keys), to
+both fallback ladders (`with_retry`'s `prior_deadlines`, the #2802 re-issue's
+included). A deadline was spent by a cancelled send or a deadline-shaped
+failure that is not an overflow or truncation verdict (`spent_a_deadline`). A
+failed attempt adds to its deadline count the least the tool loop spent on any
+provider that spent a deadline IN THAT ATTEMPT; a provider that failed the
+attempt fast with a status error is not among them, and an attempt where none
+spent a deadline adds nothing. So a deadline-shaped attempt is not retried when
+every provider that spent a deadline in it had already spent
+`max_deadline_retries` in the tool loop; a failure on one provider
+configuration never spends another's, and a ladder handed nothing is
+unchanged. Measured on a virtual clock against a
 hung provider, #1294 before → after: a ladder-only turn 96 → 62 s at T = 30 s
 and a 120 s turn, 104 → 62 s at 240 s, and 120 s both at T = 120 s, A = 240 s;
 a turn with tools, #2319 before → after, 92 → 60 s at 120 s and at 240 s, and

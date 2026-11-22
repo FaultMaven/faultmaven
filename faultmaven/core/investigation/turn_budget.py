@@ -67,7 +67,7 @@ from typing import Dict, Iterator, List, Optional, Sequence
 # is only ever used as a duration difference and must not move under an NTP step.
 _turn_deadline: ContextVar[Optional[float]] = ContextVar("turn_deadline", default=None)
 
-# The failures of the judged model call in progress, by provider label, or None
+# The failures of the judged model call in progress, by send key, or None
 # outside one (#2319). One dict per binding: a send in the router's ``wait_for``
 # child task runs on a copy of this context, and appends to the same dict.
 _model_failures: ContextVar[Optional[Dict[str, List[BaseException]]]] = ContextVar(
@@ -90,14 +90,14 @@ def collect_model_failures(into: Dict[str, List[BaseException]]) -> Iterator[Non
         _model_failures.reset(token)
 
 
-def record_model_failure(label: str, exc: BaseException) -> None:
-    """Record that the provider labelled ``label`` failed one send with ``exc``.
+def record_model_failure(key: str, exc: BaseException) -> None:
+    """Record that the provider configuration ``key`` failed one send with ``exc``.
 
     Called by the model dispatch only; inert outside a binding.
     """
     failures = _model_failures.get()
     if failures is not None:
-        failures.setdefault(label, []).append(exc)
+        failures.setdefault(key, []).append(exc)
 
 
 # Headroom deliberately left unspent at the end of the turn budget.

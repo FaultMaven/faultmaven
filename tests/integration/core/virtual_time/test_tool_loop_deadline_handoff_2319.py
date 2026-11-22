@@ -7,9 +7,11 @@ hung provider fresh, granting it the deadline retry it had already spent: about
 ``T + 2T + 2`` (92 s at T = 30 s, A = 120 s) where a ladder-only turn costs
 ``2T + 2``. Now the dispatch records each failed send for the judged call bound
 around it (the tool loop's send, each ``with_retry`` attempt), the tool loop
-hands its failing send's deadlines to the fallback ladders by provider label,
-and a ladder counts them toward its deadline cap (``with_retry``'s
-``prior_deadlines``).
+hands its failing send's deadlines to the fallback ladders by provider
+configuration (the adapter's label and the model the send targets), and a
+ladder counts them toward its deadline cap (``with_retry``'s
+``prior_deadlines``): the least handed off over the providers that spent a
+deadline in the failed attempt.
 
 The rig is the real send path: a real ``LLMRouter`` (its ``call_external``
 ceiling and breaker), a real ``ProviderRegistry`` and the real dispatch, over
@@ -48,7 +50,11 @@ from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers import ReasoningIntent, StopReason
 from faultmaven.infrastructure.llm.providers import base as providers_base
 from faultmaven.infrastructure.llm.providers import registry as registry_module
-from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
+from faultmaven.infrastructure.llm.providers.base import (
+    LLMResponse,
+    ProviderConfig,
+    ToolCall,
+)
 from faultmaven.infrastructure.llm.providers.registry import (
     ProviderHealth,
     ProviderRegistry,
@@ -170,9 +176,14 @@ def calls_search_file() -> LLMResponse:
 class _Adapter:
     """A provider whose ``_generate`` follows a script: one action per send of
     each kind (``tool_loop``: the loop's sends, which carry ``messages``;
-    ``single``: every other send), then ``HANGS``. Every send is logged."""
+    ``single``: every other send), then ``HANGS``. Every send is logged.
+    Its configured default model is what a send that names no model targets,
+    and with the label it makes the key the dispatch records a failure by."""
 
-    def __init__(self, tool_loop=(), single=()):
+    def __init__(self, tool_loop=(), single=(), model=None):
+        self.config = ProviderConfig(
+            name=self.LABEL, default_model=model or f"{self.LABEL}-default"
+        )
         self.script = {"tool_loop": list(tool_loop), "single": list(single)}
         self.sends: List[tuple] = []
 
@@ -202,9 +213,21 @@ class _Adapter:
         return action
 
 
-def adapter(label: str, **script) -> _Adapter:
-    """A stub labelled ``label``: the ``LABEL`` the dispatch records it by."""
-    return type(f"Stub_{label}", (_Adapter,), {"LABEL": label})(**script)
+def adapter(label: str, model: Optional[str] = None, **script) -> _Adapter:
+    """A stub labelled ``label`` (its ``LABEL``), configured for ``model``."""
+    return type(f"Stub_{label}", (_Adapter,), {"LABEL": label})(model=model, **script)
+
+
+def times_out_after(stub: _Adapter, seconds: float) -> None:
+    """``stub`` answers every send with its client's own timeout, a 504, after
+    ``seconds``: how a dedicated DA provider (no router ceiling) hangs."""
+
+    async def _generate(**kwargs):
+        stub.sends.append(("tool_loop", virtual_now()))
+        await asyncio.sleep(seconds)
+        raise answers_504()
+
+    stub._generate = _generate
 
 
 # --- The rig -----------------------------------------------------------------
@@ -271,6 +294,7 @@ async def run_turn(
     *,
     agent_timeout: float,
     da: Optional[_Adapter] = None,
+    da_model: Optional[str] = None,
     tools: Optional[_Tools] = None,
     with_tools: bool = True,
     **intent,
@@ -282,6 +306,7 @@ async def run_turn(
         repository=MagicMock(),
         investigation_tools=tools or _Tools(),
         da_provider=da,
+        da_model=da_model,
     )
     engine.deps.llm_error_handler = LLMErrorHandler(RetryConfig())
     kwargs = (
@@ -442,19 +467,38 @@ class TestWhatTheHandOffNeverCounts:
         """A dedicated ``DA_PROVIDER`` (sent to directly) hangs in the tool
         loop until its client gives up (504); the chat provider then hangs in
         the fallback and keeps its full deadline ladder. Mutant: the hand-off
-        keyed by anything but the label of the provider that failed."""
-        da = adapter("fireworks", tool_loop=[answers_504])
+        keyed by anything but the provider that failed (one key for every
+        send)."""
+        da = adapter("fireworks")
+        times_out_after(da, 30.0)
         chat = adapter("gemini")
         router = build_router(monkeypatch, [chat], request_timeout=30.0)
 
-        async def da_times_out(**kwargs):
-            da.sends.append(("tool_loop", virtual_now()))
-            await asyncio.sleep(30.0)
-            raise answers_504()
-
-        da._generate = da_times_out
         outcome = await run_turn(router, agent_timeout=120.0, da=da)
 
+        assert outcome.code == RETRY_EXHAUSTED
+        assert outcome.elapsed == pytest.approx(92.0)
+        assert sends(chat, "single") == [pytest.approx(30.0), pytest.approx(62.0)]
+
+    async def test_the_same_vendor_on_another_model_is_another_provider(
+        self, monkeypatch
+    ):
+        """``CHAT_PROVIDER=gemini`` on one model, ``DA_PROVIDER=gemini`` on
+        another: one adapter class, one label. The DA provider hangs in the
+        tool loop (its send names ``DA_MODEL``); the chat provider's fallback
+        ladder (its sends name no model, so its configured default) keeps its
+        deadline retry. Mutant: the key the dispatch records by is the label
+        alone."""
+        da = adapter("gemini", model="gemini-pro")
+        times_out_after(da, 30.0)
+        chat = adapter("gemini", model="gemini-flash")
+        router = build_router(monkeypatch, [chat], request_timeout=30.0)
+
+        outcome = await run_turn(
+            router, agent_timeout=120.0, da=da, da_model="gemini-pro"
+        )
+
+        assert sends(da, "tool_loop") == [0.0]
         assert outcome.code == RETRY_EXHAUSTED
         assert outcome.elapsed == pytest.approx(92.0)
         assert sends(chat, "single") == [pytest.approx(30.0), pytest.approx(62.0)]
@@ -502,7 +546,9 @@ class TestTheCountIsTheLeastSpentOfTheFailingProviders:
     ):
         """Prior ``{a: 1}``; each attempt ``a`` answers 504 and ``b`` hangs:
         ``b`` has spent nothing, so the retry is granted (never-zero for
-        ``b``). Mutant: ``min`` → ``max``."""
+        ``b``). The prior names the dispatch's keys, ``label/model``; the
+        control hands both providers a spent deadline and is refused the
+        retry, so the keys are seen to match. Mutant: ``min`` → ``max``."""
         a = adapter("a", single=[answers_504, answers_504])
         b = adapter("b")
         router = build_router(monkeypatch, [a, b], request_timeout=30.0)
@@ -512,10 +558,25 @@ class TestTheCountIsTheLeastSpentOfTheFailingProviders:
             lambda self: list(self._fallback_chain),
         )
 
-        _, error = await _chained_ladder({"a": 1}, router)
+        _, error = await _chained_ladder({"a/a-default": 1}, router)
 
         assert error.error_code == RETRY_EXHAUSTED
         assert len(sends(a)) == len(sends(b)) == 2
+
+    async def test_control_both_providers_spent_so_no_retry(self, monkeypatch):
+        a = adapter("a", single=[answers_504])
+        b = adapter("b")
+        router = build_router(monkeypatch, [a, b], request_timeout=30.0)
+        monkeypatch.setattr(
+            registry_module.ProviderRegistry,
+            "_get_routing_order",
+            lambda self: list(self._fallback_chain),
+        )
+
+        _, error = await _chained_ladder({"a/a-default": 1, "b/b-default": 1}, router)
+
+        assert error.error_code == RETRY_EXHAUSTED
+        assert len(sends(a)) == len(sends(b)) == 1
 
     async def test_with_nothing_handed_off_a_chain_ladder_is_as_on_main(
         self, monkeypatch
