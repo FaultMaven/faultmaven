@@ -1572,9 +1572,14 @@ class UserDTO:
 **Protected Endpoints:**
 
 ```python
+from typing import Optional
+
 from fastapi import Depends, File, Form, HTTPException, UploadFile
 
-from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_optional,
+    require_authentication,
+)
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
@@ -1595,11 +1600,11 @@ async def upload_document(
     ...
 
 @router.post("/knowledge/search")
-async def search_knowledge(
+async def search_documents(
     request: SearchRequest,
-    current_user: User = Depends(require_authentication)  # Any user
+    current_user: Optional[DevUser] = Depends(get_current_user_optional),  # Optional auth
 ):
-    """Search Global KB (all users)"""
+    """Search every runbook the caller can see: the global tier, plus their own and their teams' when signed in."""
     ...
 ```
 
