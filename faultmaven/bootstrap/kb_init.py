@@ -409,24 +409,11 @@ async def _ingest_pack_runbook(
     Writes the SQL row + the pack's pre-embedded chunks; never loads the
     embedding model.
 
-    The same markdown is not the same version when the chunks or the
-    pack-written fields differ (#2244): a row whose ``metadata.pack_digest``
-    is not the pack's ``pack_digest`` has the store's chunks of its
-    generation compared with the pack's, and is stamped when they are equal
-    (under ``role_may_update``) unless only an unedited row's fields lag.
-    A complete, published, unedited row is re-ingested from the pack when its
-    chunks (read through ``served``, each parent's generations in the store,
-    read once per pass; None when the listing failed) or fields are not the
-    pack's, or when ``served`` holds no chunk of its generation even under a
-    matching digest (#2388): how a row whose chunks were lost is served
-    again. Edited means a category set, or a pack-written column not what the
-    pack last wrote; an edited one is left to the repair, which re-embeds the
-    row as it stands (#1966), and an unpublished one stays retired. Such a
-    re-ingest's DELETE also requires the row published, so an unpublish after
-    the read is kept. A re-ingest passes the observed row's generation as
-    ``replaces_generation``, so the transaction that replaces it deletes only
-    that row: a peer that replaced it first wins, and this ingest fails, or
-    is skipped when the peer wrote this pack version.
+    The same markdown under another digest (#2244), or no chunk of the row's
+    generation in ``served`` (#2388), re-ingests a published, complete,
+    unedited row, replacing it only while it is as read; the decision table is
+    ``kb-ingestion-architecture.md`` step 2. A peer that replaced the row first
+    wins: this ingest fails, or is skipped when the peer wrote this version.
 
     A new placement (a scope other than the row's or, with a share
     repository wired, a team share the row lacks) is a change whatever the
@@ -491,7 +478,7 @@ async def _ingest_pack_runbook(
             }
 
     replaces_generation: Optional[str] = None
-    only_if_published = False
+    replaces_updated_at = None
     if existing_row is not None:
         replaces_generation = existing_row.vector_generation
         unserved = (
@@ -517,8 +504,11 @@ async def _ingest_pack_runbook(
                     _content_hash(existing_row.content) == runbook.content_hash
                 )
             if pack_unchanged and role_may_update:
-                metadata = {**metadata, PACK_CONTENT_HASH_KEY: runbook.content_hash}
-                await _stamp_pack_hash(runbook.item_id, metadata, db_session_factory)
+                stamp = {PACK_CONTENT_HASH_KEY: runbook.content_hash}
+                await _stamp_pack_hash(
+                    existing_row, metadata, stamp, db_session_factory
+                )
+                metadata = {**metadata, **stamp}
         # A move to another scope, or a team row lacking the pack's team share
         # (when a share repository can write it), is a change (#2386).
         moved = existing_row.scope != runbook.scope or bool(
@@ -529,51 +519,54 @@ async def _ingest_pack_runbook(
         pack_unchanged = pack_unchanged and not moved
         stale, edited = unserved, False
         if pack_unchanged:
-            # Edited (#1966, #2244): a category set, or a pack-written column not
-            # what the pack last wrote (the stamped digest's fields part, or this
-            # pack's on a row stamped before the digest existed).
-            stamped_digest = metadata.get(PACK_DIGEST_KEY)
-            row_fields = fields_digest(existing_row)
-            edited = existing_row.category is not None or not (
-                stamped_digest or runbook.pack_digest
-            ).startswith(f"{row_fields}:")
-            if stamped_digest != runbook.pack_digest:
-                # Same markdown, maybe other chunks or fields (#2244): the store's
-                # chunks of the row's generation are compared with the pack's. An
-                # equal compare is stamped, unless an unedited row's fields lag.
-                chunks_equal = await _stored_chunks_match(
-                    knowledge_service, runbook, replaces_generation, served
+            stamped = metadata.get(PACK_DIGEST_KEY)
+            row_fields = fields_digest(existing_row, runbook.owner_id)
+            current = runbook.pack_digest.startswith(f"{row_fields}:")
+            edited = (
+                existing_row.category is not None
+                or existing_row.item_type != "runbook"
+                or bool(set(metadata) - {PACK_CONTENT_HASH_KEY, PACK_DIGEST_KEY})
+                or (
+                    not stamped.startswith(f"{row_fields}:")
+                    if stamped
+                    else _content_hash(existing_row.content) != runbook.content_hash
                 )
-                stale = not (
-                    chunks_equal and runbook.pack_digest.startswith(row_fields)
+            )
+            may_reingest = not edited and existing_row.is_published
+            may_reingest = may_reingest and existing_row.ingest_complete
+            if stamped != runbook.pack_digest:
+                # Compared only where the answer can re-ingest or stamp.
+                stale = not current or not (
+                    (may_reingest or role_may_update)
+                    and await _stored_chunks_match(
+                        knowledge_service, runbook, replaces_generation, served
+                    )
                 )
-                if chunks_equal and (edited or not stale) and role_may_update:
+                if not stale and role_may_update:
                     await _stamp_pack_hash(
-                        runbook.item_id,
-                        {**metadata, PACK_DIGEST_KEY: runbook.pack_digest},
+                        existing_row,
+                        metadata,
+                        {PACK_DIGEST_KEY: runbook.pack_digest},
                         db_session_factory,
                     )
-        if pack_unchanged and not (
-            stale
-            and existing_row.is_published
-            and existing_row.ingest_complete
-            and not edited
-        ):
-            # Unchanged, or behind the pack but retired or edited, which a pack
-            # change never replaces (#1966): an unserved edited row is left to
-            # the repair, which keeps the edit.
-            logger.debug(f"Skipping {runbook.relpath}: unchanged, retired or edited")
+        if pack_unchanged and not (stale and may_reingest):
+            log = logger.info if unserved and edited else logger.debug
+            log(f"Skipping {runbook.relpath}: unchanged, retired or edited (#1966)")
             await _drop_stale_shares(
                 existing_row, own_share, shares, db_session_factory
             )
             return "skipped"
-        only_if_published = pack_unchanged
+        replaces_updated_at = existing_row.updated_at if pack_unchanged else None
         logger.info(
             f"{runbook.relpath}: "
             + (
-                "its chunks or fields are not the pack's"
-                if pack_unchanged
-                else "the pack carries a new version or placement since the last ingest"
+                "no chunk carries its row's generation"
+                if pack_unchanged and unserved
+                else (
+                    "its chunks or fields are not the pack's"
+                    if pack_unchanged
+                    else "the pack carries a new version or placement since the last ingest"
+                )
             )
             + " — re-ingesting"
         )
@@ -604,12 +597,17 @@ async def _ingest_pack_runbook(
         # start cannot stop the platform corpus from seeding (#1981).
         shipped=True,
         replaces_generation=replaces_generation,
-        only_if_published=only_if_published,
+        replaces_updated_at=replaces_updated_at,
     )
     if not chunks_created:
-        # Unpublished since the read, or a peer ingested this pack version
-        # first (#2244): nothing was written.
-        logger.info(f"{runbook.relpath}: the row changed since it was read — skipped")
+        # Nothing was written (#2244); a row still as read repeats it each run.
+        async with db_session_factory() as session:
+            now = await session.get(KnowledgeItemModel, runbook.item_id)
+        again = now and (now.is_published, now.vector_generation, now.updated_at)
+        again = again == (True, replaces_generation, replaces_updated_at)
+        (logger.warning if again else logger.info)(
+            f"{runbook.relpath}: its replacement matched no row — skipped"
+        )
         return "skipped"
 
     logger.info(
@@ -654,8 +652,7 @@ async def _stored_chunks_match(
     generation: str,
     served: Optional[Mapping[str, Collection[Optional[str]]]],
 ) -> bool:
-    """Whether the store's chunks of ``generation`` are the pack's, texts and
-    vectors (#2244); False when the listing or the read failed."""
+    """Whether the store's chunks of ``generation`` are the pack's (#2244)."""
     from faultmaven.bootstrap.kb_pack import chunks_digest
 
     if served is None or generation not in served.get(runbook.item_id, ()):
@@ -664,12 +661,12 @@ async def _stored_chunks_match(
         stored = await knowledge_service._vector_store.get_generation_chunks(
             runbook.item_id, generation
         )
+        return chunks_digest(stored) == runbook.pack_digest.partition(":")[2]
     except Exception as exc:
         logger.debug(
             f"{runbook.relpath}: its chunks could not be read ({type(exc).__name__})"
         )
         return False
-    return chunks_digest(stored) == runbook.pack_digest.partition(":")[2]
 
 
 def _content_hash(content: str) -> str:
@@ -700,17 +697,13 @@ async def _role_may_update(db_session_factory: Callable[[], Awaitable[Any]]) -> 
 
 
 async def _stamp_pack_hash(
-    item_id: str,
+    row: Any,
     metadata: dict,
+    stamps: dict,
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> None:
-    """Record which pack version a legacy row came from (best effort).
-
-    A targeted write of the metadata blob alone, leaving ``updated_at`` as it
-    is: it must not revert a concurrent unpublish or edit, and it is
-    bookkeeping, not an edit. A failure is logged; the next boot compares by
-    content again, as it did before the stamp existed.
-    """
+    """Merge ``stamps`` into ``row``'s metadata as read, only while the row is
+    as read (#2244), keeping ``updated_at``. Best effort: a failure is logged."""
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
         DatabaseKnowledgeItemRepository,
     )
@@ -718,10 +711,16 @@ async def _stamp_pack_hash(
     try:
         async with db_session_factory() as session:
             await DatabaseKnowledgeItemRepository(session).update_fields(
-                item_id, {"metadata": metadata}, touch=False
+                row.item_id,
+                {"metadata": {**metadata, **stamps}},
+                touch=False,
+                as_read=(row.vector_generation, row.updated_at),
             )
     except Exception as exc:
-        logger.warning(f"Could not stamp the pack content hash on {item_id}: {exc}")
+        logger.warning(
+            f"Could not stamp {', '.join(stamps)} on {row.item_id}: "
+            f"{type(exc).__name__}"
+        )
 
 
 # Built-in rows carry a deterministic ``kb_<12 hex>`` item_id (see

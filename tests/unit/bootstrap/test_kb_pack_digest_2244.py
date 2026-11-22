@@ -61,6 +61,7 @@ def _changed_vector() -> np.ndarray:
 )
 def test_the_digest_moves_with_each_loaded_input(tmp_path, change):
     base = _load(_with_vectors(_write_pack(tmp_path / "base"), VECTORS))
+    change = dict(change)  # the parametrize value is shared: never mutated
     vectors = change.pop("vectors", VECTORS)
     pack_dir = _write_pack(tmp_path / "changed", **change)
     if len(change.get("chunk_texts", "ab")) == 3:

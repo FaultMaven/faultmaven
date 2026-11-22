@@ -19,17 +19,25 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import logging
+import os
+import uuid
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import List
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event, text, update
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
 from faultmaven.bootstrap.kb_pack import KbPack, PackChunk, PackRunbook
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import KB_COLLECTION
-from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+from faultmaven.infrastructure.persistence.models import Base, KnowledgeItemModel
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     PACK_CONTENT_HASH_KEY,
     PACK_DIGEST_KEY,
@@ -57,6 +65,7 @@ from tests.integration.modules.knowledge.test_vector_generation_2388 import (
     _world,
     pack_dir,  # noqa: F401 - a two-chunk pack on disk
 )
+from tests.utils import seed_enterprises
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -115,11 +124,13 @@ async def _restamp(world, metadata: dict, item_id: str = DOC) -> None:
 
 
 async def _unpublish(world) -> None:
+    """A retirement that leaves ``updated_at`` alone, so only the published
+    guard can see it."""
     async with world.factory() as session:
         await session.execute(
             update(KnowledgeItemModel)
             .where(KnowledgeItemModel.item_id == DOC)
-            .values(is_published=False)
+            .values(is_published=False, updated_at=KnowledgeItemModel.updated_at)
         )
         await session.commit()
 
@@ -250,54 +261,85 @@ async def test_a_chunks_only_change_keeps_a_content_edit(
     assert (row.content, row.vector_generation) == (edited, generation)
 
 
-@pytest.mark.parametrize("stamps", ["both", "content_only"])
-@pytest.mark.parametrize("edit", [{"title": "Operator title"}, {"tags": ["edited"]}])
-async def test_a_title_or_tag_edit_survives_a_chunks_only_change(
-    factory, tmp_path, edit, stamps  # noqa: F811
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"title": "Operator title"},
+        {"tags": ["edited"]},
+        {"document_type": "troubleshooting_guide"},
+        {"version": "2"},
+    ],
+    ids=["title", "tags", "item_type", "metadata_version"],
+)
+async def test_an_edit_survives_a_chunks_only_change(
+    factory, tmp_path, edit  # noqa: F811
 ):
-    """A1: an edit writes no new generation, so the content hash alone read it
-    as unedited. Pin, on the stamped row and on the upgrade boot's legacy row.
-    Mutation: ``fields_digest`` over the content alone: the pack's title or
-    tags replace the edit."""
+    """A1, and review item 4: an edit writes no new generation, so the content
+    hash alone read it as unedited. Pin (title, tags). Mutation:
+    ``fields_digest`` over the content alone. ``item_type`` and a metadata key
+    fail on e8cfe73e: the re-ingest wrote RUNBOOK back and dropped the key."""
     world = _world(factory, tmp_path)
     await _ingest(world, _pack("v0"))
     await world.service.update_document_metadata(DOC, principal="user-1", **edit)
-    if stamps == "content_only":
-        await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
+    before = await _row(world)
     generation = (await _row(world)).vector_generation
 
     assert await _ingest(world, _pack("vA", REAL_VECTORS[1])) == "skipped"
 
     row = await _row(world)
     assert row.vector_generation == generation
-    assert (row.title, list(row.tags)) == (
-        edit.get("title", "Pool exhaustion"),
-        edit.get("tags", ["postgres"]),
+    assert (row.title, list(row.tags), row.item_type, row.knowledge_metadata) == (
+        before.title,
+        list(before.tags),
+        before.item_type,
+        before.knowledge_metadata,
     )
+
+
+async def _a_change_after_the_read(world, change) -> SimpleNamespace:
+    """A chunks-only re-ingest with ``change`` landing between the row read
+    and the replacing transaction."""
+    await _ingest(world, _pack("v0"))
+    old = (await _row(world)).vector_generation
+    real = KnowledgeService._insert_pack_row
+
+    async def changed_first(self, item, **kwargs):
+        await change()
+        return await real(self, item, **kwargs)
+
+    with patch.object(KnowledgeService, "_insert_pack_row", changed_first):
+        assert await _ingest(world, _pack("vA", REAL_VECTORS[1])) == "skipped"
+    # The skipped write's vectors are deleted with it.
+    assert sorted(_chunks(world).values()) == ["v0"]
+    return SimpleNamespace(old=old, row=await _row(world))
+
+
+async def _an_unpublish_after_the_read(world) -> None:
+    got = await _a_change_after_the_read(world, lambda: _unpublish(world))
+    assert got.row.is_published is False and got.row.vector_generation == got.old
 
 
 async def test_an_unpublish_after_the_read_is_not_republished(
     factory, tmp_path  # noqa: F811
 ):
-    """A3: the unpublish lands between the row read and the replacing
-    transaction. Pin. Mutation: drop ``only_published`` from the replacing
-    DELETE: the row is replaced, published."""
+    """A3. Pin. Mutation: drop ``is_published`` from the replacing DELETE's
+    guard: the row is replaced, published."""
+    await _an_unpublish_after_the_read(_world(factory, tmp_path))
+
+
+async def test_an_edit_after_the_read_is_kept(factory, tmp_path):  # noqa: F811
+    """Review item 2: a title edit moves neither the generation nor
+    ``is_published``. Fails on e8cfe73e (the edit was replaced)."""
     world = _world(factory, tmp_path)
-    await _ingest(world, _pack("v0"))
-    old = (await _row(world)).vector_generation
-    real = KnowledgeService._insert_pack_row
 
-    async def unpublished_first(self, item, **kwargs):
-        await _unpublish(world)
-        return await real(self, item, **kwargs)
+    async def edit():
+        async with world.factory() as session:
+            await DatabaseKnowledgeItemRepository(session).update_fields(
+                DOC, {"title": "Operator title"}
+            )
 
-    with patch.object(KnowledgeService, "_insert_pack_row", unpublished_first):
-        assert await _ingest(world, _pack("vA", REAL_VECTORS[1])) == "skipped"
-
-    row = await _row(world)
-    assert row.is_published is False and row.vector_generation == old
-    # The skipped write's vectors are deleted with it.
-    assert sorted(_chunks(world).values()) == ["v0"]
+    got = await _a_change_after_the_read(world, edit)
+    assert (got.row.title, got.row.vector_generation) == ("Operator title", got.old)
 
 
 async def test_a_peer_that_ingested_this_version_first_is_a_skip(
@@ -306,7 +348,10 @@ async def test_a_peer_that_ingested_this_version_first_is_a_skip(
     """A4: two replicas replace the same row with the same new version; the
     one whose DELETE misses is skipped, not failed, and leaves no vector.
     Fails on c21fdc5b1: the second raised ``already exists``."""
-    world = _world(factory, tmp_path)
+    await _a_peer_wins(_world(factory, tmp_path))
+
+
+async def _a_peer_wins(world) -> None:
     await _ingest(world, _pack("v0"))
     revised = _pack("vA", REAL_VECTORS[1], content=MD + "\nRevised.\n")
     gates: List[asyncio.Event] = []
@@ -466,3 +511,178 @@ async def _restamp_without_capture(world, statements: List[str]) -> None:
     seen = len(statements)
     await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
     del statements[seen:]
+
+
+# --- review fixes (#2981) -------------------------------------------------------
+
+
+@pytest.mark.parametrize("upgrade_first", [True, False])
+async def test_a_legacy_row_takes_a_pack_field_change(
+    factory, tmp_path, upgrade_first  # noqa: F811
+):
+    """Review item 3: a legacy row is judged edited by its content, so a title
+    the pack changed is the pack's, before or after the upgrade boot stamps
+    it. ``False`` fails on e8cfe73e: stamped as edited, never re-ingested.
+    ``True`` is a pin. Mutation: the compare alone decides staleness (a
+    lagging field is not stale)."""
+    world = _world(factory, tmp_path)
+    await _ingest(world, _pack())
+    await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
+    if upgrade_first:
+        assert await _ingest(world, _pack()) == "skipped"
+    revised = _pack(title="Pool exhaustion, revised")
+
+    assert await _ingest(world, revised) == "ingested"
+
+    assert (await _row(world)).title == "Pool exhaustion, revised"
+    assert await _ingest(world, revised) == "skipped"
+
+
+async def test_a_peer_replacement_before_the_stamp_is_not_overwritten(
+    factory, tmp_path  # noqa: F811
+):
+    """Review item 6: the stamp lands only on the row as read. Fails on
+    e8cfe73e (the read's stamps overwrote the peer's row). Mutation: drop the
+    generation from the stamp's guard."""
+    world = _world(factory, tmp_path)
+    await _ingest(world, _pack())
+    await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
+    peer = {PACK_CONTENT_HASH_KEY: "peer"}
+    real = kb_init._stored_chunks_match
+
+    async def a_peer_replaces_it(*args):
+        async with world.factory() as session:
+            await session.execute(
+                update(KnowledgeItemModel)
+                .where(KnowledgeItemModel.item_id == DOC)
+                .values(
+                    vector_generation="f" * 32,
+                    knowledge_metadata=json.dumps(peer),
+                    updated_at=KnowledgeItemModel.updated_at,
+                )
+            )
+            await session.commit()
+        return await real(*args)
+
+    with patch.object(kb_init, "_stored_chunks_match", a_peer_replaces_it):
+        assert await _ingest(world, _pack()) == "skipped"
+
+    assert await _metadata(world) == peer
+
+
+async def test_an_empty_pack_tag_is_not_an_edit(factory, tmp_path):  # noqa: F811
+    """Review item 8: SQLite keeps no empty tag, so the stored row lacks one
+    the pack carries. Fails on e8cfe73e: the row read as edited, so the later
+    chunks-only change was skipped."""
+    world = _world(factory, tmp_path)
+    shipped = _pack(tags=("postgres", ""))
+    await _ingest(world, shipped)
+    await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
+    generation = (await _row(world)).vector_generation
+
+    assert await _ingest(world, shipped) == "skipped"
+
+    assert (await _row(world)).vector_generation == generation
+    assert (await _metadata(world))[PACK_DIGEST_KEY] == shipped.pack_digest
+    revised = _pack("vA", REAL_VECTORS[1], tags=("postgres", ""))
+    assert await _ingest(world, revised) == "ingested"
+
+
+# --- PostgreSQL ------------------------------------------------------------------
+
+POSTGRES = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL", "").startswith("postgresql"),
+    reason="PostgreSQL-only; set DATABASE_URL to a PG instance to run.",
+)
+
+
+@asynccontextmanager
+async def _pg_world(tmp_path):
+    from tests.integration.security.conftest import database_of_its_own
+
+    async with database_of_its_own(os.environ["DATABASE_URL"], "fm_2244") as url:
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            sessions = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with sessions() as session:
+                await seed_enterprises(session, [STANDALONE_ENTERPRISE_ID])
+            yield url, _world(sessions, tmp_path)
+        finally:
+            await engine.dispose()
+
+
+@pytest.mark.postgres
+@POSTGRES
+@pytest.mark.parametrize("race", ["unpublish", "peer"])
+async def test_the_races_on_postgresql(tmp_path, race):
+    """The unpublish race and the peer win, under PostgreSQL's locking."""
+    async with _pg_world(tmp_path) as (_url, world):
+        if race == "unpublish":
+            await _an_unpublish_after_the_read(world)
+        else:
+            await _a_peer_wins(world)
+
+
+@pytest.mark.postgres
+@POSTGRES
+async def test_kb_seed_under_its_real_role_needs_no_update(tmp_path, caplog):
+    """The ``kb_seed`` maintenance role exactly as #1966's suite grants it
+    (SELECT, INSERT and DELETE on ``knowledge_items``, no UPDATE): a
+    chunks-only change re-ingests and a legacy row is compared, not stamped,
+    with no statement refused."""
+    role = f"fm_maint_{uuid.uuid4().hex[:8]}"
+    admin = create_async_engine(
+        os.environ["DATABASE_URL"], isolation_level="AUTOCOMMIT"
+    )
+    try:
+        async with _pg_world(tmp_path) as (url, world):
+            await _ingest(world, _pack("v0"))
+            async with admin.connect() as conn:
+                await conn.execute(
+                    text(f"CREATE ROLE {role} LOGIN PASSWORD 'pw' BYPASSRLS")
+                )
+                db = make_url(url).database
+                await conn.execute(text(f'GRANT CONNECT ON DATABASE "{db}" TO {role}'))
+            async with world.factory() as session:
+                for grant in (
+                    f"GRANT USAGE ON SCHEMA public TO {role}",
+                    f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}",
+                    f"GRANT INSERT, DELETE ON TABLE knowledge_items TO {role}",
+                ):
+                    await session.execute(text(grant))
+                await session.commit()
+            maint = create_async_engine(make_url(url).set(username=role, password="pw"))
+            try:
+                sessions = async_sessionmaker(
+                    maint, class_=AsyncSession, expire_on_commit=False
+                )
+                seed = SimpleNamespace(**{**vars(world), "factory": sessions})
+                world.service._db_session_factory = sessions
+                may_update = await kb_init._role_may_update(sessions)
+                revised = _pack("vA", REAL_VECTORS[1])
+                with caplog.at_level(logging.WARNING):
+                    assert (
+                        await _ingest(seed, revised, role_may_update=may_update)
+                        == "ingested"
+                    )
+                    await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
+                    assert (
+                        await _ingest(seed, revised, role_may_update=may_update)
+                        == "skipped"
+                    )
+            finally:
+                await maint.dispose()
+            assert may_update is False
+            assert await _metadata(world) == {PACK_CONTENT_HASH_KEY: MD_HASH}
+            assert await _served(world) == {"vA"}
+            assert [
+                r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+            ] == []
+    finally:
+        async with admin.connect() as conn:
+            await conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+        await admin.dispose()

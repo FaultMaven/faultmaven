@@ -697,8 +697,8 @@ class KnowledgeService:
           new pack version. The repair pass never re-embeds an unpublished row,
           and the reconcile pass deletes its vectors. Only a NEW pack version
           of that runbook republishes it: a shipped update is a new document.
-          A pack whose chunks or fields alone changed (``metadata.pack_digest``,
-          #2244) re-ingests only a published row.
+          A change of the chunks or fields alone (``metadata.pack_digest``,
+          #2244) re-ingests only a published, unedited row.
         - A deleted authored document has no row, so nothing re-indexes it
           (repair works from rows) and no door admits a chunk under its id. A
           chunk the best-effort delete below left behind, or a repair or
@@ -1275,7 +1275,7 @@ class KnowledgeService:
         pack_digest: Optional[str] = None,
         shipped: bool = False,
         replaces_generation: Optional[str] = None,
-        only_if_published: bool = False,
+        replaces_updated_at: Optional[datetime] = None,
         record: "Optional[Callable[[AsyncSession], Awaitable[bool]]]" = None,
         index_window_seconds: Optional[float] = None,
         security: Optional[SecurityAnswer] = None,
@@ -1294,7 +1294,7 @@ class KnowledgeService:
           the commit that records its caller's success.
         * **Pack** (``shipped`` true): the vectors first, then
           :meth:`_insert_pack_row`, one transaction that deletes the row it
-          replaces (``replaces_generation``, guarded on that generation),
+          replaces (guarded on ``replaces_generation``, ``replaces_updated_at``),
           INSERTs this one complete, deletes the id's shares that are not the
           pack's own, ensures a team scope's own share (an idempotent add), and
           commits (#2386). The ``kb_seed`` maintenance role holds INSERT and
@@ -1323,8 +1323,9 @@ class KnowledgeService:
           lifespan skips ``bootstrap_kb``, and ``kb_seed``'s sweeps are
           report-only.
         * **Pack.** A failed transaction leaves the row it would have replaced
-          as it was: a peer that replaced the row first makes the guarded
-          DELETE match nothing and the INSERT conflict, and the conflict rolls
+          as it was: a peer that replaced the row first with another version
+          makes the guarded DELETE match nothing and the INSERT conflict (with
+          this version, nothing is written: #2244), and the conflict rolls
           the DELETE back (under SQLite the loser may get ``SQLITE_BUSY``
           instead). The caller records the failure and the next bootstrap
           decides again. A COMMIT in doubt that landed leaves this call's row
@@ -1400,8 +1401,8 @@ class KnowledgeService:
                 never mistaken for a new pack version (#1966). Every other
                 caller leaves it out and the metadata stays ``{}``.
             pack_digest: Stamped with it, as ``metadata.pack_digest`` (#2244).
-            only_if_published: See :meth:`_insert_pack_row`; it returns 0
-                when that writes nothing.
+            replaces_updated_at: See :meth:`_insert_pack_row`; 0 when that
+                writes nothing.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -1634,7 +1635,7 @@ class KnowledgeService:
                 replaces_generation=replaces_generation,
                 team_id=share_team,
                 created_by=owner_id or verified_by,
-                only_if_published=only_if_published,
+                replaces_updated_at=replaces_updated_at,
             )
             return chunks_created if written else 0
 
@@ -1703,7 +1704,7 @@ class KnowledgeService:
         replaces_generation: Optional[str],
         team_id: Optional[str],
         created_by: Optional[str],
-        only_if_published: bool = False,
+        replaces_updated_at: Optional[datetime] = None,
     ) -> bool:
         """A pack row's one transaction (#2388): DELETE the row it replaces,
         guarded on ``replaces_generation``; INSERT ``item``; delete the id's
@@ -1752,16 +1753,16 @@ class KnowledgeService:
                     item.item_id,
                     commit=False,
                     vector_generation=replaces_generation,
-                    only_published=only_if_published,
+                    published_as_of=replaces_updated_at,
                 )
-                # A miss writes nothing when the DELETE also required the row
-                # published, or a peer's row carries this version's stamps
-                # (#2244): this call's vectors are deleted and it returns False.
+                # A miss under ``replaces_updated_at``, or onto a peer's row of
+                # this version, writes nothing (#2244): False, vectors deleted.
                 if not replaced and (
-                    only_if_published
+                    replaces_updated_at is not None
                     or item.metadata
                     == getattr(await repo.get_by_id(item.item_id), "metadata", None)
                 ):
+                    await session.rollback()
                     await self._delete_replaced_generation(
                         item.item_id, item.vector_generation
                     )

@@ -23,10 +23,7 @@ EMBEDDING_DIMENSIONS = 1024
 #: runbook whose pack hash equals it, so an edit of the row is never mistaken
 #: for a new pack version, while a new pack version still re-ingests.
 PACK_CONTENT_HASH_KEY = "pack_content_hash"
-#: The KB pack's ``pack_digest`` (``kb_pack.PackRunbook``) a built-in row was
-#: last ingested from or compared equal to (#2244): its chunks and pack-written
-#: fields as well as its markdown. Its fields part is what the row was written
-#: with, so a row whose columns no longer hash to it was edited.
+#: A pack row's ``pack_digest``; its fields part is what the pack last wrote (#2244).
 PACK_DIGEST_KEY = "pack_digest"
 
 

@@ -552,7 +552,7 @@ ALLOWED = {
     "bootstrap/data_init.py": 8,
     "bootstrap/kb_generation_sweep.py": 3,
     "bootstrap/kb_incomplete_sweep.py": 3,
-    "bootstrap/kb_init.py": 12,
+    "bootstrap/kb_init.py": 11,
     "bootstrap/kb_orphan_sweep.py": 5,
     "bootstrap/kb_pack.py": 2,
     "bootstrap/lifespan.py": 11,

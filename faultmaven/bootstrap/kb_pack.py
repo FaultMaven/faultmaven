@@ -104,28 +104,24 @@ class PackRunbook:
 
     @property
     def pack_digest(self) -> str:
-        """``"<fields digest>:<chunks digest>"`` of what was loaded, not of the
-        manifest's unverified hashes: what ``kb_init`` stamps and compares
-        (#2244). The chunk metadata the app derives at ingest is not in it: it
-        changes with the app, not the pack."""
+        """``"<fields digest>:<chunks digest>"`` of what was loaded (#2244). The
+        chunk metadata the app derives at ingest changes with the app: not in it."""
         chunks = ((c.chunk_index, c.text, c.embedding) for c in self.chunks)
         return f"{fields_digest(self)}:{chunks_digest(chunks)}"
 
 
-def fields_digest(source: Any) -> str:
-    """The fields part of ``pack_digest``: the pack-written columns, read from
-    a ``PackRunbook`` or a ``knowledge_items`` row (named alike on both)."""
-    content, title, tags, source_url, owner_id = (
-        getattr(source, name)
-        for name in ("content", "title", "tags", "source_url", "owner_id")
-    )
-    fields = [content, title, [str(t) for t in tags or []], source_url, owner_id]
+def fields_digest(source: Any, owner_id: Optional[str] = None) -> str:
+    """The pack-written columns of a ``PackRunbook`` or a row, as storage keeps
+    them (no empty tag, a text title); ``owner_id`` stands in for a NULL one."""
+    title, tags = str(source.title), [t for t in map(str, source.tags or []) if t]
+    owner = source.owner_id or owner_id
+    fields = [source.content, title, tags, source.source_url, owner]
     return hashlib.sha256(json.dumps(fields).encode("utf-8")).hexdigest()
 
 
 def chunks_digest(chunks: Iterable[Tuple[int, str, Sequence[float]]]) -> str:
-    """The chunks part of ``pack_digest``: each ``(index, text, vector)`` in
-    order, the vector as little-endian float32 bytes, each length-prefixed."""
+    """Each ``(index, text, vector)`` in order, the vector as little-endian
+    float32 bytes, each length-prefixed."""
     digest = hashlib.sha256()
     for index, text, vector in chunks:
         data, row = text.encode("utf-8"), struct.pack(f"<{len(vector)}f", *vector)

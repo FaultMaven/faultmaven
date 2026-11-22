@@ -54,6 +54,8 @@ class _KbStore:
         self.parents: dict[str, int] = {}
         #: The generation each parent's chunks carry (#2388).
         self.generations: dict[str, str] = {}
+        #: Each parent's ``(index, text, vector)`` chunks, for the compare (#2244).
+        self.chunks: dict[str, list] = {}
 
     async def delete_documents_by_parent_id(
         self, parent_document_id, collection_name=None, *, retries=2
@@ -84,6 +86,10 @@ class _KbStore:
     async def delete_generation(self, parent_document_id, generation, **_kwargs):
         return 0
 
+    async def get_generation_chunks(self, parent_document_id, generation):
+        assert generation == self.generations[parent_document_id]
+        return self.chunks.get(parent_document_id, [])
+
 
 async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
     tmp_path, caplog
@@ -107,21 +113,28 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
                 )
                 shipped = item_id_from_runbook_id("example-runbook")
                 # A built-in ingested before the stamp existed (metadata '{}')
-                # whose content still matches the pack: the skip would stamp
-                # it — an UPDATE this role is refused.
+                # whose content and fields still match the pack: the skip
+                # would stamp it — an UPDATE this role is refused. (A title
+                # other than the pack's would be the pack's change, #2244.)
                 # An authored row whose vectors are missing: repair's work.
-                for item_id, content in (
-                    (shipped, RUNBOOK_MD),
-                    (ORPHAN_ID, "# Orphan\n\nbody"),
+                for item_id, content, title, tags in (
+                    (shipped, RUNBOOK_MD, "Example Runbook", ["postgres", "latency"]),
+                    (ORPHAN_ID, "# Orphan\n\nbody", "t", []),
                 ):
                     await conn.execute(
                         text(
                             "INSERT INTO knowledge_items (item_id, enterprise_id, "
-                            "scope, title, content, item_type, metadata, "
-                            "vector_generation) VALUES (:i, :e, 'global', 't', "
-                            ":c, 'runbook', '{}', 'gen-test')"
+                            "scope, title, content, item_type, tags, metadata, "
+                            "vector_generation) VALUES (:i, :e, 'global', :t, "
+                            ":c, 'runbook', :g, '{}', 'gen-test')"
                         ),
-                        {"i": item_id, "e": STANDALONE_ENTERPRISE_ID, "c": content},
+                        {
+                            "i": item_id,
+                            "e": STANDALONE_ENTERPRISE_ID,
+                            "c": content,
+                            "t": title,
+                            "g": tags,
+                        },
                     )
             # The maintenance role, exactly as 03-create-maintenance-role.sql
             # grants it: SELECT everywhere, INSERT + DELETE on knowledge_items.
@@ -155,6 +168,11 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             store = _KbStore()
             store.parents[shipped] = 2
             store.generations[shipped] = "gen-test"
+            # The shipped pack's own chunks (``_write_pack``'s zero vectors).
+            store.chunks[shipped] = [
+                (i, text, [0.0] * 8)
+                for i, text in enumerate(("section one", "section two"))
+            ]
             svc = KnowledgeService.__new__(KnowledgeService)
             svc._db_session_factory = factory
             svc._vector_store = store

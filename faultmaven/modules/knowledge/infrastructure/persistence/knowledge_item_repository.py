@@ -56,8 +56,8 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Set
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -120,6 +120,13 @@ def _column_values(fields: Dict[str, Any]) -> Dict[str, Any]:
     return dict(_TARGETED_FIELDS[name](value) for name, value in fields.items())
 
 
+def _same_instant(column: Any, value: datetime) -> Any:
+    """``column`` holds ``value`` as read (#2244). A range, not ``==``: SQLite
+    compares the text, and a server-side ``now()`` writes no microseconds."""
+    value = _as_utc(value)
+    return and_(column <= value, column > value - timedelta(microseconds=1))
+
+
 def _as_utc(value: datetime) -> datetime:
     """``value`` as a UTC instant, the form ``created_at`` is stored in: an
     aware value is converted, a naive one is read as UTC. SQLite keeps only
@@ -179,6 +186,7 @@ class KnowledgeItemRepository(ABC):
         *,
         commit: bool = True,
         touch: bool = True,
+        as_read: Optional[Tuple[str, datetime]] = None,
     ) -> bool:
         """Write ONLY ``fields`` on one row; every other column is left as the
         database holds it (#1966). The only write after creation.
@@ -202,6 +210,8 @@ class KnowledgeItemRepository(ABC):
             touch: Stamp ``updated_at`` with the current time. ``False`` keeps
                 the stored value (bookkeeping writes the document's readers
                 should not see as an edit).
+            as_read: Write only while the row's ``(vector_generation,
+                updated_at)`` are these (#2244).
 
         Returns:
             Whether a row matched. Zero rows — absent, deleted concurrently, or
@@ -223,7 +233,7 @@ class KnowledgeItemRepository(ABC):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
-        only_published: bool = False,
+        published_as_of: Optional[datetime] = None,
     ) -> bool:
         """Delete knowledge item by ID.
 
@@ -241,14 +251,14 @@ class KnowledgeItemRepository(ABC):
             vector_generation: Delete the row only while it carries this
                 generation (#2388), so a pack replacement never removes a row
                 a peer replaced first.
-            only_published: Delete the row only while it is published
-                (#2244), so a pack replacement never republishes it.
+            published_as_of: Delete the row only while it is published and
+                its ``updated_at`` is this instant (#2244).
 
         Returns:
             True if a row matched (deleted, or deleted pending the commit),
             False if none did: absent, another ``created_at`` or generation,
-            complete under ``only_incomplete``, unpublished under
-            ``only_published``, or refused by an RLS write policy.
+            complete under ``only_incomplete``, unpublished or changed
+            under ``published_as_of``, or refused by an RLS write policy.
         """
         pass
 
@@ -596,16 +606,21 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         *,
         commit: bool = True,
         touch: bool = True,
+        as_read: Optional[Tuple[str, datetime]] = None,
     ) -> bool:
         """Targeted update (see the base class)."""
         values = _column_values(fields)
+        guard = [KnowledgeItemModel.item_id == item_id]
+        if as_read:
+            guard.append(KnowledgeItemModel.vector_generation == as_read[0])
+            guard.append(_same_instant(KnowledgeItemModel.updated_at, as_read[1]))
         values["updated_at"] = (
             datetime.now(timezone.utc) if touch else KnowledgeItemModel.updated_at
         )
         try:
             stmt = (
                 update(KnowledgeItemModel)
-                .where(KnowledgeItemModel.item_id == item_id)
+                .where(*guard)
                 .values(**values)
                 .execution_options(synchronize_session=False)
             )
@@ -631,7 +646,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
-        only_published: bool = False,
+        published_as_of: Optional[datetime] = None,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         try:
@@ -646,8 +661,11 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 stmt = stmt.where(
                     KnowledgeItemModel.vector_generation == vector_generation
                 )
-            if only_published:
-                stmt = stmt.where(KnowledgeItemModel.is_published.is_(True))
+            if published_as_of is not None:
+                stmt = stmt.where(
+                    KnowledgeItemModel.is_published.is_(True),
+                    _same_instant(KnowledgeItemModel.updated_at, published_as_of),
+                )
             result = await self.db.execute(stmt)
             if commit:
                 await self.db.commit()
@@ -1199,6 +1217,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         *,
         commit: bool = True,
         touch: bool = True,
+        as_read: Optional[Tuple[str, datetime]] = None,
     ) -> bool:
         """Targeted update (see the base class)."""
         _column_values(fields)  # the same validation as the database repository
@@ -1206,6 +1225,9 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             return False
         pending = self._pending.get(item_id)
         target = deepcopy(pending if pending is not None else self._items[item_id])
+        held = (target.vector_generation, _as_utc(target.updated_at))
+        if as_read and held != (as_read[0], _as_utc(as_read[1])):
+            return False
         for name, value in fields.items():
             if name == "item_type":
                 value = KnowledgeItemType(value)
@@ -1226,7 +1248,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
-        only_published: bool = False,
+        published_as_of: Optional[datetime] = None,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         if not self._exists(item_id):
@@ -1238,7 +1260,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
             return False
         if only_incomplete and current.ingest_complete:
             return False
-        if only_published and not current.is_published:
+        as_of = (True, _as_utc(published_as_of)) if published_as_of else None
+        if as_of and (current.is_published, _as_utc(current.updated_at)) != as_of:
             return False
         if vector_generation is not None and (
             current.vector_generation != vector_generation

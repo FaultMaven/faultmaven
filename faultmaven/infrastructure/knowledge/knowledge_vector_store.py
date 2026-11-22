@@ -1844,25 +1844,18 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     async def get_generation_chunks(
         self, parent_document_id: str, generation: str
     ) -> List[Tuple[int, str, List[float]]]:
-        """``(chunk_index, text, embedding)`` of one parent's chunks of one
-        generation, in chunk order: the pack bootstrap's compare (#2244)."""
+        """See :meth:`IKnowledgeVectorStore.get_generation_chunks`."""
         where = {"parent_document_id": parent_document_id}
         where = {"$and": [where, {"vector_generation": generation}]}
 
-        def _get_wrapper() -> List[Tuple[int, str, List[float]]]:
+        def _get() -> List[Tuple[int, str, List[float]]]:
             got = self.client.get_collection(name=KB_COLLECTION).get(
                 where=where, include=["metadatas", "documents", "embeddings"]
             )
-            rows = zip(got["metadatas"], got["documents"], got["embeddings"])
-            return sorted((md["chunk_index"], t, list(v)) for md, t, v in rows)
+            rows = zip(got["metadatas"], got["documents"], got.get("embeddings", []))
+            return sorted((md.get("chunk_index"), t, list(v)) for md, t, v in rows)
 
-        return await self.call_external(
-            operation_name="get_generation_chunks",
-            call_func=_get_wrapper,
-            timeout=10.0,
-            retries=1,
-            retry_delay=1.0,
-        )
+        return await self.call_external("get_generation_chunks", _get, timeout=10.0)
 
     async def list_all_chunk_ids_by_parent(
         self,
