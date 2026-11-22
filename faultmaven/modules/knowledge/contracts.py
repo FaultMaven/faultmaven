@@ -298,6 +298,28 @@ def describe_troubleshooting_scope() -> str:
 
 
 # ============================================================
+# Global-tier authoring policy, query form (#770, #2335)
+# ============================================================
+
+
+def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
+    """Whether the caller may author global-scope content: a platform admin
+    under a single tenant, nobody under ``TENANT_PROVIDER=multi``. The query
+    form of ``domain/global_authoring.py``'s policy; it is also the
+    single-tenant operator override of the KB document write policy."""
+    from faultmaven.exceptions import AuthorizationError
+    from faultmaven.modules.knowledge.domain.global_authoring import (
+        ensure_global_authoring_allowed,
+    )
+
+    try:
+        ensure_global_authoring_allowed(is_platform_admin)
+        return True
+    except AuthorizationError:
+        return False
+
+
+# ============================================================
 # Read-time gate on stored runbook excerpts (#1919)
 # ============================================================
 

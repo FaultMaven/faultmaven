@@ -8076,7 +8076,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.8.0"
+    "version": "15.9.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9692,7 +9692,7 @@
     },
     "/api/v1/auth/me/available-scopes": {
       "get": {
-        "description": "Return the scopes the calling user can target for team collaboration.\n\n``personal`` (author-only) is always available.\n\n``team`` is reported only when the deployment is team-enabled\n(``team_service`` is wired \u2014 a Cloud collaboration feature, unwired in\nstandalone) AND the caller actually belongs to at least one Team, since a\nuser with no Team has nothing to target.\n\n``global`` is the platform tier, so it is reported only to a\n``platform_admin``: every route that publishes at global scope requires\nthat role \u2014 upload, convert and manual authoring alike, each for\n``scope == \"global\"`` (#1377 removed upload's route-level operator gate,\nwhich had made uploading a privilege rather than the tier it guarded). Reporting it to everyone made the\ndashboard offer a target the backend then refused, which is the drift this\nendpoint exists to prevent \u2014 its whole point is to reflect the caller's\nreal capability rather than a hardcoded assumption.\n\nScopes are returned narrowest-to-widest: ``personal | team | global``.",
+        "description": "Return the scopes the calling user can target for team collaboration.\n\n``personal`` (author-only) is always available.\n\n``team`` is reported only when the deployment is team-enabled\n(``team_service`` is wired \u2014 a Cloud collaboration feature, unwired in\nstandalone) AND the caller actually belongs to at least one Team, since a\nuser with no Team has nothing to target.\n\n``global`` is the platform tier, so it is reported only when the caller\nmay author global content: under a single tenant, a ``platform_admin``;\nunder ``TENANT_PROVIDER=multi``, nobody, because global content is seeded\nby the audited ``kb_seed`` path (#2335). The answer comes from\n``is_global_authoring_allowed``; the publish routes (upload, convert,\nmanual authoring) refuse the rest. Offering a target the backend then\nrefuses is the drift this endpoint exists to prevent.\n\nScopes are returned narrowest-to-widest: ``personal | team | global``.",
         "operationId": "get_available_scopes_api_v1_auth_me_available_scopes_get",
         "responses": {
           "200": {

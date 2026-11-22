@@ -60,7 +60,7 @@ All knowledge tiers share **one ChromaDB collection** (`faultmaven_kb`). Scope i
 
 | Tier | Read filter arm (each `$and`-ed with the caller's `enterprise_id`, #1775) | Access Rule |
 |------|----------------|-------------|
-| Global | `{"scope": "global"}`, enterprise the caller's or the platform (Standalone) value | Read: all users. Write: platform admin only. |
+| Global | `{"scope": "global"}`, enterprise the caller's or the platform (Standalone) value | Read: all users. Write: `platform_admin` under a single tenant; nobody under `TENANT_PROVIDER=multi` (`kb_seed` only). |
 | Team | `{"parent_document_id": {"$in": shared_ids}}` — ids resolved from `resource_shares` | Read: team members. Write: team admin (or via promotion approval). |
 | Personal | `{"owner_id": "<id>"}` | Read/write: owner only. Promote to Team KB via approval. |
 
@@ -440,20 +440,20 @@ Adding a new KB tier requires:
 - **Lifecycle:** Permanent — managed by the platform administrator
 - **Ownership:** Platform admin. Independent of any organization.
 - **Content:** Pre-built troubleshooting guides, error code references, vendor documentation, industry best practices
-- **Access:** Read by all users across all organizations (auto-searched by agent). Write by platform admin only.
+- **Access:** Read by all users across all organizations (auto-searched by agent). Written by a `platform_admin` under a single tenant; under `TENANT_PROVIDER=multi` by nobody through the API, only by the audited `kb_seed` job.
 - **Start state:** Pre-populated in both deployments via the shipped global runbook pack.
 
 **Global-authoring enforcement (single source of truth):** every path that authors global-scope content applies one policy —
-`modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed` / `is_global_authoring_allowed`), reused at the API layer by `modules/knowledge/api/platform_tier.py`. It refuses any tenant session under `TENANT_PROVIDER=multi` (org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `admin` role single-tenant. Enforcement points:
+`modules/knowledge/domain/global_authoring.py` (`ensure_global_authoring_allowed`; its non-raising query form `is_global_authoring_allowed` is public in `modules/knowledge/contracts.py`). It refuses any tenant session under `TENANT_PROVIDER=multi` (platform and org admins included — global content ships only via the audited `kb_seed` maintenance job, #770) and requires the `platform_admin` role single-tenant (the org-scoped `admin` does not count). `GET /auth/me/available-scopes` lists `global` exactly when `is_global_authoring_allowed` holds (#2335). Enforcement points:
 
-- **Creation routes** (`convert`, `runbooks/create`, `documents` upload) — the scope is a request field, gated at the route (403).
+- **Creation routes** (`convert`, `runbooks/create`, `documents` upload) — the scope is a request field, gated at the route (403): each takes the multi arm from `modules/knowledge/api/platform_tier.py` and restates the `platform_admin` check inline.
 - **Publish / mint** (`verify_draft`, `verify-batch`, `scan`) — the scope is only known after the conversion-job row or on-disk file is inspected, so the gate lives in the service: `verify_draft` refuses to publish a `global` draft (`AuthorizationError` → 403), and `scan` skips global-inferred files a caller may not author while still discovering personal and `team_`-directory ones (the latter as personal drafts, #1986). This closes the pre-#770 hole where a non-admin could verify a system-owned global draft or mint a global draft via scan.
 
 ### Ingestion Pipeline
 
 Global-tier ingestion runs automatically at API startup via the **KB bootstrap** (`faultmaven/bootstrap/kb_init.py`). The bootstrap loads the shipped **KB pack** (`faultmaven/bootstrap/kb_pack.py`) and, for each runbook in it, writes a row to `knowledge_items` plus the pack's pre-computed chunk vectors to ChromaDB via `KnowledgeService.ingest_runbook(prechunked=...)`. Because the pack ships pre-chunked and pre-embedded, startup does **no chunking and no embedding** — it is pure SQL + vector writes and completes in seconds. Idempotent: a runbook is skipped on every restart while the pack's content hash equals the one stamped on its row at ingest (`metadata.pack_content_hash`, #1966), and runbooks no longer in the pack are pruned from both stores.
 
-Tier-1-specific notes: Global runbooks are written by the platform admin and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
+Tier-1-specific notes: Global runbooks are written by a single-tenant `platform_admin` or, under `TENANT_PROVIDER=multi`, only by the `kb_seed` job, and apply across all organizations. The 91 built-in runbooks ship pre-chunked and pre-embedded in the **KB pack** (`resources/knowledge/pack`, or `KB_PACK_DIR`); on startup the bootstrap ingests them directly — no separate "verify" step is needed because the platform vendor / admin is the verifier for pre-deployed content. The verify-via-Dashboard flow is reserved for case-generated and document-converted drafts that need a human gate.
 
 The **conversion-drafts path** (case-generated / document-converted content, not the pack) is the one that triggers YAML frontmatter parsing, structural validation (per [runbook-content-architecture.md §4 Quality Gates](./runbook-content-architecture.md#4-quality-gates)), chunking, and embedding on ingest; both paths publish through `KnowledgeService.ingest_runbook()` — see [`kb-ingestion-architecture.md`](./kb-ingestion-architecture.md) for its write order and failure handling.
 

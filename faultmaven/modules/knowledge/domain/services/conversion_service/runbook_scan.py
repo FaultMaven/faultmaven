@@ -26,9 +26,7 @@ from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     KnowledgeItemModel,
 )
-from faultmaven.modules.knowledge.domain.global_authoring import (
-    is_global_authoring_allowed,
-)
+from faultmaven.modules.knowledge.contracts import is_global_authoring_allowed
 from faultmaven.modules.knowledge.domain.models.conversion import (
     AnalysisResult,
     ConversionDraft,

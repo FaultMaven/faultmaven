@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.8.0",
+  "contractVersion": "15.9.0",
   "entries": [
+    {
+      "body": "`global` is listed exactly when the caller may author global content:\nunder a single tenant, a platform admin; under multi-tenant, nobody (global\ncontent is seeded by the audited `kb_seed` path). A multi-tenant platform\nadmin used to get the same list with `global` appended and now gets\n`[\"personal\"]`, or `[\"personal\", \"team\"]` with a Team; nothing else changes.\n\nMINOR because the list keeps its type and a client survives a shorter one:\nthe dashboard renders `global` as given, so it stops offering a target the\nserver always refused.",
+      "level": "MINOR",
+      "title": "`GET /api/v1/auth/me/available-scopes` no longer lists `global` under `TENANT_PROVIDER=multi`, where every global publish was refused 403 (#2335). No schema moves.",
+      "version": "15.9.0"
+    },
     {
       "body": "Both routes read the case through `CaseService.get_case_messages_enhanced`,\nwhich answered every failure of its read as a 200 with an empty page. Now:\n\n* a database timeout answers `GET /cases/{case_id}/messages` **503**\n  `x-error-code: DATABASE_UNAVAILABLE`, `Retry-After: 5` (newly documented),\n  whether the access check's read (`resolve_case`) or the transcript's own read\n  timed out; a retry is safe;\n* a case deleted between the access check and the read answers **404**\n  `CASE_NOT_FOUND`; any other read failure answers **500**;\n* on `GET /admin/cases/{case_id}/messages` a case gone after `get_case`\n  answers the `NotFoundError` handler's labelled **404**, and a database\n  timeout on the transcript's read answers **500**.\n\nA stored row that cannot be loaded is skipped and counted, like one that\ncannot be converted: `debug_info.storage_errors` names it `MESSAGE_PARSE_FAILED`\n(`STORAGE_READ_FAILED` is gone, having no producer), and `retrieved_count` is\nthe rows returned. `X-Storage-Status`, an undeclared header, is now computed\nwith or without `include_debug`: `success` when the page skipped no row,\n`partial` when it skipped some, `error` when it returned none of a non-empty\npage.\n\n`next_offset` is now set (it was always null): the page's offset plus the rows\nit consumed, skipped rows included, while `has_more`. A short page is not the\nlast page: a client pages by `has_more` / `next_offset`, never by a page\nshorter than `limit`.",
       "level": "MINOR",

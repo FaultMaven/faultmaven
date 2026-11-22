@@ -16,12 +16,15 @@ platform-operator action, not a tenant one:
 * **Single-tenant** (standalone / today's cloud-single): the deployment operator
   IS the platform operator, so the ``platform_admin`` role is required.
 
-This is the single source of truth for that policy. It is enforced at EVERY
-point global content is authored:
+This is the single source of truth for that policy; its non-raising query
+form, ``is_global_authoring_allowed``, is public in
+:mod:`faultmaven.modules.knowledge.contracts`. It is enforced at EVERY point
+global content is authored:
 
 * the ``convert`` / ``runbooks/create`` / ``documents`` (upload) routes, where
-  the scope is a request field known at the API layer (via :mod:`faultmaven.modules.knowledge.api.platform_tier`,
-  which reuses :data:`GLOBAL_AUTHORING_MULTI_MSG` from here); and
+  the scope is a request field: each takes the multi arm from
+  :mod:`faultmaven.modules.knowledge.api.platform_tier` and restates the
+  ``platform_admin`` check inline; and
 * the ``verify_draft`` / ``verify_batch`` / ``scan`` service methods, where a
   draft's scope is only known once the conversion-job row is loaded (or the
   on-disk file's directory is inspected) — so the gate lives at the service
@@ -82,17 +85,3 @@ def ensure_global_authoring_allowed(is_platform_admin: bool) -> None:
         raise AuthorizationError(GLOBAL_AUTHORING_MULTI_MSG)
     if not is_platform_admin:
         raise AuthorizationError(GLOBAL_AUTHORING_ADMIN_MSG)
-
-
-def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
-    """Non-raising form of :func:`ensure_global_authoring_allowed`.
-
-    Used where a mixed-scope operation (e.g. a disk scan discovering runbooks of
-    every scope) must SKIP the global items a caller may not author while still
-    processing the personal/team ones, rather than refusing the whole request.
-    """
-    try:
-        ensure_global_authoring_allowed(is_platform_admin)
-        return True
-    except AuthorizationError:
-        return False

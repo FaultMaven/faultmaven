@@ -1504,10 +1504,9 @@ Default role for all users:
 Enhanced permissions:
 
 - All regular user capabilities
-- Upload documents to Global KB
-- Update Global KB documents
-- Delete Global KB documents
-- Bulk operations on Global KB
+- Organization management (`org:manage_users`, `org:manage_settings`)
+- **Cannot:** Upload/modify/delete Global KB: that needs `platform_admin` under
+  a single tenant, and no session may under `TENANT_PROVIDER=multi`
 
 ### Role Implementation
 
@@ -1521,7 +1520,8 @@ Two role vocabularies coexist in the codebase:
   `api/v1/auth_dependencies.py` for `DevUser`), both delegating to that type's
   `is_platform_admin()`. It guards everything acting on the deployment as a
   whole: cross-tenant case listing, user administration, LLM configuration, and
-  Global KB authoring. It is granted out-of-band by the `fm-promote-platform-admin` command — never
+  Global KB authoring under a single tenant (under `TENANT_PROVIDER=multi` no
+  session may author it). It is granted out-of-band by the `fm-promote-platform-admin` command — never
   through the user-management API, whose `assign_role` validates against the
   org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately, `models/rbac.py` defines a
@@ -1572,14 +1572,26 @@ class UserDTO:
 **Protected Endpoints:**
 
 ```python
-from faultmaven.api.dependencies import require_platform_admin, require_authentication
+from fastapi import Depends, File, Form, HTTPException, UploadFile
+
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.api.platform_tier import (
+    require_global_authoring_allowed,
+)
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
 @router.post("/knowledge/documents")
 async def upload_document(
-    file: UploadFile,
-    current_user: User = Depends(require_platform_admin)  # Admin only
+    file: UploadFile = File(...),
+    scope: KnowledgeScope = Form(KnowledgeScope.PERSONAL),
+    current_user: DevUser = Depends(require_authentication),  # Any user
 ):
-    """Upload document to Global KB (admin only)"""
+    """Upload a document; the global scope is gated, not the route."""
+    if scope == KnowledgeScope.GLOBAL:
+        require_global_authoring_allowed()  # multi: 403 for every session
+        if not current_user.is_platform_admin():  # single: platform_admin only
+            raise HTTPException(status_code=403, detail="...")
     ...
 
 @router.post("/knowledge/search")
@@ -1625,13 +1637,15 @@ Authorization: Bearer {access_token}
 
 Returns the **knowledge-base publish scopes** the caller may target for
 collaboration — a distinct concept from OAuth token scopes. `personal`
-(author-only) and `global` (platform-wide) are always returned; `team` is
-included only when the deployment is team-enabled (a Cloud collaboration
-feature) **and** the caller belongs to at least one team. Frontends gate their
-team UI (KB team-publish, case share-to-team) on this signal. Scopes are
-returned narrowest-to-widest.
+(author-only) is always returned; `team` is included only when the deployment
+is team-enabled (a Cloud collaboration feature) **and** the caller belongs to
+at least one team; `global` (platform-wide) is included only when
+`is_global_authoring_allowed` holds: for a `platform_admin` under a single
+tenant, for nobody under `TENANT_PROVIDER=multi` (#2335). Frontends gate their
+publish UI (KB team-publish, case share-to-team, global authoring) on this
+signal. Scopes are returned narrowest-to-widest.
 
-**Response:**
+**Response** (a single-tenant `platform_admin` on a team):
 
 ```json
 {
