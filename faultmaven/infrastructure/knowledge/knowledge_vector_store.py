@@ -51,7 +51,7 @@ import threading
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from chromadb.errors import NotFoundError
 
@@ -1839,6 +1839,23 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             timeout=None,
             retries=1,
             retry_delay=1.0,
+        )
+
+    async def get_generation_chunks(
+        self, parent_document_id: str, generation: str
+    ) -> List[Tuple[int, str, List[float]]]:
+        where = {"parent_document_id": parent_document_id}
+        where = {"$and": [where, {"vector_generation": generation}]}
+
+        def _get() -> List[Tuple[int, str, List[float]]]:
+            got = self.client.get_collection(name=KB_COLLECTION).get(
+                where=where, include=["metadatas", "documents", "embeddings"]
+            )
+            rows = zip(got["metadatas"], got["documents"], got.get("embeddings", []))
+            return sorted((md.get("chunk_index"), t, list(v)) for md, t, v in rows)
+
+        return await self.call_external(
+            "get_generation_chunks", _get, timeout=10.0, retries=1
         )
 
     async def list_all_chunk_ids_by_parent(

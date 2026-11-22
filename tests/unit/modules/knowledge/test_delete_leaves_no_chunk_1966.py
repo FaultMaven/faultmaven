@@ -48,6 +48,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.bootstrap import kb_init
+from faultmaven.bootstrap.kb_pack import KbPack
 from faultmaven.exceptions import CircuitBreakerError
 from faultmaven.infrastructure import index_slot
 from faultmaven.infrastructure.persistence.models import Base
@@ -59,6 +60,7 @@ from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain import global_authoring
 from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     PACK_CONTENT_HASH_KEY,
+    PACK_DIGEST_KEY,
     KnowledgeItem,
     KnowledgeItemType,
 )
@@ -104,6 +106,8 @@ class _KbStore:
         self.parents: dict[str, int] = {}
         #: The generation each parent's chunks carry (#2388).
         self.generations: dict[str, str] = {}
+        #: A pack write's ``(index, text, vector)`` chunks, by parent (#2244).
+        self.chunks: dict[str, list] = {}
         self.fail_for: dict[str, Exception] = {}
         self.delete_calls: list[tuple[str, int]] = []
 
@@ -128,6 +132,10 @@ class _KbStore:
 
     async def list_chunk_ids_by_parent(self, where) -> dict:
         return {}  # the age floor's read: every chunk here is old
+
+    async def get_generation_chunks(self, parent_document_id, generation):
+        assert generation == self.generations.get(parent_document_id)
+        return self.chunks.get(parent_document_id, [])
 
     async def delete_observed_chunk_ids(self, chunk_ids, collection_name=None):
         ids = list(chunk_ids)
@@ -218,6 +226,9 @@ async def kb(monkeypatch):
         indexed.append(document.document_id)
         store.parents[document.document_id] = 3
         store.generations[document.document_id] = generation
+        store.chunks[document.document_id] = [
+            (i, text, vector) for i, (text, vector) in enumerate(prechunked or [])
+        ]
         return 3
 
     svc = KnowledgeService.__new__(KnowledgeService)
@@ -652,7 +663,10 @@ RUNBOOK_V2 = RUNBOOK_MD.replace("# Body content for tests.", "# Body, version tw
 async def test_the_pack_bootstrap_stamps_the_pack_hash_on_the_row(kb, tmp_path):
     shipped = item_id_from_runbook_id("example-runbook")
     await kb.boot(tmp_path, _write_pack(tmp_path))
-    assert (await kb.row(shipped)).metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
+    assert (await kb.row(shipped)).metadata == {
+        PACK_CONTENT_HASH_KEY: PACK_V1_HASH,
+        PACK_DIGEST_KEY: KbPack.load(_write_pack(tmp_path)).runbooks[0].pack_digest,
+    }
 
 
 async def test_an_edited_then_unpublished_builtin_stays_unpublished_after_a_reboot(
@@ -712,7 +726,12 @@ async def test_a_row_from_before_the_stamp_is_compared_by_content_once(kb, tmp_p
 
     assert second.skipped_unchanged == ["global/example.md"], second
     stamped = await kb.row(shipped)
-    assert stamped.metadata == {PACK_CONTENT_HASH_KEY: PACK_V1_HASH}
+    # Its stored chunks compared equal to the pack's: stamped with the digest
+    # too (#2244).
+    assert stamped.metadata == {
+        PACK_CONTENT_HASH_KEY: PACK_V1_HASH,
+        PACK_DIGEST_KEY: KbPack.load(pack_dir).runbooks[0].pack_digest,
+    }
     assert stamped.updated_at == before.updated_at
 
     await kb.svc.update_document_metadata(

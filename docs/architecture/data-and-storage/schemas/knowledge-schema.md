@@ -232,7 +232,7 @@ Global runbooks and methodologies live in the unified `faultmaven_kb` collection
 # Built-ins ship in the KB pack (resources/knowledge/pack, or KB_PACK_DIR),
 # pre-chunked + pre-embedded by faultmaven-kb-toolkit (kb-build-pack).
 #
-# Per runbook (idempotent by content_hash):
+# Per runbook (idempotent by content_hash and pack_digest, #2244):
 #   ingest_runbook(prechunked=[(chunk_text, vector), ...], scope=<from pack>)
 #   → knowledge_items SQL row + the pack's chunks/vectors into faultmaven_kb.
 #   NO embedding model runs at startup.
