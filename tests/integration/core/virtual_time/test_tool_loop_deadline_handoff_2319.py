@@ -252,6 +252,9 @@ def build_router(monkeypatch, chain: List[_Adapter], request_timeout: float):
     }
     registry._initialized = True
     monkeypatch.setattr(router_module, "get_registry", lambda: registry)
+    # The ceiling is read from the live settings, and the environment wins over
+    # them (resolve_request_timeout), so a shell-exported value must not leak in.
+    monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     router = LLMRouter()
     router.sanitizer = _Sanitizer()
     monkeypatch.setattr(router.settings.llm, "request_timeout", int(request_timeout))
