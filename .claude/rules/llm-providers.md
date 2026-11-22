@@ -302,22 +302,39 @@ call's deadline bounds all its waits; a quota 429 is not waited on), so a
 ladder of throttles can pay the fourth attempt, which `with_retry`'s
 turn-budget refusal stops when it would not fit, so the turn is never overrun.
 On a turn with tools
-the tool loop's own attempt comes first, outside the ladder
+the tool loop's own send comes first, outside the ladder
 (`ToolCallingUnsupportedError`, chained from the provider's failure), and the
-fallback ladder then makes its own attempts: that turn pays the tool attempt
-and then the ladder, bounded by the turn budget. Telling the ladder about the
-paid attempt is #2319. Measured on a virtual clock against a hung provider,
-before → after: a ladder-only turn 96 → 62 s at T = 30 s and a 120 s turn,
-104 → 62 s at 240 s, and 120 s both at T = 120 s, A = 240 s; a turn with tools
-92 → 92 s at 120 s, 96 → 92 s at 240 s, and 235.5 s both at T = 120 s. The cost
-moves to the breaker. At the shipped timeouts (T = 30 s, A = 120 s), a hung
-provider (every attempt a timeout) reaches two breaker failures of three on a
+fallback ladders count what it spent (#2319): the dispatch records each failed
+send (`record_model_failure`) for the judged call bound around it — the tool
+loop's send, each `with_retry` attempt, never the sends between them (triage,
+intent, a tool's answerer) — and the tool loop hands its failing send's spent
+deadlines, per provider configuration (the dispatch's key: the adapter's label
+and the model the send targets, so one vendor on two models is two keys), to
+both fallback ladders (`with_retry`'s `prior_deadlines`, the #2802 re-issue's
+included). A deadline was spent by a cancelled send or a deadline-shaped
+failure that is not an overflow or truncation verdict (`spent_a_deadline`). A
+failed attempt adds to its deadline count the least the tool loop spent on any
+provider that spent a deadline IN THAT ATTEMPT; a provider that failed the
+attempt fast with a status error is not among them, and an attempt where none
+spent a deadline adds nothing. So a deadline-shaped attempt is not retried when
+every provider that spent a deadline in it had already spent
+`max_deadline_retries` in the tool loop; a failure on one provider
+configuration never spends another's, and a ladder handed nothing is
+unchanged. Measured on a virtual clock against a
+hung provider, #1294 before → after: a ladder-only turn 96 → 62 s at T = 30 s
+and a 120 s turn, 104 → 62 s at 240 s, and 120 s both at T = 120 s, A = 240 s;
+a turn with tools, #2319 before → after, 92 → 60 s at 120 s and at 240 s, and
+235.5 s both at T = 120 s, A = 240 s, where its refusal moves from
+`TURN_BUDGET_EXHAUSTED` to `RETRY_EXHAUSTED` (the ladder's one attempt is the
+provider's last; both 503). The cost moves to the breaker. At the shipped
+timeouts (T = 30 s, A = 120 s), a hung provider (every attempt a timeout) reaches two breaker failures of three on a
 ladder-only turn, so that turn ends `RETRY_EXHAUSTED` (where the full ladder
 fit, it ended `PROVIDER_CIRCUIT_OPEN`; both 503 + `Retry-After: 30`), the next
 turn pays one `T` and opens it, and the one after is refused at once — 62 + 32 +
 0 s over three turns where it was 96 + 0 + 0 (#1513). A turn with tools reaches
-three failures (the tool loop's attempt, then the ladder's two) and opens it in
-its first turn (92 + 0 + 0 s). Where the turn affords fewer attempts (T = 120 s,
+two (the tool loop's send, then the ladder's one attempt), and the next turn's
+tool send opens it: 60 + 30 + 0 s where it was 92 + 0 + 0 — the gain is per-turn
+latency, not total cost. Where the turn affords fewer attempts (T = 120 s,
 A = 240 s), each turn pays fewer and the breaker opens a turn or two later. A
 provider that fails fast (a refused connection) is status-shaped, and opens it
 inside its first ladder. The two settings

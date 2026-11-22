@@ -529,7 +529,6 @@
   "tests/unit/core/investigation/test_timeline_rerank.py": 0.004795,
   "tests/unit/core/investigation/test_tool_call_echo_shapes_1998.py": 0.02304,
   "tests/unit/core/investigation/test_tool_context_principal.py": 0.2149,
-  "tests/unit/core/investigation/test_tool_loop_fallback_deadline_1294.py": 0.05114,
   "tests/unit/core/investigation/test_tool_result_truncation_observability.py": 0.02531,
   "tests/unit/core/investigation/test_tool_timeout_starts_vectorization_2332.py": 0.05257,
   "tests/unit/core/investigation/test_toolless_turn_single_shot_routing.py": 0.084,

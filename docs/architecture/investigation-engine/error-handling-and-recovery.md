@@ -363,23 +363,30 @@ result is the same `FAIL` / `RETRY_EXHAUSTED` a spent full ladder reports, so
 the HTTP mapping does not move. A budget refusal of a hung provider's one retry
 still reports `TURN_BUDGET_EXHAUSTED`: a paid attempt was lost.
 
-**A turn with tools pays the tool loop's attempt first.** The count is per
-ladder. The tool loop's attempt fails outside any ladder (the loop raises
-`ToolCallingUnsupportedError` chained from the provider's failure), and the
-fallback ladder then makes its own attempts, so a turn with tools against a hung
-provider pays `T` for the tool attempt and then the ladder's `2T + 2`, bounded by
-the turn budget. Telling the ladder about that paid attempt is #2319. The retry
-a grant makes is recorded on the `ErrorResult` (`deadline_retry`), and
-`with_retry` counts from it.
+**A turn with tools pays the tool loop's send first, and the fallback ladders
+count it (#2319).** The tool loop's send fails outside any ladder (the loop
+raises `ToolCallingUnsupportedError` chained from the provider's failure); it
+hands the deadlines that send spent, per provider configuration (label and
+model), to both fallback ladders. A failed attempt counts toward the deadline
+cap the least of them over the providers that spent a deadline in that attempt;
+a provider that failed it fast with a status error is not one. So a hung
+provider pays `T` in the tool loop and one ladder attempt, never its retry
+again; a different provider configuration (another vendor, or the same vendor on
+another model) keeps its own retry. The rule — what records, what spends a deadline,
+how an attempt counts it — is stated once in `.claude/rules/llm-providers.md`
+§"The retry ladder is budgeted against the turn deadline". The retry a grant
+makes is recorded on the `ErrorResult` (`deadline_retry`), and `with_retry`
+counts from it.
 
 Measured on a virtual clock (`asyncio` timers at nominal cost) against a
 provider that never answers, through the real `_generate_structured_output_inner`
-and the router's breaker, before → after:
+and the router's breaker, before → after (#1294 for the ladder-only row, #2319
+for the with-tools row):
 
 | Turn | T = 30 s, A = 120 s | T = 30 s, A = 240 s | T = 120 s, A = 240 s |
 |---|---|---|---|
 | Ladder only | 96 → 62 s | 104 → 62 s | 120 → 120 s (`TURN_BUDGET_EXHAUSTED`) |
-| With tools | 92 → 92 s | 96 → 92 s | 235.5 → 235.5 s (`TURN_BUDGET_EXHAUSTED`) |
+| With tools | 92 → 60 s | 92 → 60 s | 235.5 → 235.5 s (`TURN_BUDGET_EXHAUSTED` → `RETRY_EXHAUSTED`) |
 
 **Breaker consequence.** The router's breaker opens on the third consecutive
 failure. At the shipped timeouts (T = 30 s, A = 120 s), a hung provider (every
@@ -389,8 +396,9 @@ whenever the full ladder fit; both answer 503 with `Retry-After: 30`, with
 different messages. The next turn pays one `T`, opens the breaker, and its
 retry is refused at once; the turn after is refused without an attempt. Over
 three turns: 62 + 32 + 0 s where it was 96 + 0 + 0 s. A turn with tools reaches
-three failures in its first turn (the tool loop's attempt, then the ladder's
-two) and opens it there: 92 + 0 + 0 s. Where the turn affords fewer attempts
+two failures in its first turn (the tool loop's send, then the ladder's one
+attempt), and the next turn's tool send opens it: 60 + 30 + 0 s where it was
+92 + 0 + 0 s, a gain in per-turn latency, not in total cost. Where the turn affords fewer attempts
 (T = 120 s, A = 240 s), each turn pays fewer and the breaker opens a turn or two
 later. A provider that fails fast (a refused connection) is status-shaped, and
 opens it inside its first ladder. The breaker threshold is #1513's question.
