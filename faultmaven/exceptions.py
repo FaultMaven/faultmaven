@@ -1,7 +1,7 @@
 """Custom exceptions for FaultMaven application."""
 
 from enum import Enum
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Mapping, Optional
 
 
 def walk_cause_chain(exc: BaseException) -> Iterator[BaseException]:
@@ -957,6 +957,9 @@ class ToolCallingUnsupportedError(LLMException):
     This signals to the orchestration layer that tool calling failed due to
     model incompatibility (not a transient error), and it should fall back
     to a non-tool generation path.
+
+    ``deadlines_spent`` is what the tool loop's failing send spent, as
+    deadlines per provider label; the fallback ladders count it (#2319).
     """
 
     def __init__(
@@ -964,9 +967,12 @@ class ToolCallingUnsupportedError(LLMException):
         message: str = "Model does not support tool calling",
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        *,
+        deadlines_spent: Optional[Mapping[str, int]] = None,
     ):
         self.provider = provider
         self.model = model
+        self.deadlines_spent: Dict[str, int] = dict(deadlines_spent or {})
         super().__init__(
             message,
             retryable=False,

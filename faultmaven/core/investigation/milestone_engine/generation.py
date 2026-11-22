@@ -5,7 +5,8 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Optional
 
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -16,6 +17,7 @@ from faultmaven.core.investigation.llm_error_handler import (
     OutputTruncationError,
     ProviderRefusalError,
     classify_token_limit_reason,
+    deadlines_spent_into,
     is_output_truncation_error,
     is_truncated_json_error,
 )
@@ -816,6 +818,9 @@ class StructuredOutputGenerator:
         # calls, which would immediately reset force_schema_next).
         ceiling_reached = False
         prose_nudged = False  # keep_tools spent (#1755); reset on a tool call
+        # The deadlines the last send spent, by provider label, while it is the
+        # send that failed: emptied when a send starts and when one answers.
+        failed_send: dict[str, int] = {}
 
         for iteration in range(self.MAX_TOOL_ITERATIONS + 1):
             is_final = iteration == self.MAX_TOOL_ITERATIONS
@@ -944,12 +949,16 @@ class StructuredOutputGenerator:
                     # Which kb_qa results this request carries: one an elided
                     # exchange held is not in front of the reply.
                     kb_citations.sent(_tool_call_ids(call_kwargs["messages"]))
-                if direct_provider:
-                    # A concrete provider: the dispatch checks the call and
-                    # hands its ``_generate`` plain values (#1998).
-                    result = await send_to_model(provider, **call_kwargs)
-                else:
-                    result = await route_model_call(provider, **call_kwargs)
+                failed_send.clear()
+                # Bound around the send only, never the tools (#2319).
+                with deadlines_spent_into(failed_send):
+                    if direct_provider:
+                        # A concrete provider: the dispatch checks the call and
+                        # hands its ``_generate`` plain values (#1998).
+                        result = await send_to_model(provider, **call_kwargs)
+                    else:
+                        result = await route_model_call(provider, **call_kwargs)
+                failed_send.clear()
                 record_investigation_call(
                     result,
                     path="tool_loop",
@@ -1041,6 +1050,7 @@ class StructuredOutputGenerator:
                     ),
                     provider=provider_name,
                     model=self.deps.da_model,
+                    deadlines_spent=failed_send,
                 ) from e
 
             # A refusal (#1770), before any tool runs: a CONTENT_FILTER reply
@@ -1941,6 +1951,9 @@ class StructuredOutputGenerator:
         # 1. Pre-check: skip known-incompatible providers (avoids wasted API call)
         # 2. Runtime fallback: if tool calling fails on first attempt, catch
         #    ToolCallingUnsupportedError and fall through to non-tool path
+        # The deadlines the tool loop's failing send spent, handed to both
+        # fallback ladders below (#2319); empty on every other path.
+        tool_loop_deadlines: Mapping[str, int] = MappingProxyType({})
         if investigation_tools and tool_context:
             from faultmaven.exceptions import ToolCallingUnsupportedError
 
@@ -1985,11 +1998,10 @@ class StructuredOutputGenerator:
                         "Falling back to non-tool structured output path.",
                         exception_log_name(e),
                     )
-                    # The fallback ladder below starts fresh: a hung provider's
-                    # tool-loop attempt is paid here, outside it, and the
-                    # ladder then makes up to two deadline-shaped attempts of
-                    # its own, as the turn budget allows.
-                    # Telling the ladder about that attempt is #2319.
+                    # The tool loop's send was paid outside any ladder: the
+                    # fallback ladders count the deadlines it spent, per
+                    # provider (``with_retry``'s ``prior_deadlines``, #2319).
+                    tool_loop_deadlines = MappingProxyType(dict(e.deadlines_spent))
                     # The prompt names the tools the turn gave and may have
                     # elided historical evidence on the assumption search_file
                     # would run (directed-analysis index+stub). On the non-tool
@@ -2445,7 +2457,7 @@ class StructuredOutputGenerator:
 
         # Execute with retry and error handling
         result, error_result = await self.deps.llm_error_handler.with_retry(
-            operation=llm_operation
+            operation=llm_operation, prior_deadlines=tool_loop_deadlines
         )
 
         if result is not None:
@@ -2473,7 +2485,7 @@ class StructuredOutputGenerator:
                 )
                 starve.lowered = True
                 result, error_result = await self.deps.llm_error_handler.with_retry(
-                    operation=llm_operation
+                    operation=llm_operation, prior_deadlines=tool_loop_deadlines
                 )
                 if result is not None:
                     inference_starved_total.labels(outcome="recovered").inc()

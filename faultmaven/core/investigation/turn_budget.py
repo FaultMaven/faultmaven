@@ -60,12 +60,44 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Iterator, Optional, Sequence
+from typing import Dict, Iterator, List, Optional, Sequence
 
 # The monotonic instant by which the current turn must be finished, or None when
 # no turn-wide ceiling is in force. Monotonic (not wall clock) because the value
 # is only ever used as a duration difference and must not move under an NTP step.
 _turn_deadline: ContextVar[Optional[float]] = ContextVar("turn_deadline", default=None)
+
+# The failures of the judged model call in progress, by provider label, or None
+# outside one (#2319). One dict per binding: a send in the router's ``wait_for``
+# child task runs on a copy of this context, and appends to the same dict.
+_model_failures: ContextVar[Optional[Dict[str, List[BaseException]]]] = ContextVar(
+    "model_failures", default=None
+)
+
+
+@contextmanager
+def collect_model_failures(into: Dict[str, List[BaseException]]) -> Iterator[None]:
+    """Collect into ``into`` every model send that fails in the enclosed block.
+
+    Bound around a judged model call only — the tool loop's send and each
+    ``with_retry`` attempt — never turn-wide: a send outside every binding (the
+    triage, intent resolution, a tool's answerer) is recorded nowhere.
+    """
+    token = _model_failures.set(into)
+    try:
+        yield
+    finally:
+        _model_failures.reset(token)
+
+
+def record_model_failure(label: str, exc: BaseException) -> None:
+    """Record that the provider labelled ``label`` failed one send with ``exc``.
+
+    Called by the model dispatch only; inert outside a binding.
+    """
+    failures = _model_failures.get()
+    if failures is not None:
+        failures.setdefault(label, []).append(exc)
 
 
 # Headroom deliberately left unspent at the end of the turn budget.
