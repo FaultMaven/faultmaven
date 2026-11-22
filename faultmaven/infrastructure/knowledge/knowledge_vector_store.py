@@ -1844,7 +1844,6 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
     async def get_generation_chunks(
         self, parent_document_id: str, generation: str
     ) -> List[Tuple[int, str, List[float]]]:
-        """See :meth:`IKnowledgeVectorStore.get_generation_chunks`."""
         where = {"parent_document_id": parent_document_id}
         where = {"$and": [where, {"vector_generation": generation}]}
 
@@ -1855,7 +1854,9 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             rows = zip(got["metadatas"], got["documents"], got.get("embeddings", []))
             return sorted((md.get("chunk_index"), t, list(v)) for md, t, v in rows)
 
-        return await self.call_external("get_generation_chunks", _get, timeout=10.0)
+        return await self.call_external(
+            "get_generation_chunks", _get, timeout=10.0, retries=1
+        )
 
     async def list_all_chunk_ids_by_parent(
         self,

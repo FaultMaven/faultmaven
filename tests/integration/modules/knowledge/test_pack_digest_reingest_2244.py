@@ -50,6 +50,7 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 )
 from faultmaven.utils.serialization import decode_json_blob
 from tests.integration.modules.knowledge.test_row_checked_retrieval_2397 import (
+    OWNER,
     REAL_VECTORS,
     _fixed_query_embedding,  # noqa: F401 - autouse: every query embeds to Q
     factory,  # noqa: F401 - the FK-on SQLite world
@@ -261,26 +262,34 @@ async def test_a_chunks_only_change_keeps_a_content_edit(
     assert (row.content, row.vector_generation) == (edited, generation)
 
 
+TITLE, TAGS = {"title": "Operator title"}, {"tags": ["edited"]}
+
+
 @pytest.mark.parametrize(
-    "edit",
+    ("edit", "legacy"),
     [
-        {"title": "Operator title"},
-        {"tags": ["edited"]},
-        {"document_type": "troubleshooting_guide"},
-        {"version": "2"},
+        pytest.param(TITLE, False, id="title"),
+        pytest.param(TAGS, False, id="tags"),
+        pytest.param({"document_type": "troubleshooting_guide"}, False, id="item_type"),
+        pytest.param({"version": "2"}, False, id="metadata_version"),
+        pytest.param(TITLE, True, id="title-legacy"),
+        pytest.param(TAGS, True, id="tags-legacy"),
     ],
-    ids=["title", "tags", "item_type", "metadata_version"],
 )
 async def test_an_edit_survives_a_chunks_only_change(
-    factory, tmp_path, edit  # noqa: F811
+    factory, tmp_path, edit, legacy  # noqa: F811
 ):
     """A1, and review item 4: an edit writes no new generation, so the content
     hash alone read it as unedited. Pin (title, tags). Mutation:
     ``fields_digest`` over the content alone. ``item_type`` and a metadata key
-    fail on e8cfe73e: the re-ingest wrote RUNBOOK back and dropped the key."""
+    fail on e8cfe73e: the re-ingest wrote RUNBOOK back and dropped the key.
+    ``*-legacy`` (a row stamped before the digest, so judged by
+    ``updated_at`` and content) fails on b1893598: the edit was replaced."""
     world = _world(factory, tmp_path)
     await _ingest(world, _pack("v0"))
     await world.service.update_document_metadata(DOC, principal="user-1", **edit)
+    if legacy:
+        await _restamp(world, {PACK_CONTENT_HASH_KEY: MD_HASH})
     before = await _row(world)
     generation = (await _row(world)).vector_generation
 
@@ -686,3 +695,85 @@ async def test_kb_seed_under_its_real_role_needs_no_update(tmp_path, caplog):
         async with admin.connect() as conn:
             await conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
         await admin.dispose()
+
+
+# --- delta review fixes (#2981, b1893598) ----------------------------------------
+
+
+async def test_a_missed_replacement_deletes_its_vectors_outside_its_transaction(
+    factory, tmp_path  # noqa: F811
+):
+    """Delta item 3: the miss rolls back before the Chroma delete, so another
+    connection can write meanwhile. Mutation: drop the ``rollback`` in
+    ``_insert_pack_row``: the probe finds the database locked."""
+    world = _world(factory, tmp_path)
+    probe = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'kb.db'}", connect_args={"timeout": 0.5}
+    )
+    real = KnowledgeService._delete_replaced_generation
+    wrote: List[bool] = []
+
+    async def probe_first(self, item_id, generation):
+        try:
+            async with probe.begin() as conn:
+                await conn.execute(text("UPDATE knowledge_items SET view_count = 0"))
+            wrote.append(True)
+        except Exception:
+            wrote.append(False)
+        return await real(self, item_id, generation)
+
+    try:
+        with patch.object(KnowledgeService, "_delete_replaced_generation", probe_first):
+            await _an_unpublish_after_the_read(world)
+    finally:
+        await probe.dispose()
+    assert wrote == [True]
+
+
+async def test_a_null_owner_on_a_personal_entry_is_not_an_edit(
+    factory, tmp_path  # noqa: F811
+):
+    """Delta item 3: deleting the owner sets ``owner_id`` NULL (ON DELETE SET
+    NULL); that is not an operator's edit. Mutation: ``fields_digest`` without
+    the ``owner_id`` stand-in: the chunks-only change is skipped."""
+    world = _world(factory, tmp_path)
+
+    def personal(marker, vector):
+        runbook = _pack(marker, vector)
+        runbook.scope, runbook.owner_id = "personal", OWNER
+        return runbook
+
+    await _ingest(world, personal("v0", REAL_VECTORS[0]))
+    async with world.factory() as session:
+        await session.execute(
+            update(KnowledgeItemModel)
+            .where(KnowledgeItemModel.item_id == DOC)
+            .values(owner_id=None, updated_at=KnowledgeItemModel.updated_at)
+        )
+        await session.commit()
+
+    assert await _ingest(world, personal("vA", REAL_VECTORS[1])) == "ingested"
+    assert (await _row(world)).owner_id == OWNER
+
+
+@pytest.mark.parametrize("cause", ["unpublished", "still_as_read"])
+async def test_a_missed_replacement_logs_at_its_level(
+    factory, tmp_path, caplog, cause  # noqa: F811
+):
+    """Delta item 3: a miss the row's state explains (an unpublish) is INFO; a
+    miss on a row still as read repeats every run and is a WARNING. Mutation:
+    log every miss at one level."""
+    world = _world(factory, tmp_path)
+    caplog.set_level(logging.INFO, logger="faultmaven.bootstrap.kb_init")
+    if cause == "unpublished":
+        await _an_unpublish_after_the_read(world)
+        level = logging.INFO
+    else:
+        await _ingest(world, _pack("v0"))
+        with patch.object(
+            DatabaseKnowledgeItemRepository, "delete", return_value=False
+        ):
+            assert await _ingest(world, _pack("vA", REAL_VECTORS[1])) == "skipped"
+        level = logging.WARNING
+    (miss,) = [r for r in caplog.records if "matched no row" in r.getMessage()]
+    assert miss.levelno == level

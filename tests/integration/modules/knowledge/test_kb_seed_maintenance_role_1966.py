@@ -194,9 +194,9 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
             real_stamp = kb_init._stamp_pack_hash
             stamp_calls: list[str] = []
 
-            async def spy_stamp(item_id, metadata, session_factory):
-                stamp_calls.append(item_id)
-                await real_stamp(item_id, metadata, session_factory)
+            async def spy_stamp(row, *args):
+                stamp_calls.append(row.item_id)
+                await real_stamp(row, *args)
 
             try:
                 with (

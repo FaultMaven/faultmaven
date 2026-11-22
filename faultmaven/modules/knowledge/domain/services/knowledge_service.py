@@ -1794,8 +1794,9 @@ class KnowledgeService:
 
         The one in-process vector delete a writer makes, and only after the
         commit that switched the row away from ``generation`` is KNOWN to have
-        landed: generations are never reused, so no row serves those chunks
-        again. Never on a failed or in-doubt commit. Best effort: a failure is
+        landed (or this call's own, after a rolled-back miss): generations are
+        never reused, so no row serves those chunks again. Never on a failed
+        or in-doubt commit. Best effort: a failure is
         logged and the chunks are left to the generation sweep; nothing is
         raised into the write.
         """

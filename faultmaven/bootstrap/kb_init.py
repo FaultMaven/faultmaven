@@ -411,9 +411,9 @@ async def _ingest_pack_runbook(
 
     The same markdown under another digest (#2244), or no chunk of the row's
     generation in ``served`` (#2388), re-ingests a published, complete,
-    unedited row, replacing it only while it is as read; the decision table is
-    ``kb-ingestion-architecture.md`` step 2. A peer that replaced the row first
-    wins: this ingest fails, or is skipped when the peer wrote this version.
+    unedited row while it is as read, and any miss is skipped; the decision
+    table is ``kb-ingestion-architecture.md`` step 2. A new version losing to a
+    peer's replacement fails, or is skipped when the peer wrote this version.
 
     A new placement (a scope other than the row's or, with a share
     repository wired, a team share the row lacks) is a change whatever the
@@ -529,7 +529,8 @@ async def _ingest_pack_runbook(
                 or (
                     not stamped.startswith(f"{row_fields}:")
                     if stamped
-                    else _content_hash(existing_row.content) != runbook.content_hash
+                    else existing_row.updated_at != existing_row.created_at
+                    or _content_hash(existing_row.content) != runbook.content_hash
                 )
             )
             may_reingest = not edited and existing_row.is_published
@@ -662,10 +663,7 @@ async def _stored_chunks_match(
             runbook.item_id, generation
         )
         return chunks_digest(stored) == runbook.pack_digest.partition(":")[2]
-    except Exception as exc:
-        logger.debug(
-            f"{runbook.relpath}: its chunks could not be read ({type(exc).__name__})"
-        )
+    except Exception:  # the store logs the failed call
         return False
 
 
@@ -702,8 +700,7 @@ async def _stamp_pack_hash(
     stamps: dict,
     db_session_factory: Callable[[], Awaitable[Any]],
 ) -> None:
-    """Merge ``stamps`` into ``row``'s metadata as read, only while the row is
-    as read (#2244), keeping ``updated_at``. Best effort: a failure is logged."""
+    """Merge ``stamps`` into ``row``'s metadata, only while it is as read (#2244)."""
     from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
         DatabaseKnowledgeItemRepository,
     )
