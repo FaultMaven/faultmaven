@@ -511,7 +511,9 @@ class TestDIContainerErrorHandling:
             # Should still be initialized, with the failure on record
             assert container._initialized
             failed = container._registry.get_info("file_storage_service")
-            assert failed.error == "File storage unavailable"
+            # Named by class, never its text (#2889 S3h).
+            assert failed.error == "Exception"
+            assert "File storage unavailable" not in failed.error
 
             # Other services should work
             assert container.get_agent_service() is not None
