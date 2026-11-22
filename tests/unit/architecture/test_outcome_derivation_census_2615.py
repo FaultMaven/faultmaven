@@ -719,6 +719,13 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "symptom rows where none verified, is read beside it from "
         "case.evidence (#2811 S2b-1b-ii)",
     ),
+    (_ME + "terminal_replies.py", "resolution_confirmation_params"): (
+        {"content_by_id": 1},
+        "binds the narration's text accessor to the case for the resolve "
+        "confirmation, which reads the confirming attempt's description by "
+        "its action id (the attempt picked from the record's attempts) "
+        "(#2811 S2c-1)",
+    ),
     (_ME + "turn_narration.py", "narrate_turn"): (
         {"content_by_id": 1},
         "reads, through the narration's text accessor, the request text of "

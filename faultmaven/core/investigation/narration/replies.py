@@ -3,26 +3,31 @@ rendered from the record (#2811 S2b-2b).
 
 Whether a cause is identified, the resolution's record lines and the
 closure's reason and mitigation line are the record's
-(``cause.identification_leg``, ``resolution.statement``, ``closure``). The
-texts the confirmation names besides are the case's own content, read through
-one typed accessor, ``ResolutionContent`` (rulings of 2026-11-20 and
-2026-11-21): the conclusion's root-cause text, the most recent solution's text
-and whether the case holds evidence or commands. Pin 2 exempts it
-permanently, with its field set asserted; it holds no outcome fact and is not
-a census row. The case-level adapters stay in
+(``cause.identification_leg``, ``resolution.statement``, ``closure``), and so
+are the attempts the closed reply and the confirming solution name
+(``attempts``, #2811 S2c-1). The texts the confirmation names besides are the
+case's own content, read through one typed accessor, ``ResolutionContent``
+(rulings of 2026-11-20 and 2026-11-21): the conclusion's root-cause text, the
+most recent solution's text and whether the case holds evidence or commands.
+Pin 2 exempts it permanently, with its field set asserted; it holds no
+outcome fact and is not a census row. The confirming attempt's description is
+read by its id (``content_by_id``). The case-level adapters stay in
 ``milestone_engine.terminal_replies``.
 """
 
 from dataclasses import dataclass
-from typing import Mapping, Optional
+from typing import Callable, Mapping, Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
+    AttemptOutcome,
     CaseOutcome,
     CaseState,
     ClosureReason,
+    FixWindowState,
     closure_reason_table,
 )
 
+from .fix_verification import Content
 from .offers import mitigation_sentence
 
 #: The root line of a confirmation with no cause-identification leg (#1906
@@ -35,9 +40,10 @@ class ResolutionContent:
     """The case content the resolve confirmation names, never an outcome fact
     (ruling of 2026-11-21, S2b-2b (a)): the root-cause text
     (``_get_root_cause_summary``), the most recent solution's text
-    (``_get_solution_summary``, ``solutions[-1]`` until S2c's confirming
-    solution), and whether the case holds evidence, and commands or
-    implementation steps on a solution."""
+    (``_get_solution_summary``, ``solutions[-1]``; the confirmation names
+    the confirming attempt instead when the record holds one), and whether
+    the case holds evidence, and commands or implementation steps on a
+    solution."""
 
     root_cause: str
     solution: str
@@ -45,14 +51,63 @@ class ResolutionContent:
     has_commands: bool
 
 
-def confirmation_params(outcome: CaseOutcome, content: ResolutionContent) -> dict:
+def confirmation_params(
+    outcome: CaseOutcome,
+    content: ResolutionContent,
+    text: Callable[[str], Optional[Content]],
+) -> dict:
     """The facts the resolve confirmation states (``offers.
     confirmation_message``), from the record: whether a cause is identified
-    (``cause.identification_leg``) and the record lines
-    (``resolution.statement``)."""
-    return confirmation_params_of(
+    (``cause.identification_leg``), the record lines
+    (``resolution.statement``) and, when the record holds a confirming
+    attempt, that attempt as the solution (``confirming_solution``)."""
+    params = confirmation_params_of(
         outcome.cause.identification_leg, outcome.resolution.statement, content
     )
+    solution = confirming_solution(outcome.attempts, text)
+    if solution is not None:
+        params["solution"] = solution
+    return params
+
+
+def confirming_attempt(
+    attempts: Sequence[AttemptOutcome],
+) -> Optional[AttemptOutcome]:
+    """The attempt whose window confirms: the observed window with the
+    greatest ``fix_turn``, SUCCEEDED, and the one attempt at that turn. None
+    with no dated observed window (window 0 has no attempt to name), when
+    that window is not SUCCEEDED, or when several attempts share it."""
+    dated = [
+        a
+        for a in attempts
+        if a.window is not None and a.window.observed and a.window.fix_turn is not None
+    ]
+    if not dated:
+        return None
+    latest = max(a.window.fix_turn for a in dated)
+    at = [a for a in dated if a.window.fix_turn == latest]
+    if len(at) != 1 or at[0].window.state != FixWindowState.SUCCEEDED:
+        return None
+    return at[0]
+
+
+def confirming_solution(
+    attempts: Sequence[AttemptOutcome], text: Callable[[str], Optional[Content]]
+) -> Optional[str]:
+    """The confirming attempt (``confirming_attempt``) as the confirmation
+    names it: its description, read by its id and clipped at 200 characters,
+    and the turn it was carried out when the record holds it. None with no
+    confirming attempt or no description."""
+    attempt = confirming_attempt(attempts)
+    content = text(attempt.action_id) if attempt is not None else None
+    if content is None or not content.text:
+        return None
+    description = content.text
+    if len(description) > 200:
+        description = description[:200] + "..."
+    if attempt.accepted_in_turn is None:
+        return description
+    return f"{description} (carried out turn {attempt.accepted_in_turn})"
 
 
 def confirmation_params_of(
@@ -96,9 +151,11 @@ _CLOSED_REPLIES: Mapping[ClosureReason, str] = closure_reason_table(
             "Case closed — the fix was confirmed to work; you chose not to "
             "mark it resolved."
         ),
+        # The record-free fallback, and the line when a fix carried out was
+        # seen failing: else the record says whether the fix was carried out
+        # (``closed_line``).
         ClosureReason.SOLUTION_DEFERRED: (
-            "Case closed — cause identified and fix documented; implementation "
-            "is deferred out-of-band."
+            "Case closed — cause identified and a fix is on record."
         ),
         ClosureReason.CLOSED_RCA_INFEASIBLE: (
             "Case closed — the root cause is not reachable for this problem."
@@ -127,22 +184,84 @@ _MITIGATION_LINE_FOLLOWS = frozenset(
 )
 
 
+def _turn_clause(attempts: Sequence[AttemptOutcome]) -> str:
+    """ " (turn {t})" for the greatest turn the attempts were accepted in, or
+    nothing when the record holds none."""
+    turns = [a.accepted_in_turn for a in attempts if a.accepted_in_turn is not None]
+    return f" (turn {max(turns)})" if turns else ""
+
+
+def closed_line(
+    reason: ClosureReason,
+    leg: Optional[str],
+    attempts: Sequence[AttemptOutcome],
+) -> str:
+    """The closure reason's line, composed from the record where the reason
+    alone says more than it holds (#2419, #2421). An accepted attempt has an
+    ``action_id``; a carried-out fix is one whose kind is not an
+    interception (an unkinded attempt reads as a remediation). A
+    ``closed_insufficient_evidence`` close with an identification leg and no
+    SUCCEEDED window says the cause was identified and what was carried out;
+    ``solution_deferred`` says whether its fix was carried out, or only its
+    first sentence when a carried-out fix's window FAILED: the record holds
+    accepted attempts alone, so it cannot tell a failed fix from the deferred
+    one. Every other shape is the reason's line (``_CLOSED_REPLIES``)."""
+    accepted = [a for a in attempts if a.action_id is not None]
+    fixes = [a for a in accepted if a.kind != "interception"]
+    if reason == ClosureReason.SOLUTION_DEFERRED:
+        if any(
+            f.window is not None and f.window.state == FixWindowState.FAILED
+            for f in fixes
+        ):
+            return _CLOSED_REPLIES[reason]
+        done = (
+            f"It was carried out{_turn_clause(fixes)}."
+            if fixes
+            else "It was not carried out in the case."
+        )
+        return f"{_CLOSED_REPLIES[reason]} {done}"
+    if (
+        reason == ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE
+        and leg is not None
+        and not any(
+            a.window is not None and a.window.state == FixWindowState.SUCCEEDED
+            for a in attempts
+        )
+    ):
+        if not accepted:
+            done = "No fix was carried out in the case."
+        elif not fixes:
+            done = f"Only a workaround was carried out{_turn_clause(accepted)}."
+        else:
+            done = f"A fix was carried out{_turn_clause(fixes)}; it was not confirmed."
+        return (
+            "Case closed — a root cause was identified; no fix of it was "
+            f"confirmed. {done}"
+        )
+    return _CLOSED_REPLIES[reason]
+
+
 def terminal_status_line(
-    state: CaseState, reason: Optional[ClosureReason], line: Optional[str]
+    state: CaseState,
+    reason: Optional[ClosureReason],
+    line: Optional[str],
+    *,
+    leg: Optional[str],
+    attempts: Sequence[AttemptOutcome],
 ) -> str:
     """The status line after a transition is confirmed: "Case resolved.", or
-    the closure reason's line (``_CLOSED_REPLIES``; a CLOSED case always
-    carries a reason). What it says about a mitigation is the record's
-    ``line`` (``closure.statement``, #2100): it replaces the
-    ``mitigation_sufficient`` line and follows the reasons in
-    ``_MITIGATION_LINE_FOLLOWS``."""
+    the closure reason's line (``closed_line``, from the record's
+    identification leg and attempts; a CLOSED case always carries a reason).
+    What it says about a mitigation is the record's ``line``
+    (``closure.statement``, #2100): it replaces the ``mitigation_sufficient``
+    line and follows the reasons in ``_MITIGATION_LINE_FOLLOWS``."""
     if state == CaseState.RESOLVED:
         return "Case resolved."
     if line is None or not (
         reason == ClosureReason.MITIGATION_SUFFICIENT
         or reason in _MITIGATION_LINE_FOLLOWS
     ):
-        return _CLOSED_REPLIES[reason]
+        return closed_line(reason, leg, attempts)
     if reason == ClosureReason.MITIGATION_SUFFICIENT:
         return f"Case closed — {line}; root-cause analysis was deferred."
-    return f"{_CLOSED_REPLIES[reason]} {mitigation_sentence(line)}"
+    return f"{closed_line(reason, leg, attempts)} {mitigation_sentence(line)}"

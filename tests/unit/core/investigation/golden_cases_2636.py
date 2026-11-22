@@ -66,6 +66,17 @@ way, keeping every other entry as stored::
 
     cd <scratch> && python -c "from tests.unit.core.investigation import \\
         golden_cases_2636 as g; g.capture_main_b1d()"
+
+#2811 S2c-1 (PR #3000) re-rendered three entries, by hand, because both
+captures refuse any tree but their pinned commit. Two are B1c entries,
+``cycle:unbound_with_no_pool`` and ``cycle:unbound_after_a_mitigation``,
+rendered as ``capture_main`` does: ``cycle_text(narrated(*B1C_SCENARIOS[name]()))``.
+The third is a B1d entry, ``cycle:offer:model_confirmation_no_cause``,
+rendered as ``capture_main_b1d`` does: ``B1D_SCENARIOS[name]()``. Each was
+rendered on ``main`` at ``3974f5736``, where it equalled the stored entry, and
+on the S2c-1 branch at ``faaf2ac39``, whose render is stored. The empty-pool
+line now states ``pool_empty_reason``, and the confirmation names the
+confirming attempt. No other entry's render differed.
 """
 
 import asyncio

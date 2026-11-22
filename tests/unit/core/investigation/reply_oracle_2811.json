@@ -77,36 +77,36 @@
   }
  },
  "C:leg_none": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
    "no_commands": true,
    "no_evidence": false,
    "record_lines": "- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
    "root": "no root cause on record",
-   "solution": "Correct the OIDC provider client ID"
+   "solution": "Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)"
   }
  },
  "C:leg_rcc": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is 20\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is 20\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": "rcc",
    "no_commands": true,
    "no_evidence": false,
    "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
    "root": "max_connections is 20",
-   "solution": "Correct the OIDC provider client ID"
+   "solution": "Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)"
   }
  },
  "C:leg_working_conclusion": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: the checkout pool is capped at 20 connections\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: the checkout pool is capped at 20 connections\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": "working_conclusion",
    "no_commands": true,
    "no_evidence": false,
    "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
    "root": "the checkout pool is capped at 20 connections",
-   "solution": "Correct the OIDC provider client ID"
+   "solution": "Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)"
   }
  },
  "C:long_root": {
@@ -637,8 +637,8 @@
   "terminal": "Case resolved."
  },
  "T:solution_deferred:bare:copied": {
-  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.\n\n## Closure summary\n\nThe pool was resized.",
-  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.",
+  "composed": "Case closed — cause identified and a fix is on record. It was not carried out in the case.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and a fix is on record. It was not carried out in the case.",
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
@@ -648,11 +648,11 @@
    "root": "no root cause on record",
    "solution": "Not yet documented"
   },
-  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band."
+  "terminal": "Case closed — cause identified and a fix is on record. It was not carried out in the case."
  },
  "T:solution_deferred:bare:written": {
-  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.\n\n## Closure summary\n\nThe pool was resized.",
-  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band.",
+  "composed": "Case closed — cause identified and a fix is on record. It was not carried out in the case.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and a fix is on record. It was not carried out in the case.",
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
@@ -662,11 +662,11 @@
    "root": "no root cause on record",
    "solution": "Not yet documented"
   },
-  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band."
+  "terminal": "Case closed — cause identified and a fix is on record. It was not carried out in the case."
  },
  "T:solution_deferred:line:copied": {
-  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
-  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).",
+  "composed": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7).",
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
@@ -676,11 +676,11 @@
    "root": "no root cause on record",
    "solution": "Not yet documented"
   },
-  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7)."
+  "terminal": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7)."
  },
  "T:solution_deferred:line:written": {
-  "composed": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
-  "composed_bare": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7).",
+  "composed": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7).\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7).",
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
@@ -690,7 +690,7 @@
    "root": "no root cause on record",
    "solution": "Not yet documented"
   },
-  "terminal": "Case closed — cause identified and fix documented; implementation is deferred out-of-band. The problem was observed relieved after the mitigation (turn 7)."
+  "terminal": "Case closed — cause identified and a fix is on record. It was not carried out in the case. The problem was observed relieved after the mitigation (turn 7)."
  },
  "gate_one": {
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- diagnostic evidence (logs, metrics, error messages)\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
@@ -704,25 +704,25 @@
   }
  },
  "held_check": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": "rcc",
    "no_commands": true,
    "no_evidence": false,
    "record_lines": "- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
    "root": "The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.",
-   "solution": "Correct the OIDC provider client ID"
+   "solution": "Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)"
   }
  },
  "held_check_on_a_false_alarm": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
    "no_commands": true,
    "no_evidence": false,
    "record_lines": "- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)",
    "root": "no root cause on record",
-   "solution": "Correct the OIDC provider client ID"
+   "solution": "Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)"
   }
  },
  "held_check_then_interception": {
@@ -770,8 +770,8 @@
   }
  },
  "terminal_qa": {
-  "composed": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.\n\n## Closure summary\n\nThe pool was resized.",
-  "composed_bare": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary.",
+  "composed": "Case closed — a root cause was identified; no fix of it was confirmed. No fix was carried out in the case.\n\n## Closure summary\n\nThe pool was resized.",
+  "composed_bare": "Case closed — a root cause was identified; no fix of it was confirmed. No fix was carried out in the case.",
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": "chain",
@@ -781,7 +781,7 @@
    "root": "max_connections is set to 20, below the checkout pool size",
    "solution": "Not yet documented"
   },
-  "terminal": "Case closed — insufficient evidence to ground a cause. Residual candidates and the missing data are preserved in the closure summary."
+  "terminal": "Case closed — a root cause was identified; no fix of it was confirmed. No fix was carried out in the case."
  },
  "told_then_committed": {
   "confirmation": "Here's what I have on record:\n\n- **Root cause**: max_connections is set to 20, below the checkout pool size\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",

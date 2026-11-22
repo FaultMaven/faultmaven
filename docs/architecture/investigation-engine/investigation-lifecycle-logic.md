@@ -1604,7 +1604,7 @@ return f"""You've indicated this issue is resolved.
 
 Here's what I have on record:
 - **Root cause**: {case.root_cause_conclusion.root_cause}
-- **Solution**: {case.solutions[-1].title}
+- **Solution**: {the confirming attempt's description} (carried out turn {t}), else {case.solutions[-1].title}
 
 Is this correct? Once you confirm, I'll mark the case as resolved.
 

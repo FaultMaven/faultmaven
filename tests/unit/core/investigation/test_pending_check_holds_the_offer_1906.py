@@ -873,10 +873,16 @@ async def test_9_the_reason_names_the_failed_fix_and_the_newer_one():
     assert "a new fix after the one that did not hold" not in missing
 
 
-async def test_9_with_no_newer_fix_the_reason_is_unchanged():
+async def test_9_with_no_newer_fix_the_reason_names_both_turns():
+    """The failed fix and its failure turn, as the record holds them
+    (#2583), with no newer fix to re-check."""
     case, cause = await _relapsed(second_fix=False)
     assert recheck_texts(case) == [
-        (cause, "the latest fix was seen failing; only a new fix can confirm")
+        (
+            cause,
+            "the fix executed at turn 3 was seen failing at turn 5; only a new "
+            "fix can confirm",
+        )
     ]
     assert assess_resolution_readiness(case).missing[0] == (
         "a new fix after the one that did not hold"
