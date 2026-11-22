@@ -1572,13 +1572,20 @@ class UserDTO:
 **Protected Endpoints:**
 
 ```python
-from faultmaven.api.dependencies import require_authentication
+from fastapi import Depends, File, Form, HTTPException, UploadFile
+
+from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.api.platform_tier import (
+    require_global_authoring_allowed,
+)
+from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
 @router.post("/knowledge/documents")
 async def upload_document(
-    file: UploadFile,
-    scope: KnowledgeScope = Form(...),
-    current_user: User = Depends(require_authentication)  # Any user
+    file: UploadFile = File(...),
+    scope: KnowledgeScope = Form(KnowledgeScope.PERSONAL),
+    current_user: DevUser = Depends(require_authentication),  # Any user
 ):
     """Upload a document; the global scope is gated, not the route."""
     if scope == KnowledgeScope.GLOBAL:
