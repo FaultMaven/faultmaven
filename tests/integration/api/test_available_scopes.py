@@ -7,8 +7,10 @@ the drift this endpoint exists to prevent.
 
 - ``team`` only when the deployment is team-enabled (``team_service`` wired)
   AND the caller belongs to a Team.
-- ``global`` only for a ``platform_admin``, since every global publish route
-  requires that role.
+- ``global`` only when ``is_global_authoring_allowed`` holds for the caller:
+  a ``platform_admin`` under a single tenant, nobody under
+  ``TENANT_PROVIDER=multi`` (global content is seeded by ``kb_seed`` there).
+  Every test sets the tenant provider explicitly.
 """
 
 from unittest.mock import AsyncMock
@@ -20,6 +22,19 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.modules.auth.api.auth import router as auth_router
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.knowledge.domain import global_authoring
+from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
+
+
+def _patch_provider(monkeypatch, value):
+    monkeypatch.setattr(global_authoring, "requested_tenant_provider", lambda: value)
+
+
+@pytest.fixture(autouse=True)
+def single_tenant(monkeypatch):
+    """Single tenant unless a test says otherwise, whatever the environment's
+    ``TENANT_PROVIDER``."""
+    _patch_provider(monkeypatch, BUILTIN_SINGLE)
 
 
 @pytest.fixture
@@ -89,18 +104,25 @@ class TestAvailableScopes:
 class TestGlobalScopeIsOperatorOnly:
     """`global` is the platform tier (ADR-012 D9).
 
-    Every route that publishes there requires `platform_admin` — unconditionally
-    for `POST /knowledge/documents`, and for `scope == "global"` on the
-    conversion routes. Reporting it to anyone else makes the UI offer a target
-    the backend refuses.
+    It is offered only where the caller may author it: to a `platform_admin`
+    under a single tenant, and to nobody under multi-tenant, where every global
+    publish is refused 403. Offering it anywhere else makes the UI offer a
+    target the backend refuses.
     """
 
-    async def test_not_offered_to_a_non_operator(self, mock_user):
+    @pytest.mark.parametrize("provider", [BUILTIN_SINGLE, BUILTIN_MULTI])
+    async def test_not_offered_to_a_non_operator(
+        self, monkeypatch, mock_user, provider
+    ):
+        _patch_provider(monkeypatch, provider)
         response = await _get_scopes(mock_user, team_service=None)
+        assert response.status_code == status.HTTP_200_OK
         assert "global" not in response.json()["scopes"]
 
-    async def test_not_offered_to_an_org_admin(self):
+    @pytest.mark.parametrize("provider", [BUILTIN_SINGLE, BUILTIN_MULTI])
+    async def test_not_offered_to_an_org_admin(self, monkeypatch, provider):
         """The org-scoped `admin` role is tenant-bounded; global is not."""
+        _patch_provider(monkeypatch, provider)
         org_admin = AuthenticatedUser(
             user_id="org_admin_1",
             enterprise_id="org_1",
@@ -109,12 +131,25 @@ class TestGlobalScopeIsOperatorOnly:
             permissions=[],
         )
         response = await _get_scopes(org_admin, team_service=None)
+        assert response.status_code == status.HTTP_200_OK
         assert "global" not in response.json()["scopes"]
 
     async def test_offered_to_a_platform_admin(self, operator_user):
         response = await _get_scopes(operator_user, team_service=None)
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["scopes"] == ["personal", "global"]
+
+    async def test_not_offered_to_a_platform_admin_under_multi_tenant(
+        self, monkeypatch, operator_user
+    ):
+        """#2335: under multi every global publish answers 403, whatever the
+        role, so a platform admin is not offered `global` either."""
+        _patch_provider(monkeypatch, BUILTIN_MULTI)
+        response = await _get_scopes(operator_user, team_service=None)
+        assert response.status_code == status.HTTP_200_OK
+        scopes = response.json()["scopes"]
+        assert "personal" in scopes
+        assert "global" not in scopes
 
     async def test_ordering_stays_narrowest_to_widest(self, operator_user):
         """An operator who is also on a team gets all three, in order."""

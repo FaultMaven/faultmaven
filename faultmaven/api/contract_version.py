@@ -151,6 +151,24 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.9.0",
+        level="MINOR",
+        title=(
+            "`GET /api/v1/auth/me/available-scopes` no longer lists `global` "
+            "under `TENANT_PROVIDER=multi`, where every global publish was "
+            "refused 403 (#2335). No schema moves."
+        ),
+        body=r"""`global` is listed exactly when the caller may author global content:
+under a single tenant, a platform admin; under multi-tenant, nobody (global
+content is seeded by the audited `kb_seed` path). A multi-tenant platform
+admin used to get `["personal", "global"]` and now gets `["personal"]`, or
+`["personal", "team"]` with a Team; every other answer is unchanged.
+
+MINOR because the list keeps its type and a client survives a shorter one:
+the dashboard renders the list as given, so it stops offering a target the
+server always refused.""",
+    ),
+    ContractChange(
         version="15.8.0",
         level="MINOR",
         title=(

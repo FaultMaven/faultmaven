@@ -1010,11 +1010,9 @@ def test_capabilities_multi_tenant_is_true_exactly_when_the_write_policy_refuses
     reason cannot satisfy the check."""
     from faultmaven.config.settings import TenantProvider
     from faultmaven.exceptions import AuthorizationError
+    from faultmaven.modules.knowledge.contracts import is_global_authoring_allowed
     from faultmaven.modules.knowledge.domain.document_write import (
         ensure_document_write_allowed,
-    )
-    from faultmaven.modules.knowledge.domain.global_authoring import (
-        is_global_authoring_allowed,
     )
 
     def operator_refused(scope: str, owner_id) -> bool:

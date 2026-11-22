@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.8.0
+**Version:** 15.9.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1012,14 +1012,13 @@ Return the scopes the calling user can target for team collaboration.
 standalone) AND the caller actually belongs to at least one Team, since a
 user with no Team has nothing to target.
 
-``global`` is the platform tier, so it is reported only to a
-``platform_admin``: every route that publishes at global scope requires
-that role — upload, convert and manual authoring alike, each for
-``scope == "global"`` (#1377 removed upload's route-level operator gate,
-which had made uploading a privilege rather than the tier it guarded). Reporting it to everyone made the
-dashboard offer a target the backend then refused, which is the drift this
-endpoint exists to prevent — its whole point is to reflect the caller's
-real capability rather than a hardcoded assumption.
+``global`` is the platform tier, so it is reported only when the caller
+may author global content: under a single tenant, a ``platform_admin``;
+under ``TENANT_PROVIDER=multi``, nobody, because global content is seeded
+by the audited ``kb_seed`` path (#2335). The answer comes from
+``is_global_authoring_allowed``; the publish routes (upload, convert,
+manual authoring) refuse the rest. Offering a target the backend then
+refuses is the drift this endpoint exists to prevent.
 
 Scopes are returned narrowest-to-widest: ``personal | team | global``.
 

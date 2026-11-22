@@ -22,12 +22,12 @@ import pytest
 
 from faultmaven.exceptions import AuthorizationError, NotFoundError
 from faultmaven.modules.auth.contracts import DevUser
+from faultmaven.modules.knowledge.contracts import is_global_authoring_allowed
 from faultmaven.modules.knowledge.domain import global_authoring
 from faultmaven.modules.knowledge.domain.global_authoring import (
     GLOBAL_AUTHORING_ADMIN_MSG,
     GLOBAL_AUTHORING_MULTI_MSG,
     ensure_global_authoring_allowed,
-    is_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,

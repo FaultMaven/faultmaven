@@ -28,9 +28,9 @@ where the actor is known.
 from typing import Optional
 
 from faultmaven.exceptions import AuthorizationError
+from faultmaven.modules.knowledge.contracts import is_global_authoring_allowed
 from faultmaven.modules.knowledge.domain.global_authoring import (
     ensure_global_authoring_allowed,
-    is_global_authoring_allowed,
 )
 
 DOCUMENT_WRITE_FORBIDDEN_MSG = (
