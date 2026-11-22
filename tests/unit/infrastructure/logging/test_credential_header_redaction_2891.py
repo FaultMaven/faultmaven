@@ -10,9 +10,11 @@ renderer. ``www-authenticate``, a scopes list and a flat list are not.
 import dataclasses
 import json
 import pprint
+import re
 
 import pytest
 
+from faultmaven.infrastructure.logging import url_redaction
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.url_redaction import (
     redact_log_line,
@@ -122,9 +124,12 @@ class TestEveryRenderedLine:
         assert len(lines) == 2
         assert all("<redacted>" in line and SECRET not in line for line in lines)
 
-    def test_a_pprint_wrapped_list_of_pairs_is_blanked(self, rendered):
+    @pytest.mark.parametrize("nested", [False, True], ids=["list", "under-a-key"])
+    def test_a_pprint_wrapped_list_of_pairs_is_blanked(self, rendered, nested):
+        """Under a dict key pprint indents the next pair to its bracket's
+        column, past any fixed gap."""
         pairs = [["host", "example.com"], ["authorization", "Bearer VALUE"]]
-        headers = pprint.pformat(pairs, width=40)
+        headers = pprint.pformat({"headers": pairs} if nested else pairs, width=40)
         assert "\n" in headers, "pprint did not wrap the list"
         get_logger("faultmaven.p").error("call failed", headers=headers)
         output = rendered.buffer.getvalue()
@@ -197,7 +202,28 @@ class TestJsonLines:
         assert redact_log_line(line) == line
 
 
+# A list of pairs, then "," + 8 blanks + an escaped CRLF + 64 blanks + "[" +
+# 8 blanks + "b", two backslashes and a quote, and a 65-character segment.
+_LONGEST = (
+    "[['a', 'x'],"
+    + " " * 8
+    + "\\r\\n"
+    + " " * 64
+    + "["
+    + " " * 8
+    + "b\\\\'"
+    + "h" * 64
+    + "_"
+)
+
+
 class TestTheTextRule:
+    def test_the_search_back_covers_the_longest_opener(self):
+        pattern = url_redaction._PAIR_OPEN
+        widest = re._parser.parse(pattern.pattern, pattern.flags).getwidth()[1]
+        assert url_redaction._PAIR_OPEN_WIDTH >= widest
+        assert len(_LONGEST) - len("[['a', 'x']") == widest
+
     @pytest.mark.parametrize(
         "line, expected",
         [
@@ -213,6 +239,20 @@ class TestTheTextRule:
             ),
             # A list of pairs, as a repr writes decoded JSON headers.
             ("[['a', 'x'], ['cookie', 'VALUE']]", "[['a', 'x'], ['cookie', <redacted>"),
+            # Wrapped at a CRLF, raw and escaped.
+            (
+                "[['a', 'x'],\r\n ['cookie', 'VALUE']]",
+                "[['a', 'x'],\r\n ['cookie', <redacted>",
+            ),
+            (
+                "[['a', 'x'],\\r\\n ['cookie', 'VALUE']]",
+                "[['a', 'x'],\\r\\n ['cookie', <redacted>",
+            ),
+            # The longest opener: every bounded run at its bound.
+            (
+                _LONGEST + "cookie\\\\', b\\\\'VALUE\\\\']]",
+                _LONGEST + "cookie\\\\', <redacted>",
+            ),
             # Prose naming a header with a separator loses the rest of its
             # line: the safe side, as with "authorization:".
             ("Invalid api-key: VALUE", "Invalid api-key: <redacted>"),

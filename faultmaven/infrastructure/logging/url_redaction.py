@@ -169,16 +169,22 @@ _HEAD_NAME = (
 _HEAD = re.compile(_HEAD_NAME + r"(?:[ \t]*+[:=]|\t)", re.IGNORECASE)
 _HEAD_TUPLE = re.compile(_HEAD_NAME + r"(?<=['\"])[ \t]*+,", re.IGNORECASE)
 # A pair's first item or a record's value opens before the name: "(", "(b",
-# a list inside a list ("[[", or ", [" across a line break: pprint), ":" or
-# "=" (``Header(name='Authorization', ``), a quote (escaped in a repr of a
-# repr), and a "_" or "." segment (``('http_cookie', ``, ``{'name':
-# 'Set-Cookie', ``). A flat list's ``['authorization', 'cases:read']`` is not
-# one: the table excludes flat pairs and lists, which a scopes list cannot be
-# told from. At most 95 characters, so the search back is bounded.
+# a list inside a list ("[[", or ", [" across one line break and pprint's
+# indent), ":" or "=" (``Header(name='Authorization', ``), a quote (escaped
+# in a repr of a repr), and a "_" or "." segment (``('http_cookie', ``,
+# ``{'name': 'Set-Cookie', ``). A flat list's ``['authorization',
+# 'cases:read']`` is not one: the table excludes flat pairs and lists, which a
+# scopes list cannot be told from. The search back covers its longest match,
+# ``_PAIR_OPEN_WIDTH`` characters, and no more.
+_GAP, _INDENT, _SEGMENT = 8, 64, 64
 _PAIR_OPEN = re.compile(
-    r"(?:[(:=]|[\[,](?:[ \t\r\n]|\\[nr]){0,8}\[)"
-    r"[ \t]{0,8}b?\\{0,2}['\"](?:[\w.-]{0,64}[_.])?\Z"
+    rf"(?:[(:=]|[\[,][ \t]{{0,{_GAP}}}(?:\r?\n|\\r(?:\\n)?|\\n)?"
+    rf"[ \t]{{0,{_INDENT}}}\[)"
+    rf"[ \t]{{0,{_GAP}}}b?\\{{0,2}}['\"](?:[\w.-]{{0,{_SEGMENT}}}[_.])?\Z"
 )
+# The longest match: "," or "[", the gap, an escaped CRLF (4), the indent and
+# "[", then the gap, "b", two backslashes and a quote (4), and the segment.
+_PAIR_OPEN_WIDTH = (1 + _GAP + 4 + _INDENT + 1) + (_GAP + 4 + _SEGMENT + 1)
 # Before a name: no longer word (``x-cookie``), a "_" or "." segment boundary
 # (``session_cookie``, ``headers.cookie``: the JSON key rule's segments), the
 # shared escape grammar (``\n``, ``%0A``), or a ``\uXXXX`` escape.
@@ -210,7 +216,9 @@ def _head_at(text: str, low: str, hit: int, word: str) -> Optional[re.Match[str]
         start = hit - len(prefix)
         if start >= 0 and low.startswith(prefix, start) and _starts_name(text, start):
             head = _HEAD.match(text, start)
-            if head is None and _PAIR_OPEN.search(text, max(0, start - 95), start):
+            if head is None and _PAIR_OPEN.search(
+                text, max(0, start - _PAIR_OPEN_WIDTH), start
+            ):
                 head = _HEAD_TUPLE.match(text, start)
             if head:
                 return head
