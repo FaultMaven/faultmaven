@@ -1,0 +1,200 @@
+"""The rest of §7's redactor table is blanked on every rendered line (#2891).
+
+``x-api-key``, ``api-key``, ``x-goog-api-key``, ``x-auth-token`` and
+``Set-Cookie2`` name a credential by their name alone, as ``cookie`` does
+(#2865), and are blanked by the same unit rule on each output the redactor
+serves: the API's JSON and console lines, the jobs' formatter and a bytes
+renderer. ``www-authenticate``, a scopes list and a flat list are not.
+"""
+
+import json
+
+import pytest
+
+from faultmaven.infrastructure.logging.config import get_logger
+from faultmaven.infrastructure.logging.url_redaction import (
+    redact_log_line,
+    redact_log_line_bytes,
+    redacting_renderer,
+)
+from tests.unit.infrastructure.logging.conftest import _job_line
+
+pytestmark = [pytest.mark.unit, pytest.mark.security]
+
+SECRET = "VALUE"
+
+NAMES = ["x-api-key", "Api-Key", "X-Goog-Api-Key", "x-auth-token", "Set-Cookie2"]
+
+# Each holds SECRET as the header's value, as a header dump, a repr'd dict and
+# a repr'd tuple give it.
+TEXT_FORMS = [
+    "{}: VALUE",
+    "headers={{'{}': 'VALUE', 'accept': 'x'}}",
+    "[('{}', 'VALUE')]",
+    "[(b'{}', b'VALUE')]",
+]
+TEXT_POSITIVES = [form.format(name) for name in NAMES for form in TEXT_FORMS]
+
+
+def _raise(headers):
+    raise RuntimeError(headers)
+
+
+# A frame's source line is on the rendered traceback, so each spells its name.
+RAISERS = [
+    lambda: _raise("401 with {'x-api-key': 'VALUE'}"),
+    lambda: _raise("401 with {'Api-Key': 'VALUE'}"),
+    lambda: _raise("401 with {'X-Goog-Api-Key': 'VALUE'}"),
+    lambda: _raise("401 with {'x-auth-token': 'VALUE'}"),
+    lambda: _raise("401 with {'Set-Cookie2': 'VALUE'}"),
+]
+
+TEXT_NEGATIVES = [
+    "www-authenticate: Bearer realm=x",
+    "scopes: x-api-key, cookie",
+    "auth-token: x",
+    "my-x-api-key: x",
+    "api-key header missing",
+    "the x-api-key header was rejected",
+]
+
+
+class TestEveryRenderedLine:
+    @pytest.mark.parametrize("name", NAMES)
+    def test_a_header_in_a_message_and_a_field_is_blanked(self, rendered, name):
+        message = f"{name}: VALUE"
+        get_logger("faultmaven.p").error(message, field=message)
+        output = rendered.buffer.getvalue()
+        assert "<redacted>" in output, "the record was not written or not redacted"
+        assert SECRET not in output
+
+    @pytest.mark.parametrize("name", NAMES)
+    @pytest.mark.parametrize(
+        "fields_of",
+        [
+            lambda name: {"headers": {name: "VALUE", "accept": "kept"}},
+            lambda name: {"headers": [{"name": name, "value": "VALUE"}]},
+            lambda name: {"headers": [(name, "VALUE"), ("accept", "kept")]},
+            lambda name: {"headers": [(name.encode(), b"VALUE")]},
+            lambda name: {f"headers.{name}": "VALUE"},
+        ],
+        ids=["dict", "record", "pair", "bytes-pair", "dotted-key"],
+    )
+    def test_a_structured_value_is_blanked(self, rendered, name, fields_of):
+        get_logger("faultmaven.p").error("call failed", **fields_of(name), later="ok")
+        output = rendered.buffer.getvalue()
+        assert "call failed" in output
+        assert SECRET not in output
+
+    @pytest.mark.parametrize("raise_it", RAISERS, ids=NAMES)
+    def test_a_traceback_carrying_a_header_is_blanked(self, rendered, raise_it):
+        try:
+            raise_it()
+        except RuntimeError:
+            get_logger("faultmaven.p").exception("failed")
+        output = rendered.buffer.getvalue()
+        assert "failed" in output and "RuntimeError:" in output
+        assert SECRET not in output
+
+    @pytest.mark.parametrize("message", TEXT_NEGATIVES)
+    def test_prose_and_a_challenge_are_written_unchanged(self, rendered, message):
+        get_logger("faultmaven.p").info(message)
+        assert message in rendered.buffer.getvalue()
+
+    def test_a_flat_list_is_written_unchanged(self, rendered):
+        """The table excludes flat lists: a scopes list cannot be told from a
+        header pair, so neither loses its second item."""
+        get_logger("faultmaven.p").info(
+            "granted",
+            scopes=["authorization", "cases:read"],
+            allow_headers=["X-API-Key", "Content-Type"],
+        )
+        output = rendered.buffer.getvalue()
+        assert "cases:read" in output and "Content-Type" in output
+        assert "<redacted>" not in output
+
+
+class TestTheJobsFormatter:
+    @pytest.mark.parametrize("log_format", ["console", "json"])
+    @pytest.mark.parametrize("message", TEXT_POSITIVES)
+    def test_each_form_blanks_the_value(self, log_format, message):
+        output = _job_line(log_format, message)
+        assert SECRET not in output
+        assert "<redacted>" in output
+
+
+class TestJsonLines:
+    @pytest.mark.parametrize(
+        "record",
+        [
+            *(
+                record
+                for name in NAMES
+                for record in (
+                    {"headers": {name: "VALUE"}, "after": "kept"},
+                    {f"headers.{name}": "VALUE", "after": "kept"},
+                    {"h": [{"name": name, "value": "VALUE"}], "after": "kept"},
+                    {"h": [[name, "VALUE"]], "after": "kept"},
+                )
+            ),
+            # A "_" segment before the name, read as a key is (§7's table).
+            *(
+                record
+                for name in ("HTTP_AUTHORIZATION", "HTTP_COOKIE", "HTTP_X-API-KEY")
+                for record in (
+                    {"e": [[name, "VALUE"]], "after": "kept"},
+                    {"e": [{"name": name, "value": "VALUE"}], "after": "kept"},
+                )
+            ),
+        ],
+    )
+    def test_the_value_goes_and_the_line_stays_json(self, record):
+        redacted = redact_log_line(json.dumps(record))
+        assert SECRET not in redacted
+        assert json.loads(redacted)["after"] == "kept"
+
+    def test_a_scopes_list_is_unchanged(self):
+        line = json.dumps({"event": "e", "scopes": ["x-api-key", "authorization"]})
+        assert redact_log_line(line) == line
+
+
+class TestTheTextRule:
+    @pytest.mark.parametrize(
+        "line, expected",
+        [
+            ("HTTP_AUTHORIZATION: Bearer VALUE", "HTTP_AUTHORIZATION: <redacted>"),
+            ("HTTP_COOKIE=sid=VALUE", "HTTP_COOKIE=<redacted>"),
+            ("[('x-api-key', 'VALUE')]", "[('x-api-key', <redacted>"),
+            ("[(b'x-api-key', b'VALUE')]", "[(b'x-api-key', <redacted>"),
+            # Prose naming a header with a separator loses the rest of its
+            # line: the safe side, as with "authorization:".
+            ("Invalid api-key: VALUE", "Invalid api-key: <redacted>"),
+            ("Set-Cookie2: sid=VALUE\r\nX: kept", "Set-Cookie2: <redacted>\r\nX: kept"),
+        ],
+    )
+    def test_the_unit_is_blanked(self, line, expected):
+        assert redact_log_line(line) == expected
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            *TEXT_NEGATIVES,
+            "scopes=['authorization', 'cases:read']",
+            "allow_headers=['X-API-Key', 'Content-Type']",
+        ],
+    )
+    def test_the_line_is_unchanged(self, line):
+        assert redact_log_line(line) == line
+
+
+class TestTheBytesForm:
+    @pytest.mark.parametrize("line", [*TEXT_POSITIVES, *TEXT_NEGATIVES])
+    def test_the_bytes_form_matches_the_str_form(self, line):
+        assert redact_log_line_bytes(line.encode()) == redact_log_line(line).encode()
+
+    @pytest.mark.parametrize("line", TEXT_POSITIVES)
+    def test_a_bytes_renderer_is_redacted(self, line):
+        wrapped = redacting_renderer(lambda *_: line.encode())
+        output = wrapped(None, "info", {})
+        assert SECRET.encode() not in output
+        assert b"<redacted>" in output
