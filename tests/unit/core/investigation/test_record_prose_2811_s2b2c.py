@@ -22,6 +22,9 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import turn_narration
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    record_decision,
+)
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
     NARRATION_CONFLICTS_KEY,
     OUTCOME_WRITTEN_KEY,
@@ -37,6 +40,7 @@ from faultmaven.core.investigation.narration.notices import (
     pending_check_feedback,
     render_notice,
 )
+from faultmaven.core.investigation.narration.offer_view import OfferView
 from faultmaven.core.investigation.narration.offers import (
     readiness_message,
     render_offer,
@@ -47,6 +51,7 @@ from faultmaven.core.investigation.outcome import (
     record_case_outcome,
 )
 from faultmaven.modules.case.contracts import (
+    AnswerKind,
     ClosureEligibility,
     ConfirmationGap,
     PendingCheckReason,
@@ -425,6 +430,76 @@ def test_one_decision_under_two_codes_names_one_need(monkeypatch):
     assert need.request_text not in rendered[0][1]
     assert _held_notice(metadata) == [_feedback(decided)]
     assert _conflicts(metadata) == [f"narration.{_CODE}"]
+
+
+def test_a_non_switched_code_reads_the_record_beside_a_disagreement():
+    """A switched decision that disagrees with the stored record leaves every
+    switched text its decider's, and only those: a B1b code logged in the
+    same cycle (``SOLUTION_OFFER_WITHDRAWN``) still renders the record's fact,
+    as on ``main``."""
+    case, metadata = SWITCHED["pending_check"]()
+    record_decision(
+        metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, held_open=False
+    )
+    _stored(case, metadata)
+    _edited(
+        case.progress.outcome,
+        "resolution",
+        reason=ResolutionReason.CONFIRMED,
+        pending_check_need_id=None,
+        pending_check_reason=None,
+    )
+    _edited(case.progress.outcome, "cause", identification_held_open=True)
+    narrate_turn(case, metadata)
+    assert _conflicts(metadata) == [f"narration.{_CODE}"], "premise"
+    withdrawn = [
+        n
+        for n in metadata["system_notices"]
+        if n.startswith("SYSTEM: Your pending SOLUTION proposal was withdrawn")
+    ]
+    assert len(withdrawn) == 1
+    assert "its why is open" in withdrawn[0]
+
+
+def test_a_lapsed_offer_is_not_compared(monkeypatch):
+    """An offer that lapsed in its cycle shows nothing and is not compared:
+    one that disagrees with the record, logged beside the held check and its
+    needs-info request that agree, leaves both rendering from the record."""
+    case, metadata = SWITCHED["pending_check"]()
+    entry = _offer(metadata)
+    lapsed_id = "0123456789abcdef"
+    metadata[DECISIONS_KEY].append(
+        {
+            "code": OfferCode.BACKSTOP_RESOLVE,
+            "params": {
+                "proposal_id": lapsed_id,
+                "record_lines": "- the lapsed offer's line",
+                "reason": ResolutionReason.CONFIRMED,
+                "identification_leg": None,
+            },
+            "token": None,
+        }
+    )
+    need = _second_need(case)
+    _stored(case, metadata)
+    _edited(case.progress.outcome, "resolution", pending_check_need_id=need.need_id)
+    view = OfferView(
+        None, ((lapsed_id, AnswerKind.LAPSED),), lambda: None, lambda: None
+    )
+    monkeypatch.setattr(turn_narration, "offer_view", lambda _case: view)
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    assert rendered == [
+        (
+            entry["code"],
+            readiness_message(
+                ResolutionReason.PENDING_CHECK, request_text=need.request_text
+            ),
+        )
+    ]
+    (notice,) = _held_notice(metadata)
+    assert f"[{need.need_id}] {need.request_text}" in notice
+    assert _conflicts(metadata) == []
 
 
 def test_the_record_params_of_each_switched_code():
