@@ -697,6 +697,8 @@ class KnowledgeService:
           new pack version. The repair pass never re-embeds an unpublished row,
           and the reconcile pass deletes its vectors. Only a NEW pack version
           of that runbook republishes it: a shipped update is a new document.
+          A pack whose chunks or fields alone changed (``metadata.pack_digest``,
+          #2244) re-ingests only a published row.
         - A deleted authored document has no row, so nothing re-indexes it
           (repair works from rows) and no door admits a chunk under its id. A
           chunk the best-effort delete below left behind, or a repair or
@@ -1270,8 +1272,10 @@ class KnowledgeService:
         verification_level: "Optional[VerificationLevel]" = None,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
         pack_content_hash: Optional[str] = None,
+        pack_digest: Optional[str] = None,
         shipped: bool = False,
         replaces_generation: Optional[str] = None,
+        only_if_published: bool = False,
         record: "Optional[Callable[[AsyncSession], Awaitable[bool]]]" = None,
         index_window_seconds: Optional[float] = None,
         security: Optional[SecurityAnswer] = None,
@@ -1395,6 +1399,9 @@ class KnowledgeService:
                 skip compares the pack against, so a later edit of the row is
                 never mistaken for a new pack version (#1966). Every other
                 caller leaves it out and the metadata stays ``{}``.
+            pack_digest: Stamped with it, as ``metadata.pack_digest`` (#2244).
+            only_if_published: See :meth:`_insert_pack_row`; it returns 0
+                when that writes nothing.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -1469,6 +1476,7 @@ class KnowledgeService:
         # vertical (avoids top-level cycles between service and persistence).
         from faultmaven.modules.knowledge.domain.models.knowledge_item import (
             PACK_CONTENT_HASH_KEY,
+            PACK_DIGEST_KEY,
             KnowledgeItem,
             KnowledgeItemType,
             VerificationLevel,
@@ -1576,7 +1584,9 @@ class KnowledgeService:
             # may not UPDATE the table.
             ingest_complete=shipped,
             metadata=(
-                {PACK_CONTENT_HASH_KEY: pack_content_hash} if pack_content_hash else {}
+                {PACK_CONTENT_HASH_KEY: pack_content_hash, PACK_DIGEST_KEY: pack_digest}
+                if pack_content_hash
+                else {}
             ),
         )
         # Team publish: record visibility in the share table (source of truth,
@@ -1619,13 +1629,14 @@ class KnowledgeService:
             # Vectors first: before the transaction they are no row's, and a
             # 0-chunk write raises before any row exists.
             chunks_created = await index()
-            await self._insert_pack_row(
+            written = await self._insert_pack_row(
                 item,
                 replaces_generation=replaces_generation,
                 team_id=share_team,
                 created_by=owner_id or verified_by,
+                only_if_published=only_if_published,
             )
-            return chunks_created
+            return chunks_created if written else 0
 
         # The indexing slot's ticket, before the row (#2055): a refusal leaves
         # nothing written, and the ticket is held through the embed.
@@ -1692,7 +1703,8 @@ class KnowledgeService:
         replaces_generation: Optional[str],
         team_id: Optional[str],
         created_by: Optional[str],
-    ) -> None:
+        only_if_published: bool = False,
+    ) -> bool:
         """A pack row's one transaction (#2388): DELETE the row it replaces,
         guarded on ``replaces_generation``; INSERT ``item``; delete the id's
         shares other than the pack's own (#2386); ensure the pack's own team
@@ -1737,8 +1749,23 @@ class KnowledgeService:
             repo = DatabaseKnowledgeItemRepository(session)
             if replaces_generation is not None:
                 replaced = await repo.delete(
-                    item.item_id, commit=False, vector_generation=replaces_generation
+                    item.item_id,
+                    commit=False,
+                    vector_generation=replaces_generation,
+                    only_published=only_if_published,
                 )
+                # A miss writes nothing when the DELETE also required the row
+                # published, or a peer's row carries this version's stamps
+                # (#2244): this call's vectors are deleted and it returns False.
+                if not replaced and (
+                    only_if_published
+                    or item.metadata
+                    == getattr(await repo.get_by_id(item.item_id), "metadata", None)
+                ):
+                    await self._delete_replaced_generation(
+                        item.item_id, item.vector_generation
+                    )
+                    return False
             await repo.create(item, commit=False)
             shares = PostgreSQLShareRepository(session)
             await shares.delete_other_scopes(
@@ -1758,6 +1785,7 @@ class KnowledgeService:
             await repo.commit()
         if replaced:
             await self._delete_replaced_generation(item.item_id, replaces_generation)
+        return True
 
     async def _delete_replaced_generation(self, item_id: str, generation: str) -> None:
         """Delete ``item_id``'s chunks of ``generation``, a generation its row

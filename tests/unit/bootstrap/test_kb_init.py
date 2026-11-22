@@ -232,14 +232,27 @@ async def test_bootstrap_never_loads_model(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
-    """An existing row whose content hash equals the pack's is skipped."""
+    """An existing row stamped with the pack's content hash and digest, its
+    columns as the pack wrote them, is skipped (#2244)."""
+    from faultmaven.bootstrap.kb_pack import KbPack
+
     pack_dir = _write_pack(tmp_path)
     knowledge_service = MagicMock()
     knowledge_service.ingest_runbook = AsyncMock(return_value=2)
 
-    existing = MagicMock()
-    existing.content = RUNBOOK_MD  # identical to the pack's runbook content
-    existing.knowledge_metadata = {}
+    shipped = KbPack.load(pack_dir).runbooks[0]
+    existing = MagicMock(
+        content=RUNBOOK_MD,  # identical to the pack's runbook content
+        title=shipped.title,
+        tags=shipped.tags,
+        source_url=None,
+        owner_id=None,
+        category=None,
+    )
+    existing.knowledge_metadata = {
+        "pack_content_hash": shipped.content_hash,
+        "pack_digest": shipped.pack_digest,
+    }
     existing.scope = "global"  # the pack entry's: a new scope is a change (#2386)
 
     result = await kb_init.bootstrap_kb(

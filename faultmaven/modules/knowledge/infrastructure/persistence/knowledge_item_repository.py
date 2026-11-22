@@ -223,6 +223,7 @@ class KnowledgeItemRepository(ABC):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
+        only_published: bool = False,
     ) -> bool:
         """Delete knowledge item by ID.
 
@@ -240,12 +241,14 @@ class KnowledgeItemRepository(ABC):
             vector_generation: Delete the row only while it carries this
                 generation (#2388), so a pack replacement never removes a row
                 a peer replaced first.
+            only_published: Delete the row only while it is published
+                (#2244), so a pack replacement never republishes it.
 
         Returns:
             True if a row matched (deleted, or deleted pending the commit),
             False if none did: absent, another ``created_at`` or generation,
-            complete under ``only_incomplete``, or refused by an RLS write
-            policy.
+            complete under ``only_incomplete``, unpublished under
+            ``only_published``, or refused by an RLS write policy.
         """
         pass
 
@@ -628,6 +631,7 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
+        only_published: bool = False,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         try:
@@ -642,6 +646,8 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
                 stmt = stmt.where(
                     KnowledgeItemModel.vector_generation == vector_generation
                 )
+            if only_published:
+                stmt = stmt.where(KnowledgeItemModel.is_published.is_(True))
             result = await self.db.execute(stmt)
             if commit:
                 await self.db.commit()
@@ -1220,6 +1226,7 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         created_at: Optional[datetime] = None,
         only_incomplete: bool = False,
         vector_generation: Optional[str] = None,
+        only_published: bool = False,
     ) -> bool:
         """Delete knowledge item by ID (see the base class for the keywords)."""
         if not self._exists(item_id):
@@ -1230,6 +1237,8 @@ class InMemoryKnowledgeItemRepository(KnowledgeItemRepository):
         ):
             return False
         if only_incomplete and current.ingest_complete:
+            return False
+        if only_published and not current.is_published:
             return False
         if vector_generation is not None and (
             current.vector_generation != vector_generation

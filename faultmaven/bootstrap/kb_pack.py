@@ -52,11 +52,13 @@ offline without rebuilding the app image.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope, vocabulary
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
@@ -99,6 +101,36 @@ class PackRunbook:
     # The pack's per-runbook ``causes`` record (the toolkit's v4 graph record)
     # is deliberately NOT loaded: its only runtime reader, the KB cause seeder,
     # was removed in fm#1295. The toolkit still emits it; it is ignored here.
+
+    @property
+    def pack_digest(self) -> str:
+        """``"<fields digest>:<chunks digest>"`` of what was loaded, not of the
+        manifest's unverified hashes: what ``kb_init`` stamps and compares
+        (#2244). The chunk metadata the app derives at ingest is not in it: it
+        changes with the app, not the pack."""
+        chunks = ((c.chunk_index, c.text, c.embedding) for c in self.chunks)
+        return f"{fields_digest(self)}:{chunks_digest(chunks)}"
+
+
+def fields_digest(source: Any) -> str:
+    """The fields part of ``pack_digest``: the pack-written columns, read from
+    a ``PackRunbook`` or a ``knowledge_items`` row (named alike on both)."""
+    content, title, tags, source_url, owner_id = (
+        getattr(source, name)
+        for name in ("content", "title", "tags", "source_url", "owner_id")
+    )
+    fields = [content, title, [str(t) for t in tags or []], source_url, owner_id]
+    return hashlib.sha256(json.dumps(fields).encode("utf-8")).hexdigest()
+
+
+def chunks_digest(chunks: Iterable[Tuple[int, str, Sequence[float]]]) -> str:
+    """The chunks part of ``pack_digest``: each ``(index, text, vector)`` in
+    order, the vector as little-endian float32 bytes, each length-prefixed."""
+    digest = hashlib.sha256()
+    for index, text, vector in chunks:
+        data, row = text.encode("utf-8"), struct.pack(f"<{len(vector)}f", *vector)
+        digest.update(f"{index}:{len(data)}:{len(row)}:".encode("ascii") + data + row)
+    return digest.hexdigest()
 
 
 def baseline_pack_dir(project_root: Path) -> Path:

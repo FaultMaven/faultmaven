@@ -258,7 +258,7 @@ Redis is not used for KB document storage. Document metadata persists in SQLite 
 ```text
 # faultmaven/bootstrap/kb_init.py — bootstrap_kb()
 # 1. Load the KB pack (resources/knowledge/pack, or KB_PACK_DIR) via KbPack.load
-# 2. For each runbook (idempotent by content_hash):
+# 2. For each runbook (idempotent by content_hash and pack_digest, #2244):
 #      ingest_runbook(prechunked=[(chunk_text, vector), ...], scope=<from pack>)
 #      → writes the knowledge_items SQL row + the pack's pre-computed chunks/vectors
 #        into faultmaven_kb. NO embedding model — vectors ship in the pack.
