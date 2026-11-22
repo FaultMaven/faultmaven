@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
 
+from faultmaven.utils.exception_name import exception_log_name
+
 
 class AlertSeverity(Enum):
     """Alert severity levels."""
@@ -468,7 +470,9 @@ class AlertManager:
 
                         asyncio.run(self._send_log_notification(alert, rule, action))
                     except Exception as e:
-                        self.logger.error(f"Failed to send log notification: {e}")
+                        self.logger.error(
+                            f"Failed to send log notification: {exception_log_name(e)}"
+                        )
                 else:
                     # For other channels, just log that they would be sent
                     self.logger.info(
@@ -494,7 +498,7 @@ class AlertManager:
                         )
                     except Exception as e:
                         self.logger.error(
-                            f"Failed to send alert notification to {channel.value}: {e}"
+                            f"Failed to send alert notification to {channel.value}: {exception_log_name(e)}"
                         )
 
     async def _send_resolution_notifications(
@@ -518,7 +522,7 @@ class AlertManager:
                         )
                     except Exception as e:
                         self.logger.error(
-                            f"Failed to send resolution notification to {channel.value}: {e}"
+                            f"Failed to send resolution notification to {channel.value}: {exception_log_name(e)}"
                         )
 
     async def _send_log_notification(
@@ -611,7 +615,7 @@ class AlertManager:
                         )
 
         except Exception as e:
-            self.logger.error(f"Webhook notification error: {e}")
+            self.logger.error(f"Webhook notification error: {exception_log_name(e)}")
 
     async def _send_email_notification(
         self, alert: Alert, rule: AlertRule, action: str
