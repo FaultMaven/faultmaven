@@ -26,6 +26,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 #: A placeholder as the sanitizer writes it: ``<TYPE_digest>``
@@ -174,7 +176,7 @@ class CaseRedactionContext:
         except Exception as e:
             logger.warning(
                 f"Failed to load redaction registry from Redis for case "
-                f"{self.case_id}: {e}. Using in-memory only."
+                f"{self.case_id}: {exception_log_name(e)}. Using in-memory only."
             )
 
         self._loaded = True
@@ -226,7 +228,7 @@ class CaseRedactionContext:
         except Exception as e:
             logger.warning(
                 f"Failed to save redaction registry to Redis for case "
-                f"{self.case_id}: {e}. Changes are in-memory only."
+                f"{self.case_id}: {exception_log_name(e)}. Changes are in-memory only."
             )
 
     def sanitize(self, text: str) -> str:
@@ -350,7 +352,7 @@ class CaseRedactionContext:
             logger.debug(f"Cleaned up redaction registry for case {self.case_id}")
         except Exception as e:
             logger.warning(
-                f"Failed to cleanup redaction registry for case {self.case_id}: {e}"
+                f"Failed to cleanup redaction registry for case {self.case_id}: {exception_log_name(e)}"
             )
 
     @property

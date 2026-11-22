@@ -60,7 +60,7 @@ from faultmaven.modules.auth.contracts import (
     OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import exception_class_name, exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -629,13 +629,13 @@ async def get_authorization_request(
         return AuthorizationResponse(code=code, state=state)
 
     except InvalidRequestError as e:
-        logger.warning(f"Invalid authorization request: {e}")
+        logger.warning(f"Invalid authorization request: {exception_log_name(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         # Re-raise HTTPException (don't convert to 500)
         raise
     except Exception as e:
-        logger.error(f"Authorization error: {e}")
+        logger.error(f"Authorization error: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -704,12 +704,12 @@ async def post_authorization_approval(
         return AuthorizationResponse(code=code, state=approval.state)
 
     except InvalidRequestError as e:
-        logger.warning(f"Invalid authorization approval: {e}")
+        logger.warning(f"Invalid authorization approval: {exception_log_name(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Authorization approval error: {e}")
+        logger.error(f"Authorization approval error: {exception_log_name(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -835,7 +835,7 @@ async def token(
         # Already the client's answer: re-raise for the RFC renderer.
         raise
     except InvalidRequestError as e:
-        logger.warning(f"Invalid token request: {e}")
+        logger.warning(f"Invalid token request: {exception_log_name(e)}")
         raise OAuthProtocolError("invalid_request", str(e)) from e
     except InvalidGrantError as e:
         # RFC 6749 §5.2 puts invalid_grant at 400. It was a 401 before this
@@ -845,7 +845,7 @@ async def token(
         # caller-facing strings ("PKCE verification failed", "Authorization code
         # expired") — the 4xx domain-message case the leak guard deliberately
         # allows. The 5xx arm below carries nothing from its exception.
-        logger.warning(f"Invalid grant: {e}")
+        logger.warning(f"Invalid grant: {exception_log_name(e)}")
         raise OAuthProtocolError("invalid_grant", str(e)) from e
     except Exception as e:
         logger.error("Token endpoint error: %s", exception_class_name(e), exc_info=e)
@@ -937,7 +937,7 @@ async def revoke(
     except OAuthProtocolError:
         raise
     except Exception as e:
-        logger.error(f"Token revocation error: {e}")
+        logger.error(f"Token revocation error: {exception_log_name(e)}")
         # Invalid/unknown tokens are already treated as success inside the
         # generator (RFC 7009), so an exception here means the revocation was
         # NOT recorded (e.g. store outage). Surface it (RFC 7009 §2.2.1

@@ -32,6 +32,7 @@ import jwt
 
 from faultmaven.exceptions import InactiveAccountError
 from faultmaven.modules.auth.domain.models.user import User
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -1310,7 +1311,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid token", extra={"error": str(e)}
+                "JWT validation failed: invalid token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -1390,7 +1392,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
+                "JWT validation failed: invalid refresh token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -1511,7 +1514,7 @@ async def _revoke_token_by_jti(
     except Exception as e:
         logger.warning(
             "JWT revocation skipped: token could not be verified",
-            extra={"token_kind": token_kind, "error": str(e)},
+            extra={"token_kind": token_kind, "error": exception_log_name(e)},
         )
         return
 
@@ -2072,7 +2075,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid access token", extra={"error": str(e)}
+                "JWT validation failed: invalid access token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 
@@ -2148,7 +2152,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(
-                "JWT validation failed: invalid refresh token", extra={"error": str(e)}
+                "JWT validation failed: invalid refresh token",
+                extra={"error": exception_log_name(e)},
             )
             return None
 

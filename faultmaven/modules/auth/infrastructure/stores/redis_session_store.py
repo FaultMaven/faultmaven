@@ -26,6 +26,7 @@ from faultmaven.exceptions import SessionWriteConflict
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,9 @@ class RedisSessionStore(ISessionStore):
                     return None
             return None
         except Exception as e:
-            logger.error(f"Redis get operation failed for key {key}: {e}")
+            logger.error(
+                f"Redis get operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise ConnectionError(f"Redis operation failed: {e}")
 
     async def set(
@@ -143,7 +146,9 @@ class RedisSessionStore(ISessionStore):
 
             await self.redis_client.set(full_key, serialized, ex=ttl)
         except Exception as e:
-            logger.error(f"Redis set operation failed for key {key}: {e}")
+            logger.error(
+                f"Redis set operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise ConnectionError(f"Redis operation failed: {e}")
 
     async def delete(self, key: str) -> bool:
@@ -179,7 +184,7 @@ class RedisSessionStore(ISessionStore):
         except Exception as e:
             logger.error(
                 f"Redis find_by_user_and_client failed for user {user_id}, "
-                f"client {client_id}: {e}"
+                f"client {client_id}: {exception_log_name(e)}"
             )
             raise ConnectionError(f"Redis operation failed: {e}")
 
@@ -195,7 +200,7 @@ class RedisSessionStore(ISessionStore):
         except Exception as e:
             logger.error(
                 f"Redis index_session_by_client failed for user {user_id}, "
-                f"client {client_id}, session {session_id}: {e}"
+                f"client {client_id}, session {session_id}: {exception_log_name(e)}"
             )
             raise ConnectionError(f"Redis operation failed: {e}")
 
@@ -207,7 +212,7 @@ class RedisSessionStore(ISessionStore):
         except Exception as e:
             logger.warning(
                 f"Redis remove_client_index failed for user {user_id}, "
-                f"client {client_id}: {e}"
+                f"client {client_id}: {exception_log_name(e)}"
             )
 
     async def increment_counter(self, key: str, ttl: Optional[int] = None) -> int:
@@ -221,7 +226,9 @@ class RedisSessionStore(ISessionStore):
 
             return value
         except Exception as e:
-            logger.error(f"Redis increment operation failed for key {key}: {e}")
+            logger.error(
+                f"Redis increment operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise ConnectionError(f"Redis operation failed: {e}")
 
     async def delete_keys_holding(self, match: str, value: Any) -> int:
@@ -276,7 +283,9 @@ class RedisSessionStore(ISessionStore):
                 *(() if expected is None else (expected,)),
             )
         except Exception as e:
-            logger.error(f"Redis session write failed for session {session_id}: {e}")
+            logger.error(
+                f"Redis session write failed for session {session_id}: {exception_log_name(e)}"
+            )
             raise ConnectionError(f"Redis operation failed: {e}")
         return expires_at if int(written) else None
 
@@ -340,7 +349,9 @@ class RedisSessionStore(ISessionStore):
             try:
                 raw = await self.redis_client.get(key)
             except Exception as e:
-                logger.error(f"Redis get operation failed for key {session_id}: {e}")
+                logger.error(
+                    f"Redis get operation failed for key {session_id}: {exception_log_name(e)}"
+                )
                 raise ConnectionError(f"Redis operation failed: {e}")
             if raw is None:
                 return None
@@ -421,7 +432,9 @@ class RedisSessionStore(ISessionStore):
                 *members,
             )
         except Exception as e:
-            logger.error(f"Redis list_sessions failed for user {user_id}: {e}")
+            logger.error(
+                f"Redis list_sessions failed for user {user_id}: {exception_log_name(e)}"
+            )
             raise ConnectionError(f"Redis operation failed: {e}")
 
         sessions = []
@@ -435,7 +448,7 @@ class RedisSessionStore(ISessionStore):
             except Exception as e:
                 logger.warning(
                     f"Skipping unreadable session of user {user_id}: "
-                    f"{type(e).__name__}: {e}"
+                    f"{exception_log_name(e)}"
                 )
                 continue
             # The index names this user's sessions; the record is the authority.

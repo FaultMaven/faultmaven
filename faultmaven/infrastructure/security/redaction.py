@@ -50,6 +50,7 @@ from faultmaven.infrastructure.security.secret_patterns import (
     redact_spans,
 )
 from faultmaven.models.interfaces import ISanitizer
+from faultmaven.utils.exception_name import exception_log_name
 
 
 class RedactionUnavailableError(RuntimeError):
@@ -439,7 +440,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 retry_delay=1.0,
             )
         except Exception as e:
-            self.logger.debug(f"Health check failed for {service_url}: {e}")
+            self.logger.debug(
+                f"Health check failed for {service_url}: {exception_log_name(e)}"
+            )
             return False
 
     def _apply_presidio(
@@ -519,7 +522,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             return result
 
         except Exception as e:
-            self.logger.warning(f"Presidio K8s service error: {e}")
+            self.logger.warning(f"Presidio K8s service error: {exception_log_name(e)}")
             # NB: do NOT latch self.analyzer_available=False here. That flag is
             # only ever set True at startup, so latching it off on a transient
             # blip would permanently disable Presidio (and, under fail-closed,
@@ -614,7 +617,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
                 )
 
             except Exception as e:
-                self.logger.warning(f"Presidio K8s sensitivity check failed: {e}")
+                self.logger.warning(
+                    f"Presidio K8s sensitivity check failed: {exception_log_name(e)}"
+                )
 
         return False
 

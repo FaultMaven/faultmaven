@@ -61,6 +61,7 @@ from faultmaven.config.secret_file import (
     prepare_secret_file_for_read,
     publish_secret_once,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +297,7 @@ async def verify_pseudonym_key_agreement(key: bytes, redis_client) -> None:
         logger.warning(
             "Could not verify pseudonym key agreement (%s). Continuing: an "
             "unreachable check is not evidence of a mismatch.",
-            exc,
+            exception_log_name(exc),
         )
         return
 

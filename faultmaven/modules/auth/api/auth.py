@@ -85,6 +85,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     capture_state_read_at,
 )
 from faultmaven.modules.auth.exceptions import AccountOwnsCasesError
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -155,8 +156,9 @@ def _build_local_jwt_generator(revocation_store):
         # The plumbing — secret, lifetimes, issuer, audience — is the generator
         # module's, so this path and the container wire identical generators
         # (#959). Only the protocol translation stays here, with a static
-        # detail: the caught text goes to the log, never to the response.
-        logger.error("Local JWT generator unavailable: %s", e)
+        # detail: the log names the caught exception by its class, and the
+        # response carries nothing of it.
+        logger.error("Local JWT generator unavailable: %s", exception_log_name(e))
         raise HTTPException(
             status_code=500,
             detail="JWT_SECRET_KEY not configured for local mode authentication",
@@ -196,7 +198,7 @@ async def _record_login_best_effort(user_store: Any, user_id: str) -> None:
     except Exception as e:  # noqa: BLE001 — see docstring: display metadata only
         logger.warning(
             "Could not stamp last_login_at; /auth/me will report a stale value",
-            extra={"user_id": user_id, "error": f"{type(e).__name__}: {e}"},
+            extra={"user_id": user_id, "error": exception_log_name(e)},
             exc_info=True,
         )
 
@@ -529,7 +531,7 @@ async def local_login(
         raise
     except Exception as e:
         logger.error(
-            f"Dev login failed: {type(e).__name__}: {str(e)}",
+            f"Dev login failed: {exception_log_name(e)}",
             exc_info=True,
         )
         raise HTTPException(
@@ -680,7 +682,7 @@ async def local_register(
         raise
     except Exception as e:
         logger.error(
-            f"Dev registration failed: {type(e).__name__}: {str(e)}",
+            f"Dev registration failed: {exception_log_name(e)}",
             exc_info=True,
         )
         raise HTTPException(
@@ -878,7 +880,7 @@ async def refresh_tokens(
         raise
     except Exception as e:
         logger.error(
-            f"Token refresh failed: {type(e).__name__}: {str(e)}",
+            f"Token refresh failed: {exception_log_name(e)}",
             exc_info=True,
         )
         raise HTTPException(
@@ -964,7 +966,7 @@ async def list_users(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"List users failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error(f"List users failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "Failed to list users"},
@@ -1154,7 +1156,7 @@ async def delete_user(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Delete user failed: {type(e).__name__}: {str(e)}", exc_info=True)
+        logger.error(f"Delete user failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
@@ -1275,7 +1277,7 @@ async def logout(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Logout failed: {e}", exc_info=True)
+        logger.error(f"Logout failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Logout failed")
 
 
@@ -1343,7 +1345,7 @@ async def _resolve_organization_summary(
             "Could not resolve organization for profile",
             extra={
                 "organization_id": current_user.organization_id,
-                "error": str(e),
+                "error": exception_log_name(e),
             },
         )
         return None
@@ -1450,7 +1452,7 @@ async def _resolve_profile_timestamps(
     except Exception as e:  # noqa: BLE001 — see docstring: display fields only
         logger.warning(
             "Could not resolve persisted profile timestamps",
-            extra={"user_id": current_user.user_id, "error": str(e)},
+            extra={"user_id": current_user.user_id, "error": exception_log_name(e)},
         )
         return fallback
 
@@ -1498,7 +1500,7 @@ async def get_current_user_profile(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get user profile failed: {e}", exc_info=True)
+        logger.error(f"Get user profile failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve user profile")
 
 
@@ -1584,7 +1586,9 @@ async def auth_health_check(request: Request):
         return health_status["authentication"]
 
     except Exception as e:
-        logger.error(f"Auth health check failed: {e}", exc_info=True)
+        logger.error(
+            f"Auth health check failed: {exception_log_name(e)}", exc_info=True
+        )
         # 503, not 200. This arm reports that the probe itself failed, and a
         # 200 makes that indistinguishable from a healthy service to anything
         # gating on the status code — which is how a TypeError here went
@@ -1801,5 +1805,5 @@ async def revoke_user_tokens(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token revocation failed: {e}", exc_info=True)
+        logger.error(f"Token revocation failed: {exception_log_name(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Token revocation failed")
