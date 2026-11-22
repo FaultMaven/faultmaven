@@ -709,8 +709,9 @@ class LLMErrorHandler:
         # attempt a timeout) reaches two breaker failures of three on a
         # ladder-only turn: that turn ends RETRY_EXHAUSTED, and the next
         # ladder's first attempt pays one timeout and opens the breaker, so its
-        # retry lands here. A turn with tools reaches three (the tool loop's
-        # attempt, then the ladder's two) and opens it in its first turn. Where
+        # retry lands here. A turn with tools reaches two (the tool loop's send,
+        # then the ladder's one attempt, #2319), and the next turn's tool send
+        # opens it. Where
         # the turn affords fewer attempts (T = 120, A = 240), each turn pays
         # fewer and the breaker opens a turn or two later. A provider that
         # fails fast (a refused connection) is status-shaped, and opens it
