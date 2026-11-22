@@ -69,6 +69,7 @@ from faultmaven.exceptions import (
     ServiceException,
     SessionException,
     ValidationException,
+    walk_cause_chain,
 )
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
@@ -173,7 +174,9 @@ _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
             "after `Retry-After` seconds is safe. Told apart by "
             f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database did not "
             "answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication "
-            "every route requires could not read the token revocation store)."
+            "every route requires could not read the token revocation store). "
+            "A 503 with neither header is an unlabelled one: the case service "
+            "or the authentication service is not available."
         ),
         "headers": {
             "x-error-code": {
@@ -181,7 +184,10 @@ _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
                 "schema": {"type": "string"},
             },
             "Retry-After": {
-                "description": "Seconds; sent with every 503 this route answers.",
+                "description": (
+                    f"Seconds; sent with `{DATABASE_UNAVAILABLE}` and "
+                    "`REVOCATION_STATE_UNKNOWN`, never with an unlabelled 503."
+                ),
                 "schema": {"type": "integer"},
             },
         },
@@ -261,20 +267,22 @@ async def get_case_messages_enhanced(
 
     except HTTPException:
         raise
-    except DatabaseTimeout as unavailable:
-        # The access check's read or the service's: either way nothing could be
-        # read, which is a retryable 503, never an empty transcript (#2333).
-        logger.error(
-            "Messages of case %s not read: %s",
-            case_id,
-            exception_log_name(unavailable),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=MESSAGES_UNAVAILABLE_DETAIL,
-            headers={"x-error-code": DATABASE_UNAVAILABLE, "Retry-After": "5"},
-        ) from unavailable
     except Exception as e:
+        # A database timeout on the access check's read or the service's: either
+        # way nothing could be read, which is a retryable 503, never an empty
+        # transcript (#2333). Looked for on the cause chain: an inner session's
+        # timeout reaches here wrapped in a ``RepositoryException``.
+        if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(e)):
+            logger.error(
+                "Messages of case %s not read: %s",
+                case_id,
+                exception_log_name(e),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=MESSAGES_UNAVAILABLE_DETAIL,
+                headers={"x-error-code": DATABASE_UNAVAILABLE, "Retry-After": "5"},
+            ) from e
         logger.error(
             "Unexpected error in get_case_messages_enhanced for case %s: %s",
             case_id,
@@ -549,7 +557,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "`LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI "
             "provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the "
             "authentication every route requires could not read the token "
-            "revocation store)."
+            "revocation store). A 503 with neither header is an unlabelled "
+            "one: the case, investigation or authentication service is not "
+            "available."
         ),
         "headers": {
             "x-error-code": {
@@ -557,7 +567,10 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                 "schema": {"type": "string"},
             },
             "Retry-After": {
-                "description": "Seconds; sent with every 503 this route answers.",
+                "description": (
+                    "Seconds; sent with every labelled 503 above, never with an "
+                    "unlabelled one."
+                ),
                 "schema": {"type": "integer"},
             },
         },

@@ -533,6 +533,8 @@ class TestTranscriptReadFailuresAreErrors:
         resp = client.get(CONTENT_PATHS[1])
 
         assert resp.status_code == 404
+        assert resp.headers["x-error-code"] == "CASE_NOT_FOUND"
+        assert resp.json()["resource_type"] == "Case"
         audit_repo.record_access.assert_awaited_once()
 
     def test_a_database_timeout_on_the_read_is_500(self, audit_repo, grant_repo):

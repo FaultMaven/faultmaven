@@ -1732,15 +1732,12 @@ class CaseService(CaseDriverMixin, ICaseService):
         offset: int = 0,
         include_debug: bool = False,
     ) -> "CaseMessagesResponse":  # noqa: F821
-        """
-        Enhanced message retrieval with debugging support and metadata.
+        """A page of the case's messages, with debug information on request.
 
-        This method provides comprehensive message retrieval with:
-        - Pagination support
-        - Debug information when requested
-        - Storage error tracking
-        - Message parsing error handling
-        - Performance metrics
+        A stored row that cannot be loaded or converted is skipped and
+        counted (``MESSAGE_PARSE_FAILED``); ``retrieved_count`` is the rows
+        returned, and ``has_more`` / ``next_offset`` count the rows the page
+        consumed.
 
         Args:
             case_id: Case identifier
@@ -1752,8 +1749,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             CaseMessagesResponse with messages and metadata
 
         Raises:
-            NotFoundError: the case is gone (deleted after the route's access
-                check). Any other failure of the read propagates as itself.
+            NotFoundError: the case is missing (deleted after the caller's
+                access check). Any other failure of the read propagates as
+                itself, never answered as an empty page.
         """
         if not case_id:
             raise ValidationException("Case ID is required")

@@ -1856,7 +1856,7 @@
             "title": "Next Offset"
           },
           "retrieved_count": {
-            "description": "Number of messages returned on this page: fewer than the page consumed when a stored row could not be loaded and was skipped",
+            "description": "Number of messages returned on this page: fewer than the page consumed when a stored row could not be loaded or converted and was skipped",
             "title": "Retrieved Count",
             "type": "integer"
           },
@@ -8498,6 +8498,20 @@
             },
             "description": "Successful Response"
           },
+          "404": {
+            "description": "The case does not exist or the operator's read scope cannot see it. Carries `x-error-code: CASE_NOT_FOUND` when the case was deleted after the existence check, and no `x-error-code` otherwise.",
+            "headers": {
+              "x-error-code": {
+                "description": "Present when the case was deleted mid-read.",
+                "schema": {
+                  "enum": [
+                    "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12196,10 +12210,10 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).",
+            "description": "Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: the case service or the authentication service is not available.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds; sent with every 503 this route answers.",
+                "description": "Seconds; sent with `DATABASE_UNAVAILABLE` and `REVOCATION_STATE_UNKNOWN`, never with an unlabelled 503.",
                 "schema": {
                   "type": "integer"
                 }
@@ -12979,10 +12993,10 @@
             }
           },
           "503": {
-            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store).",
+            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: the case, investigation or authentication service is not available.",
             "headers": {
               "Retry-After": {
-                "description": "Seconds; sent with every 503 this route answers.",
+                "description": "Seconds; sent with every labelled 503 above, never with an unlabelled one.",
                 "schema": {
                   "type": "integer"
                 }

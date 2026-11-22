@@ -21,6 +21,9 @@ import pytest
 
 from faultmaven.exceptions import DatabaseTimeout
 from faultmaven.modules.case.domain.services.case_service import CaseService
+from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository.repository import (
+    RepositoryException,
+)
 from tests.case_builders import inquiry_case
 
 pytestmark = pytest.mark.unit
@@ -119,6 +122,24 @@ async def test_a_database_timeout_on_the_read_is_503(build_app, call_api, caplog
         for r in caplog.records
         if r.levelno >= logging.WARNING
     )
+
+
+async def test_a_database_timeout_wrapped_by_a_repository_is_the_same_503(
+    build_app, call_api
+):
+    """An inner session's timeout reaches the route wrapped: ``get_db_session``
+    does not rewrap a chain that already holds a ``DatabaseTimeout``."""
+    try:
+        raise RepositoryException("load failed") from DatabaseTimeout()
+    except RepositoryException as wrapped:
+        failure = wrapped
+
+    response = await _get(build_app, call_api, _service(_five_rows(), failure))
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == UNAVAILABLE_DETAIL
+    assert response.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
+    assert response.headers["Retry-After"] == "5"
 
 
 async def test_a_database_timeout_on_the_access_check_is_the_same_503(

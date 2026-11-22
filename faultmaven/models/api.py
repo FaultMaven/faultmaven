@@ -691,7 +691,8 @@ class CaseMessagesResponse(BaseModel):
         ...,
         description=(
             "Number of messages returned on this page: fewer than the page "
-            "consumed when a stored row could not be loaded and was skipped"
+            "consumed when a stored row could not be loaded or converted and "
+            "was skipped"
         ),
     )
     has_more: bool = Field(
