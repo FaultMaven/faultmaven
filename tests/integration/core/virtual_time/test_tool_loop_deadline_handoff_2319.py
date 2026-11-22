@@ -254,7 +254,6 @@ def build_router(monkeypatch, chain: List[_Adapter], request_timeout: float):
     monkeypatch.setattr(router_module, "get_registry", lambda: registry)
     router = LLMRouter()
     router.sanitizer = _Sanitizer()
-    router.request_timeout = request_timeout
     monkeypatch.setattr(router.settings.llm, "request_timeout", int(request_timeout))
     monkeypatch.setattr(router.settings.llm, "provider_timeout_overrides", {})
     return router
