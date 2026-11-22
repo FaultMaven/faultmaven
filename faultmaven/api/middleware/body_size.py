@@ -130,7 +130,8 @@ class RequestBodySizeLimitMiddleware:
         # change the setting and see it take effect without rebuilding the app.
         #
         # NOT for hot reload: ``get_settings()`` returns a module-level
-        # singleton that changes only on an explicit ``reset_settings()``, and
+        # singleton that changes only on an explicit ``reset_settings()`` or
+        # ``install_settings()`` (the LLM config reload's), and
         # ``UploadSettings`` has no override path. An earlier version of this
         # comment claimed hot reload and would have had the next reader size a
         # change against behaviour the code does not have.

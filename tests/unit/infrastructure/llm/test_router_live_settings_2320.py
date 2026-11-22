@@ -8,13 +8,21 @@ provider's per-provider timeout, while ``GET /admin/config/status`` reported the
 new one from ``resolve_request_timeout(get_settings())``.
 
 The invariant: the router's per-call ceiling is always
-``resolve_request_timeout(get_settings())``, clamped to the turn.
+``resolve_request_timeout(get_settings())``, clamped to the turn, and its
+``request_timeout`` (the routing health report's figure) is that ceiling
+unclamped.
 
 ``_ALLOWED_OVERRIDES`` has no timeout key, so a reload moves the ceiling only
 by switching the provider whose per-provider override applies; the base
-``request_timeout`` moves with the live settings object itself.
+(``LLMSettings.request_timeout``) moves with the live settings object itself.
+
+Read live, the router also sees whatever the reload installs while it runs, so
+the reload builds the next settings off the singleton and installs them in one
+step: a call during its override read keeps the previous ceiling, and a build
+that raises keeps the previous settings.
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -25,6 +33,7 @@ from faultmaven.config.settings import get_settings, reset_settings
 from faultmaven.infrastructure.llm.providers.registry import reset_registry
 from faultmaven.infrastructure.llm.router import LLMRouter, resolve_request_timeout
 from faultmaven.infrastructure.persistence import llm_config_repository
+from faultmaven.models.exceptions import ConfigurationError
 
 pytestmark = pytest.mark.unit
 
@@ -69,6 +78,7 @@ async def test_a_reload_that_switches_the_provider_moves_the_routers_timeout(
     assert router._resolve_timeout() == pytest.approx(
         resolve_request_timeout(get_settings())
     )
+    assert router.request_timeout == pytest.approx(OVERRIDES["fireworks"])
     assert router.settings is get_settings()
 
 
@@ -105,3 +115,53 @@ def test_settings_cannot_be_assigned(live_settings):
         router.settings = get_settings()
     with pytest.raises(AttributeError):
         router.request_timeout = 1.0
+
+
+async def test_a_call_during_the_override_read_keeps_the_previous_ceiling(
+    live_settings, monkeypatch
+):
+    """The reload awaits the override store. A call in that await resolves the
+    ceiling the installed settings give (fireworks' 300 s), never the env-only
+    settings being built (openai's 45 s); the reloaded one (anthropic, the
+    30 s base) applies once the reload returns."""
+    router = LLMRouter()
+    await _reload_with(monkeypatch, {"primary_provider": "fireworks"})
+    reading, release = asyncio.Event(), asyncio.Event()
+
+    async def store_that_yields_mid_read():
+        reading.set()
+        await release.wait()
+        return {"primary_provider": "anthropic"}
+
+    monkeypatch.setattr(
+        llm_config_repository, "get_all_overrides", store_that_yields_mid_read
+    )
+    reload = asyncio.create_task(llm_config_overrides.reload_llm_config())
+    await reading.wait()
+
+    async def a_call_during_the_read():
+        return router._resolve_timeout()
+
+    during = await asyncio.create_task(a_call_during_the_read())
+    release.set()
+    await reload
+
+    assert during == pytest.approx(OVERRIDES["fireworks"])
+    assert router._resolve_timeout() == pytest.approx(BASE_SECONDS)
+
+
+async def test_a_rebuild_that_raises_keeps_the_previous_settings(
+    live_settings, monkeypatch
+):
+    """A reload whose settings no longer validate raises, and the settings it
+    would have replaced stay installed, so routed calls keep their ceiling."""
+    router = LLMRouter()
+    await _reload_with(monkeypatch, {"primary_provider": "fireworks"})
+    previous = get_settings()
+    monkeypatch.setenv("LLM_PROVIDER_TIMEOUT_OVERRIDES", "not json")
+
+    with pytest.raises(ConfigurationError):
+        await _reload_with(monkeypatch, {"primary_provider": "anthropic"})
+
+    assert get_settings() is previous
+    assert router._resolve_timeout() == pytest.approx(OVERRIDES["fireworks"])

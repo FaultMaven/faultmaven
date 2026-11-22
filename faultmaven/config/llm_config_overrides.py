@@ -156,24 +156,23 @@ async def reload_llm_config() -> None:
     """Hot-reload LLM configuration from DB overrides.
 
     Call after writing new overrides to the database. This:
-    1. Re-reads overrides from DB
-    2. Resets the settings singleton (forces env var reload)
-    3. Applies overrides on top of fresh env vars
+    1. Builds fresh settings from the env vars, off the singleton
+    2. Re-reads overrides from DB and applies them to those settings
+    3. Installs them as the singleton, in one step
     4. Resets the provider registry (forces re-initialization)
 
-    In-flight LLM requests may fail during the brief reset window.
-    The registry will re-initialize lazily on the next request.
+    Until step 3 every reader, the router's per-call timeout included, sees the
+    previous settings, never the env-only ones the override read awaits on; a
+    build that raises leaves them installed (#2320). Steps 3 and 4 run with no
+    await between them. The registry re-initializes lazily on the next request.
     """
-    from faultmaven.config.settings import get_settings, reset_settings
+    from faultmaven.config.settings import build_settings, install_settings
     from faultmaven.infrastructure.llm.providers.registry import reset_registry
 
-    # Reset settings to force fresh env var read
-    reset_settings()
-
-    # Get fresh settings and apply DB overrides
-    settings = get_settings()
+    settings = build_settings()
     await apply_overrides_to_settings(settings)
 
+    install_settings(settings)
     # Reset registry so it picks up the updated settings
     reset_registry()
 

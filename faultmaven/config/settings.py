@@ -4063,62 +4063,83 @@ def get_settings() -> FaultMavenSettings:
     """
     global _settings_instance
     if _settings_instance is None:
-        try:
-            # Load .env without overriding existing environment variables.
-            # This preserves the standard precedence order: OS env > .env.
-            load_settings_dotenv()
-
-            # Apply preset defaults for zero-config experience
-            # Presets are applied AFTER .env but BEFORE settings instantiation
-            # This allows env vars to override preset values
-            from .presets import (
-                ensure_preset_applied,
-                get_current_preset_name,
-                validate_preset_requirements,
-            )
-
-            ensure_preset_applied()
-
-            # Validate preset requirements (e.g., API keys for selected provider)
-            preset_errors = validate_preset_requirements()
-            if preset_errors:
-                logger = logging.getLogger(__name__)
-                for error in preset_errors:
-                    logger.warning(f"Preset configuration warning: {error}")
-
-            logger = logging.getLogger(__name__)
-            preset_name = get_current_preset_name()
-            if preset_name:
-                logger.info(f"Settings loading with preset '{preset_name}'")
-
-            # When running tests, allow bypassing .env file to prevent credential leakage
-            if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
-                settings = FaultMavenSettings(_env_file=None)
-            else:
-                settings = FaultMavenSettings()
-
-            # Standalone convenience: the local JWT secret, resolved once, here,
-            # from the settings just built and validated — the object every gate
-            # reads — and before they are published (#1703).
-            resolve_local_jwt_secret(settings)
-            _settings_instance = settings
-        except Exception as e:
-            from faultmaven.models.exceptions import ConfigurationError
-            from faultmaven.utils.exception_name import exception_class_chain
-
-            # The remedy, on the log chain, where an uncaught refusal shows its
-            # class and frames alone (#2888).
-            logging.getLogger(__name__).error(
-                "Settings initialization failed: correct the setting the "
-                "error's class and frames point to, then start again.",
-                extra={"error": exception_class_chain(e)},
-            )
-            raise ConfigurationError(
-                f"Settings initialization failed: {e}",
-                error_code="SETTINGS_INIT_ERROR",
-                context={"original_error": str(e), "error_type": type(e).__name__},
-            )
+        _settings_instance = build_settings()
     return _settings_instance
+
+
+def build_settings() -> FaultMavenSettings:
+    """Build settings from the environment as ``get_settings`` does, without
+    installing them.
+
+    A hot reload builds the next settings here, applies its overrides to them,
+    and only then installs them with ``install_settings``: no reader sees
+    settings halfway built, and a build that raises leaves the installed ones
+    in place (#2320).
+
+    Raises:
+        ConfigurationError: If settings validation fails
+    """
+    try:
+        # Load .env without overriding existing environment variables.
+        # This preserves the standard precedence order: OS env > .env.
+        load_settings_dotenv()
+
+        # Apply preset defaults for zero-config experience
+        # Presets are applied AFTER .env but BEFORE settings instantiation
+        # This allows env vars to override preset values
+        from .presets import (
+            ensure_preset_applied,
+            get_current_preset_name,
+            validate_preset_requirements,
+        )
+
+        ensure_preset_applied()
+
+        # Validate preset requirements (e.g., API keys for selected provider)
+        preset_errors = validate_preset_requirements()
+        if preset_errors:
+            logger = logging.getLogger(__name__)
+            for error in preset_errors:
+                logger.warning(f"Preset configuration warning: {error}")
+
+        logger = logging.getLogger(__name__)
+        preset_name = get_current_preset_name()
+        if preset_name:
+            logger.info(f"Settings loading with preset '{preset_name}'")
+
+        # When running tests, allow bypassing .env file to prevent credential leakage
+        if os.getenv("FAULTMAVEN_SKIP_DOTENV"):
+            settings = FaultMavenSettings(_env_file=None)
+        else:
+            settings = FaultMavenSettings()
+
+        # Standalone convenience: the local JWT secret, resolved once, here,
+        # from the settings just built and validated — the object every gate
+        # reads — and before they are published (#1703).
+        resolve_local_jwt_secret(settings)
+        return settings
+    except Exception as e:
+        from faultmaven.models.exceptions import ConfigurationError
+        from faultmaven.utils.exception_name import exception_class_chain
+
+        # The remedy, on the log chain, where an uncaught refusal shows its
+        # class and frames alone (#2888).
+        logging.getLogger(__name__).error(
+            "Settings initialization failed: correct the setting the "
+            "error's class and frames point to, then start again.",
+            extra={"error": exception_class_chain(e)},
+        )
+        raise ConfigurationError(
+            f"Settings initialization failed: {e}",
+            error_code="SETTINGS_INIT_ERROR",
+            context={"original_error": str(e), "error_type": type(e).__name__},
+        )
+
+
+def install_settings(settings: FaultMavenSettings) -> None:
+    """Install *settings* as the singleton in one step (see ``build_settings``)."""
+    global _settings_instance
+    _settings_instance = settings
 
 
 def reset_settings() -> None:
