@@ -60,7 +60,7 @@ from faultmaven.modules.auth.contracts import (
     OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
-from faultmaven.utils.exception_name import exception_class_name, exception_log_name
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -848,7 +848,7 @@ async def token(
         logger.warning(f"Invalid grant: {exception_log_name(e)}")
         raise OAuthProtocolError("invalid_grant", str(e)) from e
     except Exception as e:
-        logger.error("Token endpoint error: %s", exception_class_name(e), exc_info=e)
+        logger.error("Token endpoint error: %s", exception_log_name(e), exc_info=e)
         raise OAuthProtocolError("server_error", "Internal server error.", 500) from e
 
     # RFC 6749 §5.1: the body carries fresh credentials.

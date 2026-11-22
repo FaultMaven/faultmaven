@@ -2412,10 +2412,9 @@ class CorruptRevocationEntry(Exception):
       only ``ValueError`` would leave that half falling through unclassified,
       which is the bug this class was introduced to close.
 
-    Carries the offending value's type and a truncated repr, for the log line.
-    The API body never shows either: the request path answers a fixed sentence
-    (``REVOCATION_STATE_UNKNOWN``), and on the Redis arm the raw body can be
-    attacker-influenced, which is why it is truncated rather than passed on.
+    Its message carries the offending value's type and a truncated repr: on the
+    Redis arm the raw body can be attacker-influenced. The log names it by class,
+    and the request path answers a fixed sentence (``REVOCATION_STATE_UNKNOWN``).
     """
 
     def __init__(self, raw, *, field: str):

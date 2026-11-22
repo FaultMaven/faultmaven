@@ -86,7 +86,9 @@ counts sites per file, so switching one site and adding another in the same
 file leaves the count, and the guard, unchanged. A name filled in place, by a
 method call (``logged.append(str(e))``) or a subscript store
 (``d[k] = str(e)``), is not tracked, so a projection built that way and then
-logged is not counted.
+logged is not counted. A method that forwards its keywords to a logger
+(``UserService._refuse_reset``) is not a log call, since :data:`LOG_HELPERS`
+names module functions only; that site is pinned by the S3e render test.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
@@ -118,8 +120,9 @@ LOG_METHODS = frozenset(
 )
 
 #: Module functions that forward their arguments to a logger call
-#: (``api/middleware/route_policy.py``, ``infrastructure/concurrency/owned_claim.py``).
-LOG_HELPERS = frozenset({"_report_once"})
+#: (``api/middleware/route_policy.py``, ``infrastructure/concurrency/owned_claim.py``,
+#: ``modules/auth/api/auth.py``).
+LOG_HELPERS = frozenset({"_report_once", "_warn_profile_degrade_once"})
 
 #: Calls whose result names an exception, or measures a text, without its text.
 SAFE_CALLS = frozenset(
@@ -783,6 +786,10 @@ def _found(source: str) -> List[Site]:
         "try:\n    pass\nexcept Exception as exc:\n"
         "    log.error('x', extra={'lookup': exc.args})",
         "try:\n    pass\nexcept Exception as exc:\n    _report_once('k', 'x (%s)', exc)",
+        "try:\n    pass\nexcept Exception as e:\n"
+        "    _warn_profile_degrade_once('k', f'x {e}')",
+        "try:\n    pass\nexcept Exception as exc:\n"
+        "    log.error('x', extra={'identifier': exc.identifier})",
         "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
         "    log.error('x', extra={'body': body})",
     ],

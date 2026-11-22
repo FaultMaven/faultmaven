@@ -143,8 +143,7 @@ class RevocationStateUnknownError(Exception):
 
     ``kind`` is the failing exception's class name — the publishable half of a
     storage fault, matching what ``GET /admin/config/status`` reports and what
-    the counter is labelled by. The driver's message stays in the log, because
-    SQLAlchemy's carries the full statement and its bound parameters.
+    the counter is labelled by.
     """
 
     #: Distinct from every other auth error code, so a client and an operator
