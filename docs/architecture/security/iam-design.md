@@ -1492,7 +1492,7 @@ openid profile email cases:read cases:write
 Default role for all users:
 
 - Login and authenticate
-- Search Global KB (read-only)
+- Search the runbooks they may see (no sign-in needed for the Global KB tier; read-only)
 - List Global KB documents (read-only)
 - Upload to their own User KB
 - Manage their own User KB documents
@@ -1580,31 +1580,34 @@ from faultmaven.api.v1.auth_dependencies import (
     get_current_user_optional,
     require_authentication,
 )
+from faultmaven.models import SearchRequest
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
 )
 from faultmaven.modules.knowledge.taxonomy import KnowledgeScope
 
-@router.post("/knowledge/documents")
+# Abridged: `router` is the knowledge `APIRouter` (prefix `/knowledge`, `routes.py:107`);
+# request models and other parameters are elided.
+@router.post("/documents")
 async def upload_document(
     file: UploadFile = File(...),
     scope: KnowledgeScope = Form(KnowledgeScope.PERSONAL),
     current_user: DevUser = Depends(require_authentication),  # Any user
 ):
-    """Upload a document; the global scope is gated, not the route."""
+    """Upload a document; the scope is gated (the global arm shown), not the route."""
     if scope == KnowledgeScope.GLOBAL:
         require_global_authoring_allowed()  # multi: 403 for every session
         if not current_user.is_platform_admin():  # single: platform_admin only
             raise HTTPException(status_code=403, detail="...")
     ...
 
-@router.post("/knowledge/search")
+@router.post("/search")
 async def search_documents(
     request: SearchRequest,
     current_user: Optional[DevUser] = Depends(get_current_user_optional),  # Optional auth
 ):
-    """Search every runbook the caller can see: the global tier, plus their own and their teams' when signed in."""
+    """Search the runbooks the caller may see (`KnowledgeService.search_documents`' visibility filter); an anonymous caller sees the global tier only."""
     ...
 ```
 
