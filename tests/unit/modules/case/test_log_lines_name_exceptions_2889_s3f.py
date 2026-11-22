@@ -11,14 +11,15 @@ before the request is answered with a 5xx carries that exception's frames
 Each case drives one site with :data:`MARKER` in the exception's message,
 captures every record at DEBUG, and renders each through the real chain's
 formatter (``build_log_formatter``). The marker is on no rendered line, frames
-included, and the class name is on the site's line; a line before a 5xx
-answering an unexpected failure also carries the exception's frames. How each
-site is driven is stated on its case, with the answer the caller gets beside
-it, unchanged.
+included, and the class name is on the site's line. Each of the area's 14
+lines that log an unexpected failure before a 5xx has its own case, which also
+asserts the line carries the exception's frames. How each site is driven is
+stated on its case, with the answer the caller gets beside it, unchanged.
 """
 
 import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -32,13 +33,22 @@ from faultmaven.api.exception_handlers import (
 )
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.api.v1.dependencies import get_case_repository, get_case_service
+from faultmaven.exceptions import (
+    CircuitBreakerError,
+    CommitOutcomeUnknown,
+    ServiceException,
+)
 from faultmaven.infrastructure.concurrency.inflight import CaseDeleteUnavailable
 from faultmaven.infrastructure.protection.tenant_turn_cap import (
     TenantTurnCapUnavailable,
 )
+from faultmaven.modules.case.api import title_generation
+from faultmaven.modules.case.api.routes import cases as cases_module
 from faultmaven.modules.case.api.routes import conversation as conversation_module
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
+    _di_get_creator_service_channel,
+    _di_get_session_service_dependency,
 )
 from faultmaven.modules.case.api.routes.router import router as case_router
 from faultmaven.modules.case.api.turn_idempotency import _answer_from_receipt
@@ -67,19 +77,49 @@ def _case():
     return inquiry_case(case_id=CASE_ID, user_id=OWNER, enterprise_id="ent_1")
 
 
-async def _call_case_route(case_service, method: str, path: str) -> httpx.Response:
+def _raised(error: BaseException, cause: BaseException) -> BaseException:
+    """``error``, raised from ``cause``, with both tracebacks set."""
+    try:
+        try:
+            raise cause
+        except BaseException as inner:
+            raise error from inner
+    except BaseException as outer:
+        return outer
+
+
+def _breaker() -> CircuitBreakerError:
+    """A first-party store failure carrying an ``error_code``, which the line
+    names as ``CircuitBreakerError[CIRCUIT_OPEN]``."""
+    return CircuitBreakerError(f"redis breaker open {MARKER}", "CIRCUIT_OPEN")
+
+
+def _session_store_down():
+    """A session service whose lookup cannot answer."""
+    failure = ServiceException(f"session store at redis://:{MARKER}@cache")
+    return SimpleNamespace(get_session=AsyncMock(side_effect=failure))
+
+
+async def _call_case_route(
+    case_service, method: str, path: str, *, session_service=None, **kwargs
+) -> httpx.Response:
     """The mounted case router, the app's exception handlers, the caller
-    authenticated as the case's owner and ``case_service`` injected."""
+    authenticated as the case's owner, and ``case_service`` (and
+    ``session_service``) injected."""
     app = FastAPI()
     for exc_type, handler in get_exception_handlers().items():
         app.add_exception_handler(exc_type, handler)
     app.include_router(case_router, prefix="/api/v1")
     app.dependency_overrides[require_authentication] = lambda: _user(OWNER)
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: case_service
+    app.dependency_overrides[_di_get_session_service_dependency] = lambda: (
+        session_service
+    )
+    app.dependency_overrides[_di_get_creator_service_channel] = lambda: None
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        return await client.request(method, f"/api/v1{path}")
+        return await client.request(method, f"/api/v1{path}", **kwargs)
 
 
 # ── modules/case/api/routes/cases.py ──────────────────────────────────────
@@ -104,21 +144,110 @@ async def test_a_refused_delete_carries_the_frames_of_both_links(lines):
     ``CaseDeleteUnavailable`` from a store error carrying the marker: the 503,
     and a line naming the cause's class with the frames of both links."""
     service = MagicMock()
-    try:
-        try:
-            raise ConnectionError(f"lease store said {MARKER}")
-        except ConnectionError as cause:
-            raise CaseDeleteUnavailable() from cause
-    except CaseDeleteUnavailable as unavailable:
-        service.hard_delete_case = AsyncMock(side_effect=unavailable)
+    service.hard_delete_case = AsyncMock(
+        side_effect=_raised(CaseDeleteUnavailable(), _breaker())
+    )
 
     answer = await _call_case_route(service, "DELETE", f"/cases/{CASE_ID}")
 
     assert answer.status_code == 503
     assert answer.headers["x-error-code"] == "CASE_DELETE_UNAVAILABLE"
-    refused = _named(lines(), "Refused delete of case", f"{CASE_ID}: ConnectionError")
+    refused = _named(
+        lines(),
+        "Refused delete of case",
+        f"{CASE_ID}: CircuitBreakerError[CIRCUIT_OPEN]",
+    )
     assert "CaseDeleteUnavailable:" in refused["frames"]
-    assert "ConnectionError:" in refused["frames"]
+    assert "CircuitBreakerError:" in refused["frames"]
+
+
+async def test_a_failed_delete_is_named_by_class_and_code_with_its_frames(lines):
+    """``DELETE /cases/{id}`` with a service whose delete raises a first-party
+    store failure: the catch-all's static 500, and a line naming the class
+    with its ``error_code`` and carrying its frames."""
+    service = MagicMock()
+    service.hard_delete_case = AsyncMock(side_effect=_breaker())
+
+    answer = await _call_case_route(service, "DELETE", f"/cases/{CASE_ID}")
+
+    assert answer.status_code == 500
+    assert answer.json()["detail"]["error"]["code"] == "DELETE_CASE_ERROR"
+    failed = _named(
+        lines(),
+        "Unexpected error in delete_case",
+        f"{CASE_ID}: CircuitBreakerError[CIRCUIT_OPEN]",
+    )
+    assert failed["frames"].startswith("CircuitBreakerError:")
+
+
+async def test_an_unevaluable_session_gate_on_create_carries_its_frames(lines):
+    """``POST /cases`` naming a session, with a session service that cannot
+    answer: the 503, and the line with its frames."""
+    answer = await _call_case_route(
+        MagicMock(),
+        "POST",
+        "/cases",
+        session_service=_session_store_down(),
+        json={"title": "Checkout API 502s", "session_id": "s-1"},
+    )
+
+    assert answer.status_code == 503
+    refused = _named(
+        lines(), "Cannot evaluate session ownership for s-1", ": ServiceException"
+    )
+    assert refused["frames"].startswith("ServiceException:")
+
+
+async def test_a_failed_case_list_is_named_by_class_with_its_frames(lines):
+    """``GET /cases`` with a service whose list raises: the catch-all's 500,
+    and the line with its frames."""
+    service = MagicMock()
+    service.list_user_cases = AsyncMock(side_effect=RuntimeError(f"db {MARKER}"))
+
+    answer = await _call_case_route(service, "GET", "/cases")
+
+    assert answer.status_code == 500
+    failed = _named(
+        lines(), "Unexpected error in list_cases", "list_cases: RuntimeError"
+    )
+    assert failed["frames"].startswith("RuntimeError:")
+
+
+async def test_a_failed_case_ui_read_is_named_by_class_with_its_frames(lines):
+    """``GET /cases/{id}/ui`` with a service whose lookup raises: the 500, and
+    the line with its frames."""
+    service = MagicMock()
+    service.require_case = AsyncMock(side_effect=RuntimeError(f"pool {MARKER}"))
+
+    answer = await _call_case_route(service, "GET", f"/cases/{CASE_ID}/ui")
+
+    assert answer.status_code == 500
+    failed = _named(
+        lines(), "Unexpected error in get_case_ui", "get_case_ui: RuntimeError"
+    )
+    assert failed["frames"].startswith("RuntimeError:")
+
+
+async def test_a_failed_title_request_is_named_by_class_with_its_frames(lines):
+    """``POST /cases/{id}/title`` with the shared generate-and-persist step
+    (stubbed) raising: the 500, and the line with its frames."""
+    service = MagicMock()
+    service.require_case = AsyncMock(return_value=_case())
+
+    with patch.object(
+        cases_module,
+        "_generate_and_persist_title",
+        AsyncMock(side_effect=RuntimeError(f"title store {MARKER}")),
+    ):
+        answer = await _call_case_route(service, "POST", f"/cases/{CASE_ID}/title")
+
+    assert answer.status_code == 500
+    failed = _named(
+        lines(),
+        "Unexpected error in generate_case_title",
+        "generate_case_title: RuntimeError",
+    )
+    assert failed["frames"].startswith("RuntimeError:")
 
 
 # ── modules/case/api/routes/conversation.py ───────────────────────────────
@@ -158,6 +287,129 @@ async def test_a_failure_answering_a_committed_turn_is_named_by_class(lines):
     assert answer.status_code == 500
     assert answer.headers["x-error-code"] == "TURN_OUTCOME_UNKNOWN"
     failed = _named(lines(), "committed; answering it failed", "failed: RuntimeError")
+    assert failed["frames"].startswith("RuntimeError:")
+
+
+async def test_an_unevaluable_session_gate_on_resume_carries_its_frames(lines):
+    """``POST /cases/sessions/{sid}/resume/{id}`` with the case readable and a
+    session service that cannot answer: the 503, and the line with frames."""
+    service = MagicMock()
+    service.require_case = AsyncMock(return_value=_case())
+    service.get_case = AsyncMock(return_value=_case())
+
+    answer = await _call_case_route(
+        service,
+        "POST",
+        f"/cases/sessions/s-1/resume/{CASE_ID}",
+        session_service=_session_store_down(),
+    )
+
+    assert answer.status_code == 503
+    refused = _named(
+        lines(), "Cannot evaluate session ownership for s-1", ": ServiceException"
+    )
+    assert refused["frames"].startswith("ServiceException:")
+
+
+async def test_an_unclassified_turn_failure_carries_its_frames(lines):
+    """``POST /cases/{id}/turns`` with the preparation raising the
+    ``ServiceException`` the service wraps an unclassified failure in: the 500
+    ``SERVICE_ERROR``, and the line naming the chain with its frames."""
+    failure = _raised(
+        ServiceException(f"turn failed: {MARKER}"), KeyError(f"slot {MARKER}")
+    )
+    service = _stubbed_service(AsyncMock(side_effect=failure))
+
+    answer = await _post_turn(service)
+
+    assert answer.status_code == 500
+    assert answer.headers["x-error-code"] == "SERVICE_ERROR"
+    failed = _named(
+        lines(), "Turn processing failed", "failed: ServiceException <- KeyError"
+    )
+    assert failed["frames"].startswith("ServiceException:")
+    assert "KeyError:" in failed["frames"]
+
+
+async def test_an_unanswered_commit_carries_its_frames(lines):
+    """``POST /cases/{id}/turns`` whose commit raises ``CommitOutcomeUnknown``:
+    the 500 ``TURN_OUTCOME_UNKNOWN``, and the line with its frames."""
+    service = _stubbed_service(AsyncMock(return_value=MagicMock()))
+    service.commit_turn = AsyncMock(
+        side_effect=_raised(
+            CommitOutcomeUnknown(f"COMMIT unanswered {MARKER}"),
+            ConnectionResetError(f"peer reset {MARKER}"),
+        )
+    )
+
+    answer = await _post_turn(service)
+
+    assert answer.status_code == 500
+    assert answer.headers["x-error-code"] == "TURN_OUTCOME_UNKNOWN"
+    failed = _named(
+        lines(),
+        "outcome unknown",
+        "unknown: CommitOutcomeUnknown <- ConnectionResetError",
+    )
+    assert failed["frames"].startswith("CommitOutcomeUnknown:")
+
+
+# ── modules/case/api/title_generation.py ──────────────────────────────────
+
+
+async def _persist_title(monkeypatch, failure: BaseException):
+    """``_generate_and_persist_title`` called with its generation stubbed (a
+    titleable case, an LLM title that passes the disclosure gate) and a case
+    service whose title write raises ``failure``."""
+
+    async def _title(*_args, **_kwargs):
+        return "Checkout API returns 502s", "llm"
+
+    async def _passes(*_args, **_kwargs):
+        return True
+
+    async def _redaction(*_args, **_kwargs):
+        return SimpleNamespace(save=AsyncMock())
+
+    monkeypatch.setattr(title_generation, "_has_problem_statement", lambda *a: True)
+    monkeypatch.setattr(title_generation, "_generate_title_with_llm", _title)
+    monkeypatch.setattr(title_generation, "_passes_disclosure_gate", _passes)
+    monkeypatch.setattr(title_generation, "load_case_redaction", _redaction)
+    service = MagicMock()
+    service.get_case_conversation_context = AsyncMock(return_value="")
+    service.update_case = AsyncMock(side_effect=failure)
+    with pytest.raises(HTTPException) as refused:
+        await title_generation._generate_and_persist_title(
+            case=_case(),
+            case_id=CASE_ID,
+            user_id=OWNER,
+            case_service=service,
+            llm_provider=None,
+            max_words=8,
+            hint=None,
+            sanitizer=None,
+            redis_client=None,
+        )
+    assert refused.value.status_code == 500
+
+
+async def test_a_service_failure_persisting_a_title_carries_its_frames(
+    lines, monkeypatch
+):
+    await _persist_title(monkeypatch, ServiceException(f"db {MARKER}"))
+    failed = _named(
+        lines(), "Service error persisting generated title", ": ServiceException"
+    )
+    assert failed["frames"].startswith("ServiceException:")
+
+
+async def test_an_unexpected_failure_persisting_a_title_carries_its_frames(
+    lines, monkeypatch
+):
+    await _persist_title(monkeypatch, RuntimeError(f"db {MARKER}"))
+    failed = _named(
+        lines(), "Unexpected error persisting generated title", ": RuntimeError"
+    )
     assert failed["frames"].startswith("RuntimeError:")
 
 

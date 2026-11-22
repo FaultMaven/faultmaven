@@ -1262,12 +1262,16 @@ async def submit_turn(
         raise
     except CommitOutcomeUnknown as unknown:
         logger.error(
-            "Turn on case %s: outcome unknown: %s", case_id, exception_log_name(unknown)
+            "Turn on case %s: outcome unknown: %s",
+            case_id,
+            exception_log_name(unknown),
+            exc_info=unknown,
         )
         raise _turn_outcome_unknown_http() from unknown
     except ServiceException as e:
         logger.error(
             f"Turn processing failed: {exception_log_name(e)}",
+            exc_info=e,
         )
         # Classify off the typed provider metadata (LLMException.status_code /
         # retryable on the __cause__ chain), not the message string — see

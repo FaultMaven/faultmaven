@@ -82,7 +82,7 @@ from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.services.case_ui_adapter import (
     transform_case_for_ui,
 )
-from faultmaven.utils.exception_name import exception_class_chain, exception_log_name
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 router = APIRouter(prefix="/cases", tags=["cases"])
@@ -243,7 +243,7 @@ async def delete_case(
         cause = unavailable.__cause__
         logger.error(
             f"Refused delete of case {case_id}: "
-            f"{exception_class_chain(cause) if cause is not None else 'no cause'}",
+            f"{exception_log_name(cause) if cause is not None else 'no cause'}",
             exc_info=unavailable,
         )
         raise HTTPException(
@@ -283,7 +283,7 @@ async def delete_case(
         # By class and frames only: a store's or repository's error
         # interpolates its client's text (#2587).
         logger.error(
-            f"Unexpected error in delete_case {case_id}: {exception_class_chain(e)}",
+            f"Unexpected error in delete_case {case_id}: {exception_log_name(e)}",
             exc_info=e,
         )
         error_response = ErrorResponse(

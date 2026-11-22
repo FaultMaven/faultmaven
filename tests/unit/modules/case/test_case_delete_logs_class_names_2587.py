@@ -54,12 +54,17 @@ pytestmark = pytest.mark.unit
 
 CASE = f"/api/v1/cases/{CASE_ID}"
 
+#: Plain text ahead of any credential header: the chain's redactor blanks what
+#: follows ``"set-cookie":``, so only this marker fails when a line logs the
+#: error's text through the chain.
+PLAIN = "zqxleak2587"
+
 #: What a client's error carries: its backend's response headers and body.
 LEAKED = (
-    'status 502, headers {"set-cookie": "session=SECRET"}, '
+    f'{PLAIN} status 502, headers {{"set-cookie": "session=SECRET"}}, '
     'body {"bucket": "fm-prod-uploads", "detail": "upstream"}'
 )
-FORBIDDEN = ("SECRET", "set-cookie", "fm-prod-uploads")
+FORBIDDEN = (PLAIN, "SECRET", "set-cookie", "fm-prod-uploads")
 
 
 class ApiError(Exception):
