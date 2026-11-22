@@ -12,13 +12,19 @@ cause is identified, the record lines) come from the record
 the decider's read only as the fold-failure fallback.
 
 ``render_offer`` renders the prose of an offer (or a request) a decision cycle
-opened, from its ``OfferCode`` and the params its decider read (decide-time,
-A4), after the cycle's record is written (#2636 B1d).
+opened, from its ``OfferCode`` and its params, after the cycle's record is
+written (#2636 B1d). For an offer in ``RECORD_PROSE``, when no switched
+decision of the cycle disagrees with the record on a field it was decided
+from, the narration step takes the outcome facts those params state from the
+record (``record_params``, #2811 S2b-2c); when one does, and for every other
+offer until stage S3 switches its decider, the params are the ones its
+decider read (decide-time, A4).
 """
 
 from typing import Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
+    CaseOutcome,
     ClosureEligibility,
     ConfirmationGap,
     ResolutionReason,
@@ -335,8 +341,10 @@ _READINESS_PARAMS = ("request_text", "off_cause_turn", "recheck_cause", "recheck
 
 
 def _readiness(params: dict) -> str:
-    """The readiness message for the reason its decider decided, from
-    ``ResolutionReadiness.offer_params``."""
+    """The readiness message for the reason in ``params``: from
+    ``ResolutionReadiness.offer_params``, the record's facts filled in by
+    ``record_params`` when no switched decision of the cycle disagrees with
+    the record."""
     return readiness_message(
         params["reason"],
         missing=params["missing"],
@@ -345,11 +353,76 @@ def _readiness(params: dict) -> str:
     )
 
 
+#: The offers whose prose states the cycle's record (#2811 S2b-2c, ruling (a)
+#: of 2026-11-22: the prose the replay found identical), by ``(code,
+#: composer)``, the composer a model proposal's alone, when no switched
+#: decision of the cycle disagrees with the record on a field it was decided
+#: from (``codes.DECIDED_FROM``); when one does, every one renders its
+#: decider's params.
+#: ``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the confirmation and closure
+#: proposals render their decider's params until stage S3 switches their
+#: deciders.
+RECORD_PROSE = frozenset(
+    {
+        (OfferCode.RCA_INFEASIBLE_CLOSE, None),
+        (OfferCode.DEFERRED_CLOSE, None),
+        (OfferCode.BACKSTOP_RESOLVE, None),
+        (OfferCode.FALSE_ALARM_CLOSE, None),
+        (OfferCode.NEEDS_INFO_UNMET_CLOSE, None),
+        (OfferCode.RESOLUTION_NEEDS_INFO, None),
+        (OfferCode.MODEL_PROPOSAL, "readiness"),
+    }
+)
+
+
+def record_params(
+    code: str, params: dict, outcome: CaseOutcome, request_text: Optional[str]
+) -> dict:
+    """``params`` with the outcome facts an offer in ``RECORD_PROSE`` states
+    taken from ``outcome``, a record no switched decision of the cycle
+    disagrees with (the caller's check); any other offer's
+    ``params`` unchanged. ``request_text``: the request text of the need the
+    record holds the resolution for (``resolution.pending_check_need_id``),
+    None when it holds none, the decision's then. Every other param (the
+    rationale, the proposal id, the composer, the texts a readiness ask names)
+    stays the decider's. ``DEFERRED_CLOSE`` states no fact the record holds."""
+    if (code, params.get("composer")) not in RECORD_PROSE:
+        return params
+    resolution = outcome.resolution
+    if code == OfferCode.RCA_INFEASIBLE_CLOSE:
+        return {**params, "closure_line": outcome.closure.statement}
+    if code == OfferCode.BACKSTOP_RESOLVE:
+        return {
+            **params,
+            "record_lines": resolution.statement,
+            "identification_leg": outcome.cause.identification_leg,
+            "reason": resolution.reason,
+        }
+    if code == OfferCode.FALSE_ALARM_CLOSE:
+        return {**params, "problem_status": outcome.problem.status}
+    if code == OfferCode.DEFERRED_CLOSE:
+        return params
+    # The readiness asks: the unmet request's close, the needs-info request
+    # and the model proposal's.
+    return {
+        **params,
+        "reason": resolution.reason,
+        "missing": list(resolution.missing),
+        "gaps": list(resolution.confirmation_gaps),
+        "request_text": (
+            request_text if request_text is not None else params.get("request_text")
+        ),
+        "off_cause_turn": resolution.off_cause_turn,
+    }
+
+
 def render_offer(code: str, params: dict) -> str:
     """The prose of an offer or request a decision cycle opened, rendered after
-    its record from the facts its decider read (A4): every text is the one the
-    decider composed before B1d. None reads the record yet (stage S3 switches
-    the deciders to it)."""
+    its record from ``params``: for an offer in ``RECORD_PROSE``, the facts
+    the record states (``record_params``) where the narration has a record
+    no switched decision of the cycle disagrees with; otherwise, and for every
+    other offer until stage S3 switches its decider to the record, the facts
+    its decider read (A4)."""
     if code == OfferCode.RCA_INFEASIBLE_CLOSE:
         # The mitigation's record (#2100, C1), never a verdict it does not hold.
         lead = mitigation_sentence(params["closure_line"] or "a mitigation was applied")
