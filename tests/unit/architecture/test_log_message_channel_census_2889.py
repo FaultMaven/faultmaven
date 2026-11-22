@@ -56,7 +56,9 @@ attribute in :data:`SAFE_ATTRS` (``e.status_code``,
 ``e.returncode``, ``e.item_id``, the knowledge item id our code sets on
 ``IngestOutcomeUnknown``, ``e.limit_type``, ``e.current_count``, ``e.limit`` and
 ``e.retry_after``, the limit and counts our code sets on ``RateLimitError``,
-...), or read by name
+``e.lookup``, the fixed label (``user_id``, ``username`` or ``email``) our code
+sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe, ...), or read
+by name
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
@@ -84,7 +86,9 @@ counts sites per file, so switching one site and adding another in the same
 file leaves the count, and the guard, unchanged. A name filled in place, by a
 method call (``logged.append(str(e))``) or a subscript store
 (``d[k] = str(e)``), is not tracked, so a projection built that way and then
-logged is not counted.
+logged is not counted. A method that forwards its keywords to a logger
+(``UserService._refuse_reset``) is not a log call, since :data:`LOG_HELPERS`
+names module functions only; that site is pinned by the S3e render test.
 
 :data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
 A new site, a file not listed, or a count that moved either way fails: a
@@ -116,8 +120,9 @@ LOG_METHODS = frozenset(
 )
 
 #: Module functions that forward their arguments to a logger call
-#: (``api/middleware/route_policy.py``, ``infrastructure/concurrency/owned_claim.py``).
-LOG_HELPERS = frozenset({"_report_once"})
+#: (``api/middleware/route_policy.py``, ``infrastructure/concurrency/owned_claim.py``,
+#: ``modules/auth/api/auth.py``).
+LOG_HELPERS = frozenset({"_report_once", "_warn_profile_degrade_once"})
 
 #: Calls whose result names an exception, or measures a text, without its text.
 SAFE_CALLS = frozenset(
@@ -156,6 +161,7 @@ SAFE_ATTRS = frozenset(
         "current_count",
         "limit",
         "retry_after",
+        "lookup",
     }
 )
 
@@ -582,8 +588,6 @@ ALLOWED = {
     "container/providers/services.py": 12,
     "container/providers/tools.py": 6,
     "container/utils.py": 2,
-    "infrastructure/auth/database_user_store.py": 8,
-    "infrastructure/auth/user_store.py": 15,
     "infrastructure/base_client.py": 4,
     "infrastructure/caching/intelligent_cache.py": 13,
     "infrastructure/concurrency/teardown.py": 1,
@@ -611,9 +615,6 @@ ALLOWED = {
     "infrastructure/persistence/chromadb_store.py": 1,
     "infrastructure/persistence/pg_connection.py": 1,
     "infrastructure/redis_client.py": 1,
-    "infrastructure/security/case_redaction.py": 3,
-    "infrastructure/security/pseudonym_key.py": 1,
-    "infrastructure/security/redaction.py": 3,
     "infrastructure/shims/security.py": 2,
     "infrastructure/storage/filesystem.py": 1,
     "infrastructure/tasks/case_cleanup.py": 6,
@@ -625,15 +626,6 @@ ALLOWED = {
     "jobs/kb_vector_enterprise_backfill.py": 2,
     "jobs/llm_usage_retention.py": 1,
     "jobs/run.py": 4,
-    "modules/auth/api/auth.py": 14,
-    "modules/auth/api/oauth.py": 7,
-    "modules/auth/api/session.py": 15,
-    "modules/auth/contracts.py": 1,
-    "modules/auth/domain/services/auth_service.py": 3,
-    "modules/auth/domain/services/jwt_token_generator.py": 5,
-    "modules/auth/domain/services/user_service.py": 2,
-    "modules/auth/infrastructure/metrics/oauth_metrics.py": 9,
-    "modules/auth/infrastructure/stores/redis_session_store.py": 10,
     "modules/case/api/routes/cases.py": 17,
     "modules/case/api/routes/conversation.py": 12,
     "modules/case/api/routes/data.py": 2,
@@ -678,6 +670,9 @@ SWITCHED_PREFIXES = (
     "api/",
     "infrastructure/protection/",
     "main.py",
+    "modules/auth/",
+    "infrastructure/auth/",
+    "infrastructure/security/",
 )
 
 
@@ -788,7 +783,13 @@ def _found(source: str) -> List[Site]:
         "def f(e):\n    log.error('%s', e.message)",
         "def f(exc: RequestValidationError):\n    log.error('%s', exc.errors())",
         "def f(error: RateLimitError):\n    log.warning('%s', error.message)",
+        "try:\n    pass\nexcept Exception as exc:\n"
+        "    log.error('x', extra={'lookup': exc.args})",
         "try:\n    pass\nexcept Exception as exc:\n    _report_once('k', 'x (%s)', exc)",
+        "try:\n    pass\nexcept Exception as e:\n"
+        "    _warn_profile_degrade_once('k', f'x {e}')",
+        "try:\n    pass\nexcept Exception as exc:\n"
+        "    log.error('x', extra={'identifier': exc.identifier})",
         "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
         "    log.error('x', extra={'body': body})",
     ],
@@ -839,6 +840,8 @@ def test_a_site_is_found(source):
         "def f(e):\n    log.error('item %s', e.item_id)",
         "def f(error: RateLimitError):\n    log.warning(f'{error.limit_type} "
         "{error.current_count}/{error.limit} {error.retry_after}')",
+        "try:\n    pass\nexcept Exception as exc:\n"
+        "    log.error('x', extra={'lookup': exc.lookup})",
         "try:\n    pass\nexcept Exception as exc:\n"
         "    _report_once('k', 'x (%s)', exception_log_name(exc))",
         "def f(exc):\n    _report_once('k', 'x %s', 'literal')",

@@ -37,6 +37,7 @@ from faultmaven.modules.auth.domain.models.rbac import (
     ROLELESS_ACCOUNT_ROLE,
     effective_roles,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.modules.auth.domain.models.user import User
@@ -1034,7 +1035,7 @@ async def is_team_member(team_service, user_id: Optional[str], team_id: str) -> 
             "Team membership resolution failed for user %s / team %s: %s",
             user_id,
             team_id,
-            exc,
+            exception_log_name(exc),
         )
         return False
 

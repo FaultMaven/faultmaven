@@ -50,6 +50,7 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 from faultmaven.modules.auth.infrastructure.metrics.revocation_metrics import (
     revocation_state_unknown_total,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +143,7 @@ class RevocationStateUnknownError(Exception):
 
     ``kind`` is the failing exception's class name — the publishable half of a
     storage fault, matching what ``GET /admin/config/status`` reports and what
-    the counter is labelled by. The driver's message stays in the log, because
-    SQLAlchemy's carries the full statement and its bound parameters.
+    the counter is labelled by.
     """
 
     #: Distinct from every other auth error code, so a client and an operator
@@ -645,7 +645,7 @@ class AuthService:
                 await self._revocation_store.add_revoked_token(token_jti, ttl)
                 logger.debug(f"Token revoked: {token_jti} (TTL: {ttl}s)")
         except Exception as e:
-            logger.error(f"Failed to revoke token: {e}")
+            logger.error(f"Failed to revoke token: {exception_log_name(e)}")
             raise ServiceError(f"Token revocation failed: {e}")
 
     def _watermark_ttl_seconds(self) -> int:
@@ -783,7 +783,7 @@ class AuthService:
                     f"{_FINAL_STAMP_ATTEMPTS} attempts"
                 )
         except Exception as e:
-            logger.error(f"Failed to revoke user tokens: {e}")
+            logger.error(f"Failed to revoke user tokens: {exception_log_name(e)}")
             raise ServiceError(f"Token revocation failed: {e}")
 
         logger.info(
@@ -891,9 +891,8 @@ class AuthService:
             kind = type(e).__name__
             revocation_state_unknown_total.labels(kind=kind).inc()
             logger.error(
-                "Revocation state unknown, refusing the request: %s: %s",
-                kind,
-                e,
+                "Revocation state unknown, refusing the request: %s",
+                exception_log_name(e),
             )
             raise RevocationStateUnknownError(kind=kind) from e
         return reason is not None

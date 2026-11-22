@@ -1236,9 +1236,8 @@ class UserLookupFailed(RepositoryError):
     JIT path) keep working unchanged — an absent user still returns ``None``;
     what changes is that they now fail loudly instead of proceeding on a guess.
 
-    Over HTTP this is a ``ServiceError``, so it becomes a generic 500 and the
-    identifier stays in the log (``service_error_handler``). The message is
-    written for the operator reading that log, or the CLI printing it.
+    Over HTTP this is a ``ServiceError``, so it becomes a generic 500, logged by
+    class (``service_error_handler``). The message is for the CLI printing it.
     """
 
     def __init__(self, message: str, *, lookup: str, identifier: str):
