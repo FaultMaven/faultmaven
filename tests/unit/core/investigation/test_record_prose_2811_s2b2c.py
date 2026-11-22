@@ -1,15 +1,16 @@
 """The held check's notice and the offer prose state the cycle's record
-where it agrees with the decision (#2811 S2b-2c, #2615 stage S2; ruling (a)
-of 2026-11-22).
+when no switched decision of the cycle disagrees with it (#2811 S2b-2c, #2615
+stage S2; ruling (a) of 2026-11-22).
 
 Switched: ``PENDING_CHECK``, ``RCA_INFEASIBLE_CLOSE``, ``BACKSTOP_RESOLVE``,
 ``FALSE_ALARM_CLOSE``, ``DEFERRED_CLOSE``, ``NEEDS_INFO_UNMET_CLOSE``,
-``RESOLUTION_NEEDS_INFO`` and the model proposal's readiness ask. Where the
-record agrees with the decision on every field it was decided from
-(``DECIDED_FROM``, compared as the conflict counter compares them), each takes
-the facts its text states from ``case.progress.outcome``, the need's request
-text through the narrators' text accessor (``content_by_id``). Where it does
-not, the text is the decider's, as on ``main``, and the conflict is counted.
+``RESOLUTION_NEEDS_INFO`` and the model proposal's readiness ask. When the
+record agrees with every switched decision of the cycle on every field it was
+decided from (``DECIDED_FROM``, compared as the conflict counter compares
+them), each takes the facts its text states from ``case.progress.outcome``,
+the need's request text through the narrators' text accessor
+(``content_by_id``). When one disagrees, every switched text is its
+decider's, as on ``main``, and the conflict is counted.
 Kept until stage S3: ``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the model
 proposal's confirmation and closure, which render their decider's params.
 """
@@ -393,6 +394,35 @@ def test_a_held_ask_the_record_reads_confirmed_renders_the_decision(monkeypatch)
     narrate_turn(case, metadata)
     assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
     assert rendered[0][1]
+    assert _held_notice(metadata) == [_feedback(decided)]
+    assert _conflicts(metadata) == [f"narration.{_CODE}"]
+
+
+def test_one_decision_under_two_codes_names_one_need(monkeypatch):
+    """Delta F1: step 2's one decision is logged as the held check (decided
+    on the reason and why the check holds) and its needs-info request
+    (decided on the reason). A record agreeing on the reason but holding need
+    B, held for another reason, disagrees with the held check: both the
+    model's notice and the user's request name the decider's need, never one
+    each, and the conflict is counted."""
+    case, metadata = SWITCHED["pending_check"]()
+    entry = _offer(metadata)
+    (decided,) = [e["params"] for e in _entries(metadata) if e["code"] == _CODE]
+    assert decided["pending_check_reason"] == PendingCheckReason.UNANSWERED
+    need = _second_need(case)
+    _stored(case, metadata)
+    _edited(
+        case.progress.outcome,
+        "resolution",
+        pending_check_need_id=need.need_id,
+        pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
+    )
+    assert case.progress.outcome.resolution.reason == decided["reason"], "premise"
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    assert decided["request_text"] in rendered[0][1]
+    assert need.request_text not in rendered[0][1]
     assert _held_notice(metadata) == [_feedback(decided)]
     assert _conflicts(metadata) == [f"narration.{_CODE}"]
 

@@ -15,8 +15,8 @@ B1c's renderers read no record: their params carry the facts their deciders
 read (decide-time, A4), so each renders the text its decider composed. Two
 are the exception: the unbound re-checks (B2, #2555), their rows the
 record's, their pool the decider's; and the held check (``PENDING_CHECK``,
-#2811 S2b-2c), which states the record where the record agrees with its
-decision, and its decider's params where it does not.
+#2811 S2b-2c), which states the record when no switched decision of the
+cycle disagrees with it, and its decider's params when one does.
 """
 
 from typing import Callable, Optional
@@ -530,9 +530,9 @@ def _failed_fix(params: dict, outcome, log) -> list:
 
 @_renders(NoticeCode.PENDING_CHECK)
 def _pending_check(params: dict, outcome, log) -> list:
-    """``outcome`` is the record where it agrees with the decision on the
-    reason and why the check holds (``turn_narration._agreed_outcome``), else
-    None (#2811 S2b-2c). With a record that holds a check, the held need,
+    """``outcome`` is the record when no switched decision of the cycle
+    disagrees with it (``turn_narration._switched_outcome``), else None
+    (#2811 S2b-2c). With a record that holds a check, the held need,
     why it holds and whether a resolve decline stands are the record's, the
     need's request text the one ``narrate_turn`` read for it
     (``record_request_text``, else the decision's). With none, or a record

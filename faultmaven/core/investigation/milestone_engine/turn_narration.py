@@ -8,10 +8,10 @@ cycle's record for a code in ``READS_THE_RECORD``, from its params for every
 other but the unbound re-checks (below). Each offer code's prose is rendered
 (``narration.offers.render_offer``) from its params, published under its key
 (``PROSE_KEYS``) and written as the offer's summary (B1d). The held check
-(``PENDING_CHECK``) and an offer in ``RECORD_PROSE`` state the record when it
-agrees with the decision on every field the decision was decided from
-(``_agreed_outcome``), and their decider's params when it does not (#2811
-S2b-2c). The request text of the need the record holds the resolution for is
+(``PENDING_CHECK``) and the offers in ``RECORD_PROSE`` state the record when
+no switched decision of the narration disagrees with it on a field it was
+decided from, and every one states its decider's params when one does
+(``_switched_outcome``, #2811 S2b-2c). The request text of the need the record holds the resolution for is
 read once, through the narrators' text accessor (``content_by_id``), and
 handed to the renderers that state it. It runs once per
 turn, in ``_finalize_turn``, before the turn record copies the notices. A
@@ -158,20 +158,36 @@ def _reads_the_record(code: str, params: dict) -> bool:
     return code in READS_THE_RECORD or (code, params.get("composer")) in RECORD_PROSE
 
 
-def _agreed_outcome(
-    code: str, params: dict, outcome: Optional[CaseOutcome]
+def _switched(code: str, params: dict) -> bool:
+    """Whether the decision's text states the record (#2811 S2b-2c): the
+    held check, or an offer in ``RECORD_PROSE``."""
+    return code == NoticeCode.PENDING_CHECK or (
+        (code, params.get("composer")) in RECORD_PROSE
+    )
+
+
+def _switched_outcome(
+    case: Any, log: list, outcome: Optional[CaseOutcome]
 ) -> Optional[CaseOutcome]:
-    """``outcome`` for a switched decision (``PENDING_CHECK``, an offer in
-    ``RECORD_PROSE``) the record agrees with on every field it was decided
-    from (``_disagreements``); None for one it disagrees with, which then
-    renders from its decider's params, as before #2811 S2b-2c (the conflict
-    is counted either way). Any other decision's ``outcome`` unchanged."""
-    if outcome is None or not (
-        code == NoticeCode.PENDING_CHECK
-        or (code, params.get("composer")) in RECORD_PROSE
-    ):
-        return outcome
-    return None if _disagreements(code, params, outcome) else outcome
+    """What every switched decision of the narration renders from, decided
+    once per narration: ``outcome`` when no switched decision in ``log``
+    disagrees with it on a field it was decided from (``_disagreements``),
+    else None, so every one renders from its decider's params, as before
+    #2811 S2b-2c (the conflict is counted when the record was stored). One
+    decision logged under two codes (step 2's held check and its needs-info
+    request) thus names one need. An offer that lapsed in its cycle shows
+    nothing and is not compared, as ``_conflicts`` skips it."""
+    if outcome is None:
+        return None
+    for entry in log:
+        params = entry["params"]
+        if (
+            _switched(entry["code"], params)
+            and not _lapsed(case, params.get("proposal_id"))
+            and _disagreements(entry["code"], params, outcome)
+        ):
+            return None
+    return outcome
 
 
 def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
@@ -183,8 +199,9 @@ def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
     needs-info request) is one conflict, and a field that refines another
     (``REFINES``) is compared only where its parent agrees, so a decision
     counts it at most once (``_disagreements``). Counted only after the turn
-    commits (#2689). A conflicting decision's text is its decider's (A4,
-    ``_agreed_outcome``); stage S3 switches the deciders to the record."""
+    commits (#2689). On a conflict, every switched decision's text is its
+    decider's (A4, ``_switched_outcome``); stage S3 switches the deciders to
+    the record."""
     counted = set()
     found = []
     for entry in log:
@@ -225,10 +242,10 @@ def _narrate_offer(
     request_text: Optional[str],
 ) -> None:
     """Publish the offer's prose under its key, and write it as the summary
-    of the offer it opened while that offer is open. The prose states
-    ``outcome``, the record where it agrees with the decision
-    (``_agreed_outcome``), for an offer in ``RECORD_PROSE`` (``record_params``),
-    else its decider's params. An offer that lapsed in
+    of the offer it opened while that offer is open. For an offer in
+    ``RECORD_PROSE`` the prose states ``outcome`` (``record_params``), the
+    record where no switched decision of the narration disagrees with it
+    (``_switched_outcome``), else its decider's params. An offer that lapsed in
     the cycle that opened it shows nothing: no prose, so no confirmation pair
     (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
     if _lapsed(case, params.get("proposal_id")):
@@ -316,9 +333,10 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     need_id = outcome.resolution.pending_check_need_id if outcome is not None else None
     content = content_by_id(case, need_id) if need_id is not None else None
     request_text = content.text if content is not None else None
+    switched = _switched_outcome(case, log, outcome)
     for entry in log:
         code, params = entry["code"], entry["params"]
-        agreed = _agreed_outcome(code, params, outcome)
+        agreed = switched if _switched(code, params) else outcome
         if code in _OFFER_CODES:
             _narrate_offer(case, metadata, code, params, agreed, request_text)
             continue
