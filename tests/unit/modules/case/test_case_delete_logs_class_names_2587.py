@@ -15,6 +15,7 @@ the backends under them raise.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,6 +33,7 @@ from faultmaven.infrastructure.concurrency.inflight import (
     CaseWorkInProgress,
 )
 from faultmaven.infrastructure.concurrency.owned_claim import OwnedClaim
+from faultmaven.infrastructure.logging.config import build_log_formatter
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
 )
@@ -79,15 +81,14 @@ def _raise_leaky(*_args, **_kwargs):
     raise _leaky()
 
 
-_STANDARD = set(vars(logging.makeLogRecord({}))) | {"message", "asctime"}
+_CHAIN = build_log_formatter("json", False, io.StringIO())
 
 
 def _rendered(record: logging.LogRecord) -> str:
-    """All a handler can write of ``record``: its message, its traceback
-    (``exc_info``, ``exc_text``, ``stack_info``) and its extra fields."""
-    parts = [logging.Formatter().format(record), str(record.exc_text or "")]
-    parts += [repr(v) for k, v in vars(record).items() if k not in _STANDARD]
-    return "\n".join(parts)
+    """All a handler writes of ``record``: every handler is the chain's
+    (principles §7, rule 5), whose line holds the message, the extra fields
+    and the frames of ``exc_info`` (rule 4), never an exception's text."""
+    return _CHAIN.format(record)
 
 
 def _assert_no_text_logged(caplog) -> str:

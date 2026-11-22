@@ -1148,6 +1148,7 @@ async def submit_turn(
                     "Turn on case %s committed; answering it failed: %s",
                     case_id,
                     exception_log_name(failure),
+                    exc_info=failure,
                 )
                 raise _turn_outcome_unknown_http() from failure
 

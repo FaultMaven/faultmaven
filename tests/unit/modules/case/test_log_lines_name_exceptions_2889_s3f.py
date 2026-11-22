@@ -144,7 +144,7 @@ async def test_an_unavailable_turn_cap_is_named_by_class_with_its_frames(lines):
 async def test_a_failure_answering_a_committed_turn_is_named_by_class(lines):
     """``POST /cases/{id}/turns`` whose commit succeeds and whose auto-title
     (stubbed) then raises: the 500 ``TURN_OUTCOME_UNKNOWN``, and the line names
-    the class where it held the failure's repr."""
+    the class where it held the failure's repr, with its frames."""
     service = _stubbed_service(AsyncMock(return_value=MagicMock()))
     service.commit_turn = AsyncMock(return_value=MagicMock())
 
@@ -157,7 +157,8 @@ async def test_a_failure_answering_a_committed_turn_is_named_by_class(lines):
 
     assert answer.status_code == 500
     assert answer.headers["x-error-code"] == "TURN_OUTCOME_UNKNOWN"
-    _named(lines(), "committed; answering it failed", "failed: RuntimeError")
+    failed = _named(lines(), "committed; answering it failed", "failed: RuntimeError")
+    assert failed["frames"].startswith("RuntimeError:")
 
 
 # ── modules/case/api/turn_idempotency.py ──────────────────────────────────
