@@ -31,9 +31,11 @@ value in a product whose logs legitimately carry evidence, where IPs and
 hostnames are the signal. Stripping a query string cannot blank an
 investigation's own data.
 
-**The one exception: four credential headers** (#2865, rule 2 of #2844's
-ruling). ``set-cookie``, ``cookie``, ``authorization`` and
-``proxy-authorization`` name a credential by their name alone, so their values
+**The one exception: credential headers** (#2865, rule 2 of #2844's
+ruling). The headers ``_SCAN_WORDS`` lists (``set-cookie``, ``cookie``,
+``authorization`` and ``proxy-authorization``; since #2891 also
+``set-cookie2``, ``x-api-key``, ``api-key``, ``x-goog-api-key`` and
+``x-auth-token``) name a credential by their name alone, so their values
 are blanked too, as defence in depth behind rule 1 (no third-party exception
 text on a log line). The rule does not measure where a value ends: from the
 header's separator it blanks to the end of the enclosing unit (the line, plus
@@ -139,17 +141,50 @@ def redact_urls_bytes(data: bytes) -> bytes:
 
 # A colour code, raw or as a repr or a JSON string spells it.
 _SGR = r"(?:\x1b|\\x1b|\\u001b|\\033)\[[0-9;]*+m"
+# The credential headers, by the scan word each contains: a line holding none
+# of the words is never scanned, and each place the scan starts is a word.
+_SCAN_WORDS = {
+    "cookie": ("set-cookie2", "set-cookie", "cookie"),
+    "authorization": ("proxy-authorization", "authorization"),
+    "api-key": ("x-goog-api-key", "x-api-key", "api-key"),
+    "auth-token": ("x-auth-token",),
+}
+_SCAN_WORDS_BYTES = tuple(word.encode() for word in _SCAN_WORDS)
+# Where a name can start, before its word: ``set-`` and the bare word for
+# ``cookie``; ``x-`` alone for ``auth-token``.
+_PREFIXES = {
+    word: tuple(dict.fromkeys(name[: name.index(word)] for name in names))
+    for word, names in _SCAN_WORDS.items()
+}
+_HEADER_NAMES = tuple(name for names in _SCAN_WORDS.values() for name in names)
 # A credential header: the name, colour codes, any quoting a repr gave it (a
 # closing quote may be followed by "]" or ")": ``headers['Authorization'] =``),
-# colour codes, then ":" or "=", a tuple's "', '", or a tab. Matched only at a
+# colour codes, then ":" or "=", or a tab; ``_HEAD_TUPLE``, tried where
+# ``_PAIR_OPEN`` holds, takes a pair's "', '" instead. Matched only at a
 # candidate the scan found with str.find, never by a scan of the whole line.
-_HEADER_NAMES = ("set-cookie", "proxy-authorization", "authorization", "cookie")
-_HEAD = re.compile(
-    r"(?:set-cookie|proxy-authorization|authorization|cookie)(?![\w-])"
+_HEAD_NAME = (
+    "(?:" + "|".join(_HEADER_NAMES) + r")(?![\w-])"
     rf"(?:{_SGR})*+[\\'\"]*+(?:(?<=['\"])[\])])?(?:{_SGR})*+"
-    r"(?:[ \t]*+[:=]|(?<=['\"])[ \t]*+,|\t)",
-    re.IGNORECASE,
 )
+_HEAD = re.compile(_HEAD_NAME + r"(?:[ \t]*+[:=]|\t)", re.IGNORECASE)
+_HEAD_TUPLE = re.compile(_HEAD_NAME + r"(?<=['\"])[ \t]*+,", re.IGNORECASE)
+# A pair's first item or a record's value opens before the name: "(", "(b",
+# a list inside a list ("[[", or ", [" across one line break and pprint's
+# indent), ":" or "=" (``Header(name='Authorization', ``), a quote (escaped
+# in a repr of a repr), and a "_" or "." segment (``('http_cookie', ``,
+# ``{'name': 'Set-Cookie', ``). A flat list's ``['authorization',
+# 'cases:read']`` is not one: the table excludes flat pairs and lists, which a
+# scopes list cannot be told from. The search back covers its longest match,
+# ``_PAIR_OPEN_WIDTH`` characters, and no more.
+_GAP, _PAIR_INDENT, _SEGMENT = 8, 64, 64
+_PAIR_OPEN = re.compile(
+    rf"(?:[(:=]|[\[,][ \t]{{0,{_GAP}}}+(?:\r?\n|\\r(?:\\n)?|\\n)?"
+    rf"[ \t]{{0,{_PAIR_INDENT}}}+\[)"
+    rf"[ \t]{{0,{_GAP}}}b?\\{{0,2}}['\"](?:[\w.-]{{0,{_SEGMENT}}}[_.])?\Z"
+)
+# The longest match: "," or "[", the gap, an escaped CRLF (4), the indent and
+# "[", then the gap, "b", two backslashes and a quote (4), and the segment.
+_PAIR_OPEN_WIDTH = (1 + _GAP + 4 + _PAIR_INDENT + 1) + (_GAP + 4 + _SEGMENT + 1)
 # Before a name: no longer word (``x-cookie``), a "_" or "." segment boundary
 # (``session_cookie``, ``headers.cookie``: the JSON key rule's segments), the
 # shared escape grammar (``\n``, ``%0A``), or a ``\uXXXX`` escape.
@@ -175,14 +210,18 @@ def _starts_name(text: str, start: int) -> bool:
     )
 
 
-def _head_at(text: str, low: str, hit: int, prefix: str) -> Optional[re.Match[str]]:
-    """The header whose name ends in the word found at ``hit``, if any."""
-    for start in (hit - len(prefix), hit):
+def _head_at(text: str, low: str, hit: int, word: str) -> Optional[re.Match[str]]:
+    """The header whose name holds the word found at ``hit``, if any."""
+    for prefix in _PREFIXES[word]:
+        start = hit - len(prefix)
         if start >= 0 and low.startswith(prefix, start) and _starts_name(text, start):
             head = _HEAD.match(text, start)
+            if head is None and _PAIR_OPEN.search(
+                text, max(0, start - _PAIR_OPEN_WIDTH), start
+            ):
+                head = _HEAD_TUPLE.match(text, start)
             if head:
                 return head
-        prefix = ""
     return None
 
 
@@ -216,18 +255,18 @@ def _unit_end(text: str, head: re.Match[str], pos: int) -> int:
 def _redact_header_text(text: str, low: str) -> str:
     """Blank from each credential header's separator to the end of its unit.
 
-    Candidates come from two ``str.find`` scans, each resumed past the last
-    blanked unit, so the cost is linear in the line.
+    Candidates come from one ``str.find`` scan per word in ``_SCAN_WORDS``,
+    each resumed past the last blanked unit, so the cost is linear in the line.
     """
     out = []
     pos = 0
-    hits = {"cookie": low.find("cookie"), "authorization": low.find("authorization")}
+    hits = {word: low.find(word) for word in _SCAN_WORDS}
     while True:
         word = min((w for w in hits if hits[w] >= 0), key=hits.get, default=None)
         if word is None:
             break
         hit = hits[word]
-        head = _head_at(text, low, hit, "set-" if word == "cookie" else "proxy-")
+        head = _head_at(text, low, hit, word)
         if head is None:
             hits[word] = low.find(word, hit + 1)
             continue
@@ -259,20 +298,21 @@ def _lowered(text: str) -> str:
 
 def _redact_text_value(text: str) -> str:
     low = _lowered(text)
-    if "cookie" not in low and "authorization" not in low:
+    if not any(word in low for word in _SCAN_WORDS):
         return text
     return _redact_header_text(text, low)
 
 
 def _is_name(value: Any) -> bool:
     """A header name, or a bytes repr of one (``b'authorization'``: how the
-    JSON renderer's fallback writes a raw header pair)."""
+    JSON renderer's fallback writes a raw header pair), read as a key is
+    (``HTTP_COOKIE``)."""
     if not isinstance(value, str):
         return False
     name = value.strip()
     if len(name) > 2 and name[0] == "b" and name[1] in "'\"" and name[-1] == name[1]:
         name = name[2:-1]
-    return name.lower() in _HEADER_NAMES
+    return _key_is_name(name)
 
 
 def _key_is_name(key: str) -> bool:
@@ -345,7 +385,7 @@ def _dumps(value: Any, ensure_ascii: bool) -> str:
 
 def _redact_headers(text: str, ensure_ascii: bool) -> str:
     low = _lowered(text)
-    if "cookie" not in low and "authorization" not in low:
+    if not any(word in low for word in _SCAN_WORDS):
         return text
     if text.startswith('{"'):
         try:
@@ -360,8 +400,8 @@ def _redact_headers(text: str, ensure_ascii: bool) -> str:
 def redact_credential_headers(text: str) -> str:
     """Blank the values of the credential headers named in the module docstring.
 
-    A line naming neither ``cookie`` nor ``authorization`` is returned as is,
-    after one lowercase copy and two finds. A JSON object line is redacted on
+    A line naming no word in ``_SCAN_WORDS`` is returned as is, after one
+    lowercase copy and a find per word. A JSON object line is redacted on
     its decoded value and re-serialized only when something changed, so it
     stays valid JSON, a repeated key included; one the decoder refuses (not
     JSON, or nested too deep) is redacted as text.
@@ -384,7 +424,7 @@ def redact_log_line_bytes(data: bytes) -> bytes:
     """
     data = redact_urls_bytes(data)
     low = data.lower()
-    if b"cookie" not in low and b"authorization" not in low:
+    if not any(word in low for word in _SCAN_WORDS_BYTES):
         return data
     # A valid line is encoded back strictly, so a decoded "\\udcff" escape
     # cannot come back as a raw invalid byte. A line that is not valid UTF-8
