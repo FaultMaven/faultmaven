@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 
 class APMProvider(Enum):
     """Supported APM providers."""
@@ -208,7 +210,9 @@ class APMIntegration:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"Error in background flush loop: {e}")
+                self.logger.error(
+                    f"Error in background flush loop: {exception_log_name(e)}"
+                )
                 await asyncio.sleep(5)  # Brief pause before retry
 
     def record_operation(
@@ -272,7 +276,9 @@ class APMIntegration:
                 try:
                     await self.export_callbacks[provider](metrics_to_export, config)
                 except Exception as e:
-                    self.logger.error(f"Failed to export to {provider.value}: {e}")
+                    self.logger.error(
+                        f"Failed to export to {provider.value}: {exception_log_name(e)}"
+                    )
 
         self.last_flush_time = datetime.now(timezone.utc)
 
@@ -335,7 +341,7 @@ class APMIntegration:
                         self.logger.warning(f"Generic export failed: {response.status}")
 
         except Exception as e:
-            self.logger.error(f"Generic export error: {e}")
+            self.logger.error(f"Generic export error: {exception_log_name(e)}")
 
     def get_export_statistics(self) -> Dict[str, Any]:
         """Get statistics about metrics export.

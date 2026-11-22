@@ -23,6 +23,8 @@ from typing import Callable, List, Optional, Set
 
 from fastapi import APIRouter, Response
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,9 @@ def _run_scrape_hooks() -> None:
         try:
             hook()
         except Exception as e:
-            logger.warning(f"Metrics scrape hook failed (non-fatal): {e}")
+            logger.warning(
+                f"Metrics scrape hook failed (non-fatal): {exception_log_name(e)}"
+            )
 
 
 # Labels that are FORBIDDEN in metrics to ensure bounded cardinality

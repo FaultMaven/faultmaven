@@ -29,7 +29,10 @@ from faultmaven.config.settings import (
     load_settings_dotenv,
 )
 from faultmaven.infrastructure.logging.process_outputs import strip_own_handlers
-from faultmaven.utils.exception_name import exception_class_name
+from faultmaven.utils.exception_name import (
+    exception_class_name,
+    exception_log_name,
+)
 from faultmaven.utils.optional_dependency import module_is_usable
 
 logger = logging.getLogger(__name__)
@@ -151,7 +154,7 @@ def _disable_sdk_tracing() -> None:
 
         _opik.set_tracing_active(False)
     except Exception as e:
-        logger.debug(f"Could not flip Opik SDK tracing switch: {e}")
+        logger.debug(f"Could not flip Opik SDK tracing switch: {exception_log_name(e)}")
 
 
 def _enable_sdk_tracing() -> None:
@@ -180,7 +183,9 @@ def _enable_sdk_tracing() -> None:
         # still wins. Never set_tracing_active(True) — that would override it.
         _opik.reset_tracing_to_config_default()
     except Exception as e:
-        logger.debug(f"Could not reset Opik SDK tracing switch: {e}")
+        logger.debug(
+            f"Could not reset Opik SDK tracing switch: {exception_log_name(e)}"
+        )
 
 
 class TraceContentCaptureRefused(RuntimeError):
@@ -235,7 +240,7 @@ def configure(settings: Any) -> TraceBackend:
     try:
         reason = _configure(settings, resolved)
     except Exception as e:
-        logger.error(f"Failed to initialize Opik tracing: {e}")
+        logger.error(f"Failed to initialize Opik tracing: {exception_log_name(e)}")
         logger.info("Continuing without tracing...")
         reason = f"configuring the trace backend raised {exception_class_name(e)}"
     _record = TraceBackend(**resolved, configured=reason is None, reason=reason)
@@ -302,7 +307,7 @@ def _configure(settings: Any, resolved: dict) -> Optional[str]:
         ):
             opik.config.update_session_config(key, value)
     except Exception as e:
-        logger.debug(f"Could not update Opik session config: {e}")
+        logger.debug(f"Could not update Opik session config: {exception_log_name(e)}")
 
     logger.info(
         f"Opik tracing initialized: url={url}, project={project}, workspace={workspace}"
@@ -341,7 +346,7 @@ def tracing_is_effective() -> bool:
 
         return bool(_opik.is_tracing_active())
     except Exception as e:  # pragma: no cover - version-sensitive symbol
-        logger.debug(f"Could not read Opik tracing switch: {e}")
+        logger.debug(f"Could not read Opik tracing switch: {exception_log_name(e)}")
         return True
 
 

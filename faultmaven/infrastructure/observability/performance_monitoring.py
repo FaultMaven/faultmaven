@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
 from faultmaven.models.interfaces import ITracer
+from faultmaven.utils.exception_name import exception_log_name
 
 
 class PerformanceMonitor:
@@ -281,7 +282,9 @@ def monitor_service_operation(
                     # Check if this might be a cache hit (simplified heuristic)
                     metadata["cache_key_provided"] = True
                 except Exception as e:
-                    monitor._logger.error(f"Failed to extract cache key: {e}")
+                    monitor._logger.error(
+                        f"Failed to extract cache key: {exception_log_name(e)}"
+                    )
 
             # Start tracing if available
             trace_context = None
@@ -290,7 +293,9 @@ def monitor_service_operation(
                     trace_context = monitor._tracer.trace(f"{service}.{op_name}")
                     trace_span = trace_context.__enter__()
                 except Exception as e:
-                    monitor._logger.error(f"Failed to start trace: {e}")
+                    monitor._logger.error(
+                        f"Failed to start trace: {exception_log_name(e)}"
+                    )
 
             try:
                 # Execute the function
@@ -395,7 +400,9 @@ def monitor_service_operation(
                     try:
                         trace_context.__exit__(None, None, None)
                     except Exception as e:
-                        monitor._logger.error(f"Failed to close trace: {e}")
+                        monitor._logger.error(
+                            f"Failed to close trace: {exception_log_name(e)}"
+                        )
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -439,7 +446,9 @@ def monitor_service_operation(
                     cache_key = cache_key_extractor(*args, **kwargs)
                     metadata["cache_key_provided"] = True
                 except Exception as e:
-                    monitor._logger.error(f"Failed to extract cache key: {e}")
+                    monitor._logger.error(
+                        f"Failed to extract cache key: {exception_log_name(e)}"
+                    )
 
             try:
                 # Execute the function
@@ -704,7 +713,9 @@ def track_cache_performance(
             try:
                 cache_key = cache_key_extractor(*args, **kwargs)
             except Exception as e:
-                monitor._logger.error(f"Failed to extract cache key: {e}")
+                monitor._logger.error(
+                    f"Failed to extract cache key: {exception_log_name(e)}"
+                )
                 return await func(*args, **kwargs)
 
             # Check cache first (this would be implemented in the actual service)
@@ -754,7 +765,9 @@ def track_cache_performance(
             try:
                 cache_key = cache_key_extractor(*args, **kwargs)
             except Exception as e:
-                monitor._logger.error(f"Failed to extract cache key: {e}")
+                monitor._logger.error(
+                    f"Failed to extract cache key: {exception_log_name(e)}"
+                )
                 return func(*args, **kwargs)
 
             cache_hit = False  # This would be determined by actual cache lookup
@@ -909,7 +922,9 @@ def _track_user_interaction_pattern(
         )
 
     except Exception as e:
-        monitor._logger.error(f"Failed to track user interaction pattern: {e}")
+        monitor._logger.error(
+            f"Failed to track user interaction pattern: {exception_log_name(e)}"
+        )
 
 
 def _track_error_pattern(
@@ -943,7 +958,7 @@ def _track_error_pattern(
         )
 
     except Exception as e:
-        monitor._logger.error(f"Failed to track error pattern: {e}")
+        monitor._logger.error(f"Failed to track error pattern: {exception_log_name(e)}")
 
 
 # Performance monitoring utilities

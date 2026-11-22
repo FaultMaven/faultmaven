@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.shims.metrics import Counter, Gauge, Histogram, is_real
 from faultmaven.models.interfaces import ITracer
+from faultmaven.utils.exception_name import exception_log_name
 
 # Prometheus metrics, through the metrics shim: no-ops with ENABLE_METRICS off
 # (#2748).
@@ -268,7 +269,9 @@ class OpikTracer(BaseExternalClient, ITracer):
                 function_name=operation, status=status
             ).observe(duration)
         except Exception as e:
-            self.logger.warning(f"Failed to record fallback metrics: {e}")
+            self.logger.warning(
+                f"Failed to record fallback metrics: {exception_log_name(e)}"
+            )
 
 
 def trace(name: str, settings=None):
@@ -369,4 +372,4 @@ def _record_metrics(function_name: str, duration: float, status: str):
             ).observe(duration)
 
     except Exception as e:
-        logging.warning(f"Failed to record metrics: {e}")
+        logging.warning(f"Failed to record metrics: {exception_log_name(e)}")

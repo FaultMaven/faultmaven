@@ -35,6 +35,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 #: Deadline for a single component probe.
 #:
 #: A probe with no deadline does not report a hung dependency, it BECOMES one:
@@ -496,7 +498,9 @@ class ComponentHealthMonitor:
                 self.logger.error(f"Health check timed out for {component_name}")
             else:
                 error = str(e)
-                self.logger.error(f"Health check failed for {component_name}: {e}")
+                self.logger.error(
+                    f"Health check failed for {component_name}: {exception_log_name(e)}"
+                )
 
             # Update with error status
             component_health = self.component_health[component_name]
@@ -1235,7 +1239,9 @@ class ComponentHealthMonitor:
                 else task.exception()
             )
             if error is not None:
-                self.logger.error(f"Health check failed for {component_name}: {error}")
+                self.logger.error(
+                    f"Health check failed for {component_name}: {exception_log_name(error)}"
+                )
                 health_results[component_name] = self._record_abandoned_probe(
                     component_name,
                     error=str(error),
@@ -1420,7 +1426,7 @@ class ComponentHealthMonitor:
             # the series is absent until the next publish ~10s later. One
             # scrape wide, which is why this announces rather than repairs.
             self.logger.debug(
-                f"Could not publish health gauge for {health.component_name}: {e}"
+                f"Could not publish health gauge for {health.component_name}: {exception_log_name(e)}"
             )
             self._report_gauge_publish_outcome(health.component_name, e)
 
@@ -1484,8 +1490,8 @@ class ComponentHealthMonitor:
             since = f" ({suppressed} further failures suppressed)" if suppressed else ""
             self.logger.warning(
                 f"component_health_status is not being published for "
-                f"{component_name}: {error}{since}. The series is absent or "
-                f"frozen at its last value until a publish succeeds, so an "
+                f"{component_name}: {exception_log_name(error)}{since}. The series "
+                f"is absent or frozen at its last value until a publish succeeds, so an "
                 f"alert selecting on it is reading neither nothing nor health."
             )
         else:

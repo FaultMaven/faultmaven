@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 
 class MetricType(Enum):
     """Types of metrics that can be collected."""
@@ -458,7 +460,7 @@ class MetricsCollector:
             try:
                 callback(alert)
             except Exception as e:
-                self.logger.error(f"Alert callback failed: {e}")
+                self.logger.error(f"Alert callback failed: {exception_log_name(e)}")
 
         self.logger.warning(f"Performance alert: {alert}")
 
