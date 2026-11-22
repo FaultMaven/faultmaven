@@ -394,6 +394,10 @@ class TestTheCostIsLinear:
             # A pair opens before the name, and the pair's comma never comes.
             ("pair quote run", lambda n: ("('x-api-key" + "'" * 200 + "x ") * n),
             ("record value", lambda n: ":'x-api-key'x " * n),
+            (
+                "blanks past the old window",
+                lambda n: ("," + " " * 72 + "'cookie'x ") * n,
+            ),
         ],
     )
     def test_each_dense_shape(self, label, payload_at):

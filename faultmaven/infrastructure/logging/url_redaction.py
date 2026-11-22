@@ -176,15 +176,15 @@ _HEAD_TUPLE = re.compile(_HEAD_NAME + r"(?<=['\"])[ \t]*+,", re.IGNORECASE)
 # 'cases:read']`` is not one: the table excludes flat pairs and lists, which a
 # scopes list cannot be told from. The search back covers its longest match,
 # ``_PAIR_OPEN_WIDTH`` characters, and no more.
-_GAP, _INDENT, _SEGMENT = 8, 64, 64
+_GAP, _PAIR_INDENT, _SEGMENT = 8, 64, 64
 _PAIR_OPEN = re.compile(
-    rf"(?:[(:=]|[\[,][ \t]{{0,{_GAP}}}(?:\r?\n|\\r(?:\\n)?|\\n)?"
-    rf"[ \t]{{0,{_INDENT}}}\[)"
+    rf"(?:[(:=]|[\[,][ \t]{{0,{_GAP}}}+(?:\r?\n|\\r(?:\\n)?|\\n)?"
+    rf"[ \t]{{0,{_PAIR_INDENT}}}+\[)"
     rf"[ \t]{{0,{_GAP}}}b?\\{{0,2}}['\"](?:[\w.-]{{0,{_SEGMENT}}}[_.])?\Z"
 )
 # The longest match: "," or "[", the gap, an escaped CRLF (4), the indent and
 # "[", then the gap, "b", two backslashes and a quote (4), and the segment.
-_PAIR_OPEN_WIDTH = (1 + _GAP + 4 + _INDENT + 1) + (_GAP + 4 + _SEGMENT + 1)
+_PAIR_OPEN_WIDTH = (1 + _GAP + 4 + _PAIR_INDENT + 1) + (_GAP + 4 + _SEGMENT + 1)
 # Before a name: no longer word (``x-cookie``), a "_" or "." segment boundary
 # (``session_cookie``, ``headers.cookie``: the JSON key rule's segments), the
 # shared escape grammar (``\n``, ``%0A``), or a ``\uXXXX`` escape.
