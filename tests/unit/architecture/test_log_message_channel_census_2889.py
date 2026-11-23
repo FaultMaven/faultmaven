@@ -59,7 +59,10 @@ level deep, the names
 assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
 from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
-(``failure = task.exception()``) or a ``gather(..., return_exceptions=True)``.
+(``failure = task.exception()``), a field in :data:`EXCEPTION_ATTRS` read off
+any receiver (``orig = error_result.original_exception``) or a
+``gather(..., return_exceptions=True)``. Such a field, read inline, is an
+exception read too.
 A ``for`` loop's targets are exceptions when the iterable itself (past
 ``await``, ``enumerate`` and ``zip``) is a tracked exception's ``.exceptions``
 or such a ``gather``, and texts over any other read of those names
@@ -100,8 +103,13 @@ tracked.
 
 **Blind spots**, stated as what the scanner reads, so nobody mistakes this for
 more. A log call's or a print's arguments are read for the exception names the
-scanner tracks and a zero-argument ``.exception()`` (above), and for subprocess
-output; text that reaches them through an untracked name is not counted. For an
+scanner tracks, a zero-argument ``.exception()`` and the fields in
+:data:`EXCEPTION_ATTRS` (above), and for subprocess output; text that reaches
+them through an untracked name is not counted: a name assigned from an alias
+(``detail = f"{orig}"`` after ``orig = r.original_exception``), a field holding
+an exception that :data:`EXCEPTION_ATTRS` does not name, and a first-party text
+field built from an exception's text (``ErrorResult.message``, which
+``llm_error_handler.py`` fills from ``str(error)``). For an
 exit (``SystemExit(...)``, ``sys.exit(...)``), only the first positional
 argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
@@ -245,6 +253,12 @@ NOT_EXCEPTION_RESULTS = {"_prune_invalid_sub_records": frozenset({1})}
 #: The names an unannotated parameter holding an exception goes by.
 EXCEPTION_PARAM_NAMES = frozenset({"e", "err", "error", "exc", "exception"})
 
+#: Fields that hold an exception: a read of one, on any receiver, reads an
+#: exception (``error_result.original_exception``, ``ErrorResult`` in
+#: ``llm_error_handler.py``; ``ErrorContext.original_error`` in
+#: ``infrastructure/logging/coordinator.py``).
+EXCEPTION_ATTRS = frozenset({"original_exception", "original_error"})
+
 _EXCEPTION_ANNOTATION = re.compile(r"(Error|Exception|ExceptionGroup)\b")
 _LOGGING_KEYWORDS = frozenset({"exc_info", "stack_info", "stacklevel"})
 _PRINT_KEYWORDS = frozenset({"file", "flush"})
@@ -366,6 +380,8 @@ class _Reads(ast.NodeVisitor):
         """``exc is not None``: a test, not text on the line."""
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in EXCEPTION_ATTRS:
+            self.name_hit = True  # ``result.original_exception``, any receiver
         if isinstance(node.value, ast.Name) and (
             node.attr in self.safe_attrs
             or node.attr in self.name_attrs.get(node.value.id, ())
@@ -513,10 +529,13 @@ def _exception_params(scope) -> set:
 
 
 def _is_exception_valued(value: ast.AST, exceptions: FrozenSet[str]) -> bool:
-    """``x = e``, ``x = e.__cause__``, ``x = task.exception()``: an exception,
-    rendered as its class chain when passed as a field."""
+    """``x = e``, ``x = e.__cause__``, ``x = task.exception()``,
+    ``x = result.original_exception`` (:data:`EXCEPTION_ATTRS`, any receiver):
+    an exception, rendered as its class chain when passed as a field."""
     if isinstance(value, ast.Name):
         return value.id in exceptions
+    if isinstance(value, ast.Attribute) and value.attr in EXCEPTION_ATTRS:
+        return True
     if isinstance(value, ast.Attribute) and value.attr in ("__cause__", "__context__"):
         return isinstance(value.value, ast.Name) and value.value.id in exceptions
     return isinstance(value, ast.Call) and _is_task_exception(value)
@@ -907,6 +926,12 @@ def _found(source: str) -> List[Site]:
         "    _warn_profile_degrade_once('k', f'x {e}')",
         "try:\n    pass\nexcept Exception as exc:\n"
         "    log.error('x', extra={'identifier': exc.identifier})",
+        "def f(result):\n    orig = result.original_exception\n"
+        "    logger.error(f'{orig}')",
+        "def f(result):\n    logger.error('%s', result.original_exception)",
+        "def f(ctx):\n    log.warning(f'x {ctx.original_error}')",
+        "def f(result):\n    msg = str(result.original_exception)\n"
+        "    logger.error(msg)",
         "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
         "    log.error('x', extra={'body': body})",
     ],
@@ -961,6 +986,12 @@ def test_a_site_is_found(source):
         "try:\n    pass\nexcept Exception as exc:\n"
         "    _report_once('k', 'x (%s)', exception_log_name(exc))",
         "def f(exc):\n    _report_once('k', 'x %s', 'literal')",
+        "def f(result):\n    orig = result.original_exception\n"
+        "    logger.error('%s', exception_log_name(orig))",
+        "def f(result):\n    orig = result.original_exception\n"
+        "    log.warning('x', error=orig)",
+        "def f(result):\n    logger.error('%s', 'a' if result.original_exception"
+        " is None else 'b')",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
@@ -1135,3 +1166,14 @@ def test_a_projection_appending_exception_text_is_a_blind_spot():
     by a method call, which the scanner does not track, so the census does not
     count it. A line like this is kept off by review, not by this guard."""
     assert not _found(_PROJECTION.format("str(e)"))
+
+
+def test_a_name_two_assignments_from_an_exception_field_is_a_blind_spot():
+    """The stated blind spot, in ``generation.py``'s pre-#2889 shape: ``detail``
+    is assigned from ``orig``, an alias, not from the field itself, so it is
+    not tracked. ``generation.py``'s line is pinned by its render test
+    (``test_log_lines_rule1_remainder_2889.py``), not by this guard."""
+    assert not _found(
+        "def f(r):\n    orig = r.original_exception\n    detail = f'x ({orig})'\n"
+        "    logger.error(f'failed: {detail}')"
+    )

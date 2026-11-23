@@ -2486,7 +2486,7 @@ class StructuredOutputGenerator:
                 logger.warning(
                     "Structured output: reasoning starved the answer (%s); "
                     "re-issuing once without the reasoning intent (#2802)",
-                    starved,
+                    exception_log_name(starved),
                 )
                 starve.lowered = True
                 result, error_result = await self.deps.llm_error_handler.with_retry(
@@ -2511,9 +2511,22 @@ class StructuredOutputGenerator:
             # authoritative signal for this failure.
             orig = error_result.original_exception
             detail = f"{error_msg} ({orig})" if orig is not None else error_msg
-            if starved is not None and orig is not starved:
+            after_starved = starved is not None and orig is not starved
+            if after_starved:
                 detail += f"; after the INFERENCE attempt starved ({starved})"
-            logger.error(f"Structured generation failed after retries: {detail}")
+            # The log line names classes and the code, never ``detail``: it
+            # holds the exceptions' text (principles §7 rule 1, #2889).
+            logger.error(
+                "Structured generation failed after retries: %s (error_code=%s)%s",
+                exception_log_name(orig) if orig is not None else "none",
+                error_result.error_code,
+                (
+                    f"; after the INFERENCE attempt starved "
+                    f"({exception_log_name(starved)})"
+                    if after_starved
+                    else ""
+                ),
+            )
             raise MilestoneEngineError(
                 f"Structured output generation failed: {detail}",
                 error_code=error_result.error_code,
