@@ -16,9 +16,11 @@ the branch:
   stood, lapsed after the drop, or closed but not lapsed (B3, ``TOKENS_FAIL``
   off: the error log path).
 
-Its output on ``main`` is ``offer_oracle_2811.json``, captured at 5e5b21e42 by
-running ``render_all`` with this file copied into a ``git archive`` extract of
-that commit, never typed by hand.
+Its stored output is ``offer_oracle_2811.json``, captured on ``main`` at
+5e5b21e42 by running ``render_all`` with this file copied into a ``git
+archive`` extract of that commit, never typed by hand. ``POOL_EMPTY``'s two
+entries (#2811 S2c-1b) were rendered at c1ade8d8c; each differs from ``main``
+at 5a1d3b130 only in its "Root cause" line (``main``: the bare ask).
 """
 
 from __future__ import annotations
@@ -171,6 +173,21 @@ def _b3(before, *, tokens_fail: bool = True) -> dict:
     }
 
 
+def _held_open():
+    """A validated root whose why is open: identification held open."""
+    case, root, _hyp = golden._m6_identified_case()
+    root.metadata = {}
+    golden._recompute_at(case, 5)
+    return case
+
+
+#: The needs-info request whose record holds a pool-empty reason beside the
+#: "Root cause" ask (#2811 S2c-1b).
+POOL_EMPTY = {
+    "offer:needs_info_no_cause": lambda: golden._with_evidence(golden._bare_case()),
+    "offer:needs_info_held_open": _held_open,
+}
+
 TURNS = {
     **{
         f"cycle:{n}": (lambda b=b: _cycle(b)) for n, b in golden.CYCLE_SCENARIOS.items()
@@ -180,6 +197,10 @@ TURNS = {
     "b3:stands": lambda: _b3(None),
     "b3:lapsed_after_the_drop": lambda: _b3(b3._withdraw_the_finding),
     "b3:closed_not_lapsed": lambda: _b3(b3._withdraw_the_offer, tokens_fail=False),
+    **{
+        n: (lambda b=b: golden.offer_texts(*golden._models_proposal(b(), "resolved")))
+        for n, b in POOL_EMPTY.items()
+    },
 }
 
 NAMES = [f"prompt:{n}" for n in PROMPT] + [f"turn:{n}" for n in TURNS]

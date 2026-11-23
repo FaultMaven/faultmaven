@@ -2428,6 +2428,20 @@
     },
     "summary": null
   },
+  "turn:offer:needs_info_held_open": {
+    "basis": null,
+    "prose": {
+      "resolution_needs_info_message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **Root cause** — what caused the problem? A cause is on record, but what produced it is still open.\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+    },
+    "summary": null
+  },
+  "turn:offer:needs_info_no_cause": {
+    "basis": null,
+    "prose": {
+      "resolution_needs_info_message": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **Root cause** — what caused the problem? No root cause is on record that a check can confirm yet.\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed."
+    },
+    "summary": null
+  },
   "turn:offer:needs_info_off_cause": {
     "basis": null,
     "prose": {

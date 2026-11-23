@@ -19,18 +19,28 @@ from, the narration step takes the outcome facts those params state from the
 record (``record_params``, #2811 S2b-2c); when one does, and for every other
 offer until stage S3 switches its decider, the params are the ones its
 decider read (decide-time, A4).
+
+The "Root cause" ask carries why the cause cannot be confirmed yet
+(``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
+the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when
+``notices.empty_pool_text`` gives a line for the record's cause. The
+decide-time message (``ResolutionReadiness.message``) keeps the ask without
+it until stage S3 gives its decider the record.
 """
 
 from typing import Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
     CaseOutcome,
+    CauseOutcome,
     ClosureEligibility,
     ConfirmationGap,
+    PoolEmptyReason,
     ResolutionReason,
 )
 
 from .codes import OfferCode
+from .notices import empty_pool_text
 
 
 def mitigation_sentence(line: str) -> str:
@@ -71,6 +81,44 @@ def _cause_recheck_ask(cause: Optional[str], fix: Optional[str]) -> str:
     )
 
 
+#: Why the cause cannot be confirmed yet, said to the user beside the "Root
+#: cause" ask, by the record's ``pool_empty_reason`` (approved copy item 5,
+#: #2811 S2c).
+_POOL_EMPTY_USER_LINES = {
+    PoolEmptyReason.HELD_OPEN: (
+        "A cause is on record, but what produced it is still open."
+    ),
+    PoolEmptyReason.IDENTIFICATION_CONTESTED: (
+        "More than one cause still fits the evidence, so none is identified yet."
+    ),
+    PoolEmptyReason.FALLEN_WITH_OTHER_STANDING: (
+        "The cause identified earlier no longer stands, and another candidate "
+        "is still open."
+    ),
+    PoolEmptyReason.FIX_TARGETS_OTHER_CAUSE: (
+        "The cause identified earlier no longer stands, and the latest fix "
+        "acted on a different cause."
+    ),
+    PoolEmptyReason.ROOTLESS_VALIDATED_ONLY: (
+        "A supported explanation is on record, but it is not tied to a root "
+        "cause yet."
+    ),
+    PoolEmptyReason.NO_CAUSE: (
+        "No root cause is on record that a check can confirm yet."
+    ),
+}
+
+
+def pool_empty_user_line(cause: CauseOutcome) -> Optional[str]:
+    """The user's half of why the confirmation pool is empty (#2811 S2c-1b):
+    the line for the record's ``pool_empty_reason``, whenever
+    ``notices.empty_pool_text`` (the one guard) gives the model's half for
+    the record's cause, else None."""
+    if empty_pool_text(cause) is None:
+        return None
+    return _POOL_EMPTY_USER_LINES[cause.pool_empty_reason]
+
+
 def _required(reason: str, **params) -> None:
     for name, value in params.items():
         if value is None:
@@ -86,9 +134,14 @@ def readiness_message(
     off_cause_turn: Optional[int] = None,
     recheck_cause: Optional[str] = None,
     recheck_fix: Optional[str] = None,
+    cause: Optional[CauseOutcome] = None,
 ) -> str:
     """``ResolutionReadiness.message``, keyed by which branch answered. An
-    unknown reason, or one without the param its text names, raises."""
+    unknown reason, or one without the param its text names, raises.
+    ``cause``: the record's, passed on the record path only
+    (``record_params``); the "Root cause" ask then carries its
+    ``pool_empty_user_line`` when there is one. The decide-time message
+    passes none, so its ask is the bare one."""
     if reason == ResolutionReason.FALSE_ALARM:
         return (
             "The evidence showed the reported problem was never present, so "
@@ -147,7 +200,9 @@ def readiness_message(
         raise ValueError(f"no readiness message for reason {reason!r}")
     asks = []
     if "root cause" in missing:
-        asks.append("- **Root cause** — what caused the problem?")
+        line = pool_empty_user_line(cause) if cause is not None else None
+        ask = "- **Root cause** — what caused the problem?"
+        asks.append(ask if line is None else f"{ask} {line}")
     if "solution" in missing:
         asks.append("- **What fixed it** — the action that resolved it.")
     if "confirmation the problem is now resolved" in missing:
@@ -337,7 +392,13 @@ _DEFERRED_CLOSE = (
     "this case with the solution documented for your team to apply?"
 )
 
-_READINESS_PARAMS = ("request_text", "off_cause_turn", "recheck_cause", "recheck_fix")
+_READINESS_PARAMS = (
+    "request_text",
+    "off_cause_turn",
+    "recheck_cause",
+    "recheck_fix",
+    "cause",
+)
 
 
 def _readiness(params: dict) -> str:
@@ -385,7 +446,11 @@ def record_params(
     record holds the resolution for (``resolution.pending_check_need_id``),
     None when it holds none, the decision's then. Every other param (the
     rationale, the proposal id, the composer, the texts a readiness ask names)
-    stays the decider's. ``DEFERRED_CLOSE`` states no fact the record holds."""
+    stays the decider's. ``DEFERRED_CLOSE`` states no fact the record holds.
+    A readiness ask takes the record's cause too, whose pool-empty line the
+    "Root cause" ask carries; only the needs-info request reaches that ask,
+    as the other two compose readiness on SUGGEST_CLOSE alone. Where the
+    record's write failed, ``outcome`` is the narration's unstored one."""
     if (code, params.get("composer")) not in RECORD_PROSE:
         return params
     resolution = outcome.resolution
@@ -413,6 +478,7 @@ def record_params(
             request_text if request_text is not None else params.get("request_text")
         ),
         "off_cause_turn": resolution.off_cause_turn,
+        "cause": outcome.cause,
     }
 
 
