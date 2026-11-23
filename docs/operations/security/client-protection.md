@@ -187,9 +187,11 @@ stands for up to its TTL without a 2xx after a cancellation, an exception raised
 after the response started, or a failed release. So `DUPLICATE_REQUEST` means an
 identical request arrived within the TTL and is still running, was answered
 2xx, or left its claim standing (a cancellation, an exception after the
-response started, a failed release). Its `Retry-After` counts down from
-that arrival and is an upper bound: the running request may answer sooner. The
-stored value is the claiming request's timestamp plus a random token. No
+response started, a failed release). A key Redis still holds is refused
+whatever any app clock reads, and its `Retry-After` is the key's remaining life
+in Redis, rounded up, at least 1 (#2514): an upper bound, since the running
+request may answer sooner. The stored value is the claiming request's timestamp
+plus a random token; the timestamp feeds only the refusal's message. No
 response body is cached.
 
 #### 3. Agent Execution Timeouts

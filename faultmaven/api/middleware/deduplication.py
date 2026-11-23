@@ -8,6 +8,7 @@ Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 
 import asyncio
 import logging
+import math
 import secrets
 import time
 from datetime import datetime, timezone
@@ -154,7 +155,8 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         ``DUPLICATE_REQUEST`` thus means an identical request arrived within the
         TTL and is still running, was answered 2xx, or left its claim standing
         (a cancellation, an exception after the response started, a failed
-        release); its ``Retry-After`` is an upper bound.
+        release); its ``Retry-After`` is that claim's remaining life in Redis,
+        rounded up (#2514), an upper bound.
         """
         start_time = time.time()
         duplicate: Optional[Response] = None
@@ -230,22 +232,25 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     async def _duplicate_response_for(
         self, request: Request, claim: _Claim, start_time: float
     ) -> Optional[Response]:
-        """Return the 409 for a duplicate, or ``None`` to let the request run."""
-        is_duplicate, original_timestamp, ttl = await self._check_redis_duplicate(claim)
+        """Return the 409 for a duplicate, or ``None`` to let the request run.
+
+        A key Redis still holds is live: no app clock is consulted (#2514). The
+        ``Retry-After`` is its remaining life in Redis, rounded up, at least 1 s;
+        a key without an expiry, which this middleware never writes, gets the
+        claim's TTL.
+        """
+        is_duplicate, original_timestamp, remaining_ms = (
+            await self._check_redis_duplicate(claim)
+        )
         if not is_duplicate:
             return None
 
         self._update_metrics(time.time() - start_time, duplicate_found=True)
 
-        if original_timestamp:
-            elapsed = (datetime.now(timezone.utc) - original_timestamp).total_seconds()
-            ttl_remaining = max(0, int(ttl - elapsed))
+        if remaining_ms < 0:
+            ttl_remaining = claim.ttl
         else:
-            ttl_remaining = ttl
-
-        if ttl_remaining == 0:
-            self.logger.debug("Duplicate request TTL expired, allowing request through")
-            return None
+            ttl_remaining = max(1, math.ceil(remaining_ms / 1000))
 
         return self._create_duplicate_response(
             request, original_timestamp, ttl_remaining
@@ -473,6 +478,10 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     ) -> Tuple[bool, Optional[datetime], int]:
         """Take ``claim``, unless the key holds another request's value.
 
+        Returns whether it does, when that request claimed the key, and the
+        key's ``PTTL`` in milliseconds, read in the same atomic call (``-1``
+        when the reply carries none).
+
         Its own value is its claim, not a duplicate: redis-py re-sends an EVAL
         after a connection error, and the first send may have run. Redis
         failures are *not* caught here: they belong to ``dispatch``, which
@@ -489,7 +498,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return {0, nil}  -- this request's own claim
         end
         if existing then
-            return {1, existing}  -- duplicate found
+            return {1, existing, redis.call('PTTL', key)}  -- duplicate found
         end
 
         -- Store this request's claim
@@ -510,16 +519,21 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # which, now that the surrounding catch is gone, 503s every request
         # under the fail-closed setting.
         is_duplicate = bool(result[0]) if result else False
-        # The stored value is the *first* request's claim; its timestamp is what
-        # the Retry-After is computed from. It has never been a cached response.
+        # The stored value is the *first* request's claim; its timestamp feeds
+        # the refusal's message only. It has never been a cached response.
         stored_claim = result[1] if result and len(result) > 1 else None
+        remaining_ms = int(result[2]) if result and len(result) > 2 else -1
 
         if is_duplicate:
             self.logger.debug(f"Duplicate request detected: {claim.key}")
             original_timestamp = _claimed_at(stored_claim)
-            return True, original_timestamp or datetime.now(timezone.utc), claim.ttl
+            return (
+                True,
+                original_timestamp or datetime.now(timezone.utc),
+                remaining_ms,
+            )
 
-        return False, None, claim.ttl
+        return False, None, remaining_ms
 
     def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""

@@ -344,11 +344,12 @@ async def test_a_release_that_never_completes_is_bounded(monkeypatch):
     assert dedup.middleware.metrics["errors"] == 1
 
 
-async def test_the_retry_after_reads_the_timestamp_the_claim_stores():
+async def test_the_refusal_reads_the_timestamp_the_claim_stores():
     """The parser, on the exact value a claim stores.
 
-    An unreadable value falls back to "now", which a ``Retry-After`` taken a
-    moment later cannot tell from the real timestamp, so the value is read here.
+    An unreadable value falls back to "now", which a refusal's message written
+    a moment later cannot tell from the real timestamp, so the value is read
+    here. ``Retry-After`` comes from the key's ``PTTL`` (#2514).
     """
     from faultmaven.api.middleware.deduplication import _claimed_at
 
