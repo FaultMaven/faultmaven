@@ -139,20 +139,15 @@ class TeamService:
     ):
         """Wire the service. All three repositories are REQUIRED.
 
-        They used to be optional, on the reasoning that the resolution half (the
-        KB read scope) needs only the team repository. That reasoning was
-        right about the resolution half and wrong about the consequence: the
-        composition root builds every repository with a ``try/except`` that
-        answers ``None``, so a transient failure to construct the enterprise
-        repository produced a service that looked wired, passed every
-        capability check, and answered **404 for every team in the deployment**
-        — a wiring failure wearing the shape of "you asked for a row that does
-        not exist", which is the one answer nobody investigates.
-
-        Refusing to construct is the honest failure: ``create_team_service``
-        then returns ``None``, ``team_service is None`` is already the
-        deployment-wide "team collaboration is not available here" signal, and
-        the surface answers its own 403 saying so.
+        A service built without its enterprise repository answered **404 for
+        every team in the deployment**: the invitation rule read a domain it
+        could not fetch, a wiring failure wearing the shape of "no such row".
+        So it refuses to construct. Under multi the composition root refuses
+        the start instead of building it short: a repository that fails to
+        build, or a missing dependency in ``create_team_service``, raises
+        ``RequiredServiceConstructionError`` (#2342). Under single-tenant the
+        factory answers ``None``, and ``team_service is None`` is the
+        deployment-wide "no team collaboration here" signal.
 
         ``invitation_ttl_days`` overrides the configured TTL; it exists for the
         tests, which must be able to mint an expired invitation without waiting

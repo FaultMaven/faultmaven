@@ -79,9 +79,10 @@ class ConfigurationError(ContainerError):
 class RequiredServiceConstructionError(RuntimeError):
     """A service the deployment configured could not be constructed (#2103).
 
-    Raised by the factories of the case repository and the case, session and
-    auth services. Also raised when a required repository is absent at
-    composition (#2548): a composition-order invariant, not a configured
+    Raised when a service the configuration requires cannot be constructed:
+    a configured service, or under ``TENANT_PROVIDER=multi`` a tenancy or
+    sharing factory (#2342). Also raised when a required repository is absent
+    at composition (#2548): a composition-order invariant, not a configured
     service whose constructor failed. ``DIContainer.initialize`` re-raises it
     in every environment, ahead of its lenient path, so the process refuses
     to start and names the cause, instead of serving without the service or

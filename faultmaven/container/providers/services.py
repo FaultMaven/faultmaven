@@ -581,6 +581,29 @@ def create_knowledge_service(
     )
 
 
+def _unbuilt_under_multi(name: str, error: BaseException) -> None:
+    """Refuse the start when a tenancy or sharing factory fails under multi (#2342).
+
+    There ``None`` would read as "this deployment is not configured for it", an
+    answer only configuration may give, so ``name``'s failure raises
+    ``RequiredServiceConstructionError`` naming the error's class chain, never
+    its text. The caller has already logged its warning (name, class, frames)
+    in both modes; under single-tenant this returns, and the caller returns
+    ``None`` as before.
+    """
+    # Unguarded: a try around this import would re-create the swallow.
+    from faultmaven.providers.tenancy.factory import (
+        BUILTIN_MULTI,
+        requested_tenant_provider,
+    )
+
+    if requested_tenant_provider() == BUILTIN_MULTI:
+        raise RequiredServiceConstructionError(
+            f"{name} could not be constructed under TENANT_PROVIDER=multi: "
+            f"{exception_log_name(error)}"
+        ) from error
+
+
 def create_organization_repository() -> Any | None:
     """Create the sessionless organization repository.
 
@@ -588,7 +611,8 @@ def create_organization_repository() -> Any | None:
     tenant factory + SingleTenantProvider need to resolve/stamp the implicit
     default org). Organization *management* (OrganizationService + routes) is
     the hosted admin composed module (ADR-010 D4), so the core does not
-    construct a service here.
+    construct a service here. Under multi a construction failure refuses the
+    start (``_unbuilt_under_multi``).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
@@ -603,6 +627,7 @@ def create_organization_repository() -> Any | None:
             f"OrganizationRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("OrganizationRepository", e)
         return None
 
 
@@ -685,7 +710,8 @@ def create_enterprise_repository() -> Any | None:
     Mirrors create_organization_repository (repository only). There is no
     EnterpriseService — enterprise CRUD in the core is bootstrap-only
     (single-tenant default-enterprise seeding); enterprise management is the
-    hosted admin composed module (ADR-010 D4).
+    hosted admin composed module (ADR-010 D4). Under multi a construction
+    failure refuses the start (``_unbuilt_under_multi``).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_enterprise_repository import (
@@ -700,6 +726,7 @@ def create_enterprise_repository() -> Any | None:
             f"EnterpriseRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("EnterpriseRepository", e)
         return None
 
 
@@ -710,7 +737,8 @@ def create_team_repository() -> Any | None:
     team repository *substrate* — used by the single-tenant default-team
     bootstrap and by KB team-scope resolution (TeamService). Team *management*
     (create/invite from a UI) is the hosted admin composed module, which drives
-    the same repository (ADR-010 D4 / ADR-013).
+    the same repository (ADR-010 D4 / ADR-013). Under multi a construction
+    failure refuses the start (``_unbuilt_under_multi``).
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_team_repository import (
@@ -725,6 +753,7 @@ def create_team_repository() -> Any | None:
             f"TeamRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("TeamRepository", e)
         return None
 
 
@@ -751,7 +780,10 @@ def create_team_service(
     allowlist, KB visibility, the milestone engine and ``GET /teams`` all
     collapse to "this deployment has no team sharing" when it is ``None``.
 
-    So a missing dependency under **multi**-tenant is **fatal**, not ``None``.
+    So under **multi**-tenant a missing dependency (team repository, tenant
+    provider or enterprise repository), or a failure to construct the service,
+    is **fatal**, not ``None``: it raises ``RequiredServiceConstructionError``,
+    keyed on ``requested_tenant_provider()`` for the first two.
     Returning ``None`` there was a worse failure than the one it replaced: it
     did not merely disable the consent routes, it silently removed every
     team-shared case and runbook from every user's scope — quieter and wider
@@ -765,6 +797,24 @@ def create_team_service(
     there is nothing to select between.
     """
     if team_repository is None or tenant_provider is None:
+        from faultmaven.providers.tenancy.factory import (
+            BUILTIN_MULTI,
+            requested_tenant_provider,
+        )
+
+        if requested_tenant_provider() == BUILTIN_MULTI:
+            missing = [
+                label
+                for label, dependency in (
+                    ("team repository", team_repository),
+                    ("tenant provider", tenant_provider),
+                )
+                if dependency is None
+            ]
+            raise RequiredServiceConstructionError(
+                "TeamService could not be constructed under TENANT_PROVIDER=multi: "
+                f"no {' and no '.join(missing)}"
+            )
         return None
 
     from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
@@ -774,7 +824,7 @@ def create_team_service(
         return None
 
     if enterprise_repository is None:
-        raise RuntimeError(
+        raise RequiredServiceConstructionError(
             "TeamService cannot be built: no enterprise repository. Under "
             "TENANT_PROVIDER=multi this is a misconfiguration, not a degraded "
             "mode — continuing would disable team sharing across every read "
@@ -782,17 +832,24 @@ def create_team_service(
             "exactly like a correctly configured standalone deployment."
         )
 
-    from faultmaven.infrastructure.persistence.user_repository import (
-        SessionlessUserRepository,
-    )
-    from faultmaven.modules.auth.domain.services.team_service import TeamService
+    try:
+        from faultmaven.infrastructure.persistence.user_repository import (
+            SessionlessUserRepository,
+        )
+        from faultmaven.modules.auth.domain.services.team_service import TeamService
 
+        service = TeamService(
+            team_repository,
+            enterprise_repository=enterprise_repository,
+            user_repository=SessionlessUserRepository(),
+        )
+    except Exception as e:
+        raise RequiredServiceConstructionError(
+            "TeamService could not be constructed under TENANT_PROVIDER=multi: "
+            f"{exception_log_name(e)}"
+        ) from e
     logger.debug("TeamService initialized (multi-tenant)")
-    return TeamService(
-        team_repository,
-        enterprise_repository=enterprise_repository,
-        user_repository=SessionlessUserRepository(),
-    )
+    return service
 
 
 def create_share_repository() -> Any | None:
@@ -803,7 +860,9 @@ def create_share_repository() -> Any | None:
     is created in BOTH deployment modes: the read path resolves the
     "shared-to-my-teams" allowlist arm through it (empty in standalone, where a
     user resolves to no teams) and the write path creates share rows when a
-    resource is published to a team.
+    resource is published to a team. Under multi a construction failure
+    refuses the start (``_unbuilt_under_multi``); under single-tenant no team
+    can read through it, so ``None`` hides nothing.
     """
     try:
         from faultmaven.infrastructure.persistence.sessionless_share_repository import (
@@ -818,6 +877,7 @@ def create_share_repository() -> Any | None:
             f"ShareRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("ShareRepository", e)
         return None
 
 
@@ -970,7 +1030,8 @@ def create_tenant_provider(
 
     team_repository is optional; when present (single-tenant mode), the
     SingleTenantProvider uses it to seed the default team row. Absence is safe —
-    bootstrap simply skips team seeding.
+    bootstrap simply skips team seeding. Under multi any construction failure
+    refuses the start (``_unbuilt_under_multi``).
     """
     from faultmaven.providers.tenancy.factory import (
         BUILTIN_MULTI,
@@ -1010,6 +1071,7 @@ def create_tenant_provider(
             f"TenantProvider initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("TenantProvider", e)
         return None
 
 
