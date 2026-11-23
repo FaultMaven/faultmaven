@@ -69,12 +69,20 @@ _ENDS_WITH_A_REMEDY = re.compile(
     r"(?:Replace it with a placeholder(?: such as \S+)?, and rotate the "
     r"credential\.|Remove it, or replace it with a safe form\.)$"
 )
-ROUTED = pytest.mark.parametrize("kind", ["password", "fork_bomb"])
+#: Two credential kinds and a command, through each route.
+ROUTED = pytest.mark.parametrize("kind", ["password", "token", "fork_bomb"])
+_COMMANDS = {"rm_rf", "fork_bomb", "dd"}
 
 
-def _leaked(snippet: str, text: str) -> list[str]:
-    value = re.search(r'"([^"]+)"', snippet)
-    return [f for f in _fragments(value.group(1), 6) if f in text] if value else []
+def _assert_not_echoed(kind: str, text: str) -> None:
+    """No 6-character fragment of a credential kind's value is in ``text``. A
+    command carries no secret, so there is nothing to look for."""
+    if kind in _COMMANDS:
+        return
+    value = re.fullmatch(r'\w+ = "([^"]+)"', KINDS[kind][0]).group(1)
+    fragments = _fragments(value, 6)
+    assert fragments, value  # something to look for, so this can fail
+    assert [f for f in fragments if f in text] == []
 
 
 def test_every_error_over_every_hazard_kind_ends_with_its_remedy():
@@ -110,7 +118,7 @@ def test_an_upload_says_it(kind):
 
     assert response.status_code == 422, response.text
     assert expected in response.json()["detail"]
-    assert _leaked(snippet, response.text) == []
+    _assert_not_echoed(kind, response.text)
 
 
 @ROUTED
@@ -135,7 +143,7 @@ def test_an_edit_says_it(monkeypatch, kind):
 
     assert response.status_code == 422, response.text
     assert expected in response.json()["detail"]
-    assert _leaked(snippet, response.text) == []
+    _assert_not_echoed(kind, response.text)
 
 
 @ROUTED
@@ -170,7 +178,7 @@ async def test_verify_batch_says_it(session_factory, tmp_path, monkeypatch, kind
     assert response.status_code == 200, response.text
     (item,) = response.json()["results"]
     assert item["status"] == "failed" and expected in item["error"], item
-    assert _leaked(snippet, response.text) == []
+    _assert_not_echoed(kind, response.text)
 
 
 class TestUnchanged:
