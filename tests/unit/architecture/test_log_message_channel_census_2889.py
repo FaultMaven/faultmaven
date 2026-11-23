@@ -97,8 +97,8 @@ tool loop sets on ``ToolCallingUnsupportedError``, ...); a pydantic error's
 ``loc`` or ``type`` read by key (:data:`SAFE_KEYS`: ``err.get("loc", ())``,
 ``err["type"]``), only on a name that holds pydantic error dicts: one unpacked
 at a position :data:`ERROR_DICT_RESULTS` lists, or a loop or comprehension
-target over one (anywhere else such a key is text: a provider body's
-``type`` is a third party's); and,
+target over one (on any name that never held pydantic error dicts in its
+scope, such a key is text: a provider body's ``type`` is a third party's); and,
 in a print's arguments in a file :data:`PRINT_SAFE_ATTRS` names, the ids our
 code sets on the listed classes, read from a name an ``except`` of that class
 binds, or its annotation types (``cli/provision_sso_org.py``:
@@ -132,7 +132,10 @@ scanner tracks, a zero-argument ``.exception()`` and the fields in
 them through an untracked name is not counted: a field holding an exception
 that :data:`EXCEPTION_ATTRS` does not name, and a first-party text field built
 from an exception's text (``ErrorResult.message``, which
-``llm_error_handler.py`` fills from ``str(error)``). For an
+``llm_error_handler.py`` fills from ``str(error)``). A name's error-dict
+standing is flow-insensitive: it survives a rebinding in its scope and in
+nested scopes, so a ``loc`` or ``type`` key read on it after one is not
+counted. For an
 exit (``SystemExit(...)``, ``sys.exit(...)``), only the first positional
 argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
@@ -238,8 +241,8 @@ SAFE_ATTRS = frozenset(
 #: Keys of a pydantic error dict that hold its location in the schema and its
 #: fixed error type, never its message or input: safe read as ``err["loc"]``
 #: or ``err.get("type", "")``, on a name :data:`ERROR_DICT_RESULTS` gives
-#: pydantic error dicts only. Off any other receiver such a key is text (a
-#: provider body's ``type`` is a third party's).
+#: pydantic error dicts only. On a name that never held them in its scope, such
+#: a key is text (a provider body's ``type`` is a third party's).
 SAFE_KEYS = frozenset({"loc", "type"})
 
 #: Per file, per class: the ids our code sets on that class, safe in a print's
