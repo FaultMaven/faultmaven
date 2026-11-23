@@ -2,7 +2,7 @@
 
 The middleware built a labelled 409 with a ``Retry-After`` and never reached it.
 ``_check_redis_duplicate`` returned the value stored in Redis -- the *first
-request's timestamp*, which is what ``Retry-After`` is computed from -- and
+request's timestamp*, which ``Retry-After`` was then computed from -- and
 ``dispatch`` treated that truthy string as a cached response body::
 
     if cached_response:
