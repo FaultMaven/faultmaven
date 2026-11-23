@@ -287,7 +287,10 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
         )
         return _exit(parsed, repairs, None)
     except ValidationError as original_error:
-        pruned, dropped = content_obj, []
+        # ``dropped`` is every pass's paths, read for PARTIAL by field name;
+        # the log keeps each pass's own list, whose indexes count positions
+        # in the body that pass pruned.
+        pruned, dropped, by_pass = content_obj, [], []
         error = original_error
         for _ in range(_PRUNE_PASSES):
             pruned, newly, unhandled = _prune_invalid_sub_records(
@@ -296,6 +299,7 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
             if not newly:
                 break
             dropped += newly
+            by_pass.append(newly)
             try:
                 parsed, repairs = _validate(pruned)
             except ValidationError as again:
@@ -303,9 +307,9 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
                 continue
             logger.warning(
                 "structured_output_degraded: pruned invalid sub-record(s) "
-                f"{dropped} from {schema_model.__name__} and continued "
+                f"by pass {by_pass} from {schema_model.__name__} and continued "
                 "(parse-time validator). Turn preserved.",
-                extra={"schema": schema_model.__name__, "pruned": dropped},
+                extra={"schema": schema_model.__name__, "pruned_by_pass": by_pass},
             )
             _record("pruned")
             return _exit(parsed, repairs, original_error, _partial_drop(dropped))

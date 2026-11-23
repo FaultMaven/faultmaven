@@ -16,6 +16,7 @@ Everything runs through the real ladder; only the outcome counter is doubled.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -128,9 +129,40 @@ def test_an_entry_and_an_id_inside_a_later_entry_are_each_pruned_alone():
     assert need.fulfilling_evidence_ids == []
 
 
+def test_the_log_names_each_pass_against_the_body_it_pruned(caplog):
+    """Pass 1 takes entry 0 and entry 1's id; pass 2 takes that need, which by
+    then is entry 0. A merged list would name entry 0 twice."""
+    with caplog.at_level(logging.WARNING, logger=so.logger.name):
+        parsed, _ = _ladder(
+            {
+                "agent_response": "Recorded.",
+                "state_updates": {
+                    "evidence_need_updates": [
+                        {"state": "fulfilled"},  # create with no purpose
+                        {
+                            "need_id": NEED_ID,
+                            "state": "fulfilled",
+                            "fulfilling_evidence_ids": [{"a": 1}],
+                        },
+                        {"need_id": "need_bbbbbbbbbbbb", "state": "pending"},
+                    ]
+                },
+            }
+        )
+    (record,) = [r for r in caplog.records if hasattr(r, "pruned_by_pass")]
+    needs = "state_updates.evidence_need_updates"
+    assert record.pruned_by_pass == [
+        [f"{needs}[1].fulfilling_evidence_ids[0]", f"{needs}[0]"],
+        [f"{needs}[0]"],
+    ]
+    assert [n.need_id for n in parsed.state_updates.evidence_need_updates] == [
+        "need_bbbbbbbbbbbb"
+    ]
+
+
 def test_a_list_path_it_cannot_walk_is_reported_as_unhandled():
-    """A defensive guard: no engine schema reaches it today, since every error
-    loc names a path in the body it came from. Its errors are never lost."""
+    """A defensive guard: its errors are never lost. The one known route is
+    pinned below; here the body simply no longer holds the entry."""
     body = {
         "agent_response": "Recorded.",
         "state_updates": {
@@ -151,6 +183,35 @@ def test_a_list_path_it_cannot_walk_is_reported_as_unhandled():
     assert dropped == []
     assert [tuple(e["loc"]) for e in unhandled] == [
         ("state_updates", "evidence_need_updates", 0, "fulfilling_evidence_ids", 0)
+    ]
+
+
+def test_a_follow_up_string_past_the_depth_bound_is_reported_unhandled():
+    """The one known route to an unwalkable path: ``_parse_nested_json`` leaves
+    a ``suggested_follow_ups`` string deeper than its bound undecoded, and
+    ``coerce_follow_ups_from_string`` decodes it, so the loc indexes a list the
+    body holds as a string."""
+    deep: list = []
+    for _ in range(70):
+        deep = [deep]
+    follow_ups = json.dumps([{"label": "Check", "hints": deep}])
+    seen = []
+    real = so._prune_invalid_sub_records
+
+    def spy(*args, **kwargs):
+        out = real(*args, **kwargs)
+        seen.append(out[1:])
+        return out
+
+    with (
+        patch.object(so, "_prune_invalid_sub_records", side_effect=spy),
+        pytest.raises(ValidationError),
+    ):
+        _parse_text({"agent_response": "Recorded.", "suggested_follow_ups": follow_ups})
+    ((dropped, unhandled),) = seen
+    assert dropped == []
+    assert [tuple(e["loc"]) for e in unhandled] == [
+        ("suggested_follow_ups", 0, "hints", 0)
     ]
 
 
