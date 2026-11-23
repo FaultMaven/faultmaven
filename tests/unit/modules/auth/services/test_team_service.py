@@ -87,7 +87,7 @@ def test_create_team_service_wired_in_multi_tenant():
 
 @pytest.mark.unit
 def test_create_team_service_none_without_repository():
-    """No repository → no service, regardless of provider."""
+    """No repository → no service under single-tenant (multi refuses, #2342)."""
     assert create_team_service(Mock(), None) is None
 
 

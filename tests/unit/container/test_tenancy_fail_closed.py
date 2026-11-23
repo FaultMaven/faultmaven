@@ -9,12 +9,18 @@ silently skip the factory (and with it the fail-closed checks) when the
 ENTERPRISE repository is unavailable under ``multi`` — the enterprise is what
 the provider resolves through (ADR-017 D1), so its absence is the one that
 leaves a multi-tenant deployment with no tenant provider at all.
+
+Under ``multi``, a construction failure of any factory that feeds tenancy or
+sharing refuses the start too (#2342): ``None`` there reads as "not configured
+for it", an answer a swallowed exception may not give.
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.container.providers import services
 from faultmaven.container.providers.services import create_tenant_provider
 from faultmaven.providers.tenancy.factory import TenancyConfigurationError
 
@@ -90,3 +96,107 @@ def _settings(tenant_provider: str) -> MagicMock:
     s.providers.tenant_provider = tenant_provider
     s.is_cloud = False
     return s
+
+
+_PERSISTENCE = "faultmaven.infrastructure.persistence."
+
+#: (factory, the constructor it calls, the name its refusal gives).
+_FACTORIES = pytest.mark.parametrize(
+    "build,target,name",
+    [
+        (
+            services.create_organization_repository,
+            _PERSISTENCE
+            + "sessionless_organization_repository.SessionlessOrganizationRepository",
+            "OrganizationRepository",
+        ),
+        (
+            services.create_enterprise_repository,
+            _PERSISTENCE
+            + "sessionless_enterprise_repository.SessionlessEnterpriseRepository",
+            "EnterpriseRepository",
+        ),
+        (
+            services.create_team_repository,
+            _PERSISTENCE + "sessionless_team_repository.SessionlessTeamRepository",
+            "TeamRepository",
+        ),
+        (
+            services.create_share_repository,
+            _PERSISTENCE + "sessionless_share_repository.SessionlessShareRepository",
+            "ShareRepository",
+        ),
+        (
+            lambda: create_tenant_provider(
+                settings=MagicMock(), enterprise_repository=MagicMock()
+            ),
+            "faultmaven.providers.tenancy.factory.create_tenant_provider",
+            "TenantProvider",
+        ),
+    ],
+    ids=["organization", "enterprise", "team", "share", "tenant_provider"],
+)
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@_FACTORIES
+def test_a_factory_that_fails_to_build_refuses_under_multi(build, target, name):
+    """The refusal names the class, never the text, and chains the original."""
+    error = ImportError("marker")
+    with (
+        patch(
+            "faultmaven.providers.tenancy.factory.get_settings",
+            return_value=_settings("multi"),
+        ),
+        patch(target, side_effect=error),
+    ):
+        with pytest.raises(RequiredServiceConstructionError) as refused:
+            build()
+
+    message = str(refused.value)
+    assert message.startswith(f"{name} could not be constructed")
+    assert "ImportError" in message
+    assert "marker" not in message
+    assert refused.value.__cause__ is error
+
+
+@pytest.mark.unit
+@_FACTORIES
+def test_a_factory_that_fails_to_build_is_none_under_single(
+    build, target, name, caplog
+):
+    """The control: single-tenant warns and returns ``None``, as before."""
+    with (
+        patch(
+            "faultmaven.providers.tenancy.factory.get_settings",
+            return_value=_settings("single"),
+        ),
+        patch(target, side_effect=ImportError("marker")),
+    ):
+        assert build() is None
+
+    assert f"{name} initialization failed: ImportError" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize(
+    "provider,repository,missing",
+    [
+        (None, MagicMock(), "no tenant provider"),
+        (MagicMock(), None, "no team repository"),
+    ],
+    ids=["no_provider", "no_team_repository"],
+)
+def test_the_team_service_refuses_a_missing_dependency_under_multi(
+    provider, repository, missing
+):
+    """Defence in depth: ``register_services`` cannot reach this after the
+    factories refuse, but ``None`` here would still mean "no team sharing"."""
+    with patch(
+        "faultmaven.providers.tenancy.factory.get_settings",
+        return_value=_settings("multi"),
+    ):
+        with pytest.raises(RequiredServiceConstructionError, match=missing):
+            services.create_team_service(provider, repository, MagicMock())

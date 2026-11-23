@@ -132,8 +132,9 @@ async def _validated_billing_organization(
     if not claimed_organization_id:
         return None
     if organization_repository is None:
-        # Standalone composes none, and a cloud process can be built before it is
-        # wired. Nothing is billed in either case.
+        # Reached only under multi, where a composed container always holds one
+        # (a construction failure refuses the start, #2342): an app whose state
+        # was never composed. Nothing is billed.
         return None
     try:
         organization = await organization_repository.get_organization(
