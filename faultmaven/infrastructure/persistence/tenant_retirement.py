@@ -86,23 +86,6 @@ from faultmaven.infrastructure.persistence.models import (
 )
 
 
-class EnterpriseRowMissing(Exception):
-    """The binding names an enterprise that does not exist.
-
-    A data fault, and reported as its own outcome rather than folded into "no
-    such tenant": the remedies differ completely, and collapsing them told an
-    operator their subject was absent when the truth was a broken row.
-    """
-
-    def __init__(self, subject: str, enterprise_id: str) -> None:
-        super().__init__(
-            f"subject {subject} names enterprise {enterprise_id}, "
-            "which does not exist"
-        )
-        self.subject = subject
-        self.enterprise_id = enterprise_id
-
-
 @dataclass(frozen=True)
 class SubjectBinding:
     """The ``sso_personal_enterprises`` row, as an operator command reads it."""
