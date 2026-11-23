@@ -4,8 +4,9 @@ and code, never its text (#2889, the rule-1 remainder).
 Principles §7, "What a log line may hold", rule 1: "A first-party exception
 contributes its class and its ``error_code`` ..., not its message." Stage S3 of
 #2886. Both lines read their exception through ``ErrorResult``'s
-``original_exception``, a shape the census did not read until
-``EXCEPTION_ATTRS`` (``test_log_message_channel_census_2889.py``).
+``original_exception``, the terminal one two assignments from it, a shape the
+census did not read until ``EXCEPTION_ATTRS`` and its fixed-point name tracking
+(``test_log_message_channel_census_2889.py``).
 
 Each case drives ``generate_structured_output`` through the real
 ``LLMErrorHandler`` with :data:`MARKER` in the starved exception's text and, for

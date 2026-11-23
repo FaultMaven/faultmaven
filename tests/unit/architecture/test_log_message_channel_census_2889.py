@@ -54,19 +54,24 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
 
 **Exception names** are the names bound by ``except ... as N``, a function's
 parameters annotated ``...Error``/``...Exception``/``...ExceptionGroup`` or
-unannotated and named ``e``/``err``/``error``/``exc``/``exception``, and, one
-level deep, the names
-assigned in the same function (``=``, an annotated ``=``, ``+=`` or ``:=``)
-from an expression reading one of those (``msg = str(e)``,
+unannotated and named ``e``/``err``/``error``/``exc``/``exception``, and the
+names assigned in the same function (``=``, an annotated ``=``, ``+=`` or
+``:=``) from an expression reading one of those (``msg = str(e)``,
 ``cause = e.__cause__``), a zero-argument ``.exception()``
 (``failure = task.exception()``), a field in :data:`EXCEPTION_ATTRS` read off
 any receiver (``orig = error_result.original_exception``) or a
-``gather(..., return_exceptions=True)``. Such a field, read inline, is an
-exception read too.
+``gather(..., return_exceptions=True)``, repeated to a fixed point: a name
+assigned from a tracked name is tracked too, at any depth
+(``detail = f"x ({orig})"``), and a safe form (below) ends the chain. Such a
+field, read inline, is an exception read too; a name assigned from one is
+tracked as text, since the field may hold one
+(``{"original_error": str(e)}``, ``config/settings.py``).
 A ``for`` loop's targets are exceptions when the iterable itself (past
 ``await``, ``enumerate`` and ``zip``) is a tracked exception's ``.exceptions``
 or such a ``gather``, and texts over any other read of those names
-(``e.args``, ``str(e).splitlines()``, ``str(results[0]).splitlines()``).
+(``e.args``, ``str(e).splitlines()``, ``str(results[0]).splitlines()``). A
+comprehension's targets over a tracked name are tracked in its element;
+iterating alone reads nothing.
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
 ``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)`` and
@@ -77,26 +82,35 @@ or such a ``gather``, and texts over any other read of those names
 refusal's sentence, else the class name, only at a print's argument position
 in a file under ``cli/`` and in a checked refusal's construction in any file
 (anywhere else its result is text, so a name assigned it is tracked); an
-attribute in :data:`SAFE_ATTRS` (``e.status_code``,
+attribute in :data:`SAFE_ATTRS`, off any receiver (``e.status_code``,
+``r.original_exception.status_code``,
 ``e.returncode``, ``e.item_id``, the knowledge item id our code sets on
 ``IngestOutcomeUnknown``, ``e.limit_type``, ``e.current_count``, ``e.limit`` and
 ``e.retry_after``, the limit and counts our code sets on ``RateLimitError``,
 ``e.lookup``, the fixed label (``user_id``, ``username`` or ``email``) our code
-sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe, ...), and,
+sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe,
+``e.deadlines_spent``, the provider-configuration keys and deadline counts the
+tool loop sets on ``ToolCallingUnsupportedError``, ...); a pydantic error's
+``loc`` or ``type`` read by key (:data:`SAFE_KEYS`: ``err.get("loc", ())``,
+``err["type"]``); and,
 in a print's arguments in a file :data:`PRINT_SAFE_ATTRS` names, the ids our
 code sets on the listed classes, read from a name an ``except`` of that class
 binds, or its annotation types (``cli/provision_sso_org.py``:
-``RemapRefused.mapped_to``, ...); or read by name
+``RemapRefused.mapped_to``, ...); or read by name, off any receiver
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
 exception (not a name that also holds its text) passed bare as a keyword field
 (``error=e``, an ``extra`` value), are not sites: rule 4's processor renders
-those as class chains (``infrastructure/logging/config.py``). An exception
+those as class chains (``infrastructure/logging/config.py``). The exemption
+covers a name bound by ``except`` or typed as an exception, and an
+:data:`EXCEPTION_ATTRS` field passed bare (``error=r.original_exception``),
+not a name assigned from such a field, which is text. An exception
 passed bare as ``self.log_error``'s ``error`` argument is not a site either:
-``BaseService.log_error`` renders it as a class chain and frames. The pruned
-paths ``_prune_invalid_sub_records`` returns (position 1 of its tuple) are
-schema locations our code built, not text: :data:`NOT_EXCEPTION_RESULTS`. A
+``BaseService.log_error`` renders it as a class chain and frames. The body
+and the pruned paths ``_prune_invalid_sub_records`` returns (positions 0 and 1
+of its tuple) are the model's pruned output and schema locations our code
+built, not an exception's text: :data:`NOT_EXCEPTION_RESULTS`. A
 call :data:`NOT_TEXT_RESULTS` lists for a file returns no text there
 (``error_recovery.py``'s ``RecoveryResult``), so a name assigned it is not
 tracked.
@@ -105,10 +119,9 @@ tracked.
 more. A log call's or a print's arguments are read for the exception names the
 scanner tracks, a zero-argument ``.exception()`` and the fields in
 :data:`EXCEPTION_ATTRS` (above), and for subprocess output; text that reaches
-them through an untracked name is not counted: a name assigned from an alias
-(``detail = f"{orig}"`` after ``orig = r.original_exception``), a field holding
-an exception that :data:`EXCEPTION_ATTRS` does not name, and a first-party text
-field built from an exception's text (``ErrorResult.message``, which
+them through an untracked name is not counted: a field holding an exception
+that :data:`EXCEPTION_ATTRS` does not name, and a first-party text field built
+from an exception's text (``ErrorResult.message``, which
 ``llm_error_handler.py`` fills from ``str(error)``). For an
 exit (``SystemExit(...)``, ``sys.exit(...)``), only the first positional
 argument is read, and the exit is a site only in the forms listed above;
@@ -208,8 +221,14 @@ SAFE_ATTRS = frozenset(
         "lookup",
         "expected_version",
         "actual_version",
+        "deadlines_spent",
     }
 )
+
+#: Keys of a pydantic error dict that hold its location in the schema and its
+#: fixed error type, never its message or input: safe read as ``err["loc"]``
+#: or ``err.get("type", "")``.
+SAFE_KEYS = frozenset({"loc", "type"})
 
 #: Per file, per class: the ids our code sets on that class, safe in a print's
 #: arguments in that file only, read from a name an ``except`` of that class
@@ -248,7 +267,7 @@ NOT_TEXT_RESULTS = {"infrastructure/error_recovery.py": frozenset({"execute"})}
 
 #: Calls whose tuple result holds, at the listed positions, no exception text:
 #: a name unpacked there is not tracked; every other position is.
-NOT_EXCEPTION_RESULTS = {"_prune_invalid_sub_records": frozenset({1})}
+NOT_EXCEPTION_RESULTS = {"_prune_invalid_sub_records": frozenset({0, 1})}
 
 #: The names an unannotated parameter holding an exception goes by.
 EXCEPTION_PARAM_NAMES = frozenset({"e", "err", "error", "exc", "exception"})
@@ -328,17 +347,27 @@ def _is_print(call: ast.Call) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == "error" and _is_parser(func)
 
 
+def _is_exception_field(node: ast.AST) -> bool:
+    """``r.original_exception``: an :data:`EXCEPTION_ATTRS` field, any receiver."""
+    return isinstance(node, ast.Attribute) and node.attr in EXCEPTION_ATTRS
+
+
 def _is_safe_getattr(call: ast.Call, safe_attrs: FrozenSet[str]) -> bool:
-    """``getattr(e, "status_code", None)``: a safe attribute, read by name."""
+    """``getattr(e, "status_code", None)``, off any receiver: a safe
+    attribute, read by name."""
     args = call.args
     return (
         isinstance(call.func, ast.Name)
         and call.func.id == "getattr"
         and len(args) >= 2
-        and isinstance(args[0], ast.Name)
         and isinstance(args[1], ast.Constant)
         and args[1].value in safe_attrs
     )
+
+
+def _safe_key(node: ast.AST) -> bool:
+    """A constant in :data:`SAFE_KEYS`."""
+    return isinstance(node, ast.Constant) and node.value in SAFE_KEYS
 
 
 def _is_gather_of_exceptions(node: ast.AST) -> bool:
@@ -373,18 +402,60 @@ class _Reads(ast.NodeVisitor):
         elif _is_safe_getattr(node, self.safe_attrs):
             for default in node.args[2:]:
                 self.visit(default)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and _safe_key(node.args[0])
+        ):
+            for default in node.args[1:]:
+                self.visit(default)  # ``err.get("loc", ())``
         elif _callee(node) not in self.safe_calls:
             self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         """``exc is not None``: a test, not text on the line."""
 
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if not _safe_key(node.slice):  # ``err["loc"]``
+            self.generic_visit(node)
+
+    def _comprehension(self, node, parts) -> None:
+        """A comprehension's targets hold what its iterable reads: a target
+        bound over a tracked name is tracked in ``parts``; iterating is not
+        itself a read, and its conditions are tests."""
+        bound = set()
+        for generator in node.generators:
+            iterable = _Reads(
+                self.names | bound, self.safe_calls, self.safe_attrs, self.name_attrs
+            )
+            iterable.visit(generator.iter)
+            self.output_hit = self.output_hit or iterable.output_hit
+            if iterable.name_hit:
+                bound |= _bound([generator.target])
+        inner = _Reads(
+            self.names | bound, self.safe_calls, self.safe_attrs, self.name_attrs
+        )
+        for part in parts:
+            inner.visit(part)
+        self.name_hit = self.name_hit or inner.name_hit
+        self.output_hit = self.output_hit or inner.output_hit
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._comprehension(node, [node.elt])
+
+    visit_SetComp = visit_GeneratorExp = visit_ListComp
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._comprehension(node, [node.key, node.value])
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in self.safe_attrs:
+            return  # ``e.status_code``, ``r.original_exception.status_code``
         if node.attr in EXCEPTION_ATTRS:
             self.name_hit = True  # ``result.original_exception``, any receiver
         if isinstance(node.value, ast.Name) and (
-            node.attr in self.safe_attrs
-            or node.attr in self.name_attrs.get(node.value.id, ())
+            node.attr in self.name_attrs.get(node.value.id, ())
         ):
             return
         if node.attr in ("stderr", "stdout") and not (
@@ -430,11 +501,18 @@ def _on_self(call: ast.Call) -> bool:
 
 def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
     """The argument expressions a line's text is built from. A name passed bare
-    as a field is skipped only when it is an exception and never its text."""
+    as a field is skipped only when it is an exception and never its text; an
+    :data:`EXCEPTION_ATTRS` field passed bare is skipped too."""
     exceptions = names.exceptions - names.texts
+
+    def bare(value: ast.AST) -> bool:
+        return (
+            isinstance(value, ast.Name) and value.id in exceptions
+        ) or _is_exception_field(value)
+
     for position, arg in enumerate(call.args):
         if position == 1 and _callee(call) == "log_error" and _on_self(call):
-            if isinstance(arg, ast.Name) and arg.id in exceptions:
+            if bare(arg):
                 continue  # ``BaseService.log_error``: a class chain and frames
         yield arg
     for keyword in call.keywords:
@@ -443,11 +521,11 @@ def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
         if printing and keyword.arg in _PRINT_KEYWORDS:
             continue
         value = keyword.value
-        if isinstance(value, ast.Name) and value.id in exceptions:
+        if bare(value):
             continue  # a field: rendered as its class chain (rule 4)
         if keyword.arg == "extra" and isinstance(value, ast.Dict):
             for item in value.values:
-                if not (isinstance(item, ast.Name) and item.id in exceptions):
+                if not bare(item):
                     yield item
             continue
         yield value
@@ -455,7 +533,7 @@ def _argument_values(call: ast.Call, printing: bool, names: "_Names"):
 
 class _Names:
     """The exception names in force: the exceptions themselves, and the
-    one-level aliases that may hold their text."""
+    aliases, at any depth, that may hold their text."""
 
     def __init__(
         self, exceptions=frozenset(), texts=frozenset(), path: str = "", typed=None
@@ -529,13 +607,12 @@ def _exception_params(scope) -> set:
 
 
 def _is_exception_valued(value: ast.AST, exceptions: FrozenSet[str]) -> bool:
-    """``x = e``, ``x = e.__cause__``, ``x = task.exception()``,
-    ``x = result.original_exception`` (:data:`EXCEPTION_ATTRS`, any receiver):
-    an exception, rendered as its class chain when passed as a field."""
+    """``x = e``, ``x = e.__cause__``, ``x = task.exception()``: an exception,
+    rendered as its class chain when passed as a field. A name assigned from an
+    :data:`EXCEPTION_ATTRS` field is not one: the field may hold a text
+    (``{"original_error": str(e)}``), so the name is tracked as text."""
     if isinstance(value, ast.Name):
         return value.id in exceptions
-    if isinstance(value, ast.Attribute) and value.attr in EXCEPTION_ATTRS:
-        return True
     if isinstance(value, ast.Attribute) and value.attr in ("__cause__", "__context__"):
         return isinstance(value.value, ast.Name) and value.value.id in exceptions
     return isinstance(value, ast.Call) and _is_task_exception(value)
@@ -595,7 +672,10 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
     from an exception name in force where the assignment stands, then the
     targets of a loop: exceptions over exceptions (:func:`_iterates_exceptions`),
     texts over any other read of a tracked name (``e.args``,
-    ``str(e).splitlines()``). One level, flow-insensitive."""
+    ``str(e).splitlines()``). Repeated to a fixed point, so a name assigned
+    from a tracked alias is tracked too (``detail = f"x ({orig})"`` after
+    ``orig = r.original_exception``); a safe form ends the chain.
+    Flow-insensitive."""
     exceptions, texts, gathered = set(), set(), set()
 
     def visit(node: ast.AST, in_force: _Names, loops: bool) -> None:
@@ -627,9 +707,12 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
                     texts.update(_bound([child.target]))
             visit(child, here, loops)
 
-    visit(scope, names, loops=False)
-    visit(scope, names.adding(exceptions=exceptions, texts=texts), loops=True)
-    return names.adding(exceptions=exceptions, texts=texts)
+    while True:
+        size = len(exceptions) + len(texts) + len(gathered)
+        visit(scope, names.adding(exceptions=exceptions, texts=texts), loops=False)
+        visit(scope, names.adding(exceptions=exceptions, texts=texts), loops=True)
+        if len(exceptions) + len(texts) + len(gathered) == size:
+            return names.adding(exceptions=exceptions, texts=texts)
 
 
 def _may_be_text(code: ast.AST, names: _Names) -> bool:
@@ -932,6 +1015,16 @@ def _found(source: str) -> List[Site]:
         "def f(ctx):\n    log.warning(f'x {ctx.original_error}')",
         "def f(result):\n    msg = str(result.original_exception)\n"
         "    logger.error(msg)",
+        "def f(result):\n    orig = result.original_exception\n"
+        "    log.warning('x', error=orig)",
+        "def f(e):\n    ctx = SimpleNamespace(original_error=str(e))\n"
+        "    o = ctx.original_error\n    log.warning('x', error=o)",
+        "def f(r):\n    orig = r.original_exception\n    detail = f'x ({orig})'\n"
+        "    logger.error(f'failed: {detail}')",
+        "def f(e):\n    a = str(e)\n    b = a\n    c = f'x {b}'\n    logger.error(c)",
+        "def f(e):\n    errs = e.errors()\n    log.warning(f'{[x for x in errs]}')",
+        "def f(e):\n    errs = e.errors()\n"
+        "    log.warning(f'{[x.get(\"msg\") for x in errs]}')",
         "def f(exc: RequestValidationError):\n    body = getattr(exc, 'body', None)\n"
         "    log.error('x', extra={'body': body})",
     ],
@@ -988,10 +1081,22 @@ def test_a_site_is_found(source):
         "def f(exc):\n    _report_once('k', 'x %s', 'literal')",
         "def f(result):\n    orig = result.original_exception\n"
         "    logger.error('%s', exception_log_name(orig))",
-        "def f(result):\n    orig = result.original_exception\n"
-        "    log.warning('x', error=orig)",
         "def f(result):\n    logger.error('%s', 'a' if result.original_exception"
         " is None else 'b')",
+        "def f(r):\n    logger.error('%s', r.original_exception.status_code)",
+        "def f(r):\n    logger.error('%s', getattr(r.original_exception, "
+        "'status_code', None))",
+        "def f(r):\n    log.warning('x', error=r.original_exception)",
+        "def f(e):\n    n = exception_log_name(e)\n    m = f'x {n}'\n"
+        "    logger.error(m)",
+        "def f(e):\n    s = getattr(getattr(e, 'response', None), 'status_code', None)\n"
+        "    d = f'HTTP {s}'\n    logger.error(d)",
+        "def f(e):\n    spent = dict(e.deadlines_spent)\n    r = retry(spent)\n"
+        "    logger.error('%s', r)",
+        "def f(e):\n    errs = e.errors()\n"
+        '    log.warning(f\'{[(x.get("loc", ()), x["type"]) for x in errs]}\')',
+        "def f(c, e, s):\n    obj, paths, rest = _prune_invalid_sub_records(c, e, s)\n"
+        "    base = obj\n    log.warning(f'{base}')",
     ],
 )
 def test_a_safe_form_is_not_a_site(source):
@@ -1168,12 +1273,10 @@ def test_a_projection_appending_exception_text_is_a_blind_spot():
     assert not _found(_PROJECTION.format("str(e)"))
 
 
-def test_a_name_two_assignments_from_an_exception_field_is_a_blind_spot():
-    """The stated blind spot, in ``generation.py``'s pre-#2889 shape: ``detail``
-    is assigned from ``orig``, an alias, not from the field itself, so it is
-    not tracked. ``generation.py``'s line is pinned by its render test
+def test_a_first_party_text_field_is_a_blind_spot():
+    """The stated blind spot: ``ErrorResult.message`` is built from an
+    exception's text, but it is a first-party ``str`` field, not an
+    exception, so the census does not count it. ``generation.py``'s line that
+    read it is pinned by its render test
     (``test_log_lines_rule1_remainder_2889.py``), not by this guard."""
-    assert not _found(
-        "def f(r):\n    orig = r.original_exception\n    detail = f'x ({orig})'\n"
-        "    logger.error(f'failed: {detail}')"
-    )
+    assert not _found("def f(r):\n    msg = r.message\n    logger.error(msg)")
