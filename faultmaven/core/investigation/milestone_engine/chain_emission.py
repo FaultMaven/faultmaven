@@ -120,12 +120,12 @@ def _report_unanchored_roots(case: Case, metadata: dict[str, Any]) -> None:
             continue
         if ref is None:
             line = f"stands on {now}." if now else "has no root."
+        elif why and now and now != old:
+            line = f"was anchored by the engine to {now}, the emitted root that restates it; its root_node_ref '{ref}' {why}."
         else:
-            line = f"was NOT {'re-rooted' if old else 'anchored'}" + (
-                f": its root_node_ref '{ref}' {why}"
-                if why
-                else f" onto {ref}: its chain does not reach the problem"
-            )
+            line = f"was NOT re-rooted onto {ref}: its chain does not reach the problem"
+            if why:
+                line = f"was NOT {'re-rooted' if old else 'anchored'}: its root_node_ref '{ref}' {why}"
             if now and now != old:
                 line += f"; the engine anchored it to {now} instead, the emitted root that restates it."
             else:

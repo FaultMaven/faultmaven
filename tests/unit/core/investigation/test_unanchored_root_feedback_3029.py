@@ -134,9 +134,9 @@ def test_a_hypothesis_the_orphan_pass_anchors_is_told_where():
     case, hyp_id, hyp, _ref, notices = _new_hypothesis("new_index_9", statement=_CAUSE)
     assert case.causal_nodes[hyp.root_node_id].statement == _CAUSE
     assert _lines_about(notices, hyp_id) == [
-        f"Hypothesis {hyp_id} was NOT anchored: its root_node_ref 'new_index_9' "
-        "names no node emitted this turn; the engine anchored it to "
-        f"{hyp.root_node_id} instead, the emitted root that restates it."
+        f"Hypothesis {hyp_id} was anchored by the engine to {hyp.root_node_id}, "
+        "the emitted root that restates it; its root_node_ref 'new_index_9' names "
+        "no node emitted this turn."
     ]
 
 
@@ -155,10 +155,9 @@ def test_a_verdict_on_the_root_the_orphan_pass_gives_is_told_so():
     assert root.statement == _CAUSE
     assert root.root_terminal is None
     assert _lines_about(notices, hyp_id) == [
-        f"Hypothesis {hyp_id} was NOT anchored: its root_node_ref 'new_index_9' "
-        "names no node emitted this turn; the engine anchored it to "
-        f"{root.node_id} instead, the emitted root that restates it. Its root "
-        "verdict, sent with 'new_index_0', which the engine anchored it to only "
+        f"Hypothesis {hyp_id} was anchored by the engine to {root.node_id}, the "
+        "emitted root that restates it; its root_node_ref 'new_index_9' names no "
+        "node emitted this turn. Its root verdict, sent with 'new_index_0', which the engine anchored it to only "
         "after this turn's refs, was not recorded; send it again with the root "
         "it is about."
     ]
