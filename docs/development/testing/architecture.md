@@ -157,11 +157,11 @@ async def test_service_lifecycle_management():
     # shut it down on the loop it was initialized on.
     await container.initialize()
     try:
-        agent_service_1 = container.get_agent_service()
-        assert agent_service_1 is not None
+        investigation_service_1 = container.get_investigation_service()
+        assert investigation_service_1 is not None
 
         # Test singleton behavior
-        assert container.get_agent_service() is agent_service_1  # Same instance
+        assert container.get_investigation_service() is investigation_service_1  # Same instance
 
         # Test dependency injection
         assert container.get_llm_provider() is not None
@@ -170,7 +170,7 @@ async def test_service_lifecycle_management():
         # shutdown() closes what initialize() opened and resets the container
         await container.shutdown()
 
-    assert container.get_agent_service() is None
+    assert container.get_investigation_service() is None
 ```
 
 ## Testing Patterns by Architectural Layer

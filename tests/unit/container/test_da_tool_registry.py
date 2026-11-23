@@ -18,6 +18,9 @@ from faultmaven.container.providers.services import (
 )
 from tests.utils import sockets_refused
 
+#: Settings a successful construction never reads: only a failure asks them.
+_COMPOSED = MagicMock(must_not_degrade=False)
+
 
 @pytest.fixture(autouse=True)
 def _no_network():
@@ -172,6 +175,7 @@ class TestCreateMilestoneEngine:
             llm_provider=mock_provider,
             case_repository=mock_repo,
             investigation_tools=mock_tools,
+            settings=_COMPOSED,
         )
 
         assert result is not None
@@ -180,13 +184,17 @@ class TestCreateMilestoneEngine:
     def test_returns_none_on_initialization_error(self, environment):
         """Returns None when MilestoneEngine initialization raises, where the
         deployment may degrade."""
-        assert not environment("development").must_not_degrade
+        settings = environment("development")
+        assert not settings.must_not_degrade
 
         with patch(
             "faultmaven.core.investigation.milestone_engine.engine.MilestoneEngine.__init__",
             side_effect=Exception("init failed"),
         ):
-            assert create_milestone_engine(MagicMock(), MagicMock(), None) is None
+            engine = create_milestone_engine(
+                MagicMock(), MagicMock(), None, settings=settings
+            )
+        assert engine is None
 
     def test_refuses_on_initialization_error_where_it_must_not_degrade(
         self, environment
@@ -194,7 +202,8 @@ class TestCreateMilestoneEngine:
         """#3003: a production deployment refuses, naming the class only."""
         from faultmaven.container.errors import RequiredServiceConstructionError
 
-        assert environment("production").must_not_degrade
+        settings = environment("production")
+        assert settings.must_not_degrade
         error = Exception("init failed")
 
         with patch(
@@ -202,7 +211,9 @@ class TestCreateMilestoneEngine:
             side_effect=error,
         ):
             with pytest.raises(RequiredServiceConstructionError) as refused:
-                create_milestone_engine(MagicMock(), MagicMock(), None)
+                create_milestone_engine(
+                    MagicMock(), MagicMock(), None, settings=settings
+                )
 
         assert refused.value.__cause__ is error
         assert "init failed" not in str(refused.value)
@@ -220,6 +231,7 @@ class TestCreateMilestoneEngine:
             investigation_tools=mock_tools,
             da_provider=mock_tcp,
             da_model="claude-sonnet-4-5-20250929",
+            settings=_COMPOSED,
         )
 
         assert result is not None
@@ -236,6 +248,7 @@ class TestCreateMilestoneEngine:
             llm_provider=mock_provider,
             case_repository=mock_repo,
             investigation_tools=mock_tools,
+            settings=_COMPOSED,
         )
 
         assert result is not None

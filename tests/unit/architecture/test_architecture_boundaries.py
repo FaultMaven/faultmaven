@@ -181,13 +181,13 @@ class TestDependencyInjection:
     def test_service_dependency_injection(self, private_base_container):
         """Test that services receive proper dependencies"""
         container = private_base_container
-        agent_service = container.get_agent_service()
+        investigation_service = container.get_investigation_service()
 
-        # Verify agent service has injected dependencies
-        assert hasattr(agent_service, "_llm")
-        assert hasattr(agent_service, "_tools")
-        assert hasattr(agent_service, "_tracer")
-        assert hasattr(agent_service, "_sanitizer")
+        # Verify investigation service has injected dependencies
+        assert hasattr(investigation_service, "_llm")
+        assert hasattr(investigation_service, "_tools")
+        assert hasattr(investigation_service, "_tracer")
+        assert hasattr(investigation_service, "_sanitizer")
 
     def test_container_health_reporting(self, private_base_container):
         """Test container health check provides meaningful status"""

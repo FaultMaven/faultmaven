@@ -255,6 +255,8 @@ def create_milestone_engine(
     team_service: Any | None = None,
     share_repository: Any | None = None,
     conversion_service: Any | None = None,
+    *,
+    settings: FaultMavenSettings,
 ) -> Any | None:
     """Create milestone engine for investigation workflow.
 
@@ -275,6 +277,8 @@ def create_milestone_engine(
         conversion_service: passed here, never assigned afterwards (#1722).
             Each is None when its service is unavailable, exactly as the
             engine saw it before.
+        settings: The composition's settings; a construction failure refuses
+            the start where they must not degrade (#3003).
     """
     try:
         from faultmaven.core.investigation.milestone_engine.engine import (
@@ -302,7 +306,7 @@ def create_milestone_engine(
         logger.warning(
             f"MilestoneEngine initialization failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("MilestoneEngine", e)
+        unbuilt_where_must_not_degrade("MilestoneEngine", e, settings)
         return None
 
 
@@ -436,8 +440,15 @@ def create_investigation_service(
     case_repository: Any | None,
     preprocessing_service: Any | None = None,
     file_storage_service: Any | None = None,
+    *,
+    settings: FaultMavenSettings,
 ) -> Any | None:
-    """Create investigation service for workflow orchestration."""
+    """Create investigation service for workflow orchestration.
+
+    ``None`` without a milestone engine, or on a construction failure (the
+    turn cap's included) where ``settings`` may degrade; elsewhere that
+    failure refuses the start (#3003).
+    """
     if not milestone_engine:
         logger.debug("InvestigationService skipped (no milestone engine)")
         return None
@@ -465,7 +476,7 @@ def create_investigation_service(
         logger.warning(
             f"InvestigationService initialization failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("InvestigationService", e)
+        unbuilt_where_must_not_degrade("InvestigationService", e, settings)
         return None
 
 
@@ -1015,7 +1026,7 @@ def create_user_service(
         return service
     except Exception as e:
         logger.warning(f"UserService initialization failed: {exception_log_name(e)}")
-        unbuilt_where_must_not_degrade("UserService", e)
+        unbuilt_where_must_not_degrade("UserService", e, settings)
         return None
 
 
@@ -1083,8 +1094,14 @@ def create_report_generation_service(
     case_repository: Any | None,
     lock_manager: Any | None,
     pii_redactor: Any | None,
+    *,
+    settings: FaultMavenSettings,
 ) -> Any | None:
-    """Create report generation service for terminal summaries."""
+    """Create report generation service for terminal summaries.
+
+    ``None`` on a construction failure where ``settings`` may degrade;
+    elsewhere that failure refuses the start (#3003).
+    """
     try:
         from faultmaven.modules.report.domain.services.report_generation_service import (
             ReportGenerationService,
@@ -1101,7 +1118,7 @@ def create_report_generation_service(
         logger.warning(
             f"ReportGenerationService initialization failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("ReportGenerationService", e)
+        unbuilt_where_must_not_degrade("ReportGenerationService", e, settings)
         return None
 
 
@@ -1551,11 +1568,12 @@ def register_services(container: BaseDIContainer) -> None:
         container.signing_token_generator = signing_generator
         container._register_service("signing_token_generator", signing_generator)
     except SigningKeyUnavailableError as e:
-        # The same misconfiguration already breaks sign-in, which reports it at
-        # the request the operator is looking at. Named here so the cause is in
-        # the startup log too, rather than only surfacing as an absent service.
+        # Where the deployment must not degrade this refuses the start (#3003).
+        # Elsewhere the same misconfiguration breaks sign-in, which reports it
+        # at the request the operator is looking at; named here so the cause
+        # is in the startup log too, not only an absent service.
         logger.error("JWT signing key unavailable: %s", exception_log_name(e))
-        unbuilt_where_must_not_degrade("The signing token generator", e)
+        unbuilt_where_must_not_degrade("The signing token generator", e, settings)
         signing_generator = None
         # Assigned, not left unset: every other service on this container is
         # read as an attribute somewhere, and an unset name raises
@@ -1565,7 +1583,8 @@ def register_services(container: BaseDIContainer) -> None:
         container.signing_token_generator = None
 
     # User Service (Composition Root: dependencies injected via constructor).
-    # Built even when there is no signing key: user management, the admin
+    # Built even when there is no signing key (where the deployment may
+    # degrade; elsewhere the start was refused above): user management, the admin
     # routes and registration have nothing to do with reset tokens, and taking
     # them down over a capability they never touch is the coupling this file
     # refuses for the OAuth generator a few lines below. The reset flow refuses
@@ -1608,7 +1627,7 @@ def register_services(container: BaseDIContainer) -> None:
             # OAuth dependency answers 503 when the service is absent, which is
             # the failure the operator can act on.
             logger.error("OAuth JWT generator unavailable: %s", exception_log_name(e))
-            unbuilt_where_must_not_degrade("The OAuth JWT generator", e)
+            unbuilt_where_must_not_degrade("The OAuth JWT generator", e, settings)
             jwt_token_generator = None
 
         container.jwt_token_generator = jwt_token_generator
@@ -1739,6 +1758,7 @@ def register_services(container: BaseDIContainer) -> None:
         case_repository=case_repository,
         lock_manager=lock_manager,
         pii_redactor=pii_redactor,
+        settings=settings,
     )
     container.report_generation_service = report_generation_service
     if report_generation_service:
@@ -1835,6 +1855,7 @@ def register_services(container: BaseDIContainer) -> None:
         team_service=team_service,
         share_repository=share_repository,
         conversion_service=conversion_service,
+        settings=settings,
     )
     container.milestone_engine = milestone_engine
     if milestone_engine:
@@ -1855,6 +1876,7 @@ def register_services(container: BaseDIContainer) -> None:
         case_repository,
         preprocessing_service,
         file_storage_service,
+        settings=settings,
     )
     container.investigation_service = investigation_service
     if investigation_service:
@@ -1883,12 +1905,6 @@ def register_services(container: BaseDIContainer) -> None:
         )
         if sso_login_service:
             container._register_service("sso_login_service", sso_login_service)
-
-    # Agent Service: the investigation service under its older name, never a
-    # stand-in for it (#3003). None when the investigation service is.
-    container.agent_service = investigation_service
-    if investigation_service:
-        container._register_service("agent_service", investigation_service)
 
     # Data Service
     data_service = create_data_service(

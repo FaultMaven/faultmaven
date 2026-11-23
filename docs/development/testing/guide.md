@@ -151,7 +151,7 @@ def test_example():
 ```python
 # Correct: Compose the container, then use it for service resolution
 await reset_container.initialize()  # a getter never composes it (#2249)
-agent_service = reset_container.get_agent_service()
+investigation_service = reset_container.get_investigation_service()
 knowledge_service = reset_container.get_knowledge_service()
 
 # Incorrect: Assigning mocks onto the container

@@ -37,6 +37,7 @@ from faultmaven.container.providers import (
     register_services,
     register_tools,
 )
+from faultmaven.container.providers.refusal import unbuilt_where_must_not_degrade
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.teardown import (
     run_teardown,
@@ -301,7 +302,7 @@ class DIContainer(BaseDIContainer):
         self.tools = []
 
         # Service layer mocks
-        self.agent_service = MagicMock()
+        self.investigation_service = MagicMock()
         self.data_service = MagicMock()
         # No stand-in: a KnowledgeService without a database cannot answer a
         # single KB question truthfully, and the stub that used to sit here
@@ -326,17 +327,6 @@ class DIContainer(BaseDIContainer):
     # container while nothing awaited the task. Every process initializes
     # before its first getter (the lifespan, the jobs runner, the fm-*
     # commands), so a getter answers from what is composed.
-
-    def get_agent_service(self):
-        """Get the agent service with all dependencies injected"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            # Only warn if not currently initializing
-            if not getattr(self, "_initializing", False):
-                logger.warning(
-                    "Agent service requested but container not initialized - this should not happen after startup"
-                )
-        return getattr(self, "agent_service", None)
 
     def get_data_service(self):
         """Get the data service with all dependencies injected"""
@@ -425,21 +415,6 @@ class DIContainer(BaseDIContainer):
             if not getattr(self, "_initializing", False):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "performance_monitor", None)
-
-    def get_enhanced_agent_service(self):
-        """Get the enhanced agent service with memory and planning capabilities"""
-        if not self._initialized:
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "Enhanced agent service requested but container not initialized"
-            )
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        enhanced_service = getattr(self, "enhanced_agent_service", None)
-        if enhanced_service is None:
-            # Fallback to standard agent service
-            return self.get_agent_service()
-        return enhanced_service
 
     def get_orchestration_service(self):
         """Get the orchestration service for multi-step workflows"""
@@ -741,6 +716,7 @@ class DIContainer(BaseDIContainer):
                 logger.warning(
                     f"Job service initialization failed: {exception_log_name(e)}"
                 )
+                unbuilt_where_must_not_degrade("JobService", e, self.get_settings())
                 self._job_service = None
 
         return self._job_service

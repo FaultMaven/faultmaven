@@ -717,7 +717,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             f"❌ Failed to create file storage service: {exception_log_name(e)}",
             exc_info=True,
         )
-        unbuilt_where_must_not_degrade("FileStorageService", e)
+        unbuilt_where_must_not_degrade("FileStorageService", e, settings)
         container._register_failed("file_storage_service", exception_log_name(e))
 
     # Deep analysis service (Tier 3 deep LLM analysis)
@@ -766,7 +766,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             container._register_service("vector_store", vector_store)
     except Exception as e:
         logger.warning(f"Vector store initialization failed: {exception_log_name(e)}")
-        unbuilt_where_must_not_degrade("Vector store", e)
+        unbuilt_where_must_not_degrade("Vector store", e, settings)
         container._register_failed("vector_store", exception_log_name(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection

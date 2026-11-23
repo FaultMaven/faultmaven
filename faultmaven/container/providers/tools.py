@@ -70,7 +70,7 @@ def create_registry_tools(
     except Exception as e:
         web_search = None
         logger.warning(f"Web search tool creation failed: {exception_log_name(e)}")
-        unbuilt_where_must_not_degrade("The web search tool", e)
+        unbuilt_where_must_not_degrade("The web search tool", e, settings)
 
     return tools
 
@@ -130,7 +130,7 @@ def create_document_qa_tools(
 
     except Exception as e:
         logger.warning(f"Document Q&A tools creation failed: {exception_log_name(e)}")
-        unbuilt_where_must_not_degrade("The document Q&A tools", e)
+        unbuilt_where_must_not_degrade("The document Q&A tools", e, settings)
 
     return result
 
@@ -294,7 +294,7 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.info("Search file tool registered (mechanical search)")
     except Exception as e:
         logger.warning(f"Search file tool registration failed: {exception_log_name(e)}")
-        unbuilt_where_must_not_degrade("The search file tool", e)
+        unbuilt_where_must_not_degrade("The search file tool", e, settings)
 
     # Vectorize file tool (on-demand vectorization)
     case_vector_store = (
@@ -316,7 +316,7 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.warning(
             f"Vectorize file tool registration failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("The vectorize file tool", e)
+        unbuilt_where_must_not_degrade("The vectorize file tool", e, settings)
 
     # Phase 1.5 — the evidence reclassifier the PATCH route and the
     # ``reclassify_evidence`` tool share (#1941), built whatever the flag says.
@@ -336,7 +336,7 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.warning(
             f"Reclassify evidence tool registration failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("The reclassify evidence tool", e)
+        unbuilt_where_must_not_degrade("The reclassify evidence tool", e, settings)
 
     # Phase 4c — entity registry tools. ``find_entity`` and
     # ``list_top_entities`` expose the ``case_entities`` table built by
@@ -385,6 +385,6 @@ def register_tools(container: BaseDIContainer) -> None:
         logger.warning(
             f"Entity registry tool registration failed: {exception_log_name(e)}"
         )
-        unbuilt_where_must_not_degrade("The entity registry tools", e)
+        unbuilt_where_must_not_degrade("The entity registry tools", e, settings)
 
     logger.info(f"✅ Tools layer registered: {len(container.tools)} tools")

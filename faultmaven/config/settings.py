@@ -1737,8 +1737,10 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     redesign left to the owner (#1778 review, R6).
 
     On a filesystem error in the persistent path it logs a warning and sets no
-    secret — local auth then fails with a clear "JWT_SECRET_KEY not configured"
-    message rather than the server crashing at startup.
+    secret. Where the deployment may degrade, local auth then fails with a
+    clear "JWT_SECRET_KEY not configured" message and the server serves the
+    rest; where it must not degrade, the composition refuses the start
+    (principles §7, #3003).
     """
     if settings.auth.auth_mode is not AuthMode.LOCAL:
         return

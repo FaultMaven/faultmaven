@@ -39,6 +39,9 @@ from faultmaven.container.errors import RequiredServiceConstructionError
 from faultmaven.container.providers.infrastructure import create_case_repository
 from faultmaven.container.providers.services import register_services
 from faultmaven.container.registry import DependencyRegistry
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    SigningKeyUnavailableError,
+)
 
 #: Infrastructure the service layer reads out of the container. These are the
 #: real boundary: each one owns a socket or a model, and ``register_services``
@@ -155,7 +158,7 @@ class TestOAuthDeploymentComposes:
             "case_service",
             "session_service",
             "data_service",
-            "agent_service",
+            "investigation_service",
         ):
             assert container.get_service(name) is not None, name
 
@@ -203,15 +206,63 @@ class TestLocalDeploymentComposes:
 
 
 @pytest.mark.unit
+class TestOAuthGeneratorUnavailable:
+    """The OAuth generator's ``SigningKeyUnavailableError`` arm (#3003).
+
+    ``AuthService`` always holds a complete pair on the container path, so the
+    builder is made to raise here.
+    """
+
+    def _composed(self, monkeypatch, environment):
+        settings = _settings(
+            monkeypatch,
+            AUTH_MODE="oauth",
+            OAUTH_ENABLED="true",
+            ENVIRONMENT=environment,
+        )
+
+        def _unavailable(*_args, **_kwargs):
+            raise SigningKeyUnavailableError("no key")
+
+        monkeypatch.setattr(
+            "faultmaven.container.providers.services.create_jwt_token_generator",
+            _unavailable,
+        )
+        container = _container(settings)
+        register_services(container)
+        return container
+
+    def test_development_composes_without_it(self, monkeypatch):
+        container = self._composed(monkeypatch, "development")
+
+        assert container.jwt_token_generator is None
+        assert container.get_service("oauth_service") is None
+        assert container.get_service("case_service") is not None
+
+    def test_a_deployment_that_must_not_degrade_refuses_it(self, monkeypatch):
+        with pytest.raises(RequiredServiceConstructionError) as refused:
+            self._composed(monkeypatch, "production")
+
+        assert isinstance(refused.value.__cause__, SigningKeyUnavailableError)
+        assert str(refused.value) == (
+            "The OAuth JWT generator could not be constructed where the "
+            "deployment must not degrade: SigningKeyUnavailableError"
+        )
+
+
+@pytest.mark.unit
 class TestCompositionWithNoSigningKey:
     """Local mode where the JWT secret never resolved.
 
-    Reachable in production, not hypothetical: ``resolve_local_jwt_secret``
-    warns and returns when it cannot write ``data/.jwt_secret``, leaving
-    ``JWT_SECRET_KEY`` unset. Everything that does not sign must survive it —
-    the admin user routes read ``app.state.user_service`` and raise a bare
-    RuntimeError when it is absent, so an unwritable directory would otherwise
-    turn every ``/api/v1/admin/users`` request into a 500.
+    Reachable, not hypothetical: ``resolve_local_jwt_secret`` warns and
+    returns when it cannot write ``data/.jwt_secret``, leaving
+    ``JWT_SECRET_KEY`` unset. Where the deployment may degrade, everything
+    that does not sign must survive it — the admin user routes read
+    ``app.state.user_service`` and raise a bare RuntimeError when it is
+    absent, so an unwritable directory would otherwise turn every
+    ``/api/v1/admin/users`` request into a 500. Where it must not degrade
+    (cloud, or ``ENVIRONMENT=production``), the composition refuses the start
+    instead (#3003; principles §7).
     """
 
     def _composed(self, monkeypatch):
@@ -222,6 +273,21 @@ class TestCompositionWithNoSigningKey:
         container = _container(settings)
         register_services(container)
         return container
+
+    def test_a_deployment_that_must_not_degrade_refuses_it(self, monkeypatch):
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+        settings = _settings(monkeypatch, AUTH_MODE="local", ENVIRONMENT="production")
+        assert settings.must_not_degrade
+        assert settings.security.jwt_secret_key is None, "the no-key state"
+
+        with pytest.raises(RequiredServiceConstructionError) as refused:
+            register_services(_container(settings))
+
+        assert isinstance(refused.value.__cause__, SigningKeyUnavailableError)
+        assert str(refused.value) == (
+            "The signing token generator could not be constructed where the "
+            "deployment must not degrade: SigningKeyUnavailableError"
+        )
 
     def test_composition_completes_and_names_the_absent_generator(self, monkeypatch):
         container = self._composed(monkeypatch)

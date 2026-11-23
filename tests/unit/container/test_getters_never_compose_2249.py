@@ -20,7 +20,7 @@ from tests.unit.container.conftest import make_private_container
 pytestmark = pytest.mark.unit
 
 _GETTERS = (
-    "get_agent_service",
+    "get_investigation_service",
     "get_data_service",
     "get_knowledge_service",
     "get_oauth_service",
@@ -30,7 +30,7 @@ _GETTERS = (
 #: without awaiting it. DIContainer's initialize() is a coroutine, so each is
 #: overridden there; one dropped override would bring the lazy path back.
 _BASE_LAZY_GETTERS = (
-    "get_agent_service",
+    "get_investigation_service",
     "get_llm_provider",
     "get_sanitizer",
     "get_tracer",

@@ -199,7 +199,7 @@ Common fixtures are available in `conftest.py`:
 async def test_with_container(reset_container):
     """Test with clean DI container state; the fixture shuts it down after."""
     await reset_container.initialize()  # a getter never composes it (#2249)
-    service = reset_container.get_agent_service()
+    service = reset_container.get_investigation_service()
     assert service is not None
 
 def test_with_started_app(booted_app_client):

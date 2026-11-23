@@ -252,14 +252,16 @@ class TestInterfaceResolutionAndInjection:
         # bare attributes they passed only because the getters composed the
         # whole container over them (#2249); the registry-backed getters
         # (session, case) never saw them.
-        container._register_service("agent_service", mock_services["llm_provider"])
+        container._register_service(
+            "investigation_service", mock_services["llm_provider"]
+        )
         container._register_service("data_service", mock_services["sanitizer"])
         container._register_service("knowledge_service", mock_services["tracer"])
         container._register_service("session_service", mock_services["vector_store"])
         container._register_service("case_service", mock_services["case_store"])
 
         # Test getter methods
-        assert container.get_agent_service() is container.agent_service
+        assert container.get_investigation_service() is container.investigation_service
         assert container.get_data_service() is container.data_service
         assert container.get_knowledge_service() is container.knowledge_service
         assert container.get_session_service() is container.session_service
@@ -272,11 +274,11 @@ class TestInterfaceResolutionAndInjection:
         with (
             patch.object(container, "initialize") as mock_init,
             patch.object(
-                container, "agent_service", create=True, new=Mock()
+                container, "investigation_service", create=True, new=Mock()
             ) as mock_service,
         ):
 
-            result = container.get_agent_service()
+            result = container.get_investigation_service()
 
             mock_init.assert_not_called()
             assert result is mock_service
@@ -374,7 +376,7 @@ class TestContainerHealthAndDiagnostics:
         container.vector_store = Mock()
         container.session_store = Mock()
         container.tools = []
-        container.agent_service = Mock()
+        container.investigation_service = Mock()
         container.data_service = Mock()
         container.knowledge_service = Mock()
         container.session_service = Mock()
@@ -399,7 +401,7 @@ class TestContainerHealthAndDiagnostics:
         container.vector_store = mock_services["vector_store"]
         container.session_store = mock_services["session_store"]
         container.tools = mock_services["tools"]
-        container.agent_service = Mock()
+        container.investigation_service = Mock()
         container.data_service = Mock()
         container.knowledge_service = Mock()
         container.session_service = Mock()

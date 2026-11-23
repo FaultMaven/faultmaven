@@ -96,4 +96,4 @@ async def test_no_stand_in_for_an_investigation_service_it_could_not_build(
 
     assert fresh_container.is_initialized
     assert fresh_container.investigation_service is None
-    assert fresh_container.get_agent_service() is None
+    assert not hasattr(fresh_container, "agent_service")

@@ -515,9 +515,13 @@ A container factory that catches its own construction failure hands it to this
 predicate at its wiring line (`unbuilt_where_must_not_degrade`,
 `container/providers/refusal.py`): a service the deployment configured that
 cannot be constructed refuses the start with `RequiredServiceConstructionError`
-where the deployment must not degrade. An implementation the deployment did not
-configure is never served in its place. Each such arm, and each line that
-degrades by declaration, is listed with its reason in the allowlist of
+where the deployment must not degrade. No implementation the deployment did not
+configure is served in a configured one's place, with one declared exception:
+standalone's local ChromaDB client when the configured server is unreachable, a
+capability gate on `is_cloud` (#901) served at any `ENVIRONMENT`. In
+`container/providers/`, `_container_impl.py` and `bootstrap/composition.py`,
+every `except` arm that can complete without raising is listed with its class
+and reason in the allowlist of
 `tests/unit/architecture/test_factories_do_not_swallow_construction_3003.py`.
 
 - **Must not degrade** → startup raises `RuntimeError`, uvicorn exits, the pod
