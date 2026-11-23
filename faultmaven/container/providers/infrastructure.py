@@ -14,6 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable
 
 from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.container.providers.refusal import unbuilt_where_must_not_degrade
 from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
@@ -609,21 +610,16 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
             )
             return store
         except Exception as e:
-            # ERROR, not a shrug: UserService selects its repository with the
-            # same predicate and does NOT fall back, so from here on logins
-            # write to Redis while /auth/me reads database rows — a split that
-            # is invisible at request time (#1128).
-            logger.error(
-                "Failed to create database user store (%s); falling back to "
-                "Redis while UserService still reads the database — user rows "
-                "written from now on will not be visible to /auth/me",
-                exception_log_name(e),
-                exc_info=True,
-            )
-            # Fall through to Redis
+            # Refused in every mode, never a fall-through to Redis (#3003, the
+            # #2103 invariant): UserService selects its repository with the
+            # same predicate and does not fall back, so logins would write to
+            # Redis while /auth/me read database rows (#1128).
+            raise RequiredServiceConstructionError(
+                f"Database user store could not be constructed: "
+                f"{exception_log_name(e)}"
+            ) from e
 
-    # Priority 2: Fall back to Redis-backed user store
-    # redis_client is always available (real or FakeRedis)
+    # No persistent database: the Redis-backed store (real or FakeRedis)
     from faultmaven.infrastructure.auth.user_store import RedisUserStore
 
     store = RedisUserStore(redis_client=redis_client)
@@ -721,6 +717,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             f"❌ Failed to create file storage service: {exception_log_name(e)}",
             exc_info=True,
         )
+        unbuilt_where_must_not_degrade("FileStorageService", e, settings)
         container._register_failed("file_storage_service", exception_log_name(e))
 
     # Deep analysis service (Tier 3 deep LLM analysis)
@@ -769,6 +766,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
             container._register_service("vector_store", vector_store)
     except Exception as e:
         logger.warning(f"Vector store initialization failed: {exception_log_name(e)}")
+        unbuilt_where_must_not_degrade("Vector store", e, settings)
         container._register_failed("vector_store", exception_log_name(e))
 
     # Knowledge vector store — scope-enforcing wrapper around faultmaven_kb collection
@@ -799,7 +797,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
     session_store = create_session_store(redis_client, settings)
     container._register_service("session_store", session_store)
 
-    # User store (provider pattern: Database → Redis)
+    # User store: the database when one is configured, else Redis
     try:
         user_store = create_user_store(redis_client, settings)
         if user_store is None:

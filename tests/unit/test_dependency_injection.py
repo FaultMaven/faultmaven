@@ -67,7 +67,7 @@ def test_container_import_and_basic_behavior(private_base_container):
             "initialize",
             "reset",
             "get_health",
-            "get_agent_service",
+            "get_investigation_service",
             "get_service",
             "has_service",
         ]

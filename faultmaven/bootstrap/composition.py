@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from fastapi import FastAPI
 
+from faultmaven.container.providers.refusal import unbuilt_where_must_not_degrade
 from faultmaven.infrastructure.concurrency.teardown import (
     ContainerRelease,
     cancel_and_wait,
@@ -326,6 +327,10 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
                 )
             except Exception as e:
                 logger.debug(f"Config overrides skipped: {exception_log_name(e)}")
+                # Overrides outrank the environment, so a pod that cannot
+                # apply them serves another configuration: refused where the
+                # deployment must not degrade (#3003).
+                unbuilt_where_must_not_degrade("LLM config overrides", e, settings)
         else:
             logger.debug(
                 "Config overrides skipped (local mode — .env is source of truth)"
@@ -564,7 +569,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # model does not have whenever startup composition failed.
     app.state.web_search_tool = getattr(container, "web_search_tool", None)
     app.state.preprocessing_service = container.get_preprocessing_service()
-    app.state.enhanced_agent_service = container.get_enhanced_agent_service()
     app.state.orchestration_service = container.get_orchestration_service()
     app.state.data_service = container.get_data_service()
     # Organization rows (the tenant substrate, ADR-010 D4). Management is the

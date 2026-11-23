@@ -28,10 +28,10 @@ review (the first cut was a full-row read-modify-write; see #1130):
    ``updated_at``, which keeps meaning "last material change to the account"
    rather than becoming a shadow of the login clock.
 6. ``RedisUserStore.record_login`` accepts the call as a deliberate no-op
-   (DevUser persists no last-login and nothing reads one from Redis), and
-   warns once per process on first use: the container falls back to this
-   store when DatabaseUserStore construction fails, a state in which logins
-   would otherwise silently stop stamping while /auth/me still reads DB rows.
+   (DevUser persists no last-login and nothing reads one from Redis). The
+   container composes that store only where no persistent database is
+   configured: a DatabaseUserStore that cannot be built refuses the start
+   (#3003), so no database rows exist for the no-op to miss.
 """
 
 from __future__ import annotations
@@ -431,11 +431,11 @@ async def test_touch_last_login_suppresses_the_updated_at_onupdate():
 
 
 # ---------------------------------------------------------------------------
-# 5. RedisUserStore parity: accepted as a no-op, warned once per process
+# 5. RedisUserStore parity: accepted as a no-op
 # ---------------------------------------------------------------------------
 
 
-async def test_redis_user_store_accepts_record_login_and_warns_once(caplog):
+async def test_redis_user_store_accepts_record_login(caplog):
     # The client stub has no methods — a stamp that touched Redis would raise.
     store = RedisUserStore(redis_client=SimpleNamespace())
 
@@ -443,9 +443,4 @@ async def test_redis_user_store_accepts_record_login_and_warns_once(caplog):
         await store.record_login(USER_ID)
         await store.record_login(USER_ID)
 
-    warnings = [
-        r
-        for r in caplog.records
-        if r.levelno == logging.WARNING and "no-op on RedisUserStore" in r.message
-    ]
-    assert len(warnings) == 1
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

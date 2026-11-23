@@ -203,12 +203,12 @@ class TestDIContainerComponentCreation:
         await container.initialize()
 
         # Should have all service components
-        assert hasattr(container, "agent_service")
+        assert hasattr(container, "investigation_service")
         assert hasattr(container, "data_service")
         assert hasattr(container, "session_service")
 
         # Services should not be None
-        assert container.agent_service is not None
+        assert container.investigation_service is not None
         assert container.data_service is not None
         assert container.session_service is not None
 
@@ -244,7 +244,7 @@ class TestDIContainerGetterMethods:
         container = DIContainer()
 
         expected_getters = [
-            "get_agent_service",
+            "get_investigation_service",
             "get_data_service",
             "get_knowledge_service",
             "get_llm_provider",
@@ -272,9 +272,9 @@ class TestDIContainerGetterMethods:
         await container.initialize()
 
         # Multiple calls to same getter should return same instance
-        agent_service1 = container.get_agent_service()
-        agent_service2 = container.get_agent_service()
-        assert agent_service1 is agent_service2
+        investigation_service1 = container.get_investigation_service()
+        investigation_service2 = container.get_investigation_service()
+        assert investigation_service1 is investigation_service2
 
         llm_provider1 = container.get_llm_provider()
         llm_provider2 = container.get_llm_provider()
@@ -295,7 +295,7 @@ class TestDIContainerGetterMethods:
             # A spy, to show the getter does not initialize the container
             with patch.object(container, "initialize") as mock_initialize:
                 # Access service before explicit initialization
-                service = container.get_agent_service()
+                service = container.get_investigation_service()
 
                 # Should have logged warning about uninitialized access
                 mock_logger.warning.assert_called()
@@ -342,7 +342,7 @@ class TestDIContainerHealthCheck:
             "sanitizer",
             "tracer",
             "tools_count",
-            "agent_service",
+            "investigation_service",
             "data_service",
             "data_classifier",
             "log_processor",
@@ -367,7 +367,7 @@ class TestDIContainerHealthCheck:
             "tracer",
             "vector_store",
             "session_store",
-            "agent_service",
+            "investigation_service",
             "data_service",
             "knowledge_service",
             "session_service",
@@ -450,13 +450,13 @@ class TestDIContainerReset:
 
         # Verify components exist
         assert hasattr(container, "llm_provider")
-        assert hasattr(container, "agent_service")
+        assert hasattr(container, "investigation_service")
 
         await container.shutdown()
 
         # Verify components are cleared
         assert not hasattr(container, "llm_provider")
-        assert not hasattr(container, "agent_service")
+        assert not hasattr(container, "investigation_service")
         assert not hasattr(container, "tools")
 
     @pytest.mark.asyncio
@@ -466,15 +466,15 @@ class TestDIContainerReset:
 
         # Initialize first time
         await container.initialize()
-        first_agent_service = container.get_agent_service()
+        first_investigation_service = container.get_investigation_service()
 
         # Shut down and initialize again
         await container.shutdown()
         await container.initialize()
-        second_agent_service = container.get_agent_service()
+        second_investigation_service = container.get_investigation_service()
 
         # Should have new instances
-        assert first_agent_service is not second_agent_service
+        assert first_investigation_service is not second_investigation_service
         assert container._initialized
 
     @pytest.mark.asyncio
@@ -516,7 +516,7 @@ class TestDIContainerErrorHandling:
             assert "File storage unavailable" not in failed.error
 
             # Other services should work
-            assert container.get_agent_service() is not None
+            assert container.get_investigation_service() is not None
             assert container.get_data_service() is not None
 
             # Knowledge service should be handled gracefully
@@ -589,7 +589,7 @@ class TestGlobalContainerProxy:
 
         # Should delegate method calls
         assert hasattr(global_container, "initialize")
-        assert hasattr(global_container, "get_agent_service")
+        assert hasattr(global_container, "get_investigation_service")
         assert callable(global_container.initialize)
 
         # Should delegate to current singleton instance

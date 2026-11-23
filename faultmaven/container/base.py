@@ -130,12 +130,12 @@ class BaseDIContainer:
         self._register_service("tools", [])
 
         # Service layer mocks
-        agent_service = MagicMock()
-        agent_service._llm = llm_provider
-        agent_service._tools = []
-        agent_service._tracer = tracer
-        agent_service._sanitizer = sanitizer
-        self._register_service("agent_service", agent_service)
+        investigation_service = MagicMock()
+        investigation_service._llm = llm_provider
+        investigation_service._tools = []
+        investigation_service._tracer = tracer
+        investigation_service._sanitizer = sanitizer
+        self._register_service("investigation_service", investigation_service)
 
         self._initialized = True
         self._logger.info("Base container initialized with mock services")
@@ -308,15 +308,15 @@ class BaseDIContainer:
         if not self._initialized and not getattr(self, "_initializing", False):
             self.initialize()
 
-    def get_agent_service(self) -> Any:
-        """Get the agent service.
+    def get_investigation_service(self) -> Any:
+        """Get the investigation service.
 
         Returns:
-            Agent service instance or None if not available
+            Investigation service instance or None if not available
         """
         # Trigger lazy initialization if needed (for tests)
         self._ensure_initialized_for_getter()
-        return self.get_service("agent_service", required=False)
+        return self.get_service("investigation_service", required=False)
 
     def get_llm_provider(self) -> Any:
         """Get the LLM provider.

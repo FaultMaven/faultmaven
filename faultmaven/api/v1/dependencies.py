@@ -86,11 +86,6 @@ async def get_preprocessing_service(request: Request) -> PreprocessingService:
     return preprocessing_service
 
 
-async def get_enhanced_agent_service(request: Request):
-    """Get EnhancedAgentService instance from app.state (Composition Root)"""
-    return request.app.state.enhanced_agent_service
-
-
 async def get_case_service(request: Request) -> Optional[ICaseService]:
     """Get CaseService instance from app.state (Composition Root)"""
     return getattr(request.app.state, "case_service", None)

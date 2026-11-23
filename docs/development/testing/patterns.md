@@ -26,10 +26,10 @@ async def test_service_with_container_pattern():
     await container.initialize()
     try:
         # Get service through container (dependency injection)
-        agent_service = container.get_agent_service()
+        investigation_service = container.get_investigation_service()
 
         # Validate service is properly initialized
-        assert agent_service is not None
+        assert investigation_service is not None
 
         # Test service functionality
         # ... test code here
@@ -231,10 +231,10 @@ async def test_cross_layer_integration(reset_container):
             # Step 4: Compose the container (a getter never does, #2249) and
             # validate the Container layer (dependency resolution)
             await reset_container.initialize()
-            agent_service = reset_container.get_agent_service()
+            investigation_service = reset_container.get_investigation_service()
             knowledge_service = reset_container.get_knowledge_service()
 
-            assert agent_service is not None
+            assert investigation_service is not None
             assert knowledge_service is not None
 
             # Step 5: Test Service layer integration. Under SKIP_SERVICE_CHECKS

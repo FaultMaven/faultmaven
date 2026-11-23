@@ -29,7 +29,6 @@ _HOLD_THE_REDIS_CLIENT = (
     "knowledge_service",
     "conversion_service",
     "investigation_service",
-    "enhanced_agent_service",
 )
 
 

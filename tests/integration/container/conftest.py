@@ -18,3 +18,33 @@ async def fresh_container():
     container.reset()
     yield container
     await container.release_every_hold()
+
+
+@pytest.fixture
+def environment(monkeypatch):
+    """Compose under the given ``ENVIRONMENT``; the settings singleton is rebuilt
+    from it and again afterwards."""
+    from faultmaven.config.settings import get_settings, reset_settings
+
+    def _set(value: str):
+        monkeypatch.setenv("ENVIRONMENT", value)
+        reset_settings()
+        return get_settings()
+
+    yield _set
+    monkeypatch.undo()
+    reset_settings()
+
+
+@pytest.fixture
+def boom(monkeypatch):
+    error = RuntimeError("boom")
+
+    def _break(target: str):
+        def _raise(*_args, **_kwargs):
+            raise error
+
+        monkeypatch.setattr(f"{target}.__init__", _raise)
+        return error
+
+    return _break
