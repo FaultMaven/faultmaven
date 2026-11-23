@@ -661,7 +661,7 @@ def _parse_text_as_schema(
     """
     content_obj = loads_llm_json(text)
     content_obj = _parse_nested_json(content_obj, schema_model)
-    # A strict parse proves the object closed: a cut took nothing from it.
+    # A strict parse proves the object closed, so the cut cannot mark it lost.
     content_obj, pre_drop = _normalize_state_updates(content_obj, schema_model, cut=cut)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
@@ -809,11 +809,11 @@ def _normalize_state_updates(
     is recovered, with its leaked siblings lifted back in, unless the provider
     reported the response *cut* at ``max_tokens``: a cut value looks exactly
     like the real unclosed form, so it is never recovered. Any other non-blank
-    string, and any string in a cut response (a blank one included: what was
-    cut could have carried state), becomes ``{}`` so the schema defaults
-    apply, counted as ``string_dropped``. A non-empty list (including a string
-    that decoded to one) becomes ``{}`` too, counted as ``non_object_dropped``,
-    so it can never fail the turn. Both warn. A list is lost state, and so is
+    string, and any string in a cut response (a blank one included), becomes
+    ``{}`` so the schema defaults apply, counted as ``string_dropped``; a blank
+    one is lost state, and marked, only when *cut_may_truncate*. A non-empty
+    list (including a string that decoded to one) becomes ``{}`` too, counted
+    as ``non_object_dropped``, so it can never fail the turn. Both warn. A list is lost state, and so is
     a string that could have carried a state field: one holding ``{`` or an
     applied state field's name, or any string when *cut_may_truncate*. A
     filler string (``"none"``, ``"N/A"``) carried no update.

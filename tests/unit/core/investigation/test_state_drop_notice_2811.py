@@ -543,6 +543,42 @@ def test_the_text_parser_marks_the_response():
     assert parsed._state_drop is StateDrop.WHOLE
 
 
+CUT_BODIES = [
+    {"agent_response": MODEL_TEXT},
+    {"agent_response": MODEL_TEXT, "state_updates": None},
+    {"agent_response": MODEL_TEXT, "state_updates": "none"},
+]
+CUT_IDS = ["missing", "null", "filler"]
+
+
+@pytest.mark.parametrize("body", CUT_BODIES, ids=CUT_IDS)
+def test_a_cut_reaches_the_marker_from_tool_input_only(body):
+    """The tool-loop parser reads provider-built tool input, which a cut can
+    leave partial and still parseable: what it lacks is lost. The text parser
+    reads a strict parse, which proves the object closed: nothing is lost."""
+    from faultmaven.core.investigation.milestone_engine.response_synthesis import (
+        state_drop_of,
+    )
+    from faultmaven.core.investigation.schemas import StateDrop
+
+    call = ToolCall(
+        id="c1",
+        type="function",
+        function={
+            "name": "InvestigationResponse_Diagnosis",
+            "arguments": json.dumps(body),
+        },
+    )
+    tool = _parse_schema_tool_call(call, InvestigationResponse_Diagnosis, cut=True)
+    assert state_drop_of(tool) is StateDrop.WHOLE
+
+    text = _parse_text_as_schema(
+        json.dumps(body), InvestigationResponse_Diagnosis, cut=True
+    )
+    assert state_drop_of(text) is None
+    assert text.agent_response == MODEL_TEXT
+
+
 async def test_the_single_shot_parser_marks_the_response():
     """``generation.py``'s caller: the single shot's own parse."""
     from faultmaven.core.investigation.schemas import StateDrop
