@@ -646,7 +646,7 @@ class AuthService:
                 logger.debug(f"Token revoked: {token_jti} (TTL: {ttl}s)")
         except Exception as e:
             logger.error(f"Failed to revoke token: {exception_log_name(e)}")
-            raise ServiceError(f"Token revocation failed: {e}")
+            raise ServiceError(f"Token revocation failed: {e}") from e
 
     def _watermark_ttl_seconds(self) -> int:
         """How long a per-user revocation watermark is held.
@@ -784,7 +784,7 @@ class AuthService:
                 )
         except Exception as e:
             logger.error(f"Failed to revoke user tokens: {exception_log_name(e)}")
-            raise ServiceError(f"Token revocation failed: {e}")
+            raise ServiceError(f"Token revocation failed: {e}") from e
 
         logger.info(
             "All tokens revoked for user",

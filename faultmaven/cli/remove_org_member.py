@@ -420,7 +420,7 @@ async def remove_org_member(
         print(f"\n❌ {refusal_text(exc)}")
         return 1
     except MembershipRemovalIncomplete as exc:
-        print(f"\n❌ {exception_log_name(exc)}")
+        print(f"\n❌ {refusal_text(exc)}")
         return EXIT_REVOCATION_INCOMPLETE
     except DBAPIError as exc:
         if not is_last_admin_violation(exc):

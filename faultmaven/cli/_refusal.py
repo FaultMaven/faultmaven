@@ -41,6 +41,11 @@ AUDITED_REFUSALS = frozenset(
         # 1 raise (through ``misscoped``): ids and literals.
         "faultmaven.modules.auth.domain.services.organization_membership_service"
         ".MembershipRemovalMisscoped",
+        # 1 raise (through ``incomplete``, shared with the role change):
+        # ``what_landed``, ``still_valid`` and ``retry_hint`` are ids and
+        # literals, and the caught failure is named by exception_log_name.
+        "faultmaven.modules.auth.domain.services.organization_membership_service"
+        ".MembershipRemovalIncomplete",
         # 1 raise: the setting's name and literals.
         "faultmaven.bootstrap.data_init.UnusableDataDirError",
         # 1 raise: the enterprise id.
