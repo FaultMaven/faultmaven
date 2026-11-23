@@ -145,8 +145,20 @@ def _synthesize_agent_response(parsed: Any, stop_reason: StopReason) -> Any:
     return synthesized
 
 
-#: ``_normalize_state_updates`` repairs that lost every state update (#2811).
-_STATE_LOSING_REPAIRS = frozenset({"string_dropped", "non_object_dropped"})
+#: State fields the server never applies (#2811): ``outcome`` is recomputed by
+#: ``determine_turn_outcome``, which takes no model value, and nothing reads
+#: ``final_summary_update``, ``documentation_links`` or ``solution_feedback``.
+#: A prune of one loses nothing, so it is not a ``PARTIAL`` drop.
+_UNAPPLIED_STATE_FIELDS = frozenset(
+    {"outcome", "final_summary_update", "documentation_links", "solution_feedback"}
+)
+
+
+def _loses_an_applied_update(path: str) -> bool:
+    """Whether a pruned *path* lies under an applied ``state_updates`` field."""
+    head, _, rest = path.partition(".")
+    field = re.split(r"[.\[]", rest, maxsplit=1)[0]
+    return head == "state_updates" and field not in _UNAPPLIED_STATE_FIELDS
 
 
 def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
@@ -192,9 +204,9 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
 
     Every return marks what was lost of ``state_updates`` (#2811): ``WHOLE``
     at step 3, at the blanked-answer rung that drops them, and when
-    *pre_drop* (``_normalize_state_updates``' repair label) lost them before
-    validation; ``PARTIAL`` when step 2 pruned a path under ``state_updates``.
-    ``WHOLE`` wins.
+    *pre_drop* (``_normalize_state_updates``' marker) says they were lost
+    before validation; ``PARTIAL`` when step 2 pruned a path under an applied
+    state field (not ``_UNAPPLIED_STATE_FIELDS``). ``WHOLE`` wins.
     """
 
     def _record(outcome: str):
@@ -202,7 +214,7 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
 
     def _exit(parsed, repairs, original_error, drop=None):
         parsed = _account_confidence(parsed, repairs, original_error)
-        if pre_drop in _STATE_LOSING_REPAIRS:
+        if pre_drop is StateDrop.WHOLE:
             drop = StateDrop.WHOLE
         if drop is not None and "_state_drop" in getattr(
             type(parsed), "__private_attributes__", {}
@@ -243,7 +255,7 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
         )
         partial = (
             StateDrop.PARTIAL
-            if any(p.partition(".")[0] == "state_updates" for p in dropped)
+            if any(_loses_an_applied_update(p) for p in dropped)
             else None
         )
         if dropped:
@@ -773,7 +785,7 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
 
 def _normalize_state_updates(
     content_obj: Any, schema_model: Any, *, cut: bool = False
-) -> tuple[Any, Optional[str]]:
+) -> tuple[Any, Optional[StateDrop]]:
     """Settle ``state_updates`` before validation; count every repair.
 
     A string that is the leaked parameter form (:func:`_recover_leaked_parameter`)
@@ -784,19 +796,23 @@ def _normalize_state_updates(
     cut could have carried state), becomes ``{}`` so the schema defaults
     apply, counted as ``string_dropped``. A non-empty list (including a string
     that decoded to one) becomes ``{}`` too, counted as ``non_object_dropped``,
-    so it can never fail the turn. Both are lost state, and both warn.
+    so it can never fail the turn. Both warn. A list is lost state, and so is
+    a string that could have carried a state field: one in a cut response, or
+    one holding ``{`` or a state field's name. A filler string (``"none"``,
+    ``"N/A"``) carried no update.
 
     A value that cannot have carried a state field — missing, ``null``, a
     blank string in a response that was not cut, ``[]``, a number or a bool —
     becomes ``{}`` and is counted as ``absent_defaulted``, without a warning:
-    nothing was lost. A value that is already an object is left alone and not
-    counted.
+    nothing was lost, unless the response was cut, where a missing or ``null``
+    value is lost state (the cut can have taken it). A value that is already an
+    object is left alone and not counted.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
 
-    Returns the object with the repair label it counted, ``None`` when it
-    counted none; the caller passes the label to the ladder (#2811).
+    Returns the object with ``StateDrop.WHOLE`` when the value it replaced was
+    lost state, else ``None``; the caller passes it to the ladder (#2811).
     """
     if not isinstance(content_obj, dict):
         return content_obj, None
@@ -811,12 +827,15 @@ def _normalize_state_updates(
         if recovered is not None:
             content_obj["state_updates"] = recovered
             repair = "xml_recovered"
+            lost = False
         else:
+            lost = cut or _could_carry_state(su, schema_model)
             logger.warning(
                 "structured_output_state_updates_dropped: state_updates for %s "
                 "arrived as a string that is not the leaked parameter form; "
-                "coerced to {} (state lost)",
+                "coerced to {} (%s)",
                 schema_name,
+                "state lost" if lost else "no state field in it",
                 extra={"schema": schema_name, "length": len(su), "cut": cut},
             )
             content_obj["state_updates"] = {}
@@ -831,14 +850,24 @@ def _normalize_state_updates(
         )
         content_obj["state_updates"] = {}
         repair = "non_object_dropped"
+        lost = True
     else:
         # Missing, null, a blank string in a response that was not cut, [], a
         # number or a bool: nothing that could have carried a state field, so
-        # nothing is lost.
+        # nothing is lost, unless a cut took a missing or null value.
         content_obj["state_updates"] = {}
         repair = "absent_defaulted"
+        lost = cut and su is None
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
-    return content_obj, repair
+    return content_obj, (StateDrop.WHOLE if lost else None)
+
+
+def _could_carry_state(text: str, schema_model: Any) -> bool:
+    """Whether a ``state_updates`` string could have carried a state field: it
+    holds ``{`` or the name of one of *schema_model*'s applied state fields."""
+    state_model = _state_model_of(schema_model)
+    names = set(state_model.model_fields) if state_model is not None else set()
+    return "{" in text or any(n in text for n in names - _UNAPPLIED_STATE_FIELDS)
 
 
 #: Deeper than any engine schema nests (about six levels). A decoded value past

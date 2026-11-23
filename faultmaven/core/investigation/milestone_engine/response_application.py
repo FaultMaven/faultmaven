@@ -699,10 +699,14 @@ class ResponseApplier:
                     "was ignored: it is declared_stable or proceed_unmitigated.",
                 )
         # The state_updates the parse lost (#2811): a schema repair, told as
-        # text on every drop, a #1442 placeholder turn included.
+        # text on every drop, a #1442 placeholder turn included. At the head:
+        # on a flag-kept placeholder turn it is the next prompt's only word of
+        # the drop, and the prompt drops notices from the tail.
         state_drop = state_drop_of(response_obj)
         if state_drop is not None:
-            _add_system_feedback(metadata, state_drop_system_notice(state_drop))
+            _add_system_feedback(
+                metadata, state_drop_system_notice(state_drop), prepend=True
+            )
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates

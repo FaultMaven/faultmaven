@@ -1,9 +1,9 @@
 """A turn whose parse lost ``state_updates`` says so (#2811, stage S2c-2 of #2615).
 
 The structured-output ladder can lose the model's case updates at four rungs:
-``state_dropped``, ``response_synthesized_state_dropped``, and the
-``string_dropped`` / ``non_object_dropped`` coercions before validation (all of
-them), or the prune rung on a path under ``state_updates`` (some of them). The
+``state_dropped``, ``response_synthesized_state_dropped``, and a coercion
+before validation of a value that could have carried state (all of them), or
+the prune rung on a path under an applied state field (some of them). The
 ladder marks the response it returns, and the turn shows the owner-approved
 note for the kind, placed by the rulings of 2026-11-23:
 
@@ -207,9 +207,36 @@ RUNGS = [
     ),
     (
         "string_dropped",
-        {"agent_response": MODEL_TEXT, "state_updates": "hypotheses: the audience"},
+        {
+            "agent_response": MODEL_TEXT,
+            "state_updates": "hypotheses_to_add: the audience mismatch",
+        },
         ["clean"],
         ["string_dropped"],
+        WHOLE_NOTE,
+        WHOLE_NOTICE,
+    ),
+    (
+        "string_dropped_with_a_brace",
+        {"agent_response": MODEL_TEXT, "state_updates": "see {the audience"},
+        ["clean"],
+        ["string_dropped"],
+        WHOLE_NOTE,
+        WHOLE_NOTICE,
+    ),
+    (
+        "cut_missing",
+        {"agent_response": MODEL_TEXT},
+        ["clean"],
+        ["absent_defaulted"],
+        WHOLE_NOTE,
+        WHOLE_NOTICE,
+    ),
+    (
+        "cut_null",
+        {"agent_response": MODEL_TEXT, "state_updates": None},
+        ["clean"],
+        ["absent_defaulted"],
         WHOLE_NOTE,
         WHOLE_NOTICE,
     ),
@@ -243,7 +270,11 @@ RUNGS = [
 async def test_a_rung_that_lost_state_shows_its_note(
     body, outcomes, repairs, note, notice
 ):
-    result, case, seen_outcomes, seen_repairs = await _turn(body)
+    # The provider reports the two ``cut_*`` bodies cut at ``max_tokens``: the
+    # cut can have taken their ``state_updates``.
+    cut = "state_updates" not in body or body["state_updates"] is None
+    stop = StopReason.MAX_TOKENS if cut else StopReason.STOP
+    result, case, seen_outcomes, seen_repairs = await _turn(body, stop_reason=stop)
 
     assert seen_outcomes == outcomes
     assert seen_repairs == repairs
@@ -321,7 +352,7 @@ INQUIRY_PRUNE = {"preliminary_urgency": {"level": 5}}
 
 @pytest.mark.parametrize(
     "state_updates, note",
-    [("urgency: high", WHOLE_NOTE), (INQUIRY_PRUNE, PARTIAL_NOTE)],
+    [("preliminary_urgency: high", WHOLE_NOTE), (INQUIRY_PRUNE, PARTIAL_NOTE)],
     ids=["whole", "partial"],
 )
 async def test_on_a_gate_turn_the_note_sits_between_the_reply_and_the_gate(
@@ -339,7 +370,7 @@ async def test_on_a_gate_turn_the_note_sits_between_the_reply_and_the_gate(
 @pytest.mark.parametrize(
     "state_updates, note, notice",
     [
-        ("urgency: high", WHOLE_PLACEHOLDER_NOTE, WHOLE_NOTICE),
+        ("preliminary_urgency: high", WHOLE_PLACEHOLDER_NOTE, WHOLE_NOTICE),
         (INQUIRY_PRUNE, PARTIAL_PLACEHOLDER_NOTE, PARTIAL_NOTICE),
     ],
     ids=["whole", "partial"],
@@ -368,6 +399,14 @@ def _diag_body(state_updates=None, **top):
     return {"agent_response": MODEL_TEXT, "state_updates": state_updates or {}, **top}
 
 
+VALID_HYPOTHESIS = {
+    "statement": "The OIDC client ID does not match the token audience",
+    "category": "config",
+    "likelihood": 0.6,
+    "rationale": "The audience check is what fails",
+}
+
+
 NO_NOTE = [
     (
         "pruned_follow_up_chip_only",
@@ -390,6 +429,18 @@ NO_NOTE = [
         ["pruned"],
     ),
     ("clean", _diag_body(), ["clean"]),
+    # A filler string carried no update: counted, not marked.
+    ("filler_none", _diag_body("none"), ["clean"]),
+    ("filler_n_a", _diag_body("N/A"), ["clean"]),
+    ("filler_no_changes", _diag_body("no changes"), ["clean"]),
+    # Not cut: a missing value lost nothing.
+    ("uncut_missing", {"agent_response": MODEL_TEXT}, ["clean"]),
+    # ``outcome`` is recomputed by the server, so its prune loses nothing.
+    (
+        "pruned_outcome_only",
+        _diag_body({"outcome": 5, "hypotheses_to_add": [VALID_HYPOTHESIS]}),
+        ["pruned"],
+    ),
 ]
 
 
@@ -397,11 +448,20 @@ NO_NOTE = [
     "body, outcomes", [r[1:] for r in NO_NOTE], ids=[r[0] for r in NO_NOTE]
 )
 async def test_a_turn_that_lost_no_state_update_shows_nothing_new(body, outcomes):
-    result, case, seen_outcomes, _ = await _turn(body)
+    result, case, seen_outcomes, seen_repairs = await _turn(body)
 
     # Positive control: the ladder really ran this rung (``pruned`` counts
-    # the chip, the dropped confidence and the set-aside link alike).
+    # the chip, the dropped confidence, the set-aside link and the outcome).
     assert seen_outcomes == outcomes
+    su = body.get("state_updates")
+    if isinstance(su, str):
+        assert seen_repairs == ["string_dropped"]
+    if isinstance(su, dict) and VALID_HYPOTHESIS in su.get("hypotheses_to_add", []):
+        # The model's other updates were applied.
+        assert any(
+            h.statement == VALID_HYPOTHESIS["statement"]
+            for h in case.hypotheses.values()
+        )
     assert result["agent_response"] == MODEL_TEXT
     record = case.turn_history[-1]
     assert not any(
@@ -424,7 +484,7 @@ def test_a_mock_response_carries_no_marker():
 # The parser marks at each of its three callers.
 # ---------------------------------------------------------------------------
 
-STRING_BODY = {"agent_response": MODEL_TEXT, "state_updates": "not an object"}
+STRING_BODY = {"agent_response": MODEL_TEXT, "state_updates": "hypotheses_to_add: x"}
 
 
 def test_the_tool_loop_parser_marks_the_response():
@@ -520,7 +580,7 @@ def test_whole_wins_over_partial():
             "state_updates": {"evidence_need_updates": [PRUNABLE_NEED]},
         },
         InvestigationResponse_Diagnosis,
-        pre_drop="string_dropped",
+        pre_drop=StateDrop.WHOLE,
     )
     assert parsed._state_drop is StateDrop.WHOLE
 
@@ -549,3 +609,29 @@ def test_the_telemetry_event_admits_the_kind():
     case = _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
     event = build_case_turn_event(case, path=TurnPath.LLM, state_drop="whole")
     assert event["state_drop"] == "whole"
+
+
+async def test_a_cut_body_with_an_object_is_marked_by_the_rungs_alone():
+    """What a cut took from an object cannot be told: no marker of its own."""
+    result, case, outcomes, repairs = await _turn(
+        _diag_body(), stop_reason=StopReason.MAX_TOKENS
+    )
+    assert (outcomes, repairs) == (["clean"], [])
+    assert result["agent_response"] == MODEL_TEXT
+
+
+async def test_the_drop_notice_heads_a_busy_turn():
+    """The prompt renders notices from the head until its budget is spent,
+    and on a flag-kept placeholder turn this one is the only word of the drop."""
+    result, case, outcomes, _ = await _turn(
+        _diag_body(
+            {
+                "milestones": {"accepted_fix_reported_in": "yesterday"},
+                "evidence_need_updates": [PRUNABLE_NEED],
+            }
+        )
+    )
+    notices = case.turn_history[-1].system_notices
+    # Positive control: another notice was written before this one.
+    assert any("accepted_fix_reported_in 'yesterday'" in n for n in notices)
+    assert notices[0] == PARTIAL_NOTICE
