@@ -143,8 +143,9 @@ _FACTORIES = pytest.mark.parametrize(
 @_FACTORIES
 def test_a_factory_that_fails_to_build_refuses_under_multi(build, target, name, caplog):
     """The refusal names the class, never the text, and chains the original.
-    The factory's warning is logged first, so the jobs path, which logs no
-    refusal, still names the factory."""
+    The factory's warning is logged first: the jobs path reports the refusal
+    by class only, never its message or the factory's name, so the warning is
+    what names the factory there."""
     error = ImportError("marker")
     with (
         patch(
