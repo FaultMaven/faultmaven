@@ -60,8 +60,8 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_CE, "_nudge_ambiguous_orphan_chains"): (1, _ORDER),
     (_CE, "_report_unanchored_roots"): (
         1,
-        "a root_node_ref not attached, and a root verdict dropped with it "
-        "(#3029): " + _ORDER,
+        "a root_node_ref not attached, or a root verdict dropped, including one "
+        "the orphan pass gave no root (#3029): " + _ORDER,
     ),
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl"): (
         2,

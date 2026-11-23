@@ -307,7 +307,11 @@ async def test_a_verified_problem_accepts_hypotheses_active():
     (hyp,) = case.hypotheses.values()
     assert hyp.state == HypothesisState.ACTIVE
     assert meta["hypotheses_generated"] == [hyp.hypothesis_id]
-    assert not meta.get("system_notices")
+    # Nothing refused; only its verdict, which no root received, is told (#3029).
+    assert meta["system_notices"] == [
+        f"Hypothesis {hyp.hypothesis_id} has no root. Its root verdict was not "
+        "recorded; send it again with the root it is about."
+    ]
 
 
 # ---------------------------------------------------------------------------
