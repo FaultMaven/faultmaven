@@ -3,8 +3,8 @@ S2c-1b, stage S2 of #2615; ruling (a) of 2026-11-22).
 
 On the record path, the needs-info request whose record holds a pool-empty
 reason carries that reason's line beside the "Root cause" ask (approved copy
-item 5), shown exactly when the model's line is (``empty_pool_text``). The
-decide-time message (``ResolutionReadiness.message``) keeps the bare ask
+item 5), exactly when ``empty_pool_text`` gives a line for the record's
+cause. The decide-time message (``ResolutionReadiness.message``) keeps the bare ask
 until stage S3: the difference is accepted and pinned here. Pin 6's user
 half: every ``PoolEmptyReason`` member has a line.
 """
@@ -125,7 +125,7 @@ def test_no_cause_beside_a_leg_has_no_line(leg):
     "reason, leg, ids",
     list(itertools.product([None, *PoolEmptyReason], (None, *_LEGS), (True, False))),
 )
-def test_the_user_line_shows_exactly_when_the_model_line_does(reason, leg, ids):
+def test_the_user_line_exists_exactly_when_empty_pool_text_gives_one(reason, leg, ids):
     """The user half takes the model half's guard: a reason whose ids are
     empty (a stored flag the fresh ids disagree with) keeps the bare ask."""
     cause = _cause(reason, leg=leg, ids=ids)
