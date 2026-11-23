@@ -23,6 +23,7 @@ from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ class ChromaDBVectorStore(BaseExternalClient):
                 extra={"collection": self.collection_name},
             )
         except Exception as e:
-            self.logger.error(f"Failed to connect to ChromaDB: {e}")
+            self.logger.error(f"Failed to connect to ChromaDB: {exception_log_name(e)}")
             raise
 
     async def search(

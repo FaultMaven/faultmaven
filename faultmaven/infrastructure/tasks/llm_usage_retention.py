@@ -23,6 +23,8 @@ import asyncio
 import logging
 from typing import Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,9 @@ async def prune_llm_usage_once() -> None:
             pruned.turn_rows_deleted,
         )
     except Exception as e:
-        logger.error(f"LLM usage retention pass failed: {e}", exc_info=True)
+        logger.error(
+            f"LLM usage retention pass failed: {exception_log_name(e)}", exc_info=True
+        )
 
 
 async def _prune_forever(interval_seconds: float) -> None:

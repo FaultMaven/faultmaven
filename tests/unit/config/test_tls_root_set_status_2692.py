@@ -175,12 +175,16 @@ def test_a_changed_extra_file_since_the_start_is_not_in_force(applied, tmp_path)
     )
 
 
-def test_a_removed_extra_ca_source_cannot_be_verified(applied, tmp_path):
+def test_a_removed_extra_ca_source_cannot_be_verified(applied, tmp_path, capsys):
     """A rotated Secret removes the setting's resolved file while the set file
-    the process started with is intact and still in use."""
+    the process started with is intact and still in use. The source's refusal
+    is caught: the status read prints nothing and exits nothing (#2889 S3i)."""
     os.remove(tmp_path / "extra-ca.pem")
+    capsys.readouterr()
 
     status = root_set_status()
+
+    assert capsys.readouterr() == ("", "")
 
     count = _host_set_count()
     assert status.in_force is False

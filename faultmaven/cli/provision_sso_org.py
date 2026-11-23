@@ -97,6 +97,7 @@ import sys
 
 from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.infrastructure.persistence.database import get_db_session
@@ -236,7 +237,7 @@ async def provision(
     try:
         db_role = await assert_provisioning_db_role_bypasses_rls()
     except DeploymentCoherenceError as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return False
     if db_role:
         print(f"\nDatabase role: {db_role} (RLS-exempt — provisioning allowed)")
@@ -367,7 +368,7 @@ async def provision(
                 enterprise_id=enterprise.enterprise_id,
             )
     except LookupError as exc:
-        print(f"❌ {exc}")
+        print(f"❌ {refusal_text(exc)}")
         return False
     except DomainMismatch as exc:
         print(

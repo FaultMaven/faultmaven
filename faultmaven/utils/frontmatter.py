@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 import yaml
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 # Scalar fields: extracted as-is (str conversion)
@@ -89,7 +91,7 @@ def parse_frontmatter(content: str) -> Dict[str, object]:
     try:
         loaded = yaml.safe_load(match.group(1))
     except Exception as e:  # yaml raises a family, not one class
-        logger.warning(f"Failed to parse frontmatter YAML: {e}")
+        logger.warning(f"Failed to parse frontmatter YAML: {exception_log_name(e)}")
         return {}
     # `or {}` is not enough. A frontmatter body that is valid YAML but not a
     # MAPPING -- `---\ndomain of the service\n---` parses to a plain string --

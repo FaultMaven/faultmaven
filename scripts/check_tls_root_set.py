@@ -223,8 +223,8 @@ CRL_INPUTS = {
 # "accepts outside, then fails": the require row's bare leg completes a
 # handshake with the set's server and then the outside one, which it reports.
 # "refused at start": non-zero, no handshake, and the start's own refusal opens
-# by naming the input ("TLS root set: PGSSLCRL is set", or the scratch home's
-# root.crl); a timeout never passes.
+# by naming the input ("❌ Refusing to run: TLS root set: PGSSLCRL is set", or
+# the scratch home's root.crl); a timeout never passes.
 EXPECTED = {
     "sqlalchemy asyncpg require": ("verifies", "accepts outside, then fails"),
     **dict.fromkeys(CRL_INPUTS, ("refused at start", "verifies")),
@@ -454,7 +454,9 @@ def _run(
         and "accepted a peer outside the set" in said,
         "refused at start": code != 0
         and delta == 0
-        and said.startswith(f"TLS root set: {_named_input(name, env)}"),
+        and said.startswith(
+            f"❌ Refusing to run: TLS root set: {_named_input(name, env)}"
+        ),
     }[expected]
     return ("PASS" if ok else "FAIL"), f"{delta} handshake(s); {said}"
 

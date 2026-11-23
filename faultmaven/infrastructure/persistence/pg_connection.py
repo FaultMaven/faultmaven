@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from sqlalchemy.engine import make_url
 
 from faultmaven.config.tls_root_set import pg_root_inputs_in_url, pg_url_refusal
+from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
     from faultmaven.config.settings import DatabaseSettings
@@ -275,5 +276,8 @@ def enable_tcp_liveness(dbapi_connection: Any, _connection_record: Any) -> None:
             sock.setsockopt(level, option, value)
         except OSError as exc:
             logger.warning(
-                "Could not set %s=%s on a PostgreSQL socket: %s", name, value, exc
+                "Could not set %s=%s on a PostgreSQL socket: %s",
+                name,
+                value,
+                exception_log_name(exc),
             )

@@ -950,7 +950,8 @@ async def test_an_unreachable_database_does_not_masquerade_as_a_refusal(
     out = capsys.readouterr().out
     assert code == 5, "an uninspected database is inconclusive, not a refusal"
     assert "INCONCLUSIVE" in out
-    assert "connection refused" in out
+    assert "could not be reached: OSError" in out
+    assert "connection refused" not in out  # its class, not its text (#2889)
 
 
 async def test_an_unreachable_database_refuses_a_wipe(monkeypatch, capsys):

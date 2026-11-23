@@ -28,11 +28,12 @@ when no element holds a hashed entry. Anything else refuses the start (a Nix or
 conda shell's ``SSL_CERT_FILE``: unset it, or put its CA in
 ``TLS_EXTRA_CA_FILE``), as do an OS bundle that does not load, a setting with no
 certificate or a non-plain one, no usable temporary directory, and a set file
-that cannot be written safely or does not load (``SystemExit``, Fail-Fast
-Configuration). ``root_set_status`` (``features.tls_root_set`` on ``GET
-/admin/config/status``) re-reads the set's sources, writing nothing, and
-compares them with the bytes of the file the environment names. Imports no
-client.
+that cannot be written safely or does not load (Fail-Fast Configuration: a
+``RootSetRefusal`` the start prints through ``exit_refusing``, exit 1).
+``root_set_status`` (``features.tls_root_set`` on ``GET
+/admin/config/status``) re-reads the set's sources, writing nothing and
+printing nothing, and compares them with the bytes of the file the environment
+names. Imports no client.
 
 The Postgres drivers have root inputs of their own outside these variables
 (#2786, #2834): a CRL source (``PGSSLCRL``, ``PGSSLCRLDIR``, a URL's ``sslcrl``
@@ -137,6 +138,12 @@ _SERVER_AUTH = "1.3.6.1.5.5.7.3.1"
 _HASHED_ENTRY = re.compile(r"[0-9a-f]{8}\.\d+")
 
 
+class RootSetRefusal(Exception):
+    """Why the set cannot be named. Its sentence is built from literals, the
+    variables' names and values, and paths; ``apply_root_set`` prints it on
+    stderr through ``exit_refusing`` (§7's outputs table, #2889)."""
+
+
 @dataclass(frozen=True)
 class RootSet:
     """The set ``apply_root_set`` exported."""
@@ -148,7 +155,18 @@ class RootSet:
 
 
 def apply_root_set() -> RootSet:
-    """Name the one root set in every owned variable, or refuse the start."""
+    """Name the one root set in every owned variable, or refuse the start:
+    ``❌ Refusing to run: TLS root set: …`` on stderr, exit 1."""
+    try:
+        return _apply_root_set()
+    except RootSetRefusal as refusal:
+        # Imported here: ``config`` does not import ``cli`` at load.
+        from faultmaven.cli._database_gate import exit_refusing
+
+        exit_refusing(str(refusal))
+
+
+def _apply_root_set() -> RootSet:
     load_settings_dotenv()
     os_source, os_file, extra, pem = _set_sources()
     if extra is not None:  # a child in another working directory reads the same file
@@ -208,7 +226,7 @@ def root_set_status() -> RootSetStatus:
         return _not_in_force(count, reason)
     try:
         extra, pem = _set_sources()[2:]
-    except SystemExit:  # a source cannot be read now (a rotated Secret)
+    except RootSetRefusal:  # a source cannot be read now (a rotated Secret)
         return RootSetStatus(False, count, (
             "The TLS root set cannot be verified because its sources changed "
             f"since this process started: it keeps the file it started with, "
@@ -288,8 +306,8 @@ def _set_directory() -> str:
         raise _tmpdir_refusal(error) from error
 
 
-def _tmpdir_refusal(error: OSError) -> SystemExit:
-    return SystemExit(
+def _tmpdir_refusal(error: OSError) -> RootSetRefusal:
+    return RootSetRefusal(
         f"TLS root set: cannot write the set's file ({exception_log_name(error)}); "
         "TMPDIR must name a writable directory."
     )
@@ -352,7 +370,7 @@ def _resolve_os_bundle() -> tuple[str, bytes, bool]:
         "darwin": "Install the OS CA bundle (on a python.org build, run its "
         "'Install Certificates' step).",
     }.get(sys.platform, "Install the OS CA bundle.")
-    raise SystemExit(
+    raise RootSetRefusal(
         "TLS root set: no operating-system CA bundle loads; tried "
         + ", ".join(tried)
         + f". {advice} {EXTRA_CA_FILE_SETTING} only adds to it."
@@ -371,7 +389,7 @@ def _extra_certificates(path: str) -> bytes:
     pem = _read(path)
     ders = _ders(pem)
     if not ders or _NON_PLAIN.search(pem):
-        raise SystemExit(
+        raise RootSetRefusal(
             f"TLS root set: {EXTRA_CA_FILE_SETTING}={path!r} must be a readable PEM "
             "file of certificates labelled CERTIFICATE (an X509 or TRUSTED "
             "CERTIFICATE block cannot be compared)."
@@ -403,12 +421,12 @@ def _check_inherited(path: str, pem: bytes, extra: str | None) -> None:
 def _refuse(name: str, value: str, reason: str) -> NoReturn:
     parent = os.path.dirname(os.path.realpath(value))
     if os.path.basename(parent) == _directory_name():
-        raise SystemExit(
+        raise RootSetRefusal(
             f"TLS root set: {name}={value!r} names a set file from an earlier "
             "FaultMaven start that is missing, altered or not this start's set: "
             f"restart that process, or unset {name}."
         )
-    raise SystemExit(
+    raise RootSetRefusal(
         f"TLS root set: {name}={value!r} {reason}. FaultMaven names the set in "
         f"{name} itself: unset {name}, or put its CA certificates in "
         f"{EXTRA_CA_FILE_SETTING}."
@@ -476,7 +494,7 @@ def _check_postgres_root_inputs() -> None:
     #2834), naming it; never a value or the database URL."""
     for name in PG_ROOT_INPUT_VARIABLES:
         if name in os.environ:
-            raise SystemExit(
+            raise RootSetRefusal(
                 f"TLS root set: {name} is set, a Postgres root input outside "
                 f"the set: unset {name}. {_PG_REMEDY}"
             )
@@ -486,10 +504,10 @@ def _check_postgres_root_inputs() -> None:
         url = None
     keys = pg_root_inputs_in_url(url) if url else []
     if keys:
-        raise SystemExit(f"TLS root set: {pg_url_refusal(keys)}")
+        raise RootSetRefusal(f"TLS root set: {pg_url_refusal(keys)}")
     for path in _root_crl_paths():
         if os.path.exists(path):  # a directory fails closed; a dangling link is none
-            raise SystemExit(
+            raise RootSetRefusal(
                 f"TLS root set: {path} exists, a Postgres root input outside "
                 f"the set (the drivers' default CRL file): remove or rename it. "
                 f"{_PG_REMEDY}"
@@ -561,7 +579,7 @@ def _write_set(path: str, pem: bytes) -> None:
     except OSError as error:
         raise _tmpdir_refusal(error) from error
     if not _loads(path):
-        raise SystemExit(
+        raise RootSetRefusal(
             f"TLS root set: the set written to {path} does not load; check "
             f"{EXTRA_CA_FILE_SETTING} and the OS CA bundle."
         )

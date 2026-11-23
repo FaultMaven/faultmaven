@@ -50,6 +50,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from faultmaven.infrastructure import encode_worker, worker_process
 from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,7 @@ async def _encode_in_worker(
             parts=tuple(texts),
         )
     except worker_process.WorkerFailed as e:
-        logger.error("KB encode worker gave no vectors: %s", e)
+        logger.error("KB encode worker gave no vectors: %s", exception_log_name(e))
         return None
     except asyncio.CancelledError:
         return None  # its caller gave up: the worker is reaped

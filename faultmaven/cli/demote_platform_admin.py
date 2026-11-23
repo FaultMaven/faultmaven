@@ -51,6 +51,7 @@ from faultmaven.modules.auth.contracts import (
     ORG_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
 #: (it is deliberately not a console entrypoint), so a pod needs the API.
@@ -101,7 +102,7 @@ async def demote_from_platform_admin(
             "'user not found'."
         )
         print("   Whether the account exists is unknown, and nothing was changed.")
-        print(f"   Underlying error: {exc}")
+        print(f"   Underlying error: {exception_log_name(exc)}")
         print("   Check the API logs and the database, then re-run.")
         return False
     if not user:
@@ -201,7 +202,7 @@ async def demote_from_platform_admin(
             except Exception as revoke_error:
                 print(
                     f"⚠️  The role WAS removed, but token revocation failed: "
-                    f"{revoke_error}\n"
+                    f"{exception_log_name(revoke_error)}\n"
                     f"   '{username}' keeps platform-admin reach until every "
                     "token issued before now expires."
                 )
@@ -220,7 +221,7 @@ async def demote_from_platform_admin(
         except Exception as audit_error:
             print(
                 f"❌ The role WAS removed, but the audit record failed: "
-                f"{audit_error}\n"
+                f"{exception_log_name(audit_error)}\n"
                 "   The privilege change is live and unrecorded. Re-running "
                 "will NOT repair it —\n"
                 "   the account no longer holds the role, so a second run "
@@ -241,7 +242,7 @@ async def demote_from_platform_admin(
         return True
 
     except Exception as e:
-        print(f"❌ Failed to demote user: {e}")
+        print(f"❌ Failed to demote user: {exception_log_name(e)}")
         return False
 
 

@@ -128,8 +128,8 @@ async def test_a_failed_close_is_logged_and_every_other_still_closes(container, 
     ):
         assert await container.shutdown() is True
 
-    assert "Closing the Redis client failed" in caplog.text
-    assert "the pool would not close" in caplog.text
+    assert "Closing the Redis client failed (non-critical): RuntimeError" in caplog.text
+    assert "the pool would not close" not in caplog.text  # its class (#2889)
     first.aclose.assert_awaited_once()
     last.aclose.assert_awaited_once()
     assert container._initialized is False

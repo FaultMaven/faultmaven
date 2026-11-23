@@ -104,6 +104,7 @@ from typing import Any, Optional
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
@@ -193,7 +194,7 @@ async def backfill_case_outcome(
         try:
             enterprise = await bind_and_load_enterprise(enterprise_id)
         except EnterpriseRefused as exc:
-            print(f"\n❌ {exc}")
+            print(f"\n❌ {refusal_text(exc)}")
             return 1
         print(f"\nEnterprise:   {enterprise.name} ({enterprise_id})")
 

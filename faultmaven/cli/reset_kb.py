@@ -127,10 +127,12 @@ from pathlib import Path
 
 from sqlalchemy import delete, func, select, true
 
-from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
+from faultmaven.bootstrap.data_init import UnusableDataDirError, resolve_kb_chroma_dir
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal, not ``__doc__.splitlines()[0]``:
 #: ``python -OO`` strips docstrings, and that expression would raise
@@ -281,7 +283,7 @@ def _not_a_store_refusal(chroma_dir: Path) -> str:
     )
 
 
-def _unusable_knob_refusal(exc: Exception) -> str:
+def _unusable_knob_refusal(reason: str) -> str:
     """Why a blank ``CHROMADB_KB_PERSIST_DIR`` is refused rather than defaulted.
 
     Substituting the documented default would be a guess no consumer makes —
@@ -292,7 +294,7 @@ def _unusable_knob_refusal(exc: Exception) -> str:
     return (
         "ERROR: refusing to reset the KB.\n"
         "\n"
-        f"    {exc}\n"
+        f"    {reason}\n"
         "\n"
         "    Nothing was written. There is no path to wipe, and guessing the\n"
         "    documented default would target a tree this deployment's ChromaDB\n"
@@ -301,6 +303,15 @@ def _unusable_knob_refusal(exc: Exception) -> str:
         "    Fix the variable, then re-run. `--keep-chroma` wipes the SQL rows\n"
         "    alone if that is genuinely what you want."
     )
+
+
+def _print_refusal(unusable: UnusableDataDirError | None, refusal: str | None):
+    """The pre-flight's refusal: the blank knob's own sentence, printed through
+    ``refusal_text`` (#2889), or the store refusal ``reset_kb`` composed."""
+    if unusable is not None:
+        print(_unusable_knob_refusal(refusal_text(unusable)))
+    else:
+        print(refusal)
 
 
 async def reset_kb(
@@ -340,7 +351,6 @@ async def reset_kb(
         )
         return 1
 
-    from faultmaven.bootstrap.data_init import UnusableDataDirError
     from faultmaven.config.deployment_coherence import is_external_chroma_configured
     from faultmaven.config.settings import get_settings
 
@@ -367,6 +377,7 @@ async def reset_kb(
     # `--keep-chroma` skips every check — it is the explicit "wipe SQL only, I
     # know" opt-out, and none of these questions arise when nothing is removed.
     refusal = None
+    unusable = None
     chroma_dir = None
     try:
         chroma_dir = resolve_kb_chroma_dir(settings)
@@ -374,16 +385,17 @@ async def reset_kb(
         # A knob set to something no consumer can open. There is no path to
         # print and none to wipe, so there is nothing to do but say why.
         if not keep_chroma:
-            refusal = _unusable_knob_refusal(exc)
-    if refusal is None and not keep_chroma:
+            unusable = exc
+    if unusable is None and not keep_chroma:
         if remote_knob:
             refusal = _remote_chroma_refusal(remote_knob)
         elif not chroma_dir.exists():
             refusal = _missing_store_refusal(chroma_dir)
         elif not _looks_like_a_chroma_store(chroma_dir):
             refusal = _not_a_store_refusal(chroma_dir)
-    if refusal and not dry_run:
-        print(refusal)
+    refused = unusable is not None or bool(refusal)
+    if refused and not dry_run:
+        _print_refusal(unusable, refusal)
         return 1
 
     from faultmaven.container.providers.services import llm_trace_eraser
@@ -434,8 +446,8 @@ async def reset_kb(
         print()
 
         if dry_run:
-            if refusal:
-                print(refusal)
+            if refused:
+                _print_refusal(unusable, refusal)
                 print()
             print("(dry-run) No changes made.")
             return 0
@@ -445,7 +457,8 @@ async def reset_kb(
     except Exception as exc:
         print(
             "ERROR: refusing to reset the KB.\n\n"
-            f"    The LLM traces of a conversion could not be purged: {exc}\n\n"
+            "    The LLM traces of a conversion could not be purged: "
+            f"{exception_log_name(exc)}\n\n"
             "    Nothing was written. Make the trace backend reachable, then re-run."
         )
         return 1
@@ -555,7 +568,7 @@ async def reset_kb(
             print()
             print("❌ ERROR: the ChromaDB directory could not be removed:")
             print(f"      {chroma_dir}")
-            print(f"      {type(exc).__name__}: {exc}")
+            print(f"      {exception_log_name(exc)}")
             print("    knowledge_items rows were deleted but NO vector collections")
             print("    were removed, so SQL and the vector store now DIVERGE —")
             print("    searches can still return chunks whose rows no longer exist.")

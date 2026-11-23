@@ -32,6 +32,7 @@ from faultmaven.config.tls_root_set import (
     EMPTY_CAPATH,
     FILE_VARIABLES,
     OWNED_VARIABLES,
+    RootSetRefusal,
     apply_root_set,
 )
 
@@ -114,9 +115,30 @@ def test_an_unreadable_extra_file_refuses_naming_the_setting(
     if content is not None:
         path.write_bytes(content)
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(path))
-    with pytest.raises(SystemExit, match="TLS_EXTRA_CA_FILE=.*must be a readable PEM"):
-        apply_root_set()
+    with pytest.raises(
+        RootSetRefusal, match="TLS_EXTRA_CA_FILE=.*must be a readable PEM"
+    ):
+        tls_root_set._apply_root_set()
     assert "SSL_CERT_FILE" not in os.environ
+
+
+def test_a_refusal_exits_1_with_its_sentence_on_stderr(
+    os_bundle, tmp_path, monkeypatch, capsys
+):
+    """Through ``apply_root_set``: ``exit_refusing``'s shape, not a string exit
+    code the interpreter prints (#2889 S3i, §7's outputs table)."""
+    path = os.path.realpath(tmp_path / "absent.pem")
+    monkeypatch.setenv("TLS_EXTRA_CA_FILE", path)
+    with pytest.raises(SystemExit) as exited:
+        apply_root_set()
+    assert exited.value.code == 1
+    printed = capsys.readouterr()
+    assert printed.out == ""
+    assert printed.err == (
+        f"❌ Refusing to run: TLS root set: TLS_EXTRA_CA_FILE={path!r} must be a "
+        "readable PEM file of certificates labelled CERTIFICATE (an X509 or "
+        "TRUSTED CERTIFICATE block cannot be compared).\n"
+    )
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
@@ -127,8 +149,8 @@ def test_no_loadable_os_bundle_refuses_naming_each_path_tried(
     empty_capath.mkdir()
     _os_paths(monkeypatch, str(tmp_path / "absent.pem"), str(empty_capath))
     monkeypatch.setattr(sys, "platform", platform)
-    with pytest.raises(SystemExit) as refusal:
-        apply_root_set()
+    with pytest.raises(RootSetRefusal) as refusal:
+        tls_root_set._apply_root_set()
     message = str(refusal.value)
     assert str(tmp_path / "absent.pem") in message and str(empty_capath) in message
     assert ("Install Certificates" in message) == (platform == "darwin")
@@ -149,8 +171,8 @@ def test_an_inherited_file_hiding_a_root_openssl_loads_refuses(
     tainted = tmp_path / "tainted.pem"
     tainted.write_bytes(b"".join(ROOTS) + _non_ascii(_ca_pem("rogue")))
     monkeypatch.setenv("SSL_CERT_FILE", str(tainted))
-    with pytest.raises(SystemExit, match="SSL_CERT_FILE="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="SSL_CERT_FILE="):
+        tls_root_set._apply_root_set()
 
 
 def test_a_capath_entry_hiding_a_root_openssl_loads_refuses(
@@ -160,8 +182,8 @@ def test_a_capath_entry_hiding_a_root_openssl_loads_refuses(
     capath.mkdir()
     (capath / "0badc0de.0").write_bytes(_non_ascii(_ca_pem("rogue")))
     monkeypatch.setenv("SSL_CERT_DIR", str(capath))
-    with pytest.raises(SystemExit, match="SSL_CERT_DIR="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="SSL_CERT_DIR="):
+        tls_root_set._apply_root_set()
 
 
 @pytest.mark.parametrize("name", FILE_VARIABLES)
@@ -171,8 +193,8 @@ def test_an_inherited_variable_holding_another_root_refuses(
     other = tmp_path / "other.pem"
     other.write_bytes(_ca_pem("someone else's root"))
     monkeypatch.setenv(name, str(other))
-    with pytest.raises(SystemExit) as refusal:
-        apply_root_set()
+    with pytest.raises(RootSetRefusal) as refusal:
+        tls_root_set._apply_root_set()
     message = str(refusal.value)
     assert f"{name}=" in message and "TLS_EXTRA_CA_FILE" in message
     assert f"unset {name}" in message and "byte-identical" in message
@@ -184,16 +206,16 @@ def test_an_inherited_file_one_certificate_short_refuses(
     short = tmp_path / "short.pem"
     short.write_bytes(b"".join(ROOTS[:-1]))
     monkeypatch.setenv("SSL_CERT_FILE", str(short))
-    with pytest.raises(SystemExit, match="SSL_CERT_FILE="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="SSL_CERT_FILE="):
+        tls_root_set._apply_root_set()
 
 
 def test_an_inherited_os_bundle_refuses_once_the_extra_ca_is_set(
     os_bundle, extra_file, monkeypatch
 ):
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(os_bundle))
-    with pytest.raises(SystemExit, match="plus TLS_EXTRA_CA_FILE"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="plus TLS_EXTRA_CA_FILE"):
+        tls_root_set._apply_root_set()
 
 
 def test_an_inherited_capath_holding_a_hashed_certificate_refuses(
@@ -203,8 +225,8 @@ def test_an_inherited_capath_holding_a_hashed_certificate_refuses(
     capath.mkdir()
     (capath / "0123abcd.0").write_bytes(_ca_pem("capath-only CA"))
     monkeypatch.setenv("SSL_CERT_DIR", str(capath))
-    with pytest.raises(SystemExit, match="SSL_CERT_DIR="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="SSL_CERT_DIR="):
+        tls_root_set._apply_root_set()
 
 
 def _relabel(pem: bytes, label: bytes) -> bytes:
@@ -219,12 +241,12 @@ def test_a_root_in_a_non_plain_block_refuses_inherited_or_extra(
     hidden = tmp_path / "hidden.pem"
     hidden.write_bytes(b"".join(ROOTS) + _relabel(_ca_pem("rogue"), label))
     monkeypatch.setenv("SSL_CERT_FILE", str(hidden))
-    with pytest.raises(SystemExit, match="SSL_CERT_FILE="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="SSL_CERT_FILE="):
+        tls_root_set._apply_root_set()
     monkeypatch.delenv("SSL_CERT_FILE")
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(hidden))
-    with pytest.raises(SystemExit, match="TLS_EXTRA_CA_FILE=.*CERTIFICATE"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="TLS_EXTRA_CA_FILE=.*CERTIFICATE"):
+        tls_root_set._apply_root_set()
 
 
 def test_a_stale_set_an_earlier_start_wrote_says_restart(
@@ -232,8 +254,8 @@ def test_a_stale_set_an_earlier_start_wrote_says_restart(
 ):
     apply_root_set()
     extra_file.write_bytes(_ca_pem("rotated private CA"))
-    with pytest.raises(SystemExit) as refusal:
-        apply_root_set()
+    with pytest.raises(RootSetRefusal) as refusal:
+        tls_root_set._apply_root_set()
     assert "restart that process" in str(refusal.value)
     assert "remove" not in str(refusal.value)
 
@@ -249,8 +271,8 @@ def test_a_set_directory_others_can_write_refuses_naming_tmpdir(
     else:
         directory.mkdir()
         directory.chmod(0o770)
-    with pytest.raises(SystemExit, match="TMPDIR"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="TMPDIR"):
+        tls_root_set._apply_root_set()
 
 
 # --- the OS bundle's resolution ----------------------------------------------
@@ -358,8 +380,8 @@ def test_an_inherited_file_with_the_same_roots_in_other_bytes_refuses(
     else:
         nix.write_bytes(b"# a comment\n" + b"".join(ROOTS))
     monkeypatch.setenv("SSL_CERT_FILE", str(nix))
-    with pytest.raises(SystemExit, match="byte-identical"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="byte-identical"):
+        tls_root_set._apply_root_set()
 
 
 def test_two_applies_name_one_file_and_write_nothing_else(os_bundle, extra_file):
@@ -387,8 +409,10 @@ def test_an_inherited_capath_with_any_hashed_entry_refuses_and_an_empty_one_is_a
             (capath / f"abcdef0{index}.0").write_bytes(pem)
     monkeypatch.setenv("SSL_CERT_DIR", str(capath))
     if held:
-        with pytest.raises(SystemExit, match="SSL_CERT_DIR=.*hashed certificate entry"):
-            apply_root_set()
+        with pytest.raises(
+            RootSetRefusal, match="SSL_CERT_DIR=.*hashed certificate entry"
+        ):
+            tls_root_set._apply_root_set()
     else:
         apply_root_set()
         assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
@@ -454,8 +478,8 @@ def test_an_inherited_file_with_a_malformed_certificate_block_refuses(
     bad = b"-----BEGIN CERTIFICATE-----\nMIIBabc\n-----END CERTIFICATE-----\n"
     broken.write_bytes(b"".join(ROOTS) + bad)
     monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(broken))
-    with pytest.raises(SystemExit, match="REQUESTS_CA_BUNDLE="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="REQUESTS_CA_BUNDLE="):
+        tls_root_set._apply_root_set()
 
 
 @pytest.mark.parametrize("rogue", [True, False])
@@ -469,8 +493,8 @@ def test_an_inherited_capath_list_is_read_element_by_element(
         (second / "0badc0de.0").write_bytes(_ca_pem("rogue capath CA"))
     monkeypatch.setenv("SSL_CERT_DIR", f"{empty}{os.pathsep}{second}")
     if rogue:
-        with pytest.raises(SystemExit, match="SSL_CERT_DIR="):
-            apply_root_set()
+        with pytest.raises(RootSetRefusal, match="SSL_CERT_DIR="):
+            tls_root_set._apply_root_set()
     else:
         apply_root_set()
         assert os.environ["SSL_CERT_DIR"] == EMPTY_CAPATH
@@ -483,8 +507,8 @@ def test_no_usable_temporary_directory_refuses_naming_tmpdir(
         raise FileNotFoundError("No usable temporary directory found")
 
     monkeypatch.setattr(tempfile, "gettempdir", none_usable)
-    with pytest.raises(SystemExit, match="TMPDIR must name a writable directory"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="TMPDIR must name a writable directory"):
+        tls_root_set._apply_root_set()
 
 
 WINDOWS = {name: _ca_pem(name) for name in ("ca store", "root store", "by oid")}
@@ -541,8 +565,8 @@ def test_on_windows_a_symlinked_set_directory_refuses(tmp_path, monkeypatch):
     _windows(monkeypatch, tmp_path, {"CA": [], "ROOT": roots})
     (tmp_path / "elsewhere").mkdir()
     (tmp_path / "faultmaven-tls-DOMAIN_some_user").symlink_to(tmp_path / "elsewhere")
-    with pytest.raises(SystemExit, match="TMPDIR"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="TMPDIR"):
+        tls_root_set._apply_root_set()
 
 
 @pytest.mark.parametrize("stores", ["empty", "denied"])
@@ -556,8 +580,8 @@ def test_on_windows_an_empty_or_unreadable_store_refuses_naming_it(
         else dict.fromkeys(("CA", "ROOT"), denied)
     )
     _windows(monkeypatch, tmp_path, held)
-    with pytest.raises(SystemExit) as refusal:
-        apply_root_set()
+    with pytest.raises(RootSetRefusal) as refusal:
+        tls_root_set._apply_root_set()
     message = str(refusal.value)
     assert message.startswith(
         "TLS root set: no operating-system CA bundle loads; tried the Windows "
@@ -582,8 +606,8 @@ def test_an_extra_block_that_decodes_but_is_not_a_certificate_refuses_at_the_loa
         b"-----BEGIN CERTIFICATE-----\nAAAAAAAA\n-----END CERTIFICATE-----\n"
     )
     monkeypatch.setenv("TLS_EXTRA_CA_FILE", str(junk))
-    with pytest.raises(SystemExit, match="the set written to .* does not load"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match="the set written to .* does not load"):
+        tls_root_set._apply_root_set()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no /dev/zero, no FIFOs")
@@ -619,5 +643,5 @@ def test_a_set_directory_another_user_owns_refuses(os_bundle, extra_file, monkey
     directory = Path(tempfile.gettempdir()) / f"faultmaven-tls-{other}"
     directory.mkdir(mode=0o700)
     monkeypatch.setattr(os, "getuid", lambda: other)
-    with pytest.raises(SystemExit, match=r"set's file \(OSError\).*TMPDIR"):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match=r"set's file \(OSError\).*TMPDIR"):
+        tls_root_set._apply_root_set()

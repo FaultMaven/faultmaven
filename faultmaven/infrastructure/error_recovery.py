@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 from ..exceptions import RecoveryResult
 
 
@@ -112,7 +114,9 @@ class RetryRecoveryStrategy(RecoveryStrategy):
                 return RecoveryResult.FAILED
 
         except Exception as recovery_error:
-            self.logger.error(f"Error during retry execution: {recovery_error}")
+            self.logger.error(
+                f"Error during retry execution: {exception_log_name(recovery_error)}"
+            )
             return RecoveryResult.FAILED
 
     def is_applicable(self, error: Exception, layer: str) -> bool:
@@ -273,7 +277,9 @@ class FallbackRecoveryStrategy(RecoveryStrategy):
                 )
                 return RecoveryResult.PARTIAL
         except Exception as fallback_error:
-            self.logger.error(f"Fallback strategy failed: {fallback_error}")
+            self.logger.error(
+                f"Fallback strategy failed: {exception_log_name(fallback_error)}"
+            )
             return RecoveryResult.FAILED
 
     def is_applicable(self, error: Exception, layer: str) -> bool:
@@ -437,13 +443,15 @@ class RecoveryManager:
                 self.recovery_history = self.recovery_history[-100:]
 
             self.logger.info(
-                f"Recovery strategy '{strategy_name}' completed with result: {result.value}"
+                f"Recovery strategy '{strategy_name}' completed with result: "
+                f"{result.value}"
             )
             return result
 
         except Exception as recovery_error:
             self.logger.error(
-                f"Error executing recovery strategy '{strategy_name}': {recovery_error}"
+                f"Error executing recovery strategy '{strategy_name}': "
+                f"{exception_log_name(recovery_error)}"
             )
             return RecoveryResult.FAILED
 

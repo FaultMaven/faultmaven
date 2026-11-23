@@ -22,6 +22,7 @@ from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,10 @@ class CaseVectorStore(BaseExternalClient):
             self.logger.debug(f"Collection ready: {collection_name}")
             return collection
         except Exception as e:
-            self.logger.error(f"Failed to get/create collection {collection_name}: {e}")
+            self.logger.error(
+                f"Failed to get/create collection {collection_name}: "
+                f"{exception_log_name(e)}"
+            )
             raise
 
     def _get_existing_collection(self, case_id: str):
@@ -415,7 +419,8 @@ class CaseVectorStore(BaseExternalClient):
                                 # delete on a stale snapshot alone.
                                 self.logger.warning(
                                     f"Skipping collection {collection.name}: "
-                                    f"existence re-check failed ({e})"
+                                    "existence re-check failed "
+                                    f"({exception_log_name(e)})"
                                 )
                                 continue
                         try:
@@ -435,7 +440,8 @@ class CaseVectorStore(BaseExternalClient):
                             )
                         except Exception as e:
                             self.logger.warning(
-                                f"Failed to delete orphaned collection {collection.name}: {e}"
+                                "Failed to delete orphaned collection "
+                                f"{collection.name}: {exception_log_name(e)}"
                             )
                             continue
 
@@ -449,7 +455,9 @@ class CaseVectorStore(BaseExternalClient):
                 return deleted_count
 
             except Exception as e:
-                self.logger.error(f"Error during orphaned collection cleanup: {e}")
+                self.logger.error(
+                    f"Error during orphaned collection cleanup: {exception_log_name(e)}"
+                )
                 raise
 
         return await self.call_external(

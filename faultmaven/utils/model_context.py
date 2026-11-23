@@ -38,6 +38,8 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -214,7 +216,7 @@ def _get_overrides() -> Dict[str, ModelWindow]:
             logger.warning(
                 "Ignoring malformed MODEL_CONTEXT_WINDOWS override for %r: %s",
                 key,
-                exc,
+                exception_log_name(exc),
             )
     return out
 

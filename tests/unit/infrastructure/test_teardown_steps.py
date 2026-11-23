@@ -49,7 +49,8 @@ async def test_every_step_runs_and_the_first_cancellation_propagates_after_the_l
 
     assert ran == ["fails", "cancelled", "cancelled again", "last"]
     assert raised.value is first, "not the first cancellation"
-    assert "A failing step failed (non-critical): the step blew up" in caplog.text
+    assert "A failing step failed (non-critical): ValueError" in caplog.text
+    assert "the step blew up" not in caplog.text  # its class, not its text (#2889)
 
 
 @pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
