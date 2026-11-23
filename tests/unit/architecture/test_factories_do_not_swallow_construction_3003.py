@@ -14,9 +14,11 @@ source order, each with its class and its reason:
   ``_unbuilt_under_multi`` (#2342);
 * ``DECLARED``: an arm that degrades by declaration, or builds nothing.
 
-A refusing arm makes its call before any ``return``. A new arm, an arm that
-drops or postpones its call, or a ``raise`` an arm no longer reaches on every
-path fails it, and each reason names its issue, its configuration or §7.
+A refusing arm makes its call as a statement of its own body, before any
+``return``, ``continue`` or ``break``. A new arm, an arm that drops, hides or
+postpones its call, or a ``raise`` an arm no longer reaches on every path fails
+it, and each reason names its issue, its configuration, §7 or, in backticks,
+the code that grounds it.
 """
 
 from __future__ import annotations
@@ -80,8 +82,16 @@ ARMS: dict[tuple[str, str], tuple[tuple[str | None, str], ...]] = {
     ("tools.py", "create_document_qa_tools"): (_CONFIGURED,),
     ("tools.py", "register_tools"): (_CONFIGURED,) * 4,
     ("_container_impl.py", "<module>"): (
-        (DECLARED, "type-only interface imports: INTERFACES_AVAILABLE, no service"),
-        (DECLARED, "type-only agentic interface imports: no service (§7)"),
+        (
+            DECLARED,
+            "interface imports: their absence sets INTERFACES_AVAILABLE false, "
+            "which selects the minimal container on a failed composition",
+        ),
+        (
+            DECLARED,
+            "agentic interface imports, read only as annotations: each name "
+            "binds `Any` when absent, and nothing is constructed",
+        ),
     ),
     ("_container_impl.py", "initialize"): (
         (
@@ -97,16 +107,25 @@ ARMS: dict[tuple[str, str], tuple[tuple[str | None, str], ...]] = {
     ),
     ("_container_impl.py", "get_job_service"): (_CONFIGURED,),
     ("composition.py", "_is_test_environment"): (
-        (DECLARED, "settings unreadable: reads SKIP_SERVICE_CHECKS directly"),
+        (
+            DECLARED,
+            "settings unreadable: reads SKIP_SERVICE_CHECKS and "
+            "PYTEST_CURRENT_TEST from the environment; builds nothing",
+        ),
     ),
     ("composition.py", "_check_llm_configuration"): (
-        (DECLARED, "settings unreadable: skips a warning, builds nothing (§7)"),
+        (
+            DECLARED,
+            "settings unreadable: skips the no-LLM-provider warning, the "
+            "function's only output (`_check_llm_configuration`)",
+        ),
     ),
     ("composition.py", "_wire_composition_root"): (
         (
-            DECLARED,
-            "unclassified: the cloud LLM config overrides and their watcher "
-            "(DEPLOYMENT_MODE=cloud), left as on main and reported on #3003",
+            MUST_NOT_DEGRADE,
+            "the LLM config overrides, which outrank the environment "
+            "(DEPLOYMENT_MODE=cloud): refused where the deployment must not "
+            "degrade (#3003)",
         ),
         (DECLARED, "the conversion service's tables, optional by §7's declaration"),
         (DECLARED, "the query classification engine, optional by §7's declaration"),
@@ -119,7 +138,7 @@ ARMS: dict[tuple[str, str], tuple[tuple[str | None, str], ...]] = {
     ),
 }
 
-_REFERENCE = re.compile(r"#\d+|§7|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b")
+_REFERENCE = re.compile(r"#\d+|§7|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|`\w+`")
 
 
 def _always_raises(body: list[ast.stmt]) -> bool:
@@ -142,19 +161,35 @@ def _always_raises(body: list[ast.stmt]) -> bool:
     return False
 
 
+def _leaves(statement: ast.stmt) -> bool:
+    """Whether ``statement`` can leave the handler, nested scopes aside."""
+    pending: list[ast.AST] = [statement]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Return, ast.Continue, ast.Break)):
+            return True
+        if not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _arm_problem(handler: ast.ExceptHandler, kind: str) -> str | None:
+    """``None`` when the handler calls ``kind`` as a statement of its own body
+    before anything that can leave it."""
     calls = [
-        node.lineno
-        for node in ast.walk(handler)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == kind
+        index
+        for index, statement in enumerate(handler.body)
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Name)
+        and statement.value.func.id == kind
     ]
     if not calls:
-        return f"does not call {kind}"
-    returns = [n.lineno for n in ast.walk(handler) if isinstance(n, ast.Return)]
-    if any(line < min(calls) for line in returns):
-        return f"returns before it calls {kind}"
+        return f"does not call {kind} as a statement of its body"
+    if any(_leaves(statement) for statement in handler.body[: calls[0]]):
+        return f"leaves before it calls {kind}"
     return None
 
 
@@ -255,7 +290,8 @@ def test_a_catch_all_factory_fails_it():
         "x.py::create_thing (line 5) is not listed"
     ]
     assert violations("x.py", _CATCH_ALL, _LISTED) == [
-        f"x.py::create_thing line 5 does not call {MUST_NOT_DEGRADE}"
+        f"x.py::create_thing line 5 does not call {MUST_NOT_DEGRADE} as a "
+        "statement of its body"
     ]
 
 
@@ -281,15 +317,61 @@ def test_an_arm_that_returns_before_its_raise_fails_it():
     ]
 
 
-def test_an_arm_that_returns_before_its_call_fails_it():
-    source = _CATCH_ALL.replace(
-        '        logger.warning("Thing failed")\n        return None\n',
-        "        if quiet:\n            return None\n"
-        f'        {MUST_NOT_DEGRADE}("Thing", e, settings)\n        return None\n',
-    )
-    assert violations("x.py", source, _LISTED) == [
-        f"x.py::create_thing line 5 returns before it calls {MUST_NOT_DEGRADE}"
-    ]
+_CALL = f'{MUST_NOT_DEGRADE}("Thing", e, settings)'
+_LOOPED = """
+def create_things():
+    for thing in things:
+        try:
+            Thing()
+        except Exception as e:
+            ARM
+"""
+
+
+@pytest.mark.parametrize(
+    "source,listed,problem",
+    [
+        (
+            _CATCH_ALL.replace(
+                '        logger.warning("Thing failed")\n',
+                f"        if quiet:\n            return None\n        {_CALL}\n",
+            ),
+            _LISTED,
+            "line 5 leaves before it calls",
+        ),
+        (
+            _LOOPED.replace(
+                "ARM", f"if quiet:\n                continue\n            {_CALL}"
+            ),
+            {("x.py", "create_things"): ((MUST_NOT_DEGRADE, "#1"),)},
+            "line 6 leaves before it calls",
+        ),
+        (
+            _LOOPED.replace("ARM", f"break\n            {_CALL}"),
+            {("x.py", "create_things"): ((MUST_NOT_DEGRADE, "#1"),)},
+            "line 6 leaves before it calls",
+        ),
+        (
+            _CATCH_ALL.replace(
+                'logger.warning("Thing failed")', f"if False:\n            {_CALL}"
+            ),
+            _LISTED,
+            "line 5 does not call",
+        ),
+        (
+            _CATCH_ALL.replace(
+                'logger.warning("Thing failed")',
+                f"def later():\n            {_CALL}",
+            ),
+            _LISTED,
+            "line 5 does not call",
+        ),
+    ],
+    ids=["return", "continue", "break", "if-false", "nested-def"],
+)
+def test_an_arm_whose_call_may_not_run_fails_it(source, listed, problem):
+    [found] = violations("x.py", source, listed)
+    assert problem in found
 
 
 def test_a_new_arm_fails_it():
@@ -305,16 +387,28 @@ def test_a_new_arm_fails_it():
     ]
 
 
-def test_the_signing_arms_are_held_to_their_call():
+@pytest.mark.parametrize(
+    "name", ["The signing token generator", "The OAuth JWT generator"]
+)
+def test_the_signing_arms_are_held_to_their_call(name):
     """The two ``SigningKeyUnavailableError`` arms: dropping either call fails."""
     path = ROOT / "faultmaven/container/providers/services.py"
-    source = path.read_text().replace(
-        f'{MUST_NOT_DEGRADE}("The OAuth JWT generator", e, settings)', "pass"
+    call = f'{MUST_NOT_DEGRADE}("{name}", e, settings)'
+    source = path.read_text()
+    assert source.count(call) == 1
+    line = source[: source.index(call)].count("\n") + 1
+    arm = max(
+        (
+            h
+            for h in ast.walk(ast.parse(source))
+            if isinstance(h, ast.ExceptHandler) and h.lineno <= line <= h.end_lineno
+        ),
+        key=lambda h: h.lineno,
     )
-    assert any(
-        "register_services" in problem and "does not call" in problem
-        for problem in violations(path.name, source, ARMS)
-    )
+    assert violations(path.name, source.replace(call, "pass"), ARMS) == [
+        f"services.py::register_services line {arm.lineno} does not call "
+        f"{MUST_NOT_DEGRADE} as a statement of its body"
+    ]
 
 
 @pytest.mark.parametrize(

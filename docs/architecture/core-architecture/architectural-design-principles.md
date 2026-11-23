@@ -508,20 +508,20 @@ the wiring* from *deciding whether a failure is survivable*:
 Both composition gates — the DI container's refusal and the composition root —
 key on it, so "must not degrade" has one meaning and one spelling. (Gates that
 express a *capability* requirement rather than a degradation policy stay on
-`is_cloud`: a shared Redis is a cloud requirement, and standalone runs
-FakeRedis by design at any `ENVIRONMENT`.)
+`is_cloud`: a shared Redis and an external ChromaDB are cloud requirements, and
+standalone runs in-process FakeRedis (`fakeredis_or_fail`) and a local ChromaDB
+client (`local_chroma_or_fail`, #901) by design at any `ENVIRONMENT`, a
+configured server it cannot reach included.)
 
 A container factory that catches its own construction failure hands it to this
 predicate at its wiring line (`unbuilt_where_must_not_degrade`,
 `container/providers/refusal.py`): a service the deployment configured that
 cannot be constructed refuses the start with `RequiredServiceConstructionError`
 where the deployment must not degrade. No implementation the deployment did not
-configure is served in a configured one's place, with one declared exception:
-standalone's local ChromaDB client when the configured server is unreachable, a
-capability gate on `is_cloud` (#901) served at any `ENVIRONMENT`. In
-`container/providers/`, `_container_impl.py` and `bootstrap/composition.py`,
-every `except` arm that can complete without raising is listed with its class
-and reason in the allowlist of
+configure is served in a configured one's place, except where a capability gate
+above allows it. In `container/providers/`, `_container_impl.py` and
+`bootstrap/composition.py`, every `except` arm that can complete without
+raising is listed with its class and reason in the allowlist of
 `tests/unit/architecture/test_factories_do_not_swallow_construction_3003.py`.
 
 - **Must not degrade** → startup raises `RuntimeError`, uvicorn exits, the pod

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
 from fastapi import FastAPI
 
+from faultmaven.container.providers.refusal import unbuilt_where_must_not_degrade
 from faultmaven.infrastructure.concurrency.teardown import (
     ContainerRelease,
     cancel_and_wait,
@@ -326,6 +327,10 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
                 )
             except Exception as e:
                 logger.debug(f"Config overrides skipped: {exception_log_name(e)}")
+                # Overrides outrank the environment, so a pod that cannot
+                # apply them serves another configuration: refused where the
+                # deployment must not degrade (#3003).
+                unbuilt_where_must_not_degrade("LLM config overrides", e, settings)
         else:
             logger.debug(
                 "Config overrides skipped (local mode — .env is source of truth)"
