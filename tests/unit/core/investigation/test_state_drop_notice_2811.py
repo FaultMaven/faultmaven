@@ -91,9 +91,10 @@ NOTE_PREFIXES = ("**Note:** the case updates", "**Note:** some case updates")
 MODEL_TEXT = "The pods fail AssumeRoleWithWebIdentity on the audience check."
 SEP = "\n\n---\n\n"
 
-#: A need whose evidence id is not a string. Its error sits in a list inside a
-#: list entry, which the prune rung cannot reach, so the ladder falls to
-#: ``state_dropped`` (or, with no answer, ``response_synthesized_state_dropped``).
+#: A fulfilled need whose only evidence id is not a string. The prune rung
+#: takes that id (#3020), which leaves the need fulfilled with no id, so
+#: re-validation fails and the ladder falls to ``state_dropped`` (or, with no
+#: answer, ``response_synthesized_state_dropped``).
 BAD_NEED = {
     "need_id": "need_aaaaaaaaaaaa",
     "state": "fulfilled",
@@ -627,13 +628,17 @@ def test_whole_wins_over_partial():
         parsed = so._validate_with_degradation(
             {
                 "agent_response": MODEL_TEXT,
-                # The second need is pruned; the first still fails.
+                # The first need's id and the second need are pruned; the
+                # first need, fulfilled with no id, still fails.
                 "state_updates": {"evidence_need_updates": [BAD_NEED, PRUNABLE_NEED]},
             },
             InvestigationResponse_Diagnosis,
         )
     # Positive control: the prune really took a path under state_updates.
-    assert seen == ["state_updates.evidence_need_updates[1]"]
+    assert seen == [
+        "state_updates.evidence_need_updates[0].fulfilling_evidence_ids[0]",
+        "state_updates.evidence_need_updates[1]",
+    ]
     assert [c.kwargs["outcome"] for c in outcomes.labels.call_args_list] == [
         "state_dropped"
     ]

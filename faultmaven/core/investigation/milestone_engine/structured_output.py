@@ -297,8 +297,8 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
                 parsed, repairs = _validate(fallback)
                 # The prune path already logs its locs ("Turn preserved"); this
                 # branch is reached only when an error the prune step could
-                # not place remains (no list index, no optional sub-object or
-                # state field on its path) — log exactly those so each
+                # not place remains (no walkable list index, no optional
+                # sub-object or state field on its path) — log exactly those so each
                 # fallback is self-diagnosing (was it correctly non-prunable,
                 # or a prune gap?). Reference: S4 backstop observability.
                 non_prunable = [
@@ -394,7 +394,9 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
 
     - A ``loc`` carrying a list index — ``('state_updates',
       'evidence_to_add', 0, 'source_file_id')`` or ``(..., 0)`` — prunes the
-      entry at the DEEPEST index. General across any list field.
+      entry at the DEEPEST index, walking any shallower index on the way
+      (#3020). General across any list field. A path that cannot be walked
+      reports its errors as unhandled.
     - A ``loc`` with no index is placed on the deepest OPTIONAL sub-object
       along its path, read from ``schema_model``, and that sub-object is
       set to ``None`` — ``('state_updates', 'root_cause_conclusion',
@@ -423,7 +425,7 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
 
     obj = copy.deepcopy(content_obj)
     state_model = _state_model_of(schema_model) if schema_model is not None else None
-    to_remove: dict[tuple, set] = {}
+    to_remove: dict[tuple, list[dict]] = {}
     to_null: set[tuple] = set()
     to_delete: dict[str, list[dict]] = {}
     unhandled: list[dict] = []
@@ -431,9 +433,7 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
         loc = tuple(err.get("loc", ()))
         int_positions = [i for i, part in enumerate(loc) if isinstance(part, int)]
         if int_positions:
-            last = int_positions[-1]
-            list_path = loc[:last]
-            to_remove.setdefault(list_path, set()).add(loc[last])
+            to_remove.setdefault(loc[: int_positions[-1]], []).append(err)
             continue
         prefix = (
             _optional_sub_record_prefix(schema_model, loc)
@@ -450,21 +450,28 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
             unhandled.append(err)
 
     dropped: list[str] = []
-    for list_path, indices in to_remove.items():
+    # Deepest first: a prune inside an entry never shifts the index a
+    # shallower path walks, so no entry is pruned in another's place (#3020).
+    for list_path, errs in sorted(to_remove.items(), key=lambda kv: -len(kv[0])):
         node = obj
-        ok = True
         for key in list_path:
-            if isinstance(node, dict) and key in node:
+            if (isinstance(node, dict) and key in node) or (
+                isinstance(node, list) and isinstance(key, int) and 0 <= key < len(node)
+            ):
                 node = node[key]
             else:
-                ok = False
+                node = None
                 break
-        if ok and isinstance(node, list):
-            for idx in sorted(indices, reverse=True):
-                if 0 <= idx < len(node):
-                    del node[idx]
-                    path_str = ".".join(str(p) for p in list_path)
-                    dropped.append(f"{path_str}[{idx}]")
+        if not isinstance(node, list):
+            unhandled.extend(errs)
+            continue
+        path_str = "".join(
+            f"[{p}]" if isinstance(p, int) else f".{p}" for p in list_path
+        ).lstrip(".")
+        for idx in sorted({e["loc"][len(list_path)] for e in errs}, reverse=True):
+            if 0 <= idx < len(node):
+                del node[idx]
+                dropped.append(f"{path_str}[{idx}]")
 
     # Shortest first, so a sub-object inside one already nulled is skipped
     # (its parent is None by then) rather than reported twice.
@@ -1097,8 +1104,14 @@ def _parse_nested_json(obj, schema_model):
     return out
 
 
-def _fix_enum_violations(obj, schema_dict, root_defs=None):
-    """Recursively fix enum violations in the response object."""
+def _fix_enum_violations(obj, schema_dict, root_defs=None, *, in_state=False):
+    """Recursively fix enum violations in the response object.
+
+    A value with a close match takes it. One with none takes the enum's first
+    member, except inside ``state_updates`` (*in_state*), where it is left as
+    sent: validation fails on it and the prune rung takes its entry or field,
+    so the case never records a member the model did not send (#3021).
+    """
 
     if not isinstance(obj, dict):
         return obj
@@ -1131,11 +1144,15 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
                     )
                     fixed_obj[key] = corrected
                 else:
-                    fallback = valid_values[0]
+                    fallback = value if in_state else valid_values[0]
+                    shown = (
+                        "left for validation"
+                        if in_state
+                        else f"using fallback '{fallback}'"
+                    )
                     logger.warning(
                         f"No close match for hallucinated enum "
-                        f"(value_len={len(value)}), "
-                        f"using fallback '{fallback}' for field '{key}'"
+                        f"(value_len={len(value)}), {shown} for field '{key}'"
                     )
                     fixed_obj[key] = fallback
             else:
@@ -1159,7 +1176,12 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
                 nested_schema = prop_schema
 
             if nested_schema:
-                fixed_obj[key] = _fix_enum_violations(value, nested_schema, root_defs)
+                fixed_obj[key] = _fix_enum_violations(
+                    value,
+                    nested_schema,
+                    root_defs,
+                    in_state=in_state or key == "state_updates",
+                )
             else:
                 fixed_obj[key] = value
 
@@ -1185,7 +1207,9 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
             for item in value:
                 if isinstance(item, dict) and item_schema:
                     fixed_list.append(
-                        _fix_enum_violations(item, item_schema, root_defs)
+                        _fix_enum_violations(
+                            item, item_schema, root_defs, in_state=in_state
+                        )
                     )
                 else:
                     fixed_list.append(item)
