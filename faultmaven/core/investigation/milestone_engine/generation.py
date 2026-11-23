@@ -2327,7 +2327,7 @@ class StructuredOutputGenerator:
                 # Recover the leaked parameter form, or coerce an unresolvable
                 # state_updates to {} so Pydantic defaults apply (counted). A
                 # body the provider reported cut is never recovered.
-                content_obj = _normalize_state_updates(
+                content_obj, pre_drop = _normalize_state_updates(
                     content_obj, schema_model, cut=provider_reported_cut
                 )
 
@@ -2361,7 +2361,9 @@ class StructuredOutputGenerator:
                 # validation outcome itself (one increment per body, as before)
                 # and re-raises only when nothing survives, which the
                 # truncation check below still sees.
-                parsed = _validate_with_degradation(content_obj, schema_model)
+                parsed = _validate_with_degradation(
+                    content_obj, schema_model, pre_drop=pre_drop
+                )
                 return _synthesize_agent_response(
                     parsed, schema_answer_stop_reason(response)
                 )

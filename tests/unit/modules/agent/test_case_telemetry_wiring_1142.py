@@ -112,6 +112,7 @@ def engine():
                     "gate_name": "insufficient_evidence",
                     "validation_repairs": 1,
                     "repair_pattern": None,
+                    "state_drop": "whole",
                 },
             },
         }
@@ -203,6 +204,8 @@ class TestOneRowPerConsumedTurn:
         assert row.user_supplied_new is False
         assert row.gate_name == "insufficient_evidence"
         assert row.validation_repairs == 1
+        # What the parse lost of the turn's state_updates (#2811).
+        assert row.state_drop == "whole"
 
     async def test_the_counter_is_the_settled_post_turn_value(
         self, service, repo, case, caplog

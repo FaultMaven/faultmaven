@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+from faultmaven.core.investigation.schemas import StateDrop
 from faultmaven.infrastructure.llm.providers import (
     StopReason,
     normalize_stop_reason,
@@ -88,6 +89,16 @@ def is_agent_response_synthesized(response_obj: Any) -> bool:
     truthy Mock, and a Mock must not read as a synthesized turn.
     """
     return getattr(response_obj, "_agent_response_synthesized", False) is True
+
+
+def state_drop_of(response_obj: Any) -> StateDrop | None:
+    """What the ladder lost of *response_obj*'s ``state_updates`` (#2811).
+
+    ``None`` for anything but a real marker, so a test double's auto-attribute
+    never reads as a drop.
+    """
+    drop = getattr(response_obj, "_state_drop", None)
+    return drop if isinstance(drop, StateDrop) else None
 
 
 def _prose_with_gate_notice(llm_text: str | None, gate_text: str) -> str:
@@ -179,3 +190,40 @@ _NARRATION_OVERCLAIM_NOTICE_PENDING = (
     "been *proposed*. It takes effect only when you confirm it using the options "
     "below."
 )
+
+# What a turn that lost ``state_updates`` at a ladder rung says (#2811), per
+# kind: the note under the model's text, the note under a #1442 placeholder
+# (or alone above engine prose that replaced one), and the ``system_notices``
+# entry the next prompt reads. Exhaustive: a kind with no row raises.
+_STATE_DROP_TEXTS: dict[StateDrop, tuple[str, str, str]] = {
+    StateDrop.WHOLE: (
+        "**Note:** the case updates in this reply arrived malformed and were "
+        "not recorded. Anything it says it changed is not saved; ask me to "
+        "record it again.",
+        "**Note:** the case updates in this turn arrived malformed and were not "
+        "recorded; ask me to record them again.",
+        "Your previous response's state_updates arrived malformed and were not "
+        "applied: none of them were recorded. The user was shown a note "
+        "inviting them to ask you to record them again.",
+    ),
+    StateDrop.PARTIAL: (
+        "**Note:** some case updates in this reply arrived malformed and were "
+        "not recorded; ask me to record any it says it changed that you don't "
+        "see.",
+        "**Note:** some case updates in this turn arrived malformed and were not "
+        "recorded; ask me to record any you expected and don't see.",
+        "Part of your previous response's state_updates arrived malformed and "
+        "was not applied. The user was shown a note inviting them to ask you to "
+        "record any update they expected and don't see.",
+    ),
+}
+
+
+def state_drop_note(drop: StateDrop, *, placeholder: bool = False) -> str:
+    """The user's note for *drop*: under the model's text, or *placeholder*."""
+    return _STATE_DROP_TEXTS[drop][1 if placeholder else 0]
+
+
+def state_drop_system_notice(drop: StateDrop) -> str:
+    """The ``system_notices`` entry that tells the next prompt of *drop*."""
+    return _STATE_DROP_TEXTS[drop][2]

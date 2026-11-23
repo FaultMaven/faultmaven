@@ -261,6 +261,7 @@ FIELD_ALLOWLIST: frozenset[str] = frozenset(
         # conformance / health
         "validation_repairs",
         "repair_pattern",
+        "state_drop",
         # volume proxy — separates "user went silent" from "user wrote a
         # paragraph that produced nothing", carrying no content
         "user_message_chars",
@@ -635,6 +636,7 @@ def build_case_turn_event(
     outcome: Any = None,
     validation_repairs: int = 0,
     repair_pattern: str | None = None,
+    state_drop: str | None = None,
     user_message_chars: int = 0,
     attachment_count: int = 0,
 ) -> dict[str, Any]:
@@ -674,6 +676,8 @@ def build_case_turn_event(
         "gate_name": gate_name,
         "validation_repairs": int(validation_repairs),
         "repair_pattern": repair_pattern,
+        # What the parse lost of the turn's state_updates (#2811).
+        "state_drop": state_drop,
         "user_message_chars": int(user_message_chars),
         "attachment_count": int(attachment_count),
     }

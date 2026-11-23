@@ -206,6 +206,7 @@ def _emit_committed_turn(
         outcome=turn_metadata.get("outcome") or turn_telemetry.get("outcome"),
         validation_repairs=int(turn_telemetry.get("validation_repairs", 0)),
         repair_pattern=turn_telemetry.get("repair_pattern"),
+        state_drop=turn_telemetry.get("state_drop"),
         # ``payload.query``, not ``query``: on an attachment-only turn
         # ``query`` has been replaced by ``generate_implicit_query``'s
         # engine-composed sentence, and reporting its length would say

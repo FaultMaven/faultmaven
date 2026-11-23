@@ -78,7 +78,11 @@ TEXT: dict[tuple[str, str], tuple[int, str]] = {
     (_HU, "_apply_hypothesis_evidence_links"): (1, "a link to a terminal hypothesis"),
     (_RA, "_reclassify_premature_causal_absence"): (1, _STATUS),
     (_RA, "_settle_fix_attempts"): (1, "a node_ref naming no node: " + _ORDER),
-    (_RA, "ResponseApplier.process_response_structured"): (2, _ORDER),
+    (_RA, "ResponseApplier.process_response_structured"): (
+        3,
+        "two ignored declarations (" + _ORDER + "), and the state_updates the "
+        "parse lost (#2811): a schema repair, which #2636 keeps as text",
+    ),
     (_RA, "ResponseApplier._apply_verification_updates"): (
         2,
         "a false-alarm withdrawal refused, outcome-bearing (it states or presumes "

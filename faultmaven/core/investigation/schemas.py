@@ -1937,6 +1937,14 @@ class StateReport(NullTolerantModel):
         return v
 
 
+class StateDrop(str, Enum):
+    """What the structured-output ladder lost of a response's
+    ``state_updates`` (#2811): all of it, or some of it."""
+
+    WHOLE = "whole"
+    PARTIAL = "partial"
+
+
 class BaseInteractionResponse(BaseModel):
     """Base class for all agent responses."""
 
@@ -1959,6 +1967,11 @@ class BaseInteractionResponse(BaseModel):
     # which is the one place that knows which validation attempt succeeded;
     # read by the apply step onto the turn's ``validation_repairs``.
     _confidence_repairs: list = PrivateAttr(default_factory=list)
+
+    # The ``state_updates`` the ladder lost on the way to this instance
+    # (#2811). Written only by ``_validate_with_degradation``; read through
+    # ``milestone_engine.response_synthesis.state_drop_of``.
+    _state_drop: Optional[StateDrop] = PrivateAttr(default=None)
 
     @field_validator("suggested_follow_ups", mode="before")
     @classmethod
