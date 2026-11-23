@@ -100,20 +100,19 @@ def unresolved_root_ref_reason(case: Case, ref: str, created: Sequence[str]) -> 
     return f"names an {node.node_type.value} node, not a root cause"
 
 
-def _dropped(sent: str = "") -> str:
-    return (
-        f" Its root verdict{sent} was not recorded; send it again with the root "
-        "it is about."
-    )
-
-
 def _report_unanchored_roots(case: Case, metadata: dict[str, Any]) -> None:
-    """One line per hypothesis whose root ref or verdict was not applied (#3029),
-    after the orphan pass. A note: [ref, why (None: declined), old root, suffix]."""
-    for hyp_id, (ref, why, old, suffix) in metadata.pop("hyp_root_notes", {}).items():
+    """One line per hypothesis whose root ref or verdict was not applied (#3029), read
+    after the orphan pass. Note: [ref, why|None=declined, old root, [(ref, root, why)]].
+    """
+    for hyp_id, (ref, why, old, drops) in metadata.pop("hyp_root_notes", {}).items():
         hyp = case.hypotheses.get(hyp_id)
         now = hyp.root_node_id if hyp else None
-        said = f"its root_node_ref '{ref}' {why}"
+        suffix = ""
+        for sent, named, failed in drops:
+            stood = "the engine anchored it to only after this turn's refs"
+            failed = failed or (stood if named == now else "it does not stand on")
+            sent = f", sent with '{sent}', which {failed}," if sent else ""
+            suffix += f" Its root verdict{sent} was not recorded; send it again with the root it is about."
         if why == "refused":  # fm#1091's line was sent at the refusal: extend it
             notices = metadata.get("system_notices", [])
             if suffix and old in notices:
@@ -121,15 +120,21 @@ def _report_unanchored_roots(case: Case, metadata: dict[str, Any]) -> None:
             continue
         if ref is None:
             line = f"stands on {now}." if now else "has no root."
-        elif why is None:
-            line = f"was NOT re-rooted onto {ref}: its chain does not reach the problem yet, so it keeps {old}."
-        elif now and now != old:
-            line = f"was anchored by the engine to {now}, the emitted root that restates it: {said}."
         else:
-            line = f"was NOT re-rooted: {said}, so it keeps {old}" if now else ""
-            line = (
-                line or f"was NOT anchored: {said}"
-            ) + ". Point root_node_ref at a ROOT node."
+            line = f"was NOT {'re-rooted' if old else 'anchored'}" + (
+                f": its root_node_ref '{ref}' {why}"
+                if why
+                else f" onto {ref}: its chain does not reach the problem"
+            )
+            if now and now != old:
+                line += f"; the engine anchored it to {now} instead, the emitted root that restates it."
+            else:
+                line += f", so it keeps {old}. " if old else ". "
+                line += (
+                    "Point root_node_ref at a ROOT node."
+                    if why
+                    else "Link that chain to the problem, then send root_node_ref again."
+                )
         _add_system_feedback(metadata, f"Hypothesis {hyp_id} {line}{suffix}")
 
 
@@ -279,7 +284,6 @@ def _apply_chain_emission(
     # becomes the new hypothesis's cause. Judging on first read would refuse a
     # hand-off the model expressed correctly, AND then GC the very chain it
     # handed over.
-    #
     # A ref not attached gets a note (#3029), told after the orphan pass.
     abandoned: list[list] = []
     contested: list[tuple[str, str]] = []
@@ -289,7 +293,7 @@ def _apply_chain_emission(
         old_root = hyp.root_node_id
         freed = _attach(hyp, root_id)
         if freed is None:
-            notes[hyp_id] = [root_id, None, old_root, ""]
+            notes[hyp_id] = [root_id, None, old_root, []]
         elif freed:
             abandoned.append(freed)
 
@@ -300,7 +304,7 @@ def _apply_chain_emission(
         root_id = _resolve_root(ref)
         if root_id is None:
             why = unresolved_root_ref_reason(case, ref, created)
-            notes[hyp_id] = [ref, why, hyp.root_node_id, ""]
+            notes[hyp_id] = [ref, why, hyp.root_node_id, []]
             continue
         if _other_owner(hyp_id, root_id) is not None:
             contested.append((hyp_id, root_id))
@@ -325,7 +329,7 @@ def _apply_chain_emission(
             f"cause, update {owner.hypothesis_id} instead of keeping both."
         )
         _add_system_feedback(metadata, line)
-        notes[hyp_id] = [root_id, "refused", line, ""]
+        notes[hyp_id] = [root_id, "refused", line, []]
         logger.info(
             "Refused hypothesis root adoption (fm#1091): %s -> %s owned by %s",
             hyp_id,
@@ -360,14 +364,12 @@ def _apply_chain_emission(
             if named is not None and named == hyp.root_node_id:
                 _record_verdict_on_root(case, hyp, verdict, cited, metadata)
                 continue
-            note = notes.setdefault(hyp_id, [None, None, None, ""])
+            note = notes.setdefault(hyp_id, [None, None, None, []])
             if note[0] is not None and note[0] in (named_ref, named):
-                note[3] += _dropped()
+                note[3].append((None, None, None))
             else:  # the verdict's own ref is not the one its note names
-                why = "it does not stand on"
-                if named is None:
-                    why = unresolved_root_ref_reason(case, named_ref, created)
-                note[3] += _dropped(f", sent with '{named_ref}', which {why},")
+                why = not named and unresolved_root_ref_reason(case, named_ref, created)
+                note[3].append((named_ref, named, why))
             continue
         if not hyp.root_node_id:
             pending[hyp_id] = (verdict, cited)
@@ -509,7 +511,7 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
         if hyp is not None and hyp.root_node_id:
             _record_verdict_on_root(case, hyp, verdict, cited, metadata)
         elif hyp is not None:
-            notes.setdefault(hyp_id, [None, None, None, ""])[3] += _dropped()
+            notes.setdefault(hyp_id, [None, None, None, []])[3].append((None,) * 3)
     _report_unanchored_roots(case, metadata)
     if not ambiguous:
         return

@@ -134,9 +134,33 @@ def test_a_hypothesis_the_orphan_pass_anchors_is_told_where():
     case, hyp_id, hyp, _ref, notices = _new_hypothesis("new_index_9", statement=_CAUSE)
     assert case.causal_nodes[hyp.root_node_id].statement == _CAUSE
     assert _lines_about(notices, hyp_id) == [
-        f"Hypothesis {hyp_id} was anchored by the engine to {hyp.root_node_id}, "
-        "the emitted root that restates it: its root_node_ref 'new_index_9' "
-        "names no node emitted this turn."
+        f"Hypothesis {hyp_id} was NOT anchored: its root_node_ref 'new_index_9' "
+        "names no node emitted this turn; the engine anchored it to "
+        f"{hyp.root_node_id} instead, the emitted root that restates it."
+    ]
+
+
+def test_a_verdict_on_the_root_the_orphan_pass_gives_is_told_so():
+    """The add item names the restating root with a verdict; the update item's
+    ref (the last entry, so the one read) fails. The orphan pass anchors the
+    hypothesis to the root the verdict named, after the verdict was dropped
+    (#2536): the line says when it got there, not that it stands elsewhere."""
+    update = [
+        HypothesisUpdate(hypothesis_id="new_index_0", root_node_ref="new_index_9")
+    ]
+    case, hyp_id, hyp, _ref, notices = _new_hypothesis(
+        "new_index_0", statement=_CAUSE, with_verdict=True, update=update
+    )
+    root = case.causal_nodes[hyp.root_node_id]
+    assert root.statement == _CAUSE
+    assert root.root_terminal is None
+    assert _lines_about(notices, hyp_id) == [
+        f"Hypothesis {hyp_id} was NOT anchored: its root_node_ref 'new_index_9' "
+        "names no node emitted this turn; the engine anchored it to "
+        f"{root.node_id} instead, the emitted root that restates it. Its root "
+        "verdict, sent with 'new_index_0', which the engine anchored it to only "
+        "after this turn's refs, was not recorded; send it again with the root "
+        "it is about."
     ]
 
 
@@ -267,8 +291,40 @@ def test_a_declined_re_root_is_told(with_verdict):
     assert new_root.root_terminal is None
     assert _lines_about(notices, hyp.hypothesis_id) == [
         f"Hypothesis {hyp.hypothesis_id} was NOT re-rooted onto {new_root.node_id}: "
-        f"its chain does not reach the problem yet, so it keeps {old_root.node_id}."
+        f"its chain does not reach the problem, so it keeps {old_root.node_id}. "
+        "Link that chain to the problem, then send root_node_ref again."
         + (f" {_DROPPED}" if with_verdict else "")
+    ]
+
+
+def test_a_declined_re_root_the_orphan_pass_re_roots_is_told_where():
+    """The re-root names an open root (declined); the same batch emits a root
+    restating the hypothesis that reaches D, and the orphan pass moves the
+    hypothesis onto it: the line names that root, not the old one."""
+    case, old_root, hyp = _open_chain_case()
+    notices = _turn(
+        case,
+        causal_nodes_to_add=[
+            CausalNodeToAdd(
+                statement="nothing rotates the secret_id", node_type="root"
+            ),
+            CausalNodeToAdd(statement=hyp.statement, node_type="root", produces="D"),
+        ],
+        hypotheses_to_update=[
+            HypothesisUpdate(
+                hypothesis_id=hyp.hypothesis_id, root_node_ref="new_index_0"
+            )
+        ],
+    )
+    (declined,) = (
+        n for n in case.causal_nodes.values() if n.statement.startswith("nothing")
+    )
+    assert hyp.root_node_id not in (None, old_root.node_id, declined.node_id)
+    assert case.causal_nodes[hyp.root_node_id].statement == hyp.statement
+    assert _lines_about(notices, hyp.hypothesis_id) == [
+        f"Hypothesis {hyp.hypothesis_id} was NOT re-rooted onto {declined.node_id}: "
+        f"its chain does not reach the problem; the engine anchored it to "
+        f"{hyp.root_node_id} instead, the emitted root that restates it."
     ]
 
 
