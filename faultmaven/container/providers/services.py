@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from faultmaven.container.errors import RequiredServiceConstructionError
+from faultmaven.container.providers.refusal import unbuilt_where_must_not_degrade
 from faultmaven.utils.exception_name import exception_log_name
 
 if TYPE_CHECKING:
@@ -301,6 +302,7 @@ def create_milestone_engine(
         logger.warning(
             f"MilestoneEngine initialization failed: {exception_log_name(e)}"
         )
+        unbuilt_where_must_not_degrade("MilestoneEngine", e)
         return None
 
 
@@ -463,6 +465,7 @@ def create_investigation_service(
         logger.warning(
             f"InvestigationService initialization failed: {exception_log_name(e)}"
         )
+        unbuilt_where_must_not_degrade("InvestigationService", e)
         return None
 
 
@@ -1012,6 +1015,7 @@ def create_user_service(
         return service
     except Exception as e:
         logger.warning(f"UserService initialization failed: {exception_log_name(e)}")
+        unbuilt_where_must_not_degrade("UserService", e)
         return None
 
 
@@ -1097,6 +1101,7 @@ def create_report_generation_service(
         logger.warning(
             f"ReportGenerationService initialization failed: {exception_log_name(e)}"
         )
+        unbuilt_where_must_not_degrade("ReportGenerationService", e)
         return None
 
 
@@ -1550,6 +1555,7 @@ def register_services(container: BaseDIContainer) -> None:
         # the request the operator is looking at. Named here so the cause is in
         # the startup log too, rather than only surfacing as an absent service.
         logger.error("JWT signing key unavailable: %s", exception_log_name(e))
+        unbuilt_where_must_not_degrade("The signing token generator", e)
         signing_generator = None
         # Assigned, not left unset: every other service on this container is
         # read as an attribute somewhere, and an unset name raises
@@ -1593,14 +1599,16 @@ def register_services(container: BaseDIContainer) -> None:
                 resolve_organizations=billing_organization_resolver,
             )
         except SigningKeyUnavailableError as e:
-            # Handled the same way as the signing generator above rather than
-            # left to abort composition: everything registered after this point
-            # — the tenant provider, the case service, the investigation engine
-            # — is unrelated to OAuth, and taking the whole application down
+            # Where the deployment must not degrade, this refuses the start
+            # (#3003). Elsewhere it is handled as the signing generator above,
+            # not left to abort composition: everything registered after this
+            # point — the tenant provider, the case service, the investigation
+            # engine — is unrelated to OAuth, and taking the whole application down
             # with them turns one unusable auth mode into a CrashLoop. The
             # OAuth dependency answers 503 when the service is absent, which is
             # the failure the operator can act on.
             logger.error("OAuth JWT generator unavailable: %s", exception_log_name(e))
+            unbuilt_where_must_not_degrade("The OAuth JWT generator", e)
             jwt_token_generator = None
 
         container.jwt_token_generator = jwt_token_generator
@@ -1876,15 +1884,11 @@ def register_services(container: BaseDIContainer) -> None:
         if sso_login_service:
             container._register_service("sso_login_service", sso_login_service)
 
-    # Agent Service
-    # Backward-compatible alias: expose InvestigationService as agent_service.
-    # If the investigation service can't be constructed (missing deps), still provide a
-    # minimal non-null placeholder so callers/tests don't explode during init.
-    agent_service = (
-        investigation_service if investigation_service is not None else object()
-    )
-    container.agent_service = agent_service
-    container._register_service("agent_service", agent_service)
+    # Agent Service: the investigation service under its older name, never a
+    # stand-in for it (#3003). None when the investigation service is.
+    container.agent_service = investigation_service
+    if investigation_service:
+        container._register_service("agent_service", investigation_service)
 
     # Data Service
     data_service = create_data_service(

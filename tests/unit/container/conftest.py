@@ -9,6 +9,7 @@ already drifted on which fields they pinned; a new must-pin field gets added
 in exactly one place.
 """
 
+import pytest
 from pydantic import SecretStr
 
 from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
@@ -54,3 +55,19 @@ def make_chroma_settings(
     settings.protection.protection_enabled = False
     settings.protection.sanitize_pii = False
     return settings
+
+
+@pytest.fixture
+def environment(monkeypatch):
+    """Rebuild the settings singleton under the given ``ENVIRONMENT``, and
+    again afterwards."""
+    from faultmaven.config.settings import get_settings, reset_settings
+
+    def _set(value: str):
+        monkeypatch.setenv("ENVIRONMENT", value)
+        reset_settings()
+        return get_settings()
+
+    yield _set
+    monkeypatch.undo()
+    reset_settings()

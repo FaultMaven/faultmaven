@@ -177,22 +177,35 @@ class TestCreateMilestoneEngine:
         assert result is not None
         assert result.deps.investigation_tools is mock_tools
 
-    def test_returns_none_on_initialization_error(self):
-        """Returns None when MilestoneEngine initialization raises."""
-        mock_provider = MagicMock()
-        mock_repo = MagicMock()
-        mock_tools = MagicMock()
+    def test_returns_none_on_initialization_error(self, environment):
+        """Returns None when MilestoneEngine initialization raises, where the
+        deployment may degrade."""
+        assert not environment("development").must_not_degrade
 
         with patch(
             "faultmaven.core.investigation.milestone_engine.engine.MilestoneEngine.__init__",
             side_effect=Exception("init failed"),
         ):
-            result = create_milestone_engine(
-                llm_provider=mock_provider,
-                case_repository=mock_repo,
-                investigation_tools=mock_tools,
-            )
-            assert result is None
+            assert create_milestone_engine(MagicMock(), MagicMock(), None) is None
+
+    def test_refuses_on_initialization_error_where_it_must_not_degrade(
+        self, environment
+    ):
+        """#3003: a production deployment refuses, naming the class only."""
+        from faultmaven.container.errors import RequiredServiceConstructionError
+
+        assert environment("production").must_not_degrade
+        error = Exception("init failed")
+
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.engine.MilestoneEngine.__init__",
+            side_effect=error,
+        ):
+            with pytest.raises(RequiredServiceConstructionError) as refused:
+                create_milestone_engine(MagicMock(), MagicMock(), None)
+
+        assert refused.value.__cause__ is error
+        assert "init failed" not in str(refused.value)
 
     def test_forwards_da_provider_and_model(self):
         """da_provider and da_model are forwarded to MilestoneEngine."""

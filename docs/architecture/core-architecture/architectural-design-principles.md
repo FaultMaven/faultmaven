@@ -511,6 +511,15 @@ express a *capability* requirement rather than a degradation policy stay on
 `is_cloud`: a shared Redis is a cloud requirement, and standalone runs
 FakeRedis by design at any `ENVIRONMENT`.)
 
+A container factory that catches its own construction failure hands it to this
+predicate at its wiring line (`unbuilt_where_must_not_degrade`,
+`container/providers/refusal.py`): a service the deployment configured that
+cannot be constructed refuses the start with `RequiredServiceConstructionError`
+where the deployment must not degrade. An implementation the deployment did not
+configure is never served in its place. Each such arm, and each line that
+degrades by declaration, is listed with its reason in the allowlist of
+`tests/unit/architecture/test_factories_do_not_swallow_construction_3003.py`.
+
 - **Must not degrade** → startup raises `RuntimeError`, uvicorn exits, the pod
   CrashLoops and the Kubernetes rollout rolls back.
 - **Anywhere else** → the failure is logged and the application serves what it
