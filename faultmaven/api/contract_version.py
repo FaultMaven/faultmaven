@@ -151,6 +151,36 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.10.0",
+        level="MINOR",
+        title=(
+            "`POST /knowledge/documents` and `POST "
+            "/knowledge/conversions/{conversion_id}/drafts/{draft_id}/verify` "
+            "answer a failed indexing embed **503** with `x-error-code` "
+            "`KNOWLEDGE_EMBEDDER_UNAVAILABLE` or `KNOWLEDGE_EMBEDDER_TIMEOUT` "
+            "where they answered 500; `PUT /knowledge/documents/{id}` adds the "
+            "header to its 503 (#2461). No schema moves."
+        ),
+        body=r"""Nothing is saved: the upload writes no row, the draft stays a draft, and
+the edit is not applied. No `Retry-After`.
+
+* Each code carries more than one cause, and the detail is a sentence per
+  cause that tells the user whether to retry or split the document. No field
+  carries the cause: branch on `x-error-code` and never parse the detail
+  text. This supersedes the `KNOWLEDGE_EMBEDDER_UNAVAILABLE` sentence 15.5.0
+  quoted; a token count that finds no slot within its wait is now
+  `KNOWLEDGE_EMBEDDER_TIMEOUT`.
+* `PUT` keeps its one detail for every re-index failure; only the header is
+  new.
+* `POST /knowledge/drafts/verify-batch` records such an item `failed` with
+  `Verification failed (EmbedderUnavailable)`, where it named
+  `KnowledgeBaseError`.
+
+MINOR by choice: all three operations already publish a 503 with
+`x-error-code`, and the 500 was never declared, so the published structure
+does not move; a client that treats any 5xx alike is unaffected.""",
+    ),
+    ContractChange(
         version="15.9.0",
         level="MINOR",
         title=(

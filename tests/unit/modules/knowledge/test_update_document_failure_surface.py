@@ -25,20 +25,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.domain import global_authoring
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 
 pytestmark = [pytest.mark.unit]
 
-#: Every indexing failure the update path raises.
-CODES = [
-    "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-    "KNOWLEDGE_EMBEDDER_TIMEOUT",
-    "KNOWLEDGE_NO_CHUNKS",
-    "KNOWLEDGE_INDEXING_FAILED",
-]
+#: Every indexing failure the update path raises: an embed that failed, by
+#: its reason (#2461), and the other codes.
+REASONS = ["model_unavailable", "worker_failed", "queued_too_long", "encode_timeout"]
+CODES = ["KNOWLEDGE_NO_CHUNKS", "KNOWLEDGE_INDEXING_FAILED"]
+
+
+def _failure(cause: str) -> KnowledgeBaseError:
+    if cause in REASONS:
+        return EmbedderUnavailable("boom", reason=cause)
+    return KnowledgeBaseError("boom", error_code=cause)
 
 
 def _user(*, user_id="u1", roles=("user",)) -> DevUser:
@@ -107,16 +110,21 @@ def _put(monkeypatch, error):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("code", CODES)
+@pytest.mark.parametrize("code", [*REASONS, *CODES])
 def test_a_reindex_failure_never_reports_the_edit_as_saved(monkeypatch, code):
     """The pre-#952 response opened with "Document saved, but re-indexing for
-    search failed". Under commit-last that is false for every one of these."""
-    resp = _put(monkeypatch, KnowledgeBaseError("boom", error_code=code))
+    search failed". Under commit-last that is false for every one of these.
+    Only an embed that failed carries its code (#2461)."""
+    error = _failure(code)
+    resp = _put(monkeypatch, error)
 
     assert resp.status_code == 503
     detail = resp.json()["detail"].lower()
     assert "not saved" in detail, f"{code} response does not say the edit was lost"
     assert "document saved" not in detail
+    assert resp.headers.get("x-error-code") == (
+        error.error_code if code in REASONS else None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,12 +132,12 @@ def test_a_reindex_failure_never_reports_the_edit_as_saved(monkeypatch, code):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("code", [*CODES, "KNOWLEDGE_NEW"])
+@pytest.mark.parametrize("code", [*REASONS, *CODES, "KNOWLEDGE_NEW"])
 def test_every_indexing_failure_says_search_is_unchanged(monkeypatch, code):
     """No indexing step deletes a chunk (#2388), so a failure at any of them,
     a code this route has never seen included, leaves what search serves as
     it was."""
-    resp = _put(monkeypatch, KnowledgeBaseError("boom", error_code=code))
+    resp = _put(monkeypatch, _failure(code))
 
     detail = resp.json()["detail"].lower()
     assert "unchanged, and so is what search serves for it" in detail, detail

@@ -64,7 +64,7 @@ import math
 from typing import Any, List, Optional, Sequence
 
 from faultmaven.infrastructure import index_slot, token_count_worker, worker_process
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
@@ -154,8 +154,12 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
 
     The worker runs under ``TOKEN_COUNT_SLOTS`` slots keyed by ``principal``,
     the user who asked. A count waits for a slot for its hang bound at most.
-    None when it cannot count: no slot within the wait, any end but an answer,
-    or an answer that is not a count.
+    None when the worker gave no count: any end but an answer, or an answer
+    that is not a count.
+
+    Raises:
+        EmbedderUnavailable: ``queued_too_long``, no slot freed within the
+            wait (#2461).
     """
     global _count_slots_state
     if not isinstance(principal, str) or not principal:
@@ -173,7 +177,10 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
             await slots.acquire(*slot_key)
     except TimeoutError:
         logger.warning("BGE-M3 token count found no slot free")
-        return None
+        raise EmbedderUnavailable(
+            "Indexing unavailable: no token count slot freed within the wait",
+            reason="queued_too_long",
+        ) from None
     try:
         end = await worker_process.run(
             _TOKEN_COUNT_WORKER,
@@ -214,7 +221,10 @@ async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
     if ticket is not None and ticket.tokens is not None:
         return ticket.tokens
     if ticket is not None:
-        counted = await count_index_tokens(texts, principal=ticket.principal)
+        try:
+            counted = await count_index_tokens(texts, principal=ticket.principal)
+        except EmbedderUnavailable:  # no count slot freed: logged there
+            counted = None
         if counted is not None:
             return counted
         if not _byte_fallback_logged:
@@ -334,12 +344,13 @@ async def embed_texts_or_raise(
         One 1024-dim BGE-M3 vector per input text, in order.
 
     Raises:
-        KnowledgeBaseError: The embedding timed out
-            (``KNOWLEDGE_EMBEDDER_TIMEOUT``), while queued behind other
-            indexing or mid-encode, or the model could not be loaded
-            (``KNOWLEDGE_EMBEDDER_UNAVAILABLE``). Never a short/empty vector
-            list for a non-empty input — a caller that wrote those would index
-            a document against someone else's chunks.
+        EmbedderUnavailable: ``KNOWLEDGE_EMBEDDER_TIMEOUT`` while queued behind
+            other indexing (``queued_too_long``) or mid-encode
+            (``encode_timeout``); ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` when the
+            model could not be loaded (``model_unavailable``) or the encode
+            ended without vectors (``worker_failed``). Never a short/empty
+            vector list for a non-empty input — a caller that wrote those would
+            index a document against someone else's chunks.
 
     A KB encode runs in a worker whose phases end before this bound
     (``index_slot.REAP_MARGIN_SECONDS``): past them it is killed and this
@@ -363,10 +374,10 @@ async def embed_texts_or_raise(
         embeddings = await _encode_on(ticket, texts, timeout, subject, operation, log)
 
     if embeddings is None:
-        log.error(f"BGE-M3 model unavailable for {operation}")
-        raise KnowledgeBaseError(
-            f"{subject} unavailable: the embedding model could not be loaded",
-            error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+        log.error(f"BGE-M3 batch embedding for {operation} ended without vectors")
+        raise EmbedderUnavailable(
+            f"{subject} unavailable: the encode ended without vectors",
+            reason="worker_failed",
         )
 
     return embeddings
@@ -392,19 +403,25 @@ async def _encode_on(
                 f"BGE-M3 batch embedding for {operation} waited {bound:.0f}s "
                 f"for other indexing on this server and never started"
             )
-            raise KnowledgeBaseError(
+            raise EmbedderUnavailable(
                 f"{subject} unavailable: waited {bound:.0f}s for other indexing "
                 f"on this server",
-                error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+                reason="queued_too_long",
             )
         log.error(
             f"BGE-M3 batch embedding timed out after {bound:.0f}s for "
             f"{operation} ({len(texts)} texts)"
         )
-        raise KnowledgeBaseError(
+        raise EmbedderUnavailable(
             f"{subject} unavailable: embedding {len(texts)} chunks timed "
             f"out after {bound:.0f}s",
-            error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+            reason="encode_timeout",
+        )
+    except index_slot.ModelNotLoaded:
+        log.error(f"BGE-M3 model unavailable for {operation}")
+        raise EmbedderUnavailable(
+            f"{subject} unavailable: the embedding model could not be loaded",
+            reason="model_unavailable",
         )
     except asyncio.CancelledError:
         ticket.abandon()  # a request that went away: its queued encode never runs

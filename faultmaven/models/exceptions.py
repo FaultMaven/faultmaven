@@ -128,6 +128,42 @@ class IndexAdmissionRefused(FaultMavenError):
         self.retry_after_seconds = retry_after_seconds
 
 
+#: Each ``EmbedderUnavailable.reason`` and the ``error_code`` it carries.
+EMBEDDER_FAILURE_CODES = {
+    "model_unavailable": "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+    "worker_failed": "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+    "queued_too_long": "KNOWLEDGE_EMBEDDER_TIMEOUT",
+    "encode_timeout": "KNOWLEDGE_EMBEDDER_TIMEOUT",
+}
+
+
+class EmbedderUnavailable(KnowledgeBaseError):
+    """A document's indexing embed failed, so nothing was indexed (#2461).
+
+    ``reason`` names the cause and determines ``error_code`` through
+    ``EMBEDDER_FAILURE_CODES``: ``model_unavailable`` (the model would not
+    load) and ``worker_failed`` (the encode or token-count worker gave no
+    answer) are ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``; ``queued_too_long`` (it
+    waited behind other indexing, or for a count slot, and never started) and
+    ``encode_timeout`` (the encode ran past its bound) are
+    ``KNOWLEDGE_EMBEDDER_TIMEOUT``. An unknown reason is a
+    ``ValueError``.
+
+    Raised by the index side of ``embedding_guard`` and by
+    ``index_slot.IndexAdmission.admit``, never by a query embed. The evidence
+    indexer raises it too, where it never reaches a route. A route answers it
+    503 by the reason's sentence (``api.exception_handlers``). Unlike
+    ``IndexAdmissionRefused`` it is a ``KnowledgeBaseError``, so the arm of
+    ``PUT /knowledge/documents/{id}`` that answers a re-index failure catches it.
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        if reason not in EMBEDDER_FAILURE_CODES:
+            raise ValueError(f"unknown embedder failure reason {reason!r}")
+        super().__init__(message, error_code=EMBEDDER_FAILURE_CODES[reason])
+        self.reason = reason
+
+
 class SessionManagementError(FaultMavenError):
     """Session and case management errors"""
 

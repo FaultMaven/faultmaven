@@ -18,9 +18,11 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from faultmaven.api.exception_handlers import (
+    EMBEDDER_UNAVAILABLE_DETAIL,
     MAX_DETAIL_CHARS,
     authorization_exception_handler,
     conflict_exception_handler,
+    embedder_unavailable_handler,
     get_exception_handlers,
     http_exception_handler,
     not_found_exception_handler,
@@ -40,7 +42,13 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
-from faultmaven.models.exceptions import IndexAdmissionRefused, OAuthProtocolError
+from faultmaven.models.exceptions import (
+    EMBEDDER_FAILURE_CODES,
+    EmbedderUnavailable,
+    IndexAdmissionRefused,
+    KnowledgeBaseError,
+    OAuthProtocolError,
+)
 from faultmaven.modules.auth.exceptions import TeamOperationRefused
 from faultmaven.modules.knowledge.exceptions import (
     GateFailed,
@@ -421,6 +429,7 @@ class TestGetExceptionHandlers:
             ItemTitleScrubUnavailable,
             IngestOutcomeUnknown,
             IndexAdmissionRefused,
+            EmbedderUnavailable,
             GateRefused,
             GateUnavailable,
             GateFailed,
@@ -429,6 +438,48 @@ class TestGetExceptionHandlers:
             LLMException,
             RawModelContentRefused,
             OAuthProtocolError,
+        }
+
+
+class TestEmbedderUnavailable:
+    """#2461: the reason determines the code, and each has the handler's
+    sentence."""
+
+    def test_every_reason_has_a_sentence_and_no_sentence_lacks_a_reason(self):
+        assert set(EMBEDDER_UNAVAILABLE_DETAIL) == set(EMBEDDER_FAILURE_CODES)
+
+    @pytest.mark.parametrize(
+        "reason,code",
+        [
+            ("model_unavailable", "KNOWLEDGE_EMBEDDER_UNAVAILABLE"),
+            ("worker_failed", "KNOWLEDGE_EMBEDDER_UNAVAILABLE"),
+            ("queued_too_long", "KNOWLEDGE_EMBEDDER_TIMEOUT"),
+            ("encode_timeout", "KNOWLEDGE_EMBEDDER_TIMEOUT"),
+        ],
+    )
+    def test_the_reason_determines_the_code(self, reason, code):
+        error = EmbedderUnavailable("m", reason=reason)
+
+        assert (error.error_code, error.reason) == (code, reason)
+        assert isinstance(error, KnowledgeBaseError)
+
+    def test_an_unknown_reason_is_refused(self):
+        with pytest.raises(ValueError):
+            EmbedderUnavailable("m", reason="KNOWLEDGE_EMBEDDER_TIMEOUT")
+
+    async def test_a_reason_outside_the_table_answers_the_worker_failed_503(
+        self, mock_request
+    ):
+        """Set after construction: the handler's 503, never a bare 500."""
+        error = EmbedderUnavailable("m", reason="encode_timeout")
+        error.reason = "unlisted"
+
+        response = await embedder_unavailable_handler(mock_request, error)
+
+        assert response.status_code == 503
+        assert response.headers["x-error-code"] == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+        assert json.loads(response.body) == {
+            "detail": EMBEDDER_UNAVAILABLE_DETAIL["worker_failed"]
         }
 
 

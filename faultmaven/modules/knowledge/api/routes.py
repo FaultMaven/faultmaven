@@ -57,7 +57,12 @@ from faultmaven.infrastructure.concurrency.request_fingerprint import (
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import (
+    EMBEDDER_FAILURE_CODES,
+    EmbedderUnavailable,
+    IndexAdmissionRefused,
+    KnowledgeBaseError,
+)
 from faultmaven.modules.auth.contracts import DevUser, is_team_member
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
@@ -131,7 +136,8 @@ RUNBOOK_SECURITY_HELP = (
 
 #: The answers of a route that indexes a document, when indexing it would not
 #: fit ``INDEX_REQUEST_WINDOW_SECONDS`` (#2055): ``IndexAdmissionRefused``,
-#: raised before anything is written and answered by ``api.exception_handlers``.
+#: raised before anything is written; or when its embed failed (#2461):
+#: ``EmbedderUnavailable``. Each route says what its 503 body carries.
 INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
     413: {
         "description": (
@@ -154,11 +160,17 @@ INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "KNOWLEDGE_INDEXING_BUSY`: within the request window there is no "
             "room for this document because other indexing is queued on this "
             "server, or an encode is stuck past its time bound; retry after "
-            "`Retry-After` seconds."
+            "`Retry-After` seconds. `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or "
+            "`KNOWLEDGE_EMBEDDER_TIMEOUT`: preparing the document for search "
+            "failed or timed out; on upload and draft verify the detail tells "
+            "the user whether to retry or split the document."
         ),
         "headers": {
             "x-error-code": {
-                "description": "KNOWLEDGE_INDEXING_BUSY, when sent.",
+                "description": (
+                    "KNOWLEDGE_INDEXING_BUSY, KNOWLEDGE_EMBEDDER_UNAVAILABLE or "
+                    "KNOWLEDGE_EMBEDDER_TIMEOUT, when sent."
+                ),
                 "schema": {"type": "string"},
             },
             "Retry-After": {
@@ -537,7 +549,10 @@ async def upload_document(
     fit is refused before anything is saved: **413** `x-error-code:
     KNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone cannot fit (split
     it), **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` with `Retry-After`
-    when the indexing queued on this server leaves no room for it.
+    when the indexing queued on this server leaves no room for it. An embed
+    that failed is **503** `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or
+    `KNOWLEDGE_EMBEDDER_TIMEOUT`, its detail a sentence per cause; nothing is
+    saved (#2461).
     """
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
@@ -792,6 +807,10 @@ async def upload_document(
     except IndexAdmissionRefused:
         # Refused before anything was written (#2055): the global handler's
         # 413, or 503 + Retry-After.
+        raise
+    except EmbedderUnavailable:
+        # The embed failed and nothing was kept (#2461): the global
+        # handler's 503 with its code and the cause's sentence.
         raise
     except Exception as e:
         # The class, never the text: a failed row write's text carries its
@@ -1388,7 +1407,10 @@ async def update_document(
     re-indexing would not fit the window is refused with **413**
     ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503** ``KNOWLEDGE_INDEXING_BUSY`` +
     ``Retry-After``, as on upload. Either way nothing is saved, and search
-    serves what it served before (#2055).
+    serves what it served before (#2055). A failed re-index is **503** with
+    one detail for every cause; an embed that failed also carries
+    ``x-error-code`` ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` or
+    ``KNOWLEDGE_EMBEDDER_TIMEOUT`` (#2461).
     """
     logger = logging.getLogger(__name__)
 
@@ -1467,6 +1489,16 @@ async def update_document(
                 f"Your edit was not saved: re-indexing for search failed. "
                 f"{searchable_state} Retry the update once the knowledge base "
                 f"is available."
+            ),
+            headers=(
+                # Matched against the table, never the exception's own value.
+                {
+                    "x-error-code": code
+                    for code in EMBEDDER_FAILURE_CODES.values()
+                    if code == e.error_code
+                }
+                if isinstance(e, EmbedderUnavailable)
+                else None
             ),
         )
     except Exception as e:

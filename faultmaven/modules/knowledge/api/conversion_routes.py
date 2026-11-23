@@ -705,7 +705,10 @@ async def verify_draft(
     With ``INDEX_REQUEST_WINDOW_SECONDS`` set, a draft whose indexing would not
     fit the window is refused before anything is written, and stays a draft:
     **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503**
-    ``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055).
+    ``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055). An embed that failed
+    is **503** ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` or
+    ``KNOWLEDGE_EMBEDDER_TIMEOUT``, its detail a sentence per cause, and the
+    draft stays a draft (#2461).
     """
     result = await service.verify_draft(
         conversion_id=conversion_id,

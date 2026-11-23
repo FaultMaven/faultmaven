@@ -40,7 +40,7 @@ from faultmaven.infrastructure.index_slot import (
     index_estimate_seconds,
 )
 from faultmaven.infrastructure.model_cache import model_cache
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
@@ -168,19 +168,21 @@ async def test_a_hung_embed_raises_instead_of_hanging(
     monkeypatch.setattr(model_cache, "embed_texts_sync", hang.encode)
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
 
-    with tokens_counted_as(0), pytest.raises(KnowledgeBaseError) as excinfo:
+    with tokens_counted_as(0), pytest.raises(EmbedderUnavailable) as excinfo:
         await embed_texts_or_raise(["chunk"], subject="Indexing", operation="test")
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert excinfo.value.reason == "encode_timeout"
 
 
 async def test_an_unavailable_model_still_raises_unavailable_not_timeout(monkeypatch):
     monkeypatch.setattr(model_cache, "embed_texts_sync", lambda _texts: None)
 
-    with pytest.raises(KnowledgeBaseError) as excinfo:
+    with pytest.raises(EmbedderUnavailable) as excinfo:
         await embed_texts_or_raise(["chunk"], subject="Indexing", operation="test")
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert excinfo.value.reason == "model_unavailable"
 
 
 async def test_a_healthy_embed_returns_its_vectors_from_the_evidence_slot(monkeypatch):
@@ -255,12 +257,13 @@ async def test_the_indexing_path_is_bounded_by_default(
     monkeypatch.setattr(model_cache, "embed_texts_sync", hang.encode)
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
 
-    with tokens_counted_as(0), pytest.raises(KnowledgeBaseError) as excinfo:
+    with tokens_counted_as(0), pytest.raises(EmbedderUnavailable) as excinfo:
         await service._index_document_in_vector_store(
             _document(), enterprise_id=STANDALONE_ENTERPRISE_ID, generation="1f" * 16
         )
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert excinfo.value.reason == "encode_timeout"
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
 
 

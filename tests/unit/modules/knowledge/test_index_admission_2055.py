@@ -6,7 +6,9 @@ Upload, PUT and verify index inside the request. With
 refused 413, one the queue cannot fit 503 + ``Retry-After``, both before the
 row; verify-batch returns what the rest of its window cannot fit as
 ``deferred``. PUT content is held to the draft bound, and bulk-update to
-metadata. The boot repair encodes on the same slot.
+metadata. The boot repair encodes on the same slot. An embed that failed is
+503 with its code and its cause's sentence on upload and verify, and adds the
+code to PUT's 503 (#2461).
 
 The REAL services over in-memory SQLite and the real indexer and slot; the
 encode (``index_slot.encode_in_worker``, the KB slot's worker, #2851), the
@@ -50,7 +52,7 @@ from faultmaven.infrastructure.persistence.models import (
     KnowledgeItemModel,
     UploadedFileModel,
 )
-from faultmaven.models.exceptions import IndexAdmissionRefused
+from faultmaven.models.exceptions import EmbedderUnavailable, IndexAdmissionRefused
 from faultmaven.modules.knowledge.api import routes
 from faultmaven.modules.knowledge.api.conversion_routes import (
     router as conversion_router,
@@ -715,3 +717,204 @@ async def test_the_boot_repair_encodes_on_the_slot_after_an_upload(
 
     assert [thread for _, thread in world.encodes.calls] == ["kb-index_0"] * 2
     assert world.encodes.most_active == 1
+
+
+# =============================================================================
+# An embed that failed (#2461)
+# =============================================================================
+
+#: The real KB encode and token count, before ``world`` replaces them.
+_REAL_ENCODE_IN_WORKER = index_slot.encode_in_worker
+_REAL_COUNT = embedding_guard.count_index_tokens
+
+#: Each cause and its code; a ``_count`` cause is the token count's.
+CAUSES = {
+    "worker_failed_count": "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+    "queued_too_long_count": "KNOWLEDGE_EMBEDDER_TIMEOUT",
+    "model_unavailable": "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+    "worker_failed": "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+    "encode_timeout": "KNOWLEDGE_EMBEDDER_TIMEOUT",
+    "queued_too_long": "KNOWLEDGE_EMBEDDER_TIMEOUT",
+}
+
+
+@pytest.fixture
+async def embed_fails(monkeypatch, world, request):
+    """The KB encode ends the way ``request.param`` names, through its real
+    raise site: the token count with a window set (no answer, or the real
+    count with every slot held), the real worker step over a
+    ``worker_process.run`` that ends as named, or a held encode ahead with a
+    bound shorter than the wait."""
+    from faultmaven.infrastructure import encode_worker, worker_process
+
+    cause = request.param
+    held = None
+    if cause.endswith("_count"):
+        monkeypatch.setattr(
+            get_settings().knowledge, "index_request_window_seconds", 600
+        )
+        world.tokens.return_value = None
+        if cause == "queued_too_long_count":
+            held_slots = SimpleNamespace(acquire=lambda *_: asyncio.Event().wait())
+            monkeypatch.setattr(embedding_guard, "count_index_tokens", _REAL_COUNT)
+            monkeypatch.setattr(embedding_guard, "TOKEN_COUNT_HANG_SECONDS", 0.05)
+            monkeypatch.setattr(
+                embedding_guard,
+                "_count_slots_state",
+                (asyncio.get_running_loop(), held_slots),
+            )
+    elif cause == "queued_too_long":
+        world.tokens.return_value = 0
+        world.encodes.held = 1
+        held = index_admission.admit_forced(["other"], 0, principal="u9")
+        future, _ = held.run(["other"], guard_seconds=0.0)
+        await asyncio.to_thread(world.encodes.entered.wait, 30)
+        monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
+    else:
+        ends = {
+            "model_unavailable": dict(code=1, failure=encode_worker.MODEL_NOT_LOADED),
+            "worker_failed": dict(code=1, failure="an encode that failed"),
+            "encode_timeout": dict(timed_out=True),
+        }
+
+        real_run = worker_process.run
+
+        async def run(module, *args, **kwargs):
+            if module != index_slot._ENCODE_WORKER:
+                return await real_run(module, *args, **kwargs)  # the gate's
+            return worker_process.WorkerEnd(phase="work", **ends[cause])
+
+        monkeypatch.setattr(index_slot, "encode_in_worker", _REAL_ENCODE_IN_WORKER)
+        monkeypatch.setattr(worker_process, "run", run)
+    try:
+        yield cause
+    finally:
+        world.encodes.release.set()
+        if held is not None:
+            await asyncio.wrap_future(future)
+
+
+#: The owner's sentence for each cause (#2461), verbatim.
+SENTENCES = {
+    "model_unavailable": (
+        "Indexing unavailable: the search model is not ready on this server, so "
+        "this document was not added. Retry in a few minutes."
+    ),
+    "worker_failed": (
+        "Indexing failed: the server could not prepare this document for search, "
+        "so it was not added. If it fails again, the document may be too large; "
+        "try splitting it."
+    ),
+    "queued_too_long": (
+        "Indexing busy: this document waited too long behind other indexing on "
+        "this server and was not added. Retry in a few minutes."
+    ),
+    "encode_timeout": (
+        "Indexing timed out: preparing this document for search took too long, "
+        "so it was not added. Retry later; a very large document may need to be "
+        "split."
+    ),
+}
+
+
+def _assert_embed_failure(response, cause: str) -> None:
+    """The cause's code and sentence, and nothing else in the body."""
+    assert response.status_code == 503, response.text
+    assert response.headers["x-error-code"] == CAUSES[cause]
+    assert "Retry-After" not in response.headers
+    assert response.json() == {"detail": SENTENCES[cause.removesuffix("_count")]}
+
+
+def _async_client(app) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t"
+    )
+
+
+class TestEmbedFailure:
+    """On ``main`` upload and single verify answered these 500."""
+
+    @pytest.mark.parametrize("embed_fails", list(CAUSES), indirect=True)
+    async def test_an_upload_answers_503_with_the_causes_sentence(
+        self, session_factory, embed_fails
+    ):
+        app = _app(knowledge=_knowledge(session_factory))
+        async with _async_client(app) as client:
+            response = await client.post(
+                "/api/v1/knowledge/documents",
+                data={"title": "T", "document_type": "runbook", "scope": "personal"},
+                files={"file": ("rb.md", valid_runbook().encode(), "text/markdown")},
+            )
+
+        _assert_embed_failure(response, embed_fails)
+        assert (await _counts(session_factory))["knowledge_items"] == 0
+
+    @pytest.mark.parametrize("embed_fails", list(CAUSES), indirect=True)
+    async def test_a_single_verify_answers_503_and_the_draft_stays(
+        self, session_factory, embed_fails
+    ):
+        knowledge = _knowledge(session_factory)
+        conversion = _conversion(session_factory, knowledge)
+        refs = await _drafts(session_factory, 1)
+        [(conversion_id, draft_id)] = refs
+
+        async with _async_client(_app(conversion=conversion)) as client:
+            response = await client.post(
+                f"/api/v1/knowledge/conversions/{conversion_id}/drafts/"
+                f"{draft_id}/verify"
+            )
+
+        _assert_embed_failure(response, embed_fails)
+        assert await _statuses(session_factory, refs) == ["draft"]
+        assert (await _counts(session_factory))["knowledge_items"] == 0
+
+    @pytest.mark.parametrize("embed_fails", ["worker_failed"], indirect=True)
+    async def test_put_keeps_its_503_and_detail_and_adds_the_code(
+        self, session_factory, world, monkeypatch, embed_fails
+    ):
+        service = _knowledge(session_factory)
+        with monkeypatch.context() as published:
+            published.setattr(index_slot, "encode_in_worker", world.encodes)
+            await _published(service)
+        monkeypatch.setattr(routes, "_authorize_document_write", AsyncMock())
+
+        async with _async_client(_app(knowledge=service)) as client:
+            response = await client.put(
+                f"/api/v1/knowledge/documents/{ITEM}",
+                json={"content": valid_runbook() + "\nAnd uncordon.\n"},
+            )
+
+        assert response.status_code == 503, response.text
+        assert response.headers["x-error-code"] == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+        assert response.json()["detail"].startswith("Your edit was not saved")
+
+    @pytest.mark.parametrize("embed_fails", ["worker_failed"], indirect=True)
+    async def test_verify_batch_records_the_class(self, session_factory, embed_fails):
+        conversion = _conversion(session_factory, _knowledge(session_factory))
+        refs = await _drafts(session_factory, 1)
+
+        result = await conversion.verify_batch(refs, user_id="u1")
+
+        [item] = result["results"]
+        assert (item["status"], item["error"]) == (
+            "failed",
+            "Verification failed (EmbedderUnavailable)",
+        )
+
+
+@pytest.mark.parametrize("window_seconds", [None, 0])
+async def test_a_count_with_no_slot_refuses_nothing_without_a_window(
+    world, monkeypatch, window_seconds
+):
+    """The boot repair (forced), or a request whose window is 0: a count that
+    found no slot refuses nothing, as one that gave no answer (#2461)."""
+    monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 600)
+    world.tokens.side_effect = EmbedderUnavailable("m", reason="queued_too_long")
+
+    async with await KnowledgeService._index_ticket(
+        ["c"],
+        principal="u1",
+        window_seconds=window_seconds,
+        forced=window_seconds is None,
+    ) as ticket:
+        assert ticket.tokens is None

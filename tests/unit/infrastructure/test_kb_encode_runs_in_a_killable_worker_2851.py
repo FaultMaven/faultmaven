@@ -46,7 +46,7 @@ from faultmaven.infrastructure.model_cache import (
     ENCODE_BATCH_SIZE,
     model_cache,
 )
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from tests.unit.infrastructure import model_worker_stubs
 
 pytestmark = [pytest.mark.unit]
@@ -160,6 +160,7 @@ async def test_an_encode_past_its_phases_is_killed_and_the_next_is_admitted(
     after = await _encode(["b"])
 
     assert timed_out.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert timed_out.value.reason == "encode_timeout"
     assert spawned[0].returncode == -signal.SIGKILL
     assert all(_dead(pid) for pid in _entered_pids(caplog))
     assert after == [[0.25] * 1024]
@@ -281,9 +282,28 @@ async def test_every_other_end_is_unavailable_and_writes_nothing(
         await _encode(["a", "b"])
 
     assert ended.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert ended.value.reason == "worker_failed"
     assert len(spawned) == 1
     if code is not None:
         assert spawned[0].returncode == code
+
+
+@pytest.mark.parametrize("stub", ["no_model", "model_panics"])
+async def test_a_worker_whose_model_would_not_load_says_so(
+    encode_stub, spawned, settled, stub
+):
+    """#2461: the real encode job, its model cache unable to load the model
+    (None, or a load that panics, a ``BaseException``): the worker's failure
+    text names it, and the guard answers ``model_unavailable``, not the
+    ``worker_failed`` of any other failure."""
+    encode_stub(stub)
+
+    with pytest.raises(KnowledgeBaseError) as ended:
+        await _encode(["a"])
+
+    assert ended.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert ended.value.reason == "model_unavailable"
+    assert [p.returncode for p in spawned] == [1]
 
 
 async def test_a_worker_that_cannot_start_is_unavailable(
@@ -356,12 +376,13 @@ async def test_a_caller_gone_before_the_task_exists_spawns_no_worker(spawned):
 # ---------------------------------------------------------------------------
 
 
-async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_unavailable(
+async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_queued_too_long(
     monkeypatch,
 ):
     """Two counts run; a third, of another user, waits for a slot. With none
-    free within its hang bound it is unavailable (None), never busy (#2851
-    ruling Q2 (a)); freed, a count runs."""
+    free within its hang bound it is ``queued_too_long`` (#2461), never
+    ``IndexAdmissionRefused`` busy (#2851 ruling Q2 (a)); freed, a count
+    runs."""
     release = asyncio.Event()
     running: list = []
 
@@ -377,10 +398,11 @@ async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_unavailable(
     await _until(lambda: len(running) == TOKEN_COUNT_SLOTS)
     monkeypatch.setattr(embedding_guard, "TOKEN_COUNT_HANG_SECONDS", 0.05)
 
-    third = await count_index_tokens(["c"], principal="u3")
+    with pytest.raises(EmbedderUnavailable) as third:
+        await count_index_tokens(["c"], principal="u3")
     release.set()
 
-    assert third is None
+    assert third.value.reason == "queued_too_long"
     assert len(running) == TOKEN_COUNT_SLOTS
     assert (await first, await second) == (3, 3)
     assert await count_index_tokens(["d"], principal="u3") == 3
@@ -399,15 +421,15 @@ async def test_a_count_runs_for_the_user_who_asked():
 
 
 async def test_an_uncounted_kb_document_is_unavailable_naming_no_cause_it_cannot_know():
-    """A count that found no slot, or gave no answer: the sentence says the
-    server could not prepare the document now, never that a tokenizer would
-    not load (owner's ruling on the #2919 review). On ``7c5318825`` it said the
-    tokenizer could not be loaded."""
+    """A count that gave no answer: the message says the tokens were not
+    counted, never that a tokenizer would not load (owner's ruling on the
+    #2919 review). On ``7c5318825`` it said the tokenizer could not be
+    loaded."""
     with pytest.raises(KnowledgeBaseError) as refused:
         IndexAdmission().admit(["c"], None, principal=USER, window_seconds=600)
 
     assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
-    assert "could not prepare this document" in refused.value.message
+    assert "tokens were not counted" in refused.value.message
     assert "tokenizer" not in refused.value.message
 
 
