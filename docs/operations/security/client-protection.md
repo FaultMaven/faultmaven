@@ -189,10 +189,11 @@ identical request arrived within the TTL and is still running, was answered
 2xx, or left its claim standing (a cancellation, an exception after the
 response started, a failed release). A key Redis still holds is refused
 whatever any app clock reads, and its `Retry-After` is the key's remaining life
-in Redis, rounded up, at least 1 (#2514): an upper bound, since the running
-request may answer sooner. The stored value is the claiming request's timestamp
-plus a random token; the timestamp feeds only the refusal's message. No
-response body is cached.
+in Redis, rounded up, at least 1 (#2514). A 2xx keeps the key for that whole
+life, so the wait is exact unless the first request ends without a 2xx and
+releases its claim sooner (#2508). The stored value is the claiming request's
+timestamp plus a random token; the timestamp feeds only the refusal's message.
+No response body is cached.
 
 #### 3. Agent Execution Timeouts
 **Purpose**: Prevent runaway agent processes from consuming resources indefinitely.

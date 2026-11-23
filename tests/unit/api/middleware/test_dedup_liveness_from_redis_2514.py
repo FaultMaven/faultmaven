@@ -5,14 +5,16 @@ app's clock, and a 0 let the repeat run unclaimed while Redis held the key: in
 the TTL's last second (``int`` truncates) and on a replica a TTL ahead. Now a
 found key is refused and ``Retry-After`` is its ``PTTL``, rounded up, at least 1.
 The stamp and the key's TTL are set directly in a FakeRedis behind the real
-middleware, so no wall clock decides an outcome. Pinned elsewhere: a released
-key's repeat runs and claims, and a re-sent own claim is no duplicate
-(``test_dedup_claim_released_unless_success_2508.py``); the 409's labels
-(``test_duplicate_gets_a_labelled_409``).
+middleware, on a frozen store clock, so no runner delay moves an outcome.
+Pinned elsewhere: a released key's repeat runs and claims, and a re-sent own
+claim is no duplicate (``test_dedup_claim_released_unless_success_2508.py``);
+the 409's labels (``test_duplicate_gets_a_labelled_409``).
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import fakeredis._basefakesocket
 import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
@@ -28,9 +30,15 @@ PATH = "/api/v1/cases/case-2514"
 
 
 class _Dedup:
-    """A ``DELETE`` answered 204 behind the real middleware, over a FakeRedis."""
+    """A ``DELETE`` answered 204 behind the real middleware, over a FakeRedis
+    whose clock stands at ``now`` (seconds) until a test moves it."""
 
-    def __init__(self):
+    def __init__(self, monkeypatch):
+        # FakeRedis sets every database's clock from ``time.time()`` in this
+        # module at each command, and reads expiry and PTTL from it.
+        self.now = 1_000_000.0
+        clock = SimpleNamespace(time=lambda: self.now)
+        monkeypatch.setattr(fakeredis._basefakesocket, "time", clock)
         self.entries = 0
         self.redis = fakeredis_aio.FakeRedis(decode_responses=True)
         settings = get_development_protection_settings()
@@ -74,9 +82,9 @@ def _assert_duplicate(response: httpx.Response, retry_after: int) -> None:
     assert response.json()["retry_after"] == retry_after
 
 
-async def test_a_live_key_stamped_a_whole_ttl_ago_is_refused():
+async def test_a_live_key_stamped_a_whole_ttl_ago_is_refused(monkeypatch):
     """Clock skew: a replica a TTL ahead of the claimer reads the key as expired."""
-    dedup = _Dedup()
+    dedup = _Dedup(monkeypatch)
     async with dedup.client:
         key = await dedup.claimed_key()
         await dedup.restamp(key, seconds_ago=dedup.ttl + 5, ttl_ms=20_000)
@@ -85,9 +93,9 @@ async def test_a_live_key_stamped_a_whole_ttl_ago_is_refused():
     assert dedup.entries == 1
 
 
-async def test_a_key_in_its_last_second_is_refused_with_retry_after_1():
+async def test_a_key_in_its_last_second_is_refused_with_retry_after_1(monkeypatch):
     """``int(ttl - elapsed)`` read 0 here and let the repeat run unclaimed."""
-    dedup = _Dedup()
+    dedup = _Dedup(monkeypatch)
     async with dedup.client:
         key = await dedup.claimed_key()
         await dedup.restamp(key, seconds_ago=dedup.ttl - 0.5, ttl_ms=500)
@@ -96,9 +104,9 @@ async def test_a_key_in_its_last_second_is_refused_with_retry_after_1():
     assert dedup.entries == 1
 
 
-async def test_retry_after_is_the_keys_remaining_life_rounded_up():
+async def test_retry_after_is_the_keys_remaining_life_rounded_up(monkeypatch):
     """12.3 s left is ``Retry-After: 13``; the stamp feeds only the message."""
-    dedup = _Dedup()
+    dedup = _Dedup(monkeypatch)
     async with dedup.client:
         key = await dedup.claimed_key()
         stamp = await dedup.restamp(key, seconds_ago=5, ttl_ms=12_300)
@@ -111,9 +119,9 @@ async def test_retry_after_is_the_keys_remaining_life_rounded_up():
     assert dedup.entries == 1
 
 
-async def test_a_key_expired_in_redis_lets_the_repeat_run_and_claim():
+async def test_a_key_expired_in_redis_lets_the_repeat_run_and_claim(monkeypatch):
     """Pinned: a key Redis no longer holds is not a duplicate."""
-    dedup = _Dedup()
+    dedup = _Dedup(monkeypatch)
     async with dedup.client:
         # An expiry in the past expires the key at once, on Redis's own clock.
         await dedup.redis.pexpireat(await dedup.claimed_key(), 1)
@@ -125,3 +133,14 @@ async def test_a_key_expired_in_redis_lets_the_repeat_run_and_claim():
         assert refused.status_code == 409
         assert refused.headers["x-error-code"] == "DUPLICATE_REQUEST"
     assert dedup.entries == 2
+
+
+async def test_a_key_at_its_expiry_instant_answers_retry_after_1(monkeypatch):
+    """``PTTL`` 0 on a key Redis still holds is ``Retry-After: 1``, never 0."""
+    dedup = _Dedup(monkeypatch)
+    async with dedup.client:
+        await dedup.restamp(await dedup.claimed_key(), seconds_ago=0, ttl_ms=1_000)
+        dedup.now += 1.0  # its expiry instant: still held, 0 ms left
+
+        _assert_duplicate(await dedup.delete(), retry_after=1)
+    assert dedup.entries == 1
