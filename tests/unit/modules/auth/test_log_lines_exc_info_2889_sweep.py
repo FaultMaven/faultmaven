@@ -10,6 +10,9 @@ exception's message, captures every record at DEBUG, and renders each through
 the real chain's formatter (``build_log_formatter``). The marker is on no
 rendered line, the arm's line names the class and carries its frames, and the
 status the caller is answered is the one it was before the frames were added.
+The user stores' delete arms (#2886) are driven through the store: the route
+answers their ``False`` with a 500, pinned by
+``test_delete_user_refuses_case_creator_1923.py``.
 """
 
 from datetime import datetime, timezone
@@ -25,6 +28,8 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
+from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
+from faultmaven.infrastructure.auth.user_store import RedisUserStore
 from faultmaven.modules.auth.api.oauth import get_oauth_service
 from faultmaven.modules.auth.api.oauth import router as oauth_router
 from faultmaven.modules.auth.api.rate_limiting import (
@@ -246,3 +251,26 @@ async def test_a_failed_heartbeat_carries_its_frames(
     assert answer.status_code == status
     assert answer.json()["detail"] == detail
     _framed(lines(), event, cls)
+
+
+# ── infrastructure/auth/{database_user_store,user_store}.py (#2886) ─────────
+
+
+async def test_a_failed_database_delete_carries_its_frames(lines):
+    """``DatabaseUserStore.delete_user`` whose repository delete raises: still
+    ``False``, and the arm's line with its frames."""
+    repository = MagicMock()
+    repository.delete = AsyncMock(side_effect=RuntimeError(f"db down {MARKER}"))
+
+    assert await DatabaseUserStore(repository).delete_user("u1") is False
+    _framed(lines(), "Failed to delete user u1", "RuntimeError")
+
+
+async def test_a_failed_redis_delete_carries_its_frames(lines):
+    """``RedisUserStore.delete_user`` whose user read cannot reach Redis: still
+    ``False``, and the arm's line with the lookup failure's frames."""
+    redis = MagicMock()
+    redis.get = AsyncMock(side_effect=ConnectionError(f"redis {MARKER}"))
+
+    assert await RedisUserStore(redis).delete_user("u1") is False
+    _framed(lines(), "Failed to delete user u1", "UserLookupFailed")
