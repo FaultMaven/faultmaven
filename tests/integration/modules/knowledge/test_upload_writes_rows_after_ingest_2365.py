@@ -20,6 +20,7 @@ runs the upload on PostgreSQL.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import _current_enterprise_id
 from faultmaven.infrastructure import embedding_guard
+from faultmaven.infrastructure.logging.config import build_log_formatter
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -526,8 +528,13 @@ def test_the_upload_route_logs_the_class_not_the_text(caplog):
 
     assert response.status_code == 500, response.text
     failing.assert_awaited_once()
-    assert "Document upload failed: RuntimeError" in caplog.text
-    assert "BODY-2365" not in caplog.text
+    # Every record as the chain writes it (principles §7, rules 4 and 5): the
+    # message, its fields and the frames of ``exc_info``, never the text.
+    # ``caplog.text`` is pytest's own formatter, which prints the message.
+    chain = build_log_formatter("json", False, io.StringIO())
+    written = "\n".join(chain.format(record) for record in caplog.records)
+    assert "Document upload failed: RuntimeError" in written
+    assert "BODY-2365" not in written
 
 
 @pytest.mark.postgres

@@ -90,6 +90,7 @@ async def record_operator_access(
                 "action": action.value,
                 "error": exception_log_name(exc),
             },
+            exc_info=exc,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

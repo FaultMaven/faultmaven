@@ -1042,6 +1042,7 @@ class StructuredOutputGenerator:
                     provider_name,
                     model_info,
                     exception_log_name(e),
+                    exc_info=e,
                 )
                 raise ToolCallingUnsupportedError(
                     message=(
@@ -1086,7 +1087,9 @@ class StructuredOutputGenerator:
                 except Exception as exc:
                     failure = f"{type(exc).__name__}: {exc}"
                     logger.warning(
-                        "Tool loop: the re-issue failed: %s", exception_log_name(exc)
+                        "Tool loop: the re-issue failed: %s",
+                        exception_log_name(exc),
+                        exc_info=exc,
                     )
                     raise _refused(f"re-issue failed: {failure}") from None
                 if not is_final and not ceiling_reached and _crosses_turn_ceiling():
@@ -2395,6 +2398,7 @@ class StructuredOutputGenerator:
                         logger.warning(
                             "Structured output: re-issue failed: %s",
                             exception_log_name(exc),
+                            exc_info=exc,
                         )
                         if isinstance(exc, ProviderRefusalError):
                             raise

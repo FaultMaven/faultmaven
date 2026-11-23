@@ -672,6 +672,7 @@ async def item_title_scrub_unavailable_handler(
         request.method,
         request.url.path,
         type(cause).__name__ if cause is not None else type(exc).__name__,
+        exc_info=exc,
     )
     return await http_exception_handler(
         request,
@@ -704,6 +705,7 @@ async def ingest_outcome_unknown_handler(
         request.url.path,
         exc.item_id,
         type(cause).__name__ if cause is not None else type(exc).__name__,
+        exc_info=exc,
     )
     return await http_exception_handler(
         request,

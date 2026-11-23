@@ -817,28 +817,32 @@ async def session_heartbeat(
             # Handle specific runtime errors from session service
             if "Session store unavailable" in str(e):
                 logger.error(
-                    f"Session store connection issue during heartbeat for {session_id}: {exception_log_name(e)}"
+                    f"Session store connection issue during heartbeat for {session_id}: {exception_log_name(e)}",
+                    exc_info=e,
                 )
                 raise HTTPException(
                     status_code=503, detail="Session store temporarily unavailable"
                 )
             elif "Activity update operation failed" in str(e):
                 logger.error(
-                    f"Session activity update failed for {session_id}: {exception_log_name(e)}"
+                    f"Session activity update failed for {session_id}: {exception_log_name(e)}",
+                    exc_info=e,
                 )
                 raise HTTPException(
                     status_code=500, detail="Failed to update session activity"
                 )
             else:
                 logger.error(
-                    f"Unexpected runtime error during heartbeat for {session_id}: {exception_log_name(e)}"
+                    f"Unexpected runtime error during heartbeat for {session_id}: {exception_log_name(e)}",
+                    exc_info=e,
                 )
                 raise HTTPException(status_code=500, detail="Internal server error")
         except SessionWriteConflict:
             raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
         except Exception as e:
             logger.error(
-                f"Unexpected error during heartbeat for {session_id}: {exception_log_name(e)}"
+                f"Unexpected error during heartbeat for {session_id}: {exception_log_name(e)}",
+                exc_info=e,
             )
             raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -877,7 +881,8 @@ async def session_heartbeat(
     except Exception as e:
         # Catch-all for unexpected errors
         logger.error(
-            f"Unexpected error in heartbeat for session {session_id}: {exception_log_name(e)}"
+            f"Unexpected error in heartbeat for session {session_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         raise HTTPException(
             status_code=500, detail="Internal server error during heartbeat operation"
