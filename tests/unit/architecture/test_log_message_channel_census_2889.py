@@ -35,6 +35,13 @@ landed a day later (``fa8fc53c0``, #2919), so the census is a guard.
   ``if``-expression counts when either branch does, and its test is not read.
   The interpreter prints a non-integer code (§7's outputs table, the
   ``SystemExit`` row). A literal is our text, and is not a site.
+* **A construction of an audited refusal** (``AUDITED_REFUSALS`` in
+  ``cli/_refusal.py``, matched by the class's bare name, or by a keyword whose
+  value in the same file is one, ``misscoped=MembershipRemovalMisscoped`` then
+  ``misscoped(...)``), and ``super().__init__(...)`` in such a class's body,
+  whose arguments read an exception name or subprocess output other than
+  through a safe form: ``refusal_text`` prints that class's message whole, so
+  the message may hold no exception's text.
 
 **Exception names** are the names bound by ``except ... as N``, a function's
 parameters annotated ``...Error``/``...Exception``/``...ExceptionGroup`` or
@@ -50,14 +57,22 @@ or such a ``gather``, and texts over any other read of those names
 (``e.args``, ``str(e).splitlines()``, ``str(results[0]).splitlines()``).
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
-``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)``, which returns a
-``bool``, ``describe_request_body(exc.body)``, a body's type and size, ...); an
+``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)`` and
+``counts_against_breaker(e)``, which return a ``bool``,
+``describe_request_body(exc.body)``, a body's type and size,
+``_provider_codes(e)``, a first-party status and a pattern-checked code, ...);
+``refusal_text(e)`` (:data:`CLI_SAFE_CALLS`), which returns an audited
+refusal's sentence, else the class name, in a file under ``cli/`` anywhere but
+a log call's arguments, and in an audited refusal's construction in any file;
+an
 attribute in :data:`SAFE_ATTRS` (``e.status_code``,
 ``e.returncode``, ``e.item_id``, the knowledge item id our code sets on
 ``IngestOutcomeUnknown``, ``e.limit_type``, ``e.current_count``, ``e.limit`` and
 ``e.retry_after``, the limit and counts our code sets on ``RateLimitError``,
 ``e.lookup``, the fixed label (``user_id``, ``username`` or ``email``) our code
-sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe, ...), or read
+sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe, ...), and in
+the files :data:`FILE_SAFE_ATTRS` names, the ids our code set on that file's
+refusals (``cli/provision_sso_org.py``: ``RemapRefused.mapped_to``, ...); or read
 by name
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
@@ -72,7 +87,8 @@ schema locations our code built, not text: :data:`NOT_EXCEPTION_RESULTS`.
 
 ``exit_refusing(str(exc))`` (``cli/_database_gate.py``) is not a site: §7 names
 its shape, a refusal on stderr whose text our code chose, as the compliant one,
-and the census counts no call to it (:data:`NOT_SITES`).
+and the census counts no call to it (:data:`NOT_SITES`). Its callers pass a
+first-party refusal (``config/tls_root_set.py``'s ``RootSetRefusal``).
 
 **Blind spots**, stated as what the scanner reads, so nobody mistakes this for
 more. A log call's or a print's arguments are read for the exception names the
@@ -81,19 +97,18 @@ output; text that reaches them through an untracked name is not counted. For an
 exit (``SystemExit(...)``, ``sys.exit(...)``), only the first positional
 argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
-argument in any other form, or an exit spelled any other way). The allowlist
-counts sites per file, so switching one site and adding another in the same
-file leaves the count, and the guard, unchanged. A name filled in place, by a
+argument in any other form, or an exit spelled any other way). A refusal
+construction is matched by name, so a class passed positionally, or a keyword
+alias passed from another file, is not followed; ``refusal_text`` under
+``cli/`` makes the name it is assigned to untracked, so that name logged later
+is not counted. A name filled in place, by a
 method call (``logged.append(str(e))``) or a subscript store
 (``d[k] = str(e)``), is not tracked, so a projection built that way and then
 logged is not counted. A method that forwards its keywords to a logger
 (``UserService._refuse_reset``) is not a log call, since :data:`LOG_HELPERS`
 names module functions only; that site is pinned by the S3e render test.
 
-:data:`ALLOWED` lists, file by file, the sites the later sub-stages of S3 switch.
-A new site, a file not listed, or a count that moved either way fails: a
-switched site shrinks its row, and the last sub-stage deletes the table. No
-file under a prefix in :data:`SWITCHED_PREFIXES` is listed.
+No site is allowed anywhere: S3 switched every one (#2889).
 """
 
 from __future__ import annotations
@@ -101,13 +116,13 @@ from __future__ import annotations
 import ast
 import re
 import textwrap
-from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import FrozenSet, List, Tuple
 
 import pytest
 
+from faultmaven.cli._refusal import AUDITED_REFUSALS
 from tests.source_tree import parse_file
 
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
@@ -141,8 +156,14 @@ SAFE_CALLS = frozenset(
         "classify_token_limit_reason",
         "_arrived_cancelled",
         "describe_request_body",
+        "_provider_codes",
+        "counts_against_breaker",
     }
 )
+
+#: Safe in a file under ``cli/``, but not as a log call's argument: an audited
+#: refusal's sentence, printed whole, else the class name (``cli/_refusal.py``).
+CLI_SAFE_CALLS = frozenset({"refusal_text"})
 
 #: Attributes of an exception or a finished process that hold a number, a flag,
 #: a fixed code or an identifier our code set, never text a third party chose.
@@ -167,6 +188,20 @@ SAFE_ATTRS = frozenset(
     }
 )
 
+#: Per file: the ids our code sets on that file's refusals, safe there only.
+FILE_SAFE_ATTRS = {
+    # ``RemapRefused``, ``OrgAlreadyClaimed`` (``tenant_bootstrap.py``),
+    # ``DomainMismatch``, ``SlugHeldByAnotherEnterprise``: enterprise and IdP
+    # org ids, slugs and domains from the command's rows and arguments.
+    "cli/provision_sso_org.py": frozenset(
+        {"provider_org_id", "mapped_to", "requested", "enterprise_id"}
+        | {"claimed_by", "requested_by", "current", "slug", "domain"}
+    ),
+}
+
+#: The bare class names :data:`AUDITED_REFUSALS` holds.
+AUDITED_NAMES = frozenset(name.rsplit(".", 1)[1] for name in AUDITED_REFUSALS)
+
 #: Callees whose text §7 names as compliant.
 NOT_SITES = frozenset({"exit_refusing"})
 
@@ -187,11 +222,14 @@ _TRACEBACK_TEXT = frozenset(
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
 
+def _bare_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
 def _callee(call: ast.Call) -> str:
-    func = call.func
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return func.id if isinstance(func, ast.Name) else ""
+    return _bare_name(call.func)
 
 
 def _receiver_name(func: ast.Attribute) -> str:
@@ -243,7 +281,7 @@ def _is_print(call: ast.Call) -> bool:
     return isinstance(func, ast.Attribute) and func.attr == "error" and _is_parser(func)
 
 
-def _is_safe_getattr(call: ast.Call) -> bool:
+def _is_safe_getattr(call: ast.Call, safe_attrs: FrozenSet[str]) -> bool:
     """``getattr(e, "status_code", None)``: a safe attribute, read by name."""
     args = call.args
     return (
@@ -252,7 +290,7 @@ def _is_safe_getattr(call: ast.Call) -> bool:
         and len(args) >= 2
         and isinstance(args[0], ast.Name)
         and isinstance(args[1], ast.Constant)
-        and args[1].value in SAFE_ATTRS
+        and args[1].value in safe_attrs
     )
 
 
@@ -274,25 +312,27 @@ class _Reads(ast.NodeVisitor):
     """Whether an expression reads a name in ``names``, or subprocess output,
     other than through a safe form."""
 
-    def __init__(self, names: FrozenSet[str]):
+    def __init__(self, names: FrozenSet[str], safe_calls, safe_attrs):
         self.names = names
+        self.safe_calls = safe_calls
+        self.safe_attrs = safe_attrs
         self.name_hit = False
         self.output_hit = False
 
     def visit_Call(self, node: ast.Call) -> None:
         if _is_task_exception(node):
             self.name_hit = True  # ``t.exception()`` read inline
-        elif _is_safe_getattr(node):
+        elif _is_safe_getattr(node, self.safe_attrs):
             for default in node.args[2:]:
                 self.visit(default)
-        elif _callee(node) not in SAFE_CALLS:
+        elif _callee(node) not in self.safe_calls:
             self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         """``exc is not None``: a test, not text on the line."""
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if node.attr in SAFE_ATTRS and isinstance(node.value, ast.Name):
+        if node.attr in self.safe_attrs and isinstance(node.value, ast.Name):
             return
         if node.attr in ("stderr", "stdout") and not (
             isinstance(node.value, ast.Name) and node.value.id == "sys"
@@ -305,8 +345,14 @@ class _Reads(ast.NodeVisitor):
             self.name_hit = True
 
 
-def _reads(node: ast.AST, names: FrozenSet[str]) -> _Reads:
-    reads = _Reads(names)
+def _reads(node: ast.AST, names: "_Names", *, logging: bool = False) -> _Reads:
+    """What ``node`` reads of ``names``, with the safe forms of ``names.path``:
+    :data:`CLI_SAFE_CALLS` under ``cli/`` unless ``logging``, and that file's
+    :data:`FILE_SAFE_ATTRS`."""
+    under_cli = names.path.startswith("cli/") and not logging
+    safe_calls = SAFE_CALLS | (CLI_SAFE_CALLS if under_cli else frozenset())
+    safe_attrs = SAFE_ATTRS | FILE_SAFE_ATTRS.get(names.path, frozenset())
+    reads = _Reads(names.all, safe_calls, safe_attrs)
     reads.visit(node)
     return reads
 
@@ -346,16 +392,19 @@ class _Names:
     """The exception names in force: the exceptions themselves, and the
     one-level aliases that may hold their text."""
 
-    def __init__(self, exceptions: FrozenSet[str] = frozenset(), texts=frozenset()):
+    def __init__(self, exceptions=frozenset(), texts=frozenset(), path: str = ""):
         self.exceptions = frozenset(exceptions)
         self.texts = frozenset(texts)
+        self.path = path  # relative to the package: picks the safe forms
 
     @property
     def all(self) -> FrozenSet[str]:
         return self.exceptions | self.texts
 
     def adding(self, exceptions=(), texts=()) -> "_Names":
-        return _Names(self.exceptions | set(exceptions), self.texts | set(texts))
+        return _Names(
+            self.exceptions | set(exceptions), self.texts | set(texts), self.path
+        )
 
 
 def _exception_params(scope) -> set:
@@ -446,12 +495,12 @@ def _scope_aliases(scope: ast.AST, names: _Names) -> _Names:
                 elif any(_is_gather_of_exceptions(n) for n in ast.walk(child.value)):
                     texts.update(bound)
                     gathered.update(bound)
-                elif _reads(child.value, here.all).name_hit:
+                elif _reads(child.value, here).name_hit:
                     texts.update(bound)
             if loops and isinstance(child, (ast.For, ast.AsyncFor)):
                 if _iterates_exceptions(child.iter, here.exceptions, gathered):
                     exceptions.update(_bound([child.target]))
-                elif _reads(child.iter, here.all).name_hit:
+                elif _reads(child.iter, here).name_hit:
                     texts.update(_bound([child.target]))
             visit(child, here, loops)
 
@@ -467,7 +516,7 @@ def _may_be_text(code: ast.AST, names: _Names) -> bool:
     ``0 if ok else 1``, ``base | 1`` and a constant are not."""
     if isinstance(code, ast.IfExp):
         return _may_be_text(code.body, names) or _may_be_text(code.orelse, names)
-    reads = _reads(code, names.all)
+    reads = _reads(code, names)
     return (
         isinstance(code, ast.JoinedStr)
         or (isinstance(code, ast.BinOp) and isinstance(code.op, (ast.Add, ast.Mod)))
@@ -507,7 +556,7 @@ def _call_site(call: ast.Call, names: _Names) -> str:
         return ""
     name_hit = output_hit = False
     for value in _argument_values(call, printing, names):
-        reads = _reads(value, names.all)
+        reads = _reads(value, names, logging=not printing)
         name_hit = name_hit or reads.name_hit
         output_hit = output_hit or reads.output_hit
     if name_hit:
@@ -515,13 +564,51 @@ def _call_site(call: ast.Call, names: _Names) -> str:
     return "subprocess-text" if output_hit else ""
 
 
-def scan_tree(tree: ast.Module) -> List[Site]:
-    """Every census site in ``tree``, as ``(line, kind)``."""
-    sites: List[Site] = []
+def _refusal_aliases(tree: ast.Module) -> FrozenSet[str]:
+    """The keywords that, somewhere in ``tree``, are passed an audited refusal
+    class by name (``misscoped=MembershipRemovalMisscoped``)."""
+    return frozenset(
+        keyword.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg and _bare_name(keyword.value) in AUDITED_NAMES
+    )
 
-    def walk(node: ast.AST, names: _Names) -> None:
+
+def _is_super_init(call: ast.Call) -> bool:
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "__init__"
+        and isinstance(func.value, ast.Call)
+        and _callee(func.value) == "super"
+    )
+
+
+def _refusal_construction_reads(call: ast.Call, names: _Names) -> bool:
+    """Whether an audited refusal's construction reads an exception name or
+    subprocess output. ``refusal_text`` is safe here wherever it stands."""
+    safe = _Names(names.exceptions, names.texts, "cli/")  # CLI_SAFE_CALLS
+    values = list(call.args) + [keyword.value for keyword in call.keywords]
+    for value in values:
+        reads = _reads(value, safe)
+        if reads.name_hit or reads.output_hit:
+            return True
+    return False
+
+
+def scan_tree(tree: ast.Module, path: str = "") -> List[Site]:
+    """Every census site in ``tree``, as ``(line, kind)``; ``path``, relative
+    to the package, picks the safe forms."""
+    sites: List[Site] = []
+    refusals = AUDITED_NAMES | _refusal_aliases(tree)
+
+    def walk(node: ast.AST, names: _Names, in_refusal: bool) -> None:
         for child in ast.iter_child_nodes(node):
-            here = names
+            here, inside = names, in_refusal
+            if isinstance(child, ast.ClassDef):
+                inside = child.name in AUDITED_NAMES
             if isinstance(child, ast.ExceptHandler) and child.name:
                 here = names.adding(exceptions={child.name})
             if isinstance(child, _SCOPES):
@@ -530,141 +617,83 @@ def scan_tree(tree: ast.Module) -> List[Site]:
                 )
             if isinstance(child, ast.Call):
                 kind = _call_site(child, here)
+                constructs = _callee(child) in refusals or (
+                    inside and _is_super_init(child)
+                )
+                if not kind and constructs:
+                    if _refusal_construction_reads(child, here):
+                        kind = "refusal-construction"
                 if kind:
                     sites.append((child.lineno, kind))
-            walk(child, here)
+            walk(child, here, inside)
 
-    walk(tree, _scope_aliases(tree, _Names()))
+    walk(tree, _scope_aliases(tree, _Names(path=path)), False)
     return sites
 
 
-def scan_source(source: str) -> List[Site]:
-    return scan_tree(ast.parse(source))
+def scan_source(source: str, path: str = "") -> List[Site]:
+    return scan_tree(ast.parse(source), path)
 
 
-@lru_cache(maxsize=1)
-def census() -> Tuple[Tuple[str, int, str], ...]:
-    """Every site under ``faultmaven/``, as ``(path, line, kind)``, the path
-    relative to the package. A file that does not parse fails the scan
+def census_of(package: Path) -> Tuple[Tuple[str, int, str], ...]:
+    """Every site under ``package``, as ``(path, line, kind)``, the path
+    relative to it. A file that does not parse fails the scan
     (``SyntaxError``), never counts as clean."""
     found = []
-    for path in sorted(PACKAGE.rglob("*.py")):
-        relative = path.relative_to(PACKAGE).as_posix()
-        for line, kind in scan_tree(parse_file(path)):
+    for path in sorted(package.rglob("*.py")):
+        relative = path.relative_to(package).as_posix()
+        for line, kind in scan_tree(parse_file(path), relative):
             found.append((relative, line, kind))
     return tuple(found)
 
 
-#: Sites per file, pending S3's later sub-stages (#2889). Exact: a switched
-#: site shrinks its row; a row at zero is deleted.
-ALLOWED = {
-    "cli/backfill_case_outcome.py": 1,
-    "cli/demote_platform_admin.py": 4,
-    "cli/personal_tenant.py": 6,
-    "cli/promote_platform_admin.py": 2,
-    "cli/provision_sso_org.py": 10,
-    "cli/purge_traces.py": 2,
-    "cli/reassign_cases.py": 4,
-    "cli/remove_org_member.py": 5,
-    "cli/reset_kb.py": 4,
-    "cli/set_turn_cap.py": 1,
-    "cli/wipe_deployment.py": 3,
-    "config/tls_root_set.py": 9,
-    "infrastructure/base_client.py": 4,
-    "infrastructure/caching/intelligent_cache.py": 13,
-    "infrastructure/concurrency/teardown.py": 1,
-    "infrastructure/embedding_guard.py": 1,
-    "infrastructure/error_recovery.py": 4,
-    "infrastructure/index_slot.py": 1,
-    "infrastructure/jobs/job_service.py": 7,
-    "infrastructure/model_cache.py": 2,
-    "infrastructure/persistence/case_vector_store.py": 4,
-    "infrastructure/persistence/chromadb_store.py": 1,
-    "infrastructure/persistence/pg_connection.py": 1,
-    "infrastructure/redis_client.py": 1,
-    "infrastructure/shims/security.py": 2,
-    "infrastructure/storage/filesystem.py": 1,
-    "infrastructure/tasks/case_cleanup.py": 6,
-    "infrastructure/tasks/job_runners.py": 4,
-    "infrastructure/tasks/llm_usage_retention.py": 1,
-    "infrastructure/worker_process.py": 2,
-    "services/base.py": 4,
-    "utils/frontmatter.py": 1,
-    "utils/model_context.py": 1,
-    "utils/schema_converter.py": 1,
-    "utils/token_estimation.py": 3,
-}
-
-
-#: The areas S3 has switched (#2889): no file under one is on :data:`ALLOWED`.
-SWITCHED_PREFIXES = (
-    "infrastructure/llm/",
-    "core/investigation/",
-    "modules/agent/",
-    "modules/evidence/",
-    "modules/preprocessing/",
-    "core/preprocessing/",
-    "core/processing/",
-    "modules/knowledge/",
-    "infrastructure/knowledge/",
-    "api/",
-    "infrastructure/protection/",
-    "main.py",
-    "modules/auth/",
-    "infrastructure/auth/",
-    "infrastructure/security/",
-    "infrastructure/observability/",
-    "infrastructure/health/",
-    "infrastructure/logging/",
-    "modules/case/",
-    "modules/report/",
-    "bootstrap/",
-    "container/",
-    "_container_impl.py",
-    "jobs/",
-    "server.py",
-    "config/investigation_capability.py",
-    "config/llm_config_overrides.py",
-    "config/revocation_storage.py",
-    "config/secret_file.py",
-    "config/settings.py",
-)
+@lru_cache(maxsize=1)
+def census() -> Tuple[Tuple[str, int, str], ...]:
+    """Every site under ``faultmaven/``."""
+    return census_of(PACKAGE)
 
 
 RULE = (
     "Principles §7 rule 1: a log line or print names an exception by "
     "exception_log_name(e) (faultmaven.utils.exception_name), never its text, "
-    "and subprocess output by exit code and length (#2889)."
+    "and subprocess output by exit code and length; an fm-* refusal prints "
+    "through refusal_text (cli/_refusal.py), and an audited refusal's message "
+    "holds no exception's text (#2889)."
 )
+
+#: A site in each kind the census counts, planted in a scratch package.
+_PLANTED = {
+    "cli/planted.py": (
+        "try:\n    pass\nexcept Exception as e:\n    print(f'x {e}')\n"
+        "    raise _Refused(f'x {e}')\n"
+    ),
+    "infrastructure/planted.py": "def f(e):\n    logger.error(f'x {e}')\n",
+    "config/planted.py": "raise SystemExit(f'refusing: {path}')\n",
+}
 
 
 def test_the_scan_reads_the_package():
     assert len(list(PACKAGE.rglob("*.py"))) > 500
-    assert census(), "the census found no site at all: the scan is not reading"
 
 
-def test_each_file_holds_exactly_its_allowed_sites():
-    counts = Counter(path for path, _, _ in census())
-    problems = []
-    for path in sorted(set(counts) | set(ALLOWED)):
-        found, allowed = counts.get(path, 0), ALLOWED.get(path, 0)
-        if found == allowed:
-            continue
-        lines = ", ".join(f"{n} ({kind})" for p, n, kind in census() if p == path)
-        row = f'"{path}": {found},' if found else "delete its row"
-        problems.append(
-            f"{path}: {found} sites, {allowed} allowed (lines {lines or 'none'}). "
-            + ("Name the exception by its class instead. " if found > allowed else "")
-            + f"Row: {row}"
-        )
-    assert not problems, RULE + "\n" + "\n".join(problems)
+def test_the_scan_finds_a_planted_site_through_the_file_walk(tmp_path):
+    """The positive control for the empty census: the same walk over a
+    package holding one site of each kind finds each, at its path."""
+    for relative, source in _PLANTED.items():
+        planted = tmp_path / relative
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.write_text(source)
+    assert census_of(tmp_path) == (
+        ("cli/planted.py", 4, "print"),
+        ("cli/planted.py", 5, "refusal-construction"),
+        ("config/planted.py", 1, "systemexit-text"),
+        ("infrastructure/planted.py", 2, "log"),
+    )
 
 
-def test_the_switched_area_is_not_on_the_list():
-    """S3 switched every site under :data:`SWITCHED_PREFIXES`: a site there is
-    never allowed, so reverting one fails the census as an unlisted file."""
-    assert not [path for path in ALLOWED if path.startswith(SWITCHED_PREFIXES)]
-    assert all(count > 0 for count in ALLOWED.values())
+def test_no_site_anywhere():
+    sites = [f"{path}:{line} ({kind})" for path, line, kind in census()]
+    assert not sites, RULE + "\n" + "\n".join(sites)
 
 
 # ── the census definition, on source the test controls ────────────────────
@@ -804,6 +833,69 @@ def test_a_site_is_found(source):
 )
 def test_a_safe_form_is_not_a_site(source):
     assert not _found(source), source
+
+
+_EXC = "try:\n    pass\nexcept Exception as exc:\n"
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("cli/x.py", _EXC + "    print(f'❌ {exc}')"),
+        ("cli/x.py", _EXC + "    logger.error(refusal_text(exc))"),
+        ("cli/x.py", _EXC + "    log.warning('x', reason=refusal_text(exc))"),
+        ("jobs/x.py", _EXC + "    print(f'❌ {refusal_text(exc)}')"),
+        ("cli/x.py", _EXC + "    raise _Refused(f'x {exc}')"),
+        ("cli/x.py", _EXC + "    raise _Refused(str(exc))"),
+        (
+            "cli/x.py",
+            _EXC + "    raise tenant_retirement.EnterpriseRowMissing(exc.args)",
+        ),
+        (
+            "modules/x.py",
+            "def g():\n    f(misscoped=MembershipRemovalMisscoped)\n"
+            "def f(e, misscoped):\n    raise misscoped(f'x {e}')",
+        ),
+        (
+            "infrastructure/x.py",
+            "class EnterpriseRowMissing(Exception):\n"
+            "    def __init__(self, exc):\n        super().__init__(f'{exc}')",
+        ),
+        ("cli/x.py", _EXC + "    print(f'{exc.mapped_to}')"),
+        ("cli/x.py", _EXC + "    print(f'{exc.enterprise_id}')"),
+    ],
+)
+def test_a_refusal_site_is_found(path, source):
+    """``refusal_text`` is safe only under ``cli/`` and never in a log call;
+    an audited refusal's construction reads no exception; the ids are safe
+    only in ``cli/provision_sso_org.py``."""
+    assert scan_source(source, path), (path, source)
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("cli/x.py", _EXC + "    print(f'❌ {refusal_text(exc)}')"),
+        (
+            "cli/x.py",
+            _EXC + "    refusal = knob(refusal_text(exc))\n    print(refusal)",
+        ),
+        ("cli/x.py", _EXC + "    raise _Refused(refusal_text(exc))"),
+        ("modules/x.py", _EXC + "    raise _Refused(refusal_text(exc))"),
+        ("cli/x.py", _EXC + "    raise _Refused(f'x {exception_log_name(exc)}')"),
+        ("cli/x.py", "def f(path):\n    raise _Refused(f'no ids in {path!r}')"),
+        ("cli/provision_sso_org.py", _EXC + "    print(f'{exc.mapped_to}')"),
+        ("cli/provision_sso_org.py", _EXC + "    print(f'{exc.enterprise_id}')"),
+        ("infrastructure/x.py", _EXC + "    log.warning('x', **_provider_codes(exc))"),
+        (
+            "infrastructure/x.py",
+            _EXC + "    s = counts_against_breaker(exc)\n"
+            '    log.warning(f\'{"a" if s else "b"}\')',
+        ),
+    ],
+)
+def test_a_refusal_safe_form_is_not_a_site(path, source):
+    assert not scan_source(source, path), (path, source)
 
 
 def test_a_file_that_does_not_parse_fails_the_scan(tmp_path):

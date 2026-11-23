@@ -88,6 +88,11 @@ class RemapRefused(Exception):
         self.requested = requested
 
 
+class EnterpriseNotUsable(LookupError):
+    """The named enterprise does not exist or is retired. A ``LookupError``, so
+    every caller that catches that still does; its sentence holds the id."""
+
+
 class OrgAlreadyClaimed(Exception):
     """The FaultMaven enterprise is already claimed by another IdP org."""
 
@@ -140,9 +145,10 @@ async def get_or_create_enterprise(
     Callers must use the returned row's id rather than the one they proposed;
     on the adopt arm they differ, and binding the proposed one names no row.
 
-    Raises ``LookupError`` when ``enterprise_id`` is given and names no LIVE
-    enterprise. Naming an id is a claim that it exists, and the operator command
-    that makes that claim documents this refusal.
+    Raises :class:`EnterpriseNotUsable` (a ``LookupError``) when
+    ``enterprise_id`` is given and names no LIVE enterprise. Naming an id is
+    a claim that it exists, and the operator command that makes that claim
+    documents this refusal.
     """
     if enterprise_id:
         found = await session.get(EnterpriseModel, enterprise_id)
@@ -164,7 +170,9 @@ async def get_or_create_enterprise(
         #
         # The sign-up path proposes NO id (it uses the one this call returns),
         # so nothing legitimate reaches this arm expecting a create.
-        raise LookupError(f"enterprise {enterprise_id} does not exist or is retired")
+        raise EnterpriseNotUsable(
+            f"enterprise {enterprise_id} does not exist or is retired"
+        )
 
     existing = await find_live_enterprise_by_slug(session, slug)
     if existing is not None:

@@ -36,8 +36,10 @@ import argparse
 import sys
 from datetime import datetime
 
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.exceptions import ServiceException
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal: ``python -OO`` strips docstrings.
 _SUMMARY = (
@@ -71,7 +73,7 @@ def purge(cutoff: datetime, *, delete: bool, confirm_project: str | None) -> int
     try:
         backend = opik_sdk.configure(get_settings())
     except opik_sdk.TraceContentCaptureRefused as exc:
-        print(f"❌ Refusing: {exc}")
+        print(f"❌ Refusing: {refusal_text(exc)}")
         return 1
     print(
         f"Trace backend: {backend.url}  workspace: {backend.workspace}  "
@@ -91,7 +93,7 @@ def purge(cutoff: datetime, *, delete: bool, confirm_project: str | None) -> int
             cutoff, delete=delete, project_name=backend.project, progress=print
         )
     except ServiceException as exc:
-        print(f"❌ {exc}")
+        print(f"❌ {exception_log_name(exc)}")
         return 3 if exc.details.get("rerun") else 1
     if result.missing:
         print(

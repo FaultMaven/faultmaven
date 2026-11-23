@@ -9,6 +9,7 @@ comprehensive error handling.
 import asyncio
 import contextvars
 import functools
+import re
 import time
 from abc import ABC
 from concurrent.futures import Executor
@@ -25,8 +26,10 @@ from faultmaven.exceptions import (
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 from faultmaven.utils.exception_name import (
+    ERROR_CODE_PATTERN,
     exception_class_chain,
     exception_class_name,
+    exception_log_name,
 )
 
 # Type variable for generic return types
@@ -57,7 +60,10 @@ def _provider_codes(error: BaseException) -> Dict[str, Any]:
     ``models.exceptions.FaultMavenError``: both carry codes the breaker latches
     (an ``LLMException``'s, an ``LLMProviderError``'s ``LLM_CONFIG_ERROR``). A
     third party's attributes of the same names are not first-party fields, and
-    their values are its own to word.
+    their values are its own to word. An ``error_code`` is kept only when it
+    is exactly a ``str`` matching :data:`ERROR_CODE_PATTERN`, the check
+    :func:`exception_log_name` makes: a first-party class can carry a code it
+    copied from another's (#2889).
     """
     # Imported here: ``faultmaven.models`` runs the modules layer on import,
     # which this client must not pull in.
@@ -65,11 +71,13 @@ def _provider_codes(error: BaseException) -> Dict[str, Any]:
 
     if not isinstance(error, (FaultMavenException, FaultMavenError)):
         return {}
-    return {
-        name: value
-        for name, kind in (("status_code", int), ("error_code", str))
-        if isinstance(value := getattr(error, name, None), kind)
-    }
+    codes = {}
+    if isinstance(status := getattr(error, "status_code", None), int):
+        codes["status_code"] = status
+    code = getattr(error, "error_code", None)
+    if type(code) is str and re.fullmatch(ERROR_CODE_PATTERN, code):
+        codes["error_code"] = code
+    return codes
 
 
 class CircuitBreaker:
@@ -669,7 +677,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "success": False,
-                                "error": str(call_error),
+                                "error": exception_log_name(call_error),
                                 "attempts": attempt + 1,
                             },
                         )
@@ -963,7 +971,7 @@ class BaseExternalClient(ABC):
                                 "client": self.client_name,
                                 "service": self.service_name,
                                 "success": False,
-                                "error": str(call_error),
+                                "error": exception_log_name(call_error),
                                 "attempts": attempt + 1,
                             },
                         )

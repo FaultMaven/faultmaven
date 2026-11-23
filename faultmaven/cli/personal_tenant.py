@@ -116,6 +116,7 @@ from typing import Any, Awaitable, Callable
 
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.config.tls_root_set import apply_root_set
@@ -145,6 +146,7 @@ from faultmaven.modules.case.contracts import (
     CaseDriverChangeReason,
 )
 from faultmaven.modules.case.infrastructure import case_driver_sql
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -204,7 +206,7 @@ async def _preflight_role() -> None:
     try:
         role = await assert_provisioning_db_role_bypasses_rls()
     except DeploymentCoherenceError as exc:
-        raise _Refused(str(exc)) from exc
+        raise _Refused(refusal_text(exc)) from exc
     if role:
         print(f"\nDatabase role: {role} (RLS-exempt — retirement allowed)")
 
@@ -288,7 +290,7 @@ async def _resolve_auth_service() -> Any:
         # so the operator saw a traceback instead of `_Refused`.
         raise _Refused(
             f"Refusing to retire: this process could not be composed, so it "
-            f"cannot revoke ({type(exc).__name__}: {exc})."
+            f"cannot revoke ({refusal_text(exc)})."
         ) from exc
     auth_service = container.get_auth_service()
     if auth_service is None:
@@ -526,14 +528,14 @@ async def _apply(steps: list[Step]) -> int:
         try:
             changed = await step.run()
         except SSOProvisioningError as exc:
-            print(f"\n❌ {step.name}: {exc}")
+            print(f"\n❌ {step.name}: {refusal_text(exc)}")
             print(
                 "   The identity provider could not be asked, or refused. "
                 "Nothing after this step ran."
             )
             return EXIT_INCOMPLETE if applied else EXIT_REFUSED
         except Exception as exc:  # noqa: BLE001 — an operator needs the reason
-            print(f"\n❌ {step.name}: {type(exc).__name__}: {exc}")
+            print(f"\n❌ {step.name}: {exception_log_name(exc)}")
             return EXIT_INCOMPLETE if applied else EXIT_REFUSED
         if changed:
             applied += 1
@@ -570,7 +572,7 @@ async def retire(
             state = await _read_state(resolved_id)
         except tenant_retirement.EnterpriseRowMissing as exc:
             raise _Refused(
-                f"{exc}.\n"
+                f"{refusal_text(exc)}.\n"
                 "   That is a broken row, not an absent tenant: the retirement "
                 "has nowhere to record its policy and no anchor to release. "
                 "Repair the enterprise row first. Nothing was written."
@@ -585,7 +587,7 @@ async def retire(
         key = _assert_personal_tenant(state, subject=subject)
         accounts = await account_anchor.accounts_anchored_to(state.enterprise_id)
     except _Refused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return EXIT_REFUSED
 
     _describe(state, policy_flag=next_login, accounts=accounts)
@@ -690,7 +692,7 @@ async def _load_company_enterprise(enterprise_id: str):
     try:
         enterprise = await bind_and_load_enterprise(enterprise_id)
     except EnterpriseRefused as exc:
-        raise _Refused(str(exc)) from exc
+        raise _Refused(refusal_text(exc)) from exc
 
     async with get_db_session() as session:
         state = await tenant_retirement.read_state(
@@ -748,7 +750,7 @@ async def reanchor(*, subject: str, enterprise_id: str, apply: bool) -> int:
                 "Nothing was written."
             )
     except _Refused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return EXIT_REFUSED
 
     print(f"\nAccount:      {user.username} <{user.email}> ({user.user_id})")
@@ -894,7 +896,7 @@ async def purge_idp_org(
     try:
         provider = _resolve_retirement_provider(idp)
     except _Refused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return EXIT_REFUSED
 
     from faultmaven.infrastructure.persistence.models import SSOOrgMappingModel
@@ -928,7 +930,7 @@ async def purge_idp_org(
             )
         )
     except SSOProvisioningError as exc:
-        print(f"\n❌ {exc}\n   Nothing was written on either side.")
+        print(f"\n❌ {refusal_text(exc)}\n   Nothing was written on either side.")
         return EXIT_REFUSED
     if outcome.organization_absent:
         print(f"\nNo IdP organization {provider_org_id} exists. Nothing to do.")

@@ -21,6 +21,7 @@ import re
 from functools import lru_cache
 from typing import List, Optional, Sequence
 
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.optional_dependency import module_is_usable
 
 logger = logging.getLogger(__name__)
@@ -139,7 +140,9 @@ def _get_tiktoken_encoder(model: str = "gpt-4") -> Optional[PlainEncoder]:
     except MemoryError:
         raise  # the preparation worker's declared exit, never a fallback (#2622)
     except Exception as e:
-        logger.warning(f"Failed to get tiktoken encoder for {model}: {e}")
+        logger.warning(
+            f"Failed to get tiktoken encoder for {model}: {exception_log_name(e)}"
+        )
         return None
 
 
@@ -159,7 +162,8 @@ def estimate_tokens_openai(text: str, model: str = "gpt-4") -> int:
             return len(encoder.encode(text))
         except Exception as e:
             logger.warning(
-                f"tiktoken encoding failed: {e}, falling back to char estimate"
+                f"tiktoken encoding failed: {exception_log_name(e)}, "
+                "falling back to char estimate"
             )
 
     # Fallback: rough estimate (4 chars per token for English)
@@ -195,7 +199,8 @@ def estimate_tokens_anthropic(text: str, model: str = "claude-sonnet-4-6") -> in
             return len(encoder.encode(text))
         except Exception as e:
             logger.warning(
-                f"Anthropic (cl100k proxy) token counting failed: {e}, "
+                "Anthropic (cl100k proxy) token counting failed: "
+                f"{exception_log_name(e)}, "
                 "falling back to char estimate"
             )
 

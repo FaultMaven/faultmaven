@@ -12,7 +12,11 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
 from faultmaven.exceptions import FaultMavenException, ValidationException
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
-from faultmaven.utils.exception_name import exception_class_chain, exception_frames
+from faultmaven.utils.exception_name import (
+    exception_class_chain,
+    exception_frames,
+    exception_log_name,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Type variable for generic return types
@@ -282,7 +286,7 @@ class BaseService(ABC):
                     data={
                         "service": self.service_name,
                         "success": False,
-                        "error": str(fault_maven_error),
+                        "error": exception_log_name(fault_maven_error),
                         "error_type": type(fault_maven_error).__name__,
                     },
                 )
@@ -314,7 +318,7 @@ class BaseService(ABC):
                     data={
                         "service": self.service_name,
                         "success": False,
-                        "error": str(operation_error),
+                        "error": exception_log_name(operation_error),
                         "error_type": type(operation_error).__name__,
                     },
                 )
@@ -503,7 +507,7 @@ class BaseService(ABC):
                     data={
                         "service": self.service_name,
                         "success": False,
-                        "error": str(fault_maven_error),
+                        "error": exception_log_name(fault_maven_error),
                         "error_type": type(fault_maven_error).__name__,
                     },
                 )
@@ -535,7 +539,7 @@ class BaseService(ABC):
                     data={
                         "service": self.service_name,
                         "success": False,
-                        "error": str(operation_error),
+                        "error": exception_log_name(operation_error),
                         "error_type": type(operation_error).__name__,
                     },
                 )

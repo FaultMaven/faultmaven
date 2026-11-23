@@ -253,11 +253,11 @@ def test_an_inconclusive_capacity_reason_is_named_by_class(lines, registry, reas
 
 def test_a_tls_set_write_refusal_names_the_error_by_class(tmp_path):
     """``_write_set`` under a directory whose parent is a file (named with the
-    marker): ``os.makedirs`` raises, and the refusal the interpreter prints
-    keeps its fixed text and names the error by class."""
+    marker): ``os.makedirs`` raises, and the refusal keeps its fixed text
+    and names the error by class."""
     blocker = tmp_path / f"file-{MARKER}"
     blocker.write_text("")
-    with pytest.raises(SystemExit) as refused:
+    with pytest.raises(tls_root_set.RootSetRefusal) as refused:
         tls_root_set._write_set(str(blocker / "set" / "roots.pem"), b"")
     cause = refused.value.__cause__
     assert isinstance(cause, OSError) and MARKER in str(cause)

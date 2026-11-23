@@ -91,7 +91,9 @@ import sys
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -175,7 +177,7 @@ async def _revocation_store_unusable(store) -> str | None:
             return (
                 "the token revocation store cannot read its storage, so writing "
                 "the watermark would fail after the membership had already been "
-                f"deleted: {fault.detail}\n"
+                f"deleted: {fault.kind}\n"
                 "   If this deployment was upgraded rather than re-provisioned, "
                 "the token_revocations table is missing and `alembic upgrade "
                 "head` will not create it.\n" + REMEDIATION
@@ -269,7 +271,7 @@ async def remove_org_member(
         # an unhandled-exception status instead. Nothing has been written at
         # this point, so exit 1 is the honest outcome either way, and naming
         # the cause loses nothing a traceback carried.
-        print(f"\n❌ {type(exc).__name__}: {exc}")
+        print(f"\n❌ {exception_log_name(exc)}")
         print(
             "\n   Refusing to remove the membership: this process could not be "
             "composed, so it cannot revoke. Nothing has been written."
@@ -310,7 +312,7 @@ async def remove_org_member(
     try:
         await bind_and_load_enterprise(enterprise_id)
     except EnterpriseRefused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return 1
 
     orgs = SessionlessOrganizationRepository()
@@ -341,7 +343,7 @@ async def remove_org_member(
             "   This is not 'no such user' — the user store did not answer, so "
             "whether the account exists is unknown and NOTHING has been removed "
             "or revoked.\n"
-            f"   Underlying error: {exc}\n"
+            f"   Underlying error: {exception_log_name(exc)}\n"
             "   Fix the store (check the API logs and the database), then re-run."
         )
         return 1
@@ -414,10 +416,10 @@ async def remove_org_member(
             organization_id, user.user_id, enterprise_id
         )
     except MembershipRemovalMisscoped as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return 1
     except MembershipRemovalIncomplete as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {exception_log_name(exc)}")
         return EXIT_REVOCATION_INCOMPLETE
     except DBAPIError as exc:
         if not is_last_admin_violation(exc):

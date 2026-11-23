@@ -61,7 +61,7 @@ def _passwd_home_holds_crl() -> bool:
 @pytest.mark.parametrize(("query", "reason"), QUERIES.values(), ids=QUERIES)
 @pytest.mark.parametrize(
     ("no_op_root_set", "prefix"),
-    [(False, "TLS root set: "), (True, "Refusing to run: ")],
+    [(False, "❌ Refusing to run: TLS root set: "), (True, "❌ Refusing to run: ")],
     ids=["at-the-start", "in-get-database-url"],
 )
 def test_a_migration_refuses_a_url_naming_a_root_input(

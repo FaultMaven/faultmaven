@@ -208,8 +208,10 @@ def test_the_command_shuts_the_container_down_on_the_loop_it_initialized_on(
         # The command's own status; a failed shutdown does not change it.
         assert exited.value.code == (0 if succeeded else 1)
         if outcome == "shutdown raises":
-            assert "Container shutdown failed" in caplog.text
-            assert "the pool would not close" in caplog.text
+            assert (
+                "Container shutdown failed (non-critical): RuntimeError" in caplog.text
+            )
+            assert "the pool would not close" not in caplog.text  # #2889
 
     container.initialize.assert_awaited_once()
     container.shutdown.assert_awaited_once()

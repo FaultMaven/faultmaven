@@ -13,6 +13,8 @@ from typing import Any, Dict, Iterable, Iterator, Type, get_args, get_origin
 
 from pydantic import BaseModel
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -405,7 +407,7 @@ def pydantic_to_strict_openai_tools(
             "strict_schema_unavailable: %s is not expressible in OpenAI's strict "
             "subset, so its tool stays unenforced (%s)",
             model.__name__,
-            exc,
+            exception_log_name(exc),
         )
         return tools
     function["strict"] = True

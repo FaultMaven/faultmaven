@@ -576,8 +576,10 @@ async def test_failed_revocation_reports_the_half_state(wiring, capsys):
 
     assert code == remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
     out = capsys.readouterr().out
-    assert "STILL VALID" in out
-    assert "Re-run" in out
+    # The service's sentence embeds the caught failure's text, so the print
+    # names the class (#2889 S3i); exit 3 is the half-state's own code.
+    assert "❌ MembershipRemovalIncomplete <- RuntimeError" in out
+    assert "redis is gone" not in out
 
 
 async def test_a_delete_that_matches_nothing_is_not_reported_as_success(wiring, capsys):

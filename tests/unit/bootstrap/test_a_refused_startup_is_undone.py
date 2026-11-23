@@ -182,7 +182,8 @@ async def test_a_failing_teardown_step_neither_replaces_the_refusal_nor_skips_th
             await compose_application(app, object())
 
     assert refused.value is composition.refusal
-    assert "the pool would not close" in caplog.text
+    assert "failed (non-critical): ConnectionError" in caplog.text
+    assert "the pool would not close" not in caplog.text  # #2889
     _assert_nothing_of_composition_remains(
         app, container, composition.clients[0], database
     )

@@ -39,6 +39,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.observability.metrics_collector import MetricsCollector
+from faultmaven.utils.exception_name import exception_log_name
 
 
 @dataclass
@@ -473,7 +474,9 @@ class IntelligentCache(BaseExternalClient):
             return None, False
 
         except Exception as e:
-            self.logger.error(f"Cache get error for key {cache_key}: {e}")
+            self.logger.error(
+                f"Cache get error for key {cache_key}: {exception_log_name(e)}"
+            )
             return None, False
 
     async def set(
@@ -529,7 +532,7 @@ class IntelligentCache(BaseExternalClient):
             return success
 
         except Exception as e:
-            self.logger.error(f"Cache set error for key {key}: {e}")
+            self.logger.error(f"Cache set error for key {key}: {exception_log_name(e)}")
             return False
 
     async def delete(self, key: str, context: Optional[Dict[str, Any]] = None) -> bool:
@@ -545,7 +548,9 @@ class IntelligentCache(BaseExternalClient):
             return success
 
         except Exception as e:
-            self.logger.error(f"Cache delete error for key {key}: {e}")
+            self.logger.error(
+                f"Cache delete error for key {key}: {exception_log_name(e)}"
+            )
             return False
 
     async def clear_by_pattern(self, pattern: str) -> int:
@@ -569,7 +574,10 @@ class IntelligentCache(BaseExternalClient):
             return cleared_count
 
         except Exception as e:
-            self.logger.error(f"Cache pattern clear error for pattern {pattern}: {e}")
+            self.logger.error(
+                f"Cache pattern clear error for pattern {pattern}: "
+                f"{exception_log_name(e)}"
+            )
             return 0
 
     async def get_cache_statistics(self) -> Dict[str, Any]:
@@ -630,7 +638,9 @@ class IntelligentCache(BaseExternalClient):
             return stats
 
         except Exception as e:
-            self.logger.error(f"Error getting cache statistics: {e}")
+            self.logger.error(
+                f"Error getting cache statistics: {exception_log_name(e)}"
+            )
             return {"error": str(e)}
 
     async def warm_cache(self, warming_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -799,7 +809,7 @@ class IntelligentCache(BaseExternalClient):
                 return True
 
         except Exception as e:
-            self.logger.error(f"Error setting L1 cache: {e}")
+            self.logger.error(f"Error setting L1 cache: {exception_log_name(e)}")
             return False
 
     async def _get_from_l2(self, cache_key: str) -> Tuple[Any, bool]:
@@ -821,7 +831,7 @@ class IntelligentCache(BaseExternalClient):
                 return None, False
 
         except Exception as e:
-            self.logger.error(f"Error getting from L2 cache: {e}")
+            self.logger.error(f"Error getting from L2 cache: {exception_log_name(e)}")
             self._l2_stats.misses += 1
             self._update_hit_rate(self._l2_stats)
             return None, False
@@ -847,7 +857,7 @@ class IntelligentCache(BaseExternalClient):
             return success
 
         except Exception as e:
-            self.logger.error(f"Error setting L2 cache: {e}")
+            self.logger.error(f"Error setting L2 cache: {exception_log_name(e)}")
             return False
 
     async def _get_from_l3(self, cache_key: str) -> Tuple[Any, bool]:
@@ -887,7 +897,7 @@ class IntelligentCache(BaseExternalClient):
                 lambda: True,  # Placeholder - would use redis_client.delete(cache_key)
             )
         except Exception as e:
-            self.logger.error(f"Error deleting from L2 cache: {e}")
+            self.logger.error(f"Error deleting from L2 cache: {exception_log_name(e)}")
             return False
 
     async def _delete_from_l3(self, cache_key: str) -> bool:
@@ -1072,11 +1082,14 @@ class IntelligentCache(BaseExternalClient):
                                     await self._apply_optimization(optimization)
                             except Exception as e:
                                 self.logger.error(
-                                    f"Error applying optimization rule: {e}"
+                                    "Error applying optimization rule: "
+                                    f"{exception_log_name(e)}"
                                 )
 
             except Exception as e:
-                self.logger.error(f"Error in periodic optimization: {e}")
+                self.logger.error(
+                    f"Error in periodic optimization: {exception_log_name(e)}"
+                )
 
     async def _cache_warming_task(self):
         """Cache warming based on predicted patterns"""
@@ -1091,7 +1104,9 @@ class IntelligentCache(BaseExternalClient):
                         pass
 
             except Exception as e:
-                self.logger.error(f"Error in cache warming task: {e}")
+                self.logger.error(
+                    f"Error in cache warming task: {exception_log_name(e)}"
+                )
 
     async def _analytics_processor(self):
         """Process cache analytics in background"""
@@ -1109,7 +1124,9 @@ class IntelligentCache(BaseExternalClient):
                         ]
 
             except Exception as e:
-                self.logger.error(f"Error in analytics processor: {e}")
+                self.logger.error(
+                    f"Error in analytics processor: {exception_log_name(e)}"
+                )
 
     async def _apply_optimization(self, optimization: Dict[str, Any]):
         """Apply cache optimization action"""

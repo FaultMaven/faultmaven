@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.optional_dependency import dependency_is_usable
 
 if TYPE_CHECKING:  # the real class, for type checkers only — never at runtime
@@ -266,7 +267,7 @@ def configure_inference_threads() -> int:
 
         torch.set_num_threads(threads)
     except Exception as exc:  # torch missing or setter unavailable
-        logger.debug(f"Could not set torch thread count: {exc}")
+        logger.debug(f"Could not set torch thread count: {exception_log_name(exc)}")
         return threads
 
     if not _THREADS_CONFIGURED:
@@ -408,7 +409,9 @@ class ModelCache:
                     load_triggered_by=triggered_by,
                     error=str(e),
                 )
-                self.logger.error(f"Failed to load BGE-M3 model: {e}")
+                self.logger.error(
+                    f"Failed to load BGE-M3 model: {exception_log_name(e)}"
+                )
                 return None
 
     def peek_bge_m3_model(self) -> Optional["SentenceTransformer"]:
