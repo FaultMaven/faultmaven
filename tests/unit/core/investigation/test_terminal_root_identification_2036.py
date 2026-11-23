@@ -54,7 +54,11 @@ from faultmaven.core.investigation.milestone_engine.stage_gates import (
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _build_causal_graph_block,
 )
-from faultmaven.core.investigation.schemas import CausalNodeToAdd, HypothesisUpdate
+from faultmaven.core.investigation.schemas import (
+    CausalNodeToAdd,
+    HypothesisToAdd,
+    HypothesisUpdate,
+)
 from faultmaven.core.investigation.terminal_transitions import (
     ResolutionReadiness,
     assess_resolution_readiness,
@@ -66,6 +70,7 @@ from faultmaven.modules.case.contracts import (
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    HypothesisCategory,
     HypothesisState,
     InvestigationActionType,
     NodeState,
@@ -316,6 +321,7 @@ def _emission_case():
 
 
 def _emit(case, hyp, *, nodes, ref, entry, created):
+    entry.root_node_ref = ref  # the ref travels on the entry, as on the wire
     metadata = {
         "hypotheses_generated": [hyp.hypothesis_id] if created else [],
         "hyp_root_refs": {hyp.hypothesis_id: ref} if ref else {},
@@ -467,9 +473,12 @@ def test_m5_recovery_names_the_why_when_the_cause_is_held():
 
 
 def _engine():
+    from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
     from tests.unit.core.investigation.test_m5_recovery_1679 import _make_engine
 
-    return _make_engine()
+    eng = _make_engine()
+    eng.deps.hypothesis_manager = HypothesisManager()  # for hypotheses_to_add
+    return eng
 
 
 def _turn(case, **fields):
@@ -627,6 +636,7 @@ def _verdict_turn(case, hyp, *, ref, nodes):
         "hyp_root_refs": {hyp.hypothesis_id: ref},
     }
     entry = SimpleNamespace(
+        root_node_ref=ref,
         root_is_terminal=True,
         terminal_basis_evidence_ids=[_basis_row(case, case.current_turn)],
     )
@@ -713,7 +723,11 @@ def test_a_verdict_follows_a_hand_off_to_the_root_its_entry_named():
     record_root_verdict(
         metadata,
         adopter.hypothesis_id,
-        SimpleNamespace(root_is_terminal=True, terminal_basis_evidence_ids=[basis]),
+        SimpleNamespace(
+            root_node_ref=handed_over,
+            root_is_terminal=True,
+            terminal_basis_evidence_ids=[basis],
+        ),
     )
     _apply_chain_emission(
         case,
@@ -729,6 +743,96 @@ def test_a_verdict_follows_a_hand_off_to_the_root_its_entry_named():
     root = case.causal_nodes[handed_over]
     assert root.root_terminal is True
     assert root.metadata["root_terminal_evidence_ids"] == [basis]
+
+
+_CAUSE = "the AppRole secret_id expired before the issuer renewed it"
+
+
+def _new_hypothesis_turn(*, verdict_on, add_ref=None, update_ref=None, nodes=None):
+    """One turn through the real apply path on a case with no hypothesis: a new
+    hypothesis stating ``_CAUSE`` (``add_ref`` on its add item), an update item
+    naming it as ``new_index_0`` when ``update_ref`` or the verdict is on it,
+    and ``nodes`` (by default a root restating it -> D). The qualifying ``true``
+    verdict rides on the entry ``verdict_on`` names. ``add_ref="D"`` names the
+    PROBLEM node's own id."""
+    from faultmaven.core.investigation.causal_graph.ingestion import (
+        seed_problem_node,
+    )
+    from tests.unit.core.investigation.test_chain_emission_wiring import (
+        _case as emission_case,
+    )
+
+    case = emission_case()
+    case.hypotheses = {}
+    if add_ref == "D":
+        add_ref = seed_problem_node(case).node_id
+    verdict = {
+        "root_is_terminal": True,
+        "terminal_basis_evidence_ids": [_basis_row(case, case.current_turn)],
+    }
+    add = HypothesisToAdd(
+        statement=_CAUSE,
+        category=HypothesisCategory.CONFIG,
+        likelihood=0.6,
+        rationale="r",
+        root_node_ref=add_ref,
+        **(verdict if verdict_on == "add" else {}),
+    )
+    updates = (
+        [
+            HypothesisUpdate(
+                hypothesis_id="new_index_0",
+                root_node_ref=update_ref,
+                **(verdict if verdict_on == "update" else {}),
+            )
+        ]
+        if update_ref or verdict_on == "update"
+        else None
+    )
+    _turn(
+        case,
+        hypotheses_to_add=[add],
+        hypotheses_to_update=updates,
+        causal_nodes_to_add=nodes
+        or [CausalNodeToAdd(statement=_CAUSE, node_type="root", produces="D")],
+    )
+    (hyp,) = case.hypotheses.values()
+    assert hyp.root_node_id is not None  # the orphan pass attached the chain
+    return case.causal_nodes[hyp.root_node_id]
+
+
+def test_a_no_ref_verdict_waits_whatever_another_entry_named():
+    """The add item's ref resolves to nothing; the verdict comes on an update
+    item that named no root, so it is recorded where the orphan pass roots the
+    hypothesis (#2536)."""
+    root = _new_hypothesis_turn(verdict_on="update", add_ref="new_index_9")
+    assert root.root_terminal is True
+
+
+def test_a_verdict_on_an_entry_with_no_ref_is_judged_by_that_entry():
+    """The reverse: the verdict comes on the add item, which named no root,
+    while the update item's ref resolves to nothing."""
+    root = _new_hypothesis_turn(verdict_on="add", update_ref="new_index_9")
+    assert root.root_terminal is True
+
+
+@pytest.mark.parametrize("ref", ["new_index_1", "D"])
+def test_a_verdict_whose_ref_names_a_non_root_node_is_dropped(ref):
+    """The ref resolves to an intermediate rung or to D, not a ROOT: the
+    hypothesis stays flat, and the verdict does not wait for the orphan pass."""
+    root = _new_hypothesis_turn(
+        verdict_on="add",
+        add_ref=ref,
+        nodes=[
+            CausalNodeToAdd(statement=_CAUSE, node_type="root", produces="new_index_1"),
+            CausalNodeToAdd(
+                statement="the issuer cannot log in to Vault",
+                node_type="intermediate",
+                produces="D",
+            ),
+        ],
+    )
+    assert _carries_no_verdict(root)
 
 
 def _two_rooted_hypotheses():
