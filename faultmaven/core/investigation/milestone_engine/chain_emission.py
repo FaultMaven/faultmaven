@@ -272,20 +272,27 @@ def _apply_chain_emission(
     for old_path in abandoned:
         prune_abandoned_nodes(case, old_path)
 
-    # The why-stopping verdict lands on the root its entry named. A verdict sent
-    # with a re-root the engine declined or refused describes a root this
-    # hypothesis does not have, so it is dropped rather than pinned on the old one.
-    # A hypothesis still flat here may gain its root in the orphan pass
-    # (``_nudge_ambiguous_orphan_chains``); its verdict waits for that.
+    # The why-stopping verdict lands on the root its entry named. An entry that
+    # named a root records its verdict only when that ref resolved and the
+    # hypothesis now stands on it; a verdict sent with a ref that resolved to
+    # nothing, or with an attach or re-root the engine declined or refused,
+    # describes a root this hypothesis does not have, so it is dropped rather
+    # than pinned on the old root or on one the orphan pass gives it (#2536).
+    # An entry that named no root records on the hypothesis's current root; a
+    # hypothesis still flat here may gain its root in the orphan pass
+    # (``_nudge_ambiguous_orphan_chains``), and its verdict waits for that.
     pending: dict[str, tuple] = {}
     for hyp_id, (verdict, cited) in verdicts.items():
         hyp = case.hypotheses.get(hyp_id)
         if hyp is None:
             continue
+        if hyp_id in root_refs:
+            named = _resolve_root(root_refs[hyp_id])
+            if named is not None and named == hyp.root_node_id:
+                _record_verdict_on_root(case, hyp, verdict, cited, metadata)
+            continue
         if not hyp.root_node_id:
             pending[hyp_id] = (verdict, cited)
-            continue
-        if hyp_id in root_refs and _resolve_root(root_refs[hyp_id]) != hyp.root_node_id:
             continue
         _record_verdict_on_root(case, hyp, verdict, cited, metadata)
     metadata["hyp_root_verdicts_pending"] = pending
@@ -412,8 +419,8 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
     which we surface to the LLM next turn via ``system_feedback`` (T2a) so it
     re-roots or declares the chain separate — the engine does not guess.
 
-    A verdict sent with a hypothesis that was still flat at chain emission is
-    recorded on the root T1 gave it (#2036)."""
+    A verdict whose entry named no root, sent with a hypothesis that was still
+    flat at chain emission, is recorded on the root T1 gave it (#2036)."""
     ambiguous = resolve_orphan_chains(case, turn=emission_turn(case, metadata))
     for hyp_id, (verdict, cited) in (
         metadata.pop("hyp_root_verdicts_pending", None) or {}

@@ -615,6 +615,122 @@ def test_a_verdict_waits_for_the_orphan_pass_to_give_its_root():
     assert root.root_attached_turn == 5
 
 
+def _verdict_turn(case, hyp, *, ref, nodes):
+    """One turn: ``hyp``'s entry names ``ref`` with a qualifying ``True``
+    verdict, beside ``nodes``; then the orphan pass, as the engine runs it."""
+    from faultmaven.core.investigation.milestone_engine.chain_emission import (
+        _nudge_ambiguous_orphan_chains,
+    )
+
+    metadata = {
+        "hypotheses_generated": [hyp.hypothesis_id],
+        "hyp_root_refs": {hyp.hypothesis_id: ref},
+    }
+    entry = SimpleNamespace(
+        root_is_terminal=True,
+        terminal_basis_evidence_ids=[_basis_row(case, case.current_turn)],
+    )
+    record_root_verdict(metadata, hyp.hypothesis_id, entry)
+    _apply_chain_emission(
+        case,
+        SimpleNamespace(
+            causal_nodes_to_add=nodes, causal_edges_to_add=[], node_evidence_links=[]
+        ),
+        metadata,
+    )
+    rooted_at_emission = hyp.root_node_id
+    _nudge_ambiguous_orphan_chains(case, metadata)
+    return metadata, rooted_at_emission
+
+
+def _carries_no_verdict(node) -> bool:
+    return node.root_terminal is None and not {
+        "root_terminal",
+        "root_terminal_evidence_ids",
+        "root_terminal_refused_turn",
+    } & set(node.metadata)
+
+
+def test_a_verdict_whose_ref_resolves_to_nothing_is_dropped():
+    """#2536: the ref names no node, so the hypothesis stays flat at emission;
+    the orphan pass then gives it the restating chain, which the verdict was
+    never about."""
+    case, hyp = _emission_case()
+    _metadata, rooted_at_emission = _verdict_turn(
+        case, hyp, ref="new_index_7", nodes=[_node(hyp.statement, "D")]
+    )
+    assert rooted_at_emission is None
+    assert hyp.root_node_id is not None  # the orphan pass attached the chain
+    assert _carries_no_verdict(case.causal_nodes[hyp.root_node_id])
+
+
+def _owner_and_adopter():
+    """``owner`` rooted on a root->D chain, and a second, flat hypothesis."""
+    from tests.unit.core.investigation.test_chain_emission_wiring import _second_hyp
+
+    case, owner = _emission_case()
+    _emit(
+        case,
+        owner,
+        nodes=[_node("NetworkPolicy denies ingress", "D")],
+        ref="new_index_0",
+        entry=SimpleNamespace(),
+        created=True,
+    )
+    adopter = _second_hyp()
+    case.hypotheses[adopter.hypothesis_id] = adopter
+    return case, owner, adopter
+
+
+def test_a_verdict_whose_ref_is_refused_is_dropped():
+    """#2536: the ref names a root another hypothesis owns (fm#1091 refuses
+    it); the orphan pass then gives the hypothesis a different chain."""
+    case, owner, adopter = _owner_and_adopter()
+    owned_root = owner.root_node_id
+    metadata, rooted_at_emission = _verdict_turn(
+        case, adopter, ref=owned_root, nodes=[_node(adopter.statement, "D")]
+    )
+    assert rooted_at_emission is None
+    assert "One cause = one chain" in "\n".join(metadata["system_notices"])
+    assert adopter.root_node_id not in (None, owned_root)
+    assert _carries_no_verdict(case.causal_nodes[adopter.root_node_id])
+    assert _carries_no_verdict(case.causal_nodes[owned_root])
+
+
+def test_a_verdict_follows_a_hand_off_to_the_root_its_entry_named():
+    """The owner deepens onto a new root in the same batch, freeing the old one
+    for the new hypothesis whose entry named it: its verdict lands there."""
+    case, owner, adopter = _owner_and_adopter()
+    handed_over = owner.root_node_id
+    metadata = {
+        "hypotheses_generated": [adopter.hypothesis_id],
+        "hyp_root_refs": {
+            adopter.hypothesis_id: handed_over,
+            owner.hypothesis_id: "new_index_0",
+        },
+    }
+    basis = _basis_row(case, case.current_turn)
+    record_root_verdict(
+        metadata,
+        adopter.hypothesis_id,
+        SimpleNamespace(root_is_terminal=True, terminal_basis_evidence_ids=[basis]),
+    )
+    _apply_chain_emission(
+        case,
+        SimpleNamespace(
+            causal_nodes_to_add=[_node("an egress rule was dropped", "D")],
+            causal_edges_to_add=[],
+            node_evidence_links=[],
+        ),
+        metadata,
+    )
+    assert adopter.root_node_id == handed_over
+    assert owner.root_node_id not in (None, handed_over)
+    root = case.causal_nodes[handed_over]
+    assert root.root_terminal is True
+    assert root.metadata["root_terminal_evidence_ids"] == [basis]
+
+
 def _two_rooted_hypotheses():
     """Hypothesis A rooted at turn 3, competitor B rooted at turn 6; fix rows
     at turn 4."""
