@@ -796,7 +796,7 @@ async def upload_document(
     except Exception as e:
         # The class, never the text: a failed row write's text carries its
         # INSERT parameters, the document's content among them (#2365).
-        logger.error("Document upload failed: %s", exception_class_name(e))
+        logger.error("Document upload failed: %s", exception_class_name(e), exc_info=e)
         # No str(e) in the response — the rule for every 500 in this module
         # (#866). A DB driver raises with the connection URI in its message, so
         # echoing exception text hands a caller credentials. Each `except` logs
@@ -867,7 +867,7 @@ async def list_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to list documents: {exception_log_name(e)}")
+        logger.error(f"Failed to list documents: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(status_code=500, detail="Failed to list documents")
 
 
@@ -912,7 +912,8 @@ async def get_document(
         raise
     except Exception as e:
         logger.error(
-            f"Failed to retrieve document {document_id}: {exception_log_name(e)}"
+            f"Failed to retrieve document {document_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         # No str(e) in the response: raw exception text is an internal detail
         # (#867). The log line above names the exception's class.
@@ -1053,7 +1054,8 @@ async def get_document_snippet(
         raise
     except Exception as e:
         logger.error(
-            f"Failed to get snippet for document {document_id}: {exception_log_name(e)}"
+            f"Failed to get snippet for document {document_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         # No str(e) in the response (#867) — see get_document.
         raise HTTPException(status_code=500, detail="Failed to get document snippet")
@@ -1121,7 +1123,8 @@ async def delete_document(
         raise
     except Exception as e:
         logger.error(
-            f"Failed to delete document {document_id}: {exception_log_name(e)}"
+            f"Failed to delete document {document_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         # See update_document — no internal exception text to the widened
         # audience (#834).
@@ -1195,7 +1198,7 @@ async def search_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Search failed: {exception_log_name(e)}")
+        logger.error(f"Search failed: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(status_code=500, detail="Search failed")
 
 
@@ -1335,7 +1338,7 @@ async def fulltext_search_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Full-text search failed: {exception_log_name(e)}")
+        logger.error(f"Full-text search failed: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(status_code=500, detail="Full-text search failed")
 
 
@@ -1452,7 +1455,8 @@ async def update_document(
         # before the row moves (#2388), so the chunks the row served before
         # the update are still the ones served.
         logger.error(
-            f"Failed to re-index document {document_id}: {exception_log_name(e)}"
+            f"Failed to re-index document {document_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         searchable_state = (
             "The document is unchanged, and so is what search serves for it."
@@ -1467,7 +1471,8 @@ async def update_document(
         )
     except Exception as e:
         logger.error(
-            f"Failed to update document {document_id}: {exception_log_name(e)}"
+            f"Failed to update document {document_id}: {exception_log_name(e)}",
+            exc_info=e,
         )
         # No str(e) in the response: this route is now reachable by any
         # authenticated user (#834), and raw exception text is an internal
@@ -1539,7 +1544,7 @@ async def bulk_update_documents(
         # handler's 422.
         raise
     except Exception as e:
-        logger.error(f"Bulk update failed: {exception_log_name(e)}")
+        logger.error(f"Bulk update failed: {exception_log_name(e)}", exc_info=e)
         # No str(e) in the response (#866) — see update_document.
         raise HTTPException(status_code=500, detail="Bulk update failed")
 
@@ -1588,7 +1593,7 @@ async def bulk_delete_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Bulk delete failed: {exception_log_name(e)}")
+        logger.error(f"Bulk delete failed: {exception_log_name(e)}", exc_info=e)
         # No str(e) in the response (#866) — see update_document.
         raise HTTPException(status_code=500, detail="Bulk delete failed")
 
@@ -1612,7 +1617,9 @@ async def get_knowledge_stats(
         return stats
 
     except Exception as e:
-        logger.error(f"Failed to get knowledge stats: {exception_log_name(e)}")
+        logger.error(
+            f"Failed to get knowledge stats: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(status_code=500, detail="Failed to get statistics")
 
 
@@ -1633,5 +1640,7 @@ async def get_search_analytics(
         return analytics
 
     except Exception as e:
-        logger.error(f"Failed to get search analytics: {exception_log_name(e)}")
+        logger.error(
+            f"Failed to get search analytics: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(status_code=500, detail="Failed to get analytics")

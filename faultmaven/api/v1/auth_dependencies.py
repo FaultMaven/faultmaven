@@ -120,14 +120,15 @@ async def get_user_store(request: Request):
         raise
     except AttributeError as e:
         logger.error(
-            f"User store attribute not found in app.state: {exception_log_name(e)}"
+            f"User store attribute not found in app.state: {exception_log_name(e)}",
+            exc_info=e,
         )
         raise HTTPException(
             status_code=503,
             detail="User management service not initialized. Please check server startup logs.",
         )
     except Exception as e:
-        logger.error(f"Failed to get user store: {exception_log_name(e)}")
+        logger.error(f"Failed to get user store: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(status_code=503, detail="User management service error")
 
 
