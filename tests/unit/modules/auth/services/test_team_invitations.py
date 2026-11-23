@@ -1356,16 +1356,12 @@ async def test_leaving_a_team_in_another_enterprise_is_absent():
 async def test_a9_the_service_refuses_to_exist_without_its_repositories():
     """An unwired dependency must not be answerable as "not found".
 
-    Every factory in the composition root answers ``None`` on failure, so a
-    ``TeamService`` missing its enterprise repository was a reachable state —
-    and it answered **404 for every team in the deployment**, because the
-    invitation rule read a domain it could not fetch. A wiring failure wearing
-    the shape of "you asked for a row that does not exist" is the one failure
-    nobody investigates.
-
-    Refusing to construct moves it to the honest place: ``create_team_service``
-    returns ``None``, which is already the deployment-wide "team collaboration
-    is not available here" signal, and the surface answers its own 403.
+    A ``TeamService`` built without its enterprise repository answered **404
+    for every team in the deployment**, because the invitation rule read a
+    domain it could not fetch: a wiring failure wearing the shape of "you asked
+    for a row that does not exist". So the service refuses to construct, and
+    under multi the composition root refuses the start rather than build it
+    short (``RequiredServiceConstructionError``, #2342).
     """
     teams = FakeTeamRepository({ALICE.user_id: ACME})
     enterprises = FakeEnterpriseRepository({ACME: "acme.com"})
