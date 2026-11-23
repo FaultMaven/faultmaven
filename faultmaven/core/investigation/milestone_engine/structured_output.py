@@ -26,6 +26,7 @@ from faultmaven.core.investigation.reliability_metrics import (
 )
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
+    StateDrop,
 )
 from faultmaven.infrastructure.llm.json_response import (
     loads_llm_json,
@@ -67,7 +68,10 @@ def _parse_schema_tool_call(
 
     # Recover the leaked parameter form, or coerce unresolvable state_updates
     # to {} so Pydantic field defaults apply (counted either way).
-    content_obj = _normalize_state_updates(content_obj, schema_model, cut=cut)
+    # Tool input the provider built can be partial and still parse.
+    content_obj, pre_drop = _normalize_state_updates(
+        content_obj, schema_model, cut=cut, cut_may_truncate=cut
+    )
 
     # Fix hallucinated enum values
     schema_dict = schema_model.model_json_schema()
@@ -79,7 +83,7 @@ def _parse_schema_tool_call(
 
     # Validate with Pydantic, degrading gracefully instead of 500ing on a
     # single malformed sub-record (parse-time cross-field validators).
-    parsed = _validate_with_degradation(content_obj, schema_model)
+    parsed = _validate_with_degradation(content_obj, schema_model, pre_drop=pre_drop)
 
     # Dropped-field detection: compare what the LLM emitted to what the
     # schema accepted. Any key the LLM put in the dict that isn't a
@@ -144,7 +148,32 @@ def _synthesize_agent_response(parsed: Any, stop_reason: StopReason) -> Any:
     return synthesized
 
 
-def _validate_with_degradation(content_obj, schema_model):
+#: State fields the server never applies (#2811): ``outcome`` is recomputed by
+#: ``determine_turn_outcome``, which takes no model value; the engine builds
+#: ``case.working_conclusion`` itself; ``evidence_quality_issues`` is only
+#: logged; and nothing reads ``final_summary_update``, ``documentation_links``
+#: or ``solution_feedback``. A prune of one loses nothing, so it is not a
+#: ``PARTIAL`` drop.
+_UNAPPLIED_STATE_FIELDS = frozenset(
+    {
+        "outcome",
+        "working_conclusion",
+        "evidence_quality_issues",
+        "final_summary_update",
+        "documentation_links",
+        "solution_feedback",
+    }
+)
+
+
+def _loses_an_applied_update(path: str) -> bool:
+    """Whether a pruned *path* lies under an applied ``state_updates`` field."""
+    head, _, rest = path.partition(".")
+    field = re.split(r"[.\[]", rest, maxsplit=1)[0]
+    return head == "state_updates" and field not in _UNAPPLIED_STATE_FIELDS
+
+
+def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
     """Validate LLM structured output, degrading gracefully instead of 500ing.
 
     Parse-time cross-field validators (e.g. ``evidence_need_updates`` state
@@ -184,10 +213,26 @@ def _validate_with_degradation(content_obj, schema_model):
     Upstream remains the real fix: provider-native constrained generation so
     the LLM cannot emit the invalid shape ([[project-llm-structured-output-strategy]]).
     This is the backstop, not a per-variant patch.
+
+    Every return marks what was lost of ``state_updates`` (#2811): ``WHOLE``
+    at step 3, at the blanked-answer rung that drops them, and when
+    *pre_drop* (``_normalize_state_updates``' marker) says they were lost
+    before validation; ``PARTIAL`` when step 2 pruned a path under an applied
+    state field (not ``_UNAPPLIED_STATE_FIELDS``). ``WHOLE`` wins.
     """
 
     def _record(outcome: str):
         _record_schema_validation(schema_model, outcome)
+
+    def _exit(parsed, repairs, original_error, drop=None):
+        parsed = _account_confidence(parsed, repairs, original_error)
+        if pre_drop is StateDrop.WHOLE:
+            drop = StateDrop.WHOLE
+        if drop is not None and "_state_drop" in getattr(
+            type(parsed), "__private_attributes__", {}
+        ):
+            parsed._state_drop = drop
+        return parsed
 
     def _validate(obj):
         # One attempt, with its OWN repair sink: validators report through
@@ -215,10 +260,15 @@ def _validate_with_degradation(content_obj, schema_model):
                 else "pruned"
             )
         )
-        return _account_confidence(parsed, repairs, None)
+        return _exit(parsed, repairs, None)
     except ValidationError as original_error:
         pruned, dropped, unhandled = _prune_invalid_sub_records(
             content_obj, original_error, schema_model
+        )
+        partial = (
+            StateDrop.PARTIAL
+            if any(_loses_an_applied_update(p) for p in dropped)
+            else None
         )
         if dropped:
             try:
@@ -230,7 +280,7 @@ def _validate_with_degradation(content_obj, schema_model):
                     extra={"schema": schema_model.__name__, "pruned": dropped},
                 )
                 _record("pruned")
-                return _account_confidence(parsed, repairs, original_error)
+                return _exit(parsed, repairs, original_error, partial)
             except ValidationError:
                 pass  # fall through to the conversational fallback
 
@@ -265,7 +315,7 @@ def _validate_with_degradation(content_obj, schema_model):
                     },
                 )
                 _record("state_dropped")
-                return _account_confidence(parsed, repairs, original_error)
+                return _exit(parsed, repairs, original_error, StateDrop.WHOLE)
             except ValidationError:
                 pass
 
@@ -324,7 +374,12 @@ def _validate_with_degradation(content_obj, schema_model):
                         if state_dropped
                         else "response_synthesized"
                     )
-                    return _account_confidence(parsed, repairs, original_error)
+                    return _exit(
+                        parsed,
+                        repairs,
+                        original_error,
+                        StateDrop.WHOLE if state_dropped else partial,
+                    )
                 except ValidationError:
                     continue
 
@@ -606,14 +661,15 @@ def _parse_text_as_schema(
     """
     content_obj = loads_llm_json(text)
     content_obj = _parse_nested_json(content_obj, schema_model)
-    content_obj = _normalize_state_updates(content_obj, schema_model, cut=cut)
+    # A strict parse proves the object closed, so the cut cannot mark it lost.
+    content_obj, pre_drop = _normalize_state_updates(content_obj, schema_model, cut=cut)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
         content_obj,
         schema_dict,
         root_defs=schema_dict.get("$defs"),
     )
-    parsed = _validate_with_degradation(content_obj, schema_model)
+    parsed = _validate_with_degradation(content_obj, schema_model, pre_drop=pre_drop)
     _log_dropped_fields(content_obj, parsed, schema_model)
 
     # Semantic guard: agent_response is the user-facing payload of every
@@ -741,35 +797,51 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
 
 
 def _normalize_state_updates(
-    content_obj: Any, schema_model: Any, *, cut: bool = False
-) -> Any:
+    content_obj: Any,
+    schema_model: Any,
+    *,
+    cut: bool = False,
+    cut_may_truncate: bool = False,
+) -> tuple[Any, Optional[StateDrop]]:
     """Settle ``state_updates`` before validation; count every repair.
 
     A string that is the leaked parameter form (:func:`_recover_leaked_parameter`)
     is recovered, with its leaked siblings lifted back in, unless the provider
     reported the response *cut* at ``max_tokens``: a cut value looks exactly
     like the real unclosed form, so it is never recovered. Any other non-blank
-    string, and any string in a cut response (a blank one included: what was
-    cut could have carried state), becomes ``{}`` so the schema defaults
-    apply, counted as ``string_dropped``. A non-empty list (including a string
-    that decoded to one) becomes ``{}`` too, counted as ``non_object_dropped``,
-    so it can never fail the turn. Both are lost state, and both warn.
+    string, and any string in a cut response (a blank one included), becomes
+    ``{}`` so the schema defaults apply, counted as ``string_dropped``; a blank
+    one is lost state, and marked, only when *cut_may_truncate*. A non-empty
+    list (including a string that decoded to one) becomes ``{}`` too, counted
+    as ``non_object_dropped``, so it can never fail the turn. Both warn. A list is lost state, and so is
+    a string that could have carried a state field: one holding ``{`` or an
+    applied state field's name, or any string when *cut_may_truncate*. A
+    filler string (``"none"``, ``"N/A"``) carried no update.
 
     A value that cannot have carried a state field — missing, ``null``, a
     blank string in a response that was not cut, ``[]``, a number or a bool —
     becomes ``{}`` and is counted as ``absent_defaulted``, without a warning:
-    nothing was lost. A value that is already an object is left alone and not
-    counted.
+    nothing was lost, unless *cut_may_truncate*, where a missing or ``null``
+    value is lost state (the cut can have taken it). A value that is already an
+    object is left alone and not counted.
+
+    *cut_may_truncate* says the body is provider-built tool input the provider
+    reported cut, which can be partial and still parse. A text body parsed
+    strictly is never partial, so its callers leave it false whatever *cut*
+    says.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
+
+    Returns the object with ``StateDrop.WHOLE`` when the value it replaced was
+    lost state, else ``None``; the caller passes it to the ladder (#2811).
     """
     if not isinstance(content_obj, dict):
-        return content_obj
+        return content_obj, None
     su = content_obj.get("state_updates")
     schema_name = getattr(schema_model, "__name__", str(schema_model))
     if isinstance(su, dict):
-        return content_obj
+        return content_obj, None
     if isinstance(su, str) and (cut or su.strip()):
         recovered = (
             None if cut else _recover_leaked_parameter(content_obj, schema_model)
@@ -777,12 +849,15 @@ def _normalize_state_updates(
         if recovered is not None:
             content_obj["state_updates"] = recovered
             repair = "xml_recovered"
+            lost = False
         else:
+            lost = cut_may_truncate or _could_carry_state(su, schema_model)
             logger.warning(
                 "structured_output_state_updates_dropped: state_updates for %s "
                 "arrived as a string that is not the leaked parameter form; "
-                "coerced to {} (state lost)",
+                "coerced to {} (%s)",
                 schema_name,
+                "state lost" if lost else "no state field in it",
                 extra={"schema": schema_name, "length": len(su), "cut": cut},
             )
             content_obj["state_updates"] = {}
@@ -797,14 +872,24 @@ def _normalize_state_updates(
         )
         content_obj["state_updates"] = {}
         repair = "non_object_dropped"
+        lost = True
     else:
         # Missing, null, a blank string in a response that was not cut, [], a
         # number or a bool: nothing that could have carried a state field, so
-        # nothing is lost.
+        # nothing is lost, unless a cut took a missing or null value.
         content_obj["state_updates"] = {}
         repair = "absent_defaulted"
+        lost = cut_may_truncate and su is None
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
-    return content_obj
+    return content_obj, (StateDrop.WHOLE if lost else None)
+
+
+def _could_carry_state(text: str, schema_model: Any) -> bool:
+    """Whether a ``state_updates`` string could have carried a state field: it
+    holds ``{`` or the name of one of *schema_model*'s applied state fields."""
+    state_model = _state_model_of(schema_model)
+    names = set(state_model.model_fields) if state_model is not None else set()
+    return "{" in text or any(n in text for n in names - _UNAPPLIED_STATE_FIELDS)
 
 
 #: Deeper than any engine schema nests (about six levels). A decoded value past

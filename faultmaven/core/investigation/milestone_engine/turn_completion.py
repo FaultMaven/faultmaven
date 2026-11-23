@@ -54,6 +54,8 @@ from .response_synthesis import (
     _narration_asserts_disposition,
     _prose_with_gate_notice,
     is_agent_response_synthesized,
+    state_drop_note,
+    state_drop_of,
 )
 from .stage_gates import declined_close_card
 from .statement_revision import revision_presentation
@@ -222,6 +224,14 @@ async def _compose_turn_reply(
     """Compose the final agent-facing reply text, gate prose, follow-ups and telemetry for the turn."""
     response_synthesized = is_agent_response_synthesized(response_obj)
     agent_response_text = "" if response_synthesized else response_obj.agent_response
+    # The state_updates the parse lost (#2811): the note sits directly under
+    # the model's text, before any gate prose. A placeholder's note is placed
+    # with the placeholder rule below.
+    state_drop = state_drop_of(response_obj)
+    if state_drop is not None and not response_synthesized:
+        agent_response_text = _prose_with_gate_notice(
+            agent_response_text, state_drop_note(state_drop)
+        )
 
     # Gate prose for the offer the turn opened, or the request it made. Gate
     # PROSE is composed with (appended below) the LLM's reply via
@@ -519,11 +529,20 @@ async def _compose_turn_reply(
     # record, never mutate; the turn's one commit, at the service,
     # persists it alongside the messages.
     # Nothing composed onto a synthesized placeholder: it IS the reply,
-    # and stays flagged. Anything composed replaced it with engine
-    # prose, which is a real answer and is not flagged.
+    # and stays flagged, with the drop note under it. Anything composed
+    # replaced it with engine prose, which is a real answer and is not
+    # flagged; the drop note heads it.
     if response_synthesized and not agent_response_text.strip():
         agent_response_text = response_obj.agent_response
+        if state_drop is not None:
+            agent_response_text = _prose_with_gate_notice(
+                agent_response_text, state_drop_note(state_drop, placeholder=True)
+            )
     else:
+        if response_synthesized and state_drop is not None:
+            agent_response_text = _prose_with_gate_notice(
+                state_drop_note(state_drop, placeholder=True), agent_response_text
+            )
         response_synthesized = False
     if case_updated.turn_history and agent_response_text != response_obj.agent_response:
         case_updated.turn_history[-1] = case_updated.turn_history[-1].model_copy(
@@ -531,9 +550,8 @@ async def _compose_turn_reply(
                 "agent_response_summary": summarize_for_turn_record(
                     agent_response_text, 500
                 ),
-                # Re-derived with the text, never carried over: the
-                # record step 6 wrote described the raw reply.
-                "agent_response_synthesized": (not agent_response_text.strip()),
+                # The flag the row carries, so the two agree (#2811).
+                "agent_response_synthesized": response_synthesized,
             }
         )
 
@@ -728,6 +746,7 @@ async def _compose_turn_reply(
                 "gate_name": gate_result[0] if gate_result else None,
                 "validation_repairs": len(validation_repairs),
                 "repair_pattern": stagnation_str,
+                "state_drop": state_drop.value if state_drop else None,
             },
         },
     }

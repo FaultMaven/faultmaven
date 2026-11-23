@@ -186,7 +186,8 @@ single wrong count.
 `seam_divergence`, `seam_overclaim`
 
 **Conformance / volume** — `validation_repairs`, `repair_pattern`,
-`user_message_chars`, `attachment_count`
+`state_drop` (`whole` or `partial` when the parse lost the turn's
+`state_updates`, else `null`; #2811), `user_message_chars`, `attachment_count`
 
 ### Attribution
 

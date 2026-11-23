@@ -728,7 +728,7 @@ def test_text_path_an_invalid_leaked_sibling_costs_that_field_only(counters):
 
 
 def test_non_dict_body_is_returned_unchanged():
-    assert _normalize_state_updates([1], TerminalResponse) == [1]
+    assert _normalize_state_updates([1], TerminalResponse) == ([1], None)
 
 
 def test_repair_vocabulary_is_pinned():
