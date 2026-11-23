@@ -568,15 +568,7 @@ async def retire(
         resolved_id = await _resolve_enterprise_id(
             subject=subject, enterprise_id=enterprise_id
         )
-        try:
-            state = await _read_state(resolved_id)
-        except tenant_retirement.EnterpriseRowMissing as exc:
-            raise _Refused(
-                f"{refusal_text(exc)}.\n"
-                "   That is a broken row, not an absent tenant: the retirement "
-                "has nowhere to record its policy and no anchor to release. "
-                "Repair the enterprise row first. Nothing was written."
-            ) from exc
+        state = await _read_state(resolved_id)
         if state is None:
             raise _Refused(
                 f"No enterprise '{resolved_id}' exists. Check the id — a "
