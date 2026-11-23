@@ -20,6 +20,7 @@ called, or the real eraser over a client whose backend is unreachable.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.container.providers import services
 from faultmaven.exceptions import ServiceException
+from faultmaven.infrastructure.logging.config import build_log_formatter
 from faultmaven.infrastructure.observability import opik_sdk
 from faultmaven.infrastructure.observability.trace_erasure import LLMTraceEraser
 from faultmaven.infrastructure.persistence.models import (
@@ -94,6 +96,15 @@ from tests.unit.modules.knowledge.test_drafts_live_in_the_database_1950 import (
     TEMPLATE,
 )
 from tests.utils import regex_only_sanitizer
+
+
+def _written(caplog) -> str:
+    """Every record as the chain writes it (principles §7, rules 4 and 5): the
+    message, its fields and the frames of ``exc_info``, never an exception's
+    text. ``caplog.text`` is pytest's own formatter, which prints the text."""
+    chain = build_log_formatter("json", False, io.StringIO())
+    return "\n".join(chain.format(record) for record in caplog.records)
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.knowledge_base]
 
@@ -334,8 +345,9 @@ class TestTheDraftDelete:
 
         assert answered.status_code == 500
         assert answered.json()["detail"] == "Failed to delete draft"
-        assert "ServiceException <- ConnectError" in caplog.text
-        assert BODY not in caplog.text and BODY not in answered.text
+        written = _written(caplog)
+        assert "ServiceException <- ConnectError" in written
+        assert BODY not in written and BODY not in answered.text
         assert (await _state(kb.factory))[0] == {"d1": "draft"}
 
     async def test_no_trace_backend_deletes_with_no_erase(self, stack):
@@ -402,8 +414,9 @@ class TestTheDocumentDelete:
 
         assert answered.status_code == 500
         assert answered.json()["detail"] == "Failed to delete document"
-        assert "ServiceException <- ConnectError" in caplog.text
-        assert BODY not in caplog.text and BODY not in answered.text
+        written = _written(caplog)
+        assert "ServiceException <- ConnectError" in written
+        assert BODY not in written and BODY not in answered.text
         assert await _state(kb.factory) == ({"d_conv_a": "verified"}, {item_id})
 
     async def test_no_trace_backend_deletes_with_no_erase(self, stack):

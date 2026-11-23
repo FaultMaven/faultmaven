@@ -635,7 +635,7 @@ async def get_authorization_request(
         # Re-raise HTTPException (don't convert to 500)
         raise
     except Exception as e:
-        logger.error(f"Authorization error: {exception_log_name(e)}")
+        logger.error(f"Authorization error: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -709,7 +709,9 @@ async def post_authorization_approval(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Authorization approval error: {exception_log_name(e)}")
+        logger.error(
+            f"Authorization approval error: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -937,7 +939,7 @@ async def revoke(
     except OAuthProtocolError:
         raise
     except Exception as e:
-        logger.error(f"Token revocation error: {exception_log_name(e)}")
+        logger.error(f"Token revocation error: {exception_log_name(e)}", exc_info=e)
         # Invalid/unknown tokens are already treated as success inside the
         # generator (RFC 7009), so an exception here means the revocation was
         # NOT recorded (e.g. store outage). Surface it (RFC 7009 §2.2.1

@@ -214,7 +214,7 @@ async def get_llm_config(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get LLM config: {exception_log_name(e)}")
+        logger.error(f"Failed to get LLM config: {exception_log_name(e)}", exc_info=e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get LLM configuration",
@@ -370,7 +370,9 @@ async def update_llm_config(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to update LLM config: {exception_log_name(e)}")
+        logger.error(
+            f"Failed to update LLM config: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update LLM configuration",
@@ -1461,7 +1463,9 @@ async def get_env_config_status(
         )
 
     except Exception as e:
-        logger.error(f"Failed to get env config status: {exception_log_name(e)}")
+        logger.error(
+            f"Failed to get env config status: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get configuration status",

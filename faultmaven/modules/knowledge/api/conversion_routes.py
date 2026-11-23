@@ -758,7 +758,9 @@ async def delete_draft(
             is_platform_admin=current_user.is_platform_admin(),
         )
     except ServiceException as e:
-        logger.error(f"Failed to delete draft {draft_id}: {exception_log_name(e)}")
+        logger.error(
+            f"Failed to delete draft {draft_id}: {exception_log_name(e)}", exc_info=e
+        )
         raise HTTPException(status_code=500, detail="Failed to delete draft")
     if not success:
         raise HTTPException(status_code=404, detail="Draft not found")

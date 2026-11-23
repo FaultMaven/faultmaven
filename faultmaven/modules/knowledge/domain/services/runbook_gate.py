@@ -238,7 +238,10 @@ async def _run(
         raise GateOutputTooLarge() from None
     except (worker_process.WorkerFailed, ValueError) as e:
         logger.error(
-            "runbook checks %s did not answer: %s", names, exception_log_name(e)
+            "runbook checks %s did not answer: %s",
+            names,
+            exception_log_name(e),
+            exc_info=e,
         )
         raise GateUnavailable() from e
     finally:

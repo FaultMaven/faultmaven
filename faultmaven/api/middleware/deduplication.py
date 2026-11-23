@@ -180,7 +180,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             self.logger.error(
                 f"Deduplication error: {exception_log_name(e)}",
-                exc_info=False,
+                exc_info=e,
             )
             self.metrics["errors"] += 1
 
