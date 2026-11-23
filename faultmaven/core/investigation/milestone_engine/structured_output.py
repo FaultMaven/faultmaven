@@ -68,7 +68,10 @@ def _parse_schema_tool_call(
 
     # Recover the leaked parameter form, or coerce unresolvable state_updates
     # to {} so Pydantic field defaults apply (counted either way).
-    content_obj, pre_drop = _normalize_state_updates(content_obj, schema_model, cut=cut)
+    # Tool input the provider built can be partial and still parse.
+    content_obj, pre_drop = _normalize_state_updates(
+        content_obj, schema_model, cut=cut, cut_may_truncate=cut
+    )
 
     # Fix hallucinated enum values
     schema_dict = schema_model.model_json_schema()
@@ -146,11 +149,20 @@ def _synthesize_agent_response(parsed: Any, stop_reason: StopReason) -> Any:
 
 
 #: State fields the server never applies (#2811): ``outcome`` is recomputed by
-#: ``determine_turn_outcome``, which takes no model value, and nothing reads
-#: ``final_summary_update``, ``documentation_links`` or ``solution_feedback``.
-#: A prune of one loses nothing, so it is not a ``PARTIAL`` drop.
+#: ``determine_turn_outcome``, which takes no model value; the engine builds
+#: ``case.working_conclusion`` itself; ``evidence_quality_issues`` is only
+#: logged; and nothing reads ``final_summary_update``, ``documentation_links``
+#: or ``solution_feedback``. A prune of one loses nothing, so it is not a
+#: ``PARTIAL`` drop.
 _UNAPPLIED_STATE_FIELDS = frozenset(
-    {"outcome", "final_summary_update", "documentation_links", "solution_feedback"}
+    {
+        "outcome",
+        "working_conclusion",
+        "evidence_quality_issues",
+        "final_summary_update",
+        "documentation_links",
+        "solution_feedback",
+    }
 )
 
 
@@ -649,6 +661,7 @@ def _parse_text_as_schema(
     """
     content_obj = loads_llm_json(text)
     content_obj = _parse_nested_json(content_obj, schema_model)
+    # A strict parse proves the object closed: a cut took nothing from it.
     content_obj, pre_drop = _normalize_state_updates(content_obj, schema_model, cut=cut)
     schema_dict = schema_model.model_json_schema()
     content_obj = _fix_enum_violations(
@@ -784,7 +797,11 @@ def _recover_leaked_parameter(content_obj: dict, schema_model: Any) -> Optional[
 
 
 def _normalize_state_updates(
-    content_obj: Any, schema_model: Any, *, cut: bool = False
+    content_obj: Any,
+    schema_model: Any,
+    *,
+    cut: bool = False,
+    cut_may_truncate: bool = False,
 ) -> tuple[Any, Optional[StateDrop]]:
     """Settle ``state_updates`` before validation; count every repair.
 
@@ -797,16 +814,21 @@ def _normalize_state_updates(
     apply, counted as ``string_dropped``. A non-empty list (including a string
     that decoded to one) becomes ``{}`` too, counted as ``non_object_dropped``,
     so it can never fail the turn. Both warn. A list is lost state, and so is
-    a string that could have carried a state field: one in a cut response, or
-    one holding ``{`` or a state field's name. A filler string (``"none"``,
-    ``"N/A"``) carried no update.
+    a string that could have carried a state field: one holding ``{`` or an
+    applied state field's name, or any string when *cut_may_truncate*. A
+    filler string (``"none"``, ``"N/A"``) carried no update.
 
     A value that cannot have carried a state field — missing, ``null``, a
     blank string in a response that was not cut, ``[]``, a number or a bool —
     becomes ``{}`` and is counted as ``absent_defaulted``, without a warning:
-    nothing was lost, unless the response was cut, where a missing or ``null``
+    nothing was lost, unless *cut_may_truncate*, where a missing or ``null``
     value is lost state (the cut can have taken it). A value that is already an
     object is left alone and not counted.
+
+    *cut_may_truncate* says the body is provider-built tool input the provider
+    reported cut, which can be partial and still parse. A text body parsed
+    strictly is never partial, so its callers leave it false whatever *cut*
+    says.
 
     ``xml_recovered`` counts a recovery, not a validated body: validation comes
     after this and is counted on ``faultmaven_schema_validation_total``.
@@ -829,7 +851,7 @@ def _normalize_state_updates(
             repair = "xml_recovered"
             lost = False
         else:
-            lost = cut or _could_carry_state(su, schema_model)
+            lost = cut_may_truncate or _could_carry_state(su, schema_model)
             logger.warning(
                 "structured_output_state_updates_dropped: state_updates for %s "
                 "arrived as a string that is not the leaked parameter form; "
@@ -857,7 +879,7 @@ def _normalize_state_updates(
         # nothing is lost, unless a cut took a missing or null value.
         content_obj["state_updates"] = {}
         repair = "absent_defaulted"
-        lost = cut and su is None
+        lost = cut_may_truncate and su is None
     schema_state_updates_repairs_total.labels(schema=schema_name, repair=repair).inc()
     return content_obj, (StateDrop.WHOLE if lost else None)
 

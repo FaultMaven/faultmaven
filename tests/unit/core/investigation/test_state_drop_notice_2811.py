@@ -116,10 +116,10 @@ def _llm(body, stop_reason: StopReason, *, as_text: bool = False) -> LLMResponse
     )
 
 
-def _engine(body: dict, stop_reason: StopReason = StopReason.STOP):
+def _engine(body: dict, stop_reason: StopReason = StopReason.STOP, *, text=False):
     """A real engine on the single-shot structured path (``generation.py``'s
     caller of the ladder), whose provider answers every call with *body* as
-    the schema tool's arguments."""
+    the schema tool's arguments, or, with *text*, as JSON text in the reply."""
     from faultmaven.infrastructure.llm.structured_output_capability import (
         StructuredOutputCapability,
         StructuredOutputMode,
@@ -128,7 +128,7 @@ def _engine(body: dict, stop_reason: StopReason = StopReason.STOP):
 
     async def _generate(**kwargs):
         names = [t["function"]["name"] for t in kwargs.get("tools") or []]
-        response = _llm(body, stop_reason)
+        response = _llm(body, stop_reason, as_text=text)
         if names:
             response.tool_calls = [
                 ToolCall(
@@ -143,11 +143,20 @@ def _engine(body: dict, stop_reason: StopReason = StopReason.STOP):
     provider.provider_name = "anthropic"
     provider.route = AsyncMock(side_effect=_generate)
     provider.get_structured_output_strategy = MagicMock(
-        return_value=StructuredOutputStrategy(
-            capability=StructuredOutputCapability.FUNCTION_CALLING,
-            mode=StructuredOutputMode.FUNCTION_CALLING,
-            include_schema_in_prompt=False,
-            response_format=None,
+        return_value=(
+            StructuredOutputStrategy(
+                capability=StructuredOutputCapability.BEST_EFFORT,
+                mode=StructuredOutputMode.JSON_OBJECT,
+                include_schema_in_prompt=True,
+                response_format={"type": "json_object"},
+            )
+            if text
+            else StructuredOutputStrategy(
+                capability=StructuredOutputCapability.FUNCTION_CALLING,
+                mode=StructuredOutputMode.FUNCTION_CALLING,
+                include_schema_in_prompt=False,
+                response_format=None,
+            )
         )
     )
     repo = MagicMock()
@@ -156,11 +165,11 @@ def _engine(body: dict, stop_reason: StopReason = StopReason.STOP):
     return MilestoneEngine(provider, repo, investigation_tools=None), provider
 
 
-async def _turn(body, *, case=None, stop_reason=StopReason.STOP):
+async def _turn(body, *, case=None, stop_reason=StopReason.STOP, text=False):
     """``process_turn`` end to end; returns the result, the case, and the
     ladder's counter labels (outcomes, ``state_updates`` repairs)."""
     case = case or _case(absence=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE)
-    engine, provider = _engine(body, stop_reason)
+    engine, provider = _engine(body, stop_reason, text=text)
     with (
         patch.object(so, "schema_validation_total") as outcomes,
         patch.object(so, "schema_state_updates_repairs_total") as repairs,
@@ -168,11 +177,12 @@ async def _turn(body, *, case=None, stop_reason=StopReason.STOP):
         result = await engine.process_turn(
             case=case, user_message="the pods still fail", redaction_ctx=None
         )
-    # Positive control: the schema tool was offered, on the single shot.
+    # Positive control: the single shot, the schema tool offered unless *text*.
     offered = [
-        t["function"]["name"] for t in provider.route.await_args.kwargs["tools"] or []
+        t["function"]["name"]
+        for t in provider.route.await_args.kwargs.get("tools") or []
     ]
-    assert offered and "search_file" not in offered
+    assert (offered and "search_file" not in offered) if not text else not offered
     return (
         result,
         case,
@@ -436,6 +446,28 @@ NO_NOTE = [
     # Not cut: a missing value lost nothing.
     ("uncut_missing", {"agent_response": MODEL_TEXT}, ["clean"]),
     # ``outcome`` is recomputed by the server, so its prune loses nothing.
+    # A string naming only a field the server never applies carried nothing.
+    ("unapplied_name_only", _diag_body("outcome: conversation"), ["clean"]),
+    (
+        "pruned_working_conclusion_only",
+        _diag_body(
+            {
+                "working_conclusion": {"next_steps": 5},
+                "hypotheses_to_add": [VALID_HYPOTHESIS],
+            }
+        ),
+        ["pruned"],
+    ),
+    (
+        "pruned_evidence_quality_issue_only",
+        _diag_body(
+            {
+                "evidence_quality_issues": [{"evidence_id": "ev_1"}],
+                "hypotheses_to_add": [VALID_HYPOTHESIS],
+            }
+        ),
+        ["pruned"],
+    ),
     (
         "pruned_outcome_only",
         _diag_body({"outcome": 5, "hypotheses_to_add": [VALID_HYPOTHESIS]}),
@@ -611,13 +643,76 @@ def test_the_telemetry_event_admits_the_kind():
     assert event["state_drop"] == "whole"
 
 
-async def test_a_cut_body_with_an_object_is_marked_by_the_rungs_alone():
-    """What a cut took from an object cannot be told: no marker of its own."""
-    result, case, outcomes, repairs = await _turn(
-        _diag_body(), stop_reason=StopReason.MAX_TOKENS
+@pytest.mark.parametrize(
+    "state_updates, repairs",
+    [({}, []), ([], ["absent_defaulted"]), (5, ["absent_defaulted"])]
+    + [(True, ["absent_defaulted"])],
+    ids=["object", "empty_list", "number", "bool"],
+)
+async def test_cut_tool_input_that_carried_nothing_shows_no_note(
+    state_updates, repairs
+):
+    """An object is marked by the rungs alone (what a cut took from it cannot
+    be told), and ``[]``, a number or a bool could not have carried a field."""
+    result, case, outcomes, seen_repairs = await _turn(
+        _diag_body() | {"state_updates": state_updates},
+        stop_reason=StopReason.MAX_TOKENS,
     )
-    assert (outcomes, repairs) == (["clean"], [])
+    assert (outcomes, seen_repairs) == (["clean"], repairs)
     assert result["agent_response"] == MODEL_TEXT
+
+
+async def test_a_cut_tool_input_string_is_lost_state():
+    """Tool input the provider built can be partial and still parse, so even
+    a filler string may be the head of a cut object."""
+    result, case, outcomes, repairs = await _turn(
+        _diag_body("none"), stop_reason=StopReason.MAX_TOKENS
+    )
+    assert repairs == ["string_dropped"]
+    assert result["agent_response"] == MODEL_TEXT + SEP + WHOLE_NOTE
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"agent_response": MODEL_TEXT}, _diag_body() | {"state_updates": None}]
+    + [_diag_body("none")],
+    ids=["missing", "null", "filler"],
+)
+async def test_a_closed_text_body_lost_nothing_to_a_cut(body):
+    """A text body parses strictly, so a parse proves the object closed: the
+    cut landed after it, and the model's own omission is not a lost update."""
+    result, case, outcomes, repairs = await _turn(
+        body, stop_reason=StopReason.MAX_TOKENS, text=True
+    )
+    # Positive control: the body was parsed, and counted.
+    assert outcomes == ["clean"] and len(repairs) == 1
+    assert result["agent_response"] == MODEL_TEXT
+
+
+#: Pinned literally, so dropping a member fails here rather than shrinking
+#: the parametrization.
+UNAPPLIED = (
+    "outcome",
+    "working_conclusion",
+    "evidence_quality_issues",
+    "final_summary_update",
+    "documentation_links",
+    "solution_feedback",
+)
+
+
+@pytest.mark.parametrize("field", UNAPPLIED)
+def test_a_prune_of_an_unapplied_field_loses_no_update(field):
+    assert not so._loses_an_applied_update(f"state_updates.{field}")
+    assert not so._loses_an_applied_update(f"state_updates.{field}[0]")
+    assert not so._loses_an_applied_update(f"state_updates.{field}.likelihood")
+
+
+def test_the_unapplied_set_is_exactly_the_pinned_one():
+    assert so._UNAPPLIED_STATE_FIELDS == frozenset(UNAPPLIED)
+    # Positive controls: an applied field, and a path outside state_updates.
+    assert so._loses_an_applied_update("state_updates.hypotheses_to_add[0]")
+    assert not so._loses_an_applied_update("suggested_follow_ups[1]")
 
 
 async def test_the_drop_notice_heads_a_busy_turn():

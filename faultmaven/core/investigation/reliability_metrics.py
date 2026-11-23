@@ -60,11 +60,14 @@ Read as rates, never the numerator alone:
   one the model got right. ``repaired`` applies only when nothing was pruned
   or dropped; a body that needed both a repair and a prune is ``pruned``.
 
-  The A/B "schema-validity" metric is ``clean / total``. Read state loss as
-  ``(state_dropped + response_synthesized_state_dropped +
+  The A/B "schema-validity" metric is ``clean / total``. Read state loss,
+  approximately, as ``(state_dropped + response_synthesized_state_dropped +
   faultmaven_schema_state_updates_repairs_total{repair=~"string_dropped|non_object_dropped"}) /
-  total`` — the last term is state lost BEFORE validation, in a body that can
-  then still validate ``clean`` (fm#1753), so no outcome here shows it. An
+  total`` — the last term is state dropped BEFORE validation, in a body that
+  can then still validate ``clean`` (fm#1753), so no outcome here shows it.
+  It is approximate both ways: a filler ``string_dropped`` string (``"none"``)
+  carried no update, and a missing or ``null`` value in a cut tool-input
+  response, which can have lost state, is counted ``absent_defaulted`` (#2811). An
   undecodable leaked value is not in that term (fm#1823): a leaked parameter
   whose VALUE its field neither takes as text nor can decode is still
   recovered, counted ``xml_recovered``, and the ladder resets that one field,
@@ -155,11 +158,12 @@ schema_validation_total = Counter(
     "the degradation ladder), labeled by ``schema`` and final ``outcome`` "
     "(clean | repaired | pruned | state_dropped | response_synthesized | "
     "response_synthesized_state_dropped | failed). Schema-validity rate = "
-    "clean / total; state-loss rate = (state_dropped + "
+    "clean / total; state-loss rate, approximately = (state_dropped + "
     "response_synthesized_state_dropped + "
     "faultmaven_schema_state_updates_repairs_total{repair=~"
-    '"string_dropped|non_object_dropped"}) / total: state lost before '
-    "validation still validates clean.",
+    '"string_dropped|non_object_dropped"}) / total: state dropped before '
+    "validation still validates clean (a filler string_dropped lost nothing; "
+    "a value lost to a cut can be absent_defaulted).",
     ["schema", "outcome"],
     lazy_labels=_LAZY_SCHEMA,
 )

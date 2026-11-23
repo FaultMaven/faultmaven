@@ -2288,6 +2288,8 @@ class StructuredOutputGenerator:
             )
 
             content = response if isinstance(response, str) else response.content
+            # Only tool input the provider built can be partial and still parse.
+            from_tool_input = False
 
             # For function calling, extract from tool_calls
             if strategy.mode == StructuredOutputMode.FUNCTION_CALLING:
@@ -2295,6 +2297,7 @@ class StructuredOutputGenerator:
                 if hasattr(response, "tool_calls") and response.tool_calls:
                     # Extract arguments from first tool call
                     args = response.tool_calls[0].function.get("arguments", "{}")
+                    from_tool_input = True
 
                     # arguments may be a string (most providers) or dict (some providers)
                     if isinstance(args, dict):
@@ -2328,7 +2331,10 @@ class StructuredOutputGenerator:
                 # state_updates to {} so Pydantic defaults apply (counted). A
                 # body the provider reported cut is never recovered.
                 content_obj, pre_drop = _normalize_state_updates(
-                    content_obj, schema_model, cut=provider_reported_cut
+                    content_obj,
+                    schema_model,
+                    cut=provider_reported_cut,
+                    cut_may_truncate=provider_reported_cut and from_tool_input,
                 )
 
                 # Fix any hallucinated enum values (reuse class static method)
