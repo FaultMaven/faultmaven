@@ -82,8 +82,8 @@ attribute in :data:`SAFE_ATTRS` (``e.status_code``,
 sets on ``UserLookupFailed``, whose ``identifier`` stays unsafe, ...), and,
 in a print's arguments in a file :data:`PRINT_SAFE_ATTRS` names, the ids our
 code sets on the listed classes, read from a name an ``except`` of that class
-binds (``cli/provision_sso_org.py``: ``RemapRefused.mapped_to``, ...); or read
-by name
+binds, or its annotation types (``cli/provision_sso_org.py``:
+``RemapRefused.mapped_to``, ...); or read by name
 (``getattr(e, "status_code", None)``); an ``e is None`` test. An
 ``error_code`` is not one: a third party's can be any text, and only
 ``exception_log_name`` renders a code, after checking it. ``exc_info=``, and an
@@ -107,11 +107,14 @@ argument is read, and the exit is a site only in the forms listed above;
 nothing else about an exit makes it a site (its other arguments, a first
 argument in any other form, or an exit spelled any other way). A refusal
 construction is matched by name, so a class passed positionally, a keyword or
-assigned alias from another file, and a factory that builds the class from a
-parameter are not followed; a class that overrides ``__str__`` or sets
+assigned alias from another file, an annotated alias (``cls: type = X``), a
+conditional one (``cls = a if b else X``), and a factory that builds the class
+from a parameter are not followed; a class that overrides ``__str__`` or sets
 ``args`` after construction is read by its constructions only. A name's class
 for ``exit_refusing`` and :data:`PRINT_SAFE_ATTRS` comes from its ``except``
-clause or its annotation, which is trusted as written. A name filled in place,
+clause or its annotation, which is trusted as written, and a class an outer
+scope gives a name carries into the scopes nested in it (``walk`` merges
+``typed``). A name filled in place,
 by a
 method call (``logged.append(str(e))``) or a subscript store
 (``d[k] = str(e)``), is not tracked, so a projection built that way and then
@@ -202,7 +205,7 @@ SAFE_ATTRS = frozenset(
 
 #: Per file, per class: the ids our code sets on that class, safe in a print's
 #: arguments in that file only, read from a name an ``except`` of that class
-#: binds. Enterprise and IdP org ids, slugs and domains from the command's rows
+#: binds, or its annotation types. Enterprise and IdP org ids, slugs and domains from the command's rows
 #: and arguments (``tenant_bootstrap.py``, ``cli/provision_sso_org.py``).
 PRINT_SAFE_ATTRS = {
     "cli/provision_sso_org.py": {
@@ -388,7 +391,7 @@ def _reads(node: ast.AST, names: "_Names", context: str = OTHER) -> _Reads:
     """What ``node`` reads of ``names``. :data:`CLI_SAFE_CALLS` are safe in a
     print's argument under ``cli/`` and in a construction; the file's
     :data:`PRINT_SAFE_ATTRS` in a print's argument, on a name an ``except`` of
-    their class binds."""
+    their class binds, or its annotation types."""
     printing = context == PRINT
     cli_safe = context == CONSTRUCTION or (printing and names.path.startswith("cli/"))
     safe_calls = SAFE_CALLS | (CLI_SAFE_CALLS if cli_safe else frozenset())
