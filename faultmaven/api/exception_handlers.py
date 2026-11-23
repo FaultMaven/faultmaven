@@ -80,6 +80,8 @@ from faultmaven.exceptions import (
     walk_cause_chain,
 )
 from faultmaven.models.exceptions import (
+    EMBEDDER_FAILURE_CODES,
+    EmbedderUnavailable,
     IndexAdmissionRefused,
     LLMProviderError,
     OAuthProtocolError,
@@ -589,6 +591,54 @@ async def index_admission_refused_handler(
                 "Retry-After": str(busy.retry_after_seconds),
             },
         )
+    return await http_exception_handler(request, answer)
+
+
+#: The 503 detail of each ``EmbedderUnavailable.reason``, as ruled (#2461).
+EMBEDDER_UNAVAILABLE_DETAIL = {
+    "model_unavailable": (
+        "Indexing unavailable: the search model is not ready on this server, "
+        "so this document was not added. Retry in a few minutes."
+    ),
+    "worker_failed": (
+        "Indexing failed: the server could not prepare this document for "
+        "search, so it was not added. If it fails again, the document may be "
+        "too large; try splitting it."
+    ),
+    "queued_too_long": (
+        "Indexing busy: this document waited too long behind other indexing "
+        "on this server and was not added. Retry in a few minutes."
+    ),
+    "encode_timeout": (
+        "Indexing timed out: preparing this document for search took too "
+        "long, so it was not added. Retry later; a very large document may "
+        "need to be split."
+    ),
+}
+
+
+async def embedder_unavailable_handler(
+    request: Request, exc: EmbedderUnavailable
+) -> JSONResponse:
+    """Answer a document whose indexing embed failed, so nothing was indexed
+    (#2461): **503**, ``x-error-code`` the exception's code, and the sentence
+    for its ``reason``. Never the exception's own message (#1400), and no
+    ``Retry-After``."""
+    logger.error(
+        "Indexing failed (%s, %s): %s %s",
+        exception_log_name(exc),
+        exc.reason,
+        request.method,
+        request.url.path,
+        exc_info=exc,
+    )
+    # Matched against the tables, so only their values reach the response.
+    reason = next(r for r in EMBEDDER_UNAVAILABLE_DETAIL if r == exc.reason)
+    answer = HTTPException(
+        status_code=503,
+        detail=EMBEDDER_UNAVAILABLE_DETAIL[reason],
+        headers={"x-error-code": EMBEDDER_FAILURE_CODES[reason]},
+    )
     return await http_exception_handler(request, answer)
 
 
@@ -1339,6 +1389,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ItemTitleScrubUnavailable: item_title_scrub_unavailable_handler,
         IngestOutcomeUnknown: ingest_outcome_unknown_handler,
         IndexAdmissionRefused: index_admission_refused_handler,
+        EmbedderUnavailable: embedder_unavailable_handler,
         GateRefused: gate_refused_handler,
         GateUnavailable: gate_unavailable_handler,
         GateFailed: gate_failed_handler,

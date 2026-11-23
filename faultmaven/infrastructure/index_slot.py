@@ -49,7 +49,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, List, Optional, Tuple
 
 from faultmaven.infrastructure import encode_worker, worker_process
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, IndexAdmissionRefused
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
@@ -193,12 +193,19 @@ def encode_phases(guard_seconds: float) -> worker_process.Phases:
     )
 
 
+class ModelNotLoaded(RuntimeError):
+    """An encode whose model would not load (#2461): from a worker whose failure
+    is ``encode_worker.MODEL_NOT_LOADED``, or the evidence slot's in-process
+    encode. It reaches the guard through the ticket's future."""
+
+
 def encode_in_worker(
     ticket: "IndexTicket", texts: List[str], guard_seconds: float
 ) -> Optional[List[List[float]]]:
     """On the KB slot's thread: one ``encode_worker`` over ``texts``, its
     vectors, or None when it gave none (logged with how it ended). Raises
-    ``TimeoutError`` past its phases."""
+    ``TimeoutError`` past its phases, ``ModelNotLoaded`` when the model would
+    not load."""
     return asyncio.run(_encode_in_worker(ticket, texts, guard_seconds))
 
 
@@ -224,6 +231,8 @@ async def _encode_in_worker(
         return None  # its caller gave up: the worker is reaped
     if end.timed_out:
         raise TimeoutError(f"KB encode worker passed its {end.phase} phase bound")
+    if end.failure == encode_worker.MODEL_NOT_LOADED:
+        raise ModelNotLoaded(end.failure)
     if end.result is None:
         logger.error(
             "KB encode worker gave no vectors: ended in %s, exit %s%s",
@@ -452,7 +461,10 @@ class EncodeSlot:
         """The encode, on the slot's thread: in this process."""
         from faultmaven.infrastructure.model_cache import model_cache
 
-        return model_cache.embed_texts_sync(texts)
+        vectors = model_cache.embed_texts_sync(texts)
+        if vectors is None:
+            raise ModelNotLoaded(encode_worker.MODEL_NOT_LOADED)
+        return vectors
 
     def pending_seconds(self) -> float:
         """The estimate of the work held ahead of a new request."""
@@ -571,17 +583,16 @@ class IndexAdmission(EncodeSlot):
                 less ``WORKER_LOAD_SECONDS`` and ``COUNT_ALLOWANCE_SECONDS``. 503 while an encode is past its
                 time bound (``hung``), or when the queue leaves it no room
                 (``busy``).
-            KnowledgeBaseError: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window is
-                set and the tokens could not be counted: nothing can be
-                estimated.
+            EmbedderUnavailable: ``model_unavailable``, a window is set and
+                the tokens could not be counted: nothing can be estimated.
         """
         if not window_seconds or window_seconds <= 0:
             return self._issue(chunks, tokens, principal)
         if tokens is None:
-            raise KnowledgeBaseError(
+            raise EmbedderUnavailable(
                 "Indexing unavailable: the server could not prepare this document "
                 "for search indexing right now; retry shortly",
-                error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                reason="model_unavailable",
             )
         limit = window_seconds if size_limit_seconds is None else size_limit_seconds
         most = index_max_tokens(limit - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)

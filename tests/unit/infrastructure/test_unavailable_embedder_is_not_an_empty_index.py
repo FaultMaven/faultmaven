@@ -142,6 +142,7 @@ async def test_no_store_reports_an_unavailable_embedder_as_a_result(make_store, 
             await search(store)
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert type(excinfo.value) is KnowledgeBaseError  # a search, not a document
 
 
 @pytest.mark.asyncio
@@ -210,6 +211,7 @@ async def test_a_hanging_embedder_fails_closed_instead_of_hanging_the_turn(
                 await search(store)
 
     assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert type(excinfo.value) is KnowledgeBaseError  # a search, not a document
 
 
 @pytest.mark.asyncio

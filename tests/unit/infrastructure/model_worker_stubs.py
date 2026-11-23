@@ -125,10 +125,20 @@ def _count_pins(request, send):
     return counted
 
 
+def _no_model(request, send):
+    """The real encode job over a model cache that cannot load the model."""
+    from faultmaven.infrastructure import model_cache
+
+    model_cache.SENTENCE_TRANSFORMERS_AVAILABLE = False
+    return encode_worker._encode(request, send)
+
+
 def _encode(request, send):
     stub = os.environ["FM_MODEL_STUB"]
     if stub == "pins":
         return _pins(request, send)
+    if stub == "no_model":
+        return _no_model(request, send)
     texts = request["parts"]
 
     def work() -> str:

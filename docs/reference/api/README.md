@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.9.0
+**Version:** 15.10.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2938,7 +2938,10 @@ detail, and the draft stays a draft.
 With ``INDEX_REQUEST_WINDOW_SECONDS`` set, a draft whose indexing would not
 fit the window is refused before anything is written, and stays a draft:
 **413** ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503**
-``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055).
+``KNOWLEDGE_INDEXING_BUSY`` + ``Retry-After`` (#2055). An embed that failed
+is **503** ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` or
+``KNOWLEDGE_EMBEDDER_TIMEOUT``, its detail a sentence per cause, and the
+draft stays a draft (#2461).
 
 **Tags:** `knowledge-conversion`
 
@@ -2954,7 +2957,7 @@ fit the window is refused before anything is written, and stays a draft:
 - `200` — Successful Response
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or `KNOWLEDGE_EMBEDDER_TIMEOUT`: the embedding model was not ready, the encode failed, or it timed out; the detail tells the user whether to retry or split the document. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3086,7 +3089,10 @@ indexed inside this request. With a window set, one that indexing would not
 fit is refused before anything is saved: **413** `x-error-code:
 KNOWLEDGE_DOCUMENT_TOO_LARGE` when the document alone cannot fit (split
 it), **503** `x-error-code: KNOWLEDGE_INDEXING_BUSY` with `Retry-After`
-when the indexing queued on this server leaves no room for it.
+when the indexing queued on this server leaves no room for it. An embed
+that failed is **503** `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or
+`KNOWLEDGE_EMBEDDER_TIMEOUT`, its detail a sentence per cause; nothing is
+saved (#2461).
 
 **Tags:** `knowledge_base`
 
@@ -3106,7 +3112,7 @@ when the indexing queued on this server leaves no room for it.
 - `409` — Conflict. Told apart by `x-error-code`: `KB_REQUEST_IN_PROGRESS` (a request with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds; it may still be running then); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different file or different fields).
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or `KNOWLEDGE_EMBEDDER_TIMEOUT`: the embedding model was not ready, the encode failed, or it timed out; the detail tells the user whether to retry or split the document. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 
@@ -3336,7 +3342,10 @@ with **422**. With ``INDEX_REQUEST_WINDOW_SECONDS`` set, content whose
 re-indexing would not fit the window is refused with **413**
 ``KNOWLEDGE_DOCUMENT_TOO_LARGE`` or **503** ``KNOWLEDGE_INDEXING_BUSY`` +
 ``Retry-After``, as on upload. Either way nothing is saved, and search
-serves what it served before (#2055).
+serves what it served before (#2055). A failed re-index is **503** with
+one detail for every cause; an embed that failed also carries
+``x-error-code`` ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` or
+``KNOWLEDGE_EMBEDDER_TIMEOUT`` (#2461).
 
 **Tags:** `knowledge_base`
 
@@ -3355,7 +3364,7 @@ serves what it served before (#2055).
 - `200` — Successful Response (`object`)
 - `413` — Too large; nothing was saved. `x-error-code: KNOWLEDGE_DOCUMENT_TOO_LARGE`: indexing the document alone would not fit this deployment's request window, however long the client waits; split it into smaller documents. Without that code, the request exceeds MAX_UPLOAD_SIZE_MB.
 - `422` — Refused; nothing was saved. The new `content` holds a credential or a destructive command, or is longer than a draft may be (100,000 characters). Or the body did not bind. With `reason`, the runbook check stopped for the document alone, and nothing was saved: `validation_timeout` (it took too long to check), `validation_output_too_large` (too many problems to list) or `validation_too_large` (too large to check). Split it into smaller runbooks. Any other 422 carries `detail` alone. ([`HTTPValidationError`](#httpvalidationerror) | `object`)
-- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
+- `503` — Unavailable; nothing was saved. `x-error-code: KNOWLEDGE_INDEXING_BUSY`: within the request window there is no room for this document because other indexing is queued on this server, or an encode is stuck past its time bound; retry after `Retry-After` seconds. `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or `KNOWLEDGE_EMBEDDER_TIMEOUT`: the embedding model was not ready, the encode failed, or it timed out; the detail tells the user whether to retry or split the document. Nothing was saved. `x-error-code: RUNBOOK_VALIDATION_BUSY`: no runbook check was free within its wait; `RUNBOOK_VALIDATION_UNAVAILABLE`: the check could not run. Retry after `Retry-After` seconds.
 
 ---
 

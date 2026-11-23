@@ -160,6 +160,7 @@ async def test_an_encode_past_its_phases_is_killed_and_the_next_is_admitted(
     after = await _encode(["b"])
 
     assert timed_out.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert timed_out.value.reason == "encode_timeout"
     assert spawned[0].returncode == -signal.SIGKILL
     assert all(_dead(pid) for pid in _entered_pids(caplog))
     assert after == [[0.25] * 1024]
@@ -281,9 +282,26 @@ async def test_every_other_end_is_unavailable_and_writes_nothing(
         await _encode(["a", "b"])
 
     assert ended.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert ended.value.reason == "worker_failed"
     assert len(spawned) == 1
     if code is not None:
         assert spawned[0].returncode == code
+
+
+async def test_a_worker_whose_model_would_not_load_says_so(
+    encode_stub, spawned, settled
+):
+    """#2461: the real encode job, its model cache unable to load the model:
+    the worker's failure text names it, and the guard answers
+    ``model_unavailable``, not the ``worker_failed`` of any other failure."""
+    encode_stub("no_model")
+
+    with pytest.raises(KnowledgeBaseError) as ended:
+        await _encode(["a"])
+
+    assert ended.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert ended.value.reason == "model_unavailable"
+    assert [p.returncode for p in spawned] == [1]
 
 
 async def test_a_worker_that_cannot_start_is_unavailable(

@@ -25,6 +25,10 @@ THREAD_KNOBS = (
     "RAYON_NUM_THREADS",
 )
 
+#: The failure text of a worker whose model would not load, which the KB slot
+#: reads as ``index_slot.ModelNotLoaded`` (#2461).
+MODEL_NOT_LOADED = "BGE-M3 would not load"
+
 
 def _encode(request: Dict[str, Any], send) -> Callable[[], str]:
     threads = int(request["threads"])
@@ -40,7 +44,7 @@ def _encode(request: Dict[str, Any], send) -> Callable[[], str]:
         model_cache.THREAD_COUNT = threads
         model = model_cache.ModelCache().get_bge_m3_model("index-worker")
         if model is None:
-            raise RuntimeError("BGE-M3 would not load")
+            raise RuntimeError(MODEL_NOT_LOADED)
         vectors = model.encode(texts, batch_size=model_cache.ENCODE_BATCH_SIZE)
         raw = np.ascontiguousarray(vectors, dtype="<f4").tobytes()
         return base64.b64encode(raw).decode("ascii")

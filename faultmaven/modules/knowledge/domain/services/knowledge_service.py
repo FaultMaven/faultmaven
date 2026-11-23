@@ -1004,8 +1004,8 @@ class KnowledgeService:
 
         Raises:
             IndexAdmissionRefused: 413 or 503, see ``IndexAdmission.admit``.
-            KnowledgeBaseError: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window is
-                set and the tokens could not be counted.
+            EmbedderUnavailable: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window
+                is set and the tokens could not be counted.
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.embedding_guard import count_index_tokens
@@ -1463,7 +1463,7 @@ class KnowledgeService:
                 destructive command (422). Nothing has been written.
             IndexAdmissionRefused: an authored ingest that would not fit the
                 indexing window (413, or 503 behind other indexing; #2055).
-                Nothing has been written. So is a ``KnowledgeBaseError``
+                Nothing has been written. So is an ``EmbedderUnavailable``
                 ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` raised when a window is set
                 and the tokenizer would not load.
             IngestNotRecorded: ``record`` returned False. Nothing was

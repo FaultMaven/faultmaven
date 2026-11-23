@@ -34,7 +34,7 @@ from faultmaven.infrastructure.index_slot import (
     index_max_tokens,
 )
 from faultmaven.infrastructure.model_cache import model_cache
-from faultmaven.models.exceptions import IndexAdmissionRefused, KnowledgeBaseError
+from faultmaven.models.exceptions import EmbedderUnavailable, IndexAdmissionRefused
 
 pytestmark = [pytest.mark.unit]
 
@@ -189,10 +189,11 @@ def test_a_window_of_zero_refuses_nothing(cloud):
 
 
 def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
-    with pytest.raises(KnowledgeBaseError) as refused:
+    with pytest.raises(EmbedderUnavailable) as refused:
         IndexAdmission().admit(["c"], None, principal=USER, window_seconds=WINDOW)
 
     assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+    assert refused.value.reason == "model_unavailable"
     assert "could not prepare this document" in refused.value.message
 
 
@@ -368,10 +369,11 @@ async def test_a_request_timing_out_while_queued_says_it_waited_for_other_indexi
     monkeypatch.setattr(index_slot, "EMBED_BATCH_LOAD_SECONDS", 0.05)
     second = admission.admit_forced(["b"], 0, principal=USER)
 
-    with pytest.raises(KnowledgeBaseError, match="for other indexing") as waited:
+    with pytest.raises(EmbedderUnavailable, match="for other indexing") as waited:
         await _embed(second, "b")
 
     assert waited.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"
+    assert waited.value.reason == "queued_too_long"
     assert second._future.cancelled()
     encodes.release.set()
     await asyncio.wrap_future(future)
@@ -409,7 +411,8 @@ async def test_a_caller_that_gives_up_behind_the_host_lock_never_encodes(
     await _settled(admission)
 
     if gives_up == "times_out":
-        assert gave_up.type is KnowledgeBaseError
+        assert gave_up.type is EmbedderUnavailable
+        assert gave_up.value.reason == "queued_too_long"
         assert "for other indexing" in str(gave_up.value), gave_up.value
     assert encodes.started == [], "the job encoded after its caller gave up"
     assert admission.waiting_for_host_lock is False
