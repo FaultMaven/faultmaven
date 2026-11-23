@@ -467,17 +467,24 @@ class TestTokenRevocation:
     async def test_revoke_token_raises_on_store_failure(
         self, auth_service_with_store, revocation_store
     ):
-        """Revocation writes fail CLOSED: a store error surfaces as ServiceError."""
+        """Revocation writes fail CLOSED: a store error surfaces as ServiceError,
+        chained to the store's exception so its class can be named (#3004)."""
         from faultmaven.exceptions import ServiceError
+        from faultmaven.utils.exception_name import exception_log_name
+
+        store_error = ConnectionError("store down")
 
         async def boom(jti, ttl):
-            raise ConnectionError("store down")
+            raise store_error
 
         revocation_store.add_revoked_token = boom
 
-        with pytest.raises(ServiceError):
+        with pytest.raises(ServiceError) as raised:
             exp = int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())
             await auth_service_with_store.revoke_token(str(uuid.uuid4()), exp)
+
+        assert raised.value.__cause__ is store_error
+        assert exception_log_name(raised.value) == "ServiceError <- ConnectionError"
 
     @pytest.mark.asyncio
     async def test_revoke_token_raises_without_store(self, auth_service):

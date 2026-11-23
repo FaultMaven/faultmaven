@@ -1009,6 +1009,11 @@ def _except(cls: str) -> str:
             "cls = MembershipRemovalMisscoped\ndef f(e):\n    raise cls(f'x {e}')",
         ),
         (
+            "modules/x.py",
+            "def g():\n    f(incomplete=MembershipRemovalIncomplete)\n"
+            "def f(exc, incomplete):\n    raise incomplete(f'x {exc}') from exc",
+        ),
+        (
             "cli/x.py",
             "class _Refused(Exception):\n"
             "    def __init__(self, exc):\n        super().__init__(f'{exc}')",
@@ -1055,6 +1060,12 @@ def test_a_refusal_site_is_found(path, source):
         ("cli/x.py", _EXC + "    raise _Refused(refusal_text(exc))"),
         ("modules/x.py", _EXC + "    raise _Refused(refusal_text(exc))"),
         ("cli/x.py", _EXC + "    raise _Refused(f'x {exception_log_name(exc)}')"),
+        (
+            "modules/x.py",
+            "def g():\n    f(incomplete=MembershipRemovalIncomplete)\n"
+            "def f(exc, incomplete):\n"
+            "    raise incomplete(f'x {exception_log_name(exc)}') from exc",
+        ),
         ("cli/x.py", "def f(path):\n    raise _Refused(f'no ids in {path!r}')"),
         ("config/x.py", "def f(path):\n    raise RootSetRefusal(f'{path!r} x')"),
         ("config/x.py", _except("RootSetRefusal") + "    exit_refusing(str(exc))"),

@@ -28,6 +28,7 @@ from faultmaven.config.tenant_context import (
     get_current_enterprise_id,
     set_current_enterprise_id,
 )
+from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
     MembershipRemovalMisscoped,
@@ -156,11 +157,44 @@ async def test_failed_revocation_raises_and_names_the_half_state(
         await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
 
     orgs.remove_member.assert_awaited_once_with(ORG_ID, USER_ID)
-    message = str(exc.value)
-    assert "STILL VALID" in message
-    assert "Re-run" in message
-    assert "redis is gone" in message
+    # The failure is named by its class, never its text (#3004): the sentence
+    # is the operator's whole instruction, printed by fm-remove-org-member.
+    assert str(exc.value) == (
+        f"User {USER_ID} was removed from organization {ORG_ID}, but their token "
+        "revocation watermark could not be written: RuntimeError. Their "
+        "outstanding tokens are STILL VALID. Re-run the removal — it is "
+        "idempotent and will bump the watermark even though the membership row "
+        "is already gone."
+    )
     assert exc.value.__cause__ is auth_service.revoke_user_tokens.side_effect
+
+
+async def test_a_store_failure_is_named_by_its_class_through_the_real_revocation(
+    orgs,
+):
+    """The real ``revoke_user_tokens`` wraps the store's failure in its own
+    ``ServiceError``; chained, so the half-state names the store's class, and
+    neither link's text reaches the sentence (#3004)."""
+
+    class StoreDown(Exception):
+        pass
+
+    class FailingStore:
+        async def revoke_user_tokens_before(self, *args, **kwargs):
+            raise StoreDown("redis://:hunter2@cache-7.internal is gone")
+
+    service = OrganizationMembershipService(
+        organization_repository=orgs,
+        auth_service=AuthService(revocation_store=FailingStore()),
+    )
+
+    with pytest.raises(MembershipRemovalIncomplete) as exc:
+        await service.remove_member(ORG_ID, USER_ID, ENTERPRISE_ID)
+
+    message = str(exc.value)
+    assert "could not be written: ServiceError <- StoreDown. Their" in message
+    assert "hunter2" not in message
+    assert "cache-7" not in message
 
 
 async def test_refuses_when_the_tenant_context_names_a_different_org(
@@ -282,11 +316,15 @@ async def test_failed_revocation_after_role_change_names_the_half_state(
         await service.set_member_role(ORG_ID, USER_ID, MEMBER_ROLE_ID, ENTERPRISE_ID)
 
     orgs.update_member_role.assert_awaited_once_with(ORG_ID, USER_ID, MEMBER_ROLE_ID)
-    message = str(exc.value)
-    assert "STILL VALID" in message
-    assert "PREVIOUS role" in message
-    assert "Re-run" in message
-    assert "redis is gone" in message
+    # Named by its class, never its text (#3004).
+    assert str(exc.value) == (
+        f"User {USER_ID}'s role in organization {ORG_ID} was set to "
+        f"{MEMBER_ROLE_ID}, but their token revocation watermark could not be "
+        "written: RuntimeError. Their outstanding tokens are STILL VALID and "
+        "still carry the PREVIOUS role — if this was a demotion, they still hold "
+        "it. Re-run the same role change — it is idempotent and will bump the "
+        "watermark even though the role is already stored."
+    )
     assert exc.value.__cause__ is auth_service.revoke_user_tokens.side_effect
 
 

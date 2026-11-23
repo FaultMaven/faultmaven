@@ -3,8 +3,9 @@
 Principles §7 rule 1: a print names an exception by its class, never its text,
 which may embed a third party's value. An operator command's refusal is the
 exception: its own first-party refusal sentence, built only from literals, the
-command's arguments and identifiers our code holds, is the operator's whole
-instruction, and is printed whole. :func:`refusal_text` decides which by the
+command's arguments, identifiers our code holds, and a caught exception's class
+chain (``exception_log_name``), is the operator's whole instruction, and is
+printed whole. :func:`refusal_text` decides which by the
 exception's exact class, so a subclass, or a class nobody audited, prints its
 class name.
 
@@ -41,6 +42,11 @@ AUDITED_REFUSALS = frozenset(
         # 1 raise (through ``misscoped``): ids and literals.
         "faultmaven.modules.auth.domain.services.organization_membership_service"
         ".MembershipRemovalMisscoped",
+        # 1 raise (through ``incomplete``, shared with the role change):
+        # ``what_landed``, ``still_valid`` and ``retry_hint`` are ids and
+        # literals, and the caught failure is named by exception_log_name.
+        "faultmaven.modules.auth.domain.services.organization_membership_service"
+        ".MembershipRemovalIncomplete",
         # 1 raise: the setting's name and literals.
         "faultmaven.bootstrap.data_init.UnusableDataDirError",
         # 1 raise: the enterprise id.

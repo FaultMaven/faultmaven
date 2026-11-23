@@ -80,6 +80,7 @@ from datetime import datetime
 
 from faultmaven.config.tenant_context import get_current_enterprise_id
 from faultmaven.models.interfaces_user import IOrganizationRepository
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +276,7 @@ class OrganizationMembershipService:
             )
             raise incomplete(
                 f"{what_landed}, but their token revocation watermark could not "
-                f"be written: {exc}. {still_valid} {retry_hint}"
+                f"be written: {exception_log_name(exc)}. {still_valid} {retry_hint}"
             ) from exc
 
     async def remove_member(
