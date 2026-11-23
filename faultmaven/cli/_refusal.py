@@ -17,6 +17,8 @@ this module imports none of them.
 
 from __future__ import annotations
 
+import sys
+
 from faultmaven.utils.exception_name import exception_log_name
 
 #: ``module.qualname`` of each audited refusal class; each raise site audited
@@ -41,8 +43,6 @@ AUDITED_REFUSALS = frozenset(
         ".MembershipRemovalMisscoped",
         # 1 raise: the setting's name and literals.
         "faultmaven.bootstrap.data_init.UnusableDataDirError",
-        # Its sentence: the subject and the enterprise id.
-        "faultmaven.infrastructure.persistence.tenant_retirement.EnterpriseRowMissing",
         # 1 raise: the enterprise id.
         "faultmaven.infrastructure.persistence.tenant_bootstrap.EnterpriseNotUsable",
     }
@@ -51,8 +51,18 @@ AUDITED_REFUSALS = frozenset(
 
 def refusal_text(error: BaseException) -> str:
     """``error``'s message when its exact class is audited, else its class
-    name (:func:`exception_log_name`). For a ``print`` under ``cli/`` only."""
+    name (:func:`exception_log_name`). For a ``print``'s argument under
+    ``cli/`` only."""
     kind = type(error)
-    if f"{kind.__module__}.{kind.__qualname__}" in AUDITED_REFUSALS:
+    if f"{_module_name(kind.__module__)}.{kind.__qualname__}" in AUDITED_REFUSALS:
         return str(error)
     return exception_log_name(error)
+
+
+def _module_name(module: str) -> str:
+    """The module's import name: a command run as ``python -m faultmaven.cli.x``
+    defines its classes in ``__main__``, whose spec names the module."""
+    if module != "__main__":
+        return module
+    spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    return getattr(spec, "name", None) or module

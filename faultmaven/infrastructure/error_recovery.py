@@ -444,7 +444,7 @@ class RecoveryManager:
 
             self.logger.info(
                 f"Recovery strategy '{strategy_name}' completed with result: "
-                f"{recovery_record['result']}"
+                f"{result.value}"
             )
             return result
 

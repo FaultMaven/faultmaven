@@ -55,9 +55,12 @@ async def test_a_case_cleanup_read_failure_is_named_by_class(lines):
     repository = MagicMock()
     repository.list_all_case_ids = AsyncMock(side_effect=_broken)
     store = MagicMock()
+    store.list_case_collection_ids = AsyncMock(return_value=[])
+    store.cleanup_orphaned_collections = AsyncMock(return_value=0)
     await case_cleanup.cleanup_orphaned_collections_task(store, repository)
     _named(lines(), "Failed to get case IDs", ": RuntimeError")
-    store.list_case_collections.assert_not_called()
+    store.list_case_collection_ids.assert_not_called()
+    store.cleanup_orphaned_collections.assert_not_called()
 
 
 class _Service(BaseService):

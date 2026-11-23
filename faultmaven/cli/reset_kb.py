@@ -127,7 +127,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, func, select, true
 
-from faultmaven.bootstrap.data_init import resolve_kb_chroma_dir
+from faultmaven.bootstrap.data_init import UnusableDataDirError, resolve_kb_chroma_dir
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.cli._refusal import refusal_text
@@ -305,6 +305,15 @@ def _unusable_knob_refusal(reason: str) -> str:
     )
 
 
+def _print_refusal(unusable: UnusableDataDirError | None, refusal: str | None):
+    """The pre-flight's refusal: the blank knob's own sentence, printed through
+    ``refusal_text`` (#2889), or the store refusal ``reset_kb`` composed."""
+    if unusable is not None:
+        print(_unusable_knob_refusal(refusal_text(unusable)))
+    else:
+        print(refusal)
+
+
 async def reset_kb(
     dry_run: bool,
     all_drafts: bool,
@@ -342,7 +351,6 @@ async def reset_kb(
         )
         return 1
 
-    from faultmaven.bootstrap.data_init import UnusableDataDirError
     from faultmaven.config.deployment_coherence import is_external_chroma_configured
     from faultmaven.config.settings import get_settings
 
@@ -369,6 +377,7 @@ async def reset_kb(
     # `--keep-chroma` skips every check — it is the explicit "wipe SQL only, I
     # know" opt-out, and none of these questions arise when nothing is removed.
     refusal = None
+    unusable = None
     chroma_dir = None
     try:
         chroma_dir = resolve_kb_chroma_dir(settings)
@@ -376,16 +385,17 @@ async def reset_kb(
         # A knob set to something no consumer can open. There is no path to
         # print and none to wipe, so there is nothing to do but say why.
         if not keep_chroma:
-            refusal = _unusable_knob_refusal(refusal_text(exc))
-    if refusal is None and not keep_chroma:
+            unusable = exc
+    if unusable is None and not keep_chroma:
         if remote_knob:
             refusal = _remote_chroma_refusal(remote_knob)
         elif not chroma_dir.exists():
             refusal = _missing_store_refusal(chroma_dir)
         elif not _looks_like_a_chroma_store(chroma_dir):
             refusal = _not_a_store_refusal(chroma_dir)
-    if refusal and not dry_run:
-        print(refusal)
+    refused = unusable is not None or bool(refusal)
+    if refused and not dry_run:
+        _print_refusal(unusable, refusal)
         return 1
 
     from faultmaven.container.providers.services import llm_trace_eraser
@@ -436,8 +446,8 @@ async def reset_kb(
         print()
 
         if dry_run:
-            if refusal:
-                print(refusal)
+            if refused:
+                _print_refusal(unusable, refusal)
                 print()
             print("(dry-run) No changes made.")
             return 0

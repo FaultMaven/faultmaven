@@ -12,7 +12,11 @@ print holds.
 """
 
 import importlib
+import os
+import subprocess
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -24,6 +28,8 @@ from faultmaven.cli import wipe_deployment as wd
 from faultmaven.cli._refusal import AUDITED_REFUSALS, refusal_text
 from faultmaven.cli._tenant import EnterpriseRefused
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.config.settings import set_env_var
+from faultmaven.config.tls_root_set import OWNED_VARIABLES, PG_ROOT_INPUT_VARIABLES
 from faultmaven.exceptions import UserLookupFailed
 from faultmaven.infrastructure.persistence.tenant_bootstrap import (
     EnterpriseNotUsable,
@@ -91,6 +97,26 @@ def test_anything_else_is_its_class(error, named):
     a subclass of an audited class that is not listed itself."""
     assert refusal_text(error).startswith(named)
     assert MARKER not in refusal_text(error)
+
+
+def test_a_refusal_under_dash_m_prints_its_sentence(tmp_path):
+    """``python -m faultmaven.cli.personal_tenant``: the command's classes are
+    defined in ``__main__``, which ``refusal_text`` resolves to the module's
+    spec name. An empty ``--subject`` is refused before any read."""
+    root = Path(__file__).resolve().parents[3]
+    skipped = set(OWNED_VARIABLES) | set(PG_ROOT_INPUT_VARIABLES)
+    env = {k: v for k, v in os.environ.items() if k not in skipped}
+    env.update(FAULTMAVEN_SKIP_DOTENV="1", TMPDIR=str(tmp_path), PYTHONPATH=str(root))
+    env["HOME"] = str(tmp_path)
+    set_env_var(env, "DATABASE_URL", f"sqlite:///{tmp_path}/fm.db")
+    result = subprocess.run(
+        [sys.executable, "-m", "faultmaven.cli.personal_tenant"]
+        + ["retire", "--subject", "  "],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "\n❌ --subject was given but is empty. " in result.stdout
+    assert "❌ _Refused" not in result.stdout
 
 
 # ── the prints, against 62fe2e23e ─────────────────────────────────────────

@@ -492,7 +492,8 @@ class TestFilesystemPathContainment:
         travels: ``FileStorageService.retrieve_file`` re-wraps it into a
         ``ServiceError`` whose message carries its own.
 
-        So the message names only the key, and the detail goes to the log.
+        So the message names only the key, and the log names the key and the
+        class: the resolved path is in neither (#2889).
         """
         (Path(temp_storage_dir) / "linked").symlink_to(
             outside_dir, target_is_directory=True
@@ -508,10 +509,10 @@ class TestFilesystemPathContainment:
         assert str(temp_storage_dir) not in message
         assert "linked/evidence.log" in message
 
-        # ...but the operator still gets the whole picture, server-side.
+        # ...and the log line names the refused key and the class.
         logged = "\n".join(r.getMessage() for r in caplog.records)
-        assert str(outside_dir) in logged
-        assert "outside the storage tree" in logged
+        assert "Refusing storage key 'linked/evidence.log': PathEscape" in logged
+        assert str(outside_dir) not in logged
 
     # -- An in-root symlink is legal, and deleting it deletes the LINK --------
 

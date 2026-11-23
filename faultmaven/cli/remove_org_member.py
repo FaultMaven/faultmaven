@@ -269,9 +269,10 @@ async def remove_org_member(
         # refused — and composition DOES refuse now, for the same reason
         # (cloud with no Redis client, #828): the operator got a traceback and
         # an unhandled-exception status instead. Nothing has been written at
-        # this point, so exit 1 is the honest outcome either way, and naming
-        # the cause loses nothing a traceback carried.
-        print(f"\n❌ {exception_log_name(exc)}")
+        # this point, so exit 1 is the honest outcome either way. The cause is
+        # named by its class, or by its sentence when it is an audited refusal
+        # (``refusal_text``, #2889), as ``fm-personal-tenant retire`` names it.
+        print(f"\n❌ {refusal_text(exc)}")
         print(
             "\n   Refusing to remove the membership: this process could not be "
             "composed, so it cannot revoke. Nothing has been written."
