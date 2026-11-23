@@ -173,6 +173,23 @@ def _loses_an_applied_update(path: str) -> bool:
     return head == "state_updates" and field not in _UNAPPLIED_STATE_FIELDS
 
 
+#: Prune passes before the ladder falls to step 3. Each pass that goes on
+#: pruned something, so the body shrinks and the loop ends by itself; a pass is
+#: needed per model level a prune climbs, because pruning a value can fail the
+#: validator of the model holding it (a fulfilled need whose only id was
+#: pruned, #3020). The response schemas nest at most two models below the
+#: response (state update, then entry), so the value and those two levels
+#: take three passes; a body that needs more falls to step 3.
+_PRUNE_PASSES = 3
+
+
+def _partial_drop(dropped: list[str]) -> Optional[StateDrop]:
+    """``PARTIAL`` when a pruned path lies under an applied state field."""
+    return (
+        StateDrop.PARTIAL if any(_loses_an_applied_update(p) for p in dropped) else None
+    )
+
+
 def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
     """Validate LLM structured output, degrading gracefully instead of 500ing.
 
@@ -192,15 +209,23 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
        it falls under (deleted, so it takes its default — ``outcome``, a
        ``documentation_links`` string). An invalid state field costs that
        field and nothing else, whether it arrived in the object or as a
-       leaked sibling; everything else on the turn survives.
+       leaked sibling; everything else on the turn survives. Prune and
+       re-validate repeat while a pass prunes something, at most
+       ``_PRUNE_PASSES`` times: a prune can fail the model that held the
+       value (a fulfilled need whose only id was pruned loses the need too).
     3. If it still fails (an error on no prunable path), drop
        ``state_updates`` entirely and keep the conversational
        ``agent_response`` — the turn survives as a conversational reply
-       rather than a 500. The state models have no required field and no
-       model validator that can reject, so step 2 places every error inside
-       a ``state_updates`` object: this rung is reached by an error on
-       ``state_updates`` itself or outside it, and stays as the backstop.
-    4. If even that fails, re-raise the original error (truly unrecoverable).
+       rather than a 500. The ladder always receives ``state_updates`` as an
+       object (``_normalize_state_updates``), and the state models have no
+       required field and no model validator that can reject, so step 2
+       places every error inside it within the passes the schemas need. No
+       engine schema reaches this rung, or the blanked-answer rung that also
+       drops ``state_updates``, today; both stay as backstops for an error
+       the prune step cannot place under ``state_updates``.
+    4. If even that fails, re-raise the original error (truly unrecoverable):
+       an error outside ``state_updates`` that step 2 cannot place, such as a
+       ``suggested_follow_ups`` that is a number.
 
     An out-of-range confidence usually never reaches step 2: the schema's
     validators rescale a percentage, coerce a bool, or drop the field of an
@@ -262,27 +287,33 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
         )
         return _exit(parsed, repairs, None)
     except ValidationError as original_error:
-        pruned, dropped, unhandled = _prune_invalid_sub_records(
-            content_obj, original_error, schema_model
-        )
-        partial = (
-            StateDrop.PARTIAL
-            if any(_loses_an_applied_update(p) for p in dropped)
-            else None
-        )
-        if dropped:
+        # ``dropped`` is every pass's paths, read for PARTIAL by field name;
+        # the log keeps each pass's own list, whose indexes count positions
+        # in the body that pass pruned.
+        pruned, dropped, by_pass = content_obj, [], []
+        error = original_error
+        for _ in range(_PRUNE_PASSES):
+            pruned, newly, unhandled = _prune_invalid_sub_records(
+                pruned, error, schema_model
+            )
+            if not newly:
+                break
+            dropped += newly
+            by_pass.append(newly)
             try:
                 parsed, repairs = _validate(pruned)
-                logger.warning(
-                    "structured_output_degraded: pruned invalid sub-record(s) "
-                    f"{dropped} from {schema_model.__name__} and continued "
-                    "(parse-time validator). Turn preserved.",
-                    extra={"schema": schema_model.__name__, "pruned": dropped},
-                )
-                _record("pruned")
-                return _exit(parsed, repairs, original_error, partial)
-            except ValidationError:
-                pass  # fall through to the conversational fallback
+            except ValidationError as again:
+                error = again  # a prune can fail what held it: prune again
+                continue
+            logger.warning(
+                "structured_output_degraded: pruned invalid sub-record(s) "
+                f"by pass {by_pass} from {schema_model.__name__} and continued "
+                "(parse-time validator). Turn preserved.",
+                extra={"schema": schema_model.__name__, "pruned_by_pass": by_pass},
+            )
+            _record("pruned")
+            return _exit(parsed, repairs, original_error, _partial_drop(dropped))
+        partial = _partial_drop(dropped)
 
         # What the prune step removed stays removed below: the fallback
         # rungs build on the pruned body, so a record already quarantined
@@ -297,8 +328,8 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
                 parsed, repairs = _validate(fallback)
                 # The prune path already logs its locs ("Turn preserved"); this
                 # branch is reached only when an error the prune step could
-                # not place remains (no list index, no optional sub-object or
-                # state field on its path) — log exactly those so each
+                # not place remains (no walkable list index, no optional
+                # sub-object or state field on its path) — log exactly those so each
                 # fallback is self-diagnosing (was it correctly non-prunable,
                 # or a prune gap?). Reference: S4 backstop observability.
                 non_prunable = [
@@ -394,7 +425,9 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
 
     - A ``loc`` carrying a list index — ``('state_updates',
       'evidence_to_add', 0, 'source_file_id')`` or ``(..., 0)`` — prunes the
-      entry at the DEEPEST index. General across any list field.
+      entry at the DEEPEST index, walking any shallower index on the way
+      (#3020). General across any list field. A path that cannot be walked
+      reports its errors as unhandled.
     - A ``loc`` with no index is placed on the deepest OPTIONAL sub-object
       along its path, read from ``schema_model``, and that sub-object is
       set to ``None`` — ``('state_updates', 'root_cause_conclusion',
@@ -423,7 +456,7 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
 
     obj = copy.deepcopy(content_obj)
     state_model = _state_model_of(schema_model) if schema_model is not None else None
-    to_remove: dict[tuple, set] = {}
+    to_remove: dict[tuple, list[dict]] = {}
     to_null: set[tuple] = set()
     to_delete: dict[str, list[dict]] = {}
     unhandled: list[dict] = []
@@ -431,9 +464,7 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
         loc = tuple(err.get("loc", ()))
         int_positions = [i for i, part in enumerate(loc) if isinstance(part, int)]
         if int_positions:
-            last = int_positions[-1]
-            list_path = loc[:last]
-            to_remove.setdefault(list_path, set()).add(loc[last])
+            to_remove.setdefault(loc[: int_positions[-1]], []).append(err)
             continue
         prefix = (
             _optional_sub_record_prefix(schema_model, loc)
@@ -450,21 +481,28 @@ def _prune_invalid_sub_records(content_obj, error, schema_model=None):
             unhandled.append(err)
 
     dropped: list[str] = []
-    for list_path, indices in to_remove.items():
+    # Deepest first: a prune inside an entry never shifts the index a
+    # shallower path walks, so no entry is pruned in another's place (#3020).
+    for list_path, errs in sorted(to_remove.items(), key=lambda kv: -len(kv[0])):
         node = obj
-        ok = True
         for key in list_path:
-            if isinstance(node, dict) and key in node:
+            if (isinstance(node, dict) and key in node) or (
+                isinstance(node, list) and isinstance(key, int) and 0 <= key < len(node)
+            ):
                 node = node[key]
             else:
-                ok = False
+                node = None
                 break
-        if ok and isinstance(node, list):
-            for idx in sorted(indices, reverse=True):
-                if 0 <= idx < len(node):
-                    del node[idx]
-                    path_str = ".".join(str(p) for p in list_path)
-                    dropped.append(f"{path_str}[{idx}]")
+        if not isinstance(node, list):
+            unhandled.extend(errs)
+            continue
+        path_str = "".join(
+            f"[{p}]" if isinstance(p, int) else f".{p}" for p in list_path
+        ).lstrip(".")
+        for idx in sorted({e["loc"][len(list_path)] for e in errs}, reverse=True):
+            if 0 <= idx < len(node):
+                del node[idx]
+                dropped.append(f"{path_str}[{idx}]")
 
     # Shortest first, so a sub-object inside one already nulled is skipped
     # (its parent is None by then) rather than reported twice.
@@ -1097,8 +1135,14 @@ def _parse_nested_json(obj, schema_model):
     return out
 
 
-def _fix_enum_violations(obj, schema_dict, root_defs=None):
-    """Recursively fix enum violations in the response object."""
+def _fix_enum_violations(obj, schema_dict, root_defs=None, *, in_state=False):
+    """Recursively fix enum violations in the response object.
+
+    A value with a close match takes it. One with none takes the enum's first
+    member, except inside ``state_updates`` (*in_state*), where it is left as
+    sent: validation fails on it and the prune rung takes its entry or field,
+    so the case never records a member the model did not send (#3021).
+    """
 
     if not isinstance(obj, dict):
         return obj
@@ -1131,11 +1175,15 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
                     )
                     fixed_obj[key] = corrected
                 else:
-                    fallback = valid_values[0]
+                    fallback = value if in_state else valid_values[0]
+                    shown = (
+                        "left for validation"
+                        if in_state
+                        else f"using fallback '{fallback}'"
+                    )
                     logger.warning(
                         f"No close match for hallucinated enum "
-                        f"(value_len={len(value)}), "
-                        f"using fallback '{fallback}' for field '{key}'"
+                        f"(value_len={len(value)}), {shown} for field '{key}'"
                     )
                     fixed_obj[key] = fallback
             else:
@@ -1159,7 +1207,12 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
                 nested_schema = prop_schema
 
             if nested_schema:
-                fixed_obj[key] = _fix_enum_violations(value, nested_schema, root_defs)
+                fixed_obj[key] = _fix_enum_violations(
+                    value,
+                    nested_schema,
+                    root_defs,
+                    in_state=in_state or key == "state_updates",
+                )
             else:
                 fixed_obj[key] = value
 
@@ -1185,7 +1238,9 @@ def _fix_enum_violations(obj, schema_dict, root_defs=None):
             for item in value:
                 if isinstance(item, dict) and item_schema:
                     fixed_list.append(
-                        _fix_enum_violations(item, item_schema, root_defs)
+                        _fix_enum_violations(
+                            item, item_schema, root_defs, in_state=in_state
+                        )
                     )
                 else:
                     fixed_list.append(item)

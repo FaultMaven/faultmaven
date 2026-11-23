@@ -14,14 +14,21 @@ note for the kind, placed by the rulings of 2026-11-23:
 
 Everything runs through the real parse: only the provider is doubled, and it
 returns raw bodies. The note texts are pinned verbatim here, not imported.
+The exception is the rungs that drop every ``state_updates``: after the
+bounded prune loop (#3020) no engine schema reaches them, so they are pinned
+as backstops, with the prune step unable to place the error
+(:func:`_unplaceable`) or a test-only schema whose state model rejects.
 """
 
 from __future__ import annotations
 
+import copy
 import json
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import Field, model_validator
 
 from faultmaven.core.investigation.case_telemetry import TELEMETRY_HANDOFF_KEY
 from faultmaven.core.investigation.milestone_engine import (
@@ -91,9 +98,9 @@ NOTE_PREFIXES = ("**Note:** the case updates", "**Note:** some case updates")
 MODEL_TEXT = "The pods fail AssumeRoleWithWebIdentity on the audience check."
 SEP = "\n\n---\n\n"
 
-#: A need whose evidence id is not a string. Its error sits in a list inside a
-#: list entry, which the prune rung cannot reach, so the ladder falls to
-#: ``state_dropped`` (or, with no answer, ``response_synthesized_state_dropped``).
+#: A fulfilled need whose only evidence id is not a string. The prune loop
+#: takes the id, then the need (#3020); the backstop rows run it with
+#: :func:`_unplaceable` in place of the prune step.
 BAD_NEED = {
     "need_id": "need_aaaaaaaaaaaa",
     "state": "fulfilled",
@@ -101,6 +108,19 @@ BAD_NEED = {
 }
 #: A create-path need with no purpose: pruned alone, at index 0.
 PRUNABLE_NEED = {"state": "fulfilled"}
+
+
+def _unplaceable(content_obj, error, schema_model=None):
+    """The prune step, placing nothing: every error comes back unhandled."""
+    return copy.deepcopy(content_obj), [], list(error.errors())
+
+
+def _backstop(outcomes):
+    """A rung that drops every ``state_updates`` is a backstop no engine schema
+    reaches today: its row runs with the prune step unable to place the error."""
+    if any(o.endswith("state_dropped") for o in outcomes):
+        return patch.object(so, "_prune_invalid_sub_records", _unplaceable)
+    return nullcontext()
 
 
 def _llm(body, stop_reason: StopReason, *, as_text: bool = False) -> LLMResponse:
@@ -284,7 +304,8 @@ async def test_a_rung_that_lost_state_shows_its_note(
     # cut can have taken their ``state_updates``.
     cut = "state_updates" not in body or body["state_updates"] is None
     stop = StopReason.MAX_TOKENS if cut else StopReason.STOP
-    result, case, seen_outcomes, seen_repairs = await _turn(body, stop_reason=stop)
+    with _backstop(outcomes):
+        result, case, seen_outcomes, seen_repairs = await _turn(body, stop_reason=stop)
 
     assert seen_outcomes == outcomes
     assert seen_repairs == repairs
@@ -343,7 +364,8 @@ PLACEHOLDER_ROWS = [
 async def test_a_placeholder_keeps_its_flag_with_the_note_under_it(
     body, stop, placeholder, outcomes, repairs, note, notice
 ):
-    result, case, seen_outcomes, seen_repairs = await _turn(body, stop_reason=stop)
+    with _backstop(outcomes):
+        result, case, seen_outcomes, seen_repairs = await _turn(body, stop_reason=stop)
 
     assert seen_outcomes == outcomes
     assert seen_repairs == repairs
@@ -608,9 +630,21 @@ def test_the_marker_survives_the_placeholder_copy():
 
 
 def test_whole_wins_over_partial():
-    """The reachable shape: a ``state_updates`` prune whose re-validation
-    falls to ``state_dropped``, counted there."""
+    """A ``state_updates`` prune whose re-validation falls to
+    ``state_dropped``, counted there. A backstop: no engine schema reaches it
+    today (#3020), so a test-only state model rejects at ``state_updates``
+    itself once its fields are valid, an error the prune step cannot place."""
     from faultmaven.core.investigation.schemas import StateDrop
+
+    class RejectingState(InvestigationResponse_Diagnosis.DiagnosisStateUpdate):
+        @model_validator(mode="after")
+        def _reject(self):
+            if any(j.content == "unplaceable" for j in self.journal_entries):
+                raise ValueError("rejected at state_updates")
+            return self
+
+    class Rejecting(InvestigationResponse_Diagnosis):
+        state_updates: RejectingState = Field(default_factory=RejectingState)
 
     seen = []
     real = so._prune_invalid_sub_records
@@ -627,13 +661,18 @@ def test_whole_wins_over_partial():
         parsed = so._validate_with_degradation(
             {
                 "agent_response": MODEL_TEXT,
-                # The second need is pruned; the first still fails.
-                "state_updates": {"evidence_need_updates": [BAD_NEED, PRUNABLE_NEED]},
+                # The need is pruned; then the state model rejects.
+                "state_updates": {
+                    "evidence_need_updates": [PRUNABLE_NEED],
+                    "journal_entries": [
+                        {"entry_type": "finding", "content": "unplaceable"}
+                    ],
+                },
             },
-            InvestigationResponse_Diagnosis,
+            Rejecting,
         )
     # Positive control: the prune really took a path under state_updates.
-    assert seen == ["state_updates.evidence_need_updates[1]"]
+    assert seen == ["state_updates.evidence_need_updates[0]"]
     assert [c.kwargs["outcome"] for c in outcomes.labels.call_args_list] == [
         "state_dropped"
     ]
