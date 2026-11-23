@@ -9,8 +9,8 @@ turns from ``OfferView``; the turn's narration reads the open offer and the
 recorded answers from it. On every fixture of the corpus
 (``offer_cases_2811``) both render byte for byte the stored oracle
 (``offer_oracle_2811.json``, captured on ``main`` at 5e5b21e42; an entry a
-later commit changed is that commit's to declare). Declared differences,
-#2811 S2c-1b: ``turn:offer:needs_info_no_cause`` and
+later commit added or changed is that commit's to declare). Declared
+differences, #2811 S2c-1b: ``turn:offer:needs_info_no_cause`` and
 ``turn:offer:needs_info_held_open``, rendered at c1ade8d8c, each differing
 from ``main`` at 5a1d3b130 only in its "Root cause" line (``main``: the bare
 ask).
@@ -74,7 +74,7 @@ def test_the_oracle_covers_the_corpus():
 
 
 @pytest.mark.parametrize("name", oc.NAMES)
-def test_each_narrator_renders_as_main_did(name):
+def test_each_narrator_renders_the_oracle(name):
     assert _json(oc.render(name)) == ORACLE[name]
 
 

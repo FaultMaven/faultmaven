@@ -22,8 +22,8 @@ decider read (decide-time, A4).
 
 The "Root cause" ask carries why the cause cannot be confirmed yet
 (``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
-the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when the model's
-line for the record's cause shows (``notices.empty_pool_text``). The
+the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when
+``notices.empty_pool_text`` gives a line for the record's cause. The
 decide-time message (``ResolutionReadiness.message``) keeps the ask without
 it until stage S3 gives its decider the record.
 """
@@ -111,9 +111,9 @@ _POOL_EMPTY_USER_LINES = {
 
 def pool_empty_user_line(cause: CauseOutcome) -> Optional[str]:
     """The user's half of why the confirmation pool is empty (#2811 S2c-1b):
-    the line for the record's ``pool_empty_reason``, shown exactly when the
-    model's half is (``notices.empty_pool_text``, the one guard), else
-    None."""
+    the line for the record's ``pool_empty_reason``, whenever
+    ``notices.empty_pool_text`` (the one guard) gives the model's half for
+    the record's cause, else None."""
     if empty_pool_text(cause) is None:
         return None
     return _POOL_EMPTY_USER_LINES[cause.pool_empty_reason]
