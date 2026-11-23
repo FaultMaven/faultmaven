@@ -165,9 +165,11 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
 the edit is not applied. No `Retry-After`.
 
 * Each code carries more than one cause, and the detail is a sentence per
-  cause that tells the user whether to retry or split the document. Branch on
-  `x-error-code`, never on the text; the cause is not on the wire. This
-  supersedes the `KNOWLEDGE_EMBEDDER_UNAVAILABLE` sentence 15.5.0 quoted.
+  cause that tells the user whether to retry or split the document. No field
+  carries the cause: branch on `x-error-code` and never parse the detail
+  text. This supersedes the `KNOWLEDGE_EMBEDDER_UNAVAILABLE` sentence 15.5.0
+  quoted; a token count that finds no slot within its wait is now
+  `KNOWLEDGE_EMBEDDER_TIMEOUT`.
 * `PUT` keeps its one detail for every re-index failure; only the header is
   new.
 * `POST /knowledge/drafts/verify-batch` records such an item `failed` with

@@ -142,11 +142,11 @@ class EmbedderUnavailable(KnowledgeBaseError):
 
     ``reason`` names the cause and determines ``error_code`` through
     ``EMBEDDER_FAILURE_CODES``: ``model_unavailable`` (the model would not
-    load, or a window is set and the tokens could not be counted) and
-    ``worker_failed`` (the encode worker ended without vectors) are
-    ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``; ``queued_too_long`` (it waited behind
-    other indexing and never started) and ``encode_timeout`` (the encode ran
-    past its bound) are ``KNOWLEDGE_EMBEDDER_TIMEOUT``. An unknown reason is a
+    load) and ``worker_failed`` (the encode or token-count worker gave no
+    answer) are ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``; ``queued_too_long`` (it
+    waited behind other indexing, or for a count slot, and never started) and
+    ``encode_timeout`` (the encode ran past its bound) are
+    ``KNOWLEDGE_EMBEDDER_TIMEOUT``. An unknown reason is a
     ``ValueError``.
 
     Raised by the index side of ``embedding_guard`` and by

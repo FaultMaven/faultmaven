@@ -161,9 +161,9 @@ INDEX_REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "room for this document because other indexing is queued on this "
             "server, or an encode is stuck past its time bound; retry after "
             "`Retry-After` seconds. `KNOWLEDGE_EMBEDDER_UNAVAILABLE` or "
-            "`KNOWLEDGE_EMBEDDER_TIMEOUT`: the embedding model was not ready, "
-            "the encode failed, or it timed out; the detail tells the user "
-            "whether to retry or split the document."
+            "`KNOWLEDGE_EMBEDDER_TIMEOUT`: preparing the document for search "
+            "failed or timed out; on upload and draft verify the detail tells "
+            "the user whether to retry or split the document."
         ),
         "headers": {
             "x-error-code": {

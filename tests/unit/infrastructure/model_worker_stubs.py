@@ -125,11 +125,17 @@ def _count_pins(request, send):
     return counted
 
 
-def _no_model(request, send):
-    """The real encode job over a model cache that cannot load the model."""
+def _no_model(request, send, panics=False):
+    """The real encode job over a model cache that cannot load the model: it
+    answers None, or its load panics."""
     from faultmaven.infrastructure import model_cache
 
+    def load(*_args):
+        raise PanicException("a load that panicked")
+
     model_cache.SENTENCE_TRANSFORMERS_AVAILABLE = False
+    if panics:
+        model_cache.ModelCache.get_bge_m3_model = load
     return encode_worker._encode(request, send)
 
 
@@ -137,8 +143,8 @@ def _encode(request, send):
     stub = os.environ["FM_MODEL_STUB"]
     if stub == "pins":
         return _pins(request, send)
-    if stub == "no_model":
-        return _no_model(request, send)
+    if stub in ("no_model", "model_panics"):
+        return _no_model(request, send, panics=stub == "model_panics")
     texts = request["parts"]
 
     def work() -> str:

@@ -632,8 +632,11 @@ async def embedder_unavailable_handler(
         request.url.path,
         exc_info=exc,
     )
-    # Matched against the tables, so only their values reach the response.
-    reason = next(r for r in EMBEDDER_UNAVAILABLE_DETAIL if r == exc.reason)
+    # Matched against the tables, so only their values reach the response; a
+    # reason outside them gets the sentence true of any cause.
+    reason = next(
+        (r for r in EMBEDDER_UNAVAILABLE_DETAIL if r == exc.reason), "worker_failed"
+    )
     answer = HTTPException(
         status_code=503,
         detail=EMBEDDER_UNAVAILABLE_DETAIL[reason],

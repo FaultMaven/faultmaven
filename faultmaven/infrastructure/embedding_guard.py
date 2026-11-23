@@ -154,8 +154,12 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
 
     The worker runs under ``TOKEN_COUNT_SLOTS`` slots keyed by ``principal``,
     the user who asked. A count waits for a slot for its hang bound at most.
-    None when it cannot count: no slot within the wait, any end but an answer,
-    or an answer that is not a count.
+    None when the worker gave no count: any end but an answer, or an answer
+    that is not a count.
+
+    Raises:
+        EmbedderUnavailable: ``queued_too_long``, no slot freed within the
+            wait (#2461).
     """
     global _count_slots_state
     if not isinstance(principal, str) or not principal:
@@ -173,7 +177,10 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
             await slots.acquire(*slot_key)
     except TimeoutError:
         logger.warning("BGE-M3 token count found no slot free")
-        return None
+        raise EmbedderUnavailable(
+            "Indexing unavailable: no token count slot freed within the wait",
+            reason="queued_too_long",
+        ) from None
     try:
         end = await worker_process.run(
             _TOKEN_COUNT_WORKER,
@@ -214,7 +221,10 @@ async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
     if ticket is not None and ticket.tokens is not None:
         return ticket.tokens
     if ticket is not None:
-        counted = await count_index_tokens(texts, principal=ticket.principal)
+        try:
+            counted = await count_index_tokens(texts, principal=ticket.principal)
+        except EmbedderUnavailable:  # no count slot freed: logged there
+            counted = None
         if counted is not None:
             return counted
         if not _byte_fallback_logged:

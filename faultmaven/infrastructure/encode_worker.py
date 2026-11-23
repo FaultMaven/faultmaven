@@ -42,7 +42,12 @@ def _encode(request: Dict[str, Any], send) -> Callable[[], str]:
         from faultmaven.infrastructure import model_cache
 
         model_cache.THREAD_COUNT = threads
-        model = model_cache.ModelCache().get_bge_m3_model("index-worker")
+        try:
+            model = model_cache.ModelCache().get_bge_m3_model("index-worker")
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except BaseException as e:  # a pyo3 panic too (#2851)
+            raise RuntimeError(MODEL_NOT_LOADED) from e
         if model is None:
             raise RuntimeError(MODEL_NOT_LOADED)
         vectors = model.encode(texts, batch_size=model_cache.ENCODE_BATCH_SIZE)

@@ -22,6 +22,7 @@ from faultmaven.api.exception_handlers import (
     MAX_DETAIL_CHARS,
     authorization_exception_handler,
     conflict_exception_handler,
+    embedder_unavailable_handler,
     get_exception_handlers,
     http_exception_handler,
     not_found_exception_handler,
@@ -465,6 +466,21 @@ class TestEmbedderUnavailable:
     def test_an_unknown_reason_is_refused(self):
         with pytest.raises(ValueError):
             EmbedderUnavailable("m", reason="KNOWLEDGE_EMBEDDER_TIMEOUT")
+
+    async def test_a_reason_outside_the_table_answers_the_worker_failed_503(
+        self, mock_request
+    ):
+        """Set after construction: the handler's 503, never a bare 500."""
+        error = EmbedderUnavailable("m", reason="encode_timeout")
+        error.reason = "unlisted"
+
+        response = await embedder_unavailable_handler(mock_request, error)
+
+        assert response.status_code == 503
+        assert response.headers["x-error-code"] == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
+        assert json.loads(response.body) == {
+            "detail": EMBEDDER_UNAVAILABLE_DETAIL["worker_failed"]
+        }
 
 
 # ============================================================

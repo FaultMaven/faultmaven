@@ -189,12 +189,12 @@ def test_a_window_of_zero_refuses_nothing(cloud):
 
 
 def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
+    """A count that gave no answer: the worker failed, not the model (#2461)."""
     with pytest.raises(EmbedderUnavailable) as refused:
         IndexAdmission().admit(["c"], None, principal=USER, window_seconds=WINDOW)
 
     assert refused.value.error_code == "KNOWLEDGE_EMBEDDER_UNAVAILABLE"
-    assert refused.value.reason == "model_unavailable"
-    assert "could not prepare this document" in refused.value.message
+    assert refused.value.reason == "worker_failed"
 
 
 def test_a_forced_ticket_is_never_refused(cloud):

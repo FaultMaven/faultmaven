@@ -67,6 +67,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
 from faultmaven.models.exceptions import (
     KNOWLEDGE_STORE_UNAVAILABLE,
+    EmbedderUnavailable,
     IndexAdmissionRefused,
     KnowledgeBaseError,
     is_knowledge_store_unavailable,
@@ -1004,21 +1005,26 @@ class KnowledgeService:
 
         Raises:
             IndexAdmissionRefused: 413 or 503, see ``IndexAdmission.admit``.
-            EmbedderUnavailable: ``KNOWLEDGE_EMBEDDER_UNAVAILABLE``, a window
-                is set and the tokens could not be counted.
+            EmbedderUnavailable: a window is set and the tokens could not be
+                counted: ``queued_too_long`` when no count slot freed within
+                its wait, else ``worker_failed``.
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.embedding_guard import count_index_tokens
         from faultmaven.infrastructure.index_slot import index_admission, now
 
         limit = float(get_settings().knowledge.index_request_window_seconds)
+        window = limit if window_seconds is None else window_seconds
         started = now()
-        tokens = (
-            await count_index_tokens(chunks, principal=principal) if limit > 0 else None
-        )
+        tokens = None
+        if limit > 0:
+            try:
+                tokens = await count_index_tokens(chunks, principal=principal)
+            except EmbedderUnavailable:  # no count slot freed within its wait
+                if window > 0 and not forced:
+                    raise  # else refused nothing, as a count with no answer
         if forced:
             return index_admission.admit_forced(chunks, tokens, principal=principal)
-        window = limit if window_seconds is None else window_seconds
         if window > 0:  # a window the count spent is busy, never "no window"
             window = max(window - (now() - started), 0.001)
         return index_admission.admit(
@@ -1464,8 +1470,8 @@ class KnowledgeService:
             IndexAdmissionRefused: an authored ingest that would not fit the
                 indexing window (413, or 503 behind other indexing; #2055).
                 Nothing has been written. So is an ``EmbedderUnavailable``
-                ``KNOWLEDGE_EMBEDDER_UNAVAILABLE`` raised when a window is set
-                and the tokenizer would not load.
+                raised when a window is set and the tokens could not be
+                counted.
             IngestNotRecorded: ``record`` returned False. Nothing was
                 published.
             IngestOutcomeUnknown: the completing COMMIT raised, and whether

@@ -583,16 +583,15 @@ class IndexAdmission(EncodeSlot):
                 less ``WORKER_LOAD_SECONDS`` and ``COUNT_ALLOWANCE_SECONDS``. 503 while an encode is past its
                 time bound (``hung``), or when the queue leaves it no room
                 (``busy``).
-            EmbedderUnavailable: ``model_unavailable``, a window is set and
-                the tokens could not be counted: nothing can be estimated.
+            EmbedderUnavailable: ``worker_failed``, a window is set and the
+                count gave no answer: nothing can be estimated.
         """
         if not window_seconds or window_seconds <= 0:
             return self._issue(chunks, tokens, principal)
         if tokens is None:
             raise EmbedderUnavailable(
-                "Indexing unavailable: the server could not prepare this document "
-                "for search indexing right now; retry shortly",
-                reason="model_unavailable",
+                "Indexing unavailable: this document's tokens were not counted",
+                reason="worker_failed",
             )
         limit = window_seconds if size_limit_seconds is None else size_limit_seconds
         most = index_max_tokens(limit - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
