@@ -447,7 +447,9 @@ class RedisUserStore:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to delete user {user_id}: {exception_log_name(e)}")
+            logger.error(
+                f"Failed to delete user {user_id}: {exception_log_name(e)}", exc_info=e
+            )
             return False
 
     async def list_users(
