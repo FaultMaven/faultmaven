@@ -421,6 +421,14 @@ async def remove_org_member(
         return 1
     except MembershipRemovalIncomplete as exc:
         print(f"\n❌ {refusal_text(exc)}")
+        # The sentence is the service's, shared with callers for whom an
+        # identical retry is right; a plain re-run of THIS command refuses a
+        # non-member, so the recovery is named here (#3008 review).
+        print(
+            "   To finish: re-run this command with --finish-interrupted to "
+            "write the outstanding revocation. A plain re-run refuses, because "
+            "the user is no longer a member."
+        )
         return EXIT_REVOCATION_INCOMPLETE
     except DBAPIError as exc:
         if not is_last_admin_violation(exc):

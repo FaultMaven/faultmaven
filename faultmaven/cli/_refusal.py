@@ -3,8 +3,9 @@
 Principles §7 rule 1: a print names an exception by its class, never its text,
 which may embed a third party's value. An operator command's refusal is the
 exception: its own first-party refusal sentence, built only from literals, the
-command's arguments and identifiers our code holds, is the operator's whole
-instruction, and is printed whole. :func:`refusal_text` decides which by the
+command's arguments, identifiers our code holds, and a caught exception's class
+chain (``exception_log_name``), is the operator's whole instruction, and is
+printed whole. :func:`refusal_text` decides which by the
 exception's exact class, so a subclass, or a class nobody audited, prints its
 class name.
 

@@ -577,10 +577,12 @@ async def test_failed_revocation_reports_the_half_state(wiring, capsys):
     assert code == remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
     out = capsys.readouterr().out
     # The service's sentence names the caught failure by its class, so the
-    # print is the whole sentence (#3004); exit 3 is the half-state's own code.
+    # print is the whole sentence (#3004), followed by this command's own
+    # recovery: a plain re-run refuses a non-member. Exit 3 is the
+    # half-state's own code.
     assert "could not be written: RuntimeError. " in out
     assert "STILL VALID" in out
-    assert "Re-run the removal" in out
+    assert "re-run this command with --finish-interrupted" in out
     assert "redis is gone" not in out
 
 
