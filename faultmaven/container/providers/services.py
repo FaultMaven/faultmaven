@@ -587,7 +587,8 @@ def _unbuilt_under_multi(name: str, error: BaseException) -> None:
     There ``None`` would read as "this deployment is not configured for it", an
     answer only configuration may give, so ``name``'s failure raises
     ``RequiredServiceConstructionError`` naming the error's class chain, never
-    its text. Under single-tenant it returns, and the caller warns and returns
+    its text. The caller has already logged its warning (name, class, frames)
+    in both modes; under single-tenant this returns, and the caller returns
     ``None`` as before.
     """
     # Unguarded: a try around this import would re-create the swallow.
@@ -622,11 +623,11 @@ def create_organization_repository() -> Any | None:
         logger.debug("OrganizationRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        _unbuilt_under_multi("OrganizationRepository", e)
         logger.warning(
             f"OrganizationRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("OrganizationRepository", e)
         return None
 
 
@@ -721,11 +722,11 @@ def create_enterprise_repository() -> Any | None:
         logger.debug("EnterpriseRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        _unbuilt_under_multi("EnterpriseRepository", e)
         logger.warning(
             f"EnterpriseRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("EnterpriseRepository", e)
         return None
 
 
@@ -748,11 +749,11 @@ def create_team_repository() -> Any | None:
         logger.debug("TeamRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        _unbuilt_under_multi("TeamRepository", e)
         logger.warning(
             f"TeamRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("TeamRepository", e)
         return None
 
 
@@ -779,10 +780,10 @@ def create_team_service(
     allowlist, KB visibility, the milestone engine and ``GET /teams`` all
     collapse to "this deployment has no team sharing" when it is ``None``.
 
-    So a missing dependency (team repository, tenant provider or enterprise
-    repository) under **multi**-tenant is **fatal**, not ``None``: it raises
-    ``RequiredServiceConstructionError``, keyed on ``requested_tenant_provider()``
-    for the first two.
+    So under **multi**-tenant a missing dependency (team repository, tenant
+    provider or enterprise repository), or a failure to construct the service,
+    is **fatal**, not ``None``: it raises ``RequiredServiceConstructionError``,
+    keyed on ``requested_tenant_provider()`` for the first two.
     Returning ``None`` there was a worse failure than the one it replaced: it
     did not merely disable the consent routes, it silently removed every
     team-shared case and runbook from every user's scope — quieter and wider
@@ -831,17 +832,24 @@ def create_team_service(
             "exactly like a correctly configured standalone deployment."
         )
 
-    from faultmaven.infrastructure.persistence.user_repository import (
-        SessionlessUserRepository,
-    )
-    from faultmaven.modules.auth.domain.services.team_service import TeamService
+    try:
+        from faultmaven.infrastructure.persistence.user_repository import (
+            SessionlessUserRepository,
+        )
+        from faultmaven.modules.auth.domain.services.team_service import TeamService
 
+        service = TeamService(
+            team_repository,
+            enterprise_repository=enterprise_repository,
+            user_repository=SessionlessUserRepository(),
+        )
+    except Exception as e:
+        raise RequiredServiceConstructionError(
+            "TeamService could not be constructed under TENANT_PROVIDER=multi: "
+            f"{exception_log_name(e)}"
+        ) from e
     logger.debug("TeamService initialized (multi-tenant)")
-    return TeamService(
-        team_repository,
-        enterprise_repository=enterprise_repository,
-        user_repository=SessionlessUserRepository(),
-    )
+    return service
 
 
 def create_share_repository() -> Any | None:
@@ -865,11 +873,11 @@ def create_share_repository() -> Any | None:
         logger.debug("ShareRepository initialized (sessionless)")
         return repository
     except Exception as e:
-        _unbuilt_under_multi("ShareRepository", e)
         logger.warning(
             f"ShareRepository initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("ShareRepository", e)
         return None
 
 
@@ -1059,11 +1067,11 @@ def create_tenant_provider(
         # workers, not just the web lifespan that also runs the coherence gate).
         raise
     except Exception as e:
-        _unbuilt_under_multi("TenantProvider", e)
         logger.warning(
             f"TenantProvider initialization failed: {exception_log_name(e)}",
             exc_info=True,
         )
+        _unbuilt_under_multi("TenantProvider", e)
         return None
 
 

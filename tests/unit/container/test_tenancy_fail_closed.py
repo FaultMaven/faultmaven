@@ -141,8 +141,10 @@ _FACTORIES = pytest.mark.parametrize(
 @pytest.mark.unit
 @pytest.mark.security
 @_FACTORIES
-def test_a_factory_that_fails_to_build_refuses_under_multi(build, target, name):
-    """The refusal names the class, never the text, and chains the original."""
+def test_a_factory_that_fails_to_build_refuses_under_multi(build, target, name, caplog):
+    """The refusal names the class, never the text, and chains the original.
+    The factory's warning is logged first, so the jobs path, which logs no
+    refusal, still names the factory."""
     error = ImportError("marker")
     with (
         patch(
@@ -159,6 +161,7 @@ def test_a_factory_that_fails_to_build_refuses_under_multi(build, target, name):
     assert "ImportError" in message
     assert "marker" not in message
     assert refused.value.__cause__ is error
+    assert f"{name} initialization failed: ImportError" in caplog.text
 
 
 @pytest.mark.unit
@@ -200,3 +203,23 @@ def test_the_team_service_refuses_a_missing_dependency_under_multi(
     ):
         with pytest.raises(RequiredServiceConstructionError, match=missing):
             services.create_team_service(provider, repository, MagicMock())
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_the_team_service_refuses_when_it_cannot_be_built_under_multi():
+    """Past the single-tenant check, a failure to build the service itself
+    refuses the start by class, never by text, like its dependencies."""
+    error = ImportError("marker")
+    with patch(
+        "faultmaven.modules.auth.domain.services.team_service.TeamService",
+        side_effect=error,
+    ):
+        with pytest.raises(RequiredServiceConstructionError) as refused:
+            services.create_team_service(MagicMock(), MagicMock(), MagicMock())
+
+    message = str(refused.value)
+    assert message.startswith("TeamService could not be constructed")
+    assert "ImportError" in message
+    assert "marker" not in message
+    assert refused.value.__cause__ is error

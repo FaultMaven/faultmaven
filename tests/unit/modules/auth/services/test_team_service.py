@@ -4,13 +4,22 @@ Covers the thin resolver service and the container factory ``create_team_service
 that wires it only in multi-tenant (Cloud) mode.
 """
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
 from faultmaven.container.providers.services import create_team_service
 from faultmaven.modules.auth.domain.services.team_service import TeamService
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+
+
+def _single_tenant():
+    """Pin ``TENANT_PROVIDER=single`` for a factory control, not the ambient one."""
+    settings = MagicMock()
+    settings.providers.tenant_provider = "single"
+    return patch(
+        "faultmaven.providers.tenancy.factory.get_settings", return_value=settings
+    )
 
 
 def _resolver(repo):
@@ -88,7 +97,8 @@ def test_create_team_service_wired_in_multi_tenant():
 @pytest.mark.unit
 def test_create_team_service_none_without_repository():
     """No repository → no service under single-tenant (multi refuses, #2342)."""
-    assert create_team_service(Mock(), None) is None
+    with _single_tenant():
+        assert create_team_service(Mock(), None) is None
 
 
 @pytest.mark.unit
@@ -125,5 +135,6 @@ def test_create_team_service_is_still_none_in_single_tenant():
 
 @pytest.mark.unit
 def test_create_team_service_none_without_provider():
-    """No tenant provider → no service."""
-    assert create_team_service(None, Mock()) is None
+    """No tenant provider → no service under single-tenant (multi refuses, #2342)."""
+    with _single_tenant():
+        assert create_team_service(None, Mock()) is None
