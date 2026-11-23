@@ -139,6 +139,11 @@ _SECRET_PATTERNS = [
     ),
 ]
 
+# The remedy each legacy-pattern credential and destructive-command error ends
+# with (#2391), so a refused author is told what to do.
+_CREDENTIAL_REMEDY = "Replace it with a placeholder, and rotate the credential."
+_DESTRUCTIVE_REMEDY = "Remove it, or replace it with a safe form."
+
 _RM_SEGMENT_RE = re.compile(r"(?im)\brm\b([^\n|;&]*)")
 _FORK_BOMB_RE = re.compile(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&?\s*\}\s*;\s*:")
 _DD_DEVICE_RE = re.compile(
@@ -737,7 +742,8 @@ def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
     A shape-detected secret (``_SHAPE_PATTERNS``, #2012) is one message per
     type, naming its line numbers and never its text, and an error only when
     its secret portion is not a placeholder. The errors are exactly what
-    :func:`enforce_runbook_security` refuses.
+    :func:`enforce_runbook_security` refuses. Every error ends with what to do
+    about it (#2391); a warning names nothing to do.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -766,7 +772,9 @@ def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
         if not values:
             continue
         if any(not _value_is_placeholder(v) for v in values):
-            errors.append(f"Security: {message} (hardcoded credential)")
+            errors.append(
+                f"Security: {message} (hardcoded credential). {_CREDENTIAL_REMEDY}"
+            )
         else:
             warnings.append(f"Security: {message} (placeholder — not blocking)")
 
@@ -781,14 +789,17 @@ def find_security_hazards(content: str) -> tuple[list[str], list[str]]:
         if positionals and _rm_target_is_catastrophic(positionals[0]):
             errors.append(
                 "Security: Dangerous command: recursive force-remove of a "
-                "root/top-level/home path (rm -rf)"
+                f"root/top-level/home path (rm -rf). {_DESTRUCTIVE_REMEDY}"
             )
             break
 
     if _FORK_BOMB_RE.search(content):
-        errors.append("Security: Dangerous: fork bomb")
+        errors.append(f"Security: Dangerous: fork bomb. {_DESTRUCTIVE_REMEDY}")
     if _DD_DEVICE_RE.search(content):
-        errors.append("Security: Potentially destructive: dd writing to a block device")
+        errors.append(
+            "Security: Potentially destructive: dd writing to a block device. "
+            f"{_DESTRUCTIVE_REMEDY}"
+        )
 
     return errors, warnings
 
