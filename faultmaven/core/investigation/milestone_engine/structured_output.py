@@ -173,6 +173,23 @@ def _loses_an_applied_update(path: str) -> bool:
     return head == "state_updates" and field not in _UNAPPLIED_STATE_FIELDS
 
 
+#: Prune passes before the ladder falls to step 3. Each pass that goes on
+#: pruned something, so the body shrinks and the loop ends by itself; a pass is
+#: needed per model level a prune climbs, because pruning a value can fail the
+#: validator of the model holding it (a fulfilled need whose only id was
+#: pruned, #3020). The response schemas nest at most two models below the
+#: response (state update, then entry), so the value and those two levels
+#: take three passes; a body that needs more falls to step 3.
+_PRUNE_PASSES = 3
+
+
+def _partial_drop(dropped: list[str]) -> Optional[StateDrop]:
+    """``PARTIAL`` when a pruned path lies under an applied state field."""
+    return (
+        StateDrop.PARTIAL if any(_loses_an_applied_update(p) for p in dropped) else None
+    )
+
+
 def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
     """Validate LLM structured output, degrading gracefully instead of 500ing.
 
@@ -192,15 +209,23 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
        it falls under (deleted, so it takes its default — ``outcome``, a
        ``documentation_links`` string). An invalid state field costs that
        field and nothing else, whether it arrived in the object or as a
-       leaked sibling; everything else on the turn survives.
+       leaked sibling; everything else on the turn survives. Prune and
+       re-validate repeat while a pass prunes something, at most
+       ``_PRUNE_PASSES`` times: a prune can fail the model that held the
+       value (a fulfilled need whose only id was pruned loses the need too).
     3. If it still fails (an error on no prunable path), drop
        ``state_updates`` entirely and keep the conversational
        ``agent_response`` — the turn survives as a conversational reply
-       rather than a 500. The state models have no required field and no
-       model validator that can reject, so step 2 places every error inside
-       a ``state_updates`` object: this rung is reached by an error on
-       ``state_updates`` itself or outside it, and stays as the backstop.
-    4. If even that fails, re-raise the original error (truly unrecoverable).
+       rather than a 500. The ladder always receives ``state_updates`` as an
+       object (``_normalize_state_updates``), and the state models have no
+       required field and no model validator that can reject, so step 2
+       places every error inside it within the passes the schemas need. No
+       engine schema reaches this rung, or the blanked-answer rung that also
+       drops ``state_updates``, today; both stay as backstops for an error
+       the prune step cannot place under ``state_updates``.
+    4. If even that fails, re-raise the original error (truly unrecoverable):
+       an error outside ``state_updates`` that step 2 cannot place, such as a
+       ``suggested_follow_ups`` that is a number.
 
     An out-of-range confidence usually never reaches step 2: the schema's
     validators rescale a percentage, coerce a bool, or drop the field of an
@@ -262,27 +287,29 @@ def _validate_with_degradation(content_obj, schema_model, *, pre_drop=None):
         )
         return _exit(parsed, repairs, None)
     except ValidationError as original_error:
-        pruned, dropped, unhandled = _prune_invalid_sub_records(
-            content_obj, original_error, schema_model
-        )
-        partial = (
-            StateDrop.PARTIAL
-            if any(_loses_an_applied_update(p) for p in dropped)
-            else None
-        )
-        if dropped:
+        pruned, dropped = content_obj, []
+        error = original_error
+        for _ in range(_PRUNE_PASSES):
+            pruned, newly, unhandled = _prune_invalid_sub_records(
+                pruned, error, schema_model
+            )
+            if not newly:
+                break
+            dropped += newly
             try:
                 parsed, repairs = _validate(pruned)
-                logger.warning(
-                    "structured_output_degraded: pruned invalid sub-record(s) "
-                    f"{dropped} from {schema_model.__name__} and continued "
-                    "(parse-time validator). Turn preserved.",
-                    extra={"schema": schema_model.__name__, "pruned": dropped},
-                )
-                _record("pruned")
-                return _exit(parsed, repairs, original_error, partial)
-            except ValidationError:
-                pass  # fall through to the conversational fallback
+            except ValidationError as again:
+                error = again  # a prune can fail what held it: prune again
+                continue
+            logger.warning(
+                "structured_output_degraded: pruned invalid sub-record(s) "
+                f"{dropped} from {schema_model.__name__} and continued "
+                "(parse-time validator). Turn preserved.",
+                extra={"schema": schema_model.__name__, "pruned": dropped},
+            )
+            _record("pruned")
+            return _exit(parsed, repairs, original_error, _partial_drop(dropped))
+        partial = _partial_drop(dropped)
 
         # What the prune step removed stays removed below: the fallback
         # rungs build on the pruned body, so a record already quarantined
