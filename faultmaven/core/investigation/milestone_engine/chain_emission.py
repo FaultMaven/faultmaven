@@ -44,7 +44,10 @@ def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> No
     to chain emission, which records it on the hypothesis's root once that root
     is resolved: the root is commonly emitted, or re-rooted onto, in the same
     turn (#2036). The rows the verdict cites resolve here, through this turn's
-    evidence slots, like every other cited id."""
+    evidence slots, like every other cited id. The verdict carries its own
+    entry's ``root_node_ref`` (None when it named none): the root it is about
+    is the one that entry named, not one another entry of the same hypothesis
+    named (#2536)."""
     verdict = getattr(entry, "root_is_terminal", None)
     if not isinstance(verdict, bool):
         return
@@ -53,7 +56,8 @@ def record_root_verdict(metadata: dict[str, Any], hyp_id: str, entry: Any) -> No
         _resolve_id_ref(ref, slots, "ev_")
         for ref in getattr(entry, "terminal_basis_evidence_ids", None) or []
     ]
-    metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, cited)
+    ref = getattr(entry, "root_node_ref", None) or None
+    metadata.setdefault("hyp_root_verdicts", {})[hyp_id] = (verdict, cited, ref)
 
 
 def resolve_root_ref(case: Case, ref: str | None, created: Sequence[str]) -> str | None:
@@ -272,20 +276,29 @@ def _apply_chain_emission(
     for old_path in abandoned:
         prune_abandoned_nodes(case, old_path)
 
-    # The why-stopping verdict lands on the root its entry named. A verdict sent
-    # with a re-root the engine declined or refused describes a root this
-    # hypothesis does not have, so it is dropped rather than pinned on the old one.
-    # A hypothesis still flat here may gain its root in the orphan pass
-    # (``_nudge_ambiguous_orphan_chains``); its verdict waits for that.
+    # The why-stopping verdict lands on the root its own entry named. A verdict
+    # whose entry named a root is recorded only when that ref resolved to a
+    # ROOT and the hypothesis now stands on it; one whose ref resolved to
+    # nothing or to a non-ROOT node, or whose attach or re-root the engine
+    # declined or refused, describes a root this hypothesis does not have, so
+    # it is dropped rather than pinned on the old root or on one the orphan
+    # pass gives it (#2536). A verdict whose entry named no root, whatever
+    # another entry of the same hypothesis named, records on the hypothesis's
+    # current root; a hypothesis still flat here may gain its root in the
+    # orphan pass (``_nudge_ambiguous_orphan_chains``), and the verdict waits
+    # for that.
     pending: dict[str, tuple] = {}
-    for hyp_id, (verdict, cited) in verdicts.items():
+    for hyp_id, (verdict, cited, named_ref) in verdicts.items():
         hyp = case.hypotheses.get(hyp_id)
         if hyp is None:
             continue
+        if named_ref:
+            named = _resolve_root(named_ref)
+            if named is not None and named == hyp.root_node_id:
+                _record_verdict_on_root(case, hyp, verdict, cited, metadata)
+            continue
         if not hyp.root_node_id:
             pending[hyp_id] = (verdict, cited)
-            continue
-        if hyp_id in root_refs and _resolve_root(root_refs[hyp_id]) != hyp.root_node_id:
             continue
         _record_verdict_on_root(case, hyp, verdict, cited, metadata)
     metadata["hyp_root_verdicts_pending"] = pending
@@ -412,8 +425,8 @@ def _nudge_ambiguous_orphan_chains(case: "Case", metadata: dict[str, Any]) -> No
     which we surface to the LLM next turn via ``system_feedback`` (T2a) so it
     re-roots or declares the chain separate — the engine does not guess.
 
-    A verdict sent with a hypothesis that was still flat at chain emission is
-    recorded on the root T1 gave it (#2036)."""
+    A verdict whose entry named no root, sent with a hypothesis that was still
+    flat at chain emission, is recorded on the root T1 gave it (#2036)."""
     ambiguous = resolve_orphan_chains(case, turn=emission_turn(case, metadata))
     for hyp_id, (verdict, cited) in (
         metadata.pop("hyp_root_verdicts_pending", None) or {}
