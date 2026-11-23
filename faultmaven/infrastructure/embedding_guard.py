@@ -65,6 +65,7 @@ from typing import Any, List, Optional, Sequence
 
 from faultmaven.infrastructure import index_slot, token_count_worker, worker_process
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
             parts=tuple(texts),
         )
     except worker_process.WorkerFailed as e:
-        logger.warning("BGE-M3 token count did not answer: %s", e)
+        logger.warning("BGE-M3 token count did not answer: %s", exception_log_name(e))
         return None
     finally:
         slots.release(*slot_key)

@@ -106,7 +106,9 @@ from sqlalchemy import text
 
 from faultmaven.cli._container import run_command
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -1259,7 +1261,7 @@ async def wipe_deployment(
     except Exception as exc:
         print(
             f"❌ Refusing: the database URL could not be resolved "
-            f"({type(exc).__name__}: {exc}). Nothing was written."
+            f"({exception_log_name(exc)}). Nothing was written."
         )
         return 1
 
@@ -1279,7 +1281,7 @@ async def wipe_deployment(
     except DeploymentCoherenceError as exc:
         # A posture refusal: the role is real but wrong. Exit 1 — refused,
         # nothing written — is exactly right.
-        print(f"❌ {exc}")
+        print(f"❌ {refusal_text(exc)}")
         return 1
     except Exception as exc:
         # NOT a refusal: the preflight connects, so an unreachable database or a
@@ -1288,7 +1290,7 @@ async def wipe_deployment(
         # nothing written" — indistinguishable from a clean refusal. A wipe
         # cannot proceed either way, but --verify must say INCONCLUSIVE rather
         # than imply a verdict, so the modes diverge.
-        print(f"❌ The database could not be reached: {type(exc).__name__}: {exc}")
+        print(f"❌ The database could not be reached: {exception_log_name(exc)}")
         if mode == "wipe":
             print("   Refusing to wipe. Nothing was written.")
             return 1

@@ -109,7 +109,9 @@ from pathlib import Path
 from faultmaven.cli._confirmation import require_confirmation
 from faultmaven.cli._container import run_with_container
 from faultmaven.cli._database_gate import require_persistent_database_or_exit
+from faultmaven.cli._refusal import refusal_text
 from faultmaven.config.tls_root_set import apply_root_set
+from faultmaven.utils.exception_name import exception_log_name
 
 #: argparse's ``description``. A literal, not derived from ``__doc__``: ``python
 #: -OO`` strips docstrings, and that expression would raise before argparse ran.
@@ -156,7 +158,9 @@ def read_case_ids(path: str) -> list[str]:
         # ValueError covers UnicodeDecodeError: a file that is not text at all
         # (the wrong path, a sqlite database, a gzip) is an operator mistake and
         # belongs in the refusal contract, not in a traceback.
-        raise _Refused(f"could not read --case-ids-file {path!r}: {exc}") from exc
+        raise _Refused(
+            f"could not read --case-ids-file {path!r}: {refusal_text(exc)}"
+        ) from exc
 
     ids: list[str] = []
     for line in raw.splitlines():
@@ -505,7 +509,7 @@ async def reassign_cases(
         # commonest way to get this wrong, and it costs nothing to find out now.
         named_ids = read_case_ids(case_ids_file)
     except _Refused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return 1
 
     print("\nInitializing...")
@@ -518,7 +522,7 @@ async def reassign_cases(
     try:
         enterprise = await bind_and_load_enterprise(enterprise_id)
     except EnterpriseRefused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return 1
 
     user_store = container.get_user_store()
@@ -535,16 +539,15 @@ async def reassign_cases(
             resolved[label] = await _resolve_user(user_store, identifier)
         except UserLookupFailed as exc:
             # Named per argument: "a user lookup failed" sends an operator to
-            # check both accounts, and the store's own identifier is the thing
-            # that says which one it was actually asked about.
+            # check both accounts, and the argument's own label and value say
+            # which one the store was asked about.
             print(
-                f"\n❌ Could not look up {label} "
-                f"{getattr(exc, 'identifier', identifier)!r}: the {exc.lookup} "
-                "lookup FAILED.\n"
+                f"\n❌ Could not look up {label} {identifier!r}: the "
+                f"{exc.lookup} lookup FAILED.\n"
                 "   This is not 'no such user' — the store did not answer, so "
                 "whether the account exists is unknown and NOTHING has been "
                 "written.\n"
-                f"   Underlying error: {exc}\n"
+                f"   Underlying error: {exception_log_name(exc)}\n"
                 "   Fix the store (check the API logs and the database), then "
                 "re-run."
             )
@@ -690,7 +693,7 @@ async def reassign_cases(
             actor=_actor(),
         )
     except _Refused as exc:
-        print(f"\n❌ {exc}")
+        print(f"\n❌ {refusal_text(exc)}")
         return 1
 
     print(f"\n✅ {len(named_ids)} case(s) now owned by {to_user.username}.")

@@ -34,7 +34,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Dict, Optional
 
 import faultmaven
-from faultmaven.utils.exception_name import exception_frames, logged_exception
+from faultmaven.utils.exception_name import (
+    exception_frames,
+    exception_log_name,
+    logged_exception,
+)
 
 if TYPE_CHECKING:
     import asyncio
@@ -501,13 +505,16 @@ def _bound(parent_pid: int, memory_bytes: int, cpu_seconds: int) -> None:
         if libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
             logger.warning("prctl(PR_SET_PDEATHSIG) failed: %s", ctypes.get_errno())
     except (OSError, AttributeError) as e:
-        logger.warning("prctl is unavailable, so this worker can outlive: %s", e)
+        logger.warning(
+            "prctl is unavailable, so this worker can outlive: %s",
+            exception_log_name(e),
+        )
     if os.getppid() != parent_pid:
         os._exit(1)  # the parent died before the death signal was armed
     try:
         Path("/proc/self/oom_score_adj").write_text("1000")
     except OSError as e:
-        logger.warning("oom_score_adj is not settable: %s", e)
+        logger.warning("oom_score_adj is not settable: %s", exception_log_name(e))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
     resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))

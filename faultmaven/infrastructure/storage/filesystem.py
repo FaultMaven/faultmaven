@@ -22,6 +22,7 @@ from faultmaven.infrastructure.storage.base import (
     StorageType,
     StoredFile,
 )
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,7 @@ class FilesystemStorageBackend(IFileStorageBackend):
                 tree="storage",
             )
         except PathEscape as exc:
-            logger.warning("Refusing storage key %r: %s", key, exc)
+            logger.warning("Refusing storage key %r: %s", key, exception_log_name(exc))
             raise PathEscape(f"Invalid storage key: {key!r}") from exc
         return candidate
 

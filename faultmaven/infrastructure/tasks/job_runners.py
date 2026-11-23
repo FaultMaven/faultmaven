@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from faultmaven.models.interfaces import IJobRunner
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class APSchedulerJobRunner(IJobRunner):
             self._started = False
             logger.info("APScheduler job runner stopped")
         except Exception as e:
-            logger.warning(f"Error stopping APScheduler: {e}")
+            logger.warning(f"Error stopping APScheduler: {exception_log_name(e)}")
 
     def _wrap_async_task(
         self, task_func: Callable, args: tuple, kwargs: dict
@@ -113,12 +114,16 @@ class APSchedulerJobRunner(IJobRunner):
                 try:
                     asyncio.run(task_func(*args, **kwargs))
                 except Exception as e:
-                    logger.error(f"Error in async task: {e}", exc_info=True)
+                    logger.error(
+                        f"Error in async task: {exception_log_name(e)}", exc_info=True
+                    )
             else:
                 try:
                     task_func(*args, **kwargs)
                 except Exception as e:
-                    logger.error(f"Error in sync task: {e}", exc_info=True)
+                    logger.error(
+                        f"Error in sync task: {exception_log_name(e)}", exc_info=True
+                    )
 
         return sync_wrapper
 
@@ -303,7 +308,9 @@ class InMemoryJobRunner(IJobRunner):
             else:
                 task_func(*args, **kwargs)
         except Exception as e:
-            logger.error(f"Error executing job {job_id}: {e}", exc_info=True)
+            logger.error(
+                f"Error executing job {job_id}: {exception_log_name(e)}", exc_info=True
+            )
 
     def _schedule_next_run(self, job_id: str):
         """Schedule the next run for a recurring job."""

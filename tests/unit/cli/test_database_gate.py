@@ -359,8 +359,11 @@ def test_each_exempt_script_exists_and_still_matches_the_scan(script):
     ), f"{script} no longer matches the scan: drop it from _NOT_DATABASE_SCRIPTS"
 
 
-#: What a command imports that opens no store: the log chain on stderr (#2888).
-_HARMLESS_COMMAND_IMPORTS = frozenset({"faultmaven.cli._log_chain"})
+#: What a command imports that opens no store: the log chain on stderr (#2888),
+#: and the refusal printer, which imports only the exception namer (#2889).
+_HARMLESS_COMMAND_IMPORTS = frozenset(
+    {"faultmaven.cli._log_chain", "faultmaven.cli._refusal.refusal_text"}
+)
 
 
 def _command_tree(command: str) -> ast.Module:

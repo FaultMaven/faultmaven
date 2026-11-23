@@ -28,6 +28,7 @@ from faultmaven.exceptions import ServiceException, ValidationException
 from faultmaven.models.api import JobStatus
 from faultmaven.models.interfaces import IJobService
 from faultmaven.utils.datetime import parse_utc_timestamp
+from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class JobService(IJobService):
             )
             logger.info(f"Created job {job_id} of type {job_type}")
         except Exception as e:
-            logger.error(f"Failed to create job {job_id}: {e}")
+            logger.error(f"Failed to create job {job_id}: {exception_log_name(e)}")
             raise ServiceException(f"Job creation failed: {e}") from e
 
         return job_id
@@ -107,7 +108,7 @@ class JobService(IJobService):
             )
 
         except Exception as e:
-            logger.error(f"Failed to retrieve job {job_id}: {e}")
+            logger.error(f"Failed to retrieve job {job_id}: {exception_log_name(e)}")
             raise ServiceException(f"Job retrieval failed: {e}") from e
 
     async def update_job_status(
@@ -151,7 +152,7 @@ class JobService(IJobService):
             return True
 
         except Exception as e:
-            logger.error(f"Failed to update job {job_id}: {e}")
+            logger.error(f"Failed to update job {job_id}: {exception_log_name(e)}")
             raise ServiceException(f"Job update failed: {e}") from e
 
     async def start_job(self, job_id: str) -> bool:
@@ -203,13 +204,16 @@ class JobService(IJobService):
                             cleaned_count += 1
 
                 except Exception as e:
-                    logger.warning(f"Error processing job key {key} for cleanup: {e}")
+                    logger.warning(
+                        f"Error processing job key {key} for cleanup: "
+                        f"{exception_log_name(e)}"
+                    )
 
             logger.info(f"Cleaned up {cleaned_count} expired jobs")
             return cleaned_count
 
         except Exception as e:
-            logger.error(f"Job cleanup failed: {e}")
+            logger.error(f"Job cleanup failed: {exception_log_name(e)}")
             return 0
 
     async def list_jobs(
@@ -249,7 +253,9 @@ class JobService(IJobService):
                         )
 
                 except Exception as e:
-                    logger.warning(f"Error processing job key {key}: {e}")
+                    logger.warning(
+                        f"Error processing job key {key}: {exception_log_name(e)}"
+                    )
 
             # Sort by created_at (newest first)
             jobs.sort(key=lambda x: x.created_at, reverse=True)
@@ -258,7 +264,7 @@ class JobService(IJobService):
             return jobs[offset : offset + limit]
 
         except Exception as e:
-            logger.error(f"Failed to list jobs: {e}")
+            logger.error(f"Failed to list jobs: {exception_log_name(e)}")
             return []
 
     def get_retry_after_seconds(self, job_status: JobStatus) -> int:

@@ -27,6 +27,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.jobs.reference_set import assess_reference_set
 from faultmaven.modules.case.contracts import ICaseRepository
+from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ async def cleanup_orphaned_collections_task(
             active_case_ids = await case_repository.list_all_case_ids()
             logger.debug(f"Found {len(active_case_ids)} case rows in the database")
         except Exception as e:
-            logger.error(f"Failed to get case IDs: {e}")
+            logger.error(f"Failed to get case IDs: {exception_log_name(e)}")
             return
 
         # The SAME fail-closed guard the CLI job and the storage sweep use
@@ -71,7 +72,7 @@ async def cleanup_orphaned_collections_task(
         try:
             collection_case_ids = await case_vector_store.list_case_collection_ids()
         except Exception as e:
-            logger.error(f"Failed to list case collections: {e}")
+            logger.error(f"Failed to list case collections: {exception_log_name(e)}")
             return
 
         verdict = assess_reference_set(
@@ -107,7 +108,9 @@ async def cleanup_orphaned_collections_task(
             logger.debug("Case cleanup completed: no orphaned collections found")
 
     except Exception as e:
-        logger.error(f"Error during case cleanup task: {e}", exc_info=True)
+        logger.error(
+            f"Error during case cleanup task: {exception_log_name(e)}", exc_info=True
+        )
 
 
 def _sync_cleanup_wrapper(
@@ -123,7 +126,9 @@ def _sync_cleanup_wrapper(
             cleanup_orphaned_collections_task(case_vector_store, case_repository)
         )
     except Exception as e:
-        logger.error(f"Error in sync cleanup wrapper: {e}", exc_info=True)
+        logger.error(
+            f"Error in sync cleanup wrapper: {exception_log_name(e)}", exc_info=True
+        )
 
 
 def start_case_cleanup_scheduler(
@@ -181,7 +186,10 @@ def start_case_cleanup_scheduler(
         return scheduler
 
     except Exception as e:
-        logger.error(f"Failed to start case cleanup scheduler: {e}", exc_info=True)
+        logger.error(
+            f"Failed to start case cleanup scheduler: {exception_log_name(e)}",
+            exc_info=True,
+        )
         return None
 
 
@@ -197,4 +205,6 @@ def stop_case_cleanup_scheduler(scheduler: Optional[BackgroundScheduler]):
             scheduler.shutdown()
             logger.info("Case cleanup scheduler stopped")
         except Exception as e:
-            logger.warning(f"Error stopping case cleanup scheduler: {e}")
+            logger.warning(
+                f"Error stopping case cleanup scheduler: {exception_log_name(e)}"
+            )

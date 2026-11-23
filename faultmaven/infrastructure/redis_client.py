@@ -16,6 +16,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.utils.exception_name import exception_log_name
 
 # Conditional Redis import — the redis package is installed for cloud; standalone uses FakeRedis
 try:
@@ -358,7 +359,7 @@ class RedisClientFactory:
                 logger.error("❌ Redis ping returned False")
                 return False
         except Exception as e:
-            logger.error(f"❌ Redis connection test failed: {e}")
+            logger.error(f"❌ Redis connection test failed: {exception_log_name(e)}")
             return False
 
 

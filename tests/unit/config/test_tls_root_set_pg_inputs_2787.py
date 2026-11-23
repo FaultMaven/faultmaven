@@ -31,6 +31,7 @@ from faultmaven.config.tls_root_set import (
     GSSENC_VARIABLE,
     OWNED_VARIABLES,
     PG_ROOT_INPUT_VARIABLES,
+    RootSetRefusal,
     apply_root_set,
     pg_root_inputs_in_url,
 )
@@ -95,8 +96,8 @@ def isolated(tmp_path, monkeypatch) -> SimpleNamespace:
 
 
 def _refusal() -> str:
-    with pytest.raises(SystemExit) as refusal:
-        apply_root_set()
+    with pytest.raises(RootSetRefusal) as refusal:
+        tls_root_set._apply_root_set()
     message = str(refusal.value)
     assert message.startswith("TLS root set: ") and "TLS_EXTRA_CA_FILE" in message
     assert not set(FILE_VARIABLES) & set(os.environ), "refused before any export"
@@ -125,8 +126,8 @@ def test_an_inherited_owned_variable_is_refused_before_a_postgres_input(
     foreign.write_bytes(b"not the set")
     monkeypatch.setenv("SSL_CERT_FILE", str(foreign))
     monkeypatch.setenv("PGSERVICE", "x")
-    with pytest.raises(SystemExit, match=r"^TLS root set: SSL_CERT_FILE="):
-        apply_root_set()
+    with pytest.raises(RootSetRefusal, match=r"^TLS root set: SSL_CERT_FILE="):
+        tls_root_set._apply_root_set()
 
 
 def test_a_crl_variable_written_only_in_the_dotenv_refuses(tmp_path, monkeypatch):

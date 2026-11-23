@@ -15,6 +15,8 @@ import logging
 import os
 from typing import List, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 # Feature detection
@@ -91,7 +93,9 @@ class PIIRedactor:
                 # ``BaseException`` would be over-catching: ``KeyboardInterrupt``
                 # and ``asyncio.CancelledError`` are somebody else's to handle,
                 # and swallowing them here would make a shutdown hang.
-                logger.warning(f"Failed to initialize Presidio: {e}")
+                logger.warning(
+                    f"Failed to initialize Presidio: {exception_log_name(e)}"
+                )
                 self._initialization_error = str(e)
                 self._analyzer = None
                 self._anonymizer = None
@@ -147,7 +151,7 @@ class PIIRedactor:
             return anonymized_result.text
 
         except Exception as e:
-            logger.error(f"PII redaction failed: {e}")
+            logger.error(f"PII redaction failed: {exception_log_name(e)}")
             # On error, return original text (fail-open)
             return text
 

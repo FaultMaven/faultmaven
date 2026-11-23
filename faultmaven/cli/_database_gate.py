@@ -59,7 +59,8 @@ def require_persistent_database_or_exit() -> None:
     try:
         settings = get_settings()
     except (DatabaseUrlWhitespaceError, ConfigurationError) as exc:
-        refusal = next(
+        # Typed for the census (#2889): only this class's text is printed.
+        refusal: Optional[DatabaseUrlWhitespaceError] = next(
             (
                 error
                 for error in (exc, exc.__cause__, exc.__context__)
@@ -116,7 +117,10 @@ def exit_refusing(reason: str) -> NoReturn:
     """Print ``❌ Refusing to run: <reason>`` on stderr, nothing on stdout, and exit 1.
 
     The one copy of the refusal's shape, used by the persistence gate and the
-    whitespace refusal above, and by ``alembic/env.py`` for both.
+    whitespace refusal above, by ``alembic/env.py`` for both and for the
+    database URL's Postgres root-input refusal
+    (``exit_refusing(pg_url_refusal(root_inputs))``), and by ``apply_root_set``
+    for the TLS root set's refusals (#2889).
     """
     print(f"❌ Refusing to run: {reason}", file=sys.stderr, flush=True)
     sys.exit(1)

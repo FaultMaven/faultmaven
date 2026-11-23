@@ -28,6 +28,7 @@ from faultmaven.cli._database_gate import require_persistent_database_or_exit
 from faultmaven.config.tls_root_set import apply_root_set
 from faultmaven.container import container
 from faultmaven.exceptions import UserLookupFailed
+from faultmaven.utils.exception_name import exception_log_name
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
 #: (it is deliberately not a console entrypoint), so a pod needs the API.
@@ -68,7 +69,7 @@ async def promote_to_platform_admin(username: str) -> bool:
             "'user not found'."
         )
         print("   Whether the account exists is unknown, and nothing was changed.")
-        print(f"   Underlying error: {exc}")
+        print(f"   Underlying error: {exception_log_name(exc)}")
         print("   Check the API logs and the database, then re-run.")
         return False
     if not user:
@@ -95,7 +96,7 @@ async def promote_to_platform_admin(username: str) -> bool:
             user_store, user, invoked_via="fm-promote-platform-admin"
         )
     except Exception as e:
-        print(f"❌ Failed to promote user: {e}")
+        print(f"❌ Failed to promote user: {exception_log_name(e)}")
         return False
 
     if not granted:

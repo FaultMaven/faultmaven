@@ -15,6 +15,8 @@ import inspect
 import logging
 from typing import Any, Callable, Iterable, Optional
 
+from faultmaven.utils.exception_name import exception_log_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +54,7 @@ async def teardown_step(what: str, step: Callable[[], Any]) -> Optional[BaseExce
     except GeneratorExit:
         raise
     except Exception as e:
-        logger.warning(f"{what} failed (non-critical): {e}")
+        logger.warning(f"{what} failed (non-critical): {exception_log_name(e)}")
     except BaseException as interrupted:
         return interrupted
     return None
