@@ -355,10 +355,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return self._create_rate_limit_response(e, request)
 
         except Exception as e:
-            # Log the error cleanly without trying to serialize exception objects
             self.logger.error(
                 f"Rate limiting error: {exception_log_name(e)}",
-                exc_info=False,  # Avoid serialization issues
+                exc_info=e,
             )
             self.metrics["errors"] += 1
 

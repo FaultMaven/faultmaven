@@ -17,15 +17,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from faultmaven.api.exception_handlers import get_exception_handlers
-from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.api.v1.auth_dependencies import (
+    get_current_user_optional,
+    require_authentication,
+)
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.modules.auth.api.oauth import get_oauth_service
 from faultmaven.modules.auth.api.oauth import router as oauth_router
 from faultmaven.modules.auth.api.rate_limiting import (
     require_oauth_rate_limit_authorize,
+    require_oauth_rate_limit_revoke,
 )
 from faultmaven.modules.auth.api.session import router as session_router
 from faultmaven.modules.auth.domain.models.auth import DevUser
@@ -33,6 +37,11 @@ from tests.unit.infrastructure.llm.test_log_lines_name_exceptions_2889 import (
     MARKER,
     _named,
     lines,  # noqa: F401 - fixture
+)
+from tests.unit.modules.auth.test_revocation_fails_closed import (
+    _auth_service,
+    _RaisingStore,
+    _token,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
@@ -72,6 +81,7 @@ def _oauth_app(oauth_service) -> FastAPI:
     app.dependency_overrides[require_authentication] = _user
     app.dependency_overrides[get_oauth_service] = lambda: oauth_service
     app.dependency_overrides[require_oauth_rate_limit_authorize] = lambda: None
+    app.dependency_overrides[require_oauth_rate_limit_revoke] = lambda: None
     return app
 
 
@@ -123,6 +133,43 @@ async def test_a_failed_authorization_approval_carries_its_frames(lines):
     assert answer.status_code == 500
     assert answer.json()["detail"] == "Internal server error"
     _framed(lines(), "Authorization approval error", "RuntimeError")
+
+
+async def test_a_revocation_that_was_not_recorded_carries_its_frames(lines):
+    """``POST /auth/oauth/revoke`` whose revocation write raises: RFC 7009's
+    503 ``temporarily_unavailable``, and the catch-all's line with its
+    frames."""
+    service = MagicMock()
+    service.revoke_token = AsyncMock(side_effect=ConnectionError(f"redis {MARKER}"))
+
+    answer = await _call(
+        _oauth_app(service),
+        "POST",
+        "/api/v1/auth/oauth/revoke",
+        data={"token": "t-1", "client_id": "faultmaven-copilot"},
+    )
+
+    assert answer.status_code == 503
+    assert answer.json()["error"] == "temporarily_unavailable"
+    _framed(lines(), "Token revocation error", "ConnectionError")
+
+
+# ── modules/auth/domain/services/auth_service.py ──────────────────────────
+
+
+async def test_an_unknown_revocation_state_carries_its_frames(lines):
+    """A bearer token checked against a revocation store whose read raises,
+    through ``get_current_user_optional``: the 503 the caller gets, and the
+    service's line with the store failure's frames."""
+    service = _auth_service(_RaisingStore(ConnectionError(f"store down {MARKER}")))
+
+    with pytest.raises(HTTPException) as refused:
+        await get_current_user_optional(MagicMock(), _token(service), service)
+
+    assert refused.value.status_code == 503
+    _framed(
+        lines(), "Revocation state unknown, refusing the request", "ConnectionError"
+    )
 
 
 # ── modules/auth/api/session.py ───────────────────────────────────────────

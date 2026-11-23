@@ -939,7 +939,7 @@ async def revoke(
     except OAuthProtocolError:
         raise
     except Exception as e:
-        logger.error(f"Token revocation error: {exception_log_name(e)}")
+        logger.error(f"Token revocation error: {exception_log_name(e)}", exc_info=e)
         # Invalid/unknown tokens are already treated as success inside the
         # generator (RFC 7009), so an exception here means the revocation was
         # NOT recorded (e.g. store outage). Surface it (RFC 7009 §2.2.1

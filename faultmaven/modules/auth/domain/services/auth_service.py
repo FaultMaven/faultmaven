@@ -893,6 +893,7 @@ class AuthService:
             logger.error(
                 "Revocation state unknown, refusing the request: %s",
                 exception_log_name(e),
+                exc_info=e,
             )
             raise RevocationStateUnknownError(kind=kind) from e
         return reason is not None

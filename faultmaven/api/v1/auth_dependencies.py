@@ -110,7 +110,9 @@ async def get_user_store(request: Request):
                     f"Container has user_store attr: {hasattr(container, 'user_store')}"
                 )
             except Exception as e:
-                logger.error(f"Failed to check container: {exception_log_name(e)}")
+                logger.error(
+                    f"Failed to check container: {exception_log_name(e)}", exc_info=e
+                )
             raise HTTPException(
                 status_code=503,
                 detail="User management service unavailable. Please check server startup logs.",

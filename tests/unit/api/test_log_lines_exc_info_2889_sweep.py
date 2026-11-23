@@ -14,25 +14,37 @@ are driven through their mounted router; the audit write and the user-store
 dependency, which answer by raising, through the function that holds them.
 """
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 from faultmaven.api.exception_handlers import get_exception_handlers
 from faultmaven.api.middleware.auth import require_platform_admin
+from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
+from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.api.operator_audit import record_operator_access
 from faultmaven.api.operator_user_scope import get_operator_user_scope
-from faultmaven.api.routes import admin_config
+from faultmaven.api.routes import admin_config, admin_usage
 from faultmaven.api.routes.admin import get_user_service
 from faultmaven.api.routes.admin import router as admin_router
 from faultmaven.api.routes.admin_config import router as admin_config_router
 from faultmaven.api.v1.auth_dependencies import get_user_store
 from faultmaven.api.v1.dependencies import get_llm_provider
+from faultmaven.config.protection import get_development_protection_settings
+from faultmaven.infrastructure.persistence import database
 from faultmaven.models.interfaces_operator_audit import OperatorAction
+from faultmaven.models.protection import RateLimitConfig
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.modules.knowledge.exceptions import (
+    IngestOutcomeUnknown,
+    ItemTitleScrubUnavailable,
+)
 from tests.unit.infrastructure.llm.test_log_lines_name_exceptions_2889 import (
     MARKER,
     _named,
@@ -295,3 +307,184 @@ async def test_an_unreadable_user_store_carries_its_frames(lines, error, event, 
     assert refused.value.status_code == 503
     assert refused.value.detail == detail
     _framed(lines(), event, type(error).__name__)
+
+
+def _container_unreadable():
+    """A container whose user-store read raises."""
+    container = MagicMock()
+    container.get_user_store.side_effect = RuntimeError(f"container {MARKER}")
+    return container
+
+
+async def test_an_unreadable_container_carries_its_frames(lines):
+    """``get_user_store`` with no store on ``app.state`` and a container whose
+    read raises: the 503, and the container check's line with its frames."""
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+
+    with patch("faultmaven.container.container", _container_unreadable()):
+        with pytest.raises(HTTPException) as refused:
+            await get_user_store(request)
+
+    assert refused.value.status_code == 503
+    _framed(lines(), "Failed to check container", "RuntimeError")
+
+
+# ── api/middleware/rate_limiting.py, api/middleware/deduplication.py ──────
+
+
+def _fail_closed_settings():
+    settings = get_development_protection_settings()
+    settings.fail_open_on_redis_error = False
+    settings.deduplication_enabled = True
+    settings.rate_limits = {
+        "global": RateLimitConfig(enabled=True, requests=5, window=60)
+    }
+    return settings
+
+
+def _http_request(path: str = "/api/v1/cases") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "root_path": "",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [],
+            "client": ("10.4.9.2", 1234),
+            "app": SimpleNamespace(state=SimpleNamespace()),
+        }
+    )
+
+
+async def _served(request):
+    return PlainTextResponse("served")
+
+
+async def _asgi(scope, receive, send):  # pragma: no cover - never reached
+    raise AssertionError("the route ran")
+
+
+async def test_a_failed_rate_limit_check_fails_closed_with_its_frames(lines):
+    """``RateLimitMiddleware.dispatch`` under ``fail_open_on_redis_error=False``
+    whose check raises: the 503, and the line with its frames."""
+    middleware = RateLimitMiddleware(app=_asgi, settings=_fail_closed_settings())
+    middleware._initialize = AsyncMock(return_value=True)
+    middleware._check_rate_limits = AsyncMock(
+        side_effect=ConnectionError(f"redis {MARKER}")
+    )
+
+    answer = await middleware.dispatch(_http_request(), _served)
+
+    assert answer.status_code == 503
+    _framed(lines(), "Rate limiting error", "ConnectionError")
+
+
+async def test_a_failed_deduplication_check_fails_closed_with_its_frames(lines):
+    """``DeduplicationMiddleware.dispatch`` under
+    ``fail_open_on_redis_error=False`` whose claim raises: the 503, and the
+    line with its frames."""
+    middleware = DeduplicationMiddleware(app=_asgi, settings=_fail_closed_settings())
+    middleware._initialized = True
+    middleware._should_skip = lambda request: False
+    middleware._claim_for = AsyncMock(side_effect=ConnectionError(f"redis {MARKER}"))
+
+    answer = await middleware.dispatch(_http_request(), _served)
+
+    assert answer.status_code == 503
+    _framed(lines(), "Deduplication error", "ConnectionError")
+
+
+# ── api/exception_handlers.py ─────────────────────────────────────────────
+
+
+async def _raised_through_the_app(error: Exception) -> httpx.Response:
+    """A route that raises ``error``, answered by the app's handlers."""
+    raising = APIRouter()
+
+    @raising.post("/raise")
+    async def _raise():
+        raise error
+
+    app = FastAPI()
+    app.include_router(raising)
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        return await c.post("/raise")
+
+
+def _from(error: Exception, cause: Exception) -> Exception:
+    """``error``, raised from ``cause``, with both tracebacks set."""
+    try:
+        try:
+            raise cause
+        except Exception as inner:
+            raise error from inner
+    except Exception as outer:
+        return outer
+
+
+async def test_an_unavailable_title_scrub_carries_its_frames(lines):
+    """An uncaught ``ItemTitleScrubUnavailable`` raised from a sanitizer
+    failure: the handler's 503, and its line with the frames of both links."""
+    error = _from(
+        ItemTitleScrubUnavailable("check could not run (ConnectionError)"),
+        ConnectionError(f"presidio {MARKER}"),
+    )
+
+    answer = await _raised_through_the_app(error)
+
+    assert answer.status_code == 503
+    _framed(lines(), "Title scrub unavailable", "ItemTitleScrubUnavailable")
+    line = _named(lines(), "Title scrub unavailable", "ConnectionError")
+    assert "ConnectionError:" in line["frames"]
+
+
+async def test_an_unknown_ingest_outcome_carries_its_frames(lines):
+    """An ``IngestOutcomeUnknown`` raised from a failed COMMIT: the handler's
+    500 ``KB_INGEST_OUTCOME_UNKNOWN``, and its line with the frames of both
+    links."""
+    error = _from(IngestOutcomeUnknown("kb-1"), ConnectionError(f"commit {MARKER}"))
+
+    answer = await _raised_through_the_app(error)
+
+    assert answer.status_code == 500
+    assert answer.headers["x-error-code"] == "KB_INGEST_OUTCOME_UNKNOWN"
+    _framed(lines(), "Authored ingest outcome unknown", "IngestOutcomeUnknown")
+    line = _named(lines(), "Authored ingest outcome unknown", "ConnectionError")
+    assert "ConnectionError:" in line["frames"]
+
+
+# ── infrastructure/llm/usage_report.py ────────────────────────────────────
+
+
+async def test_an_unreadable_usage_store_carries_its_frames(lines, monkeypatch):
+    """``GET /admin/llm/usage`` whose database session cannot be opened: the
+    route's 503 ``DATABASE_UNAVAILABLE``, and the report's line with the
+    frames."""
+
+    @asynccontextmanager
+    async def _refused():
+        raise ConnectionRefusedError(111, f"connect to {MARKER}")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(database, "get_db_session", _refused)
+    monkeypatch.setattr(admin_usage, "get_current_enterprise_id", lambda: "ent-1")
+    app = FastAPI()
+    app.include_router(admin_usage.router)
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+    app.dependency_overrides[require_platform_admin] = lambda: OPERATOR
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        answer = await c.get("/api/v1/admin/llm/usage")
+
+    assert answer.status_code == 503
+    assert answer.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
+    _framed(lines(), "llm_usage_report_unavailable", "ConnectionRefusedError")

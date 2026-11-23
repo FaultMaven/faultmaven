@@ -267,6 +267,7 @@ async def read_usage_report(
             "llm_usage_report_unavailable: the usage tables could not be read "
             "(error=%s)",
             type(exc).__name__,
+            exc_info=exc,
         )
         raise UsageStoreUnavailable() from exc
 
