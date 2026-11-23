@@ -13,13 +13,10 @@ no cause chain, so these lines are the only place its frames can be.
 Each case drives one arm through ``generate_structured_output`` with the #1770
 helpers and a send failure carrying :data:`MARKER`, captures every record at
 DEBUG, and renders each through the real chain's formatter
-(``build_log_formatter``). The marker is on no rendered line (the single-shot
-case leaves out the one line #2889 keeps open, :data:`REMAINDER`), the arm's
+(``build_log_formatter``). The marker is on no rendered line, the arm's
 line names the class and carries its frames, and the outcome is unchanged: the
 refusal, unchained, which the turn route answers 503.
 """
-
-import json
 
 import pytest
 
@@ -47,18 +44,6 @@ def _framed(rendered: list[str], event: str, cls: str) -> None:
     marker."""
     line = _named(rendered, event, cls)
     assert line["frames"].startswith(f"{cls}:"), line
-
-
-#: The rule-1 remainder #2889 keeps open (``generation.py``'s "failed after
-#: retries" line interpolates the original exception's text: recorded at
-#: https://github.com/FaultMaven/faultmaven/issues/2889#issuecomment-7093858459).
-#: Not this sweep's to change, so the single-shot case leaves that one line out
-#: of its marker check; every other line, the arm's own included, is held to it.
-REMAINDER = "Structured generation failed after retries"
-
-
-def _without_the_remainder(rendered: list[str]) -> list[str]:
-    return [line for line in rendered if REMAINDER not in json.loads(line)["event"]]
 
 
 def _failure() -> LLMException:
@@ -102,11 +87,7 @@ async def test_a_failed_structured_output_reissue_carries_its_frames(lines):
 
     await _refused(engine, tools=False)
 
-    _framed(
-        _without_the_remainder(lines()),
-        "Structured output: re-issue failed",
-        "LLMException",
-    )
+    _framed(lines(), "Structured output: re-issue failed", "LLMException")
 
 
 async def test_a_failed_generate_after_a_refusal_carries_its_frames(lines):
