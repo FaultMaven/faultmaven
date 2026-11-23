@@ -16,10 +16,11 @@ the branch:
   stood, lapsed after the drop, or closed but not lapsed (B3, ``TOKENS_FAIL``
   off: the error log path).
 
-Its output on ``main`` is ``offer_oracle_2811.json``, captured at 5e5b21e42 by
-running ``render_all`` with this file copied into a ``git archive`` extract of
-that commit, never typed by hand. ``POOL_EMPTY``'s entries (#2811 S2c-1b) were
-rendered on its branch; their render at 5a1d3b130 is in that PR.
+Its stored output is ``offer_oracle_2811.json``, captured on ``main`` at
+5e5b21e42 by running ``render_all`` with this file copied into a ``git
+archive`` extract of that commit, never typed by hand. ``POOL_EMPTY``'s two
+entries (#2811 S2c-1b) were rendered at c1ade8d8c; each differs from ``main``
+at 5a1d3b130 only in its "Root cause" line (``main``: the bare ask).
 """
 
 from __future__ import annotations

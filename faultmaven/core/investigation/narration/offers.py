@@ -22,9 +22,10 @@ decider read (decide-time, A4).
 
 The "Root cause" ask carries why the cause cannot be confirmed yet
 (``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
-the needs-info request (``RESOLUTION_NEEDS_INFO``) whose record holds a
-pool-empty reason. The decide-time message (``ResolutionReadiness.message``)
-keeps the ask without it until stage S3 gives its decider the record.
+the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when the model's
+line for the record's cause shows (``notices.empty_pool_text``). The
+decide-time message (``ResolutionReadiness.message``) keeps the ask without
+it until stage S3 gives its decider the record.
 """
 
 from typing import Optional, Sequence
@@ -109,14 +110,10 @@ _POOL_EMPTY_USER_LINES = {
 
 
 def pool_empty_user_line(cause: CauseOutcome) -> Optional[str]:
-    """The user's half of why the confirmation pool is empty (#2811 S2c-1b),
-    shown exactly when the model's half is (``notices.empty_pool_text``):
-    None for no reason, for a reason that names roots with its ids empty
-    (``HELD_OPEN`` and ``IDENTIFICATION_CONTESTED`` are stored flags the
-    fresh id lists can disagree with), and for ``NO_CAUSE`` beside an
-    identification leg. ``NO_CAUSE`` is
-    the one reason guarded on the leg: ``IDENTIFICATION_CONTESTED`` cannot
-    occur beside one (``cause_identification_leg``)."""
+    """The user's half of why the confirmation pool is empty (#2811 S2c-1b):
+    the line for the record's ``pool_empty_reason``, shown exactly when the
+    model's half is (``notices.empty_pool_text``, the one guard), else
+    None."""
     if empty_pool_text(cause) is None:
         return None
     return _POOL_EMPTY_USER_LINES[cause.pool_empty_reason]
@@ -143,8 +140,8 @@ def readiness_message(
     unknown reason, or one without the param its text names, raises.
     ``cause``: the record's, passed on the record path only
     (``record_params``); the "Root cause" ask then carries its
-    ``pool_empty_user_line``. The decide-time message passes none, so its
-    ask is the bare one."""
+    ``pool_empty_user_line`` when there is one. The decide-time message
+    passes none, so its ask is the bare one."""
     if reason == ResolutionReason.FALSE_ALARM:
         return (
             "The evidence showed the reported problem was never present, so "

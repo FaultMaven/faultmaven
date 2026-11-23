@@ -7,9 +7,13 @@ The prompt's focus selection takes the problem status and whether a resolve
 decline stands from the record, and the open offer and the standing declines'
 turns from ``OfferView``; the turn's narration reads the open offer and the
 recorded answers from it. On every fixture of the corpus
-(``offer_cases_2811``) both render byte for byte what ``main`` rendered
-(``offer_oracle_2811.json``, captured at 5e5b21e42). Declared differences:
-none.
+(``offer_cases_2811``) both render byte for byte the stored oracle
+(``offer_oracle_2811.json``, captured on ``main`` at 5e5b21e42; an entry a
+later commit changed is that commit's to declare). Declared differences,
+#2811 S2c-1b: ``turn:offer:needs_info_no_cause`` and
+``turn:offer:needs_info_held_open``, rendered at c1ade8d8c, each differing
+from ``main`` at 5a1d3b130 only in its "Root cause" line (``main``: the bare
+ask).
 """
 
 from __future__ import annotations
