@@ -31,7 +31,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Callable, NamedTuple
 
 from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -801,8 +801,8 @@ def _log_undated(case_id, evidence_id, file_id) -> None:
 
 #: The memo of the computation of a case's outcome running in this context
 #: (``_outcome_computation``), None outside one: each memoized derivation's
-#: first build, keyed by ``(derivation, id(case))`` and held with its case, so
-#: no id is reused while the scope lives (#2657).
+#: first build, keyed by ``(build, id(case))`` (``_memo_key``) and held with
+#: its case, so no id is reused while the scope lives (#2657).
 _COMPUTATION: ContextVar[dict | None] = ContextVar("outcome_computation", default=None)
 
 
@@ -821,26 +821,47 @@ def _outcome_computation() -> Iterator[None]:
         _COMPUTATION.reset(token)
 
 
+def _memo_key(build, case) -> tuple:
+    """The one key a build is stored and looked up under."""
+    return build, id(case)
+
+
+def _memoized(build, case, read):
+    """``read()`` once per case inside ``_outcome_computation``, keyed by
+    ``build``: every later call on the case returns the first build (a list
+    as a copy of it). Outside a scope, ``read()`` every time."""
+    memo = _COMPUTATION.get()
+    if memo is None:
+        return read()
+    key = _memo_key(build, case)
+    if key not in memo:
+        memo[key] = (case, read())
+    built = memo[key][1]
+    return list(built) if isinstance(built, list) else built
+
+
 def _once_per_computation(build):
-    """``build`` read once per case inside ``_outcome_computation``: every
-    later call on the case returns the first build (a list as a copy of it).
-    A call passing ``subjects`` other than the scope's own index for the case,
-    or any call outside a scope, builds afresh."""
+    """A one-argument derivation of the case, built once per case inside
+    ``_outcome_computation`` (``_memoized``)."""
+
+    @wraps(build)
+    def read(case):
+        return _memoized(build, case, lambda: build(case))
+
+    return read
+
+
+def _once_per_computation_given_index(build):
+    """A derivation taking the caller's ``subjects`` (``fix_windows``), built
+    once per case inside ``_outcome_computation`` when called with none or
+    with the scope's own index; any other index builds afresh."""
 
     @wraps(build)
     def read(case, subjects=None):
-        memo = _COMPUTATION.get()
-        args = (case,) if subjects is None else (case, subjects)
-        if memo is None:
-            return build(*args)
-        own = memo.get(("subject_index", id(case)))
+        own = (_COMPUTATION.get() or {}).get(_memo_key(subject_index.__wrapped__, case))
         if subjects is not None and (own is None or subjects is not own[1]):
-            return build(*args)
-        key = (build.__name__, id(case))
-        if key not in memo:
-            memo[key] = (case, build(*args))
-        built = memo[key][1]
-        return list(built) if isinstance(built, list) else built
+            return build(case, subjects)
+        return _memoized(build, case, lambda: build(case, subjects))
 
     return read
 
@@ -1033,7 +1054,8 @@ def licensed_roots(case: "Case") -> frozenset:
 
 @_once_per_computation
 def subject_index(case: "Case") -> SubjectIndex:
-    """The case's ``SubjectIndex``, built now."""
+    """The case's ``SubjectIndex``, built now (inside
+    ``_outcome_computation``, once per case)."""
     pv = getattr(case, "problem_verification", None)
     node_supports: dict = {}
     for node_id, node in (getattr(case, "causal_nodes", None) or {}).items():
@@ -1663,7 +1685,7 @@ class FixWindow:
         return self.disconfirmation is not None
 
 
-@_once_per_computation
+@_once_per_computation_given_index
 def fix_windows(
     case: "Case", subjects: "SubjectIndex | None" = None
 ) -> list[FixWindow]:
@@ -2253,7 +2275,8 @@ def mitigation_unsettled(case: "Case") -> bool:
 
 
 def mitigation_refusal_reason(
-    case: "Case", relief: tuple[int | None, int | None] | None = None
+    case: "Case",
+    relief: Callable[[], tuple[int | None, int | None]] | None = None,
 ) -> MitigationRefusalReason | None:
     """Why ``mitigation_verified`` does not register, or None (#2100, D3.1):
     the verdict is derived, from a problem-bound re-check dated at or after
@@ -2263,8 +2286,9 @@ def mitigation_refusal_reason(
     revision the statement awaits its confirmation. The one copy of the
     branches ``_mitigation_verify_refusal`` decides (its notice is rendered
     in ``narration.notices``, #2636) and the case outcome records (#2615).
-    ``relief``: the caller's ``mitigation_relief(case, subjects)``, so a caller
-    that reads it too reads it once (#2657); read here when None."""
+    ``relief``: reads the caller's ``mitigation_relief``, called only past
+    the branches that need none, so a caller that reads it too reads it once
+    (#2657); ``mitigation_relief(case)`` when None."""
     if mitigation_attempt_turn(case) is None:
         return MitigationRefusalReason.ATTEMPT_UNDATED
     status = case.progress.problem_status
@@ -2272,7 +2296,7 @@ def mitigation_refusal_reason(
         return MitigationRefusalReason.REVISION_PENDING
     if status != ProblemStatus.VERIFIED:
         return MitigationRefusalReason.PROBLEM_UNVERIFIED
-    relief, present = mitigation_relief(case) if relief is None else relief
+    relief, present = mitigation_relief(case) if relief is None else relief()
     if relief is not None and mitigation_holds(relief, present):
         return None
     return MitigationRefusalReason.NO_BOUND_RELIEF

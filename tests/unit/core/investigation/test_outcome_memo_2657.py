@@ -4,9 +4,10 @@
 which ``subject_index``, ``fix_windows`` and ``_cause_pool`` return their
 first build for the case. Before it, one computation over a failed fix
 rebuilt them 13, 8 and 22 times. The scope resets in ``finally``, and a
-decider outside it builds as it always did. ``_mitigation_verify_refusal``
-reads the mitigation's relief once. Builds are counted, never timed. No
-live LLM.
+decider outside it builds as it always did. The memo is sound only while
+the computation leaves the case as it found it, which a fingerprint pins.
+``_mitigation_verify_refusal`` reads the mitigation's relief once, and none
+on a branch that needs none. Builds are counted, never timed. No live LLM.
 """
 
 import contextlib
@@ -24,15 +25,28 @@ from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,
     MitigationRefusalReason,
+    ProblemStatus,
     WritePoint,
 )
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
+    _bare_case,
     _failed_fix,
+    _fallen_case,
+    _interception_only,
+    _invalidated,
     _mitigated,
+    _relief_only,
 )
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _eid,
+    _identified_case,
+)
+from tests.unit.core.investigation.test_pending_check_holds_the_offer_1906 import (
+    _held_case,
+)
+from tests.unit.core.investigation.test_resolution_backstop_turn import (
+    _confirmed_case,
 )
 
 pytestmark = pytest.mark.unit
@@ -124,10 +138,31 @@ def test_only_the_scopes_own_index_reads_the_memoized_windows():
         assert ca.subject_index(case) is own
 
 
-def test_the_mitigation_refusal_reads_its_relief_once(monkeypatch):
-    case = _mitigated()
-    _relief, present = ca.mitigation_relief(case)
-    problem, _cause = ca.subject_index(case).bindable_rows()
+@pytest.mark.parametrize(
+    "build",
+    [
+        _failed_fix,
+        lambda: _identified_case()[0],
+        _confirmed_case,
+        _held_case,
+        _bare_case,
+        lambda: _fallen_case()[0],
+        _invalidated,
+        _interception_only,
+        _relief_only,
+        _mitigated,
+        lambda: _mitigated(relieved=True),
+    ],
+)
+def test_a_computation_leaves_the_case_as_it_found_it(build):
+    """The memo's premise: nothing the computation calls mutates the case."""
+    case = build()
+    before = case.model_dump(mode="json")
+    _compute(case)
+    assert case.model_dump(mode="json") == before
+
+
+def _spy_relief(monkeypatch) -> list:
     reads = []
     real = ca.mitigation_relief
 
@@ -136,6 +171,45 @@ def test_the_mitigation_refusal_reads_its_relief_once(monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(ca, "mitigation_relief", spy)
+    return reads
+
+
+def test_the_records_mitigation_section_reads_its_relief_once(monkeypatch):
+    case = _mitigated()
+    reads = _spy_relief(monkeypatch)
+    mitigation = outcome_module._mitigation(case, ca.subject_index(case))
+    assert mitigation.refusal_reason == MitigationRefusalReason.NO_BOUND_RELIEF
+    assert len(reads) == 1
+
+
+@pytest.mark.parametrize(
+    ("build", "reason"),
+    [
+        (lambda: _mitigated(dated=False), MitigationRefusalReason.ATTEMPT_UNDATED),
+        (
+            lambda: _mitigated(ProblemStatus.REVISION_PENDING),
+            MitigationRefusalReason.REVISION_PENDING,
+        ),
+        (
+            lambda: _mitigated(ProblemStatus.UNVERIFIED),
+            MitigationRefusalReason.PROBLEM_UNVERIFIED,
+        ),
+    ],
+)
+def test_an_early_refusal_builds_no_index(monkeypatch, build, reason):
+    case = build()
+    reads = _spy_relief(monkeypatch)
+    with _builds() as counted:
+        refusal = _mitigation_verify_refusal(case)
+    assert refusal["reason"] == reason
+    assert counted["subject_index"] == 0 and reads == []
+
+
+def test_the_mitigation_refusal_reads_its_relief_once(monkeypatch):
+    case = _mitigated()
+    _relief, present = ca.mitigation_relief(case)
+    problem, _cause = ca.subject_index(case).bindable_rows()
+    reads = _spy_relief(monkeypatch)
     assert _mitigation_verify_refusal(case) == {
         "reason": MitigationRefusalReason.NO_BOUND_RELIEF,
         "problem_row_ids": [e.evidence_id for e in problem[:5]],

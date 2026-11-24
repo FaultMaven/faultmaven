@@ -326,7 +326,7 @@ def compute_case_outcome(
     disagreements are counted once a saved record carries them (#2689).
     Computed in one scope (``_outcome_computation``), which builds the
     subject index, the fix windows and the cause pool once for the case
-    (#2657)."""
+    (#2657); so nothing it calls may mutate the case."""
     with _outcome_computation():
         at = WritePoint(at)
         mint = None
@@ -740,7 +740,9 @@ def _mitigation(case: "Case", subjects: "SubjectIndex") -> Optional[MitigationOu
         refusal_reason=(
             None
             if case.progress.mitigation.verified
-            else mitigation_refusal_reason(case)
+            else mitigation_refusal_reason(
+                case, lambda: (seen.relief_turn, seen.present_turn)
+            )
         ),
     )
 
