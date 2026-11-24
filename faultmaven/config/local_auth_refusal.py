@@ -1,21 +1,17 @@
-"""The deployment coherence gate's refusals of local auth from settings alone (#2705).
+"""The coherence gate's refusals of local auth from settings alone (#2705).
 
-Two rules of the gate (``faultmaven.config.deployment_coherence``) hold whatever
-else the settings configure: a cloud deployment requires ``AUTH_MODE=oauth``,
-and ``TENANT_PROVIDER=multi`` requires cloud. The gate reads each rule in its
-own check; the local HS256 secret's mint (``resolve_local_jwt_secret``), which
-runs while the settings are built and before the gate, reads them through
-``coherence_refuses_local_auth``. A leaf: it imports nothing from faultmaven,
-so both the settings module and the gate can import it.
+A cloud deployment requires ``AUTH_MODE=oauth``, and ``TENANT_PROVIDER=multi``
+requires cloud. The gate (``deployment_coherence``) reads each rule; the local
+secret's mint, which runs before the gate, reads ``coherence_refuses_local_auth``.
+A leaf, importing nothing from faultmaven, so the settings module can import it.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-#: ``TENANT_PROVIDER``'s multi-tenant name. A literal, not the tenancy factory's
-#: ``BUILTIN_MULTI``: the factory imports the settings, which import this
-#: module. A test pins the two to agree.
+#: The factory's ``BUILTIN_MULTI``, as a literal (the factory imports the
+#: settings); a test pins the two to agree.
 _MULTI = "multi"
 
 
@@ -41,11 +37,7 @@ def _cloud_without_oauth(settings: Any) -> bool:
 
 
 def _multi_tenant_outside_cloud(settings: Any) -> bool:
-    """``TENANT_PROVIDER=multi`` outside cloud.
-
-    The value is read as the factory's ``coerce_provider_name`` reads it: unset
-    is not multi, an enum by its value, a string lower-cased.
-    """
+    """``TENANT_PROVIDER=multi`` outside cloud, read as ``coerce_provider_name`` reads it."""
     providers = getattr(settings, "providers", None)
     requested = getattr(providers, "tenant_provider", None)
     if requested is None:
@@ -58,8 +50,9 @@ def coherence_refuses_local_auth(settings: Any) -> bool:
     """Whether the coherence gate refuses a local-auth run from its settings alone.
 
     True for a cloud deployment not on OAuth and for ``TENANT_PROVIDER=multi``
-    outside cloud. A local-auth run of such settings never starts, so the mint
-    reads, writes, sets and exports no secret for it (#2705); one predicate
-    keeps the mint from drifting from the gate.
+    outside cloud. The server and the jobs runner refuse such settings at the
+    gate, and an operator command that reaches the signer refuses there, so
+    the mint reads, writes, sets and exports no secret for them (#2705); one
+    predicate keeps the mint from drifting from the gate.
     """
     return _cloud_without_oauth(settings) or _multi_tenant_outside_cloud(settings)

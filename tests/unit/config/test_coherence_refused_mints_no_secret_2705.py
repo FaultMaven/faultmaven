@@ -10,6 +10,7 @@ Every settings object here is real, built from a controlled environment.
 """
 
 import os
+import re
 import stat
 from types import SimpleNamespace
 
@@ -135,17 +136,26 @@ def test_an_explicit_key_is_still_judged_under_cloud(secret_file, monkeypatch):
     assert not secret_file.parent.exists()
 
 
-def test_cloud_with_local_auth_builds_no_hs256_signer(monkeypatch):
-    """What an operator command reaching the signer meets: a refusal, never a
-    token signed with a per-process secret."""
+@pytest.mark.parametrize(
+    "env, refusal",
+    [
+        pytest.param({"DEPLOYMENT_MODE": "cloud"}, _CLOUD_REFUSAL, id="cloud"),
+        pytest.param(
+            {"TENANT_PROVIDER": "multi"}, _MULTI_REFUSAL, id="multi-standalone"
+        ),
+    ],
+)
+def test_the_signer_refuses_refused_settings_with_the_rule(env, refusal, monkeypatch):
+    """What an operator command reaching the signer meets: the gate's text for
+    the rule, never "signing key unavailable" nor a per-process secret."""
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-        SigningKeyUnavailableError,
         build_jwt_token_generator,
     )
 
-    monkeypatch.setenv("DEPLOYMENT_MODE", "cloud")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
-    with pytest.raises(SigningKeyUnavailableError):
+    with pytest.raises(DeploymentCoherenceError, match=re.escape(refusal)):
         build_jwt_token_generator(S.build_settings(), None)
 
 
@@ -175,6 +185,8 @@ def test_the_mint_skips_exactly_what_the_gate_refuses_on_these_rules(
     if auth == "local":
         assert bool(settings.security.jwt_secret_key) is not skipped
         assert secret_file.is_file() is not skipped
+        if not skipped:
+            validate_deployment_coherence(settings)  # must not raise
 
 
 @pytest.mark.parametrize(

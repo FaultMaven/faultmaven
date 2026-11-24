@@ -21,7 +21,7 @@ Coherence Gate) and ADR-004 in ``faultmaven-doc-internal``.
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
 
 from faultmaven.config.local_auth_refusal import (
     _auth_mode_name,
@@ -82,6 +82,21 @@ def _storage_backend_name(settings: Any) -> str:
     return str(getattr(backend, "value", backend)).strip().lower()
 
 
+def local_auth_refusal_text(settings: Any) -> Optional[str]:
+    """This gate's text for its rule refusing local auth here, or None (#2705)."""
+    if _cloud_without_oauth(settings):
+        return (
+            f"AUTH_MODE must be 'oauth' for cloud (got "
+            f"'{_auth_mode_name(settings.auth)}'). Local auth bypasses "
+            "authentication — invalid on a multi-tenant cloud deployment."
+        )
+    if _multi_tenant_outside_cloud(settings):
+        from faultmaven.providers.tenancy.factory import MULTI_REQUIRES_CLOUD_MSG
+
+        return MULTI_REQUIRES_CLOUD_MSG
+    return None
+
+
 def _check_cloud(settings: Any) -> List[str]:
     """Return the list of reasons the config is NOT a valid cloud deployment."""
     problems: List[str] = []
@@ -90,12 +105,8 @@ def _check_cloud(settings: Any) -> List[str]:
     security = settings.security
 
     # 1. Auth must be OAuth (RS256), not the local bypass.
-    auth_mode = _auth_mode_name(auth)
     if _cloud_without_oauth(settings):
-        problems.append(
-            f"AUTH_MODE must be 'oauth' for cloud (got '{auth_mode}'). Local auth "
-            "bypasses authentication — invalid on a multi-tenant cloud deployment."
-        )
+        problems.append(local_auth_refusal_text(settings))
     else:
         has_private = bool(_plain(security, "jwt_private_key")) or bool(
             getattr(security, "jwt_private_key_path", None)
