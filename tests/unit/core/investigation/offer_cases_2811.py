@@ -26,6 +26,11 @@ at 5a1d3b130 only in its "Root cause" line (``main``: the bare ask).
 by hand: it equalled the stored entry on ``main`` at 77f3b9b8b, and its
 reply on the S2c-3a branch at c31e9e4ae, which is stored, ends with the
 outcome statement "**Case record:** the problem is confirmed.".
+#3039 re-rendered ``turn:cycle:licence_downgraded_once_it_holds`` and
+``turn:cycle:licence_downgraded_while_it_is_down`` by hand: each equalled the
+stored entry on ``main`` at 68ec0ac01, and on the #3039 branch, which is
+stored, its notice ends with the sentence that the user's report is recorded
+(INV-49).
 """
 
 from __future__ import annotations

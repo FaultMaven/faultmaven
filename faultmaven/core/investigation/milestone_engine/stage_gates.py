@@ -28,7 +28,10 @@ from faultmaven.core.investigation.narration.codes import (
     decision_key,
     decision_token,
 )
-from faultmaven.core.investigation.narration.notices import NO_PENDING_SOLUTION_NOTICE
+from faultmaven.core.investigation.narration.notices import (
+    NO_PENDING_SOLUTION_NOTICE,
+    recorded_change_clause,
+)
 from faultmaven.core.investigation.offers import (
     awaiting_request_recheck,
     open_terminal_offer,
@@ -1231,7 +1234,71 @@ def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
         )
 
 
-def _refuse_fix_ref(case: Case, metadata: dict[str, Any], ref: Any, what: str) -> None:
+def _report_justified(case: Case, metadata: dict[str, Any]) -> bool:
+    """The verdict ``_registration_justified`` reads, without its feedback."""
+    return not metadata.get(FIX_JUSTIFICATION_KEY) or justification_skipped(case)
+
+
+def record_reported_change(action: Any, turn: int) -> Optional[int]:
+    """INV-49 (#3039): stamp the turn the user reported carrying ``action``
+    out, when the report does not register it. What the user did is a fact
+    of the case apart from what it counts toward: the stamp registers
+    nothing, and the first report wins. Returns the stamped turn."""
+    if action.reported_done_in_turn is None:
+        action.reported_done_in_turn = turn
+    return action.reported_done_in_turn
+
+
+def unregistered_reported_changes(case: Case) -> list:
+    """The changes the user reported carrying out that registered as no fix
+    (INV-49): stamped, not accepted, and not since registered under the same
+    fix identity. Read from the field, never the state, so a recorded
+    DIAGNOSTIC later superseded still counts."""
+    registered = {
+        fix_identity(a.description)
+        for a in case.proposed_actions or []
+        if a.state == "accepted"
+    }
+    return [
+        a
+        for a in case.proposed_actions or []
+        if a.reported_done_in_turn is not None
+        and a.state != "accepted"
+        and fix_identity(a.description) not in registered
+    ]
+
+
+def reported_change_turns(case: Case) -> list[int]:
+    """The report turns of ``unregistered_reported_changes``."""
+    return [a.reported_done_in_turn for a in unregistered_reported_changes(case)]
+
+
+def _downgraded_workaround(case: Case) -> Any:
+    """The newest pending DIAGNOSTIC that 3D downgraded from a WORKAROUND
+    (its ``Solution`` row, minted with it, is a WORKAROUND): what an
+    unregistered ``mitigation_accepted`` reports carrying out (INV-49)."""
+    workarounds = {
+        fix_identity(s.immediate_action)
+        for s in case.solutions
+        if s.solution_type == SolutionType.WORKAROUND
+    }
+    return next(
+        (
+            a
+            for a in reversed(case.proposed_actions)
+            if a.state == "pending"
+            and a.action_type == InvestigationActionType.DIAGNOSTIC
+            and fix_identity(a.description) in workarounds
+        ),
+        None,
+    )
+
+
+def _refuse_fix_ref(
+    case: Case, metadata: dict[str, Any], ref: Any, what: str, recorded: str = ""
+) -> None:
+    """Refuse a ref; ``recorded``: the sentence saying the user's report was
+    recorded anyway (``recorded_change_clause``, INV-49)."""
     logger.warning(
         f"Rejected stage-gate milestone 'solution_accepted' for case "
         f"{case.case_id}: accepted_action_ref {ref!r} names {what}"
@@ -1240,7 +1307,7 @@ def _refuse_fix_ref(case: Case, metadata: dict[str, Any], ref: Any, what: str) -
         metadata,
         f"SYSTEM: 'solution_accepted' was not registered: accepted_action_ref "
         f"{ref} names {what}. It must name the SOLUTION the user carried out: "
-        "its ACTION_ID, or new_index_N for one this response proposes.",
+        "its ACTION_ID, or new_index_N for one this response proposes." + recorded,
     )
 
 
@@ -1268,6 +1335,19 @@ def _fix_named_by(
             identity not in proposed
             and (bearer is None or actions.index(bearer) < actions.index(action))
         ):
+            if (
+                action.action_type == InvestigationActionType.DIAGNOSTIC
+                and _report_justified(case, metadata)
+            ):
+                turn = record_reported_change(action, case.current_turn)
+                _refuse_fix_ref(
+                    case,
+                    metadata,
+                    ref,
+                    what,
+                    recorded=recorded_change_clause(action.action_id, turn),
+                )
+                return None
             _refuse_fix_ref(case, metadata, ref, what)
             return None
     return identity, what
@@ -1436,9 +1516,14 @@ def _bearer_registers(
     *,
     carried: bool,
     licensed: Optional[bool] = None,
+    reported_in: Optional[int] = None,
 ) -> bool:
     """Step 2, THE state rule (live gate and replay): whether the newest fix
     action bearing the named fix (``_newest_fix_bearer``) registers.
+
+    A DIAGNOSTIC bearer, refused, is stamped as carried out
+    (``record_reported_change``, INV-49) at ``reported_in`` (the carried
+    report's turn at a replay) or this turn, when the report is justified.
 
     Every case the rule keeps:
 
@@ -1465,11 +1550,17 @@ def _bearer_registers(
     carried decision; a live turn passes nothing (its downgrade proves the
     license down) and reads it here only for a superseded bearer."""
     if bearer.action_type != InvestigationActionType.SOLUTION:
+        recorded = None
+        if carried or _report_justified(case, metadata):
+            recorded = record_reported_change(
+                bearer, case.current_turn if reported_in is None else reported_in
+            )
         record_decision(
             metadata,
             NoticeCode.FIX_LICENCE_REFUSED,
             variant="downgraded" if licensed else "licence",
             subject=bearer.action_id,
+            **({} if recorded is None else {"recorded": recorded}),
         )
         return False
     if bearer.state == "pending":
@@ -1652,7 +1743,12 @@ def _register_carried_fix(
         _refuse_withdrawn(metadata, bearer.action_id, licensed)
         return None
     registers = _bearer_registers(
-        case, bearer, metadata, carried=True, licensed=licensed
+        case,
+        bearer,
+        metadata,
+        carried=True,
+        licensed=licensed,
+        reported_in=carried.turn,
     )
     return bearer if registers else None
 
@@ -2079,6 +2175,12 @@ def _apply_stage_gate_signals(
             "the workaround (SolutionToAdd, solution_type=WORKAROUND) "
             "before setting the milestone."
         )
+        workaround = _downgraded_workaround(case)
+        if workaround is not None and _report_justified(case, metadata):
+            notice += recorded_change_clause(
+                workaround.action_id,
+                record_reported_change(workaround, case.current_turn),
+            )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (
             p.mitigation is None or not p.mitigation.accepted

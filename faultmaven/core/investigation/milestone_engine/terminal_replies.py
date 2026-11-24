@@ -26,6 +26,7 @@ from .cause_state import (
     _get_root_cause_summary,
     _get_solution_summary,
 )
+from .stage_gates import reported_change_turns
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ def _terminal_confirmation_response(case) -> str:
         stored.closure.statement,
         leg=stored.cause.identification_leg,
         attempts=stored.attempts,
+        reported=reported_change_turns(case),
     )
 
 
