@@ -50,6 +50,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure import index_slot
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -59,6 +60,11 @@ pytestmark = [pytest.mark.unit]
 
 # The encode, from the KB indexing slot's thread (#2055), in its worker (#2851).
 _EMBED_TEXTS = "faultmaven.infrastructure.index_slot.encode_in_worker"
+# The runbook security check, in its worker (#2661), as the update calls it.
+_GATE = (
+    "faultmaven.modules.knowledge.domain.services.knowledge_service."
+    "aenforce_runbook_security"
+)
 _REPO = (
     "faultmaven.modules.knowledge.infrastructure.persistence."
     "knowledge_item_repository.DatabaseKnowledgeItemRepository"
@@ -202,8 +208,64 @@ def _service(state, *, commit_raises=None, commit_lands=True):
     return service, repo, calls
 
 
+@pytest.fixture(autouse=True)
+def _gate_stubbed():
+    """The runbook security gate, stubbed for every test here (#3037). Its
+    real worker must start within GATE_START_SECONDS, and on a loaded runner
+    one that does not ends the update with GateUnavailable before its chunks
+    are written. None of these tests is about the gate; its worker has its
+    own tests."""
+    with patch(_GATE, autospec=True):
+        yield
+
+
 def _kinds(calls):
     return [kind for kind, _ in calls if kind != "chunk_updated_at"]
+
+
+#: A hang guard, not a timing assertion: it bounds only the stall in which both
+#: racing updates stay alive and waiting, so a hung worker becomes a failure
+#: with its state (#3037). A step reached or an update ended wakes the wait
+#: first.
+_HANG_GUARD_SECONDS = 60.0
+
+
+async def _until(step, reached, updates, calls):
+    """Wait until ``reached`` is set, failing at once if an update ends first
+    (#3037): a polling loop cannot see a dead task, and spun forever. On a
+    failure the updates are cancelled and awaited before the test's patches
+    are left, so none outlives them."""
+    waiter = asyncio.ensure_future(reached.wait())
+    try:
+        async with asyncio.timeout(_HANG_GUARD_SECONDS):
+            await asyncio.wait({waiter, *updates}, return_when=asyncio.FIRST_COMPLETED)
+    except TimeoutError:
+        pass
+    finally:
+        waiter.cancel()
+    if reached.is_set():
+        return
+    ended = [
+        "cancelled" if task.cancelled() else repr(task.exception())
+        for task in updates
+        if task.done()
+    ]
+    waits = [
+        [f"{f.f_code.co_name}:{f.f_lineno}" for f in task.get_stack()]
+        for task in updates
+        if not task.done()
+    ]
+    # Read before the cancel: a cancelled update abandons its queued encode.
+    slot = index_slot.index_admission
+    held = (slot.queued(), slot.encoding_for_seconds(), slot.waiting_for_host_lock)
+    for task in updates:
+        task.cancel()
+    await asyncio.gather(*updates, return_exceptions=True)
+    pytest.fail(
+        f"{step} not reached; updates ended: {ended}; the others wait at: "
+        f"{waits}; calls: {calls}; KB slot: {held[0]} queued, encoding for "
+        f"{held[1]} s, waiting for the host lock {held[2]}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -469,10 +531,22 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     gates = {NEW_CONTENT: asyncio.Event(), OTHER_CONTENT: asyncio.Event()}
     write = repo.update_fields.side_effect
 
+    add = service._vector_store.add_documents.side_effect
+    both_added, committed = asyncio.Event(), asyncio.Event()
+
+    async def add_then_signal(*args, **kwargs):
+        await add(*args, **kwargs)
+        if _kinds(calls).count("vector_add") >= 2:
+            both_added.set()
+
     async def in_order(item_id, fields, **kwargs):
         await gates[fields["content"]].wait()
-        return await write(item_id, fields, **kwargs)
+        try:
+            return await write(item_id, fields, **kwargs)
+        finally:
+            committed.set()
 
+    service._vector_store.add_documents = AsyncMock(side_effect=add_then_signal)
     repo.update_fields = AsyncMock(side_effect=in_order)
     first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
@@ -486,11 +560,9 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
                 )
                 for c in (NEW_CONTENT, OTHER_CONTENT)
             ]
-            while _kinds(calls).count("vector_add") < 2:
-                await asyncio.sleep(0)
+            await _until("both updates' vector_add", both_added, updates, calls)
             gates[first].set()
-            while "sql_commit" not in _kinds(calls):
-                await asyncio.sleep(0)
+            await _until("a sql_commit", committed, updates, calls)
             gates[last].set()
             await asyncio.gather(*updates)
 
