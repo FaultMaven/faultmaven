@@ -217,8 +217,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   (`api/middleware/idempotency.py:169-234`, read at `:413-427`): the case router
   by its `{case_id}` path (`modules/case/api/routes/router.py:27`), the create
   route by the new case (`modules/case/api/routes/cases.py:487`), the report
-  routes by `case_id` and by the report's case (`modules/report/api/routes.py:331`,
-  `:915`). Case search answers many cases and is `never_replayed` (`main.py:229-234`).
+  routes by `case_id` and by the report's case (`modules/report/api/routes.py:364`,
+  `:965`). Case search answers many cases and is `never_replayed` (`main.py:229-234`).
   The entry joins that case's index in its own MULTI/EXEC, with the prune
   (`api/middleware/idempotency.py:1041-1048`). `IdempotencyReplayEraser`
   (`:1107-1154`) reads the index's members scored after now, then unlinks and
