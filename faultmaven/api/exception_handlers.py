@@ -232,7 +232,8 @@ def revocation_state_unknown_http_exception() -> HTTPException:
     )
 
 
-# A database that did not answer in time (#2280). Shaped like the revocation
+# A database that could not be reached or did not answer in time (#2280,
+# #2670). Shaped like the revocation
 # refusal above, which answers the same cause on the authentication path: 503,
 # its own code, ``Retry-After: 5``.
 DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"

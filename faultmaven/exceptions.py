@@ -117,7 +117,10 @@ class DatabaseUnavailable(ConnectionError):
     any ``ConnectionError``, an unresolvable name, a Unix socket with no
     server, an unreachable host or network, an ``OSError`` with no errno, or a
     SQLSTATE that says the server will not take a connection (class ``08``,
-    ``57P01``-``57P03``, ``53300``); never a ``PermissionError``. Only from a session whose
+    ``57P01``-``57P03``, ``53300``); never a ``PermissionError``. A client
+    TLS misconfiguration (a missing certificate file, a server refusing the
+    SSL upgrade) cannot be told from a connect failure by type, so it is named
+    this too. Only from a session whose
     transaction never began and on which nothing committed: the same driver
     error after the first statement is a dropped connection, whose work may
     have landed, and passes through as itself.
