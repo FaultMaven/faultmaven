@@ -16,7 +16,13 @@ from ``main`` at 5a1d3b130 only in its "Root cause" line (``main``: the bare
 ask). #2811 S2c-3a: ``turn:offer:turn_replayed_rca_infeasible_close``,
 rendered at c31e9e4ae and differing from ``main`` at 77f3b9b8b only in a
 reply that now ends with the outcome statement of its revision-confirm turn
-("**Case record:** the problem is confirmed.").
+("**Case record:** the problem is confirmed."). #3039:
+``turn:cycle:licence_downgraded_once_it_holds``,
+``turn:cycle:licence_downgraded_while_it_is_down``,
+``turn:cycle:licence_withdrawn_once_it_holds`` and
+``turn:cycle:licence_withdrawn_while_it_is_down``, each differing from
+``main`` only in the refusal's closing sentence that the user's report is
+recorded (INV-49).
 """
 
 from __future__ import annotations

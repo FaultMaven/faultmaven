@@ -251,7 +251,8 @@ class ProposedAction(BaseModel):
     accepted_in_turn: Optional[int] = Field(
         default=None,
         description=(
-            "Turn the user carried this action out (state='accepted'): the turn "
+            "Turn the user carried this action out AND it registered as the "
+            "fix (state='accepted'): the turn "
             "the acceptance registered in, or the previous one when the model "
             "declared the user reported it in their previous message (#2427), "
             "so it can precede ``proposed_in_turn``. Distinct from "
@@ -261,7 +262,22 @@ class ProposedAction(BaseModel):
             "what happened *after the fix* must key on this, not on the "
             "proposal turn, or pre-execution evidence from the offering turn "
             "reads as a post-fix outcome. None while pending/superseded, and "
-            "on actions accepted before this field existed."
+            "on actions accepted before this field existed. A change the user "
+            "carried out that did not register is ``reported_done_in_turn``."
+        ),
+    )
+
+    reported_done_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn the user reported carrying this action out, when that report "
+            "did NOT register it as a fix: an M5/3D-downgraded DIAGNOSTIC the "
+            "gate refused (INV-49, #3039). A fact of the case, written once "
+            "(the first report wins) and never cleared. It registers nothing: "
+            "no gate, fix window, liveness or outcome reader consults it; "
+            "``accepted``/``accepted_in_turn`` remain the only record of a "
+            "registered fix. Read by ``<pending_action>`` (which skips it), "
+            "``<user_changes>`` and the closure line."
         ),
     )
 
@@ -439,9 +455,11 @@ class SolutionOutcome(str, Enum):
     material; makes no claim that this specific fix alone resolved the case."""
 
     FAILED = "failed"
-    """Never executed or refused: the action was superseded/rejected (replaced while
-    pending, never run) OR the engine downgraded it to DIAGNOSTIC (refused as a fix).
-    Its commands must not become reusable knowledge."""
+    """Never registered as an executed fix: the action was superseded/rejected
+    (replaced while pending) OR the engine downgraded it to DIAGNOSTIC (refused as
+    a fix). The user may still have carried it out (``reported_done_in_turn``,
+    INV-49); it is not remediation the case confirmed. Its commands must not
+    become reusable knowledge."""
 
     PROPOSED = "proposed"
     """No resolved matching action (still pending or uncorrelated) — surfaced, but

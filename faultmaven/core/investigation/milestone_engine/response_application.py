@@ -125,6 +125,7 @@ from .stage_gates import (
     CARRIED_FIX_KEY,
     FIX_JUSTIFICATION_KEY,
     FIXES_ACCEPTED_KEY,
+    NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON,
     _add_system_feedback,
     _apply_stage_gate_signals,
     _case_has_symptom_evidence,
@@ -1926,16 +1927,7 @@ class ResponseApplier:
                         f"no SYMPTOM_EVIDENCE exists yet"
                     )
                     action_type = InvestigationActionType.DIAGNOSTIC
-                    downgrade_reason = (
-                        "Your previous MITIGATION proposal was downgraded to "
-                        "DIAGNOSTIC because no SYMPTOM_EVIDENCE existed on "
-                        "the case. A mitigation must target an observed "
-                        "failure, not an unverified user claim. Inspect the "
-                        "case data (pod logs / status / metrics / config "
-                        "snapshot), file SYMPTOM_EVIDENCE for what you find, "
-                        "then re-propose the mitigation grounded in that "
-                        "evidence."
-                    )
+                    downgrade_reason = NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON
 
                 # INV-32 (#656 DF-3): a NEW permanent-fix offer replaces any
                 # standing pending one — the newest proposal is THE offer

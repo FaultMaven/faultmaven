@@ -191,10 +191,23 @@ def _turn_clause(attempts: Sequence[AttemptOutcome]) -> str:
     return f" (turn {max(turns)})" if turns else ""
 
 
+def _reported_or(reported: Sequence[int], otherwise: str) -> str:
+    """What the user reported carrying out that registered as no fix
+    (INV-49), else ``otherwise``."""
+    if not reported:
+        return otherwise
+    return (
+        f"The user reported carrying out a proposed action (turn "
+        f"{max(reported)}); it was not registered as a fix of the identified "
+        "cause."
+    )
+
+
 def closed_line(
     reason: ClosureReason,
     leg: Optional[str],
     attempts: Sequence[AttemptOutcome],
+    reported: Sequence[int] = (),
 ) -> str:
     """The closure reason's line, composed from the record where the reason
     alone says more than it holds (#2419, #2421). An accepted attempt has an
@@ -205,7 +218,12 @@ def closed_line(
     ``solution_deferred`` says whether its fix was carried out, or only its
     first sentence when a carried-out fix's window FAILED: the record holds
     accepted attempts alone, so it cannot tell a failed fix from the deferred
-    one. Every other shape is the reason's line (``_CLOSED_REPLIES``)."""
+    one. Every other shape is the reason's line (``_CLOSED_REPLIES``).
+
+    ``reported``: the turns of changes the user reported carrying out that
+    registered as no fix (``ProposedAction.reported_done_in_turn``, INV-49).
+    Where the line would say nothing was carried out, it says that instead
+    (#3039): the record holds the report, so "not carried out" is false."""
     accepted = [a for a in attempts if a.action_id is not None]
     fixes = [a for a in accepted if a.kind != "interception"]
     if reason == ClosureReason.SOLUTION_DEFERRED:
@@ -217,7 +235,7 @@ def closed_line(
         done = (
             f"It was carried out{_turn_clause(fixes)}."
             if fixes
-            else "It was not carried out in the case."
+            else _reported_or(reported, "It was not carried out in the case.")
         )
         return f"{_CLOSED_REPLIES[reason]} {done}"
     if (
@@ -229,7 +247,7 @@ def closed_line(
         )
     ):
         if not accepted:
-            done = "No fix was carried out in the case."
+            done = _reported_or(reported, "No fix was carried out in the case.")
         elif not fixes:
             done = f"Only a workaround was carried out{_turn_clause(accepted)}."
         else:
@@ -248,6 +266,7 @@ def terminal_status_line(
     *,
     leg: Optional[str],
     attempts: Sequence[AttemptOutcome],
+    reported: Sequence[int] = (),
 ) -> str:
     """The status line after a transition is confirmed: "Case resolved.", or
     the closure reason's line (``closed_line``, from the record's
@@ -261,7 +280,7 @@ def terminal_status_line(
         reason == ClosureReason.MITIGATION_SUFFICIENT
         or reason in _MITIGATION_LINE_FOLLOWS
     ):
-        return closed_line(reason, leg, attempts)
+        return closed_line(reason, leg, attempts, reported)
     if reason == ClosureReason.MITIGATION_SUFFICIENT:
         return f"Case closed — {line}; root-cause analysis was deferred."
-    return f"{closed_line(reason, leg, attempts)} {mitigation_sentence(line)}"
+    return f"{closed_line(reason, leg, attempts, reported)} {mitigation_sentence(line)}"

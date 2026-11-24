@@ -1111,6 +1111,8 @@ class ProposedAction(BaseModel):
     state: str = Field(default="pending", description="pending | accepted | rejected | superseded")
     superseded_in_turn: Optional[int]  # turn the engine superseded this action (INV-32)
     superseded_reason: Optional[str]   # 'reproposal' | 'license_lost' (forensic; only pending actions render)
+    reported_done_in_turn: Optional[int]  # INV-49 (#3039): the turn the user reported carrying it out when the
+                                          # report registered no fix (a downgraded DIAGNOSTIC); registers nothing
 
 class ActionAttempt(BaseModel):
     """
