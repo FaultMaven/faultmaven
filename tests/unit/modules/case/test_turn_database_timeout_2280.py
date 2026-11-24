@@ -132,7 +132,12 @@ def _assert_database_unavailable(response: httpx.Response) -> None:
     assert response.status_code == 503, response.text
     assert response.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
     assert response.headers["retry-after"] == "5"
-    assert "not saved" in response.json()["detail"]
+    # The exact detail, so a 503 on any turn path that names only a timeout
+    # fails: a refused connection is not one (#3056).
+    assert response.json()["detail"] == (
+        "The database could not be reached or did not answer in time, so this "
+        "request was not saved. Please retry shortly."
+    )
 
 
 # ============================================================

@@ -239,13 +239,14 @@ def revocation_state_unknown_http_exception() -> HTTPException:
 DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"
 
 DATABASE_UNAVAILABLE_DETAIL = (
-    "The database did not answer in time, so this request was not saved. "
-    "Please retry shortly."
+    "The database could not be reached or did not answer in time, so this "
+    "request was not saved. Please retry shortly."
 )
 
 
 def database_unavailable_http_exception() -> HTTPException:
-    """The refusal when the database did not answer and nothing was saved (#2280).
+    """The refusal when the database could not be reached or did not answer,
+    and nothing was saved (#2280, #2670, #3056).
 
     **503**, for the reason the revocation refusal is one: the server cannot
     serve this right now, which is a dependency failure, not a verdict on the

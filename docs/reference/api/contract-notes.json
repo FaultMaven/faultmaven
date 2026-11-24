@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.15.0",
+  "contractVersion": "15.15.1",
   "entries": [
+    {
+      "body": "Corrects 15.15.0, which sent a refused database connection to the turn\nroute's 503 without changing its detail. The detail said \"The database did not\nanswer in time\", even when the database refused the connection. It now reads\n\"The database could not be reached or did not answer in time, so this request\nwas not saved. Please retry shortly.\" No status, code, header or schema\nchanged. Clients branch on `x-error-code`, never on the text.",
+      "level": "PATCH",
+      "title": "`POST /cases/{case_id}/turns`: the 503 `DATABASE_UNAVAILABLE` detail names an unreachable database as well as a timeout (#3056).",
+      "version": "15.15.1"
+    },
     {
       "body": "Before, a refused, reset or unresolvable database connection answered\n500 `Internal server error` on a route that did not catch it, and a database\ntimeout did the same outside the turn and messages routes. Now either one that\nreaches the request boundary, raised or wrapped, is **503**\n`DATABASE_UNAVAILABLE`:\n\n* GET or HEAD: `Retry-After: 5` and the detail \"The database could not be\n  reached or did not answer in time. Please retry shortly.\" A retried read is\n  safe, though the first may have written (an access-audit row);\n* any other method: no `Retry-After`, and the detail \"The database could not\n  be reached. Reload before retrying: the request may have been saved.\" An\n  earlier step of the request may have committed, so reload before sending it\n  again.\n\nA connect failure is named only before the request's database transaction\nbegan; one after it, and a commit whose outcome is unknown, answer as before. A\nwrong password or database name (SQLSTATE `28P01`, `3D000`) stays a 500. A\nroute that catches the failure itself answers what it did: `POST\n/cases/{case_id}/turns` keeps its 503 with `Retry-After` (now for an\nunreachable database too), `GET /cases/{case_id}/messages` its own 503, whose\ndetail now reads \"The database could not be reached or did not answer in time,\nso the conversation could not be loaded. Please retry shortly.\"\n\nMINOR: a 503 with a code the turn route already answered, on a failure that\nwas a 500; a client that does not know the code treats it as a generic 5xx.",
       "level": "MINOR",
