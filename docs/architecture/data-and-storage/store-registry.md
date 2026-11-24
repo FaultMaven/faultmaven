@@ -75,6 +75,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `case-inflight:`, `case-deleting:`** (case lease, delete tombstone) | Redis | operational metadata, no content | case | stamped in the key | `infrastructure/concurrency/inflight.py` | outside: a lease held around the turn's work (and around a `POST /cases/{case_id}/title` call's, #2580), not data the turn commits |
 | **Redis `turn-inflight:`** (keyed-turn claim) | Redis | operational metadata, no content | case | stamped in the key | the case module's `turn_idempotency.py` | outside: taken before the turn, released once it is answered |
 | **Redis `kb-inflight:`** (keyed KB request claim) | Redis | operational metadata, no content | user | stamped in the key | the knowledge module's `request_idempotency.py` | not written by turns |
+| **Redis `idem-inflight:`** (keyed-request claim, #2655) | Redis | operational metadata, no content | user | none: the caller's identity is hashed into the key, as in `idempotency:` | `api/middleware/idempotency.py` | not written by turns (the turn route is never replayed) |
 | **Redis `job:`** | Redis | no writer | — | — | none: `JobService` is composed, and nothing creates a job | not written |
 | **Redis `lock:report_generation:case:`** | Redis | no writer | — | — | none: `ReportLockManager` is never constructed | not written |
 | **Redis `auth:`** (fallback user store) | Redis | customer content: account records | user | none | `infrastructure/auth/user_store.py`'s `RedisUserStore`, composed only when the database user store is not | not written by turns |
@@ -111,6 +112,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `case-inflight:`, `case-deleting:`** | the tombstone is removed when its delete is refused or fails | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 30 s after the holder's last renewal (every 10 s), plus a 5 s key margin for the lease |
 | **Redis `turn-inflight:`** | released once the turn is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | the turn's response bound plus 30 s |
 | **Redis `kb-inflight:`** | released once the request is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
+| **Redis `idem-inflight:`** | released once the request is answered, or by a request cancelled before its route ran | none needed: bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
 | **Redis `job:`** | no writer | — | left, reported under no known prefix | 24 h, were one written |
 | **Redis `lock:report_generation:case:`** | no writer | — | left, reported under no known prefix | 300 s, were one written |
 | **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix | none |
@@ -260,6 +262,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `:124-129`; [Case deletion](../../operations/case-deletion.md#work-in-flight-holds-a-delete-off-2096).
 - `turn-inflight:`: `modules/case/api/turn_idempotency.py:91-108`.
 - `kb-inflight:`: `modules/knowledge/api/request_idempotency.py:66-67`, `:155-160`, `:196-202`.
+- `idem-inflight:`: `api/middleware/idempotency.py:172-178`, `:457-473`.
 - `job:`: `infrastructure/jobs/job_service.py:51-52`; `bootstrap/composition.py:591`;
   no caller of `create_job` in `faultmaven/`.
 - `lock:report_generation:case:`: `infrastructure/concurrency/report_lock_manager.py:51`;

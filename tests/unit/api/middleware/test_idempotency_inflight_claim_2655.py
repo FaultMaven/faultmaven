@@ -167,19 +167,24 @@ async def test_a_different_body_waiting_on_the_first_is_key_reuse(rig):
 
 
 async def _refused_while_waiting(rig, client, monkeypatch, fail=None):
-    """The second request, refused while the first is held in its route."""
+    """The second request, refused while it waits on the first."""
     go = asyncio.Event()
     rig.holds.append(go)
     first = asyncio.ensure_future(_post(client))
     await asyncio.wait_for(rig.entered.wait(), GUARD)
     with monkeypatch.context() as patch:
         if fail == "read":
-            # The holder reads nothing more; the waiter's every read fails.
-            patch.setattr(rig.fake, "get", _raise)
+            # The holder reads nothing more; the waiter's every poll fails.
+            patch.setattr(rig.fake, "mget", _raise)
         if fail == "claim":
-            # The store fails once the waiter has found the claim held.
+            # The holder answers 4xx (no entry) and releases; the waiter then
+            # tries the claim, and the store fails.
+            rig.statuses.append(422)
             rig.on_held = lambda: patch.setattr(rig.fake, "set", _raise)
         second = asyncio.ensure_future(_post(client))
+        if fail == "claim":
+            await asyncio.wait_for(rig.waiting.wait(), GUARD)
+            go.set()
         refused = await asyncio.wait_for(second, GUARD)
     go.set()
     await asyncio.wait_for(first, GUARD)
@@ -203,7 +208,8 @@ async def test_the_waiter_is_answered_in_progress_and_never_runs(
 
     assert refused.status_code == 409
     assert refused.headers["x-error-code"] == IDEMPOTENCY_REQUEST_IN_PROGRESS
-    assert 1 <= int(refused.headers["Retry-After"]) <= CLAIM_TTL_SECONDS
+    # A moment, a fifth of the wait: 2 s, or 1 s at a wait of 0.
+    assert refused.headers["Retry-After"] == ("1" if fail is None else "2")
     assert (
         refused.json()["detail"]
         == IN_PROGRESS_DETAIL
@@ -213,8 +219,7 @@ async def test_the_waiter_is_answered_in_progress_and_never_runs(
         )
     )
     assert len(rig.runs) == 1
-    # Refused at once on a failure; past the bound, at the next look.
-    assert rig.held == (2 if fail is None else 1)
+    assert rig.held == 1
 
 
 async def test_a_miss_then_winning_the_released_claim_replays(rig, monkeypatch):
@@ -241,6 +246,51 @@ async def test_a_miss_then_winning_the_released_claim_replays(rig, monkeypatch):
     assert first.status_code == late.status_code == 201
     assert _replayed(late) and late.json() == {"run": 1}
     assert len(rig.runs) == 1
+
+
+@pytest.mark.parametrize("ending", ["read-fails", "cancelled"])
+async def test_a_lookup_under_a_won_claim_that_fails_never_runs(
+    rig, monkeypatch, ending
+):
+    """The second request misses, the first answers and releases, the second
+    wins the claim and its lookup under it fails or is cancelled: nothing
+    runs again, and the claim goes."""
+    resume, looked_up, get = asyncio.Event(), asyncio.Event(), rig.fake.get
+    lookups = []
+
+    async def second_lookups(name):
+        lookups.append(name)
+        if len(lookups) == 1:  # the fast path's miss, then the first runs
+            found = await get(name)
+            looked_up.set()
+            await resume.wait()
+            return found
+        if ending == "cancelled":
+            asyncio.current_task().cancel()
+            await asyncio.sleep(0)
+        raise ConnectionError("redis unreachable")
+
+    monkeypatch.setattr(rig.fake, "get", second_lookups)
+    async with _client(rig.app) as client:
+        late = asyncio.ensure_future(_post(client))
+        await asyncio.wait_for(looked_up.wait(), GUARD)
+        # The first request answers 201 without reading (its own fast path
+        # reads through the original client).
+        monkeypatch.setattr(rig.fake, "get", get)
+        first = await asyncio.wait_for(_post(client), GUARD)
+        monkeypatch.setattr(rig.fake, "get", second_lookups)
+        resume.set()
+        if ending == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await late
+        else:
+            late = await asyncio.wait_for(late, GUARD)
+            assert late.status_code == 409
+            assert late.headers["x-error-code"] == IDEMPOTENCY_REQUEST_IN_PROGRESS
+
+    assert first.status_code == 201 and len(rig.runs) == 1
+    assert len(lookups) == 2
+    assert await _claims(rig.fake) == []
 
 
 @pytest.mark.parametrize("status", [201, 422, 500, "raise"])
@@ -321,7 +371,7 @@ async def test_without_a_claim_store_the_route_runs_unclaimed(rig, monkeypatch, 
     assert await _claims(rig.fake) == []
 
 
-async def test_an_unauthenticated_request_takes_no_claim(rig):
+async def test_a_request_without_an_authorization_header_takes_no_claim(rig):
     async with _client(rig.app) as client:
         first, second = await _post(client, headers={}), await _post(client, headers={})
 

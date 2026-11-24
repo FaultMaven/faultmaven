@@ -107,8 +107,9 @@ _KEYED_CONFLICTS = (
 )
 _KEYED_RETRY_AFTER = {
     "description": (
-        f"Seconds, on `{IDEMPOTENCY_REQUEST_IN_PROGRESS}` only: when the first "
-        "request's claim lapses unless it is renewed."
+        f"Seconds, on `{IDEMPOTENCY_REQUEST_IN_PROGRESS}` only: how long to "
+        "wait before reloading or retrying with the same key, which waits "
+        "again for the first request's answer."
     ),
     "schema": {"type": "integer"},
 }

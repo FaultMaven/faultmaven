@@ -170,16 +170,17 @@ the second waits, up to 10 s, for the first's answer:
   `IDEMPOTENCY_KEY_REUSE`, as for any later retry);
 * the first answered otherwise → the second runs;
 * the first has not answered within the wait, or the server could not tell →
-  **409** `IDEMPOTENCY_REQUEST_IN_PROGRESS`, `Retry-After` the first's claim's
-  remaining seconds (an upper bound: it is renewed while the first runs).
-  Nothing of this request ran; the first may have. Detail: "This request is
+  **409** `IDEMPOTENCY_REQUEST_IN_PROGRESS`, `Retry-After: 2`: a moment, since
+  a retry under the key waits for the first's answer again. Nothing of this
+  request ran; the first may have. Detail: "This request is
   still being processed. Wait a moment, then reload: it may already have gone
   through." For `POST /cases`, reload the case list before creating again.
 
-It covers every keyed, authenticated POST the middleware answers, which
-excludes the routes it never replays (the turn, KB upload and conversion
-routes answer their own keys; case search and the auth and session mints are
-not replayed). Unkeyed and unauthenticated requests are unchanged.
+It covers every keyed POST the middleware answers that carries an
+`Authorization` header, valid or not, which excludes the routes it never
+replays (the turn, KB upload and conversion routes answer their own keys; case
+search and the auth and session mints are not replayed). Unkeyed requests and
+requests without an `Authorization` header are unchanged.
 
 MINOR: a new code on a status the keyed routes already answered (409 key
 reuse), and a client that does not know the code treats it as a generic 4xx.""",

@@ -1,7 +1,7 @@
 """Idempotency Middleware
 
-Answers a keyed, authenticated POST (``Idempotency-Key``) on every route not
-declared ``never_replayed``, from a Redis entry its 2xx answer wrote (one hour
+Answers a keyed POST (``Idempotency-Key``) carrying an ``Authorization``
+header, valid or not, on every route not declared ``never_replayed``, from a Redis entry its 2xx answer wrote (one hour
 TTL). A retry with the same body gets that answer back, marked
 ``X-Idempotency-Replayed: true``; one with a different body is 409
 ``IDEMPOTENCY_KEY_REUSE``.
@@ -14,15 +14,16 @@ again while holding it, and only then runs the route. The holder writes entry
 and case index in one MULTI/EXEC, then releases. A duplicate that finds the
 claim held waits for the holder's answer, up to ``IDEMPOTENCY_WAIT_SECONDS``:
 the entry appears → replay (or the key-reuse 409); the claim is released with
-no entry (a non-2xx, never cached) → it takes the claim and runs; past the
-bound, or on a Redis error while waiting → 409
-``IDEMPOTENCY_REQUEST_IN_PROGRESS`` with ``Retry-After`` (the claim's
-remaining TTL). A waiter never runs unclaimed. No claim store (it failed) runs
-unclaimed, as before, reported once.
+no entry (a non-2xx, never cached) → it takes the claim, looks up again, and
+runs; past the bound, on a Redis error while waiting, or on a failed lookup
+under any claim → 409 ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` with
+``Retry-After``, a moment, since a retry waits again. A waiter never runs
+unclaimed. No claim store (it failed) runs unclaimed, as before, reported
+once.
 
-The claim is released on every answer and on an exception, never on a
-cancellation: a cancelled holder may have committed, so its claim lapses at
-the TTL instead. The route thus runs once per 2xx answer, except: a cache write
+The claim is released on every answer and on an exception, and on a
+cancellation before the route runs; never on one after: a cancelled holder may
+have committed, so its claim lapses at the TTL instead. The route thus runs once per 2xx answer, except: a cache write
 that failed (swallowed, so the answer still goes out), a holder that died
 between its commit and the cache write, and a route that commits then answers
 5xx. In each the next holder runs again.
@@ -182,9 +183,17 @@ CLAIM_TTL_SECONDS = 60
 #: (after 1 s, then 2 s) overlap, so those retries get the create's answer.
 IDEMPOTENCY_WAIT_SECONDS = 10
 
-#: The pause between two looks at the entry while waiting: a replay follows
-#: the holder's answer within it, at four Redis reads a second per waiter.
+#: The pause between two looks while waiting: a replay follows the holder's
+#: answer within it. Each look is one ``MGET`` of the entry and the claim, so a
+#: waiter costs four Redis reads a second, and it tries the claim only once the
+#: claim is gone. A waiter whose client disconnects keeps polling until it is
+#: answered, at most the wait.
 IDEMPOTENCY_POLL_SECONDS = 0.25
+
+#: The divisor of the wait that gives the in-progress 409's ``Retry-After``.
+#: A retry under the key waits for the first's answer again, so the pause
+#: before it can be short: a fifth of the wait, 2 s ("wait a moment").
+RETRY_AFTER_FRACTION_OF_WAIT = 5
 
 #: The detail of the in-progress 409 (ruled copy).
 IN_PROGRESS_DETAIL = (
@@ -442,66 +451,96 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         ``(claim, None)`` runs the route holding ``claim``, ``None`` when the
         claim store failed on the first attempt. ``(None, answer)`` answers
         without running: a replay or the key-reuse 409 from an entry found, or
-        the in-progress 409 once the wait is spent, or when the store fails
-        while waiting.
+        the in-progress 409 once the wait is spent, or when Redis fails a
+        lookup under the claim or a waiter's read or claim.
         """
+        name = CLAIM_PREFIX + cache_key[len(self.key_prefix) :]
         loop = asyncio.get_running_loop()
         deadline: Optional[float] = None
-        retry_after = 1
         while True:
-            held_for: Optional[int] = None
+            held = False
             try:
                 claim = await take_claim(
                     self.redis_client,
-                    CLAIM_PREFIX + cache_key[len(self.key_prefix) :],
+                    name,
                     ttl_seconds=CLAIM_TTL_SECONDS,
-                    purpose="keyed requests the idempotency middleware answers",
+                    purpose=(
+                        "keyed requests the idempotency middleware answers (a "
+                        "duplicate already waiting on one is refused instead)"
+                    ),
                     backstop="a retry after the first answers still replays it",
                     renew=renew_every(CLAIM_TTL_SECONDS / 3),
                 )
-            except ClaimHeld as held:
-                # The holder's remaining TTL, an int: no exception text.
-                held_for = held.retry_after
-            if held_for is None:
+            except ClaimHeld:
+                held = True
+            if not held:
                 if claim is None and deadline is not None:
                     # The store failed while this request waited: never unclaimed.
-                    return None, self._in_progress(retry_after)
-                entry = await self._get_cached_response(cache_key)
+                    return None, self._in_progress()
+                return await self._look_up_holding(
+                    claim, cache_key, body_fingerprint, idempotency_key
+                )
+
+            if deadline is None:
+                deadline = loop.time() + IDEMPOTENCY_WAIT_SECONDS
+            while True:
+                await asyncio.sleep(IDEMPOTENCY_POLL_SECONDS)
+                try:
+                    raw, holder = await self.redis_client.mget(cache_key, name)
+                    entry = json.loads(raw) if raw else None
+                except Exception as e:
+                    logger.warning(
+                        f"Idempotency wait could not read: {exception_log_name(e)}"
+                    )
+                    return None, self._in_progress()
                 if entry:
-                    await self._release(claim)
                     return None, self._answer_cached(
                         entry, body_fingerprint, idempotency_key
                     )
-                return claim, None
+                if holder is None:
+                    break  # released with no entry: try to take it
+                if loop.time() >= deadline:
+                    return None, self._in_progress()
 
-            retry_after = held_for
-            if deadline is None:
-                deadline = loop.time() + IDEMPOTENCY_WAIT_SECONDS
-            elif loop.time() >= deadline:
-                return None, self._in_progress(retry_after)
-            await asyncio.sleep(IDEMPOTENCY_POLL_SECONDS)
-            try:
-                raw = await self.redis_client.get(cache_key)
-                entry = json.loads(raw) if raw else None
-            except Exception as e:
-                logger.warning(
-                    f"Idempotency wait could not read: {exception_log_name(e)}"
-                )
-                return None, self._in_progress(retry_after)
-            if entry:
-                return None, self._answer_cached(
-                    entry, body_fingerprint, idempotency_key
-                )
+    async def _look_up_holding(
+        self,
+        claim: Optional[OwnedClaim],
+        cache_key: str,
+        body_fingerprint: str,
+        idempotency_key: str,
+    ) -> "tuple[Optional[OwnedClaim], Optional[Response]]":
+        """The lookup under the claim. Nothing has run yet, so the claim goes
+        on any exit but running the route, a cancellation included. A failed
+        read is the in-progress 409, never a run: a request that won a claim
+        just released may be the duplicate of one that answered."""
+        try:
+            raw = await self.redis_client.get(cache_key)
+            entry = json.loads(raw) if raw else None
+        except Exception as e:
+            logger.warning(
+                f"Idempotency lookup under the claim could not read: "
+                f"{exception_log_name(e)}"
+            )
+            await self._release(claim)
+            return None, self._in_progress()
+        except BaseException:
+            await self._release(claim)
+            raise
+        if entry:
+            await self._release(claim)
+            return None, self._answer_cached(entry, body_fingerprint, idempotency_key)
+        return claim, None
 
     @staticmethod
     async def _release(claim: Optional[OwnedClaim]) -> None:
         if claim is not None:
             await claim.release()
 
-    def _in_progress(self, retry_after: int) -> JSONResponse:
+    def _in_progress(self) -> JSONResponse:
         """The 409 for a duplicate whose first request has not answered within
-        the wait. ``Retry-After`` is the claim's remaining TTL: an upper bound
-        on the holder's lease, which it renews while it runs."""
+        the wait, or whose wait Redis failed. ``Retry-After`` is a moment
+        (``RETRY_AFTER_FRACTION_OF_WAIT``): a retry waits again."""
+        retry_after = max(1, IDEMPOTENCY_WAIT_SECONDS // RETRY_AFTER_FRACTION_OF_WAIT)
         return JSONResponse(
             status_code=409,
             headers={

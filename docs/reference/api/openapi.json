@@ -10852,7 +10852,7 @@
             "description": "Conflict; no case was created by this request. Told apart by `x-error-code`: `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key); `IDEMPOTENCY_REQUEST_IN_PROGRESS` (a request with this key is still being processed: wait, then reload; it may already have gone through).",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, on `IDEMPOTENCY_REQUEST_IN_PROGRESS` only: when the first request's claim lapses unless it is renewed.",
+                "description": "Seconds, on `IDEMPOTENCY_REQUEST_IN_PROGRESS` only: how long to wait before reloading or retrying with the same key, which waits again for the first request's answer.",
                 "schema": {
                   "type": "integer"
                 }
@@ -12836,7 +12836,7 @@
             "description": "Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key); `IDEMPOTENCY_REQUEST_IN_PROGRESS` (a request with this key is still being processed: wait, then reload; it may already have gone through).",
             "headers": {
               "Retry-After": {
-                "description": "Seconds, on `IDEMPOTENCY_REQUEST_IN_PROGRESS` only: when the first request's claim lapses unless it is renewed.",
+                "description": "Seconds, on `IDEMPOTENCY_REQUEST_IN_PROGRESS` only: how long to wait before reloading or retrying with the same key, which waits again for the first request's answer.",
                 "schema": {
                   "type": "integer"
                 }
