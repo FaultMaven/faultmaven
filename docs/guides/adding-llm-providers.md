@@ -693,7 +693,10 @@ differently: OpenAI `finish_reason: "length"`, Anthropic `stop_reason:
 "max_tokens"`, Gemini `finishReason: "MAX_TOKENS"`, Cohere a top-level
 `finish_reason: "MAX_TOKENS"`, Ollama `done_reason: "length"`, llama.cpp a
 `stopped_limit` boolean. Map it with `normalize_stop_reason()` from
-`.base` and pass the result as `stop_reason`.
+`.base`, or an OpenAI-shaped `choices[]` entry with `choice_stop_reason()`,
+and pass the result as `stop_reason`. A refusal stated in the provider's own
+field (`message.refusal`, Gemini's `promptFeedback.blockReason`) maps to
+`CONTENT_FILTER`, never to `STOP` or `UNKNOWN` with empty content (#2694).
 
 This is not optional bookkeeping. A response cut at the output cap arrives as
 an ordinary HTTP 200 with a body and a token count; without this field it is

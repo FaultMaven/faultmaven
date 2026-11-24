@@ -606,3 +606,17 @@ class TestRefusalIsContentFilter:
 
         assert result.stop_reason is StopReason.CONTENT_FILTER
         assert result.content == ""
+
+    @pytest.mark.parametrize(
+        "content,expected", [(" \n", ""), ("  partial  ", "partial")]
+    )
+    async def test_local_content_filter_body(self, content, expected):
+        """A blank body on a block is returned as ""; a real one still stripped."""
+        provider = LocalProvider(_config("local", "http://vllm:8000/v1", "hermes"))
+        body = _openai_completion({"content": content}, "content_filter")
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is StopReason.CONTENT_FILTER
+        assert result.content == expected

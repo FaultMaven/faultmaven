@@ -576,10 +576,14 @@ class LocalProvider(BaseLLMProvider):
 
                     # Only validate when there are no tool_calls — a valid
                     # function-calling response legitimately has empty content,
-                    # and so does a refusal, which carries its reason (#2694).
-                    if not tool_calls and (
-                        content or stop_reason is not StopReason.CONTENT_FILTER
-                    ):
+                    # and so does a refusal, which carries its reason (#2694):
+                    # a blank refusal body is returned as "".
+                    refused = (
+                        stop_reason is StopReason.CONTENT_FILTER and not content.strip()
+                    )
+                    if refused:
+                        content = ""
+                    if not tool_calls and not refused:
                         try:
                             content = self._validate_response_content(content)
                             self.logger.debug(
