@@ -573,6 +573,13 @@ def parked_count(client: Any) -> Optional[int]:
     return count if isinstance(count, int) and count >= 0 else None
 
 
+def replay_mutex(client: Any) -> Any:
+    """The lock each replay of ``client``'s parked messages holds from marking
+    them sent until it has put them on the queue. No public accessor; an SDK
+    that moved it raises AttributeError."""
+    return client._streamer._fallback_replay_manager._db_manager._replay_mutex
+
+
 def _built_client() -> Any:
     """The client this process has already built, or None. Never builds one."""
     from opik.api_objects.opik_client import get_current_client_raw

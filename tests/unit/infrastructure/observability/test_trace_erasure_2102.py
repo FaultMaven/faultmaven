@@ -78,7 +78,10 @@ class _FakeClient:
         self._streamer = SimpleNamespace(
             _fallback_replay_manager=SimpleNamespace(
                 _monitor=self.monitor,
-                _db_manager=SimpleNamespace(failed_messages_count=lambda: self.parked),
+                _db_manager=SimpleNamespace(
+                    failed_messages_count=lambda: self.parked,
+                    _replay_mutex=threading.Lock(),
+                ),
             )
         )
         self.flushes: list = []
@@ -442,6 +445,22 @@ class TestWhatThisPodHolds:
             await _eraser(client).erase_case(CASE, ENTERPRISE)
 
         assert client.trace_reads == [] and client.deleted == []
+
+    async def test_a_replay_that_does_not_finish_refuses_before_the_read(self):
+        """The monitor's replay holds the SDK's replay lock past the flush
+        timeout: what it marked sent may not be queued yet."""
+        client = _FakeClient(traces=["t1"])
+        replay = client._streamer._fallback_replay_manager._db_manager._replay_mutex
+        eraser = LLMTraceEraser(
+            "faultmaven", client_factory=lambda: client, flush_timeout_seconds=0.01
+        )
+
+        with replay:
+            with pytest.raises(ServiceException, match="llm_traces.*did not finish"):
+                await eraser.erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+        assert not replay.locked()
 
     async def test_two_deletes_on_one_pod_deliver_one_at_a_time(self, monkeypatch):
         """The SDK's replay is a non-blocking mutex: a flush that overlaps another

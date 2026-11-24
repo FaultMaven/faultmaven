@@ -43,7 +43,12 @@ failure, then searches traces and spans, then deletes. No purge is queued for
 later, so the delete fails when:
 
 - the backend cannot be reached (a trace is still parked after the send), or
-  the queued traces are not sent in time;
+  the queued traces, or a replay of parked ones already running, are not sent
+  in time;
+- the Opik SDK's replay database cannot be read: it lasts until that worker
+  restarts, and `GET /admin/config/status` shows it as `parked_messages: null`;
+- the Opik SDK's replay path has changed (an SDK upgrade moved the internals
+  the delete reads);
 - the backend answers an error, or pages that disagree with their total;
 - `OPIK_ENABLED` and a backend URL are set but this process did not configure
   tracing: the Opik SDK is not installed, configuring it raised, or the

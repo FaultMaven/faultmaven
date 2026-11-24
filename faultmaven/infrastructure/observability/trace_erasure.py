@@ -174,17 +174,29 @@ class LLMTraceEraser:
         replays them only while its monitor's flag is True, which otherwise
         waits for the next ping (``opik_sdk.ping_interval_for``, #2573). So the
         flag is reset here, through the SDK's internals as it has no public
-        accessor. Delivery is then read from the parked count after the flush,
-        not from the flag: the monitor's own ping can lower it while the sends
-        succeed, or raise it while a trace that failed to send waits for the
-        monitor's replay, which would land after the search.
+        accessor. Delivery is then read from the parked count, not from the
+        flag: the monitor's own ping can lower it while the sends succeed, or
+        raise it while a trace that failed to send waits for the monitor's
+        replay, which would land after the search. That replay marks its
+        traces sent (the count reads 0) before it queues them, holding the
+        SDK's replay lock throughout; so the count is read holding that lock,
+        after a second flush has sent what a finished replay queued.
         """
+        timeout = self._flush_timeout_seconds
         try:
             monitor = opik_sdk.replay_monitor(client)
+            mutex = opik_sdk.replay_mutex(client)
             if not monitor.has_server_connection:
                 monitor.reset()
-            flushed = client.flush(timeout=self._flush_timeout_seconds)
-            parked = opik_sdk.parked_count(client)
+            flushed = client.flush(timeout=timeout)
+            if not mutex.acquire(timeout=timeout):
+                raise _refused(owner, "a replay of parked traces did not finish")
+            try:
+                # Its own replay step returns at once: this thread holds the lock.
+                flushed = client.flush(timeout=timeout) and flushed
+                parked = opik_sdk.parked_count(client)
+            finally:
+                mutex.release()
         except AttributeError as exc:
             raise _refused(owner, "the Opik SDK's replay path has changed") from exc
         if parked is None:

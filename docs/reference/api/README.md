@@ -5641,7 +5641,7 @@ Read-only environment configuration status for dashboard display.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
 - `session_ttl_seconds` (object, required) — The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.
 - `timestamp` (string, required)
-- `trace_backend` (object, required) — The LLM trace SDK's process policy (crash reporting, content capture, project, ping interval) and the serving worker's trace client: whether its last send reached the backend, and how many traces it holds unsent.
+- `trace_backend` (object, required) — The LLM trace SDK's process policy (crash reporting, content capture, project, ping interval) and the serving worker's trace client: whether it reaches the backend, and how many traces it holds unsent.
 - `turn_timing` (object, required) — The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities.
 - `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ
 

@@ -6,12 +6,14 @@ binds.
   the backend is back. At 999999 s the monitor never pinged again, so a replica
   that lost the backend once parked every later trace for its life.
 - At that interval the monitor's own ping can race the case delete's flush.
-  The eraser reads delivery from the parked count, not from the monitor's flag.
+  The eraser reads delivery from the parked count, not from the monitor's flag,
+  and holding the SDK's replay lock, so no replay of the monitor's is half done.
 
 The monitor's clock is frozen and moved by the test, so it pings exactly when a
 test moves it one interval on, and never on its own.
 """
 
+import asyncio
 import atexit
 import gzip
 import json
@@ -150,6 +152,9 @@ def client(backend, clock, monkeypatch):
     ):
         monkeypatch.setenv(name, "")
     monkeypatch.delenv("OPIK_TRACK_DISABLE", raising=False)
+    # The replay thread ticks this often (the SDK's 0.3 s), so a held write's
+    # read timeout leaves a wide margin.
+    monkeypatch.setenv("OPIK_REPLAY_TICK_INTERVAL", "0.02")
     monkeypatch.setattr(opik.config, "_SESSION_CACHE_DICT", {})
     monkeypatch.setattr(opik_sdk, "_record", opik_sdk.backend())
     monkeypatch.setattr(
@@ -197,6 +202,29 @@ def _park(backend, client):
 
 def _eraser(client):
     return LLMTraceEraser("faultmaven", client_factory=lambda: client)
+
+
+async def _until_async(condition, what):
+    """``_until`` with the loop free, so a future can complete."""
+    for _ in range(1000):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{what} never happened")
+
+
+class _WatchedLock:
+    """The SDK's replay lock, reporting when a thread starts waiting on it."""
+
+    def __init__(self, lock):
+        self._lock, self.waited_on = lock, threading.Event()
+
+    def acquire(self, *args, **kwargs):
+        self.waited_on.set()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
 
 
 def test_a_parked_trace_is_resent_at_the_next_ping(backend, client, clock):
@@ -268,3 +296,42 @@ class TestAPingRacingTheDeletesFlush:
             backend.accepting = True
             decided.set()
         _until(backend.received.is_set, "the monitor's replay")
+
+    async def test_the_delete_waits_out_a_replay_that_has_marked_its_traces_sent(
+        self, backend, client, clock, monkeypatch
+    ):
+        """The monitor's replay has marked the parked trace sent (the count
+        reads 0) and not yet queued it: the delete waits for its replay lock
+        and returns only after the trace is delivered."""
+        manager = client._streamer._fallback_replay_manager
+        db = manager._db_manager
+        lock = _WatchedLock(opik_sdk.replay_mutex(client))
+        monkeypatch.setattr(opik_sdk, "replay_mutex", lambda client: lock)
+        marked, release = threading.Event(), threading.Event()
+        real = db._replay_messages
+
+        def replay_messages(db_messages, replay_callback):
+            if threading.current_thread() is manager:
+                marked.set()
+                release.wait(10)
+            return real(db_messages=db_messages, replay_callback=replay_callback)
+
+        monkeypatch.setattr(db, "_replay_messages", replay_messages)
+        _park(backend, client)
+        backend.accepting = True
+        order = []
+        backend.on_delivery = lambda: order.append("delivered")
+        _ping(clock)
+        assert marked.wait(10)
+        assert opik_sdk.parked_count(client) == 0
+
+        erase = asyncio.ensure_future(_eraser(client).erase_case(CASE, ENTERPRISE))
+        try:
+            await _until_async(
+                lambda: lock.waited_on.is_set() or erase.done(), "the delete's wait"
+            )
+        finally:
+            release.set()
+        order.append(f"erase returned {await erase}")
+
+        assert order == ["delivered", "erase returned 0"]

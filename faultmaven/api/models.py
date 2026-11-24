@@ -991,8 +991,8 @@ class EnvConfigStatusResponse(BaseModel):
         description=(
             "The LLM trace SDK's process policy (crash reporting, content "
             "capture, project, ping interval) and the serving worker's trace "
-            "client: whether its "
-            "last send reached the backend, and how many traces it holds unsent."
+            "client: whether it reaches the backend, and how many traces it "
+            "holds unsent."
         )
     )
     timestamp: datetime
