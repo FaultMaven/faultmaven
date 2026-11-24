@@ -53,6 +53,7 @@ named publicly here so that addition is a one-line change there.
 
 import re
 from bisect import bisect_right
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -144,6 +145,41 @@ def _lines(text: str):
         yield start, len(text)
 
 
+def offset_in_spans(spans: list[tuple[int, int]]) -> Callable[[int], bool]:
+    """``pos -> any(lo <= pos < hi for lo, hi in spans)``, in amortised constant
+    time for offsets asked in ascending order (#2635).
+
+    ``spans`` is cut into runs that are each sorted and disjoint: ``code_spans``
+    gives two, the fences and then the inline spans (an inline span can reach
+    into a fence, so the two are not one run). Each run keeps a pointer to its
+    first span not yet ended, which moves forward only; an offset below the
+    previous one re-seats it by bisect. A linear scan of every span per offset
+    was quadratic in the document's code.
+    """
+    runs: list[tuple[list[int], list[int]]] = []
+    for lo, hi in spans:
+        if not runs or lo < runs[-1][1][-1]:
+            runs.append(([], []))
+        runs[-1][0].append(lo)
+        runs[-1][1].append(hi)
+    cursors = [0] * len(runs)
+    previous = [0]
+
+    def inside(pos: int) -> bool:
+        backwards = pos < previous[0]
+        previous[0] = pos
+        found = False
+        for r, (starts, ends) in enumerate(runs):
+            i = bisect_right(ends, pos) if backwards else cursors[r]
+            while i < len(ends) and ends[i] <= pos:
+                i += 1
+            cursors[r] = i
+            found = found or (i < len(ends) and starts[i] <= pos)
+        return found
+
+    return inside
+
+
 def _protected_spans(text: str) -> list[tuple[int, int]]:
     """Character ranges that are markdown CODE — fenced blocks and inline spans.
 
@@ -174,14 +210,8 @@ def _protected_spans(text: str) -> list[tuple[int, int]]:
         fences.append((start, fence_end))
 
     # Only a fence can hold an inline match: ``finditer`` matches never overlap.
-    # The fences are sorted and disjoint (the inner loop shares ``lines``), so
-    # the one that can hold ``pos`` is the last to start at or before it (#2635).
-    fence_starts = [lo for lo, _ in fences]
-
-    def in_fence(pos: int) -> bool:
-        i = bisect_right(fence_starts, pos) - 1
-        return i >= 0 and pos < fences[i][1]
-
+    # The fences are sorted and disjoint (the inner loop shares ``lines``).
+    in_fence = offset_in_spans(fences)
     spans = list(fences)
     for m in CODE_SPAN_RE.finditer(text):
         if not in_fence(m.start()):
@@ -203,11 +233,8 @@ def comment_spans(text: str) -> list[tuple[int, int]]:
     if "<!--" not in text:
         return []
 
-    protected = _protected_spans(text)
-
-    def guarded(pos: int) -> bool:
-        return any(lo <= pos < hi for lo, hi in protected)
-
+    # Every offset below is asked in ascending order, the fast case.
+    guarded = offset_in_spans(_protected_spans(text))
     spans: list[tuple[int, int]] = []
     cursor = 0
     while True:
@@ -265,8 +292,9 @@ def code_spans(text: str) -> list[tuple[int, int]]:
     """Character ranges of markdown CODE — fenced blocks and inline spans.
 
     The public form of :func:`_protected_spans`, for callers that need to ask
-    "is this offset inside code?" rather than to read a masked copy. Preferred
-    over masking wherever a caller then matches a PATTERN: any mask has to
+    "is this offset inside code?" (:func:`offset_in_spans` over the result)
+    rather than to read a masked copy. Preferred over masking wherever a caller
+    then matches a PATTERN: any mask has to
     choose a fill character, and a fill can satisfy the very pattern the caller
     is testing for. Blanking to spaces turns ``##`` + an inline span + ``
     Causes`` into ``##             Causes``, which an ``^##[ \t]+Causes$``
@@ -274,35 +302,6 @@ def code_spans(text: str) -> list[tuple[int, int]]:
     class of artifact masking was adopted to avoid.
     """
     return _protected_spans(text)
-
-
-def mask_code(text: str) -> str:
-    """Blank every fenced block and inline code span *in place*, length-preserved.
-
-    The companion to :func:`mask_html_comments`, and THE single decision about
-    what markdown CODE is — both route through :func:`_protected_spans`, so
-    ``~~~`` fences, indented fences, an unclosed fence running to EOF and inline
-    spans are handled once rather than per-caller.
-
-    Masking rather than deleting, for the reason spelled out on
-    ``mask_html_comments``: deleting JOINS the text either side. A caller that
-    deletes a fence splices what precedes it onto what follows, and can
-    manufacture a line-start ``##`` the source never had — which for a caller
-    asking "does this document have a ``## Causes`` heading" is a false YES.
-    Blanking to spaces leaves every offset and line number identical to the raw
-    text. On a document with no code it is the identity.
-    """
-    spans = _protected_spans(text)
-    if not spans:
-        return text
-    out: list[str] = []
-    previous = 0
-    for start, end in spans:
-        out.append(text[previous:start])
-        out.append(COMMENT_BODY_CHAR_RE.sub(" ", text[start:end]))
-        previous = end
-    out.append(text[previous:])
-    return "".join(out)
 
 
 def causes_section(content: str) -> tuple[str, str]:
