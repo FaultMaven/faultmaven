@@ -523,11 +523,27 @@ def false_alarm_close_declined_at(case: Case) -> int | None:
     return declined.at_turn if declined is not None else None
 
 
+def restores_to(case: Case, status: ProblemStatus) -> ProblemStatus | None:
+    """The status a hold or a finding returns the case to when it ends
+    (#2811 S2c-3a), the one reading of the two owners of ``prior_status``:
+    under REVISION_PENDING the open revision's (None with no revision open),
+    under INVALIDATED the invalidation's (UNVERIFIED with none), else None.
+    ``_answer_pending``, ``_clear_invalidation`` and the turn-start outcome
+    baseline read it."""
+    if status == ProblemStatus.REVISION_PENDING:
+        revision = pending_revision(case)
+        return revision.prior_status if revision is not None else None
+    if status == ProblemStatus.INVALIDATED:
+        pv = case.problem_verification
+        finding = pv.invalidation if pv is not None else None
+        return finding.prior_status if finding else ProblemStatus.UNVERIFIED
+    return None
+
+
 def _clear_invalidation(case: Case, *, via: str) -> None:
-    pv = case.problem_verification
-    prior = pv.invalidation.prior_status if pv.invalidation else None
-    pv.invalidation = None
-    _move(case, prior or ProblemStatus.UNVERIFIED, via=via)
+    to = restores_to(case, ProblemStatus.INVALIDATED)
+    case.problem_verification.invalidation = None
+    _move(case, to, via=via)
 
 
 def edit_statement_refusal(case: Case, text: str) -> str | None:
@@ -647,11 +663,12 @@ def _answer_pending(
     offer = open_revision(case)
     if offer is None:
         return None
+    to = restores_to(case, ProblemStatus.REVISION_PENDING)
     case.offer_record = answer_offer(
         case, proposal_id=offer.proposal_id, answer=answer, via=via
     )
-    _move(case, offer.revision.prior_status, via=status_via)
-    if offer.revision.prior_status == ProblemStatus.VERIFIED:
+    _move(case, to, via=status_via)
+    if to == ProblemStatus.VERIFIED:
         _restore_the_hold(case, offer.revision)
     return offer.revision
 

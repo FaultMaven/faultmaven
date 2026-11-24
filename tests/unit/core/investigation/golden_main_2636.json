@@ -638,7 +638,7 @@
     "basis": "deferred"
   },
   "cycle:offer:turn_replayed_rca_infeasible_close": {
-    "reply": "Noted.\n\n---\n\nThe problem was observed relieved after the mitigation (turn 4). Since black-box vendor API, shall we close this case?",
+    "reply": "Noted.\n\n---\n\nThe problem was observed relieved after the mitigation (turn 4). Since black-box vendor API, shall we close this case?\n\n---\n\n**Case record:** the problem is confirmed.",
     "notices": [],
     "summary": "The problem was observed relieved after the mitigation (turn 4). Since black-box vendor API, shall we close this case?",
     "basis": "rca_infeasible"

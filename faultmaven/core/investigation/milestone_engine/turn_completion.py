@@ -18,6 +18,7 @@ from faultmaven.core.investigation.chat_data import (
 )
 from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
+    case_outcome_write_failures_total,
     engine_owned_affordance_served_total,
     narration_overclaim_total,
 )
@@ -27,15 +28,26 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
+from faultmaven.core.investigation.narration.codes import OfferCode
+from faultmaven.core.investigation.narration.offers import confirmation_message
+from faultmaven.core.investigation.narration.statement import (
+    OutcomeBaseline,
+    offer_stated,
+    outcome_changes,
+    outcome_statement,
+)
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
     open_terminal_offer,
     terminal_offer_opened_this_turn,
 )
+from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.modules.case.contracts import (
     MESSAGE_METADATA_AGENT_SYNTHESIZED,
+    CaseOutcome,
     CaseState,
     TurnOutcome,
+    WritePoint,
 )
 
 from .affordances import (
@@ -60,11 +72,17 @@ from .response_synthesis import (
 from .stage_gates import declined_close_card
 from .statement_revision import revision_presentation
 from .terminal_replies import (
-    _build_resolution_confirmation,
     _select_ack_follow_ups,
+    resolution_confirmation_params,
 )
 from .turn_application import record_turn
-from .turn_narration import NARRATION_CONFLICTS_KEY, mark_told, narrate_turn
+from .turn_narration import (
+    NARRATION_CONFLICTS_KEY,
+    OUTCOME_STATED_KEY,
+    OUTCOME_WRITTEN_KEY,
+    mark_told,
+    narrate_turn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +152,43 @@ def _narration_overclaim_notice(
     if open_terminal_offer(case):
         return _NARRATION_OVERCLAIM_NOTICE_PENDING
     return _NARRATION_OVERCLAIM_NOTICE
+
+
+def _statement_record(
+    case, metadata: dict, baseline: OutcomeBaseline | None
+) -> CaseOutcome | None:
+    """The turn-final record the outcome statement reads (#2811 S2c-3a): the
+    cycle's, or, when its write failed, the narration's fold, stored nowhere;
+    None with no baseline record to compare, or when that fold fails too
+    (logged and counted), so nothing is stated."""
+    if baseline is None or baseline.record is None:
+        return None
+    if metadata.get(OUTCOME_WRITTEN_KEY):
+        return case.progress.outcome
+    try:
+        return narration_outcome(case)
+    except Exception:  # noqa: BLE001 — the reply goes out without a statement
+        logger.exception(
+            "Case %s: no record for the outcome statement (#2811)",
+            getattr(case, "case_id", None),
+        )
+        try:
+            case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
+        except Exception:  # noqa: BLE001 — a metrics error never fails a reply
+            logger.exception("case_outcome_write_failures_total not counted")
+        return None
+
+
+def _outcome_statement_for_turn(
+    baseline: OutcomeBaseline | None, now: CaseOutcome | None, stated: frozenset
+) -> str | None:
+    """The "**Case record:**" line for the turn: each closed-set fact that
+    changed between the turn-start snapshot and the turn-final record, less
+    what the turn's prose states (pin 2: the two records and the restore
+    target alone)."""
+    if baseline is None:
+        return None
+    return outcome_statement(outcome_changes(baseline, now), stated)
 
 
 async def _finalize_turn(
@@ -220,8 +275,14 @@ async def _compose_turn_reply(
     summary_failed,
     summary_payload,
     validation_repairs,
+    baseline: OutcomeBaseline | None = None,
 ):
     """Compose the final agent-facing reply text, gate prose, follow-ups and telemetry for the turn."""
+    # What each offer prose the narration published states, and the record
+    # the outcome statement reads (#2811 S2c-3a).
+    stated_by_prose = metadata.pop(OUTCOME_STATED_KEY, None) or {}
+    now = _statement_record(case_updated, metadata, baseline)
+    stated: frozenset = frozenset()
     response_synthesized = is_agent_response_synthesized(response_obj)
     agent_response_text = "" if response_synthesized else response_obj.agent_response
     # The state_updates the parse lost (#2811): the note sits directly under
@@ -259,15 +320,16 @@ async def _compose_turn_reply(
         "deferred_solution_gate_message",
         "resolution_ready_gate_message",
     )
-    offer_prose = next(
-        (metadata[key] for key in _OFFER_PROSE if metadata.get(key)), None
-    )
+    offer_key = next((key for key in _OFFER_PROSE if metadata.get(key)), None)
     if metadata.get("resolution_ready_for_confirmation"):
         # No fixed thanks: the user's message may have carried no details at
         # all (#2428).
+        confirmation = resolution_confirmation_params(case_updated)
         agent_response_text = _prose_with_gate_notice(
-            agent_response_text,
-            _build_resolution_confirmation(case_updated),
+            agent_response_text, confirmation_message(confirmation)
+        )
+        stated = offer_stated(
+            OfferCode.REQUEST_READY, confirmation, now.attempts if now else ()
         )
         follow_ups = projection.pair
         gate_prose_appended = True
@@ -277,6 +339,7 @@ async def _compose_turn_reply(
             agent_response_text,
             metadata["resolution_readiness_message"],
         )
+        stated = stated_by_prose.get("resolution_readiness_message", frozenset())
         follow_ups = projection.pair
         gate_prose_appended = True
     elif metadata.get("resolution_needs_info_first_pass"):
@@ -287,14 +350,18 @@ async def _compose_turn_reply(
             agent_response_text,
             metadata["resolution_needs_info_message"],
         )
+        stated = stated_by_prose.get("resolution_needs_info_message", frozenset())
         gate_prose_appended = True
-    elif offer_prose is not None:
+    elif offer_key is not None:
         # An engine-proposed offer (the rca-infeasible or false-alarm close,
         # the deferred disposition, the resolution backstop): its reason is
         # composed below the model's reply, because an offer the user did not
         # ask for and the model did not narrate is otherwise two unexplained
         # buttons (fm#1122, case_fa29e0023b85 turns 11-15).
-        agent_response_text = _prose_with_gate_notice(agent_response_text, offer_prose)
+        agent_response_text = _prose_with_gate_notice(
+            agent_response_text, metadata[offer_key]
+        )
+        stated = stated_by_prose.get(offer_key, frozenset())
         follow_ups = projection.pair
         gate_prose_appended = True
 
@@ -529,16 +596,27 @@ async def _compose_turn_reply(
     # record, never mutate; the turn's one commit, at the service,
     # persists it alongside the messages.
     # Nothing composed onto a synthesized placeholder: it IS the reply,
-    # and stays flagged, with the drop note under it. Anything composed
-    # replaced it with engine prose, which is a real answer and is not
-    # flagged; the drop note heads it.
+    # and stays flagged, with the drop note and the outcome statement under
+    # it. Anything composed replaced it with engine prose, which is a real
+    # answer and is not flagged; the drop note heads it. The outcome
+    # statement is last in either arm, below the INV-40 notice (#2811
+    # S2c-3a).
+    statement = _outcome_statement_for_turn(baseline, now, stated)
     if response_synthesized and not agent_response_text.strip():
         agent_response_text = response_obj.agent_response
         if state_drop is not None:
             agent_response_text = _prose_with_gate_notice(
                 agent_response_text, state_drop_note(state_drop, placeholder=True)
             )
+        if statement is not None:
+            agent_response_text = _prose_with_gate_notice(
+                agent_response_text, statement
+            )
     else:
+        if statement is not None:
+            agent_response_text = _prose_with_gate_notice(
+                agent_response_text, statement
+            )
         if response_synthesized and state_drop is not None:
             agent_response_text = _prose_with_gate_notice(
                 state_drop_note(state_drop, placeholder=True), agent_response_text

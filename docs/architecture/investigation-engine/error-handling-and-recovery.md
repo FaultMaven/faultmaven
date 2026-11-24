@@ -727,6 +727,8 @@ Between steps 3 and 4, a body whose `agent_response` is missing or not a string 
 - after a #1442 placeholder, below `---`: the placeholder note for its kind, and the reply stays flagged `agent_response_synthesized` on both the row and the turn record;
 - where engine prose replaced the placeholder (the #1442 rule clears the flag): the placeholder note, `---`, then that prose. The terminal-summary append is not reachable on an LLM turn today, so the note never lands on a turn that just closed.
 
+The engine's outcome statement ("**Case record:** …", #2811 S2c-3a) goes last in each case, below any INV-40 notice, and under a kept placeholder below its note (`investigation-lifecycle-logic.md`, *The outcome statement*).
+
 Terminal turns are not composed there and show no note.
 
 **What the next prompt is told.** Every marked turn prepends one `system_notices` entry for its kind (`ResponseApplier.process_response_structured`), so it sits among the prepended notices at the head of the list. On a placeholder turn whose flag is kept, that entry is the only channel, since a flagged row is never quoted (`prompts/context_builder/history.py`); otherwise the note also arrives in the quoted reply. The turn's telemetry row carries the kind as `state_drop` (`docs/reference/case-telemetry-stream.md`).

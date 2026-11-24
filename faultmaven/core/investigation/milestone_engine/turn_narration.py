@@ -50,8 +50,13 @@ from faultmaven.core.investigation.narration.offers import (
     record_params,
     render_offer,
 )
+from faultmaven.core.investigation.narration.statement import (
+    OutcomeBaseline,
+    offer_stated,
+)
 from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
+from faultmaven.core.investigation.problem_status import restores_to
 from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
@@ -65,6 +70,10 @@ OUTCOME_WRITTEN_KEY = "outcome_written"
 #: The narration's conflicts (``narration.<code>``), handed to the turn's
 #: commit plan by ``_finalize_turn`` and counted after the commit (#2689).
 NARRATION_CONFLICTS_KEY = "narration_conflicts"
+
+#: What each published offer prose states (``narration.statement.offer_stated``),
+#: by its ``PROSE_KEYS`` key: turn-local, popped by ``_compose_turn_reply``.
+OUTCOME_STATED_KEY = "outcome_stated"
 
 #: The unbound re-check lines this narration told, as ``(line, ids)`` pairs,
 #: for ``mark_told`` once the turn record is created (#2555).
@@ -251,11 +260,13 @@ def _narrate_offer(
     if _lapsed(case, params.get("proposal_id")):
         return
     if outcome is not None:
-        text = render_offer(code, record_params(code, params, outcome, request_text))
-    else:
-        text = render_offer(code, params)
+        params = record_params(code, params, outcome, request_text)
+    text = render_offer(code, params)
     if code in PROSE_KEYS:
         metadata[PROSE_KEYS[code]] = text
+        metadata.setdefault(OUTCOME_STATED_KEY, {})[PROSE_KEYS[code]] = offer_stated(
+            code, params
+        )
     proposal_id = params.get("proposal_id")
     if proposal_id is not None and not summarize_offer(case, proposal_id, text):
         logger.info(
@@ -288,6 +299,22 @@ def _engine_offer_stands(case: Any, metadata: dict, params: dict) -> dict:
     metadata["transition_superseded_by_engine"] = False
     metadata["transition_dropped_for_lapsed_offer"] = True
     return {**params, "stands": False}
+
+
+def outcome_baseline(case: Any) -> OutcomeBaseline:
+    """The turn-start snapshot the outcome statement compares against (#2811
+    S2c-3a), taken before any write of the turn: a deep copy of the record,
+    the status its problem's hold or finding restores, selected by the
+    record's own status, and whether that status is the live one."""
+    record = case.progress.outcome
+    if record is None:
+        return OutcomeBaseline(record=None, restores_to=None, problem_comparable=False)
+    status = record.problem.status
+    return OutcomeBaseline(
+        record=record.model_copy(deep=True),
+        restores_to=restores_to(case, status),
+        problem_comparable=status == case.progress.problem_status,
+    )
 
 
 def mark_told(case: Any, metadata: dict, kept: list[str]) -> None:

@@ -13,7 +13,9 @@ later commit added or changed is that commit's to declare). Declared
 differences, #2811 S2c-1b: ``turn:offer:needs_info_no_cause`` and
 ``turn:offer:needs_info_held_open``, rendered at c1ade8d8c, each differing
 from ``main`` at 5a1d3b130 only in its "Root cause" line (``main``: the bare
-ask).
+ask). #2811 S2c-3a: ``turn:offer:turn_replayed_rca_infeasible_close``, whose
+reply now ends with the outcome statement of its revision-confirm turn
+("**Case record:** the problem is confirmed.").
 """
 
 from __future__ import annotations
