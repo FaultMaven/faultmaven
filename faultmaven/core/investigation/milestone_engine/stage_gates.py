@@ -4,6 +4,7 @@ from datetime import (
     UTC,
     datetime,
 )
+from functools import cache
 from typing import (
     Any,
     Literal,
@@ -2394,15 +2395,19 @@ def _mitigation_verify_refusal(case: Case) -> Optional[dict[str, Any]]:
         subject_index,
     )
 
-    reason = mitigation_refusal_reason(case)
+    @cache
+    def read():
+        subjects = subject_index(case)
+        return subjects, mitigation_relief(case, subjects)
+
+    reason = mitigation_refusal_reason(case, lambda: read()[1])
     if reason is None:
         return None
     rows: list[str] = []
     turn = present = None
     if reason == MitigationRefusalReason.NO_BOUND_RELIEF:
         turn = mitigation_attempt_turn(case)
-        subjects = subject_index(case)
-        _relief, present = mitigation_relief(case, subjects)
+        subjects, (_relief, present) = read()
         problem, _cause = subjects.bindable_rows()
         rows = [e.evidence_id for e in problem[:5]]
     return {
