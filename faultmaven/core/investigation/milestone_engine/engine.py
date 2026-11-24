@@ -130,6 +130,7 @@ from .statement_revision import (
     revision_pending,
     staged_work_summary,
 )
+from .turn_narration import outcome_baseline
 
 # =============================================================================
 # Evidence Category - Milestone Mapping (Option 2.5: System-Inferred Attribution)
@@ -693,6 +694,11 @@ class MilestoneEngine:
                 "status_transitioned": False,
                 "outcome": TurnOutcome.CONVERSATION,
             }
+            # The record as the turn found it, before any write of the turn:
+            # the outcome statement under the reply compares against it
+            # (#2811 S2c-3a). A local, not metadata, which the reply's row
+            # persists.
+            baseline = outcome_baseline(case)
 
             # The turn's uploads, derived ONCE, above the path fork (#1229).
             # Every branch below — the terminal short-circuit, the
@@ -1444,6 +1450,7 @@ class MilestoneEngine:
                 summary_failed=summary_failed,
                 summary_payload=summary_payload,
                 validation_repairs=record_inputs.validation_repairs,
+                baseline=baseline,
             )
 
         except Exception as e:

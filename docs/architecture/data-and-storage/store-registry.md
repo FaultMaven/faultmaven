@@ -118,7 +118,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix | none |
 | **Redis `faultmaven:llm_config:version`** | none | not tenant data | left, reported under no known prefix | none |
 | **Trace store** | case and conversion: purged by their tags before the case delete and the draft and document deletes, with the residuals in [Case deletion](../../operations/case-deletion.md#residuals) | by the `enterprise_id` tag: `not built`, and no retention bound covers it | not covered by `fm-wipe-deployment`; `fm-purge-traces` deletes by start time | none: no bound can be verified through Opik's API (#2700), so content stays refused (#2616 K0, #2669). Content written before #2669 stays until an operator runs `fm-purge-traces` ([runbook](../../operations/case-deletion.md#purging-the-traces-written-before-2698)) |
-| **Trace SDK's local buffer** | replayed to the backend when a delete runs on that pod, and only then purgeable there | as the trace store | not covered: pending #2616 | none: a parked trace otherwise replays only after the SDK's ping interval, set to 999999 s (about 11.6 days): #2573 |
+| **Trace SDK's local buffer** | replayed to the backend when a delete runs on that pod, and only then purgeable there | as the trace store | not covered: pending #2616 | none: a parked trace otherwise replays at the monitor's next ping once the backend is back: within the SDK's default interval when the backend URL has no path (the form checked live), and in effect never under any other form: #2573 |
 | **LLM response cache** | none, a stated exclusion ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): entries outlive a case delete, at most 1,000 per replica, evicted oldest first, or until the process ends. No request asks for a deleted case id again, and an eraser would need a cross-replica broadcast for memory nothing can read | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
 | **`cached_content_tokens`** | none, a stated exclusion ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): entries outlive a case delete, at most 4,096 per replica, least recently used, or until the process ends. No request reads a key back as text, and an eraser would need a cross-replica broadcast for memory nothing can read | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
 | **Metrics** | none | not tenant data | ends with the process | the process's lifetime; the scraper's retention is the operator's |
@@ -298,7 +298,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 ### Trace SDK's local buffer
 
 - `docs/operations/case-deletion.md` §Residuals and #2573. FaultMaven sets the ping
-  interval (`opik_sdk.PING_INTERVAL_S`), and `GET /admin/config/status` reports the
+  interval by the URL form (`opik_sdk.ping_interval_for`), and `GET /admin/config/status` reports the
   serving worker's buffer under `trace_backend` (`server_connection`,
   `parked_messages`); each worker of each replica has its own.
 

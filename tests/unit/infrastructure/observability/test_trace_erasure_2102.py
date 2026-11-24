@@ -73,8 +73,19 @@ class _FakeClient:
         self.trace_page = self.span_page = None
         self.flushed, self.send_fails = flushed, send_fails
         self.monitor = _FakeMonitor(connected)
+        #: What the SDK's replay database holds unsent; a failed send parks one.
+        self.parked = 0
+        #: What each read of the SDK's queue answers, in turn; then drained.
+        self.queue_reads: list = []
         self._streamer = SimpleNamespace(
-            _fallback_replay_manager=SimpleNamespace(_monitor=self.monitor)
+            _all_done=lambda: self.queue_reads.pop(0) if self.queue_reads else True,
+            _fallback_replay_manager=SimpleNamespace(
+                _monitor=self.monitor,
+                _db_manager=SimpleNamespace(
+                    failed_messages_count=lambda: self.parked,
+                    _replay_mutex=threading.Lock(),
+                ),
+            ),
         )
         self.flushes: list = []
         self.trace_reads: list = []
@@ -99,6 +110,7 @@ class _FakeClient:
         )
         if self.send_fails:
             self.monitor.has_server_connection = False
+            self.parked = 1
         return self.flushed
 
     @staticmethod
@@ -427,6 +439,68 @@ class TestWhatThisPodHolds:
 
         assert client.trace_reads == [] and client.deleted == []
 
+    @pytest.mark.parametrize("count", [-1, None], ids=["closed-or-failed", "moved"])
+    async def test_an_unreadable_replay_database_refuses_before_the_read(self, count):
+        client = _FakeClient(traces=["t1"])
+        client.parked = count
+
+        with pytest.raises(ServiceException, match="llm_traces.*replay database"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+
+    async def test_a_replay_that_does_not_finish_refuses_before_the_read(self):
+        """The monitor's replay holds the SDK's replay lock past the flush
+        timeout: what it marked in progress may not be queued yet."""
+        client = _FakeClient(traces=["t1"])
+        replay = client._streamer._fallback_replay_manager._db_manager._replay_mutex
+        eraser = LLMTraceEraser(
+            "faultmaven", client_factory=lambda: client, flush_timeout_seconds=0.01
+        )
+
+        with replay:
+            with pytest.raises(ServiceException, match="llm_traces.*did not finish"):
+                await eraser.erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+        assert not replay.locked()
+
+    async def test_a_queue_not_drained_is_flushed_again_and_read_again(self):
+        client = _FakeClient(traces=["t1"])
+        client.queue_reads = [False]
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 1
+
+        assert len(client.flushes) == 2
+
+    async def test_a_queue_still_not_drained_refuses_before_the_read(self):
+        client = _FakeClient(traces=["t1"])
+        client.queue_reads = [False, False]
+
+        with pytest.raises(ServiceException, match="llm_traces.*did not reach"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+
+    async def test_the_replay_lock_is_free_during_every_flush(self):
+        """The monitor's recovery replay only tries the lock: held across a
+        flush, it would replay nothing and strand the parked traces."""
+        client = _FakeClient(traces=["t1"], connected=False, send_fails=True)
+        replay = client._streamer._fallback_replay_manager._db_manager._replay_mutex
+        held: list = []
+        real = client.flush
+
+        def flush(timeout=None):
+            held.append(replay.locked())
+            return real(timeout)
+
+        client.flush = flush
+
+        with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert held == [False, False]
+
     async def test_two_deletes_on_one_pod_deliver_one_at_a_time(self, monkeypatch):
         """The SDK's replay is a non-blocking mutex: a flush that overlaps another
         returns at once, with its case's traces still parked."""
@@ -471,8 +545,15 @@ class TestWhatThisPodHolds:
                     )
                 )
             },
+            {
+                "_streamer": SimpleNamespace(
+                    _fallback_replay_manager=SimpleNamespace(
+                        _monitor=_FakeMonitor(connected=True)
+                    )
+                )
+            },
         ],
-        ids=["no-monitor", "no-reset"],
+        ids=["no-monitor", "no-reset", "no-database"],
     )
     async def test_an_sdk_that_changed_fails_closed_naming_the_store(self, changed):
         client = _FakeClient(traces=["t1"])

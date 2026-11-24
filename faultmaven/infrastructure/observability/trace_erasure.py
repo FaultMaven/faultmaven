@@ -169,28 +169,54 @@ class LLMTraceEraser:
     def _deliver_queued(self, client: Any, owner: str) -> None:
         """Send what this pod holds for the backend, so the search can find it.
 
-        ``flush`` returning True is not delivery. After one connection failure
+        ``flush`` returning True is not delivery. After a failed send or ping
         the SDK parks every later trace in a local database with no send, and
         replays them only while its monitor's flag is True, which otherwise
-        waits for a ping ``opik_sdk.PING_INTERVAL_S`` apart. So the flag is
-        reset here, through the SDK's internals as it has no public accessor.
-        The ping interval stays as it is: a non-200 ping would park every trace
-        on every pod (#2573). After the flush, a flag that is False again means
-        a send failed, so the backend is unreachable.
+        waits for the next ping (``opik_sdk.ping_interval_for``, #2573). So the
+        flag is reset here, through the SDK's internals as it has no public
+        accessor. Delivery is then read from the parked count, not from the
+        flag: the monitor's own ping can lower it while the sends succeed, or
+        raise it while a trace that failed to send waits for the monitor's
+        replay, which would land after the search. That replay marks them in
+        progress (the count reads 0) before it queues them, holding the SDK's
+        replay lock throughout; so the count and the queue are read holding
+        that lock, and once more after a second flush when they are not clear.
+        The lock is never held across a flush: the monitor's recovery replay
+        only tries it, and one that finds it held strands the parked traces.
         """
+        timeout = self._flush_timeout_seconds
         try:
             monitor = opik_sdk.replay_monitor(client)
+            mutex = opik_sdk.replay_mutex(client)
             if not monitor.has_server_connection:
                 monitor.reset()
-            flushed = client.flush(timeout=self._flush_timeout_seconds)
-            connected = monitor.has_server_connection
+            flushed = client.flush(timeout=timeout)
+            parked, drained = self._settled(client, mutex, owner)
+            if parked != 0 or not drained:
+                flushed = client.flush(timeout=timeout) and flushed
+                parked, drained = self._settled(client, mutex, owner)
         except AttributeError as exc:
             raise _refused(owner, "the Opik SDK's replay path has changed") from exc
-        if not connected:
+        if parked is None:
+            raise _refused(owner, "the Opik SDK's replay database cannot be read")
+        if parked:
             raise _refused(owner, "a send failed: the backend is unreachable")
         # A trace still queued here would land after the search and survive it.
-        if not flushed:
+        if not (flushed and drained):
             raise _refused(owner, "queued traces did not reach the backend")
+
+    def _settled(
+        self, client: Any, mutex: Any, owner: str
+    ) -> tuple[Optional[int], bool]:
+        """The parked count, and whether the SDK's queue is drained, read
+        holding its replay lock, so no replay is between marking its traces
+        in progress and queuing them. Released before any flush."""
+        if not mutex.acquire(timeout=self._flush_timeout_seconds):
+            raise _refused(owner, "a replay of parked traces did not finish")
+        try:
+            return opik_sdk.parked_count(client), opik_sdk.queue_drained(client)
+        finally:
+            mutex.release()
 
 
 class UnavailableTraceEraser:
