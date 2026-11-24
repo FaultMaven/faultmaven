@@ -334,11 +334,19 @@ _SWITCH_MENTIONS_ALLOWED: set = set()
 
 def _switch_mentions(root: Path) -> set:
     """(path, line number) of each line under *root*'s scanned files naming
-    ``METRICS_ENABLED`` or ``PROMETHEUS_ENABLED``, ``run:`` lines included."""
+    ``METRICS_ENABLED`` or ``PROMETHEUS_ENABLED``, ``run:`` lines included.
+
+    Only files git tracks: an ignored local note (``docs/working/``) ships to
+    no operator and no CI run, and reading one fails a checkout CI passes."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True
+    ).stdout.decode()
+    tracked = set(tracked.split("\0")) - {""}
+    assert tracked, "git ls-files returned nothing — the scan would be vacuous"
     found = set()
     for pattern in _SWITCH_SCAN:
         for path in root.glob(pattern):
-            if not path.is_file():
+            if path.relative_to(root).as_posix() not in tracked or not path.is_file():
                 continue
             text = path.read_bytes().decode("utf-8", errors="ignore")
             for number, line in enumerate(text.splitlines(), 1):
@@ -359,9 +367,12 @@ def test_the_switch_scan_sees_a_planted_line(tmp_path):
         "docker-compose.yml": "      - METRICS_ENABLED=true",
         ".github/workflows/ci.yml": "      - run: PROMETHEUS_ENABLED=true pytest",
     }
-    for rel, line in planted.items():
+    untracked = "docs/working/note.md"
+    for rel, line in {**planted, untracked: "METRICS_ENABLED"}.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(f"first line\n{line}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", *planted], cwd=tmp_path, check=True)
     assert _switch_mentions(tmp_path) == {(rel, 2) for rel in planted}
 
 
