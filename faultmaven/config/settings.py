@@ -1713,8 +1713,8 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         alone (``coherence_refuses_local_auth``: a cloud deployment, or
         ``TENANT_PROVIDER=multi`` outside cloud): it returns, reading, writing,
         setting and exporting nothing: the server and the jobs runner refuse
-        them at the gate, an operator command at the signer, and a secret
-        would sit foreign to the corrected run on that volume (#2705).
+        them at the gate, an operator command that reaches it at the signer,
+        and a secret would sit foreign to the corrected run on its volume (#2705).
       - Otherwise it reads the secret file
         (``settings.security.jwt_secret_file``) or generates a secret, and
         judges that value before it is published, set or exported. The file is
