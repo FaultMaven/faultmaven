@@ -59,6 +59,11 @@ pytestmark = [pytest.mark.unit]
 
 # The encode, from the KB indexing slot's thread (#2055), in its worker (#2851).
 _EMBED_TEXTS = "faultmaven.infrastructure.index_slot.encode_in_worker"
+# The runbook security check, in its worker (#2661), as the update calls it.
+_GATE = (
+    "faultmaven.modules.knowledge.domain.services.knowledge_service."
+    "aenforce_runbook_security"
+)
 _REPO = (
     "faultmaven.modules.knowledge.infrastructure.persistence."
     "knowledge_item_repository.DatabaseKnowledgeItemRepository"
@@ -204,6 +209,32 @@ def _service(state, *, commit_raises=None, commit_lands=True):
 
 def _kinds(calls):
     return [kind for kind, _ in calls if kind != "chunk_updated_at"]
+
+
+#: The event-loop turns a racing update may take to reach the step a test waits
+#: for. With the security gate's worker stubbed, only the KB slot's thread hop
+#: runs between: 5-182 turns measured (#3037).
+_RACE_TURNS = 100_000
+
+
+async def _until(reached, calls, updates, step):
+    """Yield to the loop until ``reached()``, at most ``_RACE_TURNS`` turns: a
+    stall fails with the calls seen and where each update waits, instead of
+    hanging its worker until the job is cancelled (#3037)."""
+    for _ in range(_RACE_TURNS):
+        if reached():
+            return
+        await asyncio.sleep(0)
+    waits = [
+        [f"{f.f_code.co_name}:{f.f_lineno}" for f in task.get_stack()]
+        for task in updates
+    ]
+    for task in updates:
+        task.cancel()
+    pytest.fail(
+        f"{step} not reached in {_RACE_TURNS} loop turns; calls: {calls}; "
+        f"the updates wait at: {waits}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +507,9 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     repo.update_fields = AsyncMock(side_effect=in_order)
     first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
-    with patch(_REPO, return_value=repo):
+    # The security gate's real worker (a process spawn) would put an unbounded
+    # number of loop turns before the first wait's step; it has its own tests.
+    with patch(_REPO, return_value=repo), patch(_GATE, new=AsyncMock()):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             updates = [
                 asyncio.create_task(
@@ -486,11 +519,16 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
                 )
                 for c in (NEW_CONTENT, OTHER_CONTENT)
             ]
-            while _kinds(calls).count("vector_add") < 2:
-                await asyncio.sleep(0)
+            await _until(
+                lambda: _kinds(calls).count("vector_add") >= 2,
+                calls,
+                updates,
+                "both updates' vector_add",
+            )
             gates[first].set()
-            while "sql_commit" not in _kinds(calls):
-                await asyncio.sleep(0)
+            await _until(
+                lambda: "sql_commit" in _kinds(calls), calls, updates, "a sql_commit"
+            )
             gates[last].set()
             await asyncio.gather(*updates)
 
