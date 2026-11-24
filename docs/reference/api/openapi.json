@@ -12728,7 +12728,7 @@
     },
     "/api/v1/cases/{case_id}/title": {
       "post": {
-        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive\n  it. Naming a case writes it, an investigation write that is the\n  driver's (ADR-020 D2), so any other reader is refused here before any\n  title is generated (#2806).\n- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.\n- 409 ``CASE_DELETE_IN_PROGRESS``: the case is being deleted; nothing was\n  generated or written. The call holds the case's in-flight lease while it\n  generates and writes the title, as a turn does, so a delete of the case\n  meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
+        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive\n  it. Naming a case writes it, an investigation write that is the\n  driver's (ADR-020 D2), so any other reader is refused here before any\n  title is generated (#2806).\n- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.\n- 409 ``CASE_DELETE_IN_PROGRESS``: the case is being deleted; nothing was\n  generated or written. The call holds the case's in-flight lease while it\n  generates and writes the title, as a turn does, so a delete of the case\n  meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).\n- 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a\n  different request body; nothing was generated or written.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
         "operationId": "generate_case_title_api_v1_cases__case_id__title_post",
         "parameters": [
           {
@@ -12812,12 +12812,14 @@
             }
           },
           "409": {
-            "description": "`CASE_DELETE_IN_PROGRESS`: the case is being deleted; nothing was generated or written. Reload the case.",
+            "description": "Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key).",
             "headers": {
               "x-error-code": {
+                "description": "Which conflict.",
                 "schema": {
                   "enum": [
-                    "CASE_DELETE_IN_PROGRESS"
+                    "CASE_DELETE_IN_PROGRESS",
+                    "IDEMPOTENCY_KEY_REUSE"
                   ],
                   "type": "string"
                 }

@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 
 from faultmaven.api.middleware.idempotency import declare_replay_case
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_REUSE
 from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
@@ -1017,12 +1018,19 @@ async def update_case(
         **CASE_NOT_FOUND_RESPONSE,
         409: {
             "description": (
-                f"`{CASE_DELETE_IN_PROGRESS}`: the case is being deleted; "
-                "nothing was generated or written. Reload the case."
+                "Conflict; nothing was generated or written. Told apart by "
+                f"`x-error-code`: `{CASE_DELETE_IN_PROGRESS}` (the case is "
+                "being deleted: reload the case); "
+                f"`{IDEMPOTENCY_KEY_REUSE}` (the `Idempotency-Key` was used for "
+                "a different request body: use a new key)."
             ),
             "headers": {
                 "x-error-code": {
-                    "schema": {"type": "string", "enum": [CASE_DELETE_IN_PROGRESS]}
+                    "description": "Which conflict.",
+                    "schema": {
+                        "type": "string",
+                        "enum": [CASE_DELETE_IN_PROGRESS, IDEMPOTENCY_KEY_REUSE],
+                    },
                 },
             },
         },
@@ -1062,6 +1070,8 @@ async def generate_case_title(
       generated or written. The call holds the case's in-flight lease while it
       generates and writes the title, as a turn does, so a delete of the case
       meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
+    - 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a
+      different request body; nothing was generated or written.
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate
@@ -1146,7 +1156,8 @@ async def generate_case_title(
         # The case's in-flight lease (#2096), taken as a turn takes it: the
         # generation reads and saves the case's redaction registry and writes
         # its row, which a delete erases. A delete refuses while this stands;
-        # one already running refuses this call before anything is read (#2580).
+        # one already running refuses this call before the registry or the
+        # conversation is read (#2580).
         try:
             case_hold = await hold_case(
                 getattr(request.app.state, "redis_client", None),

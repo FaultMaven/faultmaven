@@ -155,15 +155,18 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         level="MINOR",
         title=(
             "`POST /cases/{case_id}/title` holds the case's in-flight lease "
-            "while it generates and writes the title: it gains the 409 "
-            "`CASE_DELETE_IN_PROGRESS`, and `DELETE /cases/{case_id}` answers "
+            "while it generates and writes the title: it declares a 409 "
+            "(`CASE_DELETE_IN_PROGRESS`, `IDEMPOTENCY_KEY_REUSE`), and "
+            "`DELETE /cases/{case_id}` answers "
             "its 409 `CASE_WORK_IN_PROGRESS` while a title generation on the "
             "case runs (#2580). No schema moves."
         ),
         body=r"""* `POST /cases/{case_id}/title` answers **409** `CASE_DELETE_IN_PROGRESS`,
   with no `Retry-After` and the turn route's detail, while a delete of the
   case runs: no title was generated and nothing was written. Reload the case,
-  as for a turn refused the same way.
+  as for a turn refused the same way. The same 409 also declares
+  `IDEMPOTENCY_KEY_REUSE`, which a keyed title call already received when its
+  key was reused with a different body; it was never declared.
 * `DELETE /cases/{case_id}` answers its existing **409**
   `CASE_WORK_IN_PROGRESS`, with `Retry-After`, while a title generation on
   the case runs, as it does while a turn runs. Nothing was cleared.

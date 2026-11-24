@@ -1,23 +1,26 @@
 """#2580 — ``POST /cases/{id}/title`` holds the case's in-flight lease.
 
 The title call loads the case's PII redaction registry, calls a model, saves
-the registry back (every entry it loaded, with a fresh 7-day TTL) and writes
-the case row. A delete erases the registry, so one that passed under a running
-title call left the deleted case's original values in Redis. The call now
-holds the lease a turn holds (#2096): a delete refuses while it runs, and it
-refuses while a delete runs.
+the registry back and writes the case row. The save writes back every loaded
+entry the store no longer holds, so an erased registry comes back whole, and
+re-arms the 7-day TTL. A delete erases the registry, so one that passed under a
+running title call left the deleted case's original values in Redis. The call
+now holds the lease a turn holds (#2096): a delete refuses while it runs, and
+it refuses while a delete runs.
 
 Driven through the MOUNTED case router with the app's exception handlers, the
 REAL ``CaseService`` over the production ``SessionlessCaseRepository`` on a
-SQLite file, the real registry eraser and delete gate over FakeRedis, a real
-regex sanitizer and ``SANITIZE_PII`` pinned on. Only the model, and the
-conversation read (long enough user chat that the title takes the model path),
-are stubbed. The
-bare app mounts no protection middleware, so the ``title_generation`` rate
-limit (5 per 300 s) does not apply to the calls here.
+SQLite file, the real registry eraser and delete gate over FakeRedis and a real
+regex sanitizer, under each ``SANITIZE_PII`` profile pinned (the registry
+exists only with it on). Only the model, and the conversation read (long enough
+user chat that the title takes the model path), are stubbed. The bare app
+mounts no protection middleware, so the ``title_generation`` rate limit (5 per
+300 s) does not apply to the calls here.
 
-A cancelled title call is not driven: its lease member lapses on its TTL
-(``inflight.LEASE_TTL_MS``), as a cancelled turn's does.
+A title call cancelled under asyncio releases its hold in the route's
+``finally``. Only a cancelled anyio scope, which cancels every await in that
+``finally`` too, leaves the member to lapse on its TTL
+(``inflight.LEASE_TTL_MS``), as a turn's does.
 """
 
 from __future__ import annotations
@@ -77,7 +80,7 @@ from tests.unit.modules.case.test_turn_receipt_1888 import (
 )
 from tests.utils import regex_only_sanitizer, sanitize_pii_pinned
 
-pytestmark = pytest.mark.unit
+pytestmark = pytest.mark.integration
 
 CASE = f"/api/v1/cases/{CASE_ID}"
 KEY = (ENTERPRISE, CASE_ID)
@@ -100,6 +103,7 @@ class World:
     redis: Any
     model: AsyncMock
     gate: _GatedEraser
+    sanitize_pii: bool
 
     async def title(self) -> httpx.Response:
         return await self.client.post(f"{CASE}/title")
@@ -117,8 +121,8 @@ class World:
         return await self.redis.zcard(inflight.lease_key(KEY))
 
 
-@pytest.fixture
-async def world(tmp_path, monkeypatch):
+@pytest.fixture(params=[False, True], ids=["pii_off", "pii_on"])
+async def world(request, tmp_path, monkeypatch):
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{tmp_path / 'fm-2580.db'}", poolclass=NullPool
     )
@@ -174,11 +178,11 @@ async def world(tmp_path, monkeypatch):
     app.dependency_overrides[require_authentication] = lambda: _user(OWNER)
     app.dependency_overrides[_di_get_case_service_dependency] = lambda: case_service
 
-    with sanitize_pii_pinned(True):
+    with sanitize_pii_pinned(request.param):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
         ) as client:
-            yield World(client, repository, redis, model.route, gate)
+            yield World(client, repository, redis, model.route, gate, request.param)
     await inflight.drain()
     await engine.dispose()
 
@@ -203,7 +207,9 @@ async def test_a_delete_during_a_title_call_refuses_and_leaves_no_registry_behin
     assert refused.status_code == 409, refused.text
     assert refused.headers["x-error-code"] == "CASE_WORK_IN_PROGRESS"
     assert int(refused.headers["Retry-After"]) >= 1
-    assert (await world.row(), await world.registry()) == (True, True)
+    assert await world.row()
+    if world.sanitize_pii:
+        assert await world.registry()
 
     release.set()
     answer = await title
@@ -215,9 +221,12 @@ async def test_a_delete_during_a_title_call_refuses_and_leaves_no_registry_behin
     # (b) The registry key is present exactly when the case row is: before the
     # delete both stand, and the delete the released hold lets through takes
     # both.
-    assert (await world.row(), await world.registry()) == (True, True)
+    if world.sanitize_pii:
+        assert (await world.row(), await world.registry()) == (True, True)
     assert (await world.delete()).status_code == 204
-    assert (await world.row(), await world.registry()) == (False, False)
+    assert not await world.row()
+    if world.sanitize_pii:
+        assert not await world.registry()
 
 
 async def test_a_title_call_during_a_delete_is_refused_before_any_model_call(world):
@@ -232,12 +241,13 @@ async def test_a_title_call_during_a_delete_is_refused_before_any_model_call(wor
     assert answer.json()["detail"] == "This case is being deleted. Reload the case."
     assert "Retry-After" not in answer.headers
     world.model.assert_not_awaited()
-    assert not await world.registry()
+    if world.sanitize_pii:
+        assert not await world.registry()
     assert KEY not in inflight._LEASES
 
     world.gate.release.set()
     assert (await deleting).status_code == 204
-    assert (await world.row(), await world.registry()) == (False, False)
+    assert not await world.row()
 
 
 @pytest.mark.parametrize(
@@ -266,6 +276,27 @@ async def test_the_hold_is_released_on_every_exit(world, monkeypatch, outcome, s
 
     assert (await world.title()).status_code == status
     assert held == [1]  # the generation ran under the case's lease
+    assert KEY not in inflight._LEASES
+    assert await world.lease_members() == 0
+    assert (await world.delete()).status_code == 204
+
+
+async def test_a_title_call_cancelled_mid_generation_releases_the_hold(world):
+    entered = asyncio.Event()
+
+    async def _stuck(**_kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    world.model.side_effect = _stuck
+    title = asyncio.create_task(world.title())
+    await entered.wait()
+    assert await world.lease_members() == 1
+
+    title.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await title
+
     assert KEY not in inflight._LEASES
     assert await world.lease_members() == 0
     assert (await world.delete()).status_code == 204

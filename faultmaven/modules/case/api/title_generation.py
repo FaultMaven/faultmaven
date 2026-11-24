@@ -993,14 +993,17 @@ async def _generate_and_persist_title(
 ) -> tuple[str, str, int]:
     """Gate on substance, generate a title, persist it, and verify the write.
 
-    Shared by the ``POST /cases/{case_id}/title`` endpoint and the post-turn
-    background auto-titling task, so both apply the *same* policy. Splitting the
-    policy across a route and a task is how the two drift; there is one copy.
+    Shared by the ``POST /cases/{case_id}/title`` endpoint and the auto-title
+    the turn route runs inline after its commit, so both apply the *same*
+    policy. Splitting the policy across a route and a turn is how the two
+    drift; there is one copy.
 
     The prompt goes through the case's redaction context (#1956), loaded here
-    with the shared loader from ``sanitizer`` and ``redis_client``. Both
-    callers run after the turn's own save, so the two never hold the case's
-    registry at once. The title is never reversed (see ``is_title_valid``).
+    with the shared loader from ``sanitizer`` and ``redis_client``. The case's
+    in-flight lease is shared, not exclusive, so this context and a turn's (or
+    another title call's) may be held at once; ``save()``'s ``HSETNX`` merge is
+    what keeps either from dropping the other's entries. The title is never
+    reversed (see ``is_title_valid``).
 
     Returns:
         ``(title, source, substance_length)`` — ``source`` is ``llm`` /
@@ -1122,8 +1125,9 @@ async def _generate_and_persist_title(
             "Cannot generate meaningful title from available context"
         )
     # What the prompt added to the case registry, kept like a turn's. A save
-    # with nothing new still writes back every entry it loaded and re-arms the
-    # TTL, so this runs only under the case's in-flight lease (#2580).
+    # also writes back every loaded entry the store no longer holds, so an
+    # erased registry comes back whole, and re-arms the TTL: this runs only
+    # under the case's in-flight lease (#2580).
     await redaction_ctx.save()
 
     # The backstop (#1967): the disclosure gate once more, on exactly the

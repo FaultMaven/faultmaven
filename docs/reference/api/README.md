@@ -2447,6 +2447,8 @@ Generate a concise, case-specific title from case messages and metadata.
   generated or written. The call holds the case's in-flight lease while it
   generates and writes the title, as a turn does, so a delete of the case
   meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
+- 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a
+  different request body; nothing was generated or written.
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate
@@ -2476,7 +2478,7 @@ Generate a concise, case-specific title from case messages and metadata.
 - `200` — Successful Response ([`TitleResponse`](#titleresponse))
 - `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
-- `409` — `CASE_DELETE_IN_PROGRESS`: the case is being deleted; nothing was generated or written. Reload the case.
+- `409` — Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

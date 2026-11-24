@@ -154,13 +154,13 @@ renewal.
 
 How the two sides avoid a race: the delete first writes a tombstone,
 `case-deleting:{enterprise_id}:{case_id}`, and only then reads the lease; a
-turn first takes the lease, and only then reads the tombstone. Each writes
-before it reads, so they cannot both proceed. Both can refuse at once, which
+turn or a title call first takes the lease, and only then reads the tombstone.
+Each writes before it reads, so they cannot both proceed. Both can refuse at once, which
 is safe: nothing runs and nothing is cleared, and a retry decides. The
 tombstone is renewed while the delete runs, and the delete removes it when it
 is refused or fails. Otherwise (a successful delete, or a removal that failed
 or never ran) it lapses 30 s after it was written or last renewed, and holds
-the case's turns off until then.
+the case's turns and title calls off until then.
 
 While the tombstone stands, `GET /cases/{case_id}` reads `deleting: true`
 for every reader of the case (#2510). It reads `false` once the tombstone is
@@ -207,10 +207,12 @@ read reports it.
   delete, to other replicas' parked traces (#2573), and to tracing turned off
   later (#2581), as above, with no audit row to name the last.
 - **Redis unreachable (ruled 2026-11-04).** The delete fails closed with 503,
-  but a turn whose lease write or tombstone read fails runs unguarded. It is
-  logged once per process and counted on `case_unleased_turns_total{reason}`
-  (`no_store`, `store_error`). A delete that passes meanwhile can race that
-  turn, and its vectors or upload can land after the delete. Standalone cannot
+  but a turn or a title call whose lease write or tombstone read fails runs
+  unguarded. It is logged once per process and counted on
+  `case_unleased_turns_total{reason}` (`no_store`, `store_error`; title calls
+  included). A delete that passes meanwhile can race that work: a turn's
+  vectors or upload, or a title call's registry save, can land after the
+  delete. Standalone cannot
   reach this: its Redis runs in-process.
 - **A stalled holder.** A process that stops renewing for longer than 30 s
   (a frozen event loop, a paused pod) loses its lease, and a delete can then
