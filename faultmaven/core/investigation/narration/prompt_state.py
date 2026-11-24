@@ -17,7 +17,8 @@ The fresh inputs are what the record does not hold: ``mitigation.verified``
 bound relapse), the symptom's currency (the wall clock), and the offer facts,
 which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
 2026-11-20: whether an offer is open, and each standing decline's turn, a
-reader of its own). Each is a reader, asked only where the line it selects
+reader of its own), and whether a causal_evidence row no hypothesis holds is
+on record while none stands (#3048: the hypothesis cue's reader). Each is a reader, asked only where the line it selects
 prints, as ``main`` read it; the prompt assembly's ``NarrationFold`` reads
 each at most once (``NarrationFold.fresh``).
 """
@@ -41,7 +42,7 @@ MILESTONES_OMITTED = "The milestone state could not be read this turn."
 
 #: The focus emphasis's one line when the record or a fresh input could not
 #: be read this turn, in place of the problem hold, the zone, the resolve
-#: decline and the verifying-rows lines.
+#: decline, the hypothesis cue and the verifying-rows lines.
 PROGRESS_OMITTED = "The case's progress could not be read this turn."
 
 #: The fallback prompt's resolution line when the record could not be read
@@ -244,7 +245,7 @@ def focus_selection(
     """The focus emphasis's lines: on a ``steered`` turn (no knowledge_query
     or agent_meta mode) the problem hold, else, where ``zoned`` (DIAGNOSIS),
     the zone; the standing resolve decline on every turn; on a steered
-    DIAGNOSIS turn, the hypothesis cue (#3048); on a steered turn, the
+    DIAGNOSIS turn in a cause zone, the hypothesis cue (#3048); on a steered turn, the
     verifying rows missing. Each fresh input is asked only where its line
     is decided, in this order."""
     hold = problem_hold(outcome, fresh) if steered else None
@@ -256,7 +257,7 @@ def focus_selection(
         verifying_rows_missing=steered and verifying_rows_missing(outcome),
         hypothesis_cue=(
             steered
-            and zoned
+            and zone in (FocusZone.CAUSE, FocusZone.CAUSE_STALE)
             and outcome.problem.status == ProblemStatus.VERIFIED
             and fresh.causal_evidence_unclaimed()
         ),

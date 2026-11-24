@@ -33,14 +33,20 @@ from faultmaven.core.investigation.schemas import (
     HypothesisUpdate,
 )
 from faultmaven.modules.case.contracts import (
+    CausalNode,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
+    NodeState,
+    NodeType,
     ProblemStatus,
+    ValidationMethod,
 )
 from tests.case_builders import investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
@@ -142,7 +148,8 @@ def test_the_rendered_prompt_carries_no_old_wording():
 # ---------------------------------------------------------------------------
 
 
-def _stalled_case(*, held_open: bool):
+def _stalled_case(*, held_open: bool, root: NodeState | None = None):
+    """``root``: the state of the root of a standing hypothesis's chain."""
     case = investigating_case(
         statement="Gateway calls fail",
         symptom="503s",
@@ -150,6 +157,25 @@ def _stalled_case(*, held_open: bool):
         problem_status=ProblemStatus.VERIFIED,
     )
     case.progress.cause_identification_held_open = held_open
+    if root is not None:
+        hyp = _hyp()
+        node = CausalNode(
+            node_id="cn_0000000000aa",
+            statement="autoRenew was disabled",
+            node_type=NodeType.ROOT,
+            node_state=root,
+            validation_method=(
+                ValidationMethod.EMPIRICAL
+                if root == NodeState.VALIDATED
+                else ValidationMethod.NONE
+            ),
+            belief=0.5,
+            actionable=True,
+            generated_at_turn=1,
+        )
+        hyp.root_node_id = node.node_id
+        case.causal_nodes = {node.node_id: node}
+        case.hypotheses = {hyp.hypothesis_id: hyp}
     return case
 
 
@@ -167,22 +193,32 @@ def _injection(case) -> str:
     )
 
 
-def test_a_held_open_root_is_told_its_verdict_is_pending():
-    text = _injection(_stalled_case(held_open=True))
+def test_a_held_open_validated_root_is_told_its_verdict_is_pending():
+    text = _injection(_stalled_case(held_open=True, root=NodeState.VALIDATED))
     assert "why-stopping verdict is pending" in text
     assert "root_is_terminal true" in text
+    assert "recorded since the root was posited" in text
     assert "Validate a hypothesis" not in text
 
 
+def test_an_unvalidated_held_root_keeps_the_generic_notice():
+    """The flag also holds for an active root the model marked False."""
+    case = _stalled_case(held_open=True, root=NodeState.CANDIDATE)
+    assert case.progress.cause_identification_held_open
+    text = _injection(case)
+    assert "verdict is pending" not in text
+    assert "Validate a hypothesis with supporting causal evidence" in text
+
+
 def test_a_case_without_a_held_root_keeps_the_generic_notice():
-    text = _injection(_stalled_case(held_open=False))
+    text = _injection(_stalled_case(held_open=False, root=NodeState.VALIDATED))
     assert "Validate a hypothesis with supporting causal evidence" in text
     assert "verdict is pending" not in text
 
 
 def test_the_pending_text_is_for_root_cause_identified_only():
     monitor = ProgressMonitor()
-    case = _stalled_case(held_open=True)
+    case = _stalled_case(held_open=True, root=NodeState.VALIDATED)
     assert monitor._held_open_pending_text(case, "solution_proposed") is None
 
 
@@ -224,6 +260,19 @@ def _lines(case, *, steered=True, zoned=True) -> str:
     )
 
 
+def _held_by(hyp: Hypothesis, row: Evidence, stance=EvidenceStance.REFUTES):
+    hyp.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=hyp.hypothesis_id,
+            evidence_id=row.evidence_id,
+            stance=stance,
+            reasoning="r",
+            stance_confidence=0.9,
+        )
+    )
+    return hyp
+
+
 def _case(status=ProblemStatus.VERIFIED, rows=(), hyps=()):
     case = investigating_case(
         statement="Gateway calls fail",
@@ -263,6 +312,38 @@ CAUSAL = EvidenceCategory.CAUSAL_EVIDENCE
 )
 def test_the_cue_is_verified_no_hypothesis_and_a_causal_row(case, cue):
     assert (CUE in _lines(case)) is cue
+
+
+def test_rows_that_refuted_a_hypothesis_do_not_trigger_the_cue():
+    row = _row(CAUSAL)
+    refuted = _held_by(_hyp(HypothesisState.RETIRED), row)
+    assert CUE not in _lines(_case(rows=[row], hyps=[refuted]))
+    # An unlinked causal row beside it does.
+    assert CUE in _lines(_case(rows=[row, _row(CAUSAL)], hyps=[refuted]))
+
+
+def test_the_cue_is_for_the_cause_zones_only():
+    case = _case(rows=[_row(CAUSAL)])
+    assert CUE in _lines(case)
+    for milestone in ("root_cause_identified", "solution_proposed"):
+        outcome, fresh = selections(case)
+        outcome = outcome.model_copy(
+            update={
+                "milestones_shown": [
+                    "symptom_verified",
+                    "root_cause_identified",
+                    *(
+                        ["solution_proposed"]
+                        if milestone == "solution_proposed"
+                        else []
+                    ),
+                ]
+            }
+        )
+        text = _focus_lines(
+            focus_selection(outcome, fresh, 4, steered=True, zoned=True)
+        )
+        assert CUE not in text
 
 
 def test_the_cue_is_for_a_steered_diagnosis_turn():

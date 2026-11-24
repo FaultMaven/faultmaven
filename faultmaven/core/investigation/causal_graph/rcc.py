@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
 )
 
 from .clusters import mece_contested_root_ids
-from .projection import _standing_hypotheses
+from .projection import standing_hypotheses
 from .queries import (
     chain_evidence_links,
     conjuncts_for_chain,
@@ -235,7 +235,7 @@ def link_llm_rcc_to_cause(case: Case) -> bool:
     statement = getattr(rcc, "root_cause", None) or ""
     if not statement:
         return False
-    standing = list(_standing_hypotheses(case))
+    standing = list(standing_hypotheses(case))
 
     # Tier 1 — authoritative: the LLM named its cause's root node. Restrict to a
     # SINGLE standing hypothesis rooted there (never a refuted/retired one — that
@@ -366,7 +366,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # still open is not one yet (#2036).
     validated_hyps = [
         h
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
         if is_chain_root_identified(h, case.causal_nodes)
     ]
     # ONE confirmation scan feeds the faithfulness check, the root selection,

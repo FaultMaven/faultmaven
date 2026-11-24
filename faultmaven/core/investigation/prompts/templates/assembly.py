@@ -385,8 +385,8 @@ def _focus_emphasis(
     fresh inputs (``prompt_state.focus_selection``, #2811 S2b-1c-i). If the
     record or a fresh input the selection asks for cannot be read, the whole
     emphasis is the one declared line ``PROGRESS_OMITTED``, in place of the
-    hold, the zone, the resolve decline and the verifying-rows lines; the
-    failure is logged and counted once per assembly (``NarrationFold``), and
+    hold, the zone, the resolve decline, the hypothesis cue and the
+    verifying-rows lines; the failure is logged and counted once per assembly (``NarrationFold``), and
     the prompt is built. Only the selection is guarded: a fault in the text
     raises, as on ``main``."""
     try:

@@ -356,10 +356,10 @@
     "SYSTEM: Row(s) <ev:0> confirm nothing: it re-checks a row the root's verdict does not cite; name one of <ev:1> (the cited basis)."
   ],
   "cycle:unbound_on_an_uncited_pool_root": [
-    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show why it arose (RE-ROOT if a deeper cause produced it), then re-check one of them."
+    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show how its state came to be (RE-ROOT if a deeper cause produced it), then re-check one of them."
   ],
   "cycle:unbound_with_no_pool": [
-    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing why it arose, then re-check it."
+    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing how its state came to be, then re-check it."
   ],
   "cycle:unbound_after_a_mitigation": [
     "SYSTEM: Post-mitigation row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: no root cause is on record that a re-check can confirm."

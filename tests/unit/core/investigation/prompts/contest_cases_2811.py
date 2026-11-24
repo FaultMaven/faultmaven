@@ -23,7 +23,12 @@ identical). #3046 S3a-2 (the deciders read the record's carried FAILED
 verdicts) regenerated, with this generator on its branch, the entries of
 the fixtures it changes on purpose: ``2595_unkinded_failure_rebound`` and
 ``D:carried_turn``. The clock is frozen while a fixture is built and
-rendered.
+rendered. #3048 re-rendered, by hand, the ``<causal_graph>`` text of
+``R:uncited_no_citation``, ``C:all_three``, ``C:refused_held_open``,
+``C:refused_count_held`` and ``C:held_open``, each equal to its stored entry on
+``main``; on the #3048 branch the why-open and verdict-refused cues state
+clause (b) as the row that shows "how the state came to be" in place of
+"nothing renews or re-creates it". No other entry's render differed.
 """
 
 from __future__ import annotations

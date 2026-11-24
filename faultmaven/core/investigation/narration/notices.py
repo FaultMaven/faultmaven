@@ -467,7 +467,7 @@ _EMPTY_POOL_BY_IDS = {
     PoolEmptyReason.HELD_OPEN: (
         "held_open_root_ids",
         "none can confirm the cause while what produced {ids} is open; re-send "
-        "root_is_terminal true citing why it arose, then re-check it.",
+        "root_is_terminal true citing how its state came to be, then re-check it.",
     ),
     PoolEmptyReason.IDENTIFICATION_CONTESTED: (
         "contested_root_ids",
@@ -535,8 +535,8 @@ def unbound_lines(
     elif params["pool_roots"]:
         cause_text = (
             f"{why}; re-send root_is_terminal true citing the causal_evidence "
-            "rows that show why it arose (RE-ROOT if a deeper cause produced "
-            "it), then re-check one of them."
+            "rows that show how its state came to be (RE-ROOT if a deeper "
+            "cause produced it), then re-check one of them."
         )
     else:
         cause_text = (

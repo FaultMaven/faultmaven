@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.causal_graph.projection import standing_hypotheses
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -434,11 +436,18 @@ class ProgressMonitor:
             return None
         if not getattr(case.progress, "cause_identification_held_open", False):
             return None
+        # The flag also holds for an unvalidated root the model marked
+        # ``False``: that case keeps the generic text.
+        if not any(
+            is_chain_root_validated(h, case.causal_nodes)
+            for h in standing_hypotheses(case)
+        ):
+            return None
         return (
             "A validated root stands and its why-stopping verdict is pending: "
-            "set root_is_terminal true citing the causal_evidence row that "
-            "shows how its state came to be, or re-root the hypothesis onto "
-            "the mechanism above it"
+            "set root_is_terminal true citing the causal_evidence row, "
+            "recorded since the root was posited, that shows how its state "
+            "came to be, or re-root the hypothesis onto the mechanism above it"
         )
 
     def _build_prompt_injection(

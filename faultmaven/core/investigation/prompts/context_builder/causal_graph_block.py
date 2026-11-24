@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from faultmaven.core.investigation.causal_graph.projection import _standing_hypotheses
+from faultmaven.core.investigation.causal_graph.projection import standing_hypotheses
 from faultmaven.core.investigation.causal_graph.support import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
@@ -301,7 +301,7 @@ def refused_verdict_root_ids(case: Case) -> set[str]:
     nodes = case.causal_nodes or {}
     return {
         h.root_node_id
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
         if (node := nodes.get(h.root_node_id or "")) is not None
         and node.node_type == NodeType.ROOT
         and "root_terminal_refused_turn" in node.metadata

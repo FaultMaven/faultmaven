@@ -22,7 +22,11 @@ reply that now ends with the outcome statement of its revision-confirm turn
 ``turn:cycle:licence_withdrawn_once_it_holds`` and
 ``turn:cycle:licence_withdrawn_while_it_is_down``, each differing from
 ``main`` only in the refusal's closing sentence that the user's report is
-recorded (INV-49).
+recorded (INV-49). #3048: the five ``turn:cycle`` notice entries and
+``prompt:E:fallback`` / ``prompt:E:verifying_names_no_row`` declared in
+``offer_cases_2811``, each differing from ``main`` only in clause (b)'s
+wording, or, for the two prompt entries, in the hypothesis cue line (every
+entry's selection also gains the ``hypothesis_cue`` key).
 """
 
 from __future__ import annotations
