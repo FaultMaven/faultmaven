@@ -18,6 +18,11 @@ This module provides exception handlers for:
   the cause chain of a ``ServiceException``: a refused model call is a
   FaultMaven programming error, never the AI provider's failure
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
+- A database timeout or an unreachable database (``is_database_unavailable``),
+  raised or on the cause chain of a ``ServiceError``, a ``ServiceException`` or
+  an exception nothing maps → 503 ``DATABASE_UNAVAILABLE``: for GET/HEAD the
+  "not saved" detail with ``Retry-After``, for any other method a neutral
+  detail and none (#2670)
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
   handler into a 500. Keyed on FastAPI's HTTPException; Starlette's own class
@@ -68,6 +73,8 @@ from faultmaven.exceptions import (
     TURN_BUDGET_EXHAUSTED,
     AuthorizationError,
     ConflictError,
+    DatabaseTimeout,
+    DatabaseUnavailable,
     ExternalCallTimeout,
     LLMException,
     NotFoundError,
@@ -76,6 +83,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
     is_billing_error,
+    is_database_unavailable,
     is_llm_breaker,
     walk_cause_chain,
 )
@@ -258,6 +266,64 @@ def database_unavailable_http_exception() -> HTTPException:
             "Retry-After": "5",
         },
     )
+
+
+DATABASE_UNAVAILABLE_WRITE_DETAIL = (
+    "The database could not be reached. Reload before retrying: the request "
+    "may have been saved."
+)
+
+#: The methods that write nothing, whose 503 may say nothing was saved.
+_READ_METHODS = frozenset({"GET", "HEAD"})
+
+
+def database_unavailable_write_http_exception() -> HTTPException:
+    """The refusal when the database failed a request that may write (#2670).
+
+    The same 503 and code as :func:`database_unavailable_http_exception`, for
+    a request whose route cannot say nothing committed: an earlier session of
+    the same request may have. So the detail says it may have been saved, and
+    there is no ``Retry-After``: neither idempotency (2xx only) nor dedup
+    absorbs a resend.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=DATABASE_UNAVAILABLE_WRITE_DETAIL,
+        headers={"x-error-code": DATABASE_UNAVAILABLE},
+    )
+
+
+def database_unavailable_http_exception_for(method: str) -> HTTPException:
+    """The request boundary's answer to ``is_database_unavailable`` (#2670):
+    a GET/HEAD saved nothing, any other method may have."""
+    if method.upper() in _READ_METHODS:
+        return database_unavailable_http_exception()
+    return database_unavailable_write_http_exception()
+
+
+async def _database_unavailable_response(
+    request: Request, exc: BaseException
+) -> JSONResponse:
+    logger.error(
+        "Database unavailable: %s %s - %s",
+        request.method,
+        request.url.path,
+        exception_log_name(exc),
+    )
+    return await http_exception_handler(
+        request, database_unavailable_http_exception_for(request.method)
+    )
+
+
+async def database_unavailable_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    """Answer a ``DatabaseTimeout`` or ``DatabaseUnavailable`` no route caught
+    (#2670). One with ``CommitOutcomeUnknown`` on its chain may have
+    committed: it is re-raised, to be answered as an exception nothing maps."""
+    if not is_database_unavailable(exc):
+        raise exc
+    return await _database_unavailable_response(request, exc)
 
 
 def _first_engine_error_code(exc: BaseException) -> Optional[str]:
@@ -1026,6 +1092,8 @@ async def service_error_handler(
     Returns:
         JSONResponse with 500 status and generic error message
     """
+    if is_database_unavailable(exc):
+        return await _database_unavailable_response(request, exc)
     logger.error(
         "Service error: %s %s - %s",
         request.method,
@@ -1260,7 +1328,12 @@ async def service_exception_handler(
     catches ``ServiceException`` itself (inventoried by
     ``test_service_exception_global_handler``), and a broad ``except
     Exception`` arm ahead of any typed arm (#1632).
+
+    A database failure on the chain (``is_database_unavailable``) is the
+    database's 503, before any of that (#2670).
     """
+    if is_database_unavailable(exc):
+        return await _database_unavailable_response(request, exc)
     logger.error(
         "Unhandled %s: %s %s",
         exception_log_name(exc),
@@ -1350,7 +1423,12 @@ async def internal_server_error_handler(
     under the correlation id and with its traceback, when it handed one over;
     otherwise it is logged here. Path only, never the full URL: the SSO
     callback's query string carries the identity provider's authorization code.
+
+    A database failure on the chain (``is_database_unavailable``) is not a 500:
+    it is the database's 503 (#2670).
     """
+    if is_database_unavailable(exc):
+        return await _database_unavailable_response(request, exc)
     correlation_id = getattr(request.state, _LOGGED_FAILURE_CORRELATION_ID, None)
     request_id = getattr(request.state, "request_id", None)
 
@@ -1396,6 +1474,8 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         GateRefused: gate_refused_handler,
         GateUnavailable: gate_unavailable_handler,
         GateFailed: gate_failed_handler,
+        DatabaseTimeout: database_unavailable_handler,
+        DatabaseUnavailable: database_unavailable_handler,
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,

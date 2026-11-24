@@ -62,14 +62,13 @@ from faultmaven.exceptions import (
     AuthorizationError,
     CaseNotDriverError,
     CommitOutcomeUnknown,
-    DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
     RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
-    walk_cause_chain,
+    is_database_unavailable,
 )
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
@@ -268,11 +267,12 @@ async def get_case_messages_enhanced(
     except HTTPException:
         raise
     except Exception as e:
-        # A database timeout on the access check's read or the service's: either
-        # way nothing could be read, which is a retryable 503, never an empty
-        # transcript (#2333). Looked for on the cause chain: an inner session's
-        # timeout reaches here wrapped in a ``RepositoryException``.
-        if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(e)):
+        # A database timeout or an unreachable database on the access check's
+        # read or the service's: either way nothing could be read, which is a
+        # retryable 503, never an empty transcript (#2333, #2670). Looked for on
+        # the cause chain: an inner session's failure reaches here wrapped in a
+        # ``RepositoryException``.
+        if is_database_unavailable(e):
             logger.error(
                 "Messages of case %s not read: %s",
                 case_id,
@@ -1064,12 +1064,15 @@ async def submit_turn(
                         ),
                         timeout=agent_timeout,
                     )
-                except DatabaseTimeout as unavailable:
-                    # The database did not answer while the turn was prepared
-                    # (#2280). The preparation commits nothing, so this is the
-                    # 503 the revocation read answers for the same cause, not a
-                    # timeout of the turn: REQUEST_TIMEOUT would tell the client
-                    # the same input will exhaust the ceiling again.
+                except Exception as unavailable:
+                    if not is_database_unavailable(unavailable):
+                        raise
+                    # The database did not answer or could not be reached while
+                    # the turn was prepared (#2280, #2670). The preparation
+                    # commits nothing, so this is the 503 the revocation read
+                    # answers for the same cause, not a timeout of the turn:
+                    # REQUEST_TIMEOUT would tell the client the same input will
+                    # exhaust the ceiling again.
                     logger.error(
                         "Turn on case %s not prepared: %s",
                         case_id,
@@ -1088,10 +1091,13 @@ async def submit_turn(
                     # mode); nothing of this one committed. Answered below with
                     # the committed turn, as its retry would be.
                     committed_elsewhere = True
-                except DatabaseTimeout as unavailable:
-                    # A statement BEFORE the COMMIT went unanswered (an
-                    # unanswered COMMIT is ``CommitOutcomeUnknown``), so nothing
-                    # committed: the preparation's 503 (#2813).
+                except Exception as unavailable:
+                    if not is_database_unavailable(unavailable):
+                        raise
+                    # A statement BEFORE the COMMIT went unanswered or could not
+                    # reach the database (an unanswered COMMIT is
+                    # ``CommitOutcomeUnknown``), so nothing committed: the
+                    # preparation's 503 (#2813, #2670).
                     logger.error(
                         "Turn on case %s not committed: %s",
                         case_id,
