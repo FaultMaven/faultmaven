@@ -454,11 +454,11 @@ def _is_connect_failure(failure: BaseException) -> bool:
     host failed), or a SQLSTATE in ``_UNAVAILABLE_SQLSTATES`` or class ``08``,
     whether on a ``DBAPIError`` or on the driver's own exception. Never a
     ``PermissionError``: a socket the server's user cannot open is
-    configuration. A client TLS misconfiguration (a missing certificate file,
-    a server refusing the SSL upgrade) is configuration too, but arrives as a
-    ``FileNotFoundError`` or a bare ``ConnectionError``, which no type, errno
-    or SQLSTATE tells from a connect failure: it is named unavailable, and
-    answers 503. Nothing with ``CommitOutcomeUnknown``, ``DatabaseTimeout``
+    configuration. A client TLS misconfiguration (a certificate file the
+    configuration names that is missing, a server refusing the SSL upgrade) is
+    configuration too, but arrives as a ``FileNotFoundError`` or a bare
+    ``ConnectionError``, which no type, errno or SQLSTATE tells from a connect
+    failure: it is named unavailable, and answers 503. Nothing with ``CommitOutcomeUnknown``, ``DatabaseTimeout``
     or ``DatabaseUnavailable`` on its chain: each is already named.
     """
     chain = list(walk_cause_chain(failure))

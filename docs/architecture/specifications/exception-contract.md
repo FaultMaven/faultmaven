@@ -191,8 +191,8 @@ only before the session's transaction began and before anything on it
 committed. The same driver error later is a dropped connection whose work may
 have landed, and passes through as itself. `28P01`, `3D000` and a
 `PermissionError` are configuration faults and stay a 500. A client TLS
-misconfiguration (a missing certificate file, a server refusing the SSL
-upgrade) is configuration too, but it arrives as a `FileNotFoundError` or a
+misconfiguration (a certificate file the configuration names that is missing,
+a server refusing the SSL upgrade) is configuration too, but it arrives as a `FileNotFoundError` or a
 bare `ConnectionError`, which no type tells from a connect failure, so it
 answers 503. Only the case repository's save marks a
 COMMIT it cannot vouch for as `CommitOutcomeUnknown`, which is never
