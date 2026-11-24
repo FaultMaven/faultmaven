@@ -463,6 +463,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The outcome computed in memory for the narration alone when the cycle's
     # record write failed, never stored and counting nothing (#2636 B1b).
     (_ME + "turn_narration.py", "_outcome"): {"narration_outcome": 1},
+    # #2811 S2c-3a: the record the outcome statement reads when the cycle's
+    # write failed, the narration's fold, stored nowhere.
+    (_ME + "turn_completion.py", "_statement_record"): {"narration_outcome": 1},
     # The two save helpers (#2811): a turn's commit and the case service's
     # write fold the record after the save's lapse; the metadata write, whose
     # description is the statement in force outside an investigation, writes

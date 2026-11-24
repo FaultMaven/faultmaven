@@ -76,10 +76,10 @@ class TestOverrideBranchesUseComposer:
         # One composer call per gate branch, anchored by each branch's
         # engine-text argument.
         anchors = (
-            "_build_resolution_confirmation(case_updated),",
+            "agent_response_text, confirmation_message(confirmation)",
             'metadata["resolution_readiness_message"],',
             'metadata["resolution_needs_info_message"],',
-            "_prose_with_gate_notice(agent_response_text, offer_prose)",
+            "agent_response_text, metadata[offer_key]",
         )
         # The engine proposers' reasons, read through one composed branch.
         for key in (

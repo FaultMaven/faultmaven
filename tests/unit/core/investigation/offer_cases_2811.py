@@ -18,9 +18,14 @@ the branch:
 
 Its stored output is ``offer_oracle_2811.json``, captured on ``main`` at
 5e5b21e42 by running ``render_all`` with this file copied into a ``git
-archive`` extract of that commit, never typed by hand. ``POOL_EMPTY``'s two
+archive`` extract of that commit, never typed by hand but for the S2c-3a
+entry below. ``POOL_EMPTY``'s two
 entries (#2811 S2c-1b) were rendered at c1ade8d8c; each differs from ``main``
 at 5a1d3b130 only in its "Root cause" line (``main``: the bare ask).
+#2811 S2c-3a re-rendered ``turn:offer:turn_replayed_rca_infeasible_close``
+by hand: it equalled the stored entry on ``main`` at 77f3b9b8b, and its
+reply on the S2c-3a branch at c31e9e4ae, which is stored, ends with the
+outcome statement "**Case record:** the problem is confirmed.".
 """
 
 from __future__ import annotations

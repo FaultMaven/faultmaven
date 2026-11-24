@@ -1034,6 +1034,8 @@ State updates occur at specific points within a turn to ensure consistency:
 **Order of Operations Within a Turn** (`_process_turn_impl`; the decision
 cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
 
+0. **The turn-start snapshot** (`turn_narration.outcome_baseline`), before
+   any write of the turn: the outcome statement compares against it.
 1. **Step 0** — the user's answer to an open offer (section 0b), a confirmed
    revision's staged-work replay, and the re-check of a remembered resolution
    request; then the model generates its response.
@@ -1182,6 +1184,67 @@ written*, as amended by #2811, ruled 2026-11-15):
   is no omission: it propagates out of the prompt build through
   `<evidence_needs>`, which reads the pool first and unguarded, as the
   block's pool read did before.
+
+**The outcome statement** (#2811 S2c-3a, as ruled there). On a model turn the reply ends
+with one engine line, "**Case record:** " and a clause per fact, joined by
+"; " and ending with ".", exactly when a fact of the closed set changed during
+the turn and the turn's own prose does not state it
+(`narration.statement`).
+
+- **The facts** (`outcome_changes`): the problem confirmed, no longer
+  confirmed, or shown not present; a root cause identified, no longer
+  standing, standing again, or no longer identified; each attempt accepted
+  this turn (neither the snapshot nor the actions accepted at turn start
+  held it, whatever turn it is dated to), keyed by `action_id` ("a fix was
+  carried out (turn t)", an interception "a workaround …", an unkinded
+  attempt a fix; window 0 has none). The cause has fallen when a root fell
+  and the confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also
+  holds an identified root, and HELD_OPEN or IDENTIFICATION_CONTESTED can
+  mask the reason). Windows, mitigation and bookkeeping are not read (S3 adds the
+  first two).
+- **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
+  copy of the record before any write of the turn, and the actions accepted
+  then) and the turn-final record: the cycle's, or the narration's fold
+  when the cycle's write failed; when that fold fails too, nothing is
+  stated. A record minted this turn states nothing. The statement is
+  rendered from those two records and the turn-start values beside the
+  record (the restore target, the accepted actions) alone (pin 2).
+- **The restoration rule.** A hold or a finding reads as the status it
+  restores to (`problem_status.restores_to`, the one reading of its two
+  owners: the revision offer's and the invalidation's `prior_status`), so a
+  declined revision, of a false alarm too, or a withdrawn finding states no
+  problem clause, and moving into a revision hold states none either. The
+  baseline's restore target is selected by its record's own status; when
+  that status is not the live one (a write that failed at the last save), no
+  problem clause is stated that turn. Across a hold's start or end, a leg
+  that appears or goes on a backstop (`rcc`, `working_conclusion`) is the
+  hold's verified gate, not the cause, and states no cause clause; a `chain`
+  leg states (ruled 2026-11-24 (a)).
+- **What the prose states** (`stated`, keyed by `(OfferCode, composer)` as
+  `RECORD_PROSE` is): read from the branch `_compose_turn_reply` took and the
+  params its prose was rendered from. The resolve confirmation states a root
+  cause when its root line names one, and the confirming attempt when it
+  names it "(carried out turn t)"; the backstop states the cause when one is
+  on record, and the deferred resolve when its record lines hold a cause
+  line naming one; the false-alarm close, and a readiness message
+  for a false alarm, the problem not present; the needs-info ask whose
+  "Root cause" line says the cause fell, that it fell. A model proposal's
+  prose is its offer's summary, not the reply's.
+- **Placement**: last, below the INV-40 notice; under a #1442 placeholder
+  the placeholder and its flag are kept and the statement goes under it and
+  its drop note. The summary re-record runs because the text changed. S4
+  publishes the composed statement as a field and never recomputes it from
+  stored records.
+- **Residuals.** Only the turn's own changes are stated: the menu close's
+  revision cancel, the save-time refold and REST edits change facts that no
+  statement reports. One response that retracts a confirmed symptom and
+  proposes a revised statement says no "no longer confirmed", and a decline
+  of that revision then leaves the case unverified with no clause. A
+  turn that leaves a hold onto VERIFIED and newly sets a backstop leg
+  states no cause (a revision confirmed or declined, a finding withdrawn).
+  A save-time fold that failed and was swallowed leaves the next
+  turn's snapshot stale. A root swapped for another with the leg set
+  throughout states nothing.
 
 **The unbound re-checks** (#2555): the notice names the record's unbound
 re-checks not yet narrated (`narrated_turn` None) while the record's problem is
