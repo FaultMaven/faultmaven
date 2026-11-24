@@ -82,7 +82,8 @@ class ConversionErrorCode(str, Enum):
     FILE_CORRUPT = "FILE_CORRUPT"
     FILE_EMPTY = "FILE_EMPTY"
     ENCODING_ERROR = "ENCODING_ERROR"
-    # A PDF with no text layer: a scanned image, or no page at all (#2593)
+    # No text to read, in any format: a scanned PDF, a PDF with no pages or a
+    # page tree pypdf cannot read (it reports none), a whitespace-only file (#2593)
     NO_TEXT_LAYER = "NO_TEXT_LAYER"
 
     # Content-level errors

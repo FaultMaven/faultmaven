@@ -222,9 +222,11 @@ Upload (file + scope + metadata)
   │     is a worker past its memory limit, or one a signal kills while its
   │     parser reads the file. Any other end of the worker answers 500 with
   │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT.
-  │     A PDF with no text on any page (a scanned image): REJECT with HTTP
-  │     422 / NO_TEXT_LAYER. Each parser refusal carries its code by type,
-  │     never by its wording (#2593)
+  │     No text to read, in any format: REJECT with HTTP 422 /
+  │     NO_TEXT_LAYER. That is a scanned PDF, a PDF with no pages or with a
+  │     page tree pypdf cannot read (it reports no pages), or a file of
+  │     whitespace. Each parser refusal carries its code by type, never by
+  │     its wording (#2593)
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -1447,7 +1449,7 @@ The parser extracts plain text from supported file formats. It does not interpre
 
 | Format | Library | Notes |
 |--------|---------|-------|
-| PDF | `pypdf` (already a dependency) | Extract text per page. A PDF with no text on any page (scanned, image-only) is refused: 422 `NO_TEXT_LAYER`. |
+| PDF | `pypdf` (already a dependency) | Extract text per page. A PDF with no text on any page (scanned, image-only), no pages, or a page tree pypdf cannot read (it reports no pages) is refused: 422 `NO_TEXT_LAYER`, as is a file of any format with no text. |
 | DOCX | `python-docx` (already a dependency) | Extract paragraphs, tables, and list items. Preserve code blocks from monospace styling. |
 | TXT | Built-in | Read as UTF-8. |
 | Markdown | Built-in | Pass through as-is (already text). Strip HTML if embedded. |

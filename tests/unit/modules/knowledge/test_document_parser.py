@@ -4,8 +4,13 @@ Tests text extraction from PDF, DOCX, TXT, Markdown, and HTML formats.
 pypdf and beautifulsoup4 are mocked; DOCX files are built with python-docx.
 """
 
+import ast
+import base64
+import copy
+import pickle
 import sys
 import textwrap
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +18,8 @@ import pytest
 
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
+    DocumentRefusal,
+    DocumentTooComplex,
 )
 
 
@@ -817,6 +824,12 @@ class TestParseFailureClassification:
 # ---------------------------------------------------------------------------
 
 
+#: A 1x1 PNG.
+_ONE_PIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
 def _blank_page_pdf(tmp_path: Path) -> tuple[Path, str]:
     """A real PDF of one blank page: no text layer, as a scanned image."""
     from pypdf import PdfWriter
@@ -827,6 +840,17 @@ def _blank_page_pdf(tmp_path: Path) -> tuple[Path, str]:
     with path.open("wb") as out:
         writer.write(out)
     return path, "application/pdf"
+
+
+def _image_only_docx(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+    """A real DOCX whose one paragraph holds a picture and no text."""
+    from docx import Document
+
+    document = Document()
+    document.add_picture(BytesIO(base64.b64decode(_ONE_PIXEL_PNG)))
+    path = tmp_path / "scan.docx"
+    document.save(str(path))
+    return path, _DOCX
 
 
 def _undecodable_txt(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
@@ -880,8 +904,8 @@ def _file(name: str, body: bytes, content_type: str):
 
 
 #: Every parser-worded refusal: how it is reached, its code, its detail. Each
-#: code and detail but NO_TEXT_LAYER's is main's (the image-only PDF answered
-#: FILE_CORRUPT); the detail is unchanged for every one (#2593).
+#: code and detail but NO_TEXT_LAYER's is main's (a document with no text to
+#: read answered FILE_CORRUPT); the detail is unchanged for every one (#2593).
 _REFUSALS = [
     pytest.param(
         lambda tmp_path, monkeypatch: _blank_page_pdf(tmp_path),
@@ -917,10 +941,17 @@ _REFUSALS = [
     ),
     pytest.param(
         _file("blank.txt", b"  \n\n ", "text/plain"),
-        "FILE_CORRUPT",
+        "NO_TEXT_LAYER",
         "No extractable text found in blank.txt. The file may be image-only "
         "(scanned PDF) or empty.",
-        id="no-text",
+        id="whitespace-only-text",
+    ),
+    pytest.param(
+        _image_only_docx,
+        "NO_TEXT_LAYER",
+        "No extractable text found in scan.docx. The file may be image-only "
+        "(scanned PDF) or empty.",
+        id="image-only-docx",
     ),
     pytest.param(
         _file("notes.rtf", b"text", "application/rtf"),
@@ -939,7 +970,8 @@ _REFUSALS = [
 
 class TestRefusalCodeByType:
     """A ``DocumentRefusal`` carries its code from its raise site: wording it
-    differently cannot move it, and the image-only PDF is NO_TEXT_LAYER."""
+    differently cannot move it, and a document with no text to read is
+    NO_TEXT_LAYER."""
 
     @pytest.mark.unit
     @pytest.mark.parametrize("build, code, detail", _REFUSALS)
@@ -983,27 +1015,62 @@ class TestRefusalCodeByType:
 
 
 @pytest.mark.unit
-def test_post_convert_answers_an_image_only_pdf_with_no_text_layer(tmp_path):
-    """Through the route, with the real service and preprocessor: 422
-    ``NO_TEXT_LAYER``, where main answered ``FILE_CORRUPT``. The detail names
-    the route's temp file, so only its sentence is asserted."""
-    from tests.unit.modules.knowledge.test_document_preprocessor_existing_runbook import (
-        _app_with_real_service,
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        DocumentRefusal("Cannot decode file.", code="ENCODING_ERROR"),
+        DocumentTooComplex("Too complex."),
+    ],
+    ids=["refusal", "too-complex"],
+)
+def test_a_refusal_survives_pickle_and_copy(refusal):
+    """``code`` is not in ``args``: the default reduction would call
+    ``__init__`` without it."""
+    for twin in (pickle.loads(pickle.dumps(refusal)), copy.copy(refusal)):
+        assert type(twin) is type(refusal)
+        assert str(twin) == str(refusal)
+        assert twin.code == refusal.code
+
+
+def _codes_raised_by_the_parser() -> set[str]:
+    """Every string literal passed as ``code=`` in ``document_parser.py``."""
+    from faultmaven.modules.knowledge.domain.services import document_parser
+
+    tree = ast.parse(Path(document_parser.__file__).read_text(encoding="utf-8"))
+    return {
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "code" and isinstance(keyword.value, ast.Constant)
+    }
+
+
+def _status_mapped_codes() -> set[str]:
+    """The ``ConversionErrorCode`` members ``/convert``'s ``status_map`` names."""
+    from faultmaven.modules.knowledge.api import conversion_routes
+
+    tree = ast.parse(Path(conversion_routes.__file__).read_text(encoding="utf-8"))
+    (status_map,) = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and [getattr(target, "id", None) for target in node.targets] == ["status_map"]
+    ]
+    return {key.attr for key in status_map.keys}
+
+
+@pytest.mark.unit
+def test_every_code_the_parser_raises_is_a_mapped_conversion_error_code():
+    """The worker sends a plain string the parent turns into a
+    ``ConversionErrorCode`` (``document_preprocessor``): a misspelt code would be
+    a 500, and an unmapped one a 422 by default rather than by decision."""
+    from faultmaven.modules.knowledge.domain.models.conversion import (
+        ConversionErrorCode,
     )
 
-    path, content_type = _blank_page_pdf(tmp_path)
+    raised = _codes_raised_by_the_parser()
 
-    with _app_with_real_service() as client:
-        response = client.post(
-            "/api/v1/knowledge/convert",
-            data={"scope": "personal"},
-            files={"file": ("scan.pdf", path.read_bytes(), content_type)},
-        )
-
-    assert response.status_code == 422, response.text
-    body = response.json()
-    assert body["error_code"] == "NO_TEXT_LAYER"
-    assert body["detail"].startswith("Failed to parse ")
-    assert body["detail"].endswith(
-        ".pdf: No extractable text in PDF. The file may be scanned/image-only."
-    )
+    assert {"NO_TEXT_LAYER", "DOCUMENT_TOO_COMPLEX"} <= raised  # the scan reads
+    assert raised <= {code.value for code in ConversionErrorCode}
+    assert raised <= _status_mapped_codes()

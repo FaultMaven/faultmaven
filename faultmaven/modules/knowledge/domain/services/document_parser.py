@@ -41,6 +41,11 @@ class DocumentRefusal(ValueError):
         super().__init__(message)
         self.code = code
 
+    def __reduce__(self):
+        # ``code`` is not in ``args``, so the default reduction would call
+        # ``__init__`` without it: pickle and copy would raise TypeError.
+        return (_rebuilt_refusal, (type(self), self.args), self.__dict__)
+
 
 class DocumentTooComplex(DocumentRefusal):
     """pypdf's budgets refused the whole document, or refused pages and no other
@@ -48,6 +53,14 @@ class DocumentTooComplex(DocumentRefusal):
 
     def __init__(self, message: str) -> None:
         super().__init__(message, code="DOCUMENT_TOO_COMPLEX")
+
+
+def _rebuilt_refusal(cls: type, args: tuple) -> DocumentRefusal:
+    """A ``DocumentRefusal`` of ``cls`` with ``args``; ``__reduce__``'s state
+    restores ``code``."""
+    refusal = cls.__new__(cls)
+    refusal.args = args
+    return refusal
 
 
 _TOO_COMPLEX = (
@@ -201,7 +214,7 @@ class DocumentParser:
             raise DocumentRefusal(
                 f"No extractable text found in {file_path.name}. "
                 "The file may be image-only (scanned PDF) or empty.",
-                code="FILE_CORRUPT",
+                code="NO_TEXT_LAYER",
             )
 
         # ONE normalisation for all five extractors (#1403). The txt/markdown/html
