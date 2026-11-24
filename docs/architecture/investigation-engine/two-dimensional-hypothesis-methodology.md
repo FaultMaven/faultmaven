@@ -1137,13 +1137,15 @@ records only what it can substantiate:
   #3039): the user's report is recorded on its downgraded action
   (`reported_done_in_turn`) and opens no window, and when the cause is later
   established the fix registers only by a re-proposal, dated at that
-  registration, not at the report. A multi-turn backdate is not taken:
-  persistence is any problem-bound row in a turn after the fix's, dated by
-  its submit turn, so a later row quoting pre-fix data (a journal excerpt of
-  the original failure) would read as a relapse and FAIL the window, which
-  is final; dated at registration, the gate asks for one cause re-check
-  after it, which it needs anyway (cause rows before the cause was posited
-  never count). The gate reads a failed fix the same
+  registration, not at the report (#3047). Observations are ordered by
+  submit turn; a row's data clock is the host's and is never compared with a
+  message time, so nothing tells a post-report observation from a later row
+  quoting pre-fix data (a journal excerpt of the original failure), and a
+  FAILED window is final. Rows between the report and the registration lie
+  outside the fix's window, so the gate asks for one cause re-check after the
+  registration. The change is re-proposed under its own description: a
+  reworded re-proposal is another fix (`fix_identity`), and the report stays
+  listed as not registered. The gate reads a failed fix the same
   whether or not M6 could act on it, so the two cannot disagree about
   whether a fix failed. M6's record trigger demotes the identified
   (validated, still-standing) cause when the latest window *with a verdict*
