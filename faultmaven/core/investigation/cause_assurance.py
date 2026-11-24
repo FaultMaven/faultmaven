@@ -28,7 +28,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Callable, NamedTuple
@@ -1673,6 +1673,7 @@ class FixWindow:
     pair_carried: bool = False
     pair_cause_row_id: str | None = None
     fresh_disconfirmation: tuple[int, int] | None = None
+    fresh: "FixWindow | None" = field(default=None, compare=False, repr=False)
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1719,13 +1720,9 @@ class FixWindow:
         return self.disconfirmation if self.carried_pair_rows() else self.fresh_pair
 
     def as_fresh(self) -> "FixWindow":
-        """This window with the fresh read's pair: M6's fallback reading."""
-        return replace(
-            self,
-            disconfirmation=self.fresh_pair,
-            pair_carried=False,
-            pair_cause_row_id=None,
-        )
+        """M6's fallback reading: the fresh window the record was laid over,
+        with its own span, rows and pair; this window when none was."""
+        return self if self.fresh is None else self.fresh
 
 
 @_once_per_computation_given_index
@@ -2163,6 +2160,7 @@ def carry_verdicts(
                 pair_carried=pair is not None,
                 pair_cause_row_id=pair.cause_row_id if pair is not None else None,
                 fresh_disconfirmation=window.disconfirmation,
+                fresh=window,
             )
         )
     return out

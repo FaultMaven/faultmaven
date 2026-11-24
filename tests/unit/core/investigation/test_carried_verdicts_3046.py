@@ -347,12 +347,20 @@ async def test_a_carried_pair_refutes_no_cause_identified_since():
     assert _engine_rows(case) == []
 
 
-async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause():
+@pytest.mark.parametrize("intercepted", [False, True], ids=["plain", "intercepted"])
+async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause(
+    intercepted,
+):
     """The review delta's scenario A on the same case: A2's cited datum
     re-checked gone at 9, the problem still present at 10. The carried pair
     (7, 8) has left the window, so M6 reads the fresh read's pair, (9, 10),
-    and refutes A2 with it, as ``main`` does."""
+    and refutes A2 with it, as ``main`` does. With an interception at 9 the
+    carried window ends there (its failure was at 8) and holds neither row;
+    M6's fallback is the fresh window itself, with its own rows."""
     case, _root, hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    if intercepted:
+        _fix(case, turn=9, fix_kind="interception")
+        case.proposed_actions[-1].description = "restart the pgbouncer pods"
     deeper = case.causal_nodes[hyp.root_node_id]
     (basis,) = deeper.metadata["root_terminal_evidence_ids"]
     _row(
@@ -373,11 +381,14 @@ async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause():
     )
     window = carried_fix_windows(case)[-1]
     assert (window.disconfirmation, window.fresh_pair) == ((7, 8), (9, 10)), "premise"
+    if intercepted:
+        assert window.end_turn == 9 and not window.cause_rows, "premise: cut"
 
     _cycle(case, 10)
 
     assert hyp.state == HypothesisState.REFUTED
     (row,) = _engine_rows(case)
+    assert row.collected_at_turn == 10
     assert "removed at turn 9" in row.summary and "at turn 10" in row.summary
 
 
