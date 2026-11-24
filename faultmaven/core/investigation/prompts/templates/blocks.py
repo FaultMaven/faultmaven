@@ -465,8 +465,10 @@ WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION:
 # proposed resolving on a renewal. One copy, in the investigation base: the
 # sites that decide a node is the root (chain emission and re-rooting, runbook
 # Cause attribution, proposing the remediation, recording causal absence) name
-# it as "the ROOT-CAUSE TEST" rather than restating it. No braces: the base
-# template is .format()-ed.
+# it as "the ROOT-CAUSE TEST" rather than restating it. That name is the
+# model's working vocabulary, never the user's: the block ends by pointing at
+# ``_WORKING_VOCABULARY_RULE`` (#2494). No braces: the base template is
+# .format()-ed.
 _ROOT_CAUSE_TEST_BLOCK = """\
 ROOT-CAUSE TEST (the why-stopping rule):
 A cause is the ROOT CAUSE only when it passes BOTH clauses:
@@ -499,7 +501,9 @@ declines to go further, stop at the deepest state they can act on and
 intercept it there: say so, and set `verification_updates.rca_infeasible`
 true with an `rca_infeasible_rationale` saying why. Once the interception is
 verified, FaultMaven offers to close on the symptom's absence instead of waiting
-for a root it cannot reach.\
+for a root it cannot reach.
+This test's name, its alias "why-stopping" and its clause letters are WORKING
+VOCABULARY: they never reach the user (see that rule).\
 """
 
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
@@ -837,7 +841,30 @@ ABSOLUTELY FORBIDDEN:
 - NEVER claim to have accessed, "looked at", or "checked" data, systems, or
   services you did not receive in evidence context"""
 
-_GROUNDING_FORBIDDEN_REST = """
+# What the user reads takes its meaning from the conversation alone (#2494).
+# The prompt names its own rules as shorthand (the ROOT-CAUSE TEST, its
+# clauses), and replies repeated them to a user who has never seen the rule.
+# Stated as a property, with examples, not as a word list: a list would ban
+# plain English and miss the next private term. One copy, rendered wherever
+# those terms reach the model: beside the id rule below, on the investigation
+# turns that waive grounding (``templates/assembly.py``), and in the fallback
+# investigation prompt (``templates/fallback.py``). No braces: the fallback
+# template is .format()-ed.
+_WORKING_VOCABULARY_RULE = """\
+- NEVER put working vocabulary in what the user reads: agent_response, and
+  the text of suggested_follow_ups and of any action you propose. WORKING
+  VOCABULARY is a term that takes its meaning only from this prompt, or that
+  names FaultMaven's own machinery; the user has never seen this prompt. For
+  example: the ROOT-CAUSE TEST, its alias "why-stopping" and its clause letters
+  ("fails clause (b)"); "WORKAROUND" as a label; "SYSTEM:"; "the engine";
+  "intercept" or "interception" as a category name. Say the reasoning in plain
+  words instead ("a larger limit only delays the crash, because the classes
+  keep being generated and nothing frees them"). A lower-case "workaround", or
+  "intercept" as an ordinary verb in a sentence that stands on its own, is
+  plain words."""
+
+_GROUNDING_FORBIDDEN_REST = (
+    """
 - NEVER assert or infer specific system details (values, names, configurations)
   not explicitly present in the sources above. Speculative hedges ("probably",
   "likely", "typically") do not exempt you from this rule.
@@ -853,6 +880,9 @@ _GROUNDING_FORBIDDEN_REST = """
   The user cannot see these. Use the evidence label attribute instead (e.g., "in
   the nginx error log", "in the pasted stack trace"), and restate a hypothesis
   in words. IDs are only for state_updates and evidence_trail fields.
+"""
+    + _WORKING_VOCABULARY_RULE
+    + """
 
 CONFIDENCE MARKERS (per-evidence signal quality):
 - An evidence tag carrying `confidence="low"` means the classifier was unsure
@@ -860,6 +890,7 @@ CONFIDENCE MARKERS (per-evidence signal quality):
   that doesn't reflect the actual content. Treat its file_extract as
   tentative — do not assert specific findings from it ("the logs show X")
   without first confirming """
+)
 
 _RECLASSIFICATION_WITH_TOOL = """\
 RECLASSIFICATION:
