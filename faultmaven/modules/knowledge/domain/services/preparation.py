@@ -23,7 +23,10 @@ from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentRefusal,
     ParsedDocument,
 )
-from faultmaven.modules.knowledge.domain.services.runbook_grammar import code_spans
+from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+    code_spans,
+    offset_in_spans,
+)
 from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
@@ -365,23 +368,25 @@ _RUNBOOK_BODY_SECTION_RES = tuple(
     for section in _RUNBOOK_BODY_SECTIONS
 )
 
-# Code is masked before the section search, because a postmortem that QUOTES the
-# runbook it followed is a document this pipeline exists to convert, and a fenced
-# quote of ``## Symptom Recognition`` + ``## Causes`` would otherwise satisfy the
-# body half and hard-refuse it (422). This is where the gate deliberately parts
-# company with ``RunbookValidator._validate_structure``, which does NOT mask: the
-# validator is already looking at something claiming to be a runbook, so a fenced
-# heading costs it nothing, while here it costs a legitimate conversion.
+# A section heading inside code does not count, because a postmortem that QUOTES
+# the runbook it followed is a document this pipeline exists to convert, and a
+# fenced quote of ``## Symptom Recognition`` + ``## Causes`` would otherwise
+# satisfy the body half and hard-refuse it (422). This is where the gate
+# deliberately parts company with ``RunbookValidator._validate_structure``, which
+# does NOT skip code: the validator is already looking at something claiming to
+# be a runbook, so a fenced heading costs it nothing, while here it costs a
+# legitimate conversion.
 #
-# Via ``runbook_grammar.mask_code`` rather than a local regex. A private
+# Via ``runbook_grammar.code_spans`` and an offset check on each heading match
+# (``offset_in_spans``), rather than a local regex. A private
 # ``re.compile(r"```.*?```", re.DOTALL)`` shipped here first and was wrong three
 # ways, each of which either refused a legitimate document or disarmed the gate
 # on a real runbook: it did not know ``~~~`` fences; it paired backtick runs
 # positionally, so an unclosed fence swallowed the real headings after it; and
 # replacing the span with newlines dropped the characters before its first and
 # after its last, splicing WITHIN a line and manufacturing a ``## Causes`` the
-# source never had. The shared helper answers all three because it is the same
-# ``_protected_spans`` the comment mask uses, and it is length-preserving.
+# source never had. The shared spans answer all three because they are the same
+# ``_protected_spans`` the comment mask uses, and checking offsets needs no fill.
 
 # Bytes before the opening ``---`` that must not disarm the gate. The
 # frontmatter anchor is ``re.match``, so it binds at offset 0: a UTF-8 BOM (the
@@ -496,13 +501,9 @@ def _has_runbook_body(text: str) -> bool:
     ``^##[ \t]+Causes[ \t]*$`` accepts — a heading the mask invented. Offsets
     have no fill to be confused by.
     """
-    spans = code_spans(text)
-
-    def outside_code(match) -> bool:
-        return not any(start <= match.start() < end for start, end in spans)
-
+    in_code = offset_in_spans(code_spans(text))
     return all(
-        any(outside_code(m) for m in pattern.finditer(text))
+        any(not in_code(m.start()) for m in pattern.finditer(text))
         for pattern in _RUNBOOK_BODY_SECTION_RES
     )
 
