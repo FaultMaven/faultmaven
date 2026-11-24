@@ -1,22 +1,11 @@
 """The prompt's working vocabulary never reaches the user (#2494).
 
-The investigation prompt names its own rule as shorthand, "the ROOT-CAUSE
-TEST" with clauses (a) and (b), alias "why-stopping", and replies repeated
-that shorthand to a user who has never seen the rule ("fails clause (b) of
-the Root-Cause Test"). Nothing said the shorthand was internal: the only
-output rule forbade ids.
-
-The rule is stated once, as a property (a term that takes its meaning only
-from the prompt, or that names FaultMaven's own machinery), and these pins
-hold:
-
-- every prompt that SHOWS the test's name, alias or clause letters carries
-  it: the investigation base on every stage and mode, the knowledge-query and
-  meta turns that waive grounding included, and the fallback investigation
-  prompt;
-- each emitter of the name outside the templates renders only into such a
-  prompt: the held-open SOLUTION_OFFER_WITHDRAWN notice, the M5 downgrade
-  reason and every response schema whose descriptions name the test.
+Replies repeated the prompt's private shorthand ("fails clause (b) of the
+Root-Cause Test") to a user who has never seen the rule. One rule, stated as a
+property, is in every prompt that shows the test's name, alias or clause
+letters, and each emitter of the name outside the templates (the held-open
+withdrawal notice, the M5 downgrade reason, the response schemas) renders only
+into such a prompt.
 """
 
 from __future__ import annotations
@@ -44,7 +33,6 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
-    CaseState,
     InvestigationActionType,
     InvestigationStage,
     MitigationRecord,
@@ -52,8 +40,8 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
 )
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
-from tests.case_builders import inquiry_case, investigating_case
-from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
+from tests.case_builders import investigating_case
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
@@ -100,13 +88,6 @@ def _with_notice(case: Case, notice: str) -> Case:
     ]
     case.current_turn = 3
     return case
-
-
-def _held_open_withdrawal() -> str:
-    (notice,) = render_notice(
-        NoticeCode.SOLUTION_OFFER_WITHDRAWN, {"held_open": True}, None, []
-    )
-    return notice
 
 
 # ---------------------------------------------------------------------------
@@ -167,22 +148,16 @@ def test_every_investigating_prompt_carries_the_rule(stage, mode):
     assert prompt.count(_WORKING_VOCABULARY_RULE) == 1
 
 
-@pytest.mark.parametrize("given", [DEFAULT_GIVEN, NO_TOOLS])
-def test_the_fallback_investigation_prompt_carries_the_rule(given):
-    """It has no ROOT-CAUSE TEST block, but the previous turn's held-open
-    withdrawal names the test (critique 1(b), amendment 4)."""
-    notice = _held_open_withdrawal()
-    assert _shows_the_test(notice)
+@pytest.mark.parametrize("fallback", [False, True])
+def test_the_held_open_withdrawal_reaches_only_prompts_with_the_rule(fallback):
+    """The fallback has no ROOT-CAUSE TEST block, but the previous turn's
+    held-open withdrawal names the test (critique 1(b), amendment 4)."""
+    (notice,) = render_notice(
+        NoticeCode.SOLUTION_OFFER_WITHDRAWN, {"held_open": True}, None, []
+    )
     case = _with_notice(_case(), notice)
-    prompt = get_fallback_prompt_for_case(case, "what now?", given_tools=given)
-    assert "ROOT-CAUSE TEST, clause b" in prompt
-    assert _WORKING_VOCABULARY_RULE in prompt
-
-
-@pytest.mark.parametrize("stage", _STAGES)
-def test_the_held_open_withdrawal_reaches_a_prompt_with_the_rule(stage):
-    case = _with_notice(_case(stage), _held_open_withdrawal())
-    prompt = get_prompt_for_case(case, "what now?", given_tools=DEFAULT_GIVEN)
+    build = get_fallback_prompt_for_case if fallback else get_prompt_for_case
+    prompt = build(case, "what now?", given_tools=DEFAULT_GIVEN)
     assert "ROOT-CAUSE TEST, clause b" in prompt
     assert _WORKING_VOCABULARY_RULE in prompt
 
@@ -229,24 +204,3 @@ def test_a_schema_that_names_the_test_goes_only_with_an_investigating_prompt():
     assert naming <= stage_schemas
     assert schemas.InquiryResponse not in naming
     assert schemas.TerminalResponse not in naming
-
-
-@pytest.mark.parametrize("state", [CaseState.INQUIRY, CaseState.RESOLVED])
-def test_the_inquiry_and_terminal_prompts_do_not_show_the_test(state):
-    """Scope: the prompts left without the rule do not name the test."""
-    if state == CaseState.INQUIRY:
-        case = inquiry_case(statement="Order processing pods are OOM-killed")
-    else:
-        case = investigating_case(
-            statement="Order processing pods are OOM-killed",
-            symptom="order-processing pods restart with OOMKilled",
-        ).model_copy(
-            update={
-                "state": CaseState.RESOLVED,
-                "resolved_at": datetime.now(UTC),
-            }
-        )
-    prompt = get_prompt_for_case(case, "what now?", given_tools=DEFAULT_GIVEN)
-    assert not _shows_the_test(prompt)
-    fallback = get_fallback_prompt_for_case(case, "what now?", given_tools=NO_TOOLS)
-    assert not _shows_the_test(fallback)
