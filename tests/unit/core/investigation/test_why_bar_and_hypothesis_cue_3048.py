@@ -218,6 +218,25 @@ def test_a_validated_root_marked_false_is_told_to_re_root():
     assert "verdict is pending" not in text
 
 
+def test_a_mixed_set_names_both_the_false_and_the_pending_root():
+    """One validated root marked False, another with no verdict: each is
+    asked for what it needs, neither misstated."""
+    case = _stalled_case(held_open=True, root=NodeState.VALIDATED, verdict=False)
+    (node,) = case.causal_nodes.values()
+    other = node.model_copy(
+        update={"node_id": "cn_0000000000bb", "metadata": {}}, deep=True
+    )
+    hyp = _hyp()
+    hyp = hyp.model_copy(
+        update={"hypothesis_id": "hyp_0000000000bb", "root_node_id": other.node_id}
+    )
+    case.causal_nodes[other.node_id] = other
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    text = _injection(case)
+    assert "a mechanism produces its state" in text
+    assert "why-stopping verdict is pending" in text
+
+
 def test_an_unvalidated_held_root_keeps_the_generic_notice():
     """The flag also holds for an active root the model marked False."""
     case = _stalled_case(held_open=True, root=NodeState.CANDIDATE)

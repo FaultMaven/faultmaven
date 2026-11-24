@@ -429,9 +429,11 @@ class ProgressMonitor:
     @staticmethod
     def _held_open_pending_text(case: Case, milestone_name: str) -> Optional[str]:
         """What ``root_cause_identified`` is waiting on while a validated root
-        is held open (#3048): the root's why-stopping verdict, not another
-        validation. None for every other case, so the generic description
-        stands."""
+        is held open (#3048), not another validation: a validated root marked
+        ``False`` is asked to re-root onto the mechanism its verdict names, a
+        validated root with no verdict for that verdict, and a set holding
+        both gets both lines. None for every other case (an unvalidated held
+        root included), so the generic description stands."""
         if milestone_name != "root_cause_identified":
             return None
         if not getattr(case.progress, "cause_identification_held_open", False):
@@ -445,9 +447,10 @@ class ProgressMonitor:
         ]
         if not validated:
             return None
-        if all(node.root_terminal is False for node in validated):
+        lines = []
+        if any(node.root_terminal is False for node in validated):
             # The model said a mechanism produces the state.
-            return (
+            lines.append(
                 "A validated root stands and its why-stopping verdict is "
                 "false, which says a mechanism produces its state: re-root the "
                 "hypothesis onto that mechanism, or, if the record shows "
@@ -455,12 +458,15 @@ class ProgressMonitor:
                 "causal_evidence row, recorded since the root was posited, "
                 "that shows how its state came to be"
             )
-        return (
-            "A validated root stands and its why-stopping verdict is pending: "
-            "set root_is_terminal true citing the causal_evidence row, "
-            "recorded since the root was posited, that shows how its state "
-            "came to be, or re-root the hypothesis onto the mechanism above it"
-        )
+        if any(node.root_terminal is not False for node in validated):
+            lines.append(
+                "A validated root stands and its why-stopping verdict is "
+                "pending: set root_is_terminal true citing the causal_evidence "
+                "row, recorded since the root was posited, that shows how its "
+                "state came to be, or re-root the hypothesis onto the mechanism "
+                "above it"
+            )
+        return "; ".join(lines)
 
     def _build_prompt_injection(
         self,
