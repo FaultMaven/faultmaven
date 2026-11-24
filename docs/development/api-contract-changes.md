@@ -71,8 +71,11 @@ be using it" is not evidence.
 
 1. Make the change in the code.
 2. Decide what it is. **MINOR** if every existing client survives it; **MAJOR**
-   if one can break. This judgement is what the clients are being asked to
-   accept, so it is a person's call, not a script's.
+   if one can break. **PATCH** for a re-publication that changes no structure,
+   such as a corrected detail or description (optional: the levels are defined
+   in the `faultmaven/api/contract_version.py` module docstring). This
+   judgement is what the clients are being asked to accept, so it is a
+   person's call, not a script's.
 3. Add a `ContractChange` at the head of `CONTRACT_CHANGES` in
    `faultmaven/api/contract_version.py`: the new version, its level, a title
    saying what moved, and a body with the reasoning (or `""`).

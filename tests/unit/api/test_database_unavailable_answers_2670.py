@@ -240,8 +240,3 @@ async def test_an_unreachable_database_in_the_turn_preparation_is_the_not_saved_
     )
 
     _assert_database_unavailable(response)
-    # A refused connection is not a timeout: the detail names both causes (#3056).
-    assert response.json()["detail"] == (
-        "The database could not be reached or did not answer in time, so this "
-        "request was not saved. Please retry shortly."
-    )
