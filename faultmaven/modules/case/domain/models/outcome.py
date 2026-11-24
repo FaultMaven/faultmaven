@@ -9,8 +9,8 @@ the confirmed rows at RESOLVED. A conflict between a carried verdict and a fresh
 derivation is logged and counted, and the carried verdict stands.
 
 The narration step reads it (#2636 B1b): the withdrawal and mitigation notices
-state its verdicts. The other narrators (S2), the deciders (S3) and the report
-and API (S4) switch to it stage by stage.
+state its verdicts. The other narrators (S2), the deciders (S3, #3046, and
+S3d, #3053) and the report and API (S4) switch to it stage by stage.
 
 Every enum here is APPEND-ONLY. A stored case names its members by value, so a
 member renamed or removed would fail every load of that case. The members are
@@ -198,9 +198,10 @@ CURRENT_OUTCOME_SHAPE = 5
 
 class WritePoint(StrEnum):
     """Where a record is folded (``record_case_outcome``,
-    ``compute_case_outcome``). Only a cycle, a replay, a resolve, a close and
-    the backfill's repair mint a final verdict (``MINTING_POINTS``), and any
-    first record."""
+    ``compute_case_outcome``). Only a cycle, a replay, the investigation
+    apply's mint before the chain emission (``PRE_CHAIN``, #3046 S3a-2), a
+    resolve, a close and the backfill's repair mint a final verdict
+    (``MINTING_POINTS``), and any first record."""
 
     CYCLE = "cycle"
     REPLAY = "replay"
@@ -215,6 +216,8 @@ class WritePoint(StrEnum):
     NARRATION = "narration"
     SHAPE = "shape"
     """Not a fold: a verdict an older shape held final, marked on upgrade."""
+    PRE_CHAIN = "pre_chain"
+    """The investigation apply's mint before the chain emission (#2582)."""
 
 
 class FinalAt(BaseModel):
@@ -355,7 +358,15 @@ class FixWindowRecord(BaseModel):
         default_factory=dict,
         description="Root id -> the cited rows the window's cause rows re-check",
     )
-    disconfirmation: Optional[DisconfirmationPair] = None
+    disconfirmation: Optional[DisconfirmationPair] = Field(
+        default=None,
+        description=(
+            "The counterfactual pair. One a FAILED window takes later (#2728) "
+            "may cite rows outside cause_row_ids and problem_row_ids, which "
+            "keep the rows the failure was read on (the row rule is S3b's, "
+            "#2586)"
+        ),
+    )
     read_under: str = Field(
         default="", description="The problem statement the window was read under"
     )
@@ -386,7 +397,8 @@ class AttemptOutcome(BaseModel):
 
 
 class Demotion(BaseModel):
-    """An M6 demotion with its pair rows (final). No writer yet: stage S3."""
+    """An M6 demotion with its pair rows (final). No writer yet: stage S3b
+    (#3046)."""
 
     hypothesis_id: str
     root_id: str

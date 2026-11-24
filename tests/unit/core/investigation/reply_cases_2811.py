@@ -19,8 +19,11 @@ a terminal case ``_terminal_confirmation_response`` and
 ``_compose_terminal_reply`` (with a summary and without). Its output on
 ``main`` is ``reply_oracle_2811.json``, captured by running ``render_all``
 with this file copied into a ``git archive`` extract of ``main`` at
-a16a152f8, never typed by hand. Ids are deterministic and the clock is frozen
-while a fixture is built and rendered.
+a16a152f8, never typed by hand. #3046 S3a-2 (the deciders read the
+record's carried FAILED verdicts) regenerated, with this generator on its
+branch, the entry of the fixture it changes on purpose,
+``2595_unkinded_failure_rebound``. Ids are deterministic and the clock is
+frozen while a fixture is built and rendered.
 """
 
 from __future__ import annotations

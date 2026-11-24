@@ -138,8 +138,6 @@ DERIVATIONS: dict[str, str] = {
             "uncited_recheck_why",
             "uncited_recheck",
             "_no_confirming_window",
-            "latest_fix_window",
-            "latest_decided_fix_window",
             "has_resolution_confirmation",
         ),
         _CA,
@@ -274,17 +272,13 @@ ENTRIES: dict[str, str] = {
 DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # The derivations' own modules: a derivation built from others.
     (_DISCONF, "_disconfirmed_cause_trigger"): {"failed_fix_of": 1},
-    (_DISCONF, "_fix_failure_refusal"): {"fix_application_turn": 1, "fix_windows": 1},
-    (_DISCONF, "failed_fix_of"): {"latest_decided_fix_window": 1},
-    (_DISCONF, "m6_disconfirmation_basis"): {"latest_decided_fix_window": 1},
+    (_DISCONF, "_fix_failure_refusal"): {"fix_application_turn": 1},
     (_CA, "_cause_pool"): {"_pool_legs": 1},
     (_CA, "cause_pool_empty_reason"): {"_cause_pool": 1, "_pool_legs": 1},
-    (_CA, "attempt_window"): {"fix_windows": 1},
     (_CA, "cause_elimination_rows"): {"cause_recheck_status": 1},
     (_CA, "cause_recheck_status"): {
         "_no_confirming_window": 1,
         "confirming_window": 1,
-        "fix_windows": 1,
         "uncited_recheck": 1,
     },
     # #2811: the typed parameters, rendered by ``narration.rechecks``.
@@ -299,14 +293,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "mitigation_relief"): {"interception_relief": 1},
     (_CA, "pending_symptom_check"): {"symptom_elimination_rows": 1},
     (_CA, "resolution_confirmation_rows"): {"symptom_elimination_rows": 1},
-    (_CA, "confirming_polarity_rows"): {"fix_windows": 1},
-    (_CA, "confirming_window"): {"fix_windows": 1},
+    # #3046 S3a-2: the carried view lays the record's verdicts over the
+    # fresh read; every window decider reads it (``CARRIED_VIEW_SITES``).
+    (_CA, "carried_fix_windows"): {"fix_windows": 1},
     (_CA, "fix_windows"): {"_pool_legs": 1},
     (_CA, "has_actionable_solution"): {"classify_solution_outcome": 1},
     (_CA, "has_resolution_confirmation"): {"resolution_confirmation_rows": 1},
-    (_CA, "latest_decided_fix_window"): {"fix_windows": 1},
-    (_CA, "latest_fix_window"): {"fix_windows": 1},
-    (_CA, "off_cause_attempt"): {"_cause_pool": 1, "fix_windows": 1},
+    (_CA, "off_cause_attempt"): {"_cause_pool": 1},
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
     (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
@@ -326,7 +319,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_TT, "assess_resolution_readiness"): {
         "_cause_identified": 1,
         "_resolution_confirmed": 1,
-        "latest_fix_window": 1,
         "off_cause_attempt": 1,
         "pending_symptom_check": 1,
     },
@@ -343,7 +335,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "declined_resolve_entry": 1,
     },
     # #2811 S2b-1b-i: the resolve decline's readers among the deciders, which
-    # stage S3 switches. S2b-1c-ii: ``pending_check_params`` reads the held
+    # stage S3d (#3053) switches. S2b-1c-ii: ``pending_check_params`` reads the held
     # reason through the record's one derivation (``held_check_reason``).
     (_TT, "close_pivots_to_resolve"): {"declined_resolve_entry": 1},
     (_TT, "pending_check_params"): {
@@ -370,7 +362,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "resolution_confirmation_rows": 1,
     },
     # #2811 S2b-2b: whether a cause is identified, and its two wrappers, where
-    # the deciders derive it (stage S3): the resolution and closure gates,
+    # the deciders derive it (stage S3d, #3053): the resolution and closure gates,
     # the documented-but-unapplied fix, the resolve's truth surface, M5's
     # licence and the offer record's lapse rule.
     (_TT, "_cause_identified"): {"cause_identification_leg": 1},
@@ -392,12 +384,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "closure_verdict": 1,
         "mitigation_closure_line": 1,
     },
+    # #3046 S3a-2: the pair before and after the re-dating, off the fresh
+    # read, or the guard could never fire; the verdict is the carried view's.
     (_SG, "_date_to_the_report"): {"fix_windows": 2},
-    (_SG, "_flag_absence_inside_a_failed_fix_window"): {"latest_fix_window": 1},
     (_SG, "_flag_unbound_post_fix_rows"): {
         "bindable_rows": 1,
         "fix_application_turn": 1,
-        "fix_windows": 1,
         "unbound_post_fix_rows": 1,
         "uncited_recheck_why": 1,
     },
@@ -414,7 +406,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "licence_subject"): {"_pool_legs": 1},
     (_SG, "standing_fix_action"): {
         "fix_application_turn": 1,
-        "fix_windows": 1,
         "interception_relief": 1,
     },
     (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
@@ -422,7 +413,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "cause_identification_leg": 1,
         "resolution_record_lines": 1,
     },
-    # #2811 S2b-1b-i: ``pending_symptom_check`` holds the offer (stage S3).
+    # #2811 S2b-1b-i: ``pending_symptom_check`` holds the offer (stage S3d, #3053).
     (_PROPOSALS, "_maybe_propose_deferred_close"): {
         "assess_closure_readiness": 1,
         "cause_identification_leg": 1,
@@ -432,7 +423,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # #2811 S2b-2b: the resolve confirmation and the closed reply read the
     # record. The fold of the moment, for both; and the confirmation's
     # fallback when the fold raised, the decider's decide-time read (A4),
-    # removed at stage S3.
+    # removed at stage S3d (#3053).
     (_ME + "terminal_replies.py", "_reply_outcome"): {"narration_outcome": 1},
     (_ME + "terminal_replies.py", "_confirmation_outcome_fresh"): {
         "cause_identification_leg": 1,
@@ -440,7 +431,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # Not a narrated fact: the offer half of the summary gate, whose
     # enforcement half is ``TerminalTurnHandler``'s (#698, one predicate);
-    # the record has no field for it. Stage S3.
+    # the record has no field for it. Stage S3d (#3053).
     (_ME + "terminal_replies.py", "_closed_suggestions"): {
         "should_generate_terminal_summary": 1
     },
@@ -494,14 +485,14 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_resolution_readiness": 1
     },
     # #2811 S2b-1b-i: the declined re-ask's refusal code and the reopen chip,
-    # deciders that stage S3 switches.
+    # deciders that stage S3d (#3053) switches.
     (_TRANSITIONS, "declined_resolution_reask"): {
         "declined_resolve_entry": 1,
         "pending_symptom_check": 1,
     },
     (_INV + "offer_projection.py", "_reopen_chip"): {"declined_resolve_entry": 1},
     # #2811 S2b-1c-i: the cause-work gates and the false-alarm decline's
-    # refusal and reply, deciders that stage S3 switches.
+    # refusal and reply, deciders that stage S3d (#3053) switches.
     (_ME + "chain_emission.py", "_apply_chain_emission"): {
         "cause_work_accepted": 1,
         "cause_work_staged": 1,
@@ -517,6 +508,11 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "cause_work_staged": 1,
         "solution_licence_leg": 1,
     },
+    # #3046 S3a-2: a write point, the same-cycle mint before the chain
+    # emission's re-root (a cycle's, or a replayed bundle's; ``pre_chain``).
+    (_ME + "response_application.py", "_mint_before_the_chain"): {
+        "record_case_outcome": 1
+    },
     (_ME + "response_application.py", "_reclassify_premature_causal_absence"): {
         "cause_work_accepted": 1,
         "cause_work_staged": 1,
@@ -527,7 +523,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "derive_disposition_eligibility": 1
     },
     (_OFFERS, "_confirmation_ids"): {"resolution_confirmation_rows": 1},
-    (_PROBLEM, "invalidation_refusal"): {"fix_windows": 1},
     # The case outcome record (#2636, stage S1): the one place every outcome
     # is computed for the record, and its write point.
     # #2811 S2b-2a: the held-open and contested roots, derived fresh at the
@@ -575,7 +570,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     # #2811 S2b-2a: the deciders of the cause's identification, which write
     # ``cause_identification_contested`` and ``_held_open`` (the recompute)
-    # and keep or refuse the engine's conclusion mirror (stage S3).
+    # and keep or refuse the engine's conclusion mirror (stage S3d, #3053).
     (_ME + "cause_state.py", "_recompute_cause_state_from_chain"): {
         "held_open_root_ids": 1,
         "mece_contested_root_ids": 1,
@@ -586,13 +581,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_INV + "causal_graph/rcc.py", "synthesize_rcc_from_validated_root"): {
         "mece_contested_root_ids": 1
     },
-    (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"fix_windows": 1},
-    (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): {"fix_windows": 1},
     # The prompt. The fix-verification block renders from the record
     # (#2811 S2b-1a and S2b-1b-i, ``narration.fix_verification``): the
-    # assembly's one fold, and the one window list its fresh verdicts (ruling
-    # Q1 (a)) read, until stage S3; the held need is the record's.
-    (_CB + "causal_graph_block.py", "fix_confirmed"): {"latest_decided_fix_window": 1},
+    # assembly's one fold; its window verdicts and ``fix_confirmed`` read the
+    # carried view (#3046 S3a-2); the held need is the record's.
     (_CB + "narration_fold.py", "NarrationFold.outcome"): {"narration_outcome": 1},
     # #2811 S2b-2a: not the predicate but the record's field of the same
     # name, ``outcome.cause.held_open_root_ids``, which a census of names
@@ -600,9 +592,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # guard that the block reads the record.
     (_CB + "causal_graph_block.py", "_root_recovery_reasons"): {
         "held_open_root_ids": 1
-    },
-    (_CB + "fix_verification_block.py", "build_fix_verification_block"): {
-        "fix_windows": 1
     },
     # The API, the knowledge harvest and the report.
     (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},
@@ -648,7 +637,7 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"verified": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
     # #2811 S2b-1c-i: the milestone status reads the record; the stored
-    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3.
+    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3d (#3053).
     (_CB + "narration_fold.py", "_stored_mitigation_verified"): {"verified": 1},
     (_VALIDATOR, "StateValidator._validate_milestone_ordering"): {
         "solution_verified": 2,
@@ -849,6 +838,52 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "lapses, at every save, what lapse_offers lapses, so a write outside "
         "the engine lapses what it moved",
     ),
+}
+
+
+#: The carried window view (#3046 S3a-2) and its two selects, outside
+#: ``DERIVATIONS``: every decider of a fix window reads the record's final
+#: verdicts laid over the fresh read. Watched so a new reader stays visible
+#: to S3b-S4.
+CARRIED_VIEW = (
+    "carried_fix_windows",
+    "carry_verdicts",
+    "latest_fix_window",
+    "latest_decided_fix_window",
+)
+
+#: (path, qualname) -> references to ``CARRIED_VIEW``.
+CARRIED_VIEW_SITES: dict[tuple[str, str], int] = {
+    **{
+        (_CA, qualname): 1
+        for qualname in (
+            "attempt_window",
+            "carried_fix_windows",
+            "cause_recheck_status",
+            "confirming_polarity_rows",
+            "confirming_window",
+            "latest_decided_fix_window",
+            "latest_fix_window",
+            "off_cause_attempt",
+        )
+    },
+    (_DISCONF, "_fix_failure_refusal"): 1,
+    (_DISCONF, "failed_fix_of"): 1,
+    (_DISCONF, "m6_disconfirmation_basis"): 1,
+    (_TT, "assess_resolution_readiness"): 1,
+    (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): 1,
+    (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): 1,
+    (_PROBLEM, "invalidation_refusal"): 1,
+    (_SG, "_date_to_the_report"): 1,
+    (_SG, "_flag_absence_inside_a_failed_fix_window"): 1,
+    (_SG, "_flag_unbound_post_fix_rows"): 1,
+    (_SG, "standing_fix_action"): 1,
+    (_CB + "fix_verification_block.py", "build_fix_verification_block"): 1,
+    (_CB + "causal_graph_block.py", "fix_confirmed"): 1,
+    # The mint names the FAILED windows a failed write did not mint.
+    (_ME + "response_application.py", "_mint_before_the_chain"): 1,
+    # The fold seeds the view it carries for the rest of its computation.
+    (_OUTCOME, "compute_case_outcome"): 1,
 }
 
 
@@ -1194,6 +1229,22 @@ def test_every_derivation_site_is_declared():
         + "\n  ".join(problems)
         + "\n"
         + _HELP.format(table="DERIVATION_SITES")
+    )
+
+
+def test_every_carried_view_read_is_declared():
+    found: Counter = Counter()
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        tree = parse_file(path)
+        parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+        for node in ast.walk(tree):
+            name = getattr(node, "id", None) or getattr(node, "attr", None)
+            if name in CARRIED_VIEW and isinstance(node.ctx, ast.Load):
+                rel = path.relative_to(_ROOT).as_posix()
+                found[(rel, _scope_of(node, parents))] += 1
+    assert dict(found) == CARRIED_VIEW_SITES, (
+        "a reader of the carried window view is not declared in "
+        "CARRIED_VIEW_SITES (#3046 S3a-2)"
     )
 
 

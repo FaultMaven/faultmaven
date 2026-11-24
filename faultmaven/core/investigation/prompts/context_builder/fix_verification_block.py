@@ -8,7 +8,9 @@ hold (#2427, turn 11). It shows, one line each:
 
 - the latest fix attempts (accepted SOLUTIONs, by their execution turn),
   each labelled by its own kind: a remediation with its window state
-  (``cause_assurance.fix_windows``), an interception with what the problem
+  as the deciders read it (``cause_assurance.carried_fix_windows``: the
+  record's FAILED verdicts over the fresh read, #3046 S3a-2), an
+  interception with what the problem
   did after it, since it opens no window (#2036 D2.3);
 - the two legs a resolution reads (``cause_elimination_rows`` and
   ``symptom_elimination_rows``), by row id, and the rows that showed the
@@ -25,7 +27,7 @@ It is rendered from the case outcome record by ``narration.fix_verification``
 (#2811 S2b-1a, S2b-1b-i). Where ``main`` showed a block, this call site asks
 the prompt assembly's ``NarrationFold`` (``narration_fold``) for the record
 (``narration_outcome``, folded at most once per assembly), then computes the
-window verdicts ruling Q1 (a) keeps fresh (``FixVerificationFresh``) and
+window verdicts the deciders read (``FixVerificationFresh``) and
 renders, with the needs pool (``NarrationFold.needs``, read at most once per
 assembly), inside one guard. If the fold, the fresh read, the identity or the
 render raises, the block is the one declared line ``OMITTED``; the block logs
@@ -55,7 +57,7 @@ from typing import Optional
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     _dated_fixes,
-    fix_windows,
+    carried_fix_windows,
     mitigation_attempt_turn,
     subject_index,
 )
@@ -108,8 +110,8 @@ def _shown(case: Case) -> bool:
 
 
 def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
-    """The verdicts ruling Q1 (a) keeps read fresh until stage S3, by today's
-    deciders: each dated attempt's window, joined by action id at the
+    """The window verdicts the deciders read (``windows``, the carried view,
+    #3046 S3a-2): each dated attempt's window, joined by action id at the
     action's current execution turn; what the latest window says of the
     problem; and, where its ask prints, whether the gate would refuse
     ``mitigation_verified`` (True elsewhere). A
@@ -172,7 +174,7 @@ def build_fix_verification_block(
         if outcome is None:
             return _OMITTED_BLOCK
         subjects = subject_index(case)
-        windows = fix_windows(case, subjects)
+        windows = carried_fix_windows(case, subjects)
         fresh = _fresh(case, outcome, subjects, windows)
         lines = render_fix_verification(
             outcome,

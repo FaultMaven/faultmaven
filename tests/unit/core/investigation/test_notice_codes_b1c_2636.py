@@ -113,10 +113,9 @@ def _decided(metadata: dict, code: NoticeCode) -> dict:
 
 
 def test_the_absence_notice_states_the_window_its_decider_read():
-    """The window failed on a relapse at 12 and is carried whole; at 14 the
-    decider reads the cause re-checked gone beside the problem, a
-    disconfirmation the record's window does not hold. The text is the
-    decider's, as on ``main``."""
+    """The window failed on a relapse at 12; at 14 the decider reads the cause
+    re-checked gone beside the problem, a disconfirmation the record's window
+    now takes too (#2728). The text is the decider's, as on ``main``."""
     name = "absence_after_a_relapse_later_disconfirmed"
     case, metadata = golden.B1C_SCENARIOS[name]()
     assert _decided(metadata, NoticeCode.ABSENCE_IN_FAILED_WINDOW)["disconfirmed"]
@@ -126,7 +125,8 @@ def test_the_absence_notice_states_the_window_its_decider_read():
         for a in case.progress.outcome.attempts
         if a.window is not None and a.window.fix_turn == 6
     ]
-    assert window.disconfirmation is None, "premise: the record differs"
+    pair = window.disconfirmation
+    assert (pair.cause_turn, pair.problem_turn) == (14, 14), "#2728: taken"
     assert text == oracle(name)
     assert "the cause was shown removed" in text[0]
 

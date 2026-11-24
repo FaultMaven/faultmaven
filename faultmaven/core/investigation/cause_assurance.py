@@ -28,7 +28,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Callable, NamedTuple
@@ -107,6 +107,8 @@ __all__ = [
     "evidence_category_map",
     "evidence_datum_key",
     "attempt_window",
+    "carried_fix_windows",
+    "carry_verdicts",
     "conclusion_node",
     "fix_application_turn",
     "fix_windows",
@@ -133,6 +135,7 @@ __all__ = [
     "problem_leg_anchor",
     "resolution_confirmation_rows",
     "root_counterfactually_confirmed",
+    "seed_carried_windows",
     "runbook_conversion_ready",
     "subject_index",
     "symptom_elimination_rows",
@@ -811,7 +814,9 @@ def _outcome_computation() -> Iterator[None]:
     """The scope of one computation of the case outcome, entered only by
     ``outcome.compute_case_outcome``: inside it ``subject_index``,
     ``fix_windows`` and ``_cause_pool`` build once per case (#2657), which
-    holds because the computation does not mutate the case. Reset in
+    holds because the computation does not mutate the case, and
+    ``carried_fix_windows`` returns the list it folded
+    (``seed_carried_windows``, #3046 S3a-2). Reset in
     ``finally``, so a computation that raises leaves no memo for a decider,
     which builds as it always did."""
     token = _COMPUTATION.set({})
@@ -1123,7 +1128,7 @@ def observation_subject(case: "Case", row) -> str:
 # the stamp's candidates) and the reported problem observed gone after it
 # (``symptom_elimination_rows``); the gate and the pivot need both
 # (``resolution_confirmation_rows``). Neither leg admits what a failed fix
-# window holds (``fix_windows``, #1927).
+# window holds (``carried_fix_windows``, #1927).
 # ---------------------------------------------------------------------------
 
 
@@ -1239,7 +1244,7 @@ def cause_elimination_rows(
       LLM's own same-turn failed-fix row is excluded by the disconfirmation
       rule above, not by the window.
     - In the latest fix window, and not a failed one (``confirming_window``,
-      read off ``fix_windows``): a resolution confirms the latest fix, so rows
+      read off ``carried_fix_windows``): a resolution confirms the latest fix, so rows
       from before it confirm nothing about it, and a fix seen failing — the
       cause shown removed, then the problem seen again — confirms nothing,
       whatever is recorded in its window afterwards. Only a new recorded fix
@@ -1269,7 +1274,7 @@ def cause_elimination_rows(
     cause is the other leg, ``symptom_elimination_rows`` (#1906).
 
     ``subjects`` and ``windows`` are the caller's ``subject_index(case)`` and
-    ``fix_windows(case)`` when it already has them."""
+    ``carried_fix_windows(case)`` when it already has them."""
     return [
         e
         for e, why in cause_recheck_status(case, subjects=subjects, windows=windows)
@@ -1292,7 +1297,7 @@ def cause_recheck_status(
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
-    windows = fix_windows(case, subjects) if windows is None else windows
+    windows = carried_fix_windows(case, subjects) if windows is None else windows
     window = confirming_window(case, windows=windows, subjects=subjects)
     no_window = None if window is not None else _no_confirming_window(case, windows)
     window_bound = {e.evidence_id for w in windows for e in w.cause_rows}
@@ -1426,7 +1431,7 @@ def confirming_polarity_rows(case: "Case") -> list:
     latest = next(
         (
             window
-            for window in reversed(fix_windows(case))
+            for window in reversed(carried_fix_windows(case))
             if any(window.holds(subjects.observed(e)) for e in rows)
         ),
         None,
@@ -1662,6 +1667,13 @@ class FixWindow:
     targets: tuple = ()
     kind: str | None = None
     off_cause: bool = False
+    #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
+    #: row, which ``disconfirmation`` names only by turn, and the fresh read's
+    #: own pair, which M6 falls back to (#3046 S3a-2).
+    pair_carried: bool = False
+    pair_cause_row_id: str | None = None
+    fresh_disconfirmation: tuple[int, int] | None = None
+    fresh: "FixWindow | None" = field(default=None, compare=False, repr=False)
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1681,16 +1693,45 @@ class FixWindow:
         the cause, and its return may be the cause back, the effect not
         lasting, another cause, or a misread check (#2039). The cause re-checked
         still gone after the return, with the problem seen present after that,
-        is a disconfirmation again."""
-        return self.disconfirmation is not None
+        is a disconfirmation again. Read off ``m6_pair`` (#3046 S3a-2)."""
+        return self.m6_pair is not None
+
+    def carried_pair_rows(self) -> tuple:
+        """The carried pair's own cause row while it is one of the window's
+        cause rows, else ``()``."""
+        if not self.pair_carried:
+            return ()
+        return tuple(
+            e for e in self.cause_rows if e.evidence_id == self.pair_cause_row_id
+        )
+
+    @property
+    def fresh_pair(self) -> tuple[int, int] | None:
+        """The fresh read's pair, whatever the record carries."""
+        return self.fresh_disconfirmation if self.pair_carried else self.disconfirmation
+
+    @property
+    def m6_pair(self) -> tuple[int, int] | None:
+        """The pair a destructive reader acts on (#3046 S3a-2): the carried
+        pair while its cause row is one of the window's (``carried_pair_rows``),
+        else the fresh read's, as ``main`` read it. A carried pair whose row
+        has left the window never disconfirms a cause identified since, and
+        never hides a later failure the fresh read holds."""
+        return self.disconfirmation if self.carried_pair_rows() else self.fresh_pair
+
+    def as_fresh(self) -> "FixWindow":
+        """M6's fallback reading: the fresh window the record was laid over,
+        with its own span, rows and pair; this window when none was."""
+        return self if self.fresh is None else self.fresh
 
 
 @_once_per_computation_given_index
 def fix_windows(
     case: "Case", subjects: "SubjectIndex | None" = None
 ) -> list[FixWindow]:
-    """Every fix window on the case, oldest first: window 0 (the rows before any
-    dated fix — an out-of-band fix leaves no execution record), then one per
+    """Every fix window on the case, read fresh, oldest first: window 0 (the
+    rows before any dated fix — an out-of-band fix leaves no execution
+    record), then one per
     turn with a dated remediation (``_window_fixes``). An interception opens
     none (#2036 D2.3): it relieves, never resolves, and a later one does not
     hide an earlier root fix's window. It ends window 0, and an unkinded
@@ -1751,14 +1792,20 @@ def fix_windows(
     root deepened into one of them (``deepened_to``, transitively), so it
     stands after the cause is deepened, however often, until a dated fix; one
     read only through a cited row (the window's confirmation-bound rows, #2557)
-    does not survive a re-root, which erases the citation (#2582). A
+    is not re-read after a re-root, which erases the citation, and stands in
+    the record (#2582). A
     row's floor is the earliest first attach of the roots it supports; a
     later attach of the same root does not move it (save once on a root
     stored with neither key, ``CausalNode.root_first_attached_turn``).
     Persistence with no such relief fails nothing: before any dated fix, a
     causal_absence row is as likely a diagnosis-time exclusion ("DNS ruled
     out") as a fix's outcome. It never carries a disconfirmation, so nothing
-    destructive acts on an undated fix."""
+    destructive acts on an undated fix.
+
+    This is the fresh read, which a re-root, a pool move or a statement
+    revision can re-bind (#2595, #2582, #2569). Only the outcome fold and
+    ``_date_to_the_report``'s pair guard read it; every decider reads the
+    record's final verdicts laid over it (``carried_fix_windows``)."""
     fixes = _window_fixes(case)
     attempts = _dated_fix_turns(case)
     subjects = subject_index(case) if subjects is None else subjects
@@ -2008,17 +2055,130 @@ def _first_posited_turn(case: "Case", subjects, row, roots=None) -> int | None:
     return min(turns, default=None)
 
 
+#: The memo key of the carried windows a computation of the outcome seeds
+#: (``seed_carried_windows``).
+_CARRIED_MEMO = "carried_fix_windows"
+
+
+def carried_fix_windows(
+    case: "Case", subjects: "SubjectIndex | None" = None
+) -> list[FixWindow]:
+    """The fix windows every decider reads (#3046 S3a-2): the fresh read
+    (``fix_windows``) with the outcome record's final FAILED verdicts laid
+    over it (``carry_verdicts``), so a re-root, a pool move, a re-read or a
+    confirmed statement revision never reverses one. Inside a computation of
+    the outcome, the list that computation folded (``seed_carried_windows``),
+    so the record's sections read the windows it carries; with no record,
+    the fresh read."""
+    memo = _COMPUTATION.get()
+    seeded = memo and memo.get(_memo_key(_CARRIED_MEMO, case))
+    if seeded:
+        own = memo.get(_memo_key(subject_index.__wrapped__, case))
+        if subjects is None or (own and subjects is own[1]):
+            return list(seeded[1])
+    windows = fix_windows(case, subjects)
+    record = getattr(case.progress, "outcome", None)
+    if record is None:
+        return windows
+    return carry_verdicts(case, windows, record.attempts, subjects)
+
+
+def seed_carried_windows(case: "Case", windows: list[FixWindow]) -> None:
+    """Hold ``windows`` as the case's carried windows for the rest of the
+    computation of the outcome running (``_outcome_computation``)."""
+    memo = _COMPUTATION.get()
+    if memo is not None:
+        memo[_memo_key(_CARRIED_MEMO, case)] = (case, windows)
+
+
+def carry_verdicts(
+    case: "Case", windows: list[FixWindow], attempts, subjects=None
+) -> list[FixWindow]:
+    """``windows`` with each final FAILED window of ``attempts`` (a record's
+    ``AttemptOutcome`` list, or the one being folded) laid over the window its attempt
+    reads now: matched by ``action_id`` through the action's current
+    ``accepted_in_turn``, window 0 as ``action_id`` None. The verdict is the
+    record's: FAILED, observed, its relief and failure turns, and its
+    disconfirmation pair, or the fresh one while it has none. M6 acts on the
+    carried pair only through its own cause row, while that row is one of the
+    window's; otherwise on the fresh read's pair, as ``main`` did
+    (``FixWindow.m6_pair``). The span and
+    the cause rows are the fresh read's, save that an unkinded window ends
+    at the first attempt at or after its failure, as when it was read, and
+    holds no row past that. A final window whose attempt no longer reads (an
+    orphan) is not inserted, and a withdrawn attempt's drops out."""
+    turn_of: dict = {None: None}
+    for action in _dated_fixes(case):
+        if _is_remediation(action):
+            turn_of[action.action_id] = action.accepted_in_turn
+    held: dict = {}
+    for attempt in attempts:
+        final = attempt.window
+        if (
+            final is not None
+            and final.final_at is not None
+            and final.state == FIX_FAILED
+            and attempt.action_id in turn_of
+        ):
+            held.setdefault(turn_of[attempt.action_id], final)
+    out = []
+    for window in windows:
+        final = held.get(window.fix_turn)
+        if final is None:
+            out.append(window)
+            continue
+        end, rows = window.end_turn, (window.cause_rows, window.confirmed_cause_rows)
+        if window.kind is None and window.fix_turn is not None and final.failure_turn:
+            ends = [
+                t
+                for t in _dated_fix_turns(case)
+                if t > window.fix_turn and t >= final.failure_turn
+            ]
+            end = min([*ends, *([end] if end is not None else [])], default=None)
+            span = replace(window, end_turn=end)
+            subjects = subject_index(case) if subjects is None else subjects
+            rows = tuple(
+                tuple(e for e in held_rows if span.holds(subjects.observed(e)))
+                for held_rows in rows
+            )
+        pair = final.disconfirmation
+        out.append(
+            replace(
+                window,
+                end_turn=end,
+                cause_rows=rows[0],
+                confirmed_cause_rows=rows[1],
+                state=FIX_FAILED,
+                observed=True,
+                relief_turn=final.relief_turn,
+                failure_turn=final.failure_turn,
+                disconfirmation=(
+                    (pair.cause_turn, pair.problem_turn)
+                    if pair is not None
+                    else window.disconfirmation
+                ),
+                pair_carried=pair is not None,
+                pair_cause_row_id=pair.cause_row_id if pair is not None else None,
+                fresh_disconfirmation=window.disconfirmation,
+                fresh=window,
+            )
+        )
+    return out
+
+
 def latest_fix_window(case: "Case") -> FixWindow:
-    """The latest fix window — window 0 when no fix is dated."""
-    return fix_windows(case)[-1]
+    """The latest fix window — window 0 when no fix is dated — as the
+    deciders read it (``carried_fix_windows``)."""
+    return carried_fix_windows(case)[-1]
 
 
 def latest_decided_fix_window(case: "Case") -> FixWindow | None:
-    """The latest window with a verdict (SUCCEEDED or FAILED), or None. A
+    """The latest window with a verdict (SUCCEEDED or FAILED), or None, as the
+    deciders read it (``carried_fix_windows``). A
     newer window whose fix has not been observed yet does not erase an older
     window's failure: "still 503, so I'm putting pgbouncer in" records the
     failure and the next fix in one turn."""
-    for window in reversed(fix_windows(case)):
+    for window in reversed(carried_fix_windows(case)):
         if window.state != FIX_UNKNOWN:
             return window
     return None
@@ -2046,14 +2206,14 @@ def confirming_window(
     (``accepted_fix_reported_in``, #2427), the fix is dated to that message
     within its bound (``stage_gates._date_to_the_report``), so its window holds
     that message's rows and the registration turn's paste is post-fix. Read
-    off ``fix_windows`` alone, so the gate reads a failed fix the same whether
+    off ``carried_fix_windows`` alone, so the gate reads a failed fix the same whether
     or not M6 could act on
     it. With no dated fix it is window 0, the whole case: an out-of-band fix
     confirms on its rows, and nothing once it relapsed (#2501). None when
     nothing was observed at all (no leg can stand then). ``windows`` is the
-    caller's ``fix_windows(case)``."""
+    caller's ``carried_fix_windows(case)``."""
     if windows is None:
-        windows = fix_windows(case, subjects)
+        windows = carried_fix_windows(case, subjects)
     for window in reversed(windows):
         if window.observed:
             return None if window.state == FIX_FAILED or window.off_cause else window
@@ -2067,11 +2227,12 @@ def off_cause_attempt(case: "Case", windows=None) -> int | None:
     ``off_cause`` one; or that ``off_cause`` remediation itself. A live
     remediation window answers for itself, an interception after it
     included. None while the confirmation pool is empty: then there is no
-    cause to ask a fix of. ``windows`` is the caller's ``fix_windows(case)``."""
+    cause to ask a fix of. ``windows`` is the caller's
+    ``carried_fix_windows(case)``."""
     confirmation, _window, hypotheses = _cause_pool(case)
     if not (confirmation or hypotheses):
         return None
-    windows = fix_windows(case) if windows is None else windows
+    windows = carried_fix_windows(case) if windows is None else windows
     latest = windows[-1]
     live = latest.fix_turn is not None and latest.state != FIX_FAILED
     if live and not latest.off_cause:
@@ -2088,7 +2249,7 @@ def attempt_window(case: "Case", action) -> FixWindow | None:
     turn = getattr(action, "accepted_in_turn", None)
     if turn is None or not _is_remediation(action):
         return None
-    return next((w for w in fix_windows(case) if w.fix_turn == turn), None)
+    return next((w for w in carried_fix_windows(case) if w.fix_turn == turn), None)
 
 
 def interception_relief(
@@ -2323,7 +2484,7 @@ def unbound_post_fix_rows(
     (``stage_gates._flag_unbound_post_fix_rows``, #2555). Post-fix and
     bound-to-nothing as that notice's docstring states. ``subjects`` and
     ``windows`` are the caller's ``subject_index(case)`` and
-    ``fix_windows(case, subjects)``."""
+    ``carried_fix_windows(case, subjects)``."""
     fix_turn = fix_application_turn(case)
     failed = [w for w in windows if w.state == FIX_FAILED]
     # A kinded window binds its rows to the cause its fix ran against (#2036).
@@ -2426,8 +2587,8 @@ def symptom_elimination_rows(
 
     Empty when no cause leg stands. ``cause_rows``, ``subjects`` and
     ``windows`` are the caller's ``cause_elimination_rows(case)``,
-    ``subject_index(case)`` and ``fix_windows(case)`` when it already has
-    them."""
+    ``subject_index(case)`` and ``carried_fix_windows(case)`` when it
+    already has them."""
     subjects = subject_index(case) if subjects is None else subjects
     if cause_rows is None:
         cause_rows = cause_elimination_rows(case, subjects=subjects, windows=windows)
@@ -2498,8 +2659,8 @@ def pending_symptom_check(
     (``symptom_elimination_rows``): without the cause leg there is no anchor,
     and without the problem leg nothing is held, since the problem's answer
     is then still what readiness asks for. ``subjects`` and ``windows`` are
-    the caller's ``subject_index(case)`` and ``fix_windows(case)`` when it has
-    them."""
+    the caller's ``subject_index(case)`` and ``carried_fix_windows(case)``
+    when it has them."""
     candidates = [
         n
         for n in (getattr(case, "evidence_needs", None) or [])

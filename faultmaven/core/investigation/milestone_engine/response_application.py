@@ -10,8 +10,10 @@ from faultmaven.core.investigation.causal_graph.similarity import (
     find_duplicate_hypothesis,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    FIX_FAILED,
     FIX_INTERCEPTION,
     FIX_REMEDIATION,
+    carried_fix_windows,
 )
 from faultmaven.core.investigation.confidence_repair import short_repr
 from faultmaven.core.investigation.lifecycle_metrics import (
@@ -50,6 +52,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
+from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
@@ -98,6 +101,7 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
     SolutionType,
     TurnOutcome,
+    WritePoint,
 )
 
 from .affordances import (
@@ -176,6 +180,31 @@ WHY_OPEN_DOWNGRADE_REASON = (
 #: The rows ``_reclassify_premature_causal_absence`` held this turn, which its
 #: final call reports.
 _PREMATURE_ABSENCE_KEY = "premature_absence_held"
+
+
+def _mint_before_the_chain(case: Case) -> None:
+    """The same-cycle mint (#2582, #3046 S3a-2): a window this apply's
+    deciders read FAILED (steps 5 and 5b) is minted into the record before the
+    chain emission's re-root (``attach_root``) can erase the citation it was
+    read through, so the cycle's record carries it. Nothing between the
+    evidence (step 2) and here re-roots. Its own write point
+    (``WritePoint.PRE_CHAIN``) labels a failure apart from the cycle's; the
+    failure is logged with the FAILED windows it did not mint."""
+    if record_case_outcome(case, at=WritePoint.PRE_CHAIN):
+        return
+    try:
+        failed = [
+            w.fix_turn for w in carried_fix_windows(case) if w.state == FIX_FAILED
+        ]
+    except Exception:  # noqa: BLE001 — the line is all that is left of them
+        failed = "unreadable"
+    logger.error(
+        "Case %s: the outcome record was not minted before the chain emission; "
+        "the FAILED fix windows read this cycle (fix turns %s, None for window "
+        "0) may reach the cycle's record re-read (#2582)",
+        case.case_id,
+        failed,
+    )
 
 
 def _reclassify_premature_causal_absence(
@@ -2069,6 +2098,8 @@ class ResponseApplier:
         # always populated from the emitted chain; cause_state/M6 derive from the
         # real emitted chains. (cause_state derivation never reads the graph for
         # truth — see _recompute_assessment_state.)
+        #
+        _mint_before_the_chain(case)
         _apply_chain_emission(case, updates, metadata)
         _settle_fix_attempts(case, metadata)
         # Orphan-chain resolution (B2c invariant: every chain explaining D is

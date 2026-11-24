@@ -23,8 +23,8 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     SUBJECT_PROBLEM,
     _cause_posited_turn,
+    carried_fix_windows,
     cause_recheck_status,
-    fix_windows,
     interception_relief,
     latest_decided_fix_window,
     latest_disconfirmation_turn,
@@ -78,10 +78,11 @@ DECLARED = {
     # ``assembly.py`` prints the stored ``mitigation.verified``; the record
     # holds it relapse-adjusted.
     "mitigation.verified": "#2609",
-    # ``fix_confirmed`` and the block read windows fresh in fix-turn order;
-    # the record carries a FAILED window over a fresh read.
-    "fix_confirmed": "#2582/#2595",
-    "windows": "#2582/#2595",
+    # The narrators read the carried view (#3046 S3a-2), the record's FAILED
+    # verdict over the fresh read, whose span and rows are fresh; the record
+    # keeps the rows it read the failure on (its problem rows). The row rule
+    # is S3b's (#2586).
+    "windows": "#2586",
 }
 
 
@@ -107,7 +108,7 @@ def _dated(case) -> list:
 def derived(case) -> dict:
     """Each narrator fact as the narrator derives it today."""
     subjects = subject_index(case)
-    windows = fix_windows(case, subjects)
+    windows = carried_fix_windows(case, subjects)
     status = cause_recheck_status(case, subjects=subjects, windows=windows)
     cause_rows = [e for e, why in status if why is None]
     by_turn = {w.fix_turn: w for w in windows}
@@ -548,8 +549,8 @@ FIXTURES = {
     "held_check_on_a_false_alarm": (_held_check_on_a_false_alarm, set()),
     "held_check_then_interception": (_held_check_then_interception, set()),
     "2609_relapsed_mitigation": (_relapsed_mitigation, {"mitigation.verified"}),
-    "2582_cited_failure_re_rooted": (_2582, {"windows"}),
-    "2595_unkinded_failure_rebound": (_2595, {"fix_confirmed", "windows"}),
+    "2582_cited_failure_re_rooted": (_2582, set()),
+    "2595_unkinded_failure_rebound": (_2595, {"windows"}),
 }
 
 

@@ -447,7 +447,7 @@ cause_identification_held_mece_total = Counter(
 #   separate from ``no_fix_applied`` precisely so that window is visible rather
 #   than hidden inside the benign baseline.
 # The remaining labels read the latest fix window's outcome
-# (``cause_assurance.fix_windows``, #1927), the one answer the readiness gate
+# (``cause_assurance.carried_fix_windows``, #1927), the one answer the readiness gate
 # shares:
 #
 # - ``no_cause_removal`` — the fix ran but no causal_absence row after it
@@ -500,7 +500,7 @@ m6_demotion_refused_total = Counter(
 )
 
 # M6 demoted the identified cause because the latest fix window FAILED
-# (``cause_assurance.fix_windows``: an executed SOLUTION, the cause observed
+# (``cause_assurance.carried_fix_windows``: an executed SOLUTION, the cause observed
 # removed after it, then the problem observed persisting with no relief in
 # between), for a fix of that cause, while the model had not refuted the cause
 # itself (#1927). The prompt's FAILURE PATH tells the
@@ -1067,11 +1067,15 @@ terminal_summary_total = Counter(
 # disagrees with it is a disagreement, counted here by the record's field once,
 # when a saved record first carries it (#2689: after the save commits; the
 # record keeps the turn it was first read), and the carried verdict stands.
-# In this stage the deciders still read fresh derivations, so a disagreement
-# is a case where a decider and the record disagree; stage S3 switches the
-# deciders. Labelled by field only: never a case, user or tenant.
+# The window deciders read the carried verdicts (#3046 S3a-2), so an
+# ``attempts.window`` disagreement is the fresh read the record overrides;
+# the deciders that still derive fresh switch at S3d (#3053).
+# ``attempts.window.disconfirmation`` is no disagreement: a FAILED window
+# that took a later disconfirmation pair, once (#2728). Labelled by field
+# only: never a case, user or tenant.
 _OUTCOME_RECORD_FIELDS = (
     "attempts.window",
+    "attempts.window.disconfirmation",
     "attempts.accepted_in_turn",
     "resolution.confirmed_row_ids",
     "closure",
@@ -1085,13 +1089,15 @@ _OUTCOME_RECORD_FIELDS = (
 case_outcome_conflicts_total = Counter(
     "faultmaven_case_outcome_conflicts_total",
     "A carried final verdict in the case outcome record disagreed with a "
-    "fresh derivation (#2615), counted once when a saved record first "
-    "carries it (#2689); or a decision narrated after the cycle's stored "
-    "record disagreed with it (#2636), counted after the turn commits. "
-    "Labelled by the record field "
-    "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
-    "closure) or the narrated code (narration.<code>, each code a decision "
-    "is compared to the record by).",
+    "fresh derivation (#2615), or a FAILED window took a later "
+    "disconfirmation pair, an addition (#2728), counted once when a saved "
+    "record first carries it (#2689); or a decision narrated after the "
+    "cycle's stored record disagreed with it (#2636), counted after the turn "
+    "commits. Labelled by the record field "
+    "(attempts.window|attempts.window.disconfirmation|"
+    "attempts.accepted_in_turn|resolution.confirmed_row_ids|closure) or the "
+    "narrated code (narration.<code>, each code a decision is compared to the "
+    "record by).",
     labelnames=["field"],
     label_values={"field": _OUTCOME_RECORD_FIELDS},
 )
@@ -1109,7 +1115,9 @@ case_outcome_conflicts_total = Counter(
 case_outcome_write_failures_total = Counter(
     "faultmaven_case_outcome_write_failures_total",
     "A case outcome record write raised and was skipped (#2615), by write "
-    "point (cycle|replay|resolved|closed|commit|write|metadata|create); or, "
+    "point (cycle|replay|pre_chain|resolved|closed|commit|write|metadata|"
+    "create; pre_chain is an investigation apply's mint before its chain "
+    "emission, #3046 S3a-2); or, "
     "as narration, the prompt's fix-verification block or its evidence-needs "
     "re-verification checklist was omitted because the shared fold, a fresh "
     "read, the identity, a text read or a render raised, counted once per "
@@ -1120,6 +1128,7 @@ case_outcome_write_failures_total = Counter(
         "at": (
             "cycle",
             "replay",
+            "pre_chain",
             "resolved",
             "closed",
             "commit",

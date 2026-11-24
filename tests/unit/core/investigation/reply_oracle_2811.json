@@ -11,12 +11,12 @@
   }
  },
  "2595_unkinded_failure_rebound": {
-  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n- **The cause** — no root cause on record: pgbouncer pool_size now reads 100 (turn 11)\n- **The problem** — checkout returns 503 on every request, re-checked: checkout answers 200 (turn 12)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+  "confirmation": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Not yet documented\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
   "params": {
    "identification_leg": null,
    "no_commands": true,
    "no_evidence": false,
-   "record_lines": "- **The cause** — no root cause on record: pgbouncer pool_size now reads 100 (turn 11)\n- **The problem** — checkout returns 503 on every request, re-checked: checkout answers 200 (turn 12)",
+   "record_lines": "",
    "root": "no root cause on record",
    "solution": "Not yet documented"
   }

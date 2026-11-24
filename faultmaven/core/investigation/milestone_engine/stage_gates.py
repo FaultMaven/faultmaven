@@ -598,8 +598,8 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
         attempt_window,
+        carried_fix_windows,
         fix_application_turn,
-        fix_windows,
         interception_relief,
     )
 
@@ -622,7 +622,7 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             # A remediation stands while its window is the latest one and has
             # not FAILED: a later interception does not end it.
             if window.state != FIX_FAILED and (
-                window.fix_turn == fix_windows(case)[-1].fix_turn
+                window.fix_turn == carried_fix_windows(case)[-1].fix_turn
             ):
                 return action
             continue
@@ -816,7 +816,9 @@ def _flag_absence_inside_a_failed_fix_window(
     case: Case, metadata: dict[str, Any] | None, *, replace: bool = False
 ) -> bool:
     """Tell the model when it records an absence row this turn inside a fix
-    window that already FAILED (#1927, ``cause_assurance.fix_windows``).
+    window that already FAILED (#1927), as the deciders read it
+    (``cause_assurance.latest_fix_window``: the record's FAILED verdicts over
+    the fresh read, #3046 S3a-2).
 
     Such a row confirms nothing: once a fix was seen failing (the cause shown
     removed, then the problem seen again), only a NEW fix opens a window that
@@ -910,8 +912,8 @@ def _flag_unbound_post_fix_rows(
     is told once the hold ends (#2555). Not recorded when the stored record
     marks every such row told. Returns whether the code was recorded."""
     from faultmaven.core.investigation.cause_assurance import (
+        carried_fix_windows,
         fix_application_turn,
-        fix_windows,
         subject_index,
         unbound_post_fix_rows,
         uncited_recheck_why,
@@ -921,7 +923,7 @@ def _flag_unbound_post_fix_rows(
         return False
     fix_turn = fix_application_turn(case)
     subjects = subject_index(case)
-    found = unbound_post_fix_rows(case, subjects, fix_windows(case, subjects))
+    found = unbound_post_fix_rows(case, subjects, carried_fix_windows(case, subjects))
     # Every row already told in its stretch on the stored record: nothing to
     # say, so no pool is read (a row absent from the record is untold).
     record = case.progress.outcome
@@ -1872,15 +1874,22 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
     (``TurnProgress.cause_at_start``, #2036 D2.3). Read before the settle,
     the new attempt counts as a remediation here, which only widens the
     window that judged it. Otherwise the declaration is ignored, with a
-    line."""
-    from faultmaven.core.investigation.cause_assurance import FIX_FAILED, fix_windows
+    line. The window's verdict is read as the deciders read it (carried,
+    #3046 S3a-2); its pair, both times, off the fresh read: a carried pair
+    reads the same either way, and the guard would never fire."""
+    from faultmaven.core.investigation.cause_assurance import (
+        FIX_FAILED,
+        carried_fix_windows,
+        fix_windows,
+    )
 
     turn, previous = case.current_turn, case.current_turn - 1
     if previous < 1:
         _ignore_fix_report(case, metadata, "no_previous", turn=turn)
         return
     # The window before this fix, ending at this turn.
-    judged = fix_windows(case)[-2]
+    judged = carried_fix_windows(case)[-2]
+    pair = fix_windows(case)[-2].disconfirmation
     if judged.fix_turn is not None and (
         judged.state != FIX_FAILED or judged.failure_turn >= previous
     ):
@@ -1894,10 +1903,7 @@ def _date_to_the_report(case: Case, target: Any, metadata: dict[str, Any]) -> No
         )
         return
     target.accepted_in_turn = previous
-    if (
-        judged.fix_turn is not None
-        and fix_windows(case)[-2].disconfirmation != judged.disconfirmation
-    ):
+    if judged.fix_turn is not None and fix_windows(case)[-2].disconfirmation != pair:
         target.accepted_in_turn = turn
         _ignore_fix_report(
             case,

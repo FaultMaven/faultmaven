@@ -209,8 +209,8 @@ def _conflicts(log: list, outcome: CaseOutcome) -> list[str]:
     (``REFINES``) is compared only where its parent agrees, so a decision
     counts it at most once (``_disagreements``). Counted only after the turn
     commits (#2689). On a conflict, every switched decision's text is its
-    decider's (A4, ``_switched_outcome``); stage S3 switches the deciders to
-    the record."""
+    decider's (A4, ``_switched_outcome``); stage S3d (#3053) switches the
+    remaining deciders to the record."""
     counted = set()
     found = []
     for entry in log:

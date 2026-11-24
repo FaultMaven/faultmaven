@@ -279,7 +279,7 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     """Why the problem cannot be found a false alarm now, or None."""
     from faultmaven.core.investigation.cause_assurance import (
         SUBJECT_CAUSE,
-        fix_windows,
+        carried_fix_windows,
         subject_index,
     )
 
@@ -305,7 +305,7 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     subjects = subject_index(case)
     if any(
         subjects.subject(e, windows=True) == SUBJECT_CAUSE for e in case.evidence or []
-    ) or any(w.cause_rows for w in fix_windows(case, subjects)):
+    ) or any(w.cause_rows for w in carried_fix_windows(case, subjects)):
         return "a cause was observed removed, so the problem existed"
     return None
 
