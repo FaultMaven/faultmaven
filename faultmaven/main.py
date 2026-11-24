@@ -189,9 +189,10 @@ logger.info("✅ Case endpoints added")
 
 # Turn replay is owned by the turn receipt committed with the turn (#1888).
 # ONE owner: the idempotency middleware's cache is lossy (written only after
-# the route returns, a one-hour TTL, per replica under FakeRedis, and not
-# installed at all under SKIP_SERVICE_CHECKS), so it must not answer a turn the
-# receipt would answer differently. ``never_replayed`` implies
+# the route answers, a one-hour TTL, per replica under FakeRedis, and not
+# installed at all under SKIP_SERVICE_CHECKS; its in-flight claim, #2655, makes
+# an overlapping duplicate wait, not the cache durable), so it must not answer
+# a turn the receipt would answer differently. ``never_replayed`` implies
 # ``never_collapsed``; deduplication never saw a turn anyway (the copilot posts
 # multipart, the Slack agent sends no session id). Declared by the route's
 # TEMPLATE, read off the mounted app (prefix included), so the declaration
@@ -240,8 +241,8 @@ logger.info("✅ Document conversion endpoints added")
 
 # KB upload and conversion replay is owned by the receipt each commits with
 # what it publishes (#2433), for the turn route's reasons above: the
-# middleware's cache is written after the route returns, holds no in-flight
-# claim and does not fingerprint a multipart body. Read off the mounted app by
+# middleware's cache is written after the route answers, is lost to a failed
+# write and does not fingerprint a multipart body. Read off the mounted app by
 # endpoint identity, as the turn route's path is.
 from .modules.knowledge.api.conversion_routes import convert_document
 from .modules.knowledge.api.routes import upload_document

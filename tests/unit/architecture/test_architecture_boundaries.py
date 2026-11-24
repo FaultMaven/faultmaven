@@ -75,6 +75,14 @@ class TestArchitectureBoundaries:
                                 "infrastructure.shims"
                             ):
                                 pass
+                            # The owner-tokened in-flight claim: the keyed
+                            # requests' one claim primitive, which the
+                            # idempotency middleware takes as the turn and KB
+                            # routes do (#2655)
+                            elif "middleware" in str(file) and module.endswith(
+                                "concurrency.owned_claim"
+                            ):
+                                pass
                             else:
                                 violations.append(
                                     f"{file}: imports from infrastructure layer ({module})"

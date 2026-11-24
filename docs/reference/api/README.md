@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.11.0
+**Version:** 15.12.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1614,6 +1614,13 @@ Initial status is INQUIRY (problem definition phase).
 
 Returns CaseSummary with basic case info and milestone progress.
 
+A retry under the same ``Idempotency-Key`` is answered with the first
+request's 201, ``X-Idempotency-Replayed: true``, and creates nothing; one
+overlapping the first waits for that answer. 409
+``IDEMPOTENCY_REQUEST_IN_PROGRESS`` + ``Retry-After`` when the first has
+not answered within the wait: wait, then reload, since the case may
+already exist (#2655).
+
 **Tags:** `cases`
 
 **Auth:** `HTTPBearer`
@@ -1625,6 +1632,7 @@ Returns CaseSummary with basic case info and milestone progress.
 **Responses:**
 
 - `201` — Successful Response ([`CaseSummary`](#casesummary))
+- `409` — Conflict; no case was created by this request. Told apart by `x-error-code`: `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key); `IDEMPOTENCY_REQUEST_IN_PROGRESS` (a request with this key is still being processed: wait, then reload; it may already have gone through).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
@@ -2449,6 +2457,9 @@ Generate a concise, case-specific title from case messages and metadata.
   meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
 - 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a
   different request body; nothing was generated or written.
+- 409 ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` + ``Retry-After``: a request
+  with this ``Idempotency-Key`` has not answered within the wait; nothing
+  of this one ran, and the first may have (#2655).
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate
@@ -2478,7 +2489,7 @@ Generate a concise, case-specific title from case messages and metadata.
 - `200` — Successful Response ([`TitleResponse`](#titleresponse))
 - `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
-- `409` — Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key).
+- `409` — Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key); `IDEMPOTENCY_REQUEST_IN_PROGRESS` (a request with this key is still being processed: wait, then reload; it may already have gone through).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

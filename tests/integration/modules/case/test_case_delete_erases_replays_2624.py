@@ -1,6 +1,7 @@
 """A case delete erases the answers the replay cache holds for it (#2624):
 the copilot keys case creation, and a create retried after its case was
-deleted was answered with the deleted case.
+deleted was answered with the deleted case. A create overlapping its keyed
+first attempt creates nothing (#2655), so the key is indexed under one case.
 
 Built as ``test_kb_request_receipts_2433.py`` builds its app, since the
 deployed app mounts no middleware under ``SKIP_SERVICE_CHECKS``: the real case
@@ -9,6 +10,7 @@ that mounts it, with ONE FakeRedis held by the middleware and the erasers, as
 the composition root's shared client is.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,7 +22,12 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
+from faultmaven.api.middleware import idempotency
+from faultmaven.api.middleware.idempotency import (
+    KEY_PREFIX,
+    IdempotencyMiddleware,
+    case_index_key,
+)
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
@@ -94,7 +101,7 @@ async def world(tmp_path, monkeypatch):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
-        yield SimpleNamespace(client=client, service=service)
+        yield SimpleNamespace(client=client, service=service, fake=fake)
 
 
 def _create(world, title="Disk full", key=KEY):
@@ -118,6 +125,57 @@ async def test_a_deleted_cases_keyed_create_runs_again(world):
     assert again.status_code == 201
     assert not _replayed(again)
     assert again.json()["case_id"] != case_id
+
+
+async def test_an_overlapping_keyed_create_creates_one_case(world, monkeypatch):
+    """The retry arrives while the first create runs: it waits, and is
+    answered with the first's case. Before #2655 both ran: two cases, the
+    key indexed under each."""
+    monkeypatch.setattr(idempotency, "IDEMPOTENCY_POLL_SECONDS", 0, raising=False)
+    create, created = world.service.create_case, []
+    go, entered, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def held_create(*args, **kwargs):
+        created.append(None)
+        if len(created) == 1:
+            entered.set()
+            await go.wait()
+        return await create(*args, **kwargs)
+
+    pttl = world.fake.pttl
+
+    async def watched_pttl(name):
+        waiting.set()  # the retry found the first's claim held
+        return await pttl(name)
+
+    monkeypatch.setattr(world.service, "create_case", held_create)
+    monkeypatch.setattr(world.fake, "pttl", watched_pttl)
+    first = asyncio.ensure_future(_create(world))
+    await asyncio.wait_for(entered.wait(), 30)
+    retry = asyncio.ensure_future(_create(world))
+    # Before the fix the retry runs a second create instead of waiting.
+    signals = {
+        asyncio.ensure_future(waiting.wait()),
+        asyncio.ensure_future(_until(lambda: len(created) > 1)),
+    }
+    _, pending = await asyncio.wait(signals, timeout=30, return_when="FIRST_COMPLETED")
+    for signal in pending:
+        signal.cancel()
+    go.set()
+    first, retry = await asyncio.wait_for(asyncio.gather(first, retry), 30)
+
+    assert first.status_code == retry.status_code == 201
+    case_id = first.json()["case_id"]
+    assert len(created) == 1
+    assert _replayed(retry) and retry.json()["case_id"] == case_id
+    (index,) = await world.fake.keys(f"{KEY_PREFIX}case:*")
+    assert index == case_index_key(KEY_PREFIX, case_id)
+    assert len(await world.fake.zrange(index, 0, -1)) == 1
+
+
+async def _until(condition):
+    while not condition():
+        await asyncio.sleep(0)
 
 
 async def test_another_cases_create_naming_it_keeps_replaying(world):

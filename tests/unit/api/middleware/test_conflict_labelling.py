@@ -561,3 +561,15 @@ def test_deduplication_no_longer_has_an_unlabelled_409_path():
     source = path.read_text(encoding="utf-8")
     assert '"x-error-code": error_response.error_code' in source
     assert '"Retry-After": str(ttl_remaining)' in source
+
+
+def test_the_idempotency_middlewares_409s_name_their_codes():
+    """Its two refusals of a keyed request (#2655): the key reused with a
+    different body, and a first request still in flight past the wait."""
+    labels = sorted(
+        ast.unparse(e.label)
+        for e in _iter_409_emitters()
+        if e.path == "faultmaven/api/middleware/idempotency.py" and e.label
+    )
+
+    assert labels == ["IDEMPOTENCY_KEY_REUSE", "IDEMPOTENCY_REQUEST_IN_PROGRESS"]
