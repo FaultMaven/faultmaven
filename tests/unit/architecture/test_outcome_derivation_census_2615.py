@@ -500,16 +500,18 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "response_application.py", "ResponseApplier._apply_cause_claims"): {
         "cause_work_accepted": 1
     },
-    # #3046 S3a-2: also a write point, the same-cycle mint before the chain
-    # emission's re-root (a cycle's, or a replayed bundle's).
     (
         _ME + "response_application.py",
         "ResponseApplier._apply_investigation_updates",
     ): {
         "cause_work_accepted": 1,
         "cause_work_staged": 1,
-        "record_case_outcome": 1,
         "solution_licence_leg": 1,
+    },
+    # #3046 S3a-2: a write point, the same-cycle mint before the chain
+    # emission's re-root (a cycle's, or a replayed bundle's; ``pre_chain``).
+    (_ME + "response_application.py", "_mint_before_the_chain"): {
+        "record_case_outcome": 1
     },
     (_ME + "response_application.py", "_reclassify_premature_causal_absence"): {
         "cause_work_accepted": 1,
@@ -839,10 +841,16 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
 }
 
 
-#: The carried window view (#3046 S3a-2), outside ``DERIVATIONS``: every
-#: decider of a fix window reads the record's final verdicts laid over the
-#: fresh read. Watched so a new reader stays visible to S3b-S4.
-CARRIED_VIEW = ("carried_fix_windows", "carry_verdicts")
+#: The carried window view (#3046 S3a-2) and its two selects, outside
+#: ``DERIVATIONS``: every decider of a fix window reads the record's final
+#: verdicts laid over the fresh read. Watched so a new reader stays visible
+#: to S3b-S4.
+CARRIED_VIEW = (
+    "carried_fix_windows",
+    "carry_verdicts",
+    "latest_fix_window",
+    "latest_decided_fix_window",
+)
 
 #: (path, qualname) -> references to ``CARRIED_VIEW``.
 CARRIED_VIEW_SITES: dict[tuple[str, str], int] = {
@@ -860,13 +868,20 @@ CARRIED_VIEW_SITES: dict[tuple[str, str], int] = {
         )
     },
     (_DISCONF, "_fix_failure_refusal"): 1,
+    (_DISCONF, "failed_fix_of"): 1,
+    (_DISCONF, "m6_disconfirmation_basis"): 1,
+    (_TT, "assess_resolution_readiness"): 1,
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): 1,
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): 1,
     (_PROBLEM, "invalidation_refusal"): 1,
     (_SG, "_date_to_the_report"): 1,
+    (_SG, "_flag_absence_inside_a_failed_fix_window"): 1,
     (_SG, "_flag_unbound_post_fix_rows"): 1,
     (_SG, "standing_fix_action"): 1,
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): 1,
+    (_CB + "causal_graph_block.py", "fix_confirmed"): 1,
+    # The mint names the FAILED windows a failed write did not mint.
+    (_ME + "response_application.py", "_mint_before_the_chain"): 1,
     # The fold seeds the view it carries for the rest of its computation.
     (_OUTCOME, "compute_case_outcome"): 1,
 }

@@ -121,7 +121,7 @@ def _disconfirmed_cause_trigger(case: Case, *, node_side: bool) -> _M6Trigger | 
 
     - ``"record"`` — the same FAILED-FIX claim, read from the case record
       rather than from a link (#1927): the latest fix window FAILED
-      (``cause_assurance.fix_windows``), for a fix of this cause
+      (``cause_assurance.carried_fix_windows``), for a fix of this cause
       (``failed_fix_of``). The ingest gate leaves the engine as the
       only author of a node-side counterfactual refute, so ``"counterfactual"``
       is the LATCH of a disconfirmation M6 already recorded; without this arm
@@ -211,7 +211,10 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     the cause went is the counterfactual holding (#2039). The attribution is
     M6's own, because a failed fix of another candidate disconfirms that
     candidate, not this one. The persistence row is bound too: it names a row that showed the problem,
-    so a probe's own failure is not "the problem is back" (#2039)."""
+    so a probe's own failure is not "the problem is back" (#2039). A pair
+    carried from the record attributes only through its own cause row
+    (``FixWindow.pair_cause_rows``, #3046 S3a-2): a re-check of a cause
+    identified since is in the window, not in the pair."""
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     if (
         root is None
@@ -231,7 +234,7 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
             row in window.confirmed_cause_rows
             and subjects.addresses(row, {root.node_id})
         )
-        for row in window.cause_rows
+        for row in window.pair_cause_rows()
     ):
         return None
     return window
@@ -330,8 +333,8 @@ def m6_disconfirmation_basis(
     """M6's ESTABLISHED preconditions, or ``None`` (metered by refusal reason).
 
     Returns ``(fix_turn, provenance)`` when the latest fix window with a
-    verdict is FAILED (``cause_assurance.fix_windows``): a RECORDED fix application, the cause
-    observed removed after it, and the problem then observed persisting with
+    verdict is FAILED (``cause_assurance.carried_fix_windows``): a RECORDED fix
+    application, the cause observed removed after it, and the problem then observed persisting with
     no problem-gone row in between. Otherwise the refusal is metered:
     ``no_fix_applied`` / ``undatable_acceptance`` (no dated fix),
     ``resolution_confirmed`` (the window SUCCEEDED), ``no_cause_removal`` (no
@@ -544,7 +547,7 @@ def demote_disconfirmed_cause_via_evidence(case: Case, *, count: bool = True) ->
     Either way the hypothesis's own state still governs downstream, so a
     genuinely disproven cause stops grounding ``cause_state`` regardless. The
     failed fix's rows stop standing as a resolution by derivation
-    (``cause_assurance.fix_windows``), not by a mark M6 writes.
+    (``cause_assurance.carried_fix_windows``), not by a mark M6 writes.
     """
     p = case.progress
     # Chain path: a counterfactual refute on the root NODE also disconfirms the

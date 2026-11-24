@@ -1111,7 +1111,8 @@ written*, as amended by #2811, ruled 2026-11-15):
   only while the version it was folded from stands. A driver change, the
   runbook conversion's save and the vectorized flag change no field the
   record reads (`test_record_written_at_every_case_save_2811.py`).
-- **Finals are minted only at a cycle, a replay, a resolve or a close**, or on
+- **Finals are minted only at a cycle, a replay, the mint before the chain
+  emission, a resolve or a close**, or on
   a first record (`outcome.MINTING_POINTS`). A FAILED window and an
   `accepted_in_turn` are final once marked `final_at` (the write point and the
   turn); the carry keys on the mark. Any other fold refreshes the derived
@@ -1133,7 +1134,11 @@ written*, as amended by #2811, ruled 2026-11-15):
   the first attempt at or after its carried failure and holds no row past
   it. A final window whose attempt no longer reads (an orphan) is not laid
   over anything; a withdrawn attempt's drops out. Until S3b, a carried
-  FAILED window pairs the record's verdict with fresh rows. Inside one
+  FAILED window pairs the record's verdict with fresh rows. A carried pair
+  disconfirms only through its own cause row, and only while that row is one
+  of the window's: M6 attributes it through that row alone
+  (`FixWindow.pair_cause_rows`), so a re-check of a cause identified since
+  never makes the old pair refute it. Inside one
   computation of the record, `_attempts` folds the fresh read and every
   other section, and each decider it calls, reads the windows those attempts
   carry (seeded in the computation's memo), so the record agrees with itself.
@@ -1142,9 +1147,13 @@ written*, as amended by #2811, ruled 2026-11-15):
   one is set, a minting fold takes the fresh pair, once and final from then
   on. It is an addition, not a disagreement: counted once on
   `case_outcome_conflicts_total{field="attempts.window.disconfirmation"}`,
-  never under `attempts.window`.
+  never under `attempts.window`. The taken pair may cite rows outside the
+  record window's `cause_row_ids` and `problem_row_ids`, which keep the rows
+  the failure was read on (the row rule is S3b's).
 - **The same-cycle mint** (#2582). Step 1 writes the record once more, before
-  the chain emission (a replayed bundle's at `WritePoint.REPLAY`): a window
+  the chain emission, at its own write point (`WritePoint.PRE_CHAIN`, a
+  replayed bundle's too; a failed write is counted under `pre_chain` and
+  logged with the FAILED windows it did not mint): a window
   the cycle's deciders read FAILED (the solutions step and the stage gates)
   is minted before the emission's re-root (`attach_root`) can erase the
   citation it was read through. No step between the evidence and that write

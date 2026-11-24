@@ -1128,7 +1128,7 @@ def observation_subject(case: "Case", row) -> str:
 # the stamp's candidates) and the reported problem observed gone after it
 # (``symptom_elimination_rows``); the gate and the pivot need both
 # (``resolution_confirmation_rows``). Neither leg admits what a failed fix
-# window holds (``fix_windows``, #1927).
+# window holds (``carried_fix_windows``, #1927).
 # ---------------------------------------------------------------------------
 
 
@@ -1244,7 +1244,7 @@ def cause_elimination_rows(
       LLM's own same-turn failed-fix row is excluded by the disconfirmation
       rule above, not by the window.
     - In the latest fix window, and not a failed one (``confirming_window``,
-      read off ``fix_windows``): a resolution confirms the latest fix, so rows
+      read off ``carried_fix_windows``): a resolution confirms the latest fix, so rows
       from before it confirm nothing about it, and a fix seen failing — the
       cause shown removed, then the problem seen again — confirms nothing,
       whatever is recorded in its window afterwards. Only a new recorded fix
@@ -1667,6 +1667,10 @@ class FixWindow:
     targets: tuple = ()
     kind: str | None = None
     off_cause: bool = False
+    #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
+    #: row, which ``disconfirmation`` names only by turn (#3046 S3a-2).
+    pair_carried: bool = False
+    pair_cause_row_id: str | None = None
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1686,8 +1690,21 @@ class FixWindow:
         the cause, and its return may be the cause back, the effect not
         lasting, another cause, or a misread check (#2039). The cause re-checked
         still gone after the return, with the problem seen present after that,
-        is a disconfirmation again."""
-        return self.disconfirmation is not None
+        is a disconfirmation again. A pair carried from the record counts only
+        while its cause row is one of the window's cause rows (#3046 S3a-2)."""
+        return self.disconfirmation is not None and (
+            not self.pair_carried or bool(self.pair_cause_rows())
+        )
+
+    def pair_cause_rows(self) -> tuple:
+        """The cause rows a destructive reader may attribute the
+        disconfirmation through: the carried pair's own cause row, else every
+        cause row of the window."""
+        if not self.pair_carried:
+            return self.cause_rows
+        return tuple(
+            e for e in self.cause_rows if e.evidence_id == self.pair_cause_row_id
+        )
 
 
 @_once_per_computation_given_index
@@ -2043,7 +2060,9 @@ def carried_fix_windows(
             return list(seeded[1])
     windows = fix_windows(case, subjects)
     record = getattr(case.progress, "outcome", None)
-    return windows if record is None else carry_verdicts(case, windows, record.attempts)
+    if record is None:
+        return windows
+    return carry_verdicts(case, windows, record.attempts, subjects)
 
 
 def seed_carried_windows(case: "Case", windows: list[FixWindow]) -> None:
@@ -2062,7 +2081,9 @@ def carry_verdicts(
     reads now: matched by ``action_id`` through the action's current
     ``accepted_in_turn``, window 0 as ``action_id`` None. The verdict is the
     record's: FAILED, observed, its relief and failure turns, and its
-    disconfirmation pair, or the fresh one while it has none. The span and
+    disconfirmation pair, or the fresh one while it has none; a carried pair
+    disconfirms only through its own cause row while that row is one of the
+    window's (``FixWindow.pair_cause_rows``). The span and
     the cause rows are the fresh read's, save that an unkinded window ends
     at the first attempt at or after its failure, as when it was read, and
     holds no row past that. A final window whose attempt no longer reads (an
@@ -2117,6 +2138,8 @@ def carry_verdicts(
                     if pair is not None
                     else window.disconfirmation
                 ),
+                pair_carried=pair is not None,
+                pair_cause_row_id=pair.cause_row_id if pair is not None else None,
             )
         )
     return out
@@ -2162,7 +2185,7 @@ def confirming_window(
     (``accepted_fix_reported_in``, #2427), the fix is dated to that message
     within its bound (``stage_gates._date_to_the_report``), so its window holds
     that message's rows and the registration turn's paste is post-fix. Read
-    off ``fix_windows`` alone, so the gate reads a failed fix the same whether
+    off ``carried_fix_windows`` alone, so the gate reads a failed fix the same whether
     or not M6 could act on
     it. With no dated fix it is window 0, the whole case: an out-of-band fix
     confirms on its rows, and nothing once it relapsed (#2501). None when

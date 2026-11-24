@@ -138,6 +138,7 @@ PINNED: dict = {
         "create",
         "narration",
         "shape",
+        "pre_chain",
     ],
     # Defined elsewhere, and stored in the record too.
     ProblemStatus: ["unverified", "verified", "revision_pending", "invalidated"],

@@ -447,7 +447,7 @@ cause_identification_held_mece_total = Counter(
 #   separate from ``no_fix_applied`` precisely so that window is visible rather
 #   than hidden inside the benign baseline.
 # The remaining labels read the latest fix window's outcome
-# (``cause_assurance.fix_windows``, #1927), the one answer the readiness gate
+# (``cause_assurance.carried_fix_windows``, #1927), the one answer the readiness gate
 # shares:
 #
 # - ``no_cause_removal`` — the fix ran but no causal_absence row after it
@@ -500,7 +500,7 @@ m6_demotion_refused_total = Counter(
 )
 
 # M6 demoted the identified cause because the latest fix window FAILED
-# (``cause_assurance.fix_windows``: an executed SOLUTION, the cause observed
+# (``cause_assurance.carried_fix_windows``: an executed SOLUTION, the cause observed
 # removed after it, then the problem observed persisting with no relief in
 # between), for a fix of that cause, while the model had not refuted the cause
 # itself (#1927). The prompt's FAILURE PATH tells the
@@ -1115,7 +1115,9 @@ case_outcome_conflicts_total = Counter(
 case_outcome_write_failures_total = Counter(
     "faultmaven_case_outcome_write_failures_total",
     "A case outcome record write raised and was skipped (#2615), by write "
-    "point (cycle|replay|resolved|closed|commit|write|metadata|create); or, "
+    "point (cycle|replay|pre_chain|resolved|closed|commit|write|metadata|"
+    "create; pre_chain is an investigation apply's mint before its chain "
+    "emission, #3046 S3a-2); or, "
     "as narration, the prompt's fix-verification block or its evidence-needs "
     "re-verification checklist was omitted because the shared fold, a fresh "
     "read, the identity, a text read or a render raised, counted once per "
@@ -1126,6 +1128,7 @@ case_outcome_write_failures_total = Counter(
         "at": (
             "cycle",
             "replay",
+            "pre_chain",
             "resolved",
             "closed",
             "commit",

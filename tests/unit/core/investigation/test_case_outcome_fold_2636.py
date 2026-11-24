@@ -1244,6 +1244,8 @@ def test_both_counters_expose_every_series_at_zero_from_import():
 
     fields = (
         "attempts.window",
+        # A FAILED window's later pair, an addition (#2728, #3046 S3a-2).
+        "attempts.window.disconfirmation",
         "attempts.accepted_in_turn",
         "resolution.confirmed_row_ids",
         "closure",

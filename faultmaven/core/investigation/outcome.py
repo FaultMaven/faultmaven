@@ -38,7 +38,8 @@ minting point, counted as ``attempts.window.disconfirmation`` (#2728).
 Where it is written (``record_case_outcome``): at the end of each decision
 cycle (``_apply_turn_response``, after every decider, before the save), and
 in each investigation apply before the chain emission (a cycle's, or a
-replayed bundle's: the same-cycle mint, #2582), after each bundle of a
+replayed bundle's: the same-cycle mint, ``pre_chain``, #2582), after each
+bundle of a
 statement-revision replay, at both terminal transitions, and
 at the two save helpers (#2811): a turn's commit (``commit_turn_plan``) and
 the case service's write (``update_case_with_retry``), each after the save's
@@ -46,8 +47,8 @@ offer lapse (``record_before_save``), and at case creation, the out-of-band
 reclassification and the metadata write, so every saved case carries a
 record of the case as saved. A final verdict (``FinalAt``: a FAILED window,
 an ``accepted_in_turn``, the stamp's rows) and a terminal ``folded_under``
-are minted only at a cycle, a replay, a resolve, a close (``MINTING_POINTS``)
-or a first record; any other fold refreshes the rest and carries them. The narration
+are minted only at a cycle, a replay, the mint before the chain emission, a
+resolve, a close (``MINTING_POINTS``) or a first record; any other fold refreshes the rest and carries them. The narration
 step reads the cycle's record (#2636 B1b); mid-cycle narration reads one
 computed in memory (``narration_outcome``). ``closure_outcome`` computes the
 closure section on demand at the four closure entries, and the two that
@@ -149,6 +150,7 @@ MINTING_POINTS = frozenset(
     {
         WritePoint.CYCLE,
         WritePoint.REPLAY,
+        WritePoint.PRE_CHAIN,
         WritePoint.RESOLVED,
         WritePoint.CLOSED,
         WritePoint.REPAIR,
@@ -185,8 +187,8 @@ def record_case_outcome(
 ) -> bool:
     """Fold the case's outcome over ``progress.outcome`` and store it there.
 
-    ``at`` names the write point (``WritePoint``): a cycle, a replay or a
-    terminal transition, which mint finals (``MINTING_POINTS``), or a save's
+    ``at`` names the write point (``WritePoint``): a cycle, a replay, the
+    mint before the chain emission or a terminal transition, which mint finals (``MINTING_POINTS``), or a save's
     (``commit``, ``write``, ``metadata``, ``create``), which carry them (a
     first record mints); a
     misspelt one raises, and is counted as a failed write. ``closure``: at a

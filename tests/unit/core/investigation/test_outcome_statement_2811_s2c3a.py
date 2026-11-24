@@ -1194,11 +1194,11 @@ async def test_a_placeholder_keeps_its_flag_with_the_statement_under_it():
 
 def _cycle_write_fails(monkeypatch) -> None:
     """Both of the cycle's writes fail: the same-cycle mint before the chain
-    emission (#3046 S3a-2) and the write at the cycle's end."""
+    emission (``pre_chain``, #3046 S3a-2) and the write at the cycle's end."""
     real = turn_application.record_case_outcome
 
     def _write(case, *, at, **kw):
-        if at == WritePoint.CYCLE:
+        if at in (WritePoint.CYCLE, WritePoint.PRE_CHAIN):
             return False
         return real(case, at=at, **kw)
 

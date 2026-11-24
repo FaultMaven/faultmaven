@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import failed_fix_of
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -46,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     FixWindowState,
     HypothesisState,
     InvestigationActionType,
+    NodeState,
     NoWindowKind,
     ResolutionVerdict,
     WritePoint,
@@ -220,13 +222,9 @@ def _obs(category, summary, file_id, rechecks=None) -> EvidenceToAdd:
     )
 
 
-async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
-    """The same cycle (ruling 4): turn 8 carries "still failing" and the
-    deepening. The gates read the unkinded fix FAILED, and the emission's
-    re-root reverses the fresh read before the cycle's record. The mint
-    before the emission keeps it, with its pair. M6, after the chain, reads
-    the carried pair with the fresh rows: none addresses the deeper root,
-    so nothing is demoted, as on ``main``."""
+async def _failure_and_deepening_in_one_turn():
+    """Turn 8, through ``process_turn``, carries "still failing" and the
+    deepening of the root to A2 (validated, citing its first datum)."""
     case, root, hyp = _identified_case()
     fix = _fix(case)
     _row(
@@ -286,6 +284,16 @@ async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     await engine.process_turn(
         case=case, user_message="still 503; pgbouncer caps it", redaction_ctx=None
     )
+    return case, root, hyp, fix
+
+
+async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
+    """The same cycle (ruling 4). The gates read the unkinded fix FAILED, and
+    the emission's re-root reverses the fresh read before the cycle's record.
+    The mint before the emission keeps it, with its pair. M6, after the
+    chain, reads the carried pair with the fresh rows: none addresses the
+    deeper root, so nothing is demoted, as on ``main``."""
+    case, root, hyp, fix = await _failure_and_deepening_in_one_turn()
 
     assert hyp.root_node_id != root.node_id, "premise: deepened"
     assert fix_windows(case)[-1].state != FIX_FAILED, "premise: re-read"
@@ -295,6 +303,43 @@ async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     assert (pair.cause_turn, pair.problem_turn) == (7, 8)
     assert carried_fix_windows(case)[-1].disconfirmation == (7, 8)
     assert hyp.state != HypothesisState.REFUTED and _engine_rows(case) == []
+
+
+async def test_a_carried_pair_refutes_no_cause_identified_since():
+    """The review's scenario on the same case: A2's cited datum re-checked
+    gone at 9, the problem gone at 10. The fix's window keeps its carried
+    FAILED and pair (7, 8), and now holds the turn-9 row, which addresses
+    A2. The pair's own cause row (turn 7) is not among the window's rows, so
+    M6 does not read the old pair as a failed fix of A2: A2 stays VALIDATED
+    and no engine row is minted."""
+    case, _root, hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    deeper = case.causal_nodes[hyp.root_node_id]
+    (basis,) = deeper.metadata["root_terminal_evidence_ids"]
+    _row(
+        case,
+        _C.CAUSAL_ABSENCE_EVIDENCE,
+        turn=9,
+        evidence_id=_eid("a2gone"),
+        summary="pgbouncer pool_size now reads 100",
+        rechecks=basis,
+    )
+    _row(
+        case,
+        _C.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=10,
+        evidence_id=_eid("relief2"),
+        summary="checkout answers 200",
+        rechecks=VERIFYING_ID,
+    )
+    window = carried_fix_windows(case)[-1]
+    assert window.disconfirmation == (7, 8), "premise: the carried pair"
+    assert _eid("a2gone") in {e.evidence_id for e in window.cause_rows}, "premise"
+
+    _cycle(case, 10)
+
+    assert deeper.node_state == NodeState.VALIDATED
+    assert hyp.state != HypothesisState.REFUTED
+    assert _engine_rows(case) == []
 
 
 # ---------------------------------------------------------------------------
@@ -457,11 +502,14 @@ def test_the_report_dating_guard_still_reads_the_fresh_pair():
     assert entry["params"]["reason"] == "decides_disconfirmation"
 
 
-def test_m6_attributes_by_the_fresh_rows_as_on_main():
-    """Amendment 4: the rows are not carried (S3b's row rule, #2586). A
-    kinded fix of A fails and M6 demotes A; B is identified; B's fix at 10
-    fails on B's re-check, with the record written each cycle. M6 demotes B
-    at 13 and mints its row, as on ``main``."""
+def test_a_carried_pair_attributes_through_its_own_cause_row():
+    """#2586's sequence with the record written each cycle. A kinded fix of A
+    fails and M6 demotes A; B is identified; B's fix at 10 fails at 12 on a
+    re-check of A's row (the pair (11, 12)), and B's own row is re-checked at
+    13. The fresh read attributes the pair through any row of the window, so
+    on ``main`` M6 demoted B at 13. The record carries the pair with its own
+    cause row, A's, so M6 reads no failed fix of B (the review of #3058, fix
+    1); the row rule and M6's demotions record stay S3b's (#2586)."""
     case, b, hyp_b, rows = cited._kinded_a_fell_older_b_stands()
     record_case_outcome(case, at=WritePoint.CYCLE)
     cited._fix(case, 10, "remediation", [b.node_id], cited._FIX)
@@ -469,9 +517,15 @@ def test_m6_attributes_by_the_fresh_rows_as_on_main():
     case.evidence.append(cited._row("back2", cited._PRESENT, 12, "503s again"))
     _cycle(case, 12)
     cited._recheck(case, rows[0].evidence_id, turn=13, label="rc_b")
+    case.current_turn = 13
+    stored, case.progress.outcome = case.progress.outcome, None
+    assert failed_fix_of(case, hyp_b) is not None, "premise: the fresh read"
+    case.progress.outcome = stored
+
     _cycle(case, 13)
-    assert hyp_b.state == HypothesisState.REFUTED
-    assert [e.collected_at_turn for e in _engine_rows(case)] == [8, 13]
+
+    assert hyp_b.state != HypothesisState.REFUTED
+    assert [e.collected_at_turn for e in _engine_rows(case)] == [8]
 
 
 # ---------------------------------------------------------------------------

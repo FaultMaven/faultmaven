@@ -816,7 +816,9 @@ def _flag_absence_inside_a_failed_fix_window(
     case: Case, metadata: dict[str, Any] | None, *, replace: bool = False
 ) -> bool:
     """Tell the model when it records an absence row this turn inside a fix
-    window that already FAILED (#1927, ``cause_assurance.fix_windows``).
+    window that already FAILED (#1927), as the deciders read it
+    (``cause_assurance.latest_fix_window``: the record's FAILED verdicts over
+    the fresh read, #3046 S3a-2).
 
     Such a row confirms nothing: once a fix was seen failing (the cause shown
     removed, then the problem seen again), only a NEW fix opens a window that
