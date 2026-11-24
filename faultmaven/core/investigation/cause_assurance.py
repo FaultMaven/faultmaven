@@ -1668,9 +1668,11 @@ class FixWindow:
     kind: str | None = None
     off_cause: bool = False
     #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
-    #: row, which ``disconfirmation`` names only by turn (#3046 S3a-2).
+    #: row, which ``disconfirmation`` names only by turn, and the fresh read's
+    #: own pair, which M6 falls back to (#3046 S3a-2).
     pair_carried: bool = False
     pair_cause_row_id: str | None = None
+    fresh_disconfirmation: tuple[int, int] | None = None
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1690,20 +1692,39 @@ class FixWindow:
         the cause, and its return may be the cause back, the effect not
         lasting, another cause, or a misread check (#2039). The cause re-checked
         still gone after the return, with the problem seen present after that,
-        is a disconfirmation again. A pair carried from the record counts only
-        while its cause row is one of the window's cause rows (#3046 S3a-2)."""
-        return self.disconfirmation is not None and (
-            not self.pair_carried or bool(self.pair_cause_rows())
-        )
+        is a disconfirmation again. Read off ``m6_pair`` (#3046 S3a-2)."""
+        return self.m6_pair is not None
 
-    def pair_cause_rows(self) -> tuple:
-        """The cause rows a destructive reader may attribute the
-        disconfirmation through: the carried pair's own cause row, else every
-        cause row of the window."""
+    def carried_pair_rows(self) -> tuple:
+        """The carried pair's own cause row while it is one of the window's
+        cause rows, else ``()``."""
         if not self.pair_carried:
-            return self.cause_rows
+            return ()
         return tuple(
             e for e in self.cause_rows if e.evidence_id == self.pair_cause_row_id
+        )
+
+    @property
+    def fresh_pair(self) -> tuple[int, int] | None:
+        """The fresh read's pair, whatever the record carries."""
+        return self.fresh_disconfirmation if self.pair_carried else self.disconfirmation
+
+    @property
+    def m6_pair(self) -> tuple[int, int] | None:
+        """The pair a destructive reader acts on (#3046 S3a-2): the carried
+        pair while its cause row is one of the window's (``carried_pair_rows``),
+        else the fresh read's, as ``main`` read it. A carried pair whose row
+        has left the window never disconfirms a cause identified since, and
+        never hides a later failure the fresh read holds."""
+        return self.disconfirmation if self.carried_pair_rows() else self.fresh_pair
+
+    def as_fresh(self) -> "FixWindow":
+        """This window with the fresh read's pair: M6's fallback reading."""
+        return replace(
+            self,
+            disconfirmation=self.fresh_pair,
+            pair_carried=False,
+            pair_cause_row_id=None,
         )
 
 
@@ -2081,9 +2102,10 @@ def carry_verdicts(
     reads now: matched by ``action_id`` through the action's current
     ``accepted_in_turn``, window 0 as ``action_id`` None. The verdict is the
     record's: FAILED, observed, its relief and failure turns, and its
-    disconfirmation pair, or the fresh one while it has none; a carried pair
-    disconfirms only through its own cause row while that row is one of the
-    window's (``FixWindow.pair_cause_rows``). The span and
+    disconfirmation pair, or the fresh one while it has none. M6 acts on the
+    carried pair only through its own cause row, while that row is one of the
+    window's; otherwise on the fresh read's pair, as ``main`` did
+    (``FixWindow.m6_pair``). The span and
     the cause rows are the fresh read's, save that an unkinded window ends
     at the first attempt at or after its failure, as when it was read, and
     holds no row past that. A final window whose attempt no longer reads (an
@@ -2140,6 +2162,7 @@ def carry_verdicts(
                 ),
                 pair_carried=pair is not None,
                 pair_cause_row_id=pair.cause_row_id if pair is not None else None,
+                fresh_disconfirmation=window.disconfirmation,
             )
         )
     return out

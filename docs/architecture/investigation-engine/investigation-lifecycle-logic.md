@@ -1134,11 +1134,14 @@ written*, as amended by #2811, ruled 2026-11-15):
   the first attempt at or after its carried failure and holds no row past
   it. A final window whose attempt no longer reads (an orphan) is not laid
   over anything; a withdrawn attempt's drops out. Until S3b, a carried
-  FAILED window pairs the record's verdict with fresh rows. A carried pair
-  disconfirms only through its own cause row, and only while that row is one
-  of the window's: M6 attributes it through that row alone
-  (`FixWindow.pair_cause_rows`), so a re-check of a cause identified since
-  never makes the old pair refute it. Inside one
+  FAILED window pairs the record's verdict with fresh rows. M6 acts on a
+  carried pair only while its cause row is one of the window's, and
+  attributes it through that row alone (`FixWindow.carried_pair_rows`);
+  otherwise it reads the fresh read's pair with `main`'s attribution
+  (`FixWindow.m6_pair`, the failed-fix refusal's `relapse` label and the
+  absence notice's `disconfirmed` too). So a re-check of a cause identified
+  since never makes an old pair refute it, and an old pair never hides a
+  later failure the fresh read holds. Inside one
   computation of the record, `_attempts` folds the fresh read and every
   other section, and each decider it calls, reads the windows those attempts
   carry (seeded in the computation's memo), so the record agrees with itself.

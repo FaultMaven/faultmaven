@@ -212,9 +212,12 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     M6's own, because a failed fix of another candidate disconfirms that
     candidate, not this one. The persistence row is bound too: it names a row that showed the problem,
     so a probe's own failure is not "the problem is back" (#2039). A pair
-    carried from the record attributes only through its own cause row
-    (``FixWindow.pair_cause_rows``, #3046 S3a-2): a re-check of a cause
-    identified since is in the window, not in the pair."""
+    carried from the record attributes only through its own cause row while
+    that row is in the window (``FixWindow.carried_pair_rows``, #3046 S3a-2);
+    otherwise the fresh read's pair attributes as on ``main``, so a re-check
+    of a cause identified since never turns an old pair against it, and the
+    old pair never hides a later failure the fresh read holds. The window
+    returned carries the pair that attributed."""
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     if (
         root is None
@@ -223,21 +226,28 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     ):
         return None
     window = latest_decided_fix_window(case)
-    if window is None or not window.disconfirms_cause:
+    if window is None or (window.m6_pair is None and window.fresh_pair is None):
         return None
     if (getattr(hyp, "generated_at_turn", 0) or 0) > _registration_turn(case, window):
         return None
     subjects = subject_index(case)
-    if not any(
-        subjects.addresses(row, {root.node_id}, windows=True)
-        or (
-            row in window.confirmed_cause_rows
-            and subjects.addresses(row, {root.node_id})
+
+    def of_this_cause(rows) -> bool:
+        return any(
+            subjects.addresses(row, {root.node_id}, windows=True)
+            or (
+                row in window.confirmed_cause_rows
+                and subjects.addresses(row, {root.node_id})
+            )
+            for row in rows
         )
-        for row in window.pair_cause_rows()
-    ):
+
+    if of_this_cause(window.carried_pair_rows()):
+        return window
+    fresh = window.as_fresh()
+    if fresh.disconfirmation is None or not of_this_cause(fresh.cause_rows):
         return None
-    return window
+    return fresh
 
 
 def _registration_turn(case: Case, window: FixWindow) -> int:
@@ -436,8 +446,8 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
 
 def _failed_fix_provenance(window: FixWindow) -> str:
     """The engine row's provenance for a fix window that disconfirms the cause:
-    the pair of observations it read (``FixWindow.disconfirmation``)."""
-    cause_turn, persistence_turn = window.disconfirmation
+    the pair of observations it read (``FixWindow.m6_pair``)."""
+    cause_turn, persistence_turn = window.m6_pair
     return (
         f"a fix recorded as EXECUTED at turn {window.fix_turn} did not hold — "
         f"the cause was observed removed at turn {cause_turn}, and symptom "

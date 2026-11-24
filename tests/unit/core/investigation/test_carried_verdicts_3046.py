@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.core.investigation.causal_graph.disconfirmation import failed_fix_of
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -23,7 +22,10 @@ from faultmaven.core.investigation.cause_assurance import (
     carried_fix_windows,
     fix_windows,
 )
-from faultmaven.core.investigation.milestone_engine import stage_gates
+from faultmaven.core.investigation.milestone_engine import (
+    response_application,
+    stage_gates,
+)
 from faultmaven.core.investigation.narration.codes import DECISIONS_KEY
 from faultmaven.core.investigation.outcome import (
     compute_case_outcome,
@@ -290,9 +292,10 @@ async def _failure_and_deepening_in_one_turn():
 async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     """The same cycle (ruling 4). The gates read the unkinded fix FAILED, and
     the emission's re-root reverses the fresh read before the cycle's record.
-    The mint before the emission keeps it, with its pair. M6, after the
-    chain, reads the carried pair with the fresh rows: none addresses the
-    deeper root, so nothing is demoted, as on ``main``."""
+    The mint before the emission keeps it, with its pair. After the chain the
+    pair's cause row (the turn-7 re-check of A's datum) is no row of the
+    window, so M6 reads the fresh read's pair, as ``main`` did: there is none,
+    and nothing is demoted."""
     case, root, hyp, fix = await _failure_and_deepening_in_one_turn()
 
     assert hyp.root_node_id != root.node_id, "premise: deepened"
@@ -301,7 +304,9 @@ async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     pair = window.disconfirmation
     assert (window.state, window.failure_turn) == (FixWindowState.FAILED, 8)
     assert (pair.cause_turn, pair.problem_turn) == (7, 8)
-    assert carried_fix_windows(case)[-1].disconfirmation == (7, 8)
+    carried = carried_fix_windows(case)[-1]
+    assert carried.disconfirmation == (7, 8)
+    assert carried.carried_pair_rows() == () and carried.m6_pair is None
     assert hyp.state != HypothesisState.REFUTED and _engine_rows(case) == []
 
 
@@ -340,6 +345,90 @@ async def test_a_carried_pair_refutes_no_cause_identified_since():
     assert deeper.node_state == NodeState.VALIDATED
     assert hyp.state != HypothesisState.REFUTED
     assert _engine_rows(case) == []
+
+
+async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause():
+    """The review delta's scenario A on the same case: A2's cited datum
+    re-checked gone at 9, the problem still present at 10. The carried pair
+    (7, 8) has left the window, so M6 reads the fresh read's pair, (9, 10),
+    and refutes A2 with it, as ``main`` does."""
+    case, _root, hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    deeper = case.causal_nodes[hyp.root_node_id]
+    (basis,) = deeper.metadata["root_terminal_evidence_ids"]
+    _row(
+        case,
+        _C.CAUSAL_ABSENCE_EVIDENCE,
+        turn=9,
+        evidence_id=_eid("a2gone"),
+        summary="pgbouncer pool_size now reads 100",
+        rechecks=basis,
+    )
+    _row(
+        case,
+        _C.SYMPTOM_EVIDENCE,
+        turn=10,
+        evidence_id=_eid("back10"),
+        summary="checkout returns 503 again",
+        rechecks=VERIFYING_ID,
+    )
+    window = carried_fix_windows(case)[-1]
+    assert (window.disconfirmation, window.fresh_pair) == ((7, 8), (9, 10)), "premise"
+
+    _cycle(case, 10)
+
+    assert hyp.state == HypothesisState.REFUTED
+    (row,) = _engine_rows(case)
+    assert "removed at turn 9" in row.summary and "at turn 10" in row.summary
+
+
+def _relapsed_unkinded():
+    """An unkinded fix at 6, relapsed at 9: the fresh read is FAILED."""
+    case, _root, _hyp = _identified_case()
+    _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    _recompute_at(case, 9)
+    assert fix_windows(case)[-1].state == FIX_FAILED, "premise"
+    return case
+
+
+def _pre_chain_write_fails(monkeypatch, at_seen: list) -> None:
+    def _write(case, *, at, **kw):
+        at_seen.append(at)
+        return False
+
+    monkeypatch.setattr(response_application, "record_case_outcome", _write)
+
+
+def test_a_failed_pre_chain_mint_names_the_failed_windows_it_did_not_mint(
+    monkeypatch, caplog
+):
+    seen: list = []
+    _pre_chain_write_fails(monkeypatch, seen)
+    case = _relapsed_unkinded()
+
+    response_application._mint_before_the_chain(case)
+
+    assert seen == [WritePoint.PRE_CHAIN]
+    (line,) = [
+        r.getMessage() for r in caplog.records if "before the chain" in r.getMessage()
+    ]
+    assert "fix turns [6]" in line
+
+
+def test_a_failed_pre_chain_mint_with_unreadable_windows_says_so(monkeypatch, caplog):
+    def _raise(*args, **kwargs):
+        raise RuntimeError("windows unreadable")
+
+    _pre_chain_write_fails(monkeypatch, [])
+    monkeypatch.setattr(response_application, "carried_fix_windows", _raise)
+    case = _relapsed_unkinded()
+
+    response_application._mint_before_the_chain(case)
+
+    (line,) = [
+        r.getMessage() for r in caplog.records if "before the chain" in r.getMessage()
+    ]
+    assert "fix turns unreadable" in line
 
 
 # ---------------------------------------------------------------------------
@@ -502,14 +591,13 @@ def test_the_report_dating_guard_still_reads_the_fresh_pair():
     assert entry["params"]["reason"] == "decides_disconfirmation"
 
 
-def test_a_carried_pair_attributes_through_its_own_cause_row():
-    """#2586's sequence with the record written each cycle. A kinded fix of A
-    fails and M6 demotes A; B is identified; B's fix at 10 fails at 12 on a
-    re-check of A's row (the pair (11, 12)), and B's own row is re-checked at
-    13. The fresh read attributes the pair through any row of the window, so
-    on ``main`` M6 demoted B at 13. The record carries the pair with its own
-    cause row, A's, so M6 reads no failed fix of B (the review of #3058, fix
-    1); the row rule and M6's demotions record stay S3b's (#2586)."""
+def test_m6_attributes_as_on_main_where_the_carried_pair_does_not_decide():
+    """The review delta's scenario B, #2586's sequence with the record written
+    each cycle. B's fix at 10 fails at 12 on a re-check of A's row (the pair
+    (11, 12)); B's own row is re-checked at 13. The carried pair's row does
+    not address B, so M6 reads the fresh read's pair with ``main``'s
+    attribution and demotes B at 13, as ``main`` does: the row rule and M6's
+    demotions record stay S3b's (#2586)."""
     case, b, hyp_b, rows = cited._kinded_a_fell_older_b_stands()
     record_case_outcome(case, at=WritePoint.CYCLE)
     cited._fix(case, 10, "remediation", [b.node_id], cited._FIX)
@@ -518,14 +606,12 @@ def test_a_carried_pair_attributes_through_its_own_cause_row():
     _cycle(case, 12)
     cited._recheck(case, rows[0].evidence_id, turn=13, label="rc_b")
     case.current_turn = 13
-    stored, case.progress.outcome = case.progress.outcome, None
-    assert failed_fix_of(case, hyp_b) is not None, "premise: the fresh read"
-    case.progress.outcome = stored
+    assert carried_fix_windows(case)[-1].pair_carried, "premise: carried"
 
     _cycle(case, 13)
 
-    assert hyp_b.state != HypothesisState.REFUTED
-    assert [e.collected_at_turn for e in _engine_rows(case)] == [8]
+    assert hyp_b.state == HypothesisState.REFUTED
+    assert [e.collected_at_turn for e in _engine_rows(case)] == [8, 13]
 
 
 # ---------------------------------------------------------------------------
