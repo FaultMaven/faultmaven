@@ -1184,20 +1184,11 @@ def classify_query(user_message: str, has_attachments: bool) -> QueryClassificat
 
 ### Mode-Specific System Prompts
 
-Two `DATA_ACCESS_*` constants are injected into the INVESTIGATOR system prompt via the `{data_access_strategy}` placeholder:
-
-**Triage mode** (`DATA_ACCESS_TRIAGE`):
-
-```text
-## Data Access Strategy
-
-The <file_extract> content in <evidence_collected> is your primary source.
-Summarize the key findings: errors by severity, anomalies, misconfigurations,
-notable patterns.
-If a <file_extract> is [TRUNCATED], use search_file to retrieve specific sections.
-Do NOT call deep_analysis or vectorize_file in triage mode — the file extract
-is the answer.
-```
+**A cut, elided or omitted extract** is governed by the unseen-text rule,
+`unseen_text_rule` in `faultmaven/core/investigation/prompts/templates/blocks.py`
+(#2401), rendered in `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`: the model
+describes only the part it was shown. The rule names `search_file` only for a
+`file_backed="true"` item, and only on a turn that gives that tool.
 
 **Directed Analysis mode** (`DATA_ACCESS_DIRECTED_ANALYSIS`):
 

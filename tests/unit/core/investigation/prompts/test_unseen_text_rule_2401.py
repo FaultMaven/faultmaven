@@ -4,16 +4,24 @@ what the model was not shown.
 #3031's turn 10: the user pasted 7,311 characters, the prompt showed the
 first 4,000 (the per-item cap), and the model said the paste "is truncated
 before" a key that sat at character 6,385. The cap stays (ruled); what changes
-is what the prompt says about the part it cuts. Every prompt that can render a
-cut, elided or omitted item states the unseen-text rule, naming
-``search_file`` only when the turn gives it (#1939), and the cut marker says
-FaultMaven holds the whole item when it does.
+is what the prompt says about the part it cuts. INQUIRY_TEMPLATE and
+INVESTIGATION_BASE, the prompts that render <evidence_collected>, state the
+unseen-text rule. It names every marker that shortens or leaves out an item
+there, the budget squeeze's included, and keeps apart a tool result's
+output-limit notice. It names ``search_file`` only when the turn gives it
+(#1939), and then only for a ``file_backed="true"`` item (#2375). The cut
+marker, the fallback stub's included, says FaultMaven holds the whole item
+when it does.
 """
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
+from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation.prompts.context_builder.budget import (
     EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
 )
@@ -21,10 +29,12 @@ from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.blocks import unseen_text_rule
 from faultmaven.core.investigation.prompts.templates.fallback import (
     _fallback_stub_block,
 )
 from faultmaven.core.investigation.prompts.templates.tool_text import NO_TOOLS
+from faultmaven.infrastructure.llm.truncation import TRUNCATION_NOTICE
 from faultmaven.modules.case.contracts import (
     CaseState,
     Evidence,
@@ -68,27 +78,34 @@ _RULE_SENTENCE = (
     "because this prompt does not show it."
 )
 _HELD = "FaultMaven holds the whole item."
+_LEFT_OUT = "was shortened or left out of this prompt by FaultMaven."
+_READ_STORED = (
+    'To read the rest of an item marked file_backed="true", call search_file '
+    "with its id; an item without it cannot be read further, so say which part "
+    "you could not see."
+)
+_SAY_WHICH = "If you need the rest, say which part you could not see."
 
 
-def _paste(turn: int) -> UploadedFile:
+def _paste(turn: int, file_id: str = _FILE_ID) -> UploadedFile:
     return UploadedFile(
-        file_id=_FILE_ID,
+        file_id=file_id,
         filename="pasted_text_10.txt",
         size_bytes=len(_PASTE),
         content_type="text/plain",
         uploaded_at_turn=turn,
         upload_source="text_paste",
-        storage_ref=f"evidence/case_3031/{_FILE_ID}.txt",
+        storage_ref=f"evidence/case_3031/{file_id}.txt",
         data_type="config",
         summary="systemd unit properties.",
         structural_index=_PASTE,
     )
 
 
-def _row() -> Evidence:
+def _row(evidence_id: str = _EV_ID, file_id: str = _FILE_ID) -> Evidence:
     return Evidence(
-        evidence_id=_EV_ID,
-        source_file_id=_FILE_ID,
+        evidence_id=evidence_id,
+        source_file_id=file_id,
         summary="decoder unit properties",
         extract=None,
         category=EvidenceCategory.SYMPTOM_EVIDENCE,
@@ -175,8 +192,9 @@ def test_a_cut_paste_renders_with_the_rule_and_a_held_marker(cell):
 
     flat = _flat(prompt)
     assert "UNSEEN TEXT:" in flat
+    assert _LEFT_OUT in flat
     assert _RULE_SENTENCE in flat
-    assert "To read the rest, call search_file with the item's id." in flat
+    assert _READ_STORED in flat
     # The part past the cap is really not shown.
     assert _TAIL_KEY not in prompt
     if lookup is None:
@@ -206,12 +224,16 @@ def test_a_toolless_turn_names_no_tool_in_the_rule_or_the_marker(state):
 
     flat = _flat(prompt)
     assert _RULE_SENTENCE in flat
-    assert "If you need the rest, say which part you could not see." in flat
+    assert _SAY_WHICH in flat
     assert f"[TRUNCATED: {_CUT:,} more characters not shown. {_HELD}]" in prompt
     assert "search_file" not in prompt
+    assert "tool result" not in flat
 
 
-def test_an_unstored_item_is_not_said_to_be_held():
+def test_an_unstored_cut_item_is_neither_held_nor_sent_to_search_file():
+    """With search_file given, the rule sends the model to it only for an item
+    marked file_backed="true"; an unstored item carries no such mark, and its
+    marker names no tool (#2375)."""
     case = _case(10)
     case.uploaded_files[0] = case.uploaded_files[0].model_copy(
         update={"storage_ref": None}
@@ -221,25 +243,91 @@ def test_an_unstored_item_is_not_said_to_be_held():
 
     assert f"[TRUNCATED: {_CUT:,} more characters not shown.]" in prompt
     assert _HELD not in prompt
-    assert _RULE_SENTENCE in _flat(prompt)
+    tag = re.search(rf'<uploaded_file file_id="{_FILE_ID}"[^>]*>', prompt).group(0)
+    assert 'file_backed="true"' not in tag
+    flat = _flat(prompt)
+    assert _RULE_SENTENCE in flat and _READ_STORED in flat
+    # The rule's only reading sentence is the file_backed-scoped one.
+    assert "call search_file with the item's id" not in flat
+    assert "Use search_file with the file_id above" not in prompt
 
 
-@pytest.mark.parametrize("given", [DEFAULT_GIVEN, NO_TOOLS], ids=["six", "none"])
-def test_the_fallback_stub_marks_a_cut_head_and_not_a_whole_one(given):
-    long_case = _case(10)
-    short_case = _case(10)
-    short_case.uploaded_files[0] = short_case.uploaded_files[0].model_copy(
-        update={"structural_index": "ActiveState=failed"}
+def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
+    """Six cited pastes at a 25,000-token target: the budget squeeze cuts
+    <evidence_collected> mid-item, with its own marker and no per-item one."""
+    ids = [f"file_3031{i:08x}" for i in range(6)]
+    case = _case(11).model_copy(
+        update={
+            "uploaded_files": [_paste(10, f) for f in ids],
+            "evidence": [_row(f"ev_3031{i:08x}", f) for i, f in enumerate(ids)],
+        }
     )
+    monkeypatch.setattr(get_settings().model_context, "prompt_target_tokens", 25_000)
+
+    prompt = get_prompt_for_case(
+        case,
+        "why?",
+        provider_name="openai",
+        model_name="gpt-4o",
+        given_tools=DEFAULT_GIVEN,
+    )
+
+    block = prompt[re.search(r'<evidence_collected fence="[0-9a-f]+">', prompt).end() :]
+    assert "[... Content truncated due to context limit ...]" in block
+    flat_rule = _flat(unseen_text_rule(DEFAULT_GIVEN))
+    for marker in (
+        "[... Content truncated due to context limit ...]",
+        "[...truncated...]",
+        "`[...]`",
+    ):
+        assert marker in flat_rule
+    assert flat_rule in _flat(prompt)
+
+
+def test_the_rule_is_scoped_apart_from_the_output_limit_notice():
+    """A tool result can carry TRUNCATION_NOTICE, whose answer really is
+    incomplete: the rule names the evidence cut marker by a form the notice
+    does not match, and says the notice keeps its meaning."""
+    rule = _flat(unseen_text_rule(DEFAULT_GIVEN))
+    assert "An item in <evidence_collected> marked `[TRUNCATED: … more" in rule
+    assert "more characters not shown" not in TRUNCATION_NOTICE
+    notice_head = "[TRUNCATED: the answer below hit the model's output limit"
+    assert TRUNCATION_NOTICE.startswith(notice_head)
+    assert (
+        f"a tool result's own `{notice_head} …]` notice keeps its meaning, and "
+        "that answer is incomplete." in rule
+    )
+
+
+@pytest.mark.parametrize("stored", [True, False], ids=["stored", "unstored"])
+@pytest.mark.parametrize("given", [DEFAULT_GIVEN, NO_TOOLS], ids=["six", "none"])
+def test_the_fallback_stub_marks_a_cut_head_and_not_a_whole_one(given, stored):
+    def case_with(index: str):
+        case = _case(10)
+        case.uploaded_files[0] = case.uploaded_files[0].model_copy(
+            update={
+                "structural_index": index,
+                "storage_ref": case.uploaded_files[0].storage_ref if stored else None,
+            }
+        )
+        return case
 
     def stub(case):
         return _fallback_stub_block(
             case, PromptFence(mint_token()), given, head_chars=200
         )
 
-    assert f" [TRUNCATED: {len(_PASTE) - 200:,} more characters not shown.]" in stub(
-        long_case
+    held = f" {_HELD}" if stored else ""
+    marker = f" [TRUNCATED: {len(_PASTE) - 200:,} more characters not shown.{held}]"
+    assert marker in stub(case_with(_PASTE))
+    # The count is of the extract the full render shows, not of the whole
+    # structural index with its search map and metadata.
+    indexed = json.dumps(
+        {"v": 1, "file_extract": _PASTE, "search_map": "s" * 900, "file_meta": {}}
     )
-    short = stub(short_case)
+    rendered = stub(case_with(indexed))
+    assert marker in rendered
+    assert _PASTE[:40].replace("\n", " ") in rendered
+    short = stub(case_with("ActiveState=failed"))
     assert "ActiveState=failed" in short
     assert "[TRUNCATED:" not in short

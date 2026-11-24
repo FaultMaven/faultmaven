@@ -358,8 +358,9 @@ def _is_stored(uf) -> bool:
     return uf is not None and uf.has_stored_content
 
 
-def _truncated_note(remaining_chars: int, uf, lookup: str) -> str:
-    """The marker on an extract cut at the per-item cap.
+def _truncated_marker(remaining_chars: int, uf, lookup: str = "") -> str:
+    """The marker on an extract cut short: the per-item cap here, the head of
+    the fallback stub (``templates/fallback.py``).
 
     It says whether FaultMaven holds the whole item (#2401): a stored file is
     held whole, so the model is not left to guess that the user's data ends
@@ -367,9 +368,7 @@ def _truncated_note(remaining_chars: int, uf, lookup: str) -> str:
     ``search_file`` is given and can read the file (#1939, #2375).
     """
     held = " FaultMaven holds the whole item." if _is_stored(uf) else ""
-    return (
-        f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.{held}{lookup}]"
-    )
+    return f"[TRUNCATED: {remaining_chars:,} more characters not shown.{held}{lookup}]"
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:
@@ -859,7 +858,7 @@ def _render_orphan_file_block(
         if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
-            truncation_note = _truncated_note(
+            truncation_note = "\n" + _truncated_marker(
                 remaining_chars,
                 uf,
                 (
@@ -1372,7 +1371,7 @@ def _render_evidence_block(
                 body += f"{confidence_advisory}\n"
             body += file_extract
             if truncated:
-                body += _truncated_note(
+                body += "\n" + _truncated_marker(
                     remaining_chars,
                     ev_file_meta,
                     (

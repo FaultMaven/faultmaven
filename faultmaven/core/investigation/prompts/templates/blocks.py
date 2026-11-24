@@ -339,30 +339,45 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
 """
 
 # What the model may say about the part of an item it was not shown (#2401) —
-# used in INQUIRY_TEMPLATE and INVESTIGATION_BASE, the prompts that render a
-# cut, elided or omitted item. Only the reading is turn-dependent: search_file
-# is named only on a turn that gives it (#1939).
+# used in INQUIRY_TEMPLATE and INVESTIGATION_BASE, the prompts that render
+# <evidence_collected>. It names every marker that shortens or leaves out an
+# item there: the per-item cut, the directed-analysis elision, the omitted
+# stub, and the budget squeeze (``TokenBudget._truncate_to``). It is scoped to
+# that block, because a tool result can carry the output-limit notice
+# (``infrastructure/llm/truncation.TRUNCATION_NOTICE``), whose answer really is
+# incomplete. Only the closing sentences are turn-dependent: a tool is named
+# only on a turn that gives it (#1939), and ``search_file`` only for an item it
+# can read (``file_backed="true"``, #2375).
 _UNSEEN_TEXT_RULE = """\
-UNSEEN TEXT: An item marked `[TRUNCATED: …]`, `[Structural index elided …]` or
-  `[Full content omitted …]` was cut by FaultMaven to fit this prompt. The user's
-  item is whole. Describe only what the shown part shows. Never state what the
-  part you were not shown contains, defines, returns or lacks, and never call the
-  user's data missing, incomplete or truncated because this prompt does not show
-  it.\
+UNSEEN TEXT: An item in <evidence_collected> marked `[TRUNCATED: … more
+  characters not shown …]`, `[Structural index elided …]` or `[Full content
+  omitted …]`, or cut off at `[... Content truncated due to context limit ...]`,
+  `[...truncated...]` or `[...]`, was shortened or left out of this prompt by
+  FaultMaven. The user's item is whole. Describe only what the shown part
+  shows. Never state what the part you were not shown contains, defines,
+  returns or lacks, and never call the user's data missing, incomplete or
+  truncated because this prompt does not show it.\
 """
+
+#: The scope sentence, on a turn whose tools can return the output-limit notice.
+_UNSEEN_TEXT_TOOL_NOTICE = (
+    " This rule covers <evidence_collected> only: a tool result's own"
+    " `[TRUNCATED: the answer below hit the model's output limit …]` notice"
+    " keeps its meaning, and that answer is incomplete."
+)
 
 
 def unseen_text_rule(given: GivenTools) -> str:
     """``{unseen_text}``: the unseen-text rule, ending with how to reach
     the rest on this turn."""
+    rule = _UNSEEN_TEXT_RULE + (_UNSEEN_TEXT_TOOL_NOTICE if given else "")
     if has(given, "search_file"):
-        return (
-            _UNSEEN_TEXT_RULE
-            + " To read the rest, call search_file with the item's id."
+        return rule + (
+            ' To read the rest of an item marked file_backed="true", call'
+            " search_file with its id; an item without it cannot be read"
+            " further, so say which part you could not see."
         )
-    return (
-        _UNSEEN_TEXT_RULE + " If you need the rest, say which part you could not see."
-    )
+    return rule + " If you need the rest, say which part you could not see."
 
 
 # What the user tells FaultMaven in their message (#1930) — used in
