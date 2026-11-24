@@ -63,6 +63,7 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_PROBLEM,
     _cause_posited_turn,
     _is_remediation,
+    _outcome_computation,
     _pool_legs,
     cause_pool_empty_reason,
     cause_recheck_status,
@@ -322,41 +323,45 @@ def compute_case_outcome(
     terminal ``folded_under``, are minted only at one of ``MINTING_POINTS``
     or on a first record (no ``prior``). ``closure``: the closure a terminal
     transition persists (``record_case_outcome``). Counts nothing: its
-    disagreements are counted once a saved record carries them (#2689)."""
-    at = WritePoint(at)
-    mint = None
-    if prior is None or at in MINTING_POINTS:
-        mint = FinalAt(at=at, turn=case.current_turn)
-    subjects = subject_index(case)
-    windows = fix_windows(case, subjects)
-    if prior is not None:
-        prior = _upgraded(prior, case, subjects, windows)
-    status = cause_recheck_status(case, subjects=subjects, windows=windows)
-    statement = current_statement(case)
-    seen = _Disagreements(case, prior)
-    unbound = _unbound_rechecks(prior, case, subjects, windows)
-    fold = _Fold(prior, case, subjects, windows, statement, seen, mint)
-    return CaseOutcome(
-        shape=CURRENT_OUTCOME_SHAPE,
-        # An off-cycle fold carries it: only a minting one moves a record to
-        # terminal, so a terminal write that raised is still repaired.
-        folded_under=case.state if mint is not None else prior.folded_under,
-        problem=ProblemOutcome(
-            status=case.progress.problem_status,
-            verifying_row_ids=list(subjects.verifying),
-            statement=statement,
-        ),
-        cause=_cause(case, subjects, status),
-        attempts=_attempts(fold),
-        demotions=list(prior.demotions) if prior is not None else [],
-        resolution=_resolution(fold, status),
-        unbound_rechecks=unbound,
-        bindable=_bindable(subjects),
-        mitigation=_mitigation(case, subjects),
-        milestones_shown=shown_milestones(case),
-        closure=_closure(prior, case, closure, seen),
-        disagreements=seen.read,
-    )
+    disagreements are counted once a saved record carries them (#2689).
+    Computed in one scope (``_outcome_computation``), which builds the
+    subject index, the fix windows and the cause pool once for the case
+    (#2657)."""
+    with _outcome_computation():
+        at = WritePoint(at)
+        mint = None
+        if prior is None or at in MINTING_POINTS:
+            mint = FinalAt(at=at, turn=case.current_turn)
+        subjects = subject_index(case)
+        windows = fix_windows(case, subjects)
+        if prior is not None:
+            prior = _upgraded(prior, case, subjects, windows)
+        status = cause_recheck_status(case, subjects=subjects, windows=windows)
+        statement = current_statement(case)
+        seen = _Disagreements(case, prior)
+        unbound = _unbound_rechecks(prior, case, subjects, windows)
+        fold = _Fold(prior, case, subjects, windows, statement, seen, mint)
+        return CaseOutcome(
+            shape=CURRENT_OUTCOME_SHAPE,
+            # An off-cycle fold carries it: only a minting one moves a record to
+            # terminal, so a terminal write that raised is still repaired.
+            folded_under=case.state if mint is not None else prior.folded_under,
+            problem=ProblemOutcome(
+                status=case.progress.problem_status,
+                verifying_row_ids=list(subjects.verifying),
+                statement=statement,
+            ),
+            cause=_cause(case, subjects, status),
+            attempts=_attempts(fold),
+            demotions=list(prior.demotions) if prior is not None else [],
+            resolution=_resolution(fold, status),
+            unbound_rechecks=unbound,
+            bindable=_bindable(subjects),
+            mitigation=_mitigation(case, subjects),
+            milestones_shown=shown_milestones(case),
+            closure=_closure(prior, case, closure, seen),
+            disagreements=seen.read,
+        )
 
 
 def _shape_2(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome:

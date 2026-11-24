@@ -25,9 +25,12 @@ imports and re-exports it.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, NamedTuple
 
 from faultmaven.core.investigation.coverage_trust import is_vouched
@@ -796,6 +799,52 @@ def _log_undated(case_id, evidence_id, file_id) -> None:
     )
 
 
+#: The memo of the computation of a case's outcome running in this context
+#: (``_outcome_computation``), None outside one: each memoized derivation's
+#: first build, keyed by ``(derivation, id(case))`` and held with its case, so
+#: no id is reused while the scope lives (#2657).
+_COMPUTATION: ContextVar[dict | None] = ContextVar("outcome_computation", default=None)
+
+
+@contextmanager
+def _outcome_computation() -> Iterator[None]:
+    """The scope of one computation of the case outcome, entered only by
+    ``outcome.compute_case_outcome``: inside it ``subject_index``,
+    ``fix_windows`` and ``_cause_pool`` build once per case (#2657), which
+    holds because the computation does not mutate the case. Reset in
+    ``finally``, so a computation that raises leaves no memo for a decider,
+    which builds as it always did."""
+    token = _COMPUTATION.set({})
+    try:
+        yield
+    finally:
+        _COMPUTATION.reset(token)
+
+
+def _once_per_computation(build):
+    """``build`` read once per case inside ``_outcome_computation``: every
+    later call on the case returns the first build (a list as a copy of it).
+    A call passing ``subjects`` other than the scope's own index for the case,
+    or any call outside a scope, builds afresh."""
+
+    @wraps(build)
+    def read(case, subjects=None):
+        memo = _COMPUTATION.get()
+        args = (case,) if subjects is None else (case, subjects)
+        if memo is None:
+            return build(*args)
+        own = memo.get(("subject_index", id(case)))
+        if subjects is not None and (own is None or subjects is not own[1]):
+            return build(*args)
+        key = (build.__name__, id(case))
+        if key not in memo:
+            memo[key] = (case, build(*args))
+        built = memo[key][1]
+        return list(built) if isinstance(built, list) else built
+
+    return read
+
+
 def _one_cause(case: "Case", root_ids) -> bool:
     """Whether ``root_ids`` are one cause: a single node, or nodes that collapse
     to one distinct-cause cluster (``sole_cluster_origin``). A missing hook
@@ -806,6 +855,7 @@ def _one_cause(case: "Case", root_ids) -> bool:
     return arbitrate is not None and arbitrate(case, set(root_ids)) is not None
 
 
+@_once_per_computation
 def _cause_pool(case: "Case") -> tuple[frozenset, frozenset, frozenset]:
     """The causes a cause observation can be about, as ``(confirmation roots,
     window roots, rootless hypothesis ids)``.
@@ -981,6 +1031,7 @@ def licensed_roots(case: "Case") -> frozenset:
     )
 
 
+@_once_per_computation
 def subject_index(case: "Case") -> SubjectIndex:
     """The case's ``SubjectIndex``, built now."""
     pv = getattr(case, "problem_verification", None)
@@ -1612,6 +1663,7 @@ class FixWindow:
         return self.disconfirmation is not None
 
 
+@_once_per_computation
 def fix_windows(
     case: "Case", subjects: "SubjectIndex | None" = None
 ) -> list[FixWindow]:
@@ -2200,7 +2252,9 @@ def mitigation_unsettled(case: "Case") -> bool:
     return record is not None and record.accepted and not mitigation_settled(case)
 
 
-def mitigation_refusal_reason(case: "Case") -> MitigationRefusalReason | None:
+def mitigation_refusal_reason(
+    case: "Case", relief: tuple[int | None, int | None] | None = None
+) -> MitigationRefusalReason | None:
     """Why ``mitigation_verified`` does not register, or None (#2100, D3.1):
     the verdict is derived, from a problem-bound re-check dated at or after
     the mitigation's attempt and not followed by a bound persistence
@@ -2208,7 +2262,9 @@ def mitigation_refusal_reason(case: "Case") -> MitigationRefusalReason | None:
     be re-checked; without a verified problem nothing binds; under a pending
     revision the statement awaits its confirmation. The one copy of the
     branches ``_mitigation_verify_refusal`` decides (its notice is rendered
-    in ``narration.notices``, #2636) and the case outcome records (#2615)."""
+    in ``narration.notices``, #2636) and the case outcome records (#2615).
+    ``relief``: the caller's ``mitigation_relief(case, subjects)``, so a caller
+    that reads it too reads it once (#2657); read here when None."""
     if mitigation_attempt_turn(case) is None:
         return MitigationRefusalReason.ATTEMPT_UNDATED
     status = case.progress.problem_status
@@ -2216,7 +2272,7 @@ def mitigation_refusal_reason(case: "Case") -> MitigationRefusalReason | None:
         return MitigationRefusalReason.REVISION_PENDING
     if status != ProblemStatus.VERIFIED:
         return MitigationRefusalReason.PROBLEM_UNVERIFIED
-    relief, present = mitigation_relief(case)
+    relief, present = mitigation_relief(case) if relief is None else relief
     if relief is not None and mitigation_holds(relief, present):
         return None
     return MitigationRefusalReason.NO_BOUND_RELIEF
