@@ -70,14 +70,9 @@ be using it" is not evidence.
 ## Publishing a change
 
 1. Make the change in the code.
-2. Decide what it is. **MINOR** if the surface grew in a way every existing
-   client survives; **MAJOR** if one can break; **PATCH** (optional, never
-   required for prose) for a re-publication that changes no structure, such as
-   a corrected error detail. An edit to an enum's per-value meaning in
-   `x-enum-descriptions` is structure, not prose. The levels are defined in the
-   `faultmaven/api/contract_version.py` module docstring. This judgement is
-   what the clients are being asked to accept, so it is a person's call, not a
-   script's.
+2. Decide what it is. **MINOR** if every existing client survives it; **MAJOR**
+   if one can break. This judgement is what the clients are being asked to
+   accept, so it is a person's call, not a script's.
 3. Add a `ContractChange` at the head of `CONTRACT_CHANGES` in
    `faultmaven/api/contract_version.py`: the new version, its level, a title
    saying what moved, and a body with the reasoning (or `""`).
