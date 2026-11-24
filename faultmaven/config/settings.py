@@ -1712,10 +1712,9 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
       - The deployment coherence gate refuses these settings from the settings
         alone (``coherence_refuses_local_auth``: a cloud deployment, or
         ``TENANT_PROVIDER=multi`` outside cloud): it returns, reading, writing,
-        setting and exporting nothing. The server and the jobs runner refuse
-        these settings at the gate, and an operator command that reaches the
-        signer refuses there; a secret written for them would sit, foreign to
-        the corrected run, on that deployment's volume (#2705).
+        setting and exporting nothing: the server and the jobs runner refuse
+        them at the gate, an operator command at the signer, and a secret
+        would sit foreign to the corrected run on that volume (#2705).
       - Otherwise it reads the secret file
         (``settings.security.jwt_secret_file``) or generates a secret, and
         judges that value before it is published, set or exported. The file is
@@ -1907,8 +1906,7 @@ class SecuritySettings(BaseSettings):
     # install needs no JWT_SECRET_KEY — set the env var to override. It is
     # generated and persisted (jwt_secret_file) only when the database is
     # persistent; otherwise an existing file is read, or an ephemeral per-process
-    # secret is used (#1703). None of this happens for settings the coherence
-    # gate refuses (cloud, or TENANT_PROVIDER=multi outside cloud; #2705).
+    # secret is used (#1703); none for settings the coherence gate refuses (#2705).
     # OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,

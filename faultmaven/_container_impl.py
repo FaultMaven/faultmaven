@@ -25,6 +25,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, ClassVar, List, Optional
 
+from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.config.settings import FaultMavenSettings, get_settings
 from faultmaven.container.base import BaseDIContainer
 from faultmaven.container.errors import (
@@ -194,7 +195,9 @@ class DIContainer(BaseDIContainer):
             else:
                 is_tenancy_refusal = isinstance(e, TenancyConfigurationError)
 
-            if is_tenancy_refusal:
+            # So does the gate's own refusal, raised by the signer (#2705); its
+            # subclasses, unavailable stores, keep the fail-fast channel below.
+            if is_tenancy_refusal or type(e) is DeploymentCoherenceError:
                 raise
 
             # Nor does a ChromaDB client that must not be built (a malformed

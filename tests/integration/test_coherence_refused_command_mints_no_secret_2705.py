@@ -13,7 +13,8 @@ no mint, not a probe looking in the wrong place.
 
 A command that composes the container reaches the signer, which refuses these
 settings with the coherence gate's own text for the rule, never "signing key
-unavailable" (which would steer an operator to set ``JWT_SECRET_KEY``).
+unavailable" (which would steer an operator to set ``JWT_SECRET_KEY``), and the
+container re-raises it, so nothing runs after it.
 ``FAULTMAVEN_SKIP_DOTENV`` keeps every ``.env`` out of the child, and nothing in
 it connects beyond its own process.
 """
@@ -137,3 +138,6 @@ def test_a_command_reaching_the_signer_is_refused_with_the_rule(
     assert rule in completed.stderr, detail
     assert "SigningKeyUnavailableError" not in completed.stderr, detail
     assert "data/.jwt_secret" not in entries, detail
+    # Nothing ran after the refusal: the container did not swallow it.
+    assert completed.stdout.rstrip().endswith("Initializing..."), detail
+    assert "Looking up user" not in completed.stdout, detail

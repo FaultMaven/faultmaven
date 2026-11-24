@@ -2373,8 +2373,7 @@ def build_jwt_token_generator(
             means it was explicitly cleared or the persist failed), or OAuth
             mode called without the resolved RSA pair.
         DeploymentCoherenceError: Local mode on settings the coherence gate
-            refuses, with its text for the rule (an operator command reaches
-            here without the gate; #2705).
+            refuses, with its text for the rule (#2705).
     """
     if _auth_mode_name(settings) == "local":
         refusal = local_auth_refusal_text(settings)
