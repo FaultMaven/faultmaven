@@ -143,14 +143,16 @@ NO_PENDING_SOLUTION_NOTICE = (
     "SYSTEM: 'solution_accepted' was not registered — no "
     "SOLUTION proposal is currently pending (it may have been "
     "downgraded, withdrawn or superseded since it was made). If "
-    "the user has already carried out the fix and the root cause "
-    "stands established, register it in ONE response: re-propose "
-    "it as a SolutionToAdd and set solution_accepted with "
-    "accepted_action_ref new_index_N naming it, justified by "
-    "their report; do not ask them to accept it again. If the root "
-    "cause is not established, re-ground it with evidence first. If "
-    "the problem is already resolved, record the confirming "
-    "evidence instead: causal_absence for the cause gone and "
+    "the user reported carrying out a change, put it on record in ONE "
+    "response, justified by their report, and do not ask them to accept "
+    "or confirm it again: name its ACTION_ID with accepted_action_ref "
+    "when <pending_action> shows it, else re-propose it as a "
+    "SolutionToAdd and set solution_accepted with accepted_action_ref "
+    "new_index_N naming it. It registers as the fix when the root cause "
+    "stands established; otherwise it is recorded as carried out "
+    "(<user_changes>) and counts as no fix until the cause is "
+    "established. If the problem is already resolved, record the "
+    "confirming evidence instead: causal_absence for the cause gone and "
     "symptom_absence for the reported problem gone."
 )
 
@@ -702,23 +704,46 @@ def _licence_refused(params: dict, outcome, log) -> list:
     does), its only bearer an M5-downgraded copy once it holds (the copy
     cannot register, a re-proposal can), or the license down."""
     subject = params["subject"]
-    if params["variant"] == "withdrawn":
+    recorded = params.get("recorded")
+    if recorded is not None:
+        # INV-49 (#3039): the report is a fact of the case whatever the gate
+        # decides; say so, so the model neither asks again nor reads the
+        # refusal as "the user did not do it".
         return [
+            _licence_refused_line(params, subject)
+            + recorded_change_clause(subject, recorded)
+        ]
+    return [_licence_refused_line(params, subject)]
+
+
+def recorded_change_clause(subject: str, turn: int) -> str:
+    """The sentence a refusal adds when the user's report was recorded
+    (INV-49): carried out, on record, and not a fix."""
+    return (
+        f" The user's report is recorded: {subject} is on record as carried "
+        f"out at turn {turn} (see <user_changes>); it counts as a fix only "
+        "once it is registered as one."
+    )
+
+
+def _licence_refused_line(params: dict, subject: str) -> str:
+    if params["variant"] == "withdrawn":
+        return (
             f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
             "withdrawn while its root cause was not established, and a withdrawn "
             "fix does not register by its ACTION_ID. If the user carried it out, "
             "re-propose it as a SolutionToAdd and set solution_accepted with "
             "accepted_action_ref new_index_N naming it."
-        ]
+        )
     if params["variant"] == "downgraded":
-        return [
+        return (
             f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
             "downgraded to a DIAGNOSTIC when it was proposed, because its root "
             "cause was not established then. The cause is established now: if the "
             "user carried out the fix, re-propose it as a SolutionToAdd and set "
             "solution_accepted with accepted_action_ref new_index_N naming it."
-        ]
-    return [license_notice(subject)]
+        )
+    return license_notice(subject)
 
 
 def fix_report_reason(params: dict) -> str:

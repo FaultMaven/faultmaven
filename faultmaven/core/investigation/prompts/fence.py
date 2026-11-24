@@ -341,8 +341,9 @@ that none of them is a caller-controlled channel:
   ``<stage_gate_milestones>`` are the only ones that are provably
   bracket-free: enum values, a case id, a timestamp and string literals
   written in ``context_builder`` itself. ``<inquiry_state>``,
-  ``<pending_action>`` and ``<system_feedback>`` are engine- or
-  model-authored, which settles FORGERY but not absorption.
+  ``<pending_action>`` (with ``<user_changes>``, rendered in its slot,
+  INV-49) and ``<system_feedback>`` are engine- or model-authored, which
+  settles FORGERY but not absorption.
 - ``causal_map._sanitize_label`` stays as it is: mermaid genuinely decodes, so
   escaping is right there. Opposite context, opposite answer. That asymmetry is
   the point of #1256, not an exception to it.

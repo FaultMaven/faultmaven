@@ -14,6 +14,10 @@ from faultmaven.core.investigation.kb_question import (
     render_kb_lookup_block,
     take_over_pushed,
 )
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    is_workaround_downgrade,
+    unregistered_reported_changes,
+)
 from faultmaven.core.investigation.narration.prompt_state import (
     MILESTONES_OMITTED,
     MilestoneStatus,
@@ -67,6 +71,131 @@ from .narration_fold import NarrationFold
 from .text_shaping import sanitize_user_input
 
 logger = logging.getLogger(__name__)
+
+
+#: The ``<user_changes>`` block (INV-49, #3039) lists at most this many
+#: changes, newest kept, and each description at most this many characters.
+USER_CHANGES_MAX = 8
+#: What the block names itself as to the narration fold.
+_USER_CHANGES = "user changes"
+_PENDING_ACTION = "pending action"
+USER_CHANGE_DESCRIPTION_CHARS = 300
+
+#: How the model reads a change the user reported making (INV-49). The
+#: simulator's wording, extended by the design ruling on #3039.
+USER_CHANGES_RULE = (
+    "A change the user reports making is a fact of the case, dated to the turn "
+    "they reported it: do not ask who made it or whether it was made. It is not "
+    "evidence of its effect: what the system shows afterwards still needs a "
+    "reading. A state that differs from what that change would produce is "
+    "still a question. Data the user labels as read before the change "
+    "describes the system before it."
+)
+
+#: The standing line that names the existing registration path once the cause
+#: is established (INV-49: the engine never promotes a recorded change).
+USER_CHANGES_REGISTER_LINE = (
+    "The root cause is established now. If a change recorded above as not a "
+    "fix is the fix of that cause, register it: re-propose it as a "
+    "SolutionToAdd and set solution_accepted with accepted_action_ref "
+    "new_index_N naming it."
+)
+
+
+def _record_names_a_cause(fold: NarrationFold, block: str) -> bool:
+    """The outcome record holds an identified cause; False with no record."""
+    outcome = fold.outcome(block)
+    return outcome is not None and outcome.cause.identification_leg is not None
+
+
+def _if_carried_out(action: Any, fold: NarrationFold) -> str:
+    """The ``<pending_action>`` cue for a downgraded action (INV-49): how a
+    report of carrying it out is put on record. A downgraded workaround is
+    reported through ``mitigation_accepted``; a downgraded fix, once the
+    record holds an identified cause, through the re-proposal that registers
+    it, else by naming it, which records it and registers nothing."""
+    if is_workaround_downgrade(action):
+        return (
+            "IF_CARRIED_OUT: set mitigation_accepted when the user reports "
+            "carrying this out: the report is recorded as carried out "
+            "(<user_changes>); it registers no mitigation\n"
+        )
+    if _record_names_a_cause(fold, _PENDING_ACTION):
+        return (
+            "IF_CARRIED_OUT: the root cause is established now: when the user "
+            "reports carrying this out, re-propose it as a SolutionToAdd and "
+            "set solution_accepted with accepted_action_ref new_index_N naming "
+            "it, which registers it as the fix\n"
+        )
+    return (
+        "IF_CARRIED_OUT: set solution_accepted, with "
+        f"accepted_action_ref: {action.action_id}, when the user reports "
+        "carrying this out: the report is recorded as carried out "
+        "(<user_changes>); it registers no fix\n"
+    )
+
+
+def user_changes_block(case: Case, fold: NarrationFold) -> str:
+    """``<user_changes>``: every change the user reported carrying out, by
+    the turn they reported it (INV-49, #3039).
+
+    A registered fix or mitigation (``accepted``, at ``accepted_in_turn``)
+    and a change recorded but not registered (``reported_done_in_turn``)
+    alike. A recorded change whose fix registered later is listed once, as
+    registered. Read from the field, never the state: a recorded DIAGNOSTIC
+    may since have been superseded (``_retire_shadowed_diagnostic_asks``).
+    Informational: no gate reads it. Empty when the user reported none.
+    Whether the cause is identified is the outcome record's
+    (``fold.outcome``); with no record, the register line is left out."""
+    registered = [
+        a
+        for a in case.proposed_actions or []
+        if a.state == "accepted" and a.accepted_in_turn is not None
+    ]
+    recorded = unregistered_reported_changes(case)
+    rows = sorted(
+        [(a.accepted_in_turn, a, True) for a in registered]
+        + [(a.reported_done_in_turn, a, False) for a in recorded],
+        key=lambda row: row[0],
+    )
+    if not rows:
+        return ""
+    omitted = max(0, len(rows) - USER_CHANGES_MAX)
+    lines = [
+        "<user_changes>",
+        "Actions the user reported carrying out (engine record):",
+    ]
+    if omitted:
+        lines.append(f"[... {omitted} earlier actions omitted ...]")
+    for turn, action, is_registered in rows[omitted:]:
+        text = " ".join((action.description or "").split())
+        if len(text) > USER_CHANGE_DESCRIPTION_CHARS:
+            text = text[: USER_CHANGE_DESCRIPTION_CHARS - 3] + "..."
+        if is_registered:
+            status = (
+                "registered as the mitigation"
+                if action.action_type == InvestigationActionType.MITIGATION
+                else "registered as the fix"
+            )
+        elif is_workaround_downgrade(action):
+            status = (
+                "recorded as carried out; not registered as the mitigation (no "
+                "symptom evidence was on record for it)"
+            )
+        else:
+            status = (
+                "recorded as carried out; not registered as a fix (its root "
+                "cause was not established when it was reported)"
+            )
+        lines.append(f"- [T{turn}] {action.action_id}: {text} — {status}")
+    lines.append(USER_CHANGES_RULE)
+    if any(
+        not is_registered and not is_workaround_downgrade(action)
+        for _turn, action, is_registered in rows[omitted:]
+    ) and _record_names_a_cause(fold, _USER_CHANGES):
+        lines.append(USER_CHANGES_REGISTER_LINE)
+    lines.append("</user_changes>")
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -977,9 +1106,15 @@ def build_investigation_context(
     # solution_accepted cue and stall the TREATMENT transition on the post-fix
     # reply. A DIAGNOSTIC (no compliance gate) surfaces only when nothing
     # compliance-bearing stands pending.
+    # A change the user already reported carrying out is not pending, whatever
+    # its state (INV-49): it renders in <user_changes> instead.
     pending_action_str = ""
     if case.proposed_actions:
-        pending = [a for a in case.proposed_actions if a.state == "pending"]
+        pending = [
+            a
+            for a in case.proposed_actions
+            if a.state == "pending" and a.reported_done_in_turn is None
+        ]
         compliance_bearing = [
             a
             for a in pending
@@ -1016,9 +1151,18 @@ def build_investigation_context(
             # LLM understands why its intent was rewritten and can
             # recover on this turn (e.g. by gathering the missing
             # evidence and re-proposing).
+            elif action_type_upper == "DIAGNOSTIC":
+                # INV-49: a report of carrying it out is recorded, not lost;
+                # the cue names the path that also registers what can.
+                pending_action_str += _if_carried_out(action, narration_fold)
             if getattr(action, "downgrade_reason", None):
                 pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
             pending_action_str += "</pending_action>"
+    changes = user_changes_block(case, narration_fold)
+    if changes:
+        pending_action_str = (
+            f"{changes}\n\n{pending_action_str}" if pending_action_str else changes
+        )
 
     # 6. Conversation History — rendered inside the shared fence above, in two
     # modes:

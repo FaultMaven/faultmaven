@@ -1133,7 +1133,17 @@ records only what it can substantiate:
   fix's window then holds
   that message's rows, all post-fix: its cause row and a later problem-present
   row (the registration turn's paste included) are a disconfirmation
-  (INV-42). The gate reads a failed fix the same
+  (INV-42). A fix carried out before its licence is different (INV-49,
+  #3039): the user's report is recorded on its downgraded action
+  (`reported_done_in_turn`) and opens no window, and when the cause is later
+  established the fix registers only by a re-proposal, dated at that
+  registration, not at the report. A multi-turn backdate is not taken:
+  persistence is any problem-bound row in a turn after the fix's, dated by
+  its submit turn, so a later row quoting pre-fix data (a journal excerpt of
+  the original failure) would read as a relapse and FAIL the window, which
+  is final; dated at registration, the gate asks for one cause re-check
+  after it, which it needs anyway (cause rows before the cause was posited
+  never count). The gate reads a failed fix the same
   whether or not M6 could act on it, so the two cannot disagree about
   whether a fix failed. M6's record trigger demotes the identified
   (validated, still-standing) cause when the latest window *with a verdict*
