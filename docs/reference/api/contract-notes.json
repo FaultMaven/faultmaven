@@ -1,10 +1,16 @@
 {
-  "contractVersion": "15.12.0",
+  "contractVersion": "15.13.0",
   "entries": [
     {
       "body": "Before, two overlapping requests under one key both ran: a keyed\n`POST /cases` retried while the first was in flight created two cases. Now\nthe second waits, up to 10 s, for the first's answer:\n\n* the first answered 2xx \u2192 the second gets that answer, with\n  `X-Idempotency-Replayed: true` (a different body: **409**\n  `IDEMPOTENCY_KEY_REUSE`, as for any later retry);\n* the first answered otherwise \u2192 the second runs;\n* the first has not answered within the wait, or the server could not tell \u2192\n  **409** `IDEMPOTENCY_REQUEST_IN_PROGRESS`, `Retry-After: 2`: a moment, since\n  a retry under the key waits for the first's answer again. Nothing of this\n  request ran; the first may have. Detail: \"This request is\n  still being processed. Wait a moment, then reload: it may already have gone\n  through.\" For `POST /cases`, reload the case list before creating again.\n\nIt covers every keyed POST the middleware answers that carries an\n`Authorization` header, valid or not, which excludes the routes it never\nreplays (the turn, KB upload and conversion routes answer their own keys; case\nsearch and the auth and session mints are not replayed). Unkeyed requests and\nrequests without an `Authorization` header are unchanged.\n\nMINOR: a new code on a status the keyed routes already answered (409 key\nreuse), and a client that does not know the code treats it as a generic 4xx.",
       "level": "MINOR",
       "title": "A keyed POST that `IdempotencyMiddleware` answers runs once while an earlier request under its `Idempotency-Key` is in flight: it waits for that answer, and past the wait is **409** `IDEMPOTENCY_REQUEST_IN_PROGRESS` with `Retry-After` (#2655). `POST /cases` declares its 409 and `POST /cases/{case_id}/title` adds the code. No schema moves.",
+      "version": "15.13.0"
+    },
+    {
+      "body": "* `NO_TEXT_LAYER` (422): no text could be read from the document, in any\n  format. That is a PDF no page of which has text pypdf can read (a scanned\n  image), a PDF with no pages or with a page tree pypdf reads as empty, or a\n  DOCX, text, Markdown or HTML file with no text to read (an image-only DOCX,\n  a whitespace-only file). It was `FILE_CORRUPT`.\n  The `detail` is unchanged; nothing else moves.\n\nNothing structural moves: conversion error codes and their headers are not in\nthe OpenAPI schema or `contract-notes.json`. MINOR because every client\nsurvives it: one that does not know a code shows its generic error with the\n`detail`.",
+      "level": "MINOR",
+      "title": "`POST /knowledge/convert` refuses a document with no text to read (a scanned PDF, a whitespace-only file) with 422 `NO_TEXT_LAYER` (#2593).",
       "version": "15.12.0"
     },
     {
