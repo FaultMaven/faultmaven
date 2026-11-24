@@ -221,7 +221,12 @@ Upload (file + scope + metadata)
   │     little to convert: REJECT with HTTP 422 / DOCUMENT_TOO_COMPLEX, as
   │     is a worker past its memory limit, or one a signal kills while its
   │     parser reads the file. Any other end of the worker answers 500 with
-  │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT
+  │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT.
+  │     No text to read, in any format: REJECT with HTTP 422 /
+  │     NO_TEXT_LAYER. That is a scanned PDF, a PDF with no pages or with a
+  │     page tree pypdf reads as empty, or a file of whitespace. Each
+  │     parser refusal carries its code by type, never by its wording
+  │     (#2593)
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -958,10 +963,10 @@ Every refusal above carries an `error_code` alongside `detail`; the Dashboard
 keys its user-facing copy on that code, not on the prose. **This table is
 illustrative, not exhaustive** — the authoritative mapping is the `status_map`
 in `modules/knowledge/api/conversion_routes.py`, which also returns
-`FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `DOCUMENT_TOO_SHORT`,
-`DOCUMENT_TOO_COMPLEX`, `NO_TECHNICAL_CONTENT` and `LLM_PARSE_ERROR` as 422,
-and `CONVERSION_BUSY` as 503 with `Retry-After`. Read the map rather than
-extending this list, or the two drift apart again.
+`FILE_EMPTY`, `FILE_CORRUPT`, `ENCODING_ERROR`, `NO_TEXT_LAYER`,
+`DOCUMENT_TOO_SHORT`, `DOCUMENT_TOO_COMPLEX`, `NO_TECHNICAL_CONTENT` and
+`LLM_PARSE_ERROR` as 422, and `CONVERSION_BUSY` as 503 with `Retry-After`.
+Read the map rather than extending this list, or the two drift apart again.
 
 ---
 
@@ -1444,7 +1449,7 @@ The parser extracts plain text from supported file formats. It does not interpre
 
 | Format | Library | Notes |
 |--------|---------|-------|
-| PDF | `pypdf` (already a dependency) | Extract text per page. Warn if OCR-only PDF detected (no extractable text). |
+| PDF | `pypdf` (already a dependency) | Extract text per page. A PDF with no text on any page (scanned, image-only), no pages, or a page tree pypdf reads as empty is refused: 422 `NO_TEXT_LAYER`, as is a file of any format with no text. |
 | DOCX | `python-docx` (already a dependency) | Extract paragraphs, tables, and list items. Preserve code blocks from monospace styling. |
 | TXT | Built-in | Read as UTF-8. |
 | Markdown | Built-in | Pass through as-is (already text). Strip HTML if embedded. |
