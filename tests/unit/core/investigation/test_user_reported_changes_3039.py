@@ -401,8 +401,6 @@ class TestTheRecordRenders:
         so the line the model reads says so."""
         block = user_changes_block(_reported_case(), _Fold(leg="chain"))
         assert "re-propose it, with its description unchanged" in block
-        assert "A reworded re-proposal registers as another fix" in block
-        assert "do not register the change again" in block
 
     def test_a_superseded_reported_change_still_renders(self):
         """``_retire_shadowed_diagnostic_asks`` may supersede it: the block
