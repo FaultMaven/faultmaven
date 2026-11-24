@@ -20,9 +20,9 @@ This module provides exception handlers for:
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
 - A database timeout or an unreachable database (``is_database_unavailable``),
   raised or on the cause chain of a ``ServiceError``, a ``ServiceException`` or
-  an exception nothing maps → 503 ``DATABASE_UNAVAILABLE``: for GET/HEAD the
-  "not saved" detail with ``Retry-After``, for any other method a neutral
-  detail and none (#2670)
+  an exception nothing maps → 503 ``DATABASE_UNAVAILABLE``: for GET/HEAD a
+  retry detail with ``Retry-After``, for any other method a detail saying the
+  request may have been saved and none (#2670)
 - HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
   the encoder cannot render answers its own status instead of crashing the
   handler into a 500. Keyed on FastAPI's HTTPException; Starlette's own class
@@ -268,12 +268,20 @@ def database_unavailable_http_exception() -> HTTPException:
     )
 
 
+#: The request boundary's GET/HEAD detail (#2670). It claims nothing about what
+#: was saved: a GET can commit before the database fails (an access-audit row,
+#: its own exit COMMIT), and retrying a read is safe either way.
+DATABASE_UNAVAILABLE_READ_DETAIL = (
+    "The database could not be reached or did not answer in time. Please retry "
+    "shortly."
+)
+
 DATABASE_UNAVAILABLE_WRITE_DETAIL = (
     "The database could not be reached. Reload before retrying: the request "
     "may have been saved."
 )
 
-#: The methods that write nothing, whose 503 may say nothing was saved.
+#: The methods whose retry is safe, so their 503 invites one.
 _READ_METHODS = frozenset({"GET", "HEAD"})
 
 
@@ -295,21 +303,30 @@ def database_unavailable_write_http_exception() -> HTTPException:
 
 def database_unavailable_http_exception_for(method: str) -> HTTPException:
     """The request boundary's answer to ``is_database_unavailable`` (#2670):
-    a GET/HEAD saved nothing, any other method may have."""
+    a GET/HEAD is safe to retry, with ``Retry-After``; any other method may
+    have saved, so it is not invited."""
     if method.upper() in _READ_METHODS:
-        return database_unavailable_http_exception()
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=DATABASE_UNAVAILABLE_READ_DETAIL,
+            headers={"x-error-code": DATABASE_UNAVAILABLE, "Retry-After": "5"},
+        )
     return database_unavailable_write_http_exception()
 
 
-async def _database_unavailable_response(
-    request: Request, exc: BaseException
-) -> JSONResponse:
+def _log_database_unavailable(request: Request, exc: BaseException) -> None:
     logger.error(
         "Database unavailable: %s %s - %s",
         request.method,
         request.url.path,
         exception_log_name(exc),
     )
+
+
+async def _database_unavailable_response(
+    request: Request, exc: BaseException
+) -> JSONResponse:
+    _log_database_unavailable(request, exc)
     return await http_exception_handler(
         request, database_unavailable_http_exception_for(request.method)
     )
@@ -1425,14 +1442,22 @@ async def internal_server_error_handler(
     callback's query string carries the identity provider's authorization code.
 
     A database failure on the chain (``is_database_unavailable``) is not a 500:
-    it is the database's 503 (#2670).
+    it is the database's 503 (#2670), with the same ids and logged on the same
+    rule.
     """
-    if is_database_unavailable(exc):
-        return await _database_unavailable_response(request, exc)
     correlation_id = getattr(request.state, _LOGGED_FAILURE_CORRELATION_ID, None)
     request_id = getattr(request.state, "request_id", None)
 
-    if correlation_id is None:
+    content: Dict[str, Any] = {"detail": "Internal server error"}
+    headers: Dict[str, str] = {}
+    unavailable = is_database_unavailable(exc)
+    if unavailable:
+        answer = database_unavailable_http_exception_for(request.method)
+        content["detail"] = answer.detail
+        headers.update(answer.headers or {})
+        if correlation_id is None:
+            _log_database_unavailable(request, exc)
+    elif correlation_id is None:
         # With the traceback: on a deployed stack this is the one record of an
         # exception LoggingMiddleware never saw (one raised before its ``try``).
         logger.error(
@@ -1444,14 +1469,18 @@ async def internal_server_error_handler(
             extra={"request_id": request_id} if request_id else {},
         )
 
-    content: Dict[str, Any] = {"detail": "Internal server error"}
-    headers: Dict[str, str] = {}
     if correlation_id is not None:
         content["correlation_id"] = correlation_id
         headers["X-Correlation-ID"] = correlation_id
     if request_id:
         content["request_id"] = request_id
         headers["X-Request-ID"] = request_id
+    if unavailable:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=content,
+            headers=headers,
+        )
     return JSONResponse(status_code=500, content=content, headers=headers)
 
 

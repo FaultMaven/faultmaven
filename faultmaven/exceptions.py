@@ -113,10 +113,11 @@ class DatabaseTimeout(TimeoutError):
 class DatabaseUnavailable(ConnectionError):
     """The database could not be reached before anything was sent (#2670).
 
-    Raised by ``get_db_session`` in place of a connect failure escaping it: a
-    refused, reset or unresolvable connection, an unreachable host or network,
-    or a SQLSTATE that says the server will not take a connection (class
-    ``08``, ``57P01``-``57P03``, ``53300``). Only from a session whose
+    Raised by ``get_db_session`` in place of a connect failure escaping it:
+    any ``ConnectionError``, an unresolvable name, a Unix socket with no
+    server, an unreachable host or network, an ``OSError`` with no errno, or a
+    SQLSTATE that says the server will not take a connection (class ``08``,
+    ``57P01``-``57P03``, ``53300``); never a ``PermissionError``. Only from a session whose
     transaction never began and on which nothing committed: the same driver
     error after the first statement is a dropped connection, whose work may
     have landed, and passes through as itself.
@@ -132,9 +133,12 @@ def is_database_unavailable(exc: BaseException) -> bool:
     and no ``CommitOutcomeUnknown`` (#2670).
 
     The one test of "the database could not serve this", read by the request
-    boundary and by every site that answers it. A COMMIT timeout reaches here
-    as a ``DatabaseTimeout`` around a ``CommitOutcomeUnknown``: the commit may
-    have landed, so it is never "unavailable".
+    boundary and by every site that answers it. Only the case repository's
+    save marks a COMMIT it cannot vouch for as ``CommitOutcomeUnknown`` (which
+    ``get_db_session`` then wraps as a ``DatabaseTimeout`` on a timeout): that
+    commit may have landed, so it is never "unavailable". ``get_db_session``'s
+    own exit COMMIT is not marked: its timeout is a plain ``DatabaseTimeout``,
+    and the boundary answers it by method.
     """
     chain = list(walk_cause_chain(exc))
     return not any(isinstance(c, CommitOutcomeUnknown) for c in chain) and any(

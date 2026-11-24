@@ -118,6 +118,8 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
             # handler takes the exception only to log it, and its body is a
             # static message plus the request's ids.
             response = await internal_server_error_handler(request, e)
+            # Recorded as answered: a database failure is its 503 (#2670).
+            status_code = response.status_code
 
         finally:
             # Calculate timing

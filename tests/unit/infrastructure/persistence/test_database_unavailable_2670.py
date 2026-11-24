@@ -1,12 +1,14 @@
 """An unreachable database is named at the session, by position (#2670).
 
-``get_db_session`` raises ``DatabaseUnavailable`` for a connect failure (a
-refused, reset or unresolvable connection, an unreachable host, a SQLSTATE
-saying the server takes no connection) only while nothing reached the server:
+``get_db_session`` raises ``DatabaseUnavailable`` for a connect failure (any
+``ConnectionError``, an unresolvable name, a Unix socket with no server, an
+unreachable host, an ``OSError`` with no errno, a SQLSTATE saying the server
+takes no connection) only while nothing reached the server:
 before the session's transaction began and before anything on it committed.
 The same driver error later is a dropped connection whose work may have landed,
 and passes through as itself, as does anything with ``CommitOutcomeUnknown`` on
-its chain and a configuration fault (``28P01``, ``3D000``).
+its chain and a configuration fault (``28P01``, ``3D000``, a
+``PermissionError``).
 
 The regression runs through a closed loopback port; the table raises each
 shape synthetically (no name is resolved). Past ``after_begin`` the stand-in is
@@ -110,6 +112,15 @@ async def test_a_refused_connection_is_named_database_unavailable(fresh_engine):
 _CONNECT_FAILURES = {
     "refused": lambda: ConnectionRefusedError(errno.ECONNREFUSED, "refused"),
     "reset": lambda: ConnectionResetError(errno.ECONNRESET, "reset"),
+    "aborted": lambda: ConnectionAbortedError(errno.ECONNABORTED, "aborted"),
+    "broken pipe": lambda: BrokenPipeError(errno.EPIPE, "broken pipe"),
+    "a Unix socket with no server": lambda: FileNotFoundError(
+        errno.ENOENT, "No such file or directory"
+    ),
+    "every address failed": lambda: OSError(
+        "Multiple exceptions: [Errno 111] Connect call failed ('::1', 5432), "
+        "[Errno 111] Connect call failed ('127.0.0.1', 5432)"
+    ),
     "unresolvable": lambda: socket.gaierror(socket.EAI_NONAME, "unknown"),
     "host unreachable": lambda: OSError(errno.EHOSTUNREACH, "no route"),
     "network unreachable": lambda: OSError(errno.ENETUNREACH, "no network"),
@@ -141,6 +152,12 @@ class TestBeforeTheTransactionBegan:
             pytest.param(lambda: _dbapi_error(_DriverError("3D000")), id="3D000"),
             pytest.param(lambda: _DriverError("28P01"), id="28P01 unwrapped"),
             pytest.param(lambda: OSError(errno.EACCES, "denied"), id="another errno"),
+            pytest.param(
+                lambda: PermissionError(errno.EACCES, "denied"), id="PermissionError"
+            ),
+            pytest.param(
+                lambda: PermissionError("no errno"), id="PermissionError, no errno"
+            ),
             pytest.param(
                 lambda: _chained(
                     CommitOutcomeUnknown("commit"), ConnectionResetError()

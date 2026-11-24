@@ -1,10 +1,11 @@
 """A database failure that reaches the request boundary is a 503, by method (#2670).
 
 A database timeout or an unreachable database (``is_database_unavailable``)
-that no route answered is 503 ``DATABASE_UNAVAILABLE``. A GET/HEAD saved
-nothing: the "not saved" detail and ``Retry-After``. Any other method may have
-(an earlier session of the request may have committed): a neutral detail
-telling the client to reload first, and no ``Retry-After``. A failure with
+that no route answered is 503 ``DATABASE_UNAVAILABLE``. A GET/HEAD is safe to
+retry: a detail that claims nothing about what was saved, and ``Retry-After``.
+Any other method may have saved (an earlier session of the request may have
+committed): a detail telling the client to reload first, and no
+``Retry-After``. A failure with
 ``CommitOutcomeUnknown`` on its chain keeps the answer it had.
 
 Driven over HTTP on a scratch app with the production handlers, as
@@ -52,7 +53,10 @@ from tests.unit.modules.case.test_turn_database_timeout_2280 import (
 
 pytestmark = pytest.mark.unit
 
-NOT_SAVED = "not saved"
+RETRY_SHORTLY = (
+    "The database could not be reached or did not answer in time. Please retry "
+    "shortly."
+)
 MAY_HAVE_BEEN_SAVED = (
     "The database could not be reached. Reload before retrying: the request "
     "may have been saved."
@@ -81,7 +85,7 @@ def _assert_read_answer(response: httpx.Response) -> None:
     assert response.status_code == 503, response.text
     assert response.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
     assert response.headers["retry-after"] == "5"
-    assert NOT_SAVED in response.json()["detail"]
+    assert response.json()["detail"] == RETRY_SHORTLY
 
 
 def _assert_write_answer(response: httpx.Response) -> None:

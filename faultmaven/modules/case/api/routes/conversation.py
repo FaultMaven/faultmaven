@@ -160,10 +160,11 @@ async def _turn_gated_for_viewer(
     return turn.model_copy(update={"sources": sources or []})
 
 
-#: The 503 a transcript read answers when the database does not answer (#2333).
+#: The 503 a transcript read answers when the database could not be reached or
+#: did not answer (#2333, #2670).
 MESSAGES_UNAVAILABLE_DETAIL = (
-    "The database did not answer in time, so the conversation could not be "
-    "loaded. Please retry shortly."
+    "The database could not be reached or did not answer in time, so the "
+    "conversation could not be loaded. Please retry shortly."
 )
 
 _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
@@ -171,8 +172,9 @@ _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
         "description": (
             "Unavailable; the conversation could not be read, and a retry "
             "after `Retry-After` seconds is safe. Told apart by "
-            f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database did not "
-            "answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication "
+            f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database could not "
+            "be reached or did not answer in time); `REVOCATION_STATE_UNKNOWN` "
+            "(the authentication "
             "every route requires could not read the token revocation store). "
             "A 503 with neither header is an unlabelled one: a service the "
             "route depends on is not available."
@@ -553,8 +555,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
         "description": (
             "Unavailable; nothing of the turn committed, and a retry after "
             "`Retry-After` seconds is safe. Told apart by `x-error-code`: "
-            f"`{DATABASE_UNAVAILABLE}` (the database did not answer while the "
-            "turn was being prepared or before its commit); "
+            f"`{DATABASE_UNAVAILABLE}` (the database could not be reached or "
+            "did not answer while the turn was being prepared or before its "
+            "commit); "
             "`TENANT_TURN_CAP_UNAVAILABLE` (the usage "
             "allowance could not be checked); `LLM_OVER_CAPACITY`, "
             "`LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI "

@@ -446,13 +446,16 @@ _UNAVAILABLE_SQLSTATES = frozenset({"57P01", "57P02", "57P03", "53300"})
 def _is_connect_failure(failure: BaseException) -> bool:
     """A connect failure on ``failure``'s cause chain, not yet named.
 
-    Read by type, errno or SQLSTATE, never by message: a refused, reset or
-    unresolvable connection (raised by the driver unwrapped at pool checkout),
-    an unreachable host or network, or a SQLSTATE in
-    ``_UNAVAILABLE_SQLSTATES`` or class ``08``, whether on a ``DBAPIError`` or
-    on the driver's own exception. Nothing with ``CommitOutcomeUnknown``,
-    ``DatabaseTimeout`` or ``DatabaseUnavailable`` on its chain: each is
-    already named.
+    Read by type, errno or SQLSTATE, never by message (the driver raises
+    each unwrapped at pool checkout): any ``ConnectionError`` (refused, reset,
+    aborted, a broken pipe), an unresolvable name, a Unix socket with no server
+    (``FileNotFoundError``), an unreachable host or network, an ``OSError``
+    with no errno (asyncio's "Multiple exceptions" when every address of a
+    host failed), or a SQLSTATE in ``_UNAVAILABLE_SQLSTATES`` or class ``08``,
+    whether on a ``DBAPIError`` or on the driver's own exception. Never a
+    ``PermissionError``: a socket the server's user cannot open is
+    configuration. Nothing with ``CommitOutcomeUnknown``, ``DatabaseTimeout``
+    or ``DatabaseUnavailable`` on its chain: each is already named.
     """
     chain = list(walk_cause_chain(failure))
     if any(
@@ -461,11 +464,13 @@ def _is_connect_failure(failure: BaseException) -> bool:
     ):
         return False
     for cause in chain:
-        if isinstance(
-            cause, (ConnectionRefusedError, ConnectionResetError, socket.gaierror)
-        ):
+        if isinstance(cause, PermissionError):
+            continue
+        if isinstance(cause, (ConnectionError, FileNotFoundError, socket.gaierror)):
             return True
-        if isinstance(cause, OSError) and cause.errno in _UNREACHABLE_ERRNOS:
+        if isinstance(cause, OSError) and (
+            cause.errno is None or cause.errno in _UNREACHABLE_ERRNOS
+        ):
             return True
         code = sqlstate(cause) or getattr(cause, "sqlstate", None)
         if isinstance(code, str) and (

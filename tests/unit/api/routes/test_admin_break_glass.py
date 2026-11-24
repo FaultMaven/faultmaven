@@ -545,4 +545,11 @@ class TestTranscriptReadFailuresAreErrors:
 
         assert resp.status_code == 503
         assert resp.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
+        assert resp.headers["retry-after"] == "5"
+        # The access-audit row above committed: the detail claims nothing
+        # about what was saved.
+        assert resp.json()["detail"] == (
+            "The database could not be reached or did not answer in time. "
+            "Please retry shortly."
+        )
         audit_repo.record_access.assert_awaited_once()

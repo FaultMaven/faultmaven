@@ -172,21 +172,28 @@ found on the cause chain of what they receive, before anything else.
 | `is_database_unavailable` (a `DatabaseTimeout` or `DatabaseUnavailable` on the cause chain, and no `CommitOutcomeUnknown`) on a GET or HEAD | 503 | `DATABASE_UNAVAILABLE` | 5 |
 | the same on any other method | 503 | `DATABASE_UNAVAILABLE` | — |
 
-A GET or HEAD saved nothing, so its detail says so and invites a retry
-(`database_unavailable_http_exception`). Any other method may have saved: an
-earlier session of the same request may have committed. Its detail is "The
+A GET or HEAD is safe to retry, so it is invited, with a detail that claims
+nothing about what was saved: "The database could not be reached or did not
+answer in time. Please retry shortly." A GET can commit before the database
+fails (an access-audit row, its own exit COMMIT). Any other method may have
+saved: an earlier session of the same request may have committed. Its detail
+is "The
 database could not be reached. Reload before retrying: the request may have
 been saved.", with no `Retry-After`, because neither idempotency (2xx only)
 nor dedup absorbs a resend (`database_unavailable_write_http_exception`).
 
 `get_db_session` names both: a timeout as `DatabaseTimeout`, and a connect
-failure (refused, reset, unresolvable, an unreachable host or network, SQLSTATE
-class `08`, `57P01`-`57P03` or `53300`) as `DatabaseUnavailable`, the latter
+failure (any `ConnectionError`, an unresolvable name, a Unix socket with no
+server, an unreachable host or network, an `OSError` with no errno, SQLSTATE
+class `08`, `57P01`-`57P03` or `53300`; never a `PermissionError`) as
+`DatabaseUnavailable`, the latter
 only before the session's transaction began and before anything on it
 committed. The same driver error later is a dropped connection whose work may
 have landed, and passes through as itself. `28P01` and `3D000` are
-configuration faults and stay a 500. A COMMIT timeout carries
-`CommitOutcomeUnknown` and is never "unavailable".
+configuration faults and stay a 500. Only the case repository's save marks a
+COMMIT it cannot vouch for as `CommitOutcomeUnknown`, which is never
+"unavailable"; `get_db_session`'s own exit COMMIT is not marked, and its
+timeout is a plain `DatabaseTimeout`, answered by method.
 
 Not every route reaches the boundary with it: a route arm that catches the
 failure and answers it, or swallows it, answers what it always did (#1632).
