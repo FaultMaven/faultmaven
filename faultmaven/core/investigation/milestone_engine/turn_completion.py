@@ -184,8 +184,8 @@ def _outcome_statement_for_turn(
 ) -> str | None:
     """The "**Case record:**" line for the turn: each closed-set fact that
     changed between the turn-start snapshot and the turn-final record, less
-    what the turn's prose states (pin 2: the two records and the restore
-    target alone)."""
+    what the turn's prose states (pin 2: the two records and the snapshot's
+    turn-start values alone)."""
     if baseline is None:
         return None
     return outcome_statement(outcome_changes(baseline, now), stated)

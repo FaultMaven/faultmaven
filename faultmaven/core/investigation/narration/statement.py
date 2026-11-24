@@ -5,8 +5,9 @@ the turn-final record over the closed field set (rulings of 2026-11-22 Q4 (a)
 and 2026-11-24): the problem's status, the identification leg and its fallen
 pool, and the accepted attempts. ``outcome_statement`` renders the changes the
 turn's own prose does not state (``stated``, ``offer_stated``) as one
-"**Case record:**" line. Both read the two records and the turn-start restore
-target alone (pin 2); the restore target's owners are the revision offer's and
+"**Case record:**" line. Both read the two records, the turn-start restore
+target and the actions accepted at turn start alone (pin 2); the restore
+target's owners are the revision offer's and
 the invalidation's ``prior_status`` (``problem_status.restores_to``).
 """
 
@@ -60,12 +61,12 @@ class OutcomeBaseline:
     the status its problem's hold or finding restores (``restores_to``),
     whether its problem status is the live one (a failed write at the last
     save leaves them apart, and no problem clause is then stated), and the
-    turn's number."""
+    actions already accepted then (``accepted``)."""
 
     record: Optional[CaseOutcome]
     restores_to: Optional[ProblemStatus]
     problem_comparable: bool
-    turn: int
+    accepted: frozenset
 
 
 _HOLDS = frozenset({ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED})
@@ -135,18 +136,19 @@ def _cause(prior: CaseOutcome, now: CaseOutcome) -> list:
     return []
 
 
-def _fixes(prior: CaseOutcome, now: CaseOutcome, turn: int) -> list:
-    """Each attempt accepted this turn, by ``action_id``: its
-    ``accepted_in_turn`` is this turn's and the prior did not hold one. An
-    earlier turn's acceptance a stale snapshot lacks is not this turn's.
-    Window 0 has none."""
+def _fixes(prior: CaseOutcome, now: CaseOutcome, accepted: frozenset) -> list:
+    """Each attempt accepted this turn, by ``action_id``: neither the prior
+    record nor the turn-start actions held its acceptance, whatever turn it
+    is dated to (a fix dated back to the report, #2427, or carried through a
+    hold). Window 0 has none."""
     before = {a.action_id: a.accepted_in_turn for a in prior.attempts}
     return [
         Change(OutcomeChange.FIX_CARRIED_OUT, a)
         for a in now.attempts
         if a.action_id is not None
-        and a.accepted_in_turn == turn
+        and a.accepted_in_turn is not None
         and before.get(a.action_id) is None
+        and a.action_id not in accepted
     ]
 
 
@@ -160,7 +162,7 @@ def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
     return [
         *_problem(base, prior.problem.status, now.problem.status),
         *_cause(prior, now),
-        *_fixes(prior, now, base.turn),
+        *_fixes(prior, now, base.accepted),
     ]
 
 

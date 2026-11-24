@@ -145,9 +145,12 @@ def _kinds(changes) -> list:
     return [c.kind for c in changes]
 
 
-def _base(record, *, restores=None, comparable=True, turn=0) -> OutcomeBaseline:
+def _base(record, *, restores=None, comparable=True, accepted=()) -> OutcomeBaseline:
     return OutcomeBaseline(
-        record=record, restores_to=restores, problem_comparable=comparable, turn=turn
+        record=record,
+        restores_to=restores,
+        problem_comparable=comparable,
+        accepted=frozenset(accepted),
     )
 
 
@@ -255,7 +258,7 @@ def test_the_baseline_reads_restores_to_by_the_records_own_status(spy):
 def test_the_baseline_of_a_case_with_no_record_holds_none():
     case = _case(_V)
     case.progress.outcome = None
-    assert outcome_baseline(case) == OutcomeBaseline(None, None, False, 4)
+    assert outcome_baseline(case) == OutcomeBaseline(None, None, False, frozenset())
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +282,7 @@ def _silent_with_control(case, move) -> None:
     control = copy.deepcopy(case)
     move(case)
     move(control)
-    _carried_out(control, baseline.turn)
+    _carried_out(control, case.current_turn)
     assert outcome_changes(baseline, _record(case, case.progress.outcome)) == []
     assert _kinds(
         outcome_changes(baseline, _record(control, control.progress.outcome))
@@ -370,7 +373,9 @@ def test_a_baseline_the_live_status_disagrees_with_states_no_problem_clause():
     baseline = outcome_baseline(case)
     verify_problem(case, via="t")
     now = _record(case, case.progress.outcome)
-    stale = OutcomeBaseline(baseline.record, baseline.restores_to, False, baseline.turn)
+    stale = OutcomeBaseline(
+        baseline.record, baseline.restores_to, False, baseline.accepted
+    )
     assert _kinds(outcome_changes(baseline, now)) == [OutcomeChange.PROBLEM_VERIFIED]
     assert outcome_changes(stale, now) == []
 
@@ -501,6 +506,16 @@ def test_leaving_a_finding_and_verifying_states_no_backstop_cause():
     assert _record(case).cause.identification_leg == "rcc"
 
 
+def test_a_decline_onto_verified_with_a_new_backstop_leg_states_no_cause():
+    """The residual's sibling, pinned: the decline restores VERIFIED and an
+    rcc set the same turn is not stated. Control: off the hold it is."""
+    case = _case(_V)
+    _propose(case)
+    assert _turn_of(case, lambda c: (_decline(c), _rcc(c))) == []
+    assert _record(case).cause.identification_leg == "rcc"
+    assert _turn_of(_case(_V), _rcc) == [OutcomeChange.CAUSE_IDENTIFIED]
+
+
 def test_a_hold_ending_on_a_chain_leg_states_it_and_a_backstop_does_not():
     """The residual, pinned: a revision confirm that newly identifies on a
     backstop leg states no cause; on the chain leg it does."""
@@ -538,33 +553,31 @@ def test_an_accepted_attempt_states_once_unkinded_as_a_fix():
     before = _record(case)
     fix = _fix(case, turn=6)
     now = _record(case, before)
-    changes = outcome_changes(_base(before, turn=6), now)
+    changes = outcome_changes(_base(before), now)
     assert _fixes(changes) == [(fix.action_id, 6, None)]
     assert outcome_statement(changes, frozenset()) == (
         HEAD + "a fix was carried out (turn 6)."
     )
-    assert outcome_changes(_base(now, turn=7), _record(case, now)) == []
+    assert outcome_changes(_base(now), _record(case, now)) == []
 
 
 def test_an_earlier_turns_fix_a_stale_snapshot_lacks_is_not_this_turns():
-    """Only changes this turn made are stated (Q4 (a)): a fix accepted at 6
-    that a snapshot folded before it lacks is not turn 7's."""
+    """Only changes this turn made are stated (Q4 (a)): a fix the snapshot
+    lacks but the case had accepted at turn start is not this turn's."""
     case, _root, _hyp = _identified_case()
     stale = _record(case)
-    _fix(case, turn=6)
+    fix = _fix(case, turn=6)
     now = _record(case, stale)
-    assert outcome_changes(_base(stale, turn=7), now) == []
-    # Control: the same records on the turn that accepted it.
-    assert _kinds(outcome_changes(_base(stale, turn=6), now)) == [
-        OutcomeChange.FIX_CARRIED_OUT
-    ]
+    assert outcome_changes(_base(stale, accepted={fix.action_id}), now) == []
+    # Control: the same records when the turn accepted it.
+    assert _kinds(outcome_changes(_base(stale), now)) == [OutcomeChange.FIX_CARRIED_OUT]
 
 
 def test_an_interception_states_a_workaround():
     case, _root, _hyp = _identified_case()
     before = _record(case)
     _fix(case, fix_kind="interception", target_ids=[_ROOT_ID])
-    changes = outcome_changes(_base(before, turn=6), _record(case, before))
+    changes = outcome_changes(_base(before), _record(case, before))
     assert outcome_statement(changes, frozenset()) == (
         HEAD + "a workaround was carried out (turn 6)."
     )
@@ -583,7 +596,7 @@ def test_a_second_attempt_states_only_itself():
         state="accepted",
     )
     case.proposed_actions.append(second)
-    changes = outcome_changes(_base(before, turn=9), _record(case, before))
+    changes = outcome_changes(_base(before), _record(case, before))
     assert _fixes(changes) == [(second.action_id, 9, None)]
 
 
@@ -595,6 +608,11 @@ def test_window_zero_states_nothing():
     now = _record(case, before)
     assert [a.action_id for a in now.attempts] == [None], "premise: window 0"
     assert _fixes(outcome_changes(_base(before), now)) == []
+    # Control: the same turn with a fix carried out states that fix alone.
+    fix = _fix(case, turn=9)
+    assert _fixes(outcome_changes(_base(before), _record(case, before))) == [
+        (fix.action_id, 9, None)
+    ]
 
 
 def test_a_carried_failed_attempt_states_nothing():
@@ -605,14 +623,54 @@ def test_a_carried_failed_attempt_states_nothing():
     # Control: it stated on the turn it was accepted.
     unfixed = copy.deepcopy(failed)
     unfixed.proposed_actions.clear()
-    assert _fixes(outcome_changes(_base(_record(unfixed), turn=8), prior)) == [
+    assert _fixes(outcome_changes(_base(_record(unfixed)), prior)) == [
         (attempt.action_id, 8, None)
     ]
     failed.proposed_actions.clear()
     now = _record(failed, prior)
     carried = [a.action_id for a in now.attempts if a.action_id is not None]
     assert carried == [attempt.action_id], "carried"
-    assert _fixes(outcome_changes(_base(prior, turn=8), now)) == []
+    assert _fixes(outcome_changes(_base(prior), now)) == []
+
+
+def _this_turns_fixes(base, case) -> list:
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    changes = outcome_changes(base, case.progress.outcome)
+    return outcome_statement(changes, frozenset())
+
+
+async def test_a_fix_dated_back_to_its_report_is_this_turns():
+    """#2427: accepted at turn 11, dated to the report at 10; turn 11 made
+    the change, so it is stated, dated as the record holds it."""
+    from tests.unit.core.investigation import test_fix_registration_lag_2427 as lag
+
+    eng, case, _hyp = lag._identified()
+    await lag._reported(eng, case)
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    case.current_turn = 11
+    base = outcome_baseline(case)
+    await lag._registered(eng, case, lag._PREVIOUS)
+    assert _this_turns_fixes(base, case) == HEAD + "a fix was carried out (turn 10)."
+
+
+async def test_a_fix_carried_through_a_hold_is_the_confirming_turns():
+    """Accepted on hold turn 6, registered when turn 7 confirms the revision:
+    turn 7 states it, dated 6."""
+    from tests.unit.core.investigation import test_solution_attempts_2105 as sa
+    from tests.unit.core.investigation.fix_turns_2039 import _turn
+
+    eng, case = sa._identified()
+    await _turn(eng, case, 5, solutions_to_add=[sa._fix(sa._SECOND)])
+    (fix,) = sa._solutions(case)
+    sa._revise(case)
+    await _turn(eng, case, 6, milestones=sa._accepted(fix.action_id))
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    case.current_turn = 7
+    base = outcome_baseline(case)
+    await sa._confirm(eng, case, 7)
+    statement = _this_turns_fixes(base, case)
+    assert statement is not None
+    assert statement.endswith("a fix was carried out (turn 6).")
 
 
 # ---------------------------------------------------------------------------
@@ -941,13 +999,20 @@ def _cause_work():
     )
 
 
-async def _process(engine, case, message, response, *, after_save=None):
-    """One turn: the case saved with its record, then ``process_turn``."""
+async def _process(engine, case, message, response, *, after_save=None, during=None):
+    """One turn: the case saved with its record, then ``process_turn``;
+    ``during`` runs on the case while the model answers."""
     record_case_outcome(case, at=WritePoint.COMMIT)
     if after_save is not None:
         after_save(case)
     case.current_turn += 1
-    engine.generator.generate_structured_output = AsyncMock(return_value=response)
+
+    async def _answer(*args, **kwargs):
+        if during is not None:
+            during(case)
+        return response
+
+    engine.generator.generate_structured_output = AsyncMock(side_effect=_answer)
     result = await engine.process_turn(
         case=case, user_message=message, redaction_ctx=None
     )
@@ -1019,18 +1084,17 @@ def _retract_and_propose():
     )
 
 
-def _accepted_unrecorded(case, turn=None, **kw):
-    """A fix the stored record does not hold, accepted at ``turn`` (the turn
-    about to run, by default): the positive control of a turn on which no
-    closed-set fact but the problem can move."""
-    _carried_out(case, case.current_turn + 1 if turn is None else turn, **kw)
+def _accepted_mid_turn(case, **kw):
+    """A fix accepted during the turn, outside its cycle: the positive control
+    of a turn on which no closed-set fact but the problem can move."""
+    _carried_out(case, case.current_turn, **kw)
 
 
 async def test_the_residual_a_retract_and_propose_turn_says_no_unconfirmed():
     """Ruled residual: one response retracts the confirmed symptom and
     proposes a revision; the reply asks for the revision and says no "no
     longer confirmed" (nor, across the hold, that the rcc cause went).
-    Positive control: a fix the snapshot does not hold is stated (cause work
+    Positive control: a fix accepted during the turn is stated (cause work
     and fixes are held on a revision turn, so nothing else can move)."""
     await _residual_turn()
 
@@ -1043,7 +1107,7 @@ async def _residual_turn():
         case,
         "it was a load test",
         _retract_and_propose(),
-        after_save=_accepted_unrecorded,
+        during=_accepted_mid_turn,
     )
     updated = result["case_updated"]
     assert updated.progress.problem_status == _P
@@ -1055,13 +1119,13 @@ async def _residual_turn():
 
 async def test_the_decline_tail_leaves_the_case_unverified_with_no_clause():
     """Accepted tail: the decline of that revision returns the case to
-    UNVERIFIED, which states nothing. Positive control: a fix the snapshot
-    does not hold, carried out, is stated (cause work and a fix's licence are
-    refused on an unverified problem, so nothing else can move)."""
+    UNVERIFIED, which states nothing. Positive control: a fix accepted during
+    the turn is stated (cause work and a fix's licence are refused on an
+    unverified problem, so nothing else can move)."""
     engine, case = await _residual_turn()
     turn = case.current_turn + 1
     reply, result = await _process(
-        engine, case, "no", _response(), after_save=_accepted_unrecorded
+        engine, case, "no", _response(), during=_accepted_mid_turn
     )
     updated = result["case_updated"]
     assert updated.progress.problem_status == _U
@@ -1129,10 +1193,10 @@ async def test_a_second_failure_states_nothing_and_is_counted(monkeypatch):
     counter.labels.return_value.inc.assert_called_once_with()
 
 
-async def test_a_resolve_confirmation_states_neither_fact_it_confirms():
-    """The confirmation names the cause and the confirming fix, both of which
-    the stale snapshot lacks: neither is stated twice. Positive control: a
-    workaround it does not name, carried out too, is stated."""
+async def test_a_resolve_confirmation_states_neither_fact_it_confirms(monkeypatch):
+    """The confirmation names the cause the stale snapshot lacks and the
+    confirming fix, carried out this turn: no Case record line repeats them.
+    Positive control: those two facts changed this turn."""
     from tests.unit.core.investigation.test_resolution_backstop_turn import (
         _confirmed_case,
     )
@@ -1142,19 +1206,31 @@ async def test_a_resolve_confirmation_states_neither_fact_it_confirms():
     conclusion = case.root_cause_conclusion
 
     def _stale(c):
-        # The snapshot was folded before the conclusion and the attempts.
+        # The snapshot was folded before the conclusion.
         c.root_cause_conclusion = None
         record_case_outcome(c, at=WritePoint.COMMIT)
         c.root_cause_conclusion = conclusion
-        _accepted_unrecorded(c, turn=c.current_turn)
-        _accepted_unrecorded(c, fix_kind="interception", description="fail over")
 
-    engine = _revision_engine()
-    reply, _ = await _process(engine, case, "done", _response(), after_save=_stale)
+    seen = []
+    real = turn_completion._outcome_statement_for_turn
+
+    def _spy(baseline, now, stated):
+        seen.append(_kinds(outcome_changes(baseline, now)))
+        return real(baseline, now, stated)
+
+    monkeypatch.setattr(turn_completion, "_outcome_statement_for_turn", _spy)
+    reply, _ = await _process(
+        _revision_engine(),
+        case,
+        "done",
+        _response(),
+        after_save=_stale,
+        during=_accepted_mid_turn,
+    )
     assert f"- **Root cause**: {conclusion.root_cause}" in reply
-    assert "- **Solution**: restart the orders service (carried out turn 0)" in reply
-    assert reply.endswith(SEP + HEAD + "a workaround was carried out (turn 1).")
-    assert "a fix was carried out" not in reply, "turn 0's, not this turn's"
+    assert "- **Solution**: restart the orders service (carried out turn 1)" in reply
+    assert HEAD not in reply
+    assert seen == [[OutcomeChange.CAUSE_IDENTIFIED, OutcomeChange.FIX_CARRIED_OUT]]
 
 
 # ---------------------------------------------------------------------------
@@ -1170,15 +1246,12 @@ async def _exit_changes(engine, case, message, **kw) -> tuple:
     )
 
     record_case_outcome(case, at=WritePoint.COMMIT)
-    case.current_turn += 1
     baseline = outcome_baseline(case)
-    case.current_turn -= 1
     result = await _turn(engine, case, message, **kw)
-    assert case.current_turn == baseline.turn
     saved = compute_case_outcome(case.progress.outcome, case, at=WritePoint.COMMIT)
     # Control: the same turn with a fix carried out states it.
     control = copy.deepcopy(case)
-    _carried_out(control, baseline.turn)
+    _carried_out(control, case.current_turn)
     moved = compute_case_outcome(
         control.progress.outcome, control, at=WritePoint.COMMIT
     )

@@ -305,16 +305,22 @@ def outcome_baseline(case: Any) -> OutcomeBaseline:
     """The turn-start snapshot the outcome statement compares against (#2811
     S2c-3a), taken before any write of the turn: a deep copy of the record,
     the status its problem's hold or finding restores, selected by the
-    record's own status, whether that status is the live one, and the turn."""
+    record's own status, whether that status is the live one, and the ids of
+    the actions already accepted."""
+    accepted = frozenset(
+        a.action_id
+        for a in getattr(case, "proposed_actions", None) or ()
+        if a.state == "accepted"
+    )
     record = case.progress.outcome
     if record is None:
-        return OutcomeBaseline(None, None, False, case.current_turn)
+        return OutcomeBaseline(None, None, False, accepted)
     status = record.problem.status
     return OutcomeBaseline(
         record=record.model_copy(deep=True),
         restores_to=restores_to(case, status),
         problem_comparable=status == case.progress.problem_status,
-        turn=case.current_turn,
+        accepted=accepted,
     )
 
 

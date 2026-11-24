@@ -1194,20 +1194,21 @@ the turn and the turn's own prose does not state it
 - **The facts** (`outcome_changes`): the problem confirmed, no longer
   confirmed, or shown not present; a root cause identified, no longer
   standing, standing again, or no longer identified; each attempt accepted
-  this turn (its `accepted_in_turn` is the turn's, which the snapshot did
-  not hold), keyed by `action_id` ("a fix was carried
-  out (turn t)", an interception "a workaround …", an unkinded attempt a
-  fix; window 0 has none). The cause has fallen when a root fell and the
-  confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also holds
-  an identified root, and HELD_OPEN or IDENTIFICATION_CONTESTED can mask the
-  reason). Windows, mitigation and bookkeeping are not read (S3 adds the
+  this turn (neither the snapshot nor the actions accepted at turn start
+  held it, whatever turn it is dated to), keyed by `action_id` ("a fix was
+  carried out (turn t)", an interception "a workaround …", an unkinded
+  attempt a fix; window 0 has none). The cause has fallen when a root fell
+  and the confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also
+  holds an identified root, and HELD_OPEN or IDENTIFICATION_CONTESTED can
+  mask the reason). Windows, mitigation and bookkeeping are not read (S3 adds the
   first two).
 - **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
-  copy of the record before any write of the turn, and the turn) and the
-  turn-final record: the cycle's, or the narration's fold when the cycle's write
-  failed; when that fold fails too, nothing is stated. A record minted this
-  turn states nothing. The statement is rendered from those two records and
-  the turn-start restore target alone (pin 2).
+  copy of the record before any write of the turn, and the actions accepted
+  then) and the turn-final record: the cycle's, or the narration's fold
+  when the cycle's write failed; when that fold fails too, nothing is
+  stated. A record minted this turn states nothing. The statement is
+  rendered from those two records and the turn-start values beside the
+  record (the restore target, the accepted actions) alone (pin 2).
 - **The restoration rule.** A hold or a finding reads as the status it
   restores to (`problem_status.restores_to`, the one reading of its two
   owners: the revision offer's and the invalidation's `prior_status`), so a
@@ -1239,9 +1240,8 @@ the turn and the turn's own prose does not state it
   statement reports. One response that retracts a confirmed symptom and
   proposes a revised statement says no "no longer confirmed", and a decline
   of that revision then leaves the case unverified with no clause. A
-  revision-confirm turn that newly identifies on a backstop leg states no
-  cause, nor does a turn that leaves a false-alarm finding and verifies the
-  problem (INVALIDATED → VERIFIED) when the leg it brings back is a backstop.
+  turn that leaves a hold onto VERIFIED and newly sets a backstop leg
+  states no cause (a revision confirmed or declined, a finding withdrawn).
   A save-time fold that failed and was swallowed leaves the next
   turn's snapshot stale. A root swapped for another with the leg set
   throughout states nothing.
