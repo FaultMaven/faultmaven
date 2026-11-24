@@ -453,3 +453,100 @@ class TestLocalProvider:
 
         assert result.stop_reason is StopReason.STOP
         assert result.is_truncated is False
+
+
+# --------------------------------------------------------------------------
+# A refusal stated in the provider's own field (#2694)
+# --------------------------------------------------------------------------
+
+
+_REFUSAL = {
+    "role": "assistant",
+    "content": None,
+    "refusal": "I'm sorry, I can't assist with that request.",
+}
+
+
+def _openai_completion(message: dict) -> dict:
+    """A chat completion; on a refusal ``finish_reason`` stays ``"stop"``."""
+    return {
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
+    }
+
+
+_ANSWERED = {"content": {"parts": [{"text": "an answer"}]}, "finishReason": "STOP"}
+
+_OPENAI_SHAPED = pytest.mark.parametrize(
+    "provider_factory",
+    [
+        lambda: OpenAIProvider(
+            _config("openai", "https://api.openai.com/v1", "gpt-4o")
+        ),
+        lambda: FireworksProvider(
+            _config("fireworks", "https://api.fireworks.ai/inference/v1", "m")
+        ),
+        lambda: GroqProvider(
+            _config("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b")
+        ),
+        lambda: LocalProvider(_config("local", "http://vllm:8000/v1", "hermes")),
+    ],
+    ids=["openai", "fireworks", "groq", "local-compat"],
+)
+
+
+@pytest.mark.asyncio
+class TestRefusalIsContentFilter:
+    """Read from the finish field alone, an OpenAI-shaped refusal was ``STOP``
+    with no body (the local transport raised on it), and a blocked Gemini
+    prompt ``UNKNOWN``: both ran the truncation ladder as a cut body."""
+
+    @_OPENAI_SHAPED
+    @pytest.mark.parametrize(
+        "message,expected",
+        [
+            (_REFUSAL, StopReason.CONTENT_FILTER),
+            ({"content": "an answer", "refusal": None}, StopReason.STOP),
+            ({"content": "an answer"}, StopReason.STOP),
+        ],
+        ids=["refusal", "refusal-null", "refusal-absent"],
+    )
+    async def test_message_refusal(self, provider_factory, message, expected):
+        provider = provider_factory()
+        session = _mock_aiohttp_session(_openai_completion(message))
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is expected
+        # Content is read as before: empty for the refusal, the answer otherwise.
+        assert (result.content or "") == (message["content"] or "")
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            # A blocked prompt: no candidates, the block in promptFeedback.
+            # OTHER is not in the alias table, and is still a block.
+            ({"promptFeedback": {"blockReason": "SAFETY"}}, StopReason.CONTENT_FILTER),
+            ({"promptFeedback": {"blockReason": "OTHER"}}, StopReason.CONTENT_FILTER),
+            # With candidates, finishReason keeps the reading.
+            ({"candidates": [_ANSWERED], "promptFeedback": {}}, StopReason.STOP),
+            (
+                {
+                    "candidates": [_ANSWERED],
+                    "promptFeedback": {"blockReason": "SAFETY"},
+                },
+                StopReason.STOP,
+            ),
+        ],
+        ids=["blocked-safety", "blocked-other", "answered", "answered-beside-block"],
+    )
+    async def test_gemini_prompt_feedback(self, body, expected):
+        provider = GeminiProvider(
+            _config("gemini", "https://generativelanguage.googleapis.com/v1beta", "g")
+        )
+        body = {**body, "usageMetadata": {"promptTokenCount": 8, "totalTokenCount": 8}}
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is expected

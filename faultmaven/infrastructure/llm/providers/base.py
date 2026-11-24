@@ -215,6 +215,19 @@ def normalize_stop_reason(raw: Any) -> StopReason:
     return _STOP_REASON_ALIASES.get(text, StopReason.UNKNOWN)
 
 
+def choice_stop_reason(choice: Dict[str, Any]) -> StopReason:
+    """The stop reason of one OpenAI-shaped ``choices[]`` entry.
+
+    A refusal is stated in ``message.refusal``, not in ``finish_reason``, which
+    stays ``"stop"`` beside an empty body (#2694). Read alone, the finish field
+    hands the refusal on as a natural stop with nothing in it.
+    """
+    refusal = (choice.get("message") or {}).get("refusal")
+    if isinstance(refusal, str) and refusal:
+        return StopReason.CONTENT_FILTER
+    return normalize_stop_reason(choice.get("finish_reason"))
+
+
 def extract_provider_error_code(body: Any) -> Optional[str]:
     """The machine-readable error code from a provider's error response body.
 

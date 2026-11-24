@@ -825,6 +825,14 @@ class GeminiProvider(BaseLLMProvider):
         _candidates = response_data.get("candidates") or []
         _candidate = _candidates[0] if _candidates else {}
         stop_reason = normalize_stop_reason(_candidate.get("finishReason"))
+        # A blocked PROMPT has no candidates: the block is stated in
+        # promptFeedback.blockReason, and it is a block whatever reason it
+        # names, so a reason the table does not map still reads as one (#2694).
+        _block_reason = (response_data.get("promptFeedback") or {}).get("blockReason")
+        if not _candidates and _block_reason:
+            stop_reason = normalize_stop_reason(_block_reason)
+            if stop_reason is StopReason.UNKNOWN:
+                stop_reason = StopReason.CONTENT_FILTER
 
         # Truncation handling stays behaviour-preserving for STRUCTURED calls:
         # a cut JSON body is unusable, and the engine's max_tokens ladder is

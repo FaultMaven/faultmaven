@@ -26,6 +26,7 @@ from .base import (
     LLMResponse,
     ProviderConfig,
     StopReason,
+    choice_stop_reason,
     extract_provider_error_code,
     normalize_stop_reason,
     post_waiting_out_rate_limits,
@@ -553,7 +554,7 @@ class LocalProvider(BaseLLMProvider):
                     choice = data["choices"][0]
                     message = choice["message"]
                     # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
-                    stop_reason = normalize_stop_reason(choice.get("finish_reason"))
+                    stop_reason = choice_stop_reason(choice)
                     content = message.get("content") or ""
                     self.logger.debug(f"Raw content: content_len={len(content)}")
 
@@ -574,8 +575,9 @@ class LocalProvider(BaseLLMProvider):
                             content = "{}"
 
                     # Only validate when there are no tool_calls — a valid
-                    # function-calling response legitimately has empty content.
-                    if not tool_calls:
+                    # function-calling response legitimately has empty content,
+                    # and so does a refusal, which carries its reason (#2694).
+                    if not tool_calls and stop_reason is not StopReason.CONTENT_FILTER:
                         try:
                             content = self._validate_response_content(content)
                             self.logger.debug(
