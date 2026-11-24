@@ -30,6 +30,10 @@ from typing import (
 
 import jwt
 
+from faultmaven.config.deployment_coherence import (
+    DeploymentCoherenceError,
+    local_auth_refusal_text,
+)
 from faultmaven.exceptions import InactiveAccountError
 from faultmaven.modules.auth.domain.models.user import User
 from faultmaven.utils.exception_name import exception_log_name
@@ -2246,7 +2250,8 @@ def build_hs256_token_generator(
     Raises:
         SigningKeyUnavailableError: ``JWT_SECRET_KEY`` is unset. In local mode
             ``get_settings()`` generates and persists one, so this means the
-            secret was explicitly cleared or the persist failed.
+            secret was explicitly cleared, the persist failed, or the coherence
+            gate refuses the settings (none is minted for them, #2705).
     """
     secret = getattr(settings.security, "jwt_secret_key", None)
     if not secret:
@@ -2367,8 +2372,14 @@ def build_jwt_token_generator(
             (``get_settings()`` normally generates and persists one, so this
             means it was explicitly cleared or the persist failed), or OAuth
             mode called without the resolved RSA pair.
+        DeploymentCoherenceError: Local mode on settings the coherence gate
+            refuses, with its text for the rule (#2705).
     """
     if _auth_mode_name(settings) == "local":
+        refusal = local_auth_refusal_text(settings)
+        if refusal:
+            logger.critical(refusal)
+            raise DeploymentCoherenceError(refusal)
         return build_hs256_token_generator(
             settings,
             revocation_store,

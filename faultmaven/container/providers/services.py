@@ -1278,6 +1278,7 @@ def create_signing_token_generator(
 
     Raises:
         SigningKeyUnavailableError: The selected mode has no usable key.
+        DeploymentCoherenceError: Local mode on settings the gate refuses (#2705).
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         build_jwt_token_generator,
@@ -1568,6 +1569,7 @@ def register_services(container: BaseDIContainer) -> None:
         container.signing_token_generator = signing_generator
         container._register_service("signing_token_generator", signing_generator)
     except SigningKeyUnavailableError as e:
+        # (A DeploymentCoherenceError, #2705, is not caught: it ends composition.)
         # Where the deployment must not degrade this refuses the start (#3003).
         # Elsewhere the same misconfiguration breaks sign-in, which reports it
         # at the request the operator is looking at; named here so the cause

@@ -21,7 +21,13 @@ Coherence Gate) and ADR-004 in ``faultmaven-doc-internal``.
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
+
+from faultmaven.config.local_auth_refusal import (
+    _auth_mode_name,
+    _cloud_without_oauth,
+    _multi_tenant_outside_cloud,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +82,19 @@ def _storage_backend_name(settings: Any) -> str:
     return str(getattr(backend, "value", backend)).strip().lower()
 
 
-def _auth_mode_name(auth: Any) -> str:
-    """Return the configured auth mode as a plain lowercase name.
+def local_auth_refusal_text(settings: Any) -> Optional[str]:
+    """This gate's text for its rule refusing local auth here, or None (#2705)."""
+    if _cloud_without_oauth(settings):
+        return (
+            f"AUTH_MODE must be 'oauth' for cloud (got "
+            f"'{_auth_mode_name(settings.auth)}'). Local auth bypasses "
+            "authentication — invalid on a multi-tenant cloud deployment."
+        )
+    if _multi_tenant_outside_cloud(settings):
+        from faultmaven.providers.tenancy.factory import MULTI_REQUIRES_CLOUD_MSG
 
-    ``AuthMode`` is a ``(str, Enum)``, so ``str(member)`` yields
-    ``'AuthMode.OAUTH'`` — matching on that is how the cloud auth gate refused
-    every correctly-configured cloud boot while the standalone warning stayed
-    dead (#881). Read ``.value`` when present, and normalize so a plain-string
-    override matches too. Both call sites share this one predicate so they
-    cannot drift apart again.
-    """
-    mode = getattr(auth, "auth_mode", None)
-    if mode is None:
-        return "local"
-    return str(getattr(mode, "value", mode)).strip().lower()
+        return MULTI_REQUIRES_CLOUD_MSG
+    return None
 
 
 def _check_cloud(settings: Any) -> List[str]:
@@ -100,12 +105,8 @@ def _check_cloud(settings: Any) -> List[str]:
     security = settings.security
 
     # 1. Auth must be OAuth (RS256), not the local bypass.
-    auth_mode = _auth_mode_name(auth)
-    if auth_mode != "oauth":
-        problems.append(
-            f"AUTH_MODE must be 'oauth' for cloud (got '{auth_mode}'). Local auth "
-            "bypasses authentication — invalid on a multi-tenant cloud deployment."
-        )
+    if _cloud_without_oauth(settings):
+        problems.append(local_auth_refusal_text(settings))
     else:
         has_private = bool(_plain(security, "jwt_private_key")) or bool(
             getattr(security, "jwt_private_key_path", None)
@@ -258,7 +259,7 @@ def _check_tenant_provider_coherent(settings: Any) -> None:
             f"(expected '{BUILTIN_SINGLE}' or '{BUILTIN_MULTI}')."
         )
 
-    if not settings.is_cloud:
+    if _multi_tenant_outside_cloud(settings):
         raise DeploymentCoherenceError(MULTI_REQUIRES_CLOUD_MSG)
 
 
