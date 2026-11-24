@@ -75,6 +75,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `case-inflight:`, `case-deleting:`** (case lease, delete tombstone) | Redis | operational metadata, no content | case | stamped in the key | `infrastructure/concurrency/inflight.py` | outside: a lease held around the turn's work (and around a `POST /cases/{case_id}/title` call's, #2580), not data the turn commits |
 | **Redis `turn-inflight:`** (keyed-turn claim) | Redis | operational metadata, no content | case | stamped in the key | the case module's `turn_idempotency.py` | outside: taken before the turn, released once it is answered |
 | **Redis `kb-inflight:`** (keyed KB request claim) | Redis | operational metadata, no content | user | stamped in the key | the knowledge module's `request_idempotency.py` | not written by turns |
+| **Redis `idem-inflight:`** (keyed-request claim, #2655) | Redis | operational metadata, no content | user | none: the caller's identity is hashed into the key, as in `idempotency:` | `api/middleware/idempotency.py` | not written by turns (the turn route is never replayed) |
 | **Redis `job:`** | Redis | no writer | — | — | none: `JobService` is composed, and nothing creates a job | not written |
 | **Redis `lock:report_generation:case:`** | Redis | no writer | — | — | none: `ReportLockManager` is never constructed | not written |
 | **Redis `auth:`** (fallback user store) | Redis | customer content: account records | user | none | `infrastructure/auth/user_store.py`'s `RedisUserStore`, composed only when the database user store is not | not written by turns |
@@ -111,6 +112,7 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **Redis `case-inflight:`, `case-deleting:`** | the tombstone is removed when its delete is refused or fails | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 30 s after the holder's last renewal (every 10 s), plus a 5 s key margin for the lease |
 | **Redis `turn-inflight:`** | released once the turn is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | the turn's response bound plus 30 s |
 | **Redis `kb-inflight:`** | released once the request is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
+| **Redis `idem-inflight:`** | released once the request is answered, or, best effort, by a request cancelled before its route ran (a shutdown's anyio scope cancel can cut that release short; the claim then lapses at its TTL) | none needed: bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
 | **Redis `job:`** | no writer | — | left, reported under no known prefix | 24 h, were one written |
 | **Redis `lock:report_generation:case:`** | no writer | — | left, reported under no known prefix | 300 s, were one written |
 | **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix | none |
@@ -210,22 +212,22 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:205-212`.
 - Session pointers: `modules/case/domain/services/case_erasure.py:14-31`;
   `modules/case/domain/services/case_service.py:323-327`, `:783-787`.
-- `idempotency:`: `api/middleware/idempotency.py:185-186`, `:772-781`, `:823-845`, `:599-603`.
+- `idempotency:`: `api/middleware/idempotency.py:242-243`, `:967-984`, `:1020-1048`, `:794-802`.
   Delete, case: a route declares the case its request acts on
-  (`api/middleware/idempotency.py:144-176`, read at `:400-411`): the case router
+  (`api/middleware/idempotency.py:169-234`, read at `:413-427`): the case router
   by its `{case_id}` path (`modules/case/api/routes/router.py:27`), the create
-  route by the new case (`modules/case/api/routes/cases.py:416`), the report
-  routes by `case_id` and by the report's case (`modules/report/api/routes.py:331`,
-  `:915`). Case search answers many cases and is `never_replayed` (`main.py:214-225`).
+  route by the new case (`modules/case/api/routes/cases.py:487`), the report
+  routes by `case_id` and by the report's case (`modules/report/api/routes.py:364`,
+  `:965`). Case search answers many cases and is `never_replayed` (`main.py:229-234`).
   The entry joins that case's index in its own MULTI/EXEC, with the prune
-  (`api/middleware/idempotency.py:838-845`). `IdempotencyReplayEraser`
-  (`:904-951`) reads the index's members scored after now, then unlinks and
+  (`api/middleware/idempotency.py:1041-1048`). `IdempotencyReplayEraser`
+  (`:1107-1154`) reads the index's members scored after now, then unlinks and
   unindexes each batch in one MULTI/EXEC, so a member cached after the read stays
   indexed for a later delete and a failed batch leaves the rest indexed for the
   retry. A stale member is skipped: its entry expired by the index's own record,
   and its key, which names no case, may since hold another case's entry. That
-  line is approximate. A score is taken before its write commits (`:841`,
-  executed at `:845`), so it falls short of the entry's expiry by the write's
+  line is approximate. A score is taken before its write commits (`:1044`,
+  executed at `:1048`), so it falls short of the entry's expiry by the write's
   commit delay: the eraser skips an entry of the case in that last interval,
   which outlives the delete by at most the delay. Clocks out of step between
   replicas move the line by their skew, either way: a writer clock behind the
@@ -260,6 +262,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `:124-129`; [Case deletion](../../operations/case-deletion.md#work-in-flight-holds-a-delete-off-2096).
 - `turn-inflight:`: `modules/case/api/turn_idempotency.py:91-108`.
 - `kb-inflight:`: `modules/knowledge/api/request_idempotency.py:66-67`, `:155-160`, `:196-202`.
+- `idem-inflight:`: `api/middleware/idempotency.py:175-181`, `:460-476`.
 - `job:`: `infrastructure/jobs/job_service.py:51-52`; `bootstrap/composition.py:591`;
   no caller of `create_job` in `faultmaven/`.
 - `lock:report_generation:case:`: `infrastructure/concurrency/report_lock_manager.py:51`;

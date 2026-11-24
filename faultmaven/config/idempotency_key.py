@@ -43,6 +43,11 @@ IDEMPOTENCY_KEY_REUSE = "IDEMPOTENCY_KEY_REUSE"
 #: request is not run again.
 IDEMPOTENCY_REPLAY_UNAVAILABLE = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 
+#: ``x-error-code`` of the 409 ``IdempotencyMiddleware`` answers a keyed request
+#: whose first request under the key has not answered within the wait (#2655).
+#: Nothing of this request ran; the first may have.
+IDEMPOTENCY_REQUEST_IN_PROGRESS = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
+
 #: Set ``true`` on a response that is a replay of an earlier one rather than a
 #: new execution. Listed in ``cors_expose_headers`` so a browser client can
 #: tell the two apart.

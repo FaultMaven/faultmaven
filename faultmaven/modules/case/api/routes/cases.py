@@ -26,7 +26,10 @@ from fastapi.responses import JSONResponse
 
 from faultmaven.api.middleware.idempotency import declare_replay_case
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.config.idempotency_key import IDEMPOTENCY_KEY_REUSE
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_KEY_REUSE,
+    IDEMPOTENCY_REQUEST_IN_PROGRESS,
+)
 from faultmaven.exceptions import (
     CASE_TERMINAL,
     AuthorizationError,
@@ -93,6 +96,23 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 
 
 logger = logging.getLogger(__name__)
+
+#: The 409s ``IdempotencyMiddleware`` answers a keyed request with (#2655):
+#: the description's clauses, and the ``Retry-After`` the in-progress one sets.
+_KEYED_CONFLICTS = (
+    f"`{IDEMPOTENCY_KEY_REUSE}` (the `Idempotency-Key` was used for a "
+    "different request body: use a new key); "
+    f"`{IDEMPOTENCY_REQUEST_IN_PROGRESS}` (a request with this key is still "
+    "being processed: wait, then reload; it may already have gone through)"
+)
+_KEYED_RETRY_AFTER = {
+    "description": (
+        f"Seconds, on `{IDEMPOTENCY_REQUEST_IN_PROGRESS}` only: how long to "
+        "wait before reloading or retrying with the same key, which waits "
+        "again for the first request's answer."
+    ),
+    "schema": {"type": "integer"},
+}
 
 
 @router.delete(
@@ -307,6 +327,27 @@ async def delete_case(
     "",
     response_model=CaseSummary,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {
+            "description": (
+                "Conflict; no case was created by this request. Told apart by "
+                f"`x-error-code`: {_KEYED_CONFLICTS}."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "description": "Which conflict.",
+                    "schema": {
+                        "type": "string",
+                        "enum": [
+                            IDEMPOTENCY_KEY_REUSE,
+                            IDEMPOTENCY_REQUEST_IN_PROGRESS,
+                        ],
+                    },
+                },
+                "Retry-After": _KEYED_RETRY_AFTER,
+            },
+        },
+    },
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_create_case")
@@ -326,6 +367,13 @@ async def create_case(
     Initial status is INQUIRY (problem definition phase).
 
     Returns CaseSummary with basic case info and milestone progress.
+
+    A retry under the same ``Idempotency-Key`` is answered with the first
+    request's 201, ``X-Idempotency-Replayed: true``, and creates nothing; one
+    overlapping the first waits for that answer. 409
+    ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` + ``Retry-After`` when the first has
+    not answered within the wait: wait, then reload, since the case may
+    already exist (#2655).
     """
     case_service = check_case_service_available(case_service)
 
@@ -1020,18 +1068,21 @@ async def update_case(
             "description": (
                 "Conflict; nothing was generated or written. Told apart by "
                 f"`x-error-code`: `{CASE_DELETE_IN_PROGRESS}` (the case is "
-                "being deleted: reload the case); "
-                f"`{IDEMPOTENCY_KEY_REUSE}` (the `Idempotency-Key` was used for "
-                "a different request body: use a new key)."
+                f"being deleted: reload the case); {_KEYED_CONFLICTS}."
             ),
             "headers": {
                 "x-error-code": {
                     "description": "Which conflict.",
                     "schema": {
                         "type": "string",
-                        "enum": [CASE_DELETE_IN_PROGRESS, IDEMPOTENCY_KEY_REUSE],
+                        "enum": [
+                            CASE_DELETE_IN_PROGRESS,
+                            IDEMPOTENCY_KEY_REUSE,
+                            IDEMPOTENCY_REQUEST_IN_PROGRESS,
+                        ],
                     },
                 },
+                "Retry-After": _KEYED_RETRY_AFTER,
             },
         },
     },
@@ -1072,6 +1123,9 @@ async def generate_case_title(
       meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
     - 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a
       different request body; nothing was generated or written.
+    - 409 ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` + ``Retry-After``: a request
+      with this ``Idempotency-Key`` has not answered within the wait; nothing
+      of this one ran, and the first may have (#2655).
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate

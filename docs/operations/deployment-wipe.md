@@ -355,7 +355,7 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   - `case-deleting:` (the delete's tombstone) expires 30 s, and `case-inflight:`
     (the case lease) 35 s, after its holder's last renewal;
   - `turn-inflight:` expires at the turn's response bound plus 30 s, and
-    `kb-inflight:` 60 s after its last renewal;
+    `kb-inflight:` and `idem-inflight:` 60 s after their last renewal;
   - `oauth:claim:` expires with its authorization code (`OAUTH_CODE_EXPIRY_SECONDS`);
   - `auth:` (the Redis user store, composed only when the database user store
     is not) and `faultmaven:llm_config:version` have no TTL;

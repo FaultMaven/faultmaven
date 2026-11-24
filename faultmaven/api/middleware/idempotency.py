@@ -1,17 +1,35 @@
 """Idempotency Middleware
 
-Purpose: Handle Idempotency-Key headers for POST operations with Redis persistence
+Answers a keyed POST (``Idempotency-Key``) carrying an ``Authorization``
+header, valid or not, on every route not declared ``never_replayed``, from a
+Redis entry its 2xx answer wrote (one hour TTL). A retry with the same body
+gets that answer back, marked ``X-Idempotency-Replayed: true``; one with a
+different body is 409 ``IDEMPOTENCY_KEY_REUSE``.
 
-This middleware implements idempotency semantics for POST requests by:
-- Storing request/response pairs in Redis with TTL
-- Returning cached responses for duplicate idempotency keys
-- Ensuring atomic operations across server restarts
-- Supporting proper error handling and replay scenarios
+**Claim, then look up, then answer (#2655).** A miss alone proves nothing: a
+duplicate overlapping the first request would miss too and run again (a keyed
+``POST /cases`` created two cases). So a miss takes an owner-tokened claim
+(``idem-inflight:``, a lease renewed while the route runs), looks the entry up
+again while holding it, and only then runs the route. The holder writes entry
+and case index in one MULTI/EXEC, then releases. A duplicate that finds the
+claim held waits for the holder's answer, up to ``IDEMPOTENCY_WAIT_SECONDS``:
+the entry appears → replay (or the key-reuse 409); the claim is released with
+no entry (a non-2xx, never cached) → it takes the claim, looks up again, and
+runs; past the bound, on a Redis error while waiting, or on a failed lookup
+under any claim → 409 ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` with
+``Retry-After``, a moment, since a retry waits again. A waiter never runs
+unclaimed. No claim store (it failed on the first attempt) runs unclaimed, as
+before, reported once, whether or not the lookup then reads.
 
-Architecture Integration:
-- Uses container.py dependency injection for Redis client
-- Integrates with logging system for correlation tracking
-- Follows FastAPI middleware patterns
+The claim is released on every answer and on an exception, and on a
+cancellation before the route runs, best effort: a cancel of the anyio scope
+(a shutdown) can cut that release short, and the claim then lapses at its TTL,
+a delay of at most the lease, never a second run. It is never released on a
+cancellation after the route starts: a cancelled holder may have committed,
+so its claim lapses at the TTL instead. The route thus runs once per 2xx
+answer, except: a cache write that failed (swallowed, so the answer still goes
+out), a holder that died between its commit and the cache write, and a route
+that commits then answers 5xx. In each the next holder runs again.
 """
 
 import asyncio
@@ -29,7 +47,14 @@ from starlette.types import ASGIApp
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REPLAYED_HEADER,
+    IDEMPOTENCY_REQUEST_IN_PROGRESS,
     is_valid_idempotency_key,
+)
+from faultmaven.infrastructure.concurrency.owned_claim import (
+    ClaimHeld,
+    OwnedClaim,
+    renew_every,
+    take_claim,
 )
 from faultmaven.infrastructure.logging.coordinator import current_correlation_id
 from faultmaven.utils.exception_name import exception_log_name
@@ -146,6 +171,38 @@ KEY_PREFIX = "idempotency:"
 
 #: How many entries one ``UNLINK`` of the case delete names.
 ERASE_BATCH = 500
+
+#: Where the in-flight claims live, one per entry key (#2655).
+CLAIM_PREFIX = "idem-inflight:"
+
+#: The claim's lease, as the KB requests' (``request_idempotency``): renewed
+#: every third of it while the route runs, and lapsing within it after the
+#: holder dies or is cancelled.
+CLAIM_TTL_SECONDS = 60
+
+#: How long a duplicate waits for the holder's answer before the 409. Shorter
+#: than the lease, so a dead holder's claim answers the waiter rather than
+#: holding it; long enough to cover a case create that the Copilot's retries
+#: (after 1 s, then 2 s) overlap, so those retries get the create's answer.
+IDEMPOTENCY_WAIT_SECONDS = 10
+
+#: The pause between two looks while waiting: a replay follows the holder's
+#: answer within it. Each look is one ``MGET`` of the entry and the claim, so a
+#: waiter costs four Redis reads a second, and it tries the claim only once the
+#: claim is gone. A waiter whose client disconnects keeps polling until it is
+#: answered, at most the wait.
+IDEMPOTENCY_POLL_SECONDS = 0.25
+
+#: The divisor of the wait that gives the in-progress 409's ``Retry-After``.
+#: A retry under the key waits for the first's answer again, so the pause
+#: before it can be short: a fifth of the wait, 2 s ("wait a moment").
+RETRY_AFTER_FRACTION_OF_WAIT = 5
+
+#: The detail of the in-progress 409 (ruled copy).
+IN_PROGRESS_DETAIL = (
+    "This request is still being processed. Wait a moment, then reload: it "
+    "may already have gone through."
+)
 
 #: The ``request.state`` attribute naming the case a keyed request acts on.
 _REPLAY_CASE = "idempotency_replay_case_id"
@@ -339,81 +396,42 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 idempotency_key, request, caller_identity
             )
 
-            # Check for existing response
+            # The fast path: a hit is answered without a claim. A miss is
+            # repeated under the claim before anything runs (#2655).
             cached_response = await self._get_cached_response(cache_key)
             if cached_response:
-                # The body is compared here rather than folded into the key.
-                # Keying on it would make a reused key with a different body a
-                # cache *miss*, which silently executes a second time and
-                # creates a second resource. Replay only when the stored and
-                # incoming bodies are shown to be the same:
-                #
-                #   both fingerprinted and equal -> replay
-                #   both unfingerprinted         -> replay (equal sentinels)
-                #   different, or only one       -> 409, do not execute
-                #
-                # The both-unfingerprinted case is what a keyed multipart or
-                # oversized request gets: its body is never buffered, so the
-                # key alone identifies it. Turn submission, the copilot's hot
-                # retry path, no longer reaches here at all: its replay is the
-                # turn receipt committed with the turn (#1888), which does
-                # fingerprint the turn's inputs, and the route is declared
-                # ``never_replayed`` so this cache cannot answer it differently.
-                if cached_response.get("body_fingerprint") != body_fingerprint:
-                    logger.warning(
-                        f"Idempotency key reused with a different request body: "
-                        f"{idempotency_key}"
-                    )
-                    return JSONResponse(
-                        status_code=409,
-                        # Labelled, and that is load-bearing rather than
-                        # decorative. Several unrelated conflicts share 409, and
-                        # a client cannot tell them apart from the body: the
-                        # Slack agent reads an **unlabelled** 409 on the turn
-                        # POST as "this case is terminal" and tells the user
-                        # their investigation is closed. Key reuse is not
-                        # terminal and not even about the case, so going out
-                        # unlabelled would make it a false claim about the
-                        # user's investigation. A label the client does not
-                        # recognize falls through to its generic 4xx handling,
-                        # which is the honest answer for a conflict it does not
-                        # model — so labelling can only narrow the damage.
-                        headers={"x-error-code": IDEMPOTENCY_KEY_REUSE},
-                        content={
-                            "detail": (
-                                "This Idempotency-Key was already used with a "
-                                "different request body. Use a new key for a "
-                                "different request, or retry the original "
-                                "request unchanged."
-                            ),
-                            "error_type": "IdempotencyKeyReuse",
-                            "error_code": IDEMPOTENCY_KEY_REUSE,
-                            "correlation_id": current_correlation_id(),
-                            "timestamp": self._get_timestamp(),
-                        },
-                    )
-
-                logger.info(
-                    f"Returning cached response for idempotency key: {idempotency_key}"
+                return self._answer_cached(
+                    cached_response, body_fingerprint, idempotency_key
                 )
-                return self._create_response_from_cache(cached_response)
+
+            claim, answer = await self._claim_or_answer(
+                cache_key, body_fingerprint, idempotency_key
+            )
+            if answer is not None:
+                return answer
 
             # Process request normally. The state is created in the scope
             # first, so the case a route declares lands where this reads it.
             state = request.state
             downstream_invoked = True
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
 
-            # Cache successful responses (2xx status codes)
-            if 200 <= response.status_code < 300:
-                await self._cache_response(
-                    cache_key,
-                    response,
-                    idempotency_key,
-                    body_fingerprint,
-                    getattr(state, _REPLAY_CASE, None),
-                )
-
+                # Cache successful responses (2xx status codes), then release.
+                if 200 <= response.status_code < 300:
+                    await self._cache_response(
+                        cache_key,
+                        response,
+                        idempotency_key,
+                        body_fingerprint,
+                        getattr(state, _REPLAY_CASE, None),
+                    )
+            except Exception:
+                await self._release(claim)
+                raise
+            # A cancellation (not an ``Exception``) keeps the claim: the route
+            # may have committed, so the claim lapses at its TTL instead.
+            await self._release(claim)
             return response
 
         except Exception as e:
@@ -427,6 +445,184 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             # The failure happened before the request reached the route, so
             # degrading to a normal, uncached request is safe.
             return await call_next(request)
+
+    async def _claim_or_answer(
+        self, cache_key: str, body_fingerprint: str, idempotency_key: str
+    ) -> "tuple[Optional[OwnedClaim], Optional[Response]]":
+        """Claim the key and look its entry up again, or answer (#2655).
+
+        ``(claim, None)`` runs the route holding ``claim``, ``None`` when the
+        claim store failed on the first attempt. ``(None, answer)`` answers
+        without running: a replay or the key-reuse 409 from an entry found, or
+        the in-progress 409 once the wait is spent, or when Redis fails a
+        lookup under the claim or a waiter's read or claim.
+        """
+        name = CLAIM_PREFIX + cache_key[len(self.key_prefix) :]
+        loop = asyncio.get_running_loop()
+        deadline: Optional[float] = None
+        while True:
+            held = False
+            try:
+                claim = await take_claim(
+                    self.redis_client,
+                    name,
+                    ttl_seconds=CLAIM_TTL_SECONDS,
+                    purpose=(
+                        "keyed requests the idempotency middleware answers (a "
+                        "duplicate already waiting on one is refused instead)"
+                    ),
+                    backstop="a retry after the first answers still replays it",
+                    renew=renew_every(CLAIM_TTL_SECONDS / 3),
+                )
+            except ClaimHeld:
+                held = True
+            if not held:
+                if claim is None and deadline is not None:
+                    # The store failed while this request waited: never unclaimed.
+                    return None, self._in_progress()
+                return await self._look_up_holding(
+                    claim, cache_key, body_fingerprint, idempotency_key
+                )
+
+            if deadline is None:
+                deadline = loop.time() + IDEMPOTENCY_WAIT_SECONDS
+            while True:
+                await asyncio.sleep(IDEMPOTENCY_POLL_SECONDS)
+                try:
+                    raw, holder = await self.redis_client.mget(cache_key, name)
+                    entry = json.loads(raw) if raw else None
+                except Exception as e:
+                    logger.warning(
+                        f"Idempotency wait could not read: {exception_log_name(e)}"
+                    )
+                    return None, self._in_progress()
+                if entry:
+                    return None, self._answer_cached(
+                        entry, body_fingerprint, idempotency_key
+                    )
+                if holder is None:
+                    break  # released with no entry: try to take it
+                if loop.time() >= deadline:
+                    return None, self._in_progress()
+
+    async def _look_up_holding(
+        self,
+        claim: Optional[OwnedClaim],
+        cache_key: str,
+        body_fingerprint: str,
+        idempotency_key: str,
+    ) -> "tuple[Optional[OwnedClaim], Optional[Response]]":
+        """The lookup under the claim. Nothing has run yet, so the claim goes
+        on any exit but running the route, a cancellation included (best
+        effort). Under a held claim a failed read is the in-progress 409, never
+        a run: a request that won a claim just released may be the duplicate
+        of one that answered. With no claim (the store failed on the first
+        attempt) it runs unclaimed, as the fast path's failed read would."""
+        try:
+            raw = await self.redis_client.get(cache_key)
+            entry = json.loads(raw) if raw else None
+        except Exception as e:
+            logger.warning(
+                f"Idempotency lookup under the claim could not read: "
+                f"{exception_log_name(e)}"
+            )
+            if claim is None:
+                return None, None
+            await self._release(claim)
+            return None, self._in_progress()
+        except BaseException:
+            await self._release(claim)
+            raise
+        if entry:
+            await self._release(claim)
+            return None, self._answer_cached(entry, body_fingerprint, idempotency_key)
+        return claim, None
+
+    @staticmethod
+    async def _release(claim: Optional[OwnedClaim]) -> None:
+        if claim is not None:
+            await claim.release()
+
+    def _in_progress(self) -> JSONResponse:
+        """The 409 for a duplicate whose first request has not answered within
+        the wait, or whose wait Redis failed. ``Retry-After`` is a moment
+        (``RETRY_AFTER_FRACTION_OF_WAIT``): a retry waits again."""
+        retry_after = max(1, IDEMPOTENCY_WAIT_SECONDS // RETRY_AFTER_FRACTION_OF_WAIT)
+        return JSONResponse(
+            status_code=409,
+            headers={
+                "x-error-code": IDEMPOTENCY_REQUEST_IN_PROGRESS,
+                "Retry-After": str(retry_after),
+            },
+            content={
+                "detail": IN_PROGRESS_DETAIL,
+                "error_type": "IdempotencyRequestInProgress",
+                "error_code": IDEMPOTENCY_REQUEST_IN_PROGRESS,
+                "correlation_id": current_correlation_id(),
+                "timestamp": self._get_timestamp(),
+            },
+        )
+
+    def _answer_cached(
+        self,
+        cached_response: Dict[str, Any],
+        body_fingerprint: str,
+        idempotency_key: str,
+    ) -> Response:
+        """Replay a cached answer, or refuse a different body under its key."""
+        # The body is compared here rather than folded into the key.
+        # Keying on it would make a reused key with a different body a
+        # cache *miss*, which silently executes a second time and
+        # creates a second resource. Replay only when the stored and
+        # incoming bodies are shown to be the same:
+        #
+        #   both fingerprinted and equal -> replay
+        #   both unfingerprinted         -> replay (equal sentinels)
+        #   different, or only one       -> 409, do not execute
+        #
+        # The both-unfingerprinted case is what a keyed multipart or
+        # oversized request gets: its body is never buffered, so the
+        # key alone identifies it. Turn submission, the copilot's hot
+        # retry path, no longer reaches here at all: its replay is the
+        # turn receipt committed with the turn (#1888), which does
+        # fingerprint the turn's inputs, and the route is declared
+        # ``never_replayed`` so this cache cannot answer it differently.
+        if cached_response.get("body_fingerprint") != body_fingerprint:
+            logger.warning(
+                f"Idempotency key reused with a different request body: "
+                f"{idempotency_key}"
+            )
+            return JSONResponse(
+                status_code=409,
+                # Labelled, and that is load-bearing rather than
+                # decorative. Several unrelated conflicts share 409, and
+                # a client cannot tell them apart from the body: the
+                # Slack agent reads an **unlabelled** 409 on the turn
+                # POST as "this case is terminal" and tells the user
+                # their investigation is closed. Key reuse is not
+                # terminal and not even about the case, so going out
+                # unlabelled would make it a false claim about the
+                # user's investigation. A label the client does not
+                # recognize falls through to its generic 4xx handling,
+                # which is the honest answer for a conflict it does not
+                # model — so labelling can only narrow the damage.
+                headers={"x-error-code": IDEMPOTENCY_KEY_REUSE},
+                content={
+                    "detail": (
+                        "This Idempotency-Key was already used with a "
+                        "different request body. Use a new key for a "
+                        "different request, or retry the original "
+                        "request unchanged."
+                    ),
+                    "error_type": "IdempotencyKeyReuse",
+                    "error_code": IDEMPOTENCY_KEY_REUSE,
+                    "correlation_id": current_correlation_id(),
+                    "timestamp": self._get_timestamp(),
+                },
+            )
+
+        logger.info(f"Returning cached response for idempotency key: {idempotency_key}")
+        return self._create_response_from_cache(cached_response)
 
     def _is_valid_idempotency_key(self, key: str) -> bool:
         """Validate idempotency key format: the one grammar every layer reads

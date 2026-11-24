@@ -151,6 +151,41 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.14.0",
+        level="MINOR",
+        title=(
+            "A keyed POST that `IdempotencyMiddleware` answers runs once while "
+            "an earlier request under its `Idempotency-Key` is in flight: it "
+            "waits for that answer, and past the wait is **409** "
+            "`IDEMPOTENCY_REQUEST_IN_PROGRESS` with `Retry-After` (#2655). "
+            "`POST /cases` declares its 409 and `POST /cases/{case_id}/title` "
+            "adds the code. No schema moves."
+        ),
+        body=r"""Before, two overlapping requests under one key both ran: a keyed
+`POST /cases` retried while the first was in flight created two cases. Now
+the second waits, up to 10 s, for the first's answer:
+
+* the first answered 2xx → the second gets that answer, with
+  `X-Idempotency-Replayed: true` (a different body: **409**
+  `IDEMPOTENCY_KEY_REUSE`, as for any later retry);
+* the first answered otherwise → the second runs;
+* the first has not answered within the wait, or the server could not tell →
+  **409** `IDEMPOTENCY_REQUEST_IN_PROGRESS`, `Retry-After: 2`: a moment, since
+  a retry under the key waits for the first's answer again. Nothing of this
+  request ran; the first may have. Detail: "This request is
+  still being processed. Wait a moment, then reload: it may already have gone
+  through." For `POST /cases`, reload the case list before creating again.
+
+It covers every keyed POST the middleware answers that carries an
+`Authorization` header, valid or not, which excludes the routes it never
+replays (the turn, KB upload and conversion routes answer their own keys; case
+search and the auth and session mints are not replayed). Unkeyed requests and
+requests without an `Authorization` header are unchanged.
+
+MINOR: a new code on a status the keyed routes already answered (409 key
+reuse), and a client that does not know the code treats it as a generic 4xx.""",
+    ),
+    ContractChange(
         version="15.13.0",
         level="MINOR",
         title=(
