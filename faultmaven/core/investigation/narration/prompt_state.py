@@ -77,6 +77,9 @@ class PromptStateFresh:
     offers: Callable[[], OfferView]
     """The offer facts (``offers.offer_view``, #2811 S2b-2d); each decline's
     turn is read where its line asks for it."""
+    causal_evidence_unclaimed: Callable[[], bool]
+    """A non-engine causal_evidence row is on record and no hypothesis
+    stands (#3048); asked only on a verified problem."""
 
 
 class MilestoneStatus(NamedTuple):
@@ -226,6 +229,8 @@ class FocusSelection(NamedTuple):
     """Selected only where no hold is."""
     resolve_declined: Optional[ResolveDeclined]
     verifying_rows_missing: bool
+    hypothesis_cue: bool
+    """Verified, no hypothesis stands, causal evidence is on record (#3048)."""
 
 
 def focus_selection(
@@ -238,8 +243,9 @@ def focus_selection(
 ) -> FocusSelection:
     """The focus emphasis's lines: on a ``steered`` turn (no knowledge_query
     or agent_meta mode) the problem hold, else, where ``zoned`` (DIAGNOSIS),
-    the zone; the standing resolve decline on every turn; on a steered turn,
-    the verifying rows missing. Each fresh input is asked only where its line
+    the zone; the standing resolve decline on every turn; on a steered
+    DIAGNOSIS turn, the hypothesis cue (#3048); on a steered turn, the
+    verifying rows missing. Each fresh input is asked only where its line
     is decided, in this order."""
     hold = problem_hold(outcome, fresh) if steered else None
     zone = focus_zone(outcome, fresh) if zoned and hold is None else None
@@ -248,6 +254,12 @@ def focus_selection(
         zone=zone,
         resolve_declined=resolve_declined(outcome, fresh, current_turn),
         verifying_rows_missing=steered and verifying_rows_missing(outcome),
+        hypothesis_cue=(
+            steered
+            and zoned
+            and outcome.problem.status == ProblemStatus.VERIFIED
+            and fresh.causal_evidence_unclaimed()
+        ),
     )
 
 

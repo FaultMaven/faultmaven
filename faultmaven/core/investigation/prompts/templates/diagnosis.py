@@ -291,11 +291,13 @@ node: that splits one cause across duplicate roots and prevents it from validati
    old root's `cn_...` id, and set `root_node_ref` on its `hypotheses_to_update`
    entry to the new root — rather than branch.
    With every root_node_ref give the root's why-stopping verdict:
-   `root_is_terminal` true only once you have seen that nothing will produce
-   that state again (ROOT-CAUSE TEST clause b), false while its why is open.
+   `root_is_terminal` true once a causal_evidence row shows how the state came
+   to be and no row on record shows a mechanism that produces it again
+   (ROOT-CAUSE TEST clause b), false while a row shows such a mechanism or no
+   row yet shows how it came to be.
    A true verdict cites in `terminal_basis_evidence_ids` the causal_evidence
-   rows that show it (how the state was issued or set, its lifetime, that
-   nothing renews or re-creates it), recorded since the root was posited; a
+   rows that show how the state came to be (how it was issued or set),
+   recorded since the root was posited; a
    row showing only that the state exists is not one, and an uncited true is
    refused. Send it again on `hypotheses_to_update` when the why is answered.
 3. Attach evidence to the RUNG it tests via `node_evidence_links`
@@ -336,9 +338,9 @@ config shows why it did not, deepen the chain:
                           root_is_terminal:true,
                           terminal_basis_evidence_ids:["new_index_0"]}]
 Renewing the cert by hand is now the mitigation; re-enabling auto-renewal is the
-remediation (the change log shows a one-off manual edit, so nothing will disable it
-again and it passes clause b; a config pipeline that re-applies the old value would
-be the cause above). After that fix,
+remediation (the change log shows how it came to be, one manual edit, and no row
+shows a mechanism that repeats it, so it passes clause b; a config pipeline that
+re-applies the old value would be the cause above). After that fix,
 the causal_absence row shows auto-renewal enabled and the symptom_absence row the
 handshake succeeding.
 

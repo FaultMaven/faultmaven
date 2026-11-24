@@ -679,9 +679,9 @@ def _root_refused(params: dict, outcome, log) -> list:
         f"Root {params['node_id']} was NOT marked terminal: root_is_terminal true "
         "must cite, in terminal_basis_evidence_ids, a causal_evidence row "
         f"recorded since this root was posited (turn "
-        f"{params['posited_turn']}) showing that nothing controllable "
-        "produces its state (how it was issued or set, its lifetime, that "
-        "nothing renews it). "
+        f"{params['posited_turn']}) showing how its state came to be (how it "
+        "was issued or set), with no row on record showing a mechanism that "
+        "produces it again. "
         + (f"Not qualifying: {'; '.join(refused)}. " if refused else "None cited. ")
         + "Its why stays open."
     ]

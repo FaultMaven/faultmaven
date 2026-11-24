@@ -297,6 +297,7 @@ class ProgressMonitor:
             milestone_info=milestone_info,
             investigative_turns=investigative_turns,
             repair=repair,
+            pending_text=self._held_open_pending_text(case, milestone_name),
         )
 
         result = ProgressCheckResult(
@@ -423,6 +424,23 @@ class ProgressMonitor:
     # Prompt Injection Builder
     # =========================================================================
 
+    @staticmethod
+    def _held_open_pending_text(case: Case, milestone_name: str) -> Optional[str]:
+        """What ``root_cause_identified`` is waiting on while a validated root
+        is held open (#3048): the root's why-stopping verdict, not another
+        validation. None for every other case, so the generic description
+        stands."""
+        if milestone_name != "root_cause_identified":
+            return None
+        if not getattr(case.progress, "cause_identification_held_open", False):
+            return None
+        return (
+            "A validated root stands and its why-stopping verdict is pending: "
+            "set root_is_terminal true citing the causal_evidence row that "
+            "shows how its state came to be, or re-root the hypothesis onto "
+            "the mechanism above it"
+        )
+
     def _build_prompt_injection(
         self,
         stage: InvestigationStage,
@@ -430,6 +448,7 @@ class ProgressMonitor:
         milestone_info: dict,
         investigative_turns: int,
         repair: Optional[RepairAction],
+        pending_text: Optional[str] = None,
     ) -> str:
         """
         Build the prompt injection text for transparent mode.
@@ -443,6 +462,8 @@ class ProgressMonitor:
             milestone_info: Milestone dependency info
             investigative_turns: Number of investigative turns since last milestone
             repair: Repair action if a pattern was detected
+            pending_text: What the pending milestone needs, when it differs
+                from the milestone's generic description
 
         Returns:
             Prompt injection text
@@ -454,7 +475,7 @@ class ProgressMonitor:
             f"PROGRESS TRANSPARENCY: The investigation has been in "
             f"{stage.value.upper()} for {investigative_turns} investigative turns "
             f"without reaching the next milestone.\n"
-            f"Pending milestone: {milestone_name} — {milestone_info['description']}.\n"
+            f"Pending milestone: {milestone_name} — {pending_text or milestone_info['description']}.\n"
             f"In your response, provide case-specific guidance on what evidence "
             f"would advance this milestone. Be concrete: name specific files, "
             f"services, time ranges, or commands based on what you know about "

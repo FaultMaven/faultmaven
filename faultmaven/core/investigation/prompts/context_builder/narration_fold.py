@@ -13,6 +13,10 @@ import sys
 import traceback
 from typing import Callable, Optional, TypeVar
 
+from faultmaven.core.investigation.cause_assurance import (
+    ENGINE_EVIDENCE_AUTHOR,
+    STANDING_HYP_STATES,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
@@ -20,7 +24,12 @@ from faultmaven.core.investigation.narration.needs import NeedsView
 from faultmaven.core.investigation.narration.prompt_state import PromptStateFresh
 from faultmaven.core.investigation.offers import offer_view
 from faultmaven.core.investigation.outcome import narration_outcome
-from faultmaven.modules.case.contracts import Case, CaseOutcome, WritePoint
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseOutcome,
+    EvidenceCategory,
+    WritePoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,18 @@ def _symptom_stale(case: Case) -> bool:
     )
 
     return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _causal_evidence_unclaimed(case: Case) -> bool:
+    """A non-engine causal_evidence row is on record and no hypothesis in the
+    standing set (``STANDING_HYP_STATES``) holds it (#3048)."""
+    if any(h and h.state in STANDING_HYP_STATES for h in case.hypotheses.values()):
+        return False
+    return any(
+        e.category == EvidenceCategory.CAUSAL_EVIDENCE
+        and e.collected_by != ENGINE_EVIDENCE_AUTHOR
+        for e in case.evidence
+    )
 
 
 def _currency_note(case: Case) -> str:
@@ -118,6 +139,7 @@ class NarrationFold:
                 mitigation_verified=self._once(_stored_mitigation_verified),
                 symptom_stale=self._once(_symptom_stale),
                 offers=self._once(offer_view),
+                causal_evidence_unclaimed=self._once(_causal_evidence_unclaimed),
             )
         return self._fresh
 

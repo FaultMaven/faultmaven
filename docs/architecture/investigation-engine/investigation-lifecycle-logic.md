@@ -1353,6 +1353,8 @@ symptom evidence (the step-2b review), moves `unverified → verified`. Cause wo
 is accepted from then on, and the gates read the status the turn ENDS with, so
 one turn can verify, form hypotheses, emit the chain and identify the cause.
 
+While the problem is VERIFIED, no hypothesis stands and a causal_evidence row is on record, the DIAGNOSIS focus says so and asks for the hypothesis and its chain this turn.
+
 **(b) Inaccurate statement.** The LLM sends
 `verification_updates.revised_problem_statement` with the symptom evidence that
 shows the problem as revised. The guard (`revision_refusal`) requires that

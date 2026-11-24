@@ -281,15 +281,14 @@ _RECOVERY_NOTES: dict[str, str] = {
         "what produced this state and whether it returns once corrected. Then "
         "re-root this hypothesis onto that cause, or mark this root terminal on "
         "its hypotheses_to_update entry: root_is_terminal true, citing in "
-        "terminal_basis_evidence_ids the causal_evidence row that shows nothing "
-        "renews or re-creates it. The cause is not identified until one of them "
-        "is done"
+        "terminal_basis_evidence_ids the causal_evidence row that shows how the "
+        "state came to be (no row on record shows a mechanism that produces it "
+        "again). The cause is not identified until one of them is done"
     ),
     _VERDICT_REFUSED: (
         " — its root_is_terminal true was refused: it cited no causal_evidence "
         "row recorded since this root was posited. Cite in "
-        "terminal_basis_evidence_ids the row that shows nothing renews or "
-        "re-creates it"
+        "terminal_basis_evidence_ids the row that shows how the state came to be"
     ),
 }
 
