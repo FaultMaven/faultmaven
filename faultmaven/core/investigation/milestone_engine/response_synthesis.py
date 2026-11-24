@@ -1,4 +1,6 @@
 import logging
+import re
+from bisect import bisect_right
 from typing import Any
 
 from faultmaven.core.investigation.schemas import StateDrop
@@ -159,6 +161,71 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
     """
     lowered = (agent_text or "").lower()
     return any(p in lowered for p in _COMPLETION_PHRASES)
+
+
+# The outcome-prose sets (#2811 S2c-3b): outcome claims the model's own reply
+# states in prose, counted by ``narration_outcome_prose_total`` and never acted
+# on. S1-S4 as measured on stored replies (#2811, round 104), widened to an
+# adverb in the auxiliary, "root-cause", the mitigation's auxiliaries and "the
+# fix is verified" (#3045 review), plus ``problem_confirmed``. Each counts a
+# claim of its kind, conditionals and a copied "**Case record:**" clause
+# included, so the count is an upper bound.
+# The names are the counter's closed ``set`` label values.
+# An auxiliary may carry up to two adverbs, one before and one after "been"
+# ("has now been", "was finally", "is now", "has now been fully").
+_ADV = r"(?:now|finally|also|still|already|indeed|\w+ly)"
+_AUX = rf"(?:is|was|has(?: {_ADV})? been)(?: {_ADV})?"
+OUTCOME_PROSE_SETS: dict[str, re.Pattern[str]] = {
+    name: re.compile(pattern, re.IGNORECASE)
+    for name, pattern in (
+        (
+            "root_cause",
+            rf"\broot[- ]cause {_AUX} "
+            r"(?:identified|confirmed|eliminated|established|verified)\b",
+        ),
+        ("fix", rf"\bthe fix (?:worked|held|{_AUX} (?:holding|verified|confirmed))\b"),
+        (
+            "problem",
+            rf"\b(?:issue|problem|incident|outage) {_AUX} (?:resolved|fixed)\b",
+        ),
+        (
+            "problem_confirmed",
+            rf"\bthe (?:problem|symptom) {_AUX} (?:confirmed|verified)\b",
+        ),
+        (
+            "mitigation",
+            rf"\bmitigation {_AUX} (?:verified|confirmed|holding|stable)\b",
+        ),
+    )
+}
+# A match is not counted when its clause holds one of these words before it.
+# A closed list. The clause starts after the last of ``.!?;:,``, a line break,
+# an em dash, a spaced hyphen or "but", so a negation elsewhere in the
+# sentence ("No, the issue is resolved.") hides nothing.
+_OUTCOME_PROSE_NEGATIONS = re.compile(
+    r"\b(?:not|no|never|cannot|can't|isn't|wasn't|hasn't|haven't|hadn't|don't|"
+    r"doesn't|didn't|won't|nor|neither|without|unable)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_BREAK = re.compile(r"[.!?;:,\n—]| - |\bbut\b", re.IGNORECASE)
+
+
+def outcome_prose_sets(agent_text: str | None) -> tuple[str, ...]:
+    """The outcome-prose sets *agent_text* states unnegated, each once, in
+    ``OUTCOME_PROSE_SETS`` order (#2811 S2c-3b)."""
+    text = agent_text or ""
+    # Each clause break's end, found once per reply: a match's clause starts
+    # at the last end at or before it (linear in the reply, not per match).
+    ends = [b.end() for b in _CLAUSE_BREAK.finditer(text)]
+    found = []
+    for name, pattern in OUTCOME_PROSE_SETS.items():
+        for match in pattern.finditer(text):
+            i = bisect_right(ends, match.start())
+            start = ends[i - 1] if i else 0
+            if not _OUTCOME_PROSE_NEGATIONS.search(text, start, match.start()):
+                found.append(name)
+                break
+    return tuple(found)
 
 
 # INV-40 corrective notice. Appended (never substituted) below over-claiming

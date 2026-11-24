@@ -692,6 +692,17 @@ about the user's intent, do NOT fire the state change. Instead:
       "No — [the alternative action]"\
 """
 
+# The outcome rule (#2811 S2c-3b, ruled wording): in INVESTIGATION_BASE's
+# cached prefix, so every stage and the knowledge-query and meta turns carry
+# it. INQUIRY, the fallback stub and TERMINAL do not (the design doc's
+# outcome-statement paragraph says why). The engine's "**Case record:**" line
+# under the reply is what keeps its promise.
+_OUTCOME_FIELDS_RULE = (
+    "State that the problem is confirmed or that a root cause is identified "
+    "only through the structured fields; the engine states what the case "
+    "record holds under your reply."
+)
+
 # Diagnostic reasoning requirements — injected into INVESTIGATION_BASE.
 # Set to empty string for knowledge_query mode (KNOWLEDGE_QUERY_INSTRUCTIONS
 # explicitly waives this — a general-knowledge answer doesn't need the
@@ -726,9 +737,9 @@ partial-evidence claim with full-certainty language. Calibrated hedging is the
 positive expression of the ambiguity rule above — ambiguity forbids false
 certainty; calibration prescribes the vocabulary for honest uncertainty.
 
-**No premature resolution.** Never state that a problem is resolved, fixed, or
-root-caused without verification evidence (post-fix telemetry, user confirmation,
-a successful test). For proposed-but-unverified fixes, use conditional language:
+**No premature resolution.** Never state that a problem is resolved or fixed
+without verification evidence (post-fix telemetry, user confirmation, a successful
+test). For proposed-but-unverified fixes, use conditional language:
 "if applied, this should resolve..." rather than "this resolves...".
 
 **EXAMPLES:**
@@ -832,7 +843,7 @@ _GROUNDING_FORBIDDEN_REST = """
   "likely", "typically") do not exempt you from this rule.
 - NEVER present one explanation as confirmed when the evidence equally supports
   alternatives — present the competing possibilities with what supports each
-- NEVER state that a problem is resolved, fixed, or root-caused without
+- NEVER state that a problem is resolved or fixed without
   verification evidence (post-fix telemetry, user confirmation, successful test).
   Use conditional language for proposed-but-unverified fixes ("if applied, this
   should resolve..." rather than "this resolves...")

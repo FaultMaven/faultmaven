@@ -17,6 +17,7 @@ when it does.
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 import pytest
@@ -26,6 +27,7 @@ from faultmaven.core.investigation.prompts.context_builder.budget import (
     EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM,
 )
 from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
+from faultmaven.core.investigation.prompts.templates import assembly
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
@@ -252,9 +254,49 @@ def test_an_unstored_cut_item_is_neither_held_nor_sent_to_search_file():
     assert "Use search_file with the file_id above" not in prompt
 
 
-def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
-    """Six cited pastes at a 25,000-token target: the budget squeeze cuts
-    <evidence_collected> mid-item, with its own marker and no per-item one."""
+#: How far past the starvation boundary the squeeze test's target sits: well
+#: inside the window in which the budget squeeze cuts mid-item (measured at
+#: about 850 tokens wide on #2811 S2c-3b), and well clear of the few tokens a
+#: fence token's length moves the template.
+_PAST_STARVATION = 400
+
+
+def _squeeze_prompt(case, target: int) -> str:
+    """*case*'s prompt at a *target*-token fill target."""
+    get_settings().model_context.prompt_target_tokens = target
+    return get_prompt_for_case(
+        case,
+        "why?",
+        provider_name="openai",
+        model_name="gpt-4o",
+        given_tools=DEFAULT_GIVEN,
+    )
+
+
+def _starvation_boundary(case, caplog) -> int:
+    """The smallest target at which the budget backstop does not starve
+    *case*: the template overhead and reserve it measures (logged when a
+    small target starves), plus its margin and ``min_viable``."""
+    with caplog.at_level(logging.WARNING, logger=assembly.__name__):
+        _squeeze_prompt(case, 2_000)
+    (starved,) = [
+        r for r in caplog.records if r.getMessage() == "prompt_starvation_fallback"
+    ]
+    budget = get_settings().prompt_budget
+    return (
+        starved.template_overhead
+        + starved.reserve_tokens
+        + budget.overhead_margin_tokens
+        + budget.min_viable_tokens
+    )
+
+
+def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch, caplog):
+    """Six cited pastes at a target just past the starvation boundary: the
+    budget squeeze cuts <evidence_collected> mid-item, with its own marker and
+    no per-item one. The target is derived from the template's measured
+    overhead, so the template's growth moves it (the #2811 rule line moved it
+    by about 37 tokens)."""
     ids = [f"file_3031{i:08x}" for i in range(6)]
     case = _case(11).model_copy(
         update={
@@ -262,14 +304,11 @@ def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
             "evidence": [_row(f"ev_3031{i:08x}", f) for i, f in enumerate(ids)],
         }
     )
-    monkeypatch.setattr(get_settings().model_context, "prompt_target_tokens", 25_000)
+    context = get_settings().model_context
+    monkeypatch.setattr(context, "prompt_target_tokens", context.prompt_target_tokens)
 
-    prompt = get_prompt_for_case(
-        case,
-        "why?",
-        provider_name="openai",
-        model_name="gpt-4o",
-        given_tools=DEFAULT_GIVEN,
+    prompt = _squeeze_prompt(
+        case, _starvation_boundary(case, caplog) + _PAST_STARVATION
     )
 
     block = prompt[re.search(r'<evidence_collected fence="[0-9a-f]+">', prompt).end() :]

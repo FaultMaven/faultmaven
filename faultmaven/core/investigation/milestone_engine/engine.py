@@ -88,6 +88,7 @@ from faultmaven.core.investigation.problem_status import (
     decline_revision,
 )
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
+from faultmaven.core.investigation.prompts.templates.assembly import PromptReport
 from faultmaven.core.investigation.state_validator import StateValidator
 from faultmaven.core.investigation.terminal_transitions import (
     ClosureReadiness,
@@ -1371,6 +1372,10 @@ class MilestoneEngine:
                 # the message asked, this the symptom the case states.
                 await self.kb_prefetcher.prefetch_symptom(case, symptom)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
+            # The state the prompt is rendered in, and whether the model
+            # answered from the minimal fallback instead (#2811 S2c-3b).
+            prompted_state = case.state
+            prompt_report = PromptReport()
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
                 self.deps.llm_provider,
@@ -1384,6 +1389,7 @@ class MilestoneEngine:
                 bare_resolve_decline=bare_resolve_decline,
                 kb_rendered=metadata[TURN_METADATA_KB_PROMPTED],
                 kb_lookup=kb_lookup,
+                prompt_report=prompt_report,
             )
 
             # 4. Apply state from the final accepted response (exactly once)
@@ -1451,6 +1457,8 @@ class MilestoneEngine:
                 summary_payload=summary_payload,
                 validation_repairs=record_inputs.validation_repairs,
                 baseline=baseline,
+                prompted_state=prompted_state,
+                prompt_fallback=prompt_report.fallback,
             )
 
         except Exception as e:

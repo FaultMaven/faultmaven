@@ -848,6 +848,51 @@ narration_overclaim_total = Counter(
     label_values={"provider": _PROVIDERS},
 )
 
+# The prose half of the outcome rule (#2811 S2c-3b). Every investigating prompt
+# asks the model to state the problem confirmed or a root cause identified
+# only through the structured fields, and the engine states the record under
+# the reply. This counts, per ``set``, the INVESTIGATING model turns whose
+# prompt carried the rule (not the minimal fallback) and whose own
+# ``agent_response`` still states an outcome in prose
+# (``response_synthesis.OUTCOME_PROSE_SETS``): once per matching set per turn,
+# a synthesized placeholder never. It never changes a reply. The sets count
+# conditionals and copied engine clauses, so it is an upper bound; it is the
+# baseline INV-40's widening is decided on (S2c-4). Its denominator is
+# ``investigating_model_turns_total{prompt="full"}``.
+_OUTCOME_PROSE_SET_LABELS = (
+    "root_cause",
+    "fix",
+    "problem",
+    "problem_confirmed",
+    "mitigation",
+)
+narration_outcome_prose_total = Counter(
+    "faultmaven_narration_outcome_prose_total",
+    "An INVESTIGATING model turn's own agent_response stated an outcome in "
+    "prose, by phrase ``set`` (root_cause, fix, problem, problem_confirmed, "
+    "mitigation) and CHAT ``provider``: one increment per matching set per "
+    "turn; fallback-prompt turns, synthesized placeholders and negated "
+    "phrases are not counted. An upper bound (conditionals and copied engine "
+    "clauses count). Count only: the reply is unchanged (#2811).",
+    ["provider", "set"],
+    label_values={"provider": _PROVIDERS, "set": _OUTCOME_PROSE_SET_LABELS},
+)
+
+# The per-turn volume the provider-labelled lifecycle rates divide by (#2811
+# S2c-3b): one increment per INVESTIGATING model turn whose reply is the
+# model's own (not a synthesized placeholder), by CHAT ``provider`` and by the
+# ``prompt`` it answered from: ``full`` (the investigating template, which
+# carries the outcome rule) or ``fallback`` (the minimal fallback prompt).
+investigating_model_turns_total = Counter(
+    "faultmaven_investigating_model_turns_total",
+    "INVESTIGATING model turns whose reply is the model's own, by CHAT "
+    "``provider`` and the ``prompt`` answered from (full | fallback). The "
+    "per-turn denominator of narration_outcome_prose_total (prompt=full) and "
+    "of the per-provider lifecycle rates (#2811).",
+    ["provider", "prompt"],
+    label_values={"provider": _PROVIDERS, "prompt": ("full", "fallback")},
+)
+
 
 # INV-41 (#673 dual-authoring retirement gate, §7.7). #673 — retire the LLM
 # free-text conclusion and derive it from the validated chain — is the design's

@@ -935,8 +935,7 @@ Your understanding of the problem is not fixed — it MUST evolve as new evidenc
 
 4. **Substantiate Existing Opinions**
    - When new evidence supports an existing hypothesis or problem statement, explicitly
-     note the reinforcement: "This confirms what we suspected — [evidence] supports
-     the theory that [hypothesis]."
+     note the reinforcement: "[evidence] supports the theory that [hypothesis]."
 
 **WHEN DIAGNOSIS STALLS (Exhausted Approaches):**
 
