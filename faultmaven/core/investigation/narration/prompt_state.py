@@ -79,8 +79,9 @@ class PromptStateFresh:
     """The offer facts (``offers.offer_view``, #2811 S2b-2d); each decline's
     turn is read where its line asks for it."""
     causal_evidence_unclaimed: Callable[[], bool]
-    """A non-engine causal_evidence row is on record and no hypothesis
-    stands (#3048); asked only on a verified problem."""
+    """No hypothesis stands and a non-engine causal_evidence row is on record
+    that no hypothesis holds, through its links or its chain's (#3048); asked
+    only on a verified problem in a cause zone."""
 
 
 class MilestoneStatus(NamedTuple):
@@ -231,7 +232,8 @@ class FocusSelection(NamedTuple):
     resolve_declined: Optional[ResolveDeclined]
     verifying_rows_missing: bool
     hypothesis_cue: bool
-    """Verified, no hypothesis stands, causal evidence is on record (#3048)."""
+    """Verified, in a cause zone (the cause not identified), no hypothesis
+    stands and a causal_evidence row no hypothesis holds is on record (#3048)."""
 
 
 def focus_selection(

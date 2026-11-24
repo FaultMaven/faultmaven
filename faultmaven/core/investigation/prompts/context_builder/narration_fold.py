@@ -14,6 +14,7 @@ import traceback
 from typing import Callable, Optional, TypeVar
 
 from faultmaven.core.investigation.causal_graph.projection import standing_hypotheses
+from faultmaven.core.investigation.causal_graph.queries import chain_evidence_links
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
@@ -53,16 +54,16 @@ def _symptom_stale(case: Case) -> bool:
 
 def _causal_evidence_unclaimed(case: Case) -> bool:
     """No hypothesis stands and a non-engine causal_evidence row is on record
-    that no hypothesis holds, in any state (the flat hypothesis evidence
-    links, any stance): the rows that refuted or retired an earlier
-    hypothesis are held, so they do not count (#3048)."""
+    that no hypothesis holds, in any state, through its flat evidence links or
+    its chain's (``chain_evidence_links``), any stance: the rows that refuted
+    or retired an earlier hypothesis are held, so they do not count (#3048)."""
     hypotheses = [h for h in case.hypotheses.values() if h]
     if any(True for _ in standing_hypotheses(case)):
         return False
     held = {
         getattr(link, "evidence_id", None)
         for h in hypotheses
-        for link in (getattr(h, "evidence_links", None) or [])
+        for link in chain_evidence_links(case, h)
     }
     return any(
         getattr(e, "category", None) == EvidenceCategory.CAUSAL_EVIDENCE

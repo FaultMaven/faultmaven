@@ -4,12 +4,16 @@ asked for one (#3048)."""
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timezone
 
 import pytest
 
 from faultmaven.core.investigation.narration.notices import NoticeCode, render_notice
-from faultmaven.core.investigation.narration.prompt_state import focus_selection
+from faultmaven.core.investigation.narration.prompt_state import (
+    FocusZone,
+    focus_selection,
+)
 from faultmaven.core.investigation.progress_monitor import ProgressMonitor
 from faultmaven.core.investigation.prompts.context_builder.causal_graph_block import (
     _RECOVERY_NOTES,
@@ -43,6 +47,7 @@ from faultmaven.modules.case.contracts import (
     HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemStatus,
@@ -148,7 +153,9 @@ def test_the_rendered_prompt_carries_no_old_wording():
 # ---------------------------------------------------------------------------
 
 
-def _stalled_case(*, held_open: bool, root: NodeState | None = None):
+def _stalled_case(
+    *, held_open: bool, root: NodeState | None = None, verdict: bool | None = None
+):
     """``root``: the state of the root of a standing hypothesis's chain."""
     case = investigating_case(
         statement="Gateway calls fail",
@@ -172,6 +179,7 @@ def _stalled_case(*, held_open: bool, root: NodeState | None = None):
             belief=0.5,
             actionable=True,
             generated_at_turn=1,
+            metadata={} if verdict is None else {"root_terminal": verdict},
         )
         hyp.root_node_id = node.node_id
         case.causal_nodes = {node.node_id: node}
@@ -199,6 +207,15 @@ def test_a_held_open_validated_root_is_told_its_verdict_is_pending():
     assert "root_is_terminal true" in text
     assert "recorded since the root was posited" in text
     assert "Validate a hypothesis" not in text
+
+
+def test_a_validated_root_marked_false_is_told_to_re_root():
+    case = _stalled_case(held_open=True, root=NodeState.VALIDATED, verdict=False)
+    text = _injection(case)
+    assert "a mechanism produces its state" in text
+    assert "re-root the hypothesis onto that mechanism" in text
+    assert "recorded since the root was posited" in text
+    assert "verdict is pending" not in text
 
 
 def test_an_unvalidated_held_root_keeps_the_generic_notice():
@@ -250,6 +267,9 @@ def _hyp(state=HypothesisState.ACTIVE) -> Hypothesis:
         generated_at_turn=3,
         rationale="r",
         state=state,
+        refutation_reason=(
+            "the data refutes it" if state == HypothesisState.REFUTED else None
+        ),
     )
 
 
@@ -320,6 +340,69 @@ def test_rows_that_refuted_a_hypothesis_do_not_trigger_the_cue():
     assert CUE not in _lines(_case(rows=[row], hyps=[refuted]))
     # An unlinked causal row beside it does.
     assert CUE in _lines(_case(rows=[row, _row(CAUSAL)], hyps=[refuted]))
+
+
+_STANCES = [
+    EvidenceStance.SUPPORTS,
+    EvidenceStance.REFUTES,
+    EvidenceStance.NEUTRAL,
+]
+
+
+@pytest.mark.parametrize(
+    "state", [HypothesisState.RETIRED, HypothesisState.INCONCLUSIVE]
+)
+@pytest.mark.parametrize("stance", _STANCES)
+def test_a_row_a_non_standing_hypothesis_holds_never_triggers_the_cue(state, stance):
+    row = _row(CAUSAL)
+    hyp = _held_by(_hyp(state), row, stance)
+    assert CUE not in _lines(_case(rows=[row], hyps=[hyp]))
+
+
+@pytest.mark.parametrize("stance", _STANCES)
+def test_a_refuted_hypothesis_holds_its_rows(stance):
+    row = _row(CAUSAL)
+    hyp = _held_by(_hyp(HypothesisState.REFUTED), row, stance)
+    assert CUE not in _lines(_case(rows=[row], hyps=[hyp]))
+
+
+def test_a_row_linked_only_on_the_chain_is_held():
+    row = _row(CAUSAL)
+    hyp = _hyp(HypothesisState.RETIRED)
+    node = CausalNode(
+        node_id="cn_0000000000aa",
+        statement="autoRenew was disabled",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.1,
+        actionable=True,
+        generated_at_turn=1,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=row.evidence_id,
+                stance=EvidenceStance.REFUTES,
+                reasoning="r",
+                linked_at_turn=2,
+            )
+        ],
+    )
+    hyp.root_node_id = node.node_id
+    case = _case(rows=[row], hyps=[hyp])
+    case.causal_nodes = {node.node_id: node}
+    assert not hyp.evidence_links
+    assert CUE not in _lines(case)
+    # The same row with no link anywhere triggers it.
+    assert CUE in _lines(_case(rows=[row]))
+
+
+def test_a_stale_symptom_shows_the_cue_in_the_stale_cause_zone():
+    case = _case(rows=[_row(CAUSAL)])
+    outcome, fresh = selections(case)
+    stale = dataclasses.replace(fresh, symptom_stale=lambda: True)
+    selection = focus_selection(outcome, stale, 4, steered=True, zoned=True)
+    assert selection.zone == FocusZone.CAUSE_STALE
+    assert CUE in _focus_lines(selection)
 
 
 def test_the_cue_is_for_the_cause_zones_only():

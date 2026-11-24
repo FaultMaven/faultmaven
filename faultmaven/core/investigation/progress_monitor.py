@@ -438,11 +438,23 @@ class ProgressMonitor:
             return None
         # The flag also holds for an unvalidated root the model marked
         # ``False``: that case keeps the generic text.
-        if not any(
-            is_chain_root_validated(h, case.causal_nodes)
+        validated = [
+            case.causal_nodes[h.root_node_id]
             for h in standing_hypotheses(case)
-        ):
+            if is_chain_root_validated(h, case.causal_nodes)
+        ]
+        if not validated:
             return None
+        if all(node.root_terminal is False for node in validated):
+            # The model said a mechanism produces the state.
+            return (
+                "A validated root stands and its why-stopping verdict is "
+                "false, which says a mechanism produces its state: re-root the "
+                "hypothesis onto that mechanism, or, if the record shows "
+                "otherwise, re-send root_is_terminal true citing the "
+                "causal_evidence row, recorded since the root was posited, "
+                "that shows how its state came to be"
+            )
         return (
             "A validated root stands and its why-stopping verdict is pending: "
             "set root_is_terminal true citing the causal_evidence row, "

@@ -228,9 +228,10 @@ def _verifying_rows_missing_emphasis(missing: bool) -> str:
 
 
 def _hypothesis_cue_emphasis(cue: bool) -> str:
-    """One line while the problem is verified, causal evidence is on record
-    and no hypothesis stands (#3048): the evidence is asked to be claimed by a
-    hypothesis and its chain this turn. ``cue`` is the selection's
+    """One line while the problem is verified, the cause is not identified
+    (the cause zones only), no hypothesis stands and a causal_evidence row no
+    hypothesis holds is on record (#3048): the evidence is asked to be claimed
+    by a hypothesis and its chain this turn. ``cue`` is the selection's
     (``prompt_state.focus_selection``)."""
     if not cue:
         return ""
