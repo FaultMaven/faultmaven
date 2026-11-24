@@ -52,6 +52,7 @@ named publicly here so that addition is a one-line change there.
 """
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass
 
 
@@ -152,7 +153,7 @@ def _protected_spans(text: str) -> list[tuple[int, int]]:
     tokens in two different Causes blank everything between them, deleting the
     second Cause's heading outright.
     """
-    spans: list[tuple[int, int]] = []
+    fences: list[tuple[int, int]] = []
     lines = _lines(text)
     for start, end in lines:
         opener = _CODE_FENCE_AT_RE.match(text, start, end)
@@ -170,11 +171,18 @@ def _protected_spans(text: str) -> list[tuple[int, int]]:
             ):
                 fence_end = line_end
                 break
-        spans.append((start, fence_end))
+        fences.append((start, fence_end))
+
+    # Only a fence can hold an inline match: ``finditer`` matches never overlap.
+    # The fences are sorted and disjoint (the inner loop shares ``lines``), so
+    # the one that can hold ``pos`` is the last to start at or before it (#2635).
+    fence_starts = [lo for lo, _ in fences]
 
     def in_fence(pos: int) -> bool:
-        return any(lo <= pos < hi for lo, hi in spans)
+        i = bisect_right(fence_starts, pos) - 1
+        return i >= 0 and pos < fences[i][1]
 
+    spans = list(fences)
     for m in CODE_SPAN_RE.finditer(text):
         if not in_fence(m.start()):
             spans.append(m.span())
