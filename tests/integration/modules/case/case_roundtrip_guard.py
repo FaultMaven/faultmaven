@@ -252,6 +252,8 @@ def _investigating(
                 description="Show the pool settings",
                 proposed_at=_T0,
                 proposed_in_turn=2,
+                # INV-49 (#3039): the report a refused gate still records.
+                reported_done_in_turn=3,
             )
         ],
         action_attempts=[
