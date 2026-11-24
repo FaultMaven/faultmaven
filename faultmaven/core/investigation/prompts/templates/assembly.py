@@ -40,6 +40,7 @@ from .blocks import (
     evidence_grounding_block,
     knowledge_query_instructions,
     tool_results_note,
+    unseen_text_rule,
 )
 from .diagnosis import _CHAIN_EMISSION_BLOCK, rca_diagnosis_block
 from .fallback import get_fallback_prompt_for_case
@@ -544,6 +545,8 @@ def get_prompt_for_case(
         # (#1939). Sorted, so one set renders one byte string (#613 prefix).
         ctx["tools_this_turn"] = tools_line(given_tools)
         ctx["tool_results_rule"] = tool_results_note(given_tools)
+        # Both templates that render a cut, elided or omitted item (#2401).
+        ctx["unseen_text"] = unseen_text_rule(given_tools)
 
         # #1328: a question about the assistant itself. Rendered as a block
         # in INQUIRY (which has no stage slot) and as the stage instructions

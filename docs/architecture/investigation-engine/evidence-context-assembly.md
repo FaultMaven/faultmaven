@@ -145,7 +145,11 @@ The budget is derived from the active model, not a fixed character count.
   budget, clamped to `[min_total_tokens, max_total_tokens]`.
 - Accounting is in **tokens** (via `faultmaven.utils.token_estimation`), with the
   char≈token/4 fallback when a tokenizer is unavailable. The per-item cap
-  (`max_chars_per_item`) still bounds any one structural index.
+  (`max_chars_per_item`) still bounds any one structural index. What accompanies
+  the cut is the unseen-text rule (`unseen_text_rule`, `templates/blocks.py`,
+  #2401), rendered in every prompt that can show a cut, elided or omitted item:
+  the model describes only the part it was shown and never states what the rest
+  contains.
 - Defaults (see `InvestigationContextSettings`): a Gemini-class 15K-token prompt
   budget yields ~9K tokens (~36K chars) for evidence — more than double the old
   flat 16K-char cap — while a 6K-token Cohere/Fireworks budget yields a

@@ -80,6 +80,7 @@ from faultmaven.core.investigation.prompts.context_builder.evidence import (
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.blocks import unseen_text_rule
 from faultmaven.core.investigation.prompts.templates.fallback import (
     DEGRADED_NO_TOOLS_NOTICE,
     get_fallback_prompt_for_case,
@@ -636,6 +637,25 @@ def test_every_prompt_states_the_turns_tools(row: str) -> None:
     assert not missing, missing
     if not g:
         assert line.startswith("No investigation tools are available on this turn")
+
+
+#: The prompts that render ``<evidence_collected>``, where an item can be cut,
+#: elided or omitted (#2401).
+_EVIDENCE_PROMPTS = {"inquiry", *_INVESTIGATING}
+
+
+@pytest.mark.parametrize("row", sorted(ROWS))
+def test_every_evidence_prompt_states_the_unseen_text_rule(row: str) -> None:
+    """#2401: each prompt that can render a cut item carries the unseen-text
+    rule, and the rule names ``search_file`` only on a turn that gives it."""
+    g = ROWS[row]
+    rule = unseen_text_rule(g)
+    texts = renders(g)
+    missing = [c for c in sorted(_EVIDENCE_PROMPTS) if rule not in texts[c]]
+    assert not missing, missing
+    assert ("search_file" in rule) is ("search_file" in g)
+    # Non-vacuity: the columns really render a cut item.
+    assert "[TRUNCATED:" in texts["diagnosis"]
 
 
 @pytest.mark.parametrize("row", sorted(ROWS))

@@ -75,8 +75,7 @@ WORKING WITH EVIDENCE DATA:
 - """
     + _DATA_CITATION_RULE
     + """
-- If the structural index is TRUNCATED (marked with [TRUNCATED]), work with what's
-  visible and note that additional detail may exist beyond what's shown.
+- {unseen_text}
 - If you need detail the structural index doesn't have: state a specific command
   the user can run to extract it in your response, and mirror it as a RUN
   suggestion (see MIRROR, DON'T FORK below) — never a command that appears only

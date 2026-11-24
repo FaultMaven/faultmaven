@@ -210,7 +210,12 @@ def _fallback_stub_block(
             seen_file_ids.add(row.file_id)
             # Canonical row for this id, so the name matches <evidence>.
             uf = (find(row.file_id) if find is not None else None) or row
-            head = (uf.structural_index or "")[:head_chars].replace("\n", " ")
+            index = uf.structural_index or ""
+            head = index[:head_chars].replace("\n", " ")
+            if len(index) > head_chars:
+                # A cut head says so (#2401), as the full render's cut does.
+                cut = len(index) - head_chars
+                head += f" [TRUNCATED: {cut:,} more characters not shown.]"
             n_stored += uf.has_stored_content
             stubs.append(
                 fence.element(

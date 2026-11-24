@@ -338,6 +338,33 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
   each value should plausibly match its type. Omit obvious artifacts.\
 """
 
+# What the model may say about the part of an item it was not shown (#2401) —
+# used in INQUIRY_TEMPLATE and INVESTIGATION_BASE, the prompts that render a
+# cut, elided or omitted item. Only the reading is turn-dependent: search_file
+# is named only on a turn that gives it (#1939).
+_UNSEEN_TEXT_RULE = """\
+UNSEEN TEXT: An item marked `[TRUNCATED: …]`, `[Structural index elided …]` or
+  `[Full content omitted …]` was cut by FaultMaven to fit this prompt. The user's
+  item is whole. Describe only what the shown part shows. Never state what the
+  part you were not shown contains, defines, returns or lacks, and never call the
+  user's data missing, incomplete or truncated because this prompt does not show
+  it.\
+"""
+
+
+def unseen_text_rule(given: GivenTools) -> str:
+    """``{unseen_text}``: the unseen-text rule, ending with how to reach
+    the rest on this turn."""
+    if has(given, "search_file"):
+        return (
+            _UNSEEN_TEXT_RULE
+            + " To read the rest, call search_file with the item's id."
+        )
+    return (
+        _UNSEEN_TEXT_RULE + " If you need the rest, say which part you could not see."
+    )
+
+
 # What the user tells FaultMaven in their message (#1930) — used in
 # INQUIRY_TEMPLATE and INVESTIGATION_BASE. The user declares what is data: the
 # model only names the blocks, by their first and last line, and the output a
