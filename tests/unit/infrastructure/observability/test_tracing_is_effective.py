@@ -205,7 +205,7 @@ def test_the_record_resolves_the_project_once(opik_stand_in):
 
     assert (named.project, unnamed.project) == ("faultmaven", "faultmaven")
     assert named.url == "http://localhost:5173/api/"
-    assert named.ping_interval_s == opik_sdk.PING_INTERVAL_S == 999999
+    assert named.ping_interval_s == opik_sdk.PING_INTERVAL_S == 10  # the SDK default
     assert opik_sdk.backend() is unnamed
 
 

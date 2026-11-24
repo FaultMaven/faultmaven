@@ -172,11 +172,10 @@ class LLMTraceEraser:
         ``flush`` returning True is not delivery. After one connection failure
         the SDK parks every later trace in a local database with no send, and
         replays them only while its monitor's flag is True, which otherwise
-        waits for a ping ``opik_sdk.PING_INTERVAL_S`` apart. So the flag is
-        reset here, through the SDK's internals as it has no public accessor.
-        The ping interval stays as it is: a non-200 ping would park every trace
-        on every pod (#2573). After the flush, a flag that is False again means
-        a send failed, so the backend is unreachable.
+        waits for the next ping, up to ``opik_sdk.PING_INTERVAL_S`` away
+        (#2573). So the flag is reset here, through the SDK's internals as it
+        has no public accessor. After the flush, a flag that is False again
+        means a send failed, so the backend is unreachable.
         """
         try:
             monitor = opik_sdk.replay_monitor(client)

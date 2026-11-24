@@ -70,11 +70,21 @@ try:
 except ImportError:
     SPAN_TAGGING_AVAILABLE = False
 
-#: The SDK's connection-monitor ping interval. Its default is 10 s, but its ping
-#: URL drops the ``/opik/api/`` prefix (``urljoin`` with an absolute path), so it
-#: stays this high until each deployment's URL form passes a live check (#2573,
-#: the #2616 ruling, Q9). A parked trace waits this long for a replay.
-PING_INTERVAL_S = 999999
+#: The SDK's connection-monitor ping interval: its own default (10 s). After a
+#: failed send the SDK parks every trace until a ping succeeds, so a parked
+#: trace waits at most this long once the backend is back (#2573). The ping URL
+#: is ``urljoin(base, "/is-alive/ping")``, which drops a path prefix; #2616 Q9's
+#: check covers both URL forms. ``OPIK_URL_OVERRIDE`` (Cloud) has no prefix and
+#: answered 200 live; ``OPIK_USE_LOCAL``'s ``{opik_local_url}/api/`` is the
+#: SDK's own default form for a local Opik, pinged at this default by every SDK.
+try:
+    from opik.config import OpikConfig
+
+    PING_INTERVAL_S = int(
+        OpikConfig.model_fields["connection_monitor_ping_interval"].default
+    )
+except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+    PING_INTERVAL_S = 10
 
 NOT_CONFIGURED = "tracing was not configured in this process"
 

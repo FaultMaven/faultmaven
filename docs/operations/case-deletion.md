@@ -175,8 +175,9 @@ read reports it.
   search may not be found by it.
 - **Traces on another replica (#2573).** After a connection failure the SDK
   parks traces in a SQLite database on that pod. A parked trace replays only
-  when a delete runs on that pod, or after the SDK's ping interval of 999999 s
-  (`opik_sdk.PING_INTERVAL_S`), which is about 11.6 days. A trace parked or
+  when a delete runs on that pod, or at the monitor's next ping once the
+  backend is back: the SDK's default interval of 10 s
+  (`opik_sdk.PING_INTERVAL_S`). A trace parked or
   still batched on another replica is invisible to the delete and can land
   after it. `GET /admin/config/status` reports it under `trace_backend` for
   the worker process that served the request: `server_connection` reads
