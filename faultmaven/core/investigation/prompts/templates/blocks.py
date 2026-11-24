@@ -699,6 +699,12 @@ about the user's intent, do NOT fire the state change. Instead:
 # it. INQUIRY, the fallback stub and TERMINAL do not (the design doc's
 # outcome-statement paragraph says why). The engine's "**Case record:**" line
 # under the reply is what keeps its promise.
+_OUTCOME_FIELDS_RULE = (
+    "State that the problem is confirmed or that a root cause is identified "
+    "only through the structured fields; the engine states what the case "
+    "record holds under your reply."
+)
+
 # What the user reads takes its meaning from the conversation alone (#2494):
 # replies named the ROOT-CAUSE TEST and its clauses to a user who never saw
 # them. A property, not a word list. The reduced fallbacks carry the property
@@ -717,12 +723,6 @@ or "interception" as a category name. Say "a restart only clears it until it
 builds up again", not "it fails clause (b)". A lower-case "workaround", or
 "intercept" as an ordinary verb in a sentence that stands on its own, is plain
 words."""
-)
-
-_OUTCOME_FIELDS_RULE = (
-    "State that the problem is confirmed or that a root cause is identified "
-    "only through the structured fields; the engine states what the case "
-    "record holds under your reply."
 )
 
 # Diagnostic reasoning requirements — injected into INVESTIGATION_BASE.
