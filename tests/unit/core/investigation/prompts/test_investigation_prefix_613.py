@@ -106,6 +106,10 @@ PREFIX_ALLOWLIST = {
     # The advisor block's note that tool calls are not banned actions: present
     # when the turn gives tools. Varies with the given set only, as above.
     "tool_results_rule",
+    # The unseen-text rule's scope sentence (rendered on a turn that gives any
+    # tool) and its reading sentence (search_file when it is given, else say
+    # what could not be seen) (#2401). Both vary with the given set only.
+    "unseen_text",
     # The stage instructions. Constant within a stage and processing mode, so
     # they change a few times a case at most — which makes them the prefix's
     # LAST part. The DIAGNOSIS focus emphasis, which moves with the milestones

@@ -8076,7 +8076,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.10.0"
+    "version": "15.11.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11034,7 +11034,7 @@
     },
     "/api/v1/cases/{case_id}": {
       "delete": {
-        "description": "Permanently delete a case and all associated data, or fail and keep it.\n\nEvery store that holds the case's data is cleared before the case itself:\nits LLM traces, its evidence search index, its uploaded files, its PII\nredaction registry, the sessions pointing at it, the answers cached for\nreplay of keyed requests (`Idempotency-Key`) that acted on it, its team\nshares and its runbook conversion jobs and drafts (a published runbook is\nkept).\nAn audit record names who deleted it and what was cleared.\n\nIf any store cannot be cleared, the request answers 500\n`DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A\nfailed delete can leave a case that reads normally while some of its\nfiles and its evidence search are already gone, until a retry completes\nthe delete. The case's LLM traces clear first, where a trace backend is\nconfigured: when that backend is unreachable the request answers this 500\nand the rest of the case is untouched.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the case's CREATOR may delete it: delete is governance (ADR-020 D2).\nAny other reader \u2014 the driver included \u2014 is refused with 403.\n\nWhile a turn on the case, or work one started (its upload links, evidence\nindexing, a runbook draft), is still running, on any server, the delete\nanswers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.\nA turn sent while the delete runs is refused with 409\n`CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads\n`deleting: true` while the delete's tombstone stands: until it is removed\nor lapses, or the case is gone (404) (#2510).\nIf whether work is in flight cannot be read, the delete answers 503\n`CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).\n\nReturns 204 No Content on success.",
+        "description": "Permanently delete a case and all associated data, or fail and keep it.\n\nEvery store that holds the case's data is cleared before the case itself:\nits LLM traces, its evidence search index, its uploaded files, its PII\nredaction registry, the sessions pointing at it, the answers cached for\nreplay of keyed requests (`Idempotency-Key`) that acted on it, its team\nshares and its runbook conversion jobs and drafts (a published runbook is\nkept).\nAn audit record names who deleted it and what was cleared.\n\nIf any store cannot be cleared, the request answers 500\n`DELETE_CASE_ERROR` and the case stays, so the delete can be retried. A\nfailed delete can leave a case that reads normally while some of its\nfiles and its evidence search are already gone, until a retry completes\nthe delete. The case's LLM traces clear first, where a trace backend is\nconfigured: when that backend is unreachable the request answers this 500\nand the rest of the case is untouched.\n\nThe operation is idempotent - subsequent requests will return\n204 No Content even if the case has already been deleted, and so does a\nrequest naming a case the caller cannot see.\n\nOnly the case's CREATOR may delete it: delete is governance (ADR-020 D2).\nAny other reader \u2014 the driver included \u2014 is refused with 403.\n\nWhile a turn on the case, or work one started (its upload links, evidence\nindexing, a runbook draft), or a title generation on the case is still\nrunning, on any server, the delete answers 409 `CASE_WORK_IN_PROGRESS`\nwith `Retry-After` and clears nothing. A turn or a title generation sent\nwhile the delete runs is refused with 409 `CASE_DELETE_IN_PROGRESS`, and\n`GET /cases/{case_id}` reads `deleting: true` while the delete's tombstone\nstands: until it is removed or lapses, or the case is gone (404) (#2510).\nIf whether work is in flight cannot be read, the delete answers 503\n`CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).\n\nReturns 204 No Content on success.",
         "operationId": "delete_case_api_v1_cases__case_id__delete",
         "parameters": [
           {
@@ -11060,7 +11060,7 @@
             }
           },
           "409": {
-            "description": "`CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.",
+            "description": "`CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, or a title generation on the case is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until the work's current lease lapses unless renewed: the work may run longer, and a retry may be refused again.",
@@ -12728,7 +12728,7 @@
     },
     "/api/v1/cases/{case_id}/title": {
       "post": {
-        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive\n  it. Naming a case writes it, an investigation write that is the\n  driver's (ADR-020 D2), so any other reader is refused here before any\n  title is generated (#2806).\n- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
+        "description": "Generate a concise, case-specific title from case messages and metadata.\n\n**Request body (optional):**\n- `max_words`: integer (3\u201312, default 8) - Maximum words in generated title\n- `hint`: string - Optional hint to guide title generation\n- `force`: boolean (default false) - Only overwrite non-default titles when true\n\n**Returns:**\n- 200: TitleResponse with X-Correlation-ID header\n- 403 ``CASE_NOT_DRIVER``: the caller reads the case but does not drive\n  it. Naming a case writes it, an investigation write that is the\n  driver's (ADR-020 D2), so any other reader is refused here before any\n  title is generated (#2806).\n- 404 ``CASE_NOT_FOUND``: the caller cannot read the case.\n- 409 ``CASE_DELETE_IN_PROGRESS``: the case is being deleted; nothing was\n  generated or written. The call holds the case's in-flight lease while it\n  generates and writes the title, as a turn does, so a delete of the case\n  meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).\n- 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a\n  different request body; nothing was generated or written.\n- 422: ValidationException body \u2014 see ``api/exception_handlers.py``\n  and ``docs/architecture/specifications/exception-contract.md``.\n  Raised when there is insufficient meaningful context to generate\n  a title (pre-LLM length gate, or LLM + fallback both fail).\n  Clients SHOULD keep the existing title unchanged and may retry\n  later.\n- 503: the check that keeps sensitive data out of titles could not run\n  (a server-side dependency is unavailable), so no title was written.\n  The detail is generic. Clients SHOULD keep the existing title and may\n  retry later.",
         "operationId": "generate_case_title_api_v1_cases__case_id__title_post",
         "parameters": [
           {
@@ -12805,6 +12805,21 @@
                 "schema": {
                   "enum": [
                     "CASE_NOT_FOUND"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key).",
+            "headers": {
+              "x-error-code": {
+                "description": "Which conflict.",
+                "schema": {
+                  "enum": [
+                    "CASE_DELETE_IN_PROGRESS",
+                    "IDEMPOTENCY_KEY_REUSE"
                   ],
                   "type": "string"
                 }

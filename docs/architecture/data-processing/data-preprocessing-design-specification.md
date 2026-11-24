@@ -181,8 +181,8 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 |------|------|------|
 | **Processing model** | Linear 4-tier escalation ("Never skip tiers. Always try the cheaper option first.") | Scenario-driven: **Triage**, **Directed Analysis**, **Semantic Search**. Mode selected by mechanical query classifier, not LLM judgment. |
 | **Query routing** | LLM-driven tier selection via system prompt | Heuristic `classify_query()` — regex entity detection (timestamps, HTTP status codes, error keywords, service names, IPs) + generic phrase detection. No LLM call. |
-| **System prompt** | Single "Data Access Strategy" with tier ordering | Mode-specific: `DATA_ACCESS_TRIAGE` (structural index is the answer) vs `DATA_ACCESS_DIRECTED_ANALYSIS` (structural index as orientation map, deep_analysis as primary tool) |
-| **Structural index role** | Always presented the same way in LLM context | Tagged `<structural_index role="orientation">` in DA mode; plain `<structural_index>` in Triage mode |
+| **System prompt** | Single "Data Access Strategy" with tier ordering | Mode-specific: `DATA_ACCESS_TRIAGE` (structural index is the answer) vs `DATA_ACCESS_DIRECTED_ANALYSIS` (structural index as orientation map, deep_analysis as primary tool). Both constants were removed in #997; see "Mode-Specific System Prompts" for what each mode renders today. |
+| **Structural index role** | Always presented the same way in LLM context | Tagged `<file_extract role="orientation">` in DA mode; plain `<file_extract>` in Triage mode |
 | **Vectorization trigger** | Agent proposes → user approves | Auto-triggered mechanically on DA failure signals (no user confirmation) |
 | **Failure tracking** | Global `consecutive_empty_searches` counter with escalation advisory after 2 empties | Per-evidence `EvidenceDAState` with 4 independent triggers: tool timeout, 3+ empty searches, 3+ DA invocations, low confidence (<0.2). Cross-turn persistence via `da_invocation_count` on Evidence model. |
 | **Small-file DA failure** | Not addressed | Raw file content injected directly into LLM context when DA fails on files below vectorization threshold |
@@ -321,7 +321,7 @@ Knowledge questions are detected by matching ALL three gates:
 2. **No hard case-specific entities**: No timestamps, HTTP status codes, or IP addresses. Service names and error keywords are allowed (they can be the *subject* of a knowledge question, e.g., "How does Redis clustering work?")
 3. **No case references**: No possessive/locational references to case data ("the error", "in the logs", "we're seeing"). All case reference patterns require a prefix (the/this/our/in/from) to avoid matching bare nouns like "What is a null pointer exception?"
 
-Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM can invoke `kb_qa` when the question is about runbooks or documented procedures. The LLM decides whether to use a tool based on the question. Diagnostic reasoning validation is skipped, and the EVIDENCE GROUNDING block is omitted entirely from the rendered prompt (`evidence_grounding=""`) rather than appending an escape clause — so no constraint text sandwiches the exemption.
+Knowledge queries still get tool access (with `tool_choice="auto"`) so the LLM can invoke `kb_qa` when the question is about runbooks or documented procedures. The LLM decides whether to use a tool based on the question. On an INVESTIGATING turn the DIAGNOSTIC REASONING block is not rendered, and the EVIDENCE GROUNDING block is replaced by the observation-time definition alone (`evidence_grounding=_OBSERVATION_TIME_BLOCK`, `templates/assembly.py`) rather than appending an escape clause — so no constraint text sandwiches the exemption. The INQUIRY template renders neither block, and gives a knowledge query no instructions of its own.
 
 ### 1.2 Design Principles
 
@@ -1142,7 +1142,7 @@ In v3.2, `store_in_vector_db_background()` is called automatically after every u
 
 ## 6. Scenario-Driven Processing Modes
 
-The investigation agent receives a **mode-specific system prompt** based on the query classifier's output. This replaces the old linear escalation decision tree and "Never skip tiers" instruction.
+The query classifier's output selects a **processing mode**. On an INVESTIGATING turn, Knowledge Query and Agent Meta render their own instructions in place of the stage instructions and waive the EVIDENCE GROUNDING and DIAGNOSTIC REASONING blocks; on an INQUIRY turn, Agent Meta's instructions render through `{agent_meta_instructions}` and Knowledge Query gets none of its own (`templates/assembly.py`, `templates/inquiry.py`). Triage and Directed Analysis turns share one prompt and differ only in evidence rendering and tool forcing (see "Mode-Specific System Prompts" below). Mode routing replaces the old linear escalation decision tree and "Never skip tiers" instruction.
 
 ### 6.0 Query Classifier
 
@@ -1184,49 +1184,47 @@ def classify_query(user_message: str, has_attachments: bool) -> QueryClassificat
 
 ### Mode-Specific System Prompts
 
-Two `DATA_ACCESS_*` constants are injected into the INVESTIGATOR system prompt via the `{data_access_strategy}` placeholder:
+**A cut, elided or omitted extract** is governed by the unseen-text rule,
+`unseen_text_rule` in `faultmaven/core/investigation/prompts/templates/blocks.py`
+(#2401), rendered in `INQUIRY_TEMPLATE` and `INVESTIGATION_BASE`: the model
+describes only the part it was shown. The rule names `search_file` only for a
+`file_backed="true"` item, and only on a turn that gives that tool.
 
-**Triage mode** (`DATA_ACCESS_TRIAGE`):
+**Directed Analysis mode** has no prompt text of its own. The `DATA_ACCESS_*`
+constants and the `{data_access_strategy}` placeholder were removed in #997. A
+`directed_analysis` turn differs from a triage turn in two ways:
 
-```text
-## Data Access Strategy
+- **Evidence rendering** (`_render_evidence_block`,
+  `faultmaven/core/investigation/prompts/context_builder/evidence.py`). When the
+  turn gives `search_file`, an earlier item whose raw file is stored keeps its
+  `<search_map>`, and its `<file_extract>` is replaced by the marker
+  `[Structural index elided in directed-analysis mode — call search_file with
+  the … id above to read specifics …]` (`role="orientation"
+  elided="directed_analysis"`). An Evidence-backed extract that is not elided
+  carries `role="orientation"`. The upload of the current turn keeps its full
+  extract.
+- **Tool forcing** (`_should_force_tools`,
+  `faultmaven/core/investigation/milestone_engine/stage_gates.py`). The tool
+  loop runs with `tool_choice=required` when the case holds a file a reading
+  tool can open, no resolve or close offer is open, and no bare resolve decline
+  was recorded on the turn. Forcing is off on a turn given no investigation
+  tools (`force_tools`,
+  `faultmaven/core/investigation/milestone_engine/turn_generation.py`).
 
-The <file_extract> content in <evidence_collected> is your primary source.
-Summarize the key findings: errors by severity, anomalies, misconfigurations,
-notable patterns.
-If a <file_extract> is [TRUNCATED], use search_file to retrieve specific sections.
-Do NOT call deep_analysis or vectorize_file in triage mode — the file extract
-is the answer.
-```
+What the model is told about the tools is not mode-specific. The tool loop's
+system instruction (`_build_da_system_instruction`,
+`faultmaven/core/investigation/milestone_engine/tool_messages.py`) describes
+`search_file` ("keyword/regex search against raw evidence files") and
+`deep_analysis` ("LLM-interpreted analysis of specific evidence sections …
+Limited to 1 call per turn"), naming only the tools the turn gives. Which source
+to answer from is `evidence_grounding_block(given)` in
+`faultmaven/core/investigation/prompts/templates/blocks.py`, rendered through
+`{evidence_grounding}` on INVESTIGATING triage and directed-analysis turns alike;
+the INQUIRY template has no such slot.
 
-**Directed Analysis mode** (`DATA_ACCESS_DIRECTED_ANALYSIS`):
+**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. On an INVESTIGATING turn, `knowledge_query_instructions(given)` is injected as `adaptive_instructions`, and `evidence_grounding` carries only the observation-time definition (`_OBSERVATION_TIME_BLOCK`), so no EVIDENCE GROUNDING rule renders; `diagnostic_reasoning` renders empty (`faultmaven/core/investigation/prompts/templates/assembly.py`). An INQUIRY turn gives it no instructions of its own.
 
-```text
-## Data Access Strategy
-
-The user has a specific question. The <file_extract role="orientation"> for
-each evidence file is a map of the file's contents (time range, services, error
-distribution).
-
-Use this map to formulate targeted queries:
-- **deep_analysis** — Primary tool. Ask a focused question about specific evidence.
-- **search_file** — Supplementary. Use for exact keyword, regex, or timestamp matching.
-
-You do NOT need to try search_file before deep_analysis. Use whichever is
-appropriate for the question. If your analysis is insufficient, the system will
-automatically index large files for semantic search — you do not need to manage this.
-```
-
-**Note:** The per-turn routing rule in `evidence_grounding_block(given)` (injected via
-`evidence_grounding=`) provides finer-grained routing guidance that supersedes the
-`DATA_ACCESS_DIRECTED_ANALYSIS` defaults for specific question types. See Section 1 of
-`templates/blocks.py` for the four-category rule (characterization / retrieval / count /
-temporal distribution). The DA mode prompt governs tool selection strategy; the
-evidence grounding block governs what source to answer from.
-
-**Knowledge Query mode**: Knowledge queries get tool access with `tool_choice="auto"` — the LLM can invoke `kb_qa` for runbook content or answer from built-in knowledge. `knowledge_query_instructions(given)` is injected as `adaptive_instructions` and `evidence_grounding=""` is passed, so the EVIDENCE GROUNDING block is absent from the rendered prompt entirely. Diagnostic reasoning validation is also skipped.
-
-**Agent Meta mode** (#1328): the same two waivers, with `AGENT_META_INSTRUCTIONS` (a high-level self-knowledge profile plus an answer discipline: a few sentences, docs link, say the model is not told which provider serves the deployment, no tool calls, never request FaultMaven's configuration as evidence, case state untouched) as `adaptive_instructions`. Tools are never forced. A turn that delivers evidence is re-routed before the prompt is built: to Directed Analysis in INVESTIGATING, to Triage in INQUIRY.
+**Agent Meta mode** (#1328): the same two waivers, with `AGENT_META_INSTRUCTIONS` (a high-level self-knowledge profile plus an answer discipline: a few sentences, docs link, say the model is not told which provider serves the deployment, no tool calls, never request FaultMaven's configuration as evidence, case state untouched) as `adaptive_instructions` on an INVESTIGATING turn; in INQUIRY the block renders through `{agent_meta_instructions}` (`templates/inquiry.py`). Tools are never forced. A turn that delivers evidence is re-routed before the prompt is built: to Directed Analysis in INVESTIGATING, to Triage in INQUIRY.
 
 **System Instruction (Type A/B/C routing)**: The system instruction includes question routing guidance:
 

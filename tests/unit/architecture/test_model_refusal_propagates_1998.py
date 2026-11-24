@@ -491,6 +491,7 @@ _TITLE = "Login Failures On The Auth Service"
 def _titled_case() -> SimpleNamespace:
     return SimpleNamespace(
         case_id="case_1998p3title",
+        enterprise_id="ent_1998",  # the route holds the case's lease (#2580)
         title="Case-261016-1",
         description="",
         is_terminal=False,

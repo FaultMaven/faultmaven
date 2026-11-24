@@ -121,6 +121,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "system_feedback",
         "tool_results_rule",
         "tools_this_turn",
+        "unseen_text",
         "user_message",
     },
     "TERMINAL_TEMPLATE": {
@@ -161,6 +162,7 @@ EXPECTED_KEYS: dict[str, set[str]] = {
         "system_feedback",
         "tool_results_rule",
         "tools_this_turn",
+        "unseen_text",
         "user_message",
         "working_conclusion",
     },

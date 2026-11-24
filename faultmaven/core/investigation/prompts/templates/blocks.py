@@ -338,6 +338,51 @@ Be SPECIFIC: cite actual values from the structural index (IPs, hostnames, entit
   each value should plausibly match its type. Omit obvious artifacts.\
 """
 
+# What the model may say about the part of an item it was not shown (#2401) —
+# used in INQUIRY_TEMPLATE and INVESTIGATION_BASE, the prompts that render
+# <evidence_collected>. It names every marker that shortens or leaves out an
+# item there: the per-item cut, the directed-analysis elision, the omitted
+# stub, and the budget squeeze's cut at the end of the block
+# (``TokenBudget._truncate_to``; its bare ``[...]`` replaces a whole section,
+# never part of an item, and users type it in pastes, so it is not named). It
+# is scoped to that block, because a tool result can carry the output-limit
+# notice (``infrastructure/llm/truncation.TRUNCATION_NOTICE``), whose answer
+# really is incomplete. Only the closing sentences are turn-dependent: a tool is named
+# only on a turn that gives it (#1939), and ``search_file`` only for an item it
+# can read (``file_backed="true"``, #2375).
+_UNSEEN_TEXT_RULE = """\
+UNSEEN TEXT: An item in <evidence_collected> marked `[TRUNCATED: … more
+  characters not shown …]`, `[Structural index elided …]` or `[Full content
+  omitted …]`, or cut off at the end of <evidence_collected> by
+  `[... Content truncated due to context limit ...]` or `[...truncated...]`,
+  was shortened or left out of this prompt by FaultMaven. The user's item is
+  whole. Describe only what the shown part shows. Never state what the part
+  you were not shown contains, defines, returns or lacks, and never call the
+  user's data missing, incomplete or truncated because this prompt does not
+  show it.\
+"""
+
+#: The scope sentence, rendered on a turn that gives any tool.
+_UNSEEN_TEXT_TOOL_NOTICE = (
+    " This rule covers <evidence_collected> only: a tool result's own"
+    " `[TRUNCATED: the answer below hit the model's output limit …]` notice"
+    " keeps its meaning, and that answer is incomplete."
+)
+
+
+def unseen_text_rule(given: GivenTools) -> str:
+    """``{unseen_text}``: the unseen-text rule, ending with how to reach
+    the rest on this turn."""
+    rule = _UNSEEN_TEXT_RULE + (_UNSEEN_TEXT_TOOL_NOTICE if given else "")
+    if has(given, "search_file"):
+        return rule + (
+            ' To read the rest of an item marked file_backed="true", call'
+            " search_file with its id; an item without it cannot be read"
+            " further, so say which part you could not see."
+        )
+    return rule + " If you need the rest, say which part you could not see."
+
+
 # What the user tells FaultMaven in their message (#1930) — used in
 # INQUIRY_TEMPLATE and INVESTIGATION_BASE. The user declares what is data: the
 # model only names the blocks, by their first and last line, and the output a

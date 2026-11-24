@@ -2435,7 +2435,7 @@ class TestTheInvariantHoldsAcrossTheBudgetRange:
         )
 
         fallbacks = mains = 0
-        for target in range(1000, 24001, 500):
+        for target in range(1000, 25001, 500):
             monkeypatch.setattr(settings.model_context, "prompt_target_tokens", target)
             prompt = get_prompt_for_case(
                 case, payload, provider_name="openai", model_name="gpt-4o"

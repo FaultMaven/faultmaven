@@ -60,9 +60,9 @@ on the attempt that saved it, and printed per case (a CLI process's counter
 is never scraped); a dry run counts nothing (#2689). It marks no unbound
 re-check told: the next verified narrated turn tells each once (#2555).
 
-A case that needs a record while work on it is in flight (a turn, or a task
-one spawned, holds its lease on some replica: ``CaseDeleteGate.work_in_flight``,
-the lease a delete reads) is skipped and listed, and so is one whose lease
+A case that needs a record while work on it is in flight (a turn, a task one
+spawned, or a title call holds its lease on some replica:
+``CaseDeleteGate.work_in_flight``, the lease a delete reads) is skipped and listed, and so is one whose lease
 cannot be read; a re-run picks them up. A case that does not need a record is
 left alone, and its lease is not read. Under standalone the lease store lives
 in the API's own process, which this command cannot see: run it with the API
