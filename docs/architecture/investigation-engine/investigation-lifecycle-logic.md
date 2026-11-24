@@ -1193,8 +1193,9 @@ the turn and the turn's own prose does not state it
 
 - **The facts** (`outcome_changes`): the problem confirmed, no longer
   confirmed, or shown not present; a root cause identified, no longer
-  standing, standing again, or no longer identified; each attempt whose
-  `accepted_in_turn` the turn set, keyed by `action_id` ("a fix was carried
+  standing, standing again, or no longer identified; each attempt accepted
+  this turn (its `accepted_in_turn` is the turn's, which the snapshot did
+  not hold), keyed by `action_id` ("a fix was carried
   out (turn t)", an interception "a workaround …", an unkinded attempt a
   fix; window 0 has none). The cause has fallen when a root fell and the
   confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also holds
@@ -1202,8 +1203,8 @@ the turn and the turn's own prose does not state it
   reason). Windows, mitigation and bookkeeping are not read (S3 adds the
   first two).
 - **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
-  copy of the record before any write of the turn) and the turn-final
-  record: the cycle's, or the narration's fold when the cycle's write
+  copy of the record before any write of the turn, and the turn) and the
+  turn-final record: the cycle's, or the narration's fold when the cycle's write
   failed; when that fold fails too, nothing is stated. A record minted this
   turn states nothing. The statement is rendered from those two records and
   the turn-start restore target alone (pin 2).
@@ -1222,8 +1223,9 @@ the turn and the turn's own prose does not state it
   `RECORD_PROSE` is): read from the branch `_compose_turn_reply` took and the
   params its prose was rendered from. The resolve confirmation states a root
   cause when its root line names one, and the confirming attempt when it
-  names it "(carried out turn t)"; the backstop and the deferred resolve
-  state at most the cause; the false-alarm close, and a readiness message
+  names it "(carried out turn t)"; the backstop states the cause when one is
+  on record, and the deferred resolve when its record lines hold a cause
+  line naming one; the false-alarm close, and a readiness message
   for a false alarm, the problem not present; the needs-info ask whose
   "Root cause" line says the cause fell, that it fell. A model proposal's
   prose is its offer's summary, not the reply's.
@@ -1238,7 +1240,9 @@ the turn and the turn's own prose does not state it
   proposes a revised statement says no "no longer confirmed", and a decline
   of that revision then leaves the case unverified with no clause. A
   revision-confirm turn that newly identifies on a backstop leg states no
-  cause. A save-time fold that failed and was swallowed leaves the next
+  cause, nor does a turn that leaves a false-alarm finding and verifies the
+  problem (INVALIDATED → VERIFIED) when the leg it brings back is a backstop.
+  A save-time fold that failed and was swallowed leaves the next
   turn's snapshot stale. A root swapped for another with the leg set
   throughout states nothing.
 

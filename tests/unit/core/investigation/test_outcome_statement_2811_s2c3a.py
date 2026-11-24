@@ -145,9 +145,9 @@ def _kinds(changes) -> list:
     return [c.kind for c in changes]
 
 
-def _base(record, *, restores=None, comparable=True) -> OutcomeBaseline:
+def _base(record, *, restores=None, comparable=True, turn=0) -> OutcomeBaseline:
     return OutcomeBaseline(
-        record=record, restores_to=restores, problem_comparable=comparable
+        record=record, restores_to=restores, problem_comparable=comparable, turn=turn
     )
 
 
@@ -255,7 +255,7 @@ def test_the_baseline_reads_restores_to_by_the_records_own_status(spy):
 def test_the_baseline_of_a_case_with_no_record_holds_none():
     case = _case(_V)
     case.progress.outcome = None
-    assert outcome_baseline(case) == OutcomeBaseline(None, None, False)
+    assert outcome_baseline(case) == OutcomeBaseline(None, None, False, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +269,36 @@ def _turn_of(case, move) -> list:
     baseline = outcome_baseline(case)
     move(case)
     return _kinds(outcome_changes(baseline, _record(case, case.progress.outcome)))
+
+
+def _silent_with_control(case, move) -> None:
+    """``move`` states nothing; the same turn with a fix carried out too
+    states that fix alone (the same-turn positive control)."""
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    baseline = outcome_baseline(case)
+    control = copy.deepcopy(case)
+    move(case)
+    move(control)
+    _carried_out(control, baseline.turn)
+    assert outcome_changes(baseline, _record(case, case.progress.outcome)) == []
+    assert _kinds(
+        outcome_changes(baseline, _record(control, control.progress.outcome))
+    ) == [OutcomeChange.FIX_CARRIED_OUT]
+
+
+def _carried_out(case, turn, description="restart the orders service", **kw):
+    """A SOLUTION accepted at ``turn``, appended to the case."""
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description=description,
+            proposed_in_turn=turn - 1,
+            accepted_in_turn=turn,
+            state="accepted",
+            **kw,
+        )
+    )
 
 
 def _decline(case):
@@ -296,13 +326,13 @@ def test_leaving_verified_states_no_longer_confirmed():
 
 def test_moving_into_a_revision_hold_states_nothing_its_confirm_states():
     case = _case(_U)
-    assert _turn_of(case, _propose) == []
+    _silent_with_control(case, _propose)
     assert _turn_of(case, _confirm) == [OutcomeChange.PROBLEM_VERIFIED]
 
 
 def test_moving_from_verified_into_a_revision_hold_states_nothing():
     case = _case(_V)
-    assert _turn_of(case, _propose) == []
+    _silent_with_control(case, _propose)
     # Control: the same snapshot, a decline and a retraction in one turn.
     assert _turn_of(case, lambda c: (_decline(c), unverify_problem(c, via="t"))) == [
         OutcomeChange.PROBLEM_UNCONFIRMED
@@ -312,7 +342,7 @@ def test_moving_from_verified_into_a_revision_hold_states_nothing():
 def test_a_declined_revision_restores_and_states_nothing():
     case = _case(_V)
     _propose(case)
-    assert _turn_of(case, _decline) == []
+    _silent_with_control(case, _decline)
     assert case.progress.problem_status == _V
 
 
@@ -320,7 +350,7 @@ def test_a_declined_revision_of_a_false_alarm_states_nothing():
     case = _case(_V)
     _invalidate(case)
     _propose(case)
-    assert _turn_of(copy.deepcopy(case), _decline) == []
+    _silent_with_control(copy.deepcopy(case), _decline)
     # Control: the same hold confirmed verifies.
     assert _turn_of(case, _confirm) == [OutcomeChange.PROBLEM_VERIFIED]
 
@@ -328,9 +358,8 @@ def test_a_declined_revision_of_a_false_alarm_states_nothing():
 def test_a_finding_states_and_its_withdrawal_restores_silently():
     case = _case(_V)
     assert _turn_of(case, _invalidate) == [OutcomeChange.PROBLEM_INVALIDATED]
-    assert (
-        _turn_of(case, lambda c: withdraw_invalidation(c, basis="the user saw it"))
-        == []
+    _silent_with_control(
+        case, lambda c: withdraw_invalidation(c, basis="the user saw it")
     )
     assert case.progress.problem_status == _V
 
@@ -341,15 +370,21 @@ def test_a_baseline_the_live_status_disagrees_with_states_no_problem_clause():
     baseline = outcome_baseline(case)
     verify_problem(case, via="t")
     now = _record(case, case.progress.outcome)
-    stale = OutcomeBaseline(baseline.record, baseline.restores_to, False)
+    stale = OutcomeBaseline(baseline.record, baseline.restores_to, False, baseline.turn)
     assert _kinds(outcome_changes(baseline, now)) == [OutcomeChange.PROBLEM_VERIFIED]
     assert outcome_changes(stale, now) == []
 
 
 def test_a_record_minted_this_turn_states_nothing():
     case = _case(_U)
+    before = _record(case)
     verify_problem(case, via="t")
-    assert outcome_changes(_base(None), _record(case)) == []
+    now = _record(case)
+    assert outcome_changes(_base(None), now) == []
+    # Control: the same turn-final record against a snapshot states it.
+    assert _kinds(outcome_changes(_base(before), now)) == [
+        OutcomeChange.PROBLEM_VERIFIED
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +483,24 @@ def test_a_hold_moves_a_backstop_leg_without_a_cause_clause():
     ]
 
 
+def test_leaving_a_finding_and_verifying_states_no_backstop_cause():
+    """The residual, pinned: a finding withdrawn to UNVERIFIED and the
+    problem verified in the same turn (INVALIDATED -> VERIFIED) states the
+    problem, but not the rcc leg it brings back."""
+    case = _rcc_case()
+    unverify_problem(case, via="t")
+    _invalidate(case)
+    assert case.problem_verification.invalidation.prior_status == _U
+    assert _turn_of(
+        case,
+        lambda c: (
+            withdraw_invalidation(c, basis="the user saw it"),
+            verify_problem(c, via="t"),
+        ),
+    ) == [OutcomeChange.PROBLEM_VERIFIED]
+    assert _record(case).cause.identification_leg == "rcc"
+
+
 def test_a_hold_ending_on_a_chain_leg_states_it_and_a_backstop_does_not():
     """The residual, pinned: a revision confirm that newly identifies on a
     backstop leg states no cause; on the chain leg it does."""
@@ -485,19 +538,33 @@ def test_an_accepted_attempt_states_once_unkinded_as_a_fix():
     before = _record(case)
     fix = _fix(case, turn=6)
     now = _record(case, before)
-    changes = outcome_changes(_base(before), now)
+    changes = outcome_changes(_base(before, turn=6), now)
     assert _fixes(changes) == [(fix.action_id, 6, None)]
     assert outcome_statement(changes, frozenset()) == (
         HEAD + "a fix was carried out (turn 6)."
     )
-    assert outcome_changes(_base(now), _record(case, now)) == []
+    assert outcome_changes(_base(now, turn=7), _record(case, now)) == []
+
+
+def test_an_earlier_turns_fix_a_stale_snapshot_lacks_is_not_this_turns():
+    """Only changes this turn made are stated (Q4 (a)): a fix accepted at 6
+    that a snapshot folded before it lacks is not turn 7's."""
+    case, _root, _hyp = _identified_case()
+    stale = _record(case)
+    _fix(case, turn=6)
+    now = _record(case, stale)
+    assert outcome_changes(_base(stale, turn=7), now) == []
+    # Control: the same records on the turn that accepted it.
+    assert _kinds(outcome_changes(_base(stale, turn=6), now)) == [
+        OutcomeChange.FIX_CARRIED_OUT
+    ]
 
 
 def test_an_interception_states_a_workaround():
     case, _root, _hyp = _identified_case()
     before = _record(case)
     _fix(case, fix_kind="interception", target_ids=[_ROOT_ID])
-    changes = outcome_changes(_base(before), _record(case, before))
+    changes = outcome_changes(_base(before, turn=6), _record(case, before))
     assert outcome_statement(changes, frozenset()) == (
         HEAD + "a workaround was carried out (turn 6)."
     )
@@ -516,7 +583,7 @@ def test_a_second_attempt_states_only_itself():
         state="accepted",
     )
     case.proposed_actions.append(second)
-    changes = outcome_changes(_base(before), _record(case, before))
+    changes = outcome_changes(_base(before, turn=9), _record(case, before))
     assert _fixes(changes) == [(second.action_id, 9, None)]
 
 
@@ -538,14 +605,14 @@ def test_a_carried_failed_attempt_states_nothing():
     # Control: it stated on the turn it was accepted.
     unfixed = copy.deepcopy(failed)
     unfixed.proposed_actions.clear()
-    assert _fixes(outcome_changes(_base(_record(unfixed)), prior)) == [
+    assert _fixes(outcome_changes(_base(_record(unfixed), turn=8), prior)) == [
         (attempt.action_id, 8, None)
     ]
     failed.proposed_actions.clear()
     now = _record(failed, prior)
     carried = [a.action_id for a in now.attempts if a.action_id is not None]
     assert carried == [attempt.action_id], "carried"
-    assert _fixes(outcome_changes(_base(prior), now)) == []
+    assert _fixes(outcome_changes(_base(prior, turn=8), now)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +686,22 @@ def _readiness(reason, missing=(), cause=None, **extra) -> dict:
     return {"reason": reason, "missing": list(missing), "cause": cause, **extra}
 
 
+#: Record lines as ``resolution_record_lines`` writes them.
+_CAUSE = (
+    "- **The cause** — max_connections is 20: the re-check after the fix (turn 7)\n"
+)
+_NO_ROOT = "- **The cause** — no root cause on record: the re-check (turn 7)\n"
+_PROBLEM = "- **The problem** — the reported problem, re-checked: the re-check (turn 7)"
+
+
+def test_a_deferred_resolve_naming_only_the_problem_leaves_the_cause_to_state():
+    stated = offer_stated(OfferCode.DEFERRED_RESOLVE, {"record_lines": _PROBLEM})
+    changes = [Change(OutcomeChange.CAUSE_IDENTIFIED)]
+    assert outcome_statement(changes, stated) == HEAD + "a root cause is identified."
+    named = offer_stated(OfferCode.DEFERRED_RESOLVE, {"record_lines": _CAUSE})
+    assert outcome_statement(changes, named) is None
+
+
 def test_what_each_offer_prose_states():
     fallen = _record(_fallen()).cause
     identified = _record(_identified_case()[0]).cause
@@ -642,16 +725,10 @@ def test_what_each_offer_prose_states():
             {"identification_leg": None, "record_lines": "- x"},
             set(),
         ),
-        (
-            OfferCode.DEFERRED_RESOLVE,
-            {"identification_leg": "chain", "record_lines": "- x"},
-            {(I, None)},
-        ),
-        (
-            OfferCode.DEFERRED_RESOLVE,
-            {"identification_leg": "chain", "record_lines": ""},
-            set(),
-        ),
+        (OfferCode.DEFERRED_RESOLVE, {"record_lines": _CAUSE + _PROBLEM}, {(I, None)}),
+        (OfferCode.DEFERRED_RESOLVE, {"record_lines": _PROBLEM}, set()),
+        (OfferCode.DEFERRED_RESOLVE, {"record_lines": _NO_ROOT + _PROBLEM}, set()),
+        (OfferCode.DEFERRED_RESOLVE, {"record_lines": ""}, set()),
         (
             OfferCode.RESOLUTION_NEEDS_INFO,
             _readiness(gaps, ["root cause"], fallen),
@@ -885,7 +962,8 @@ async def test_a_verifying_turn_states_the_problem_confirmed():
 async def test_a_turn_that_changes_nothing_states_nothing():
     case = _case(_U)
     engine = _revision_engine()
-    await _process(engine, case, "the log", _verifying())
+    first, _ = await _process(engine, case, "the log", _verifying())
+    assert first == "Noted." + SEP + HEAD + "the problem is confirmed."
     reply, _ = await _process(engine, case, "thanks", _response())
     assert reply == "Noted."
 
@@ -941,21 +1019,11 @@ def _retract_and_propose():
     )
 
 
-def _accepted_unrecorded(case, description="restart the orders service", **kw):
-    """A fix the stored record does not hold yet (the record was folded
-    before it was accepted): the positive control of a turn on which no
+def _accepted_unrecorded(case, turn=None, **kw):
+    """A fix the stored record does not hold, accepted at ``turn`` (the turn
+    about to run, by default): the positive control of a turn on which no
     closed-set fact but the problem can move."""
-    case.proposed_actions.append(
-        ProposedAction(
-            case_id=case.case_id,
-            action_type=InvestigationActionType.SOLUTION,
-            description=description,
-            proposed_in_turn=case.current_turn - 1,
-            accepted_in_turn=case.current_turn,
-            state="accepted",
-            **kw,
-        )
-    )
+    _carried_out(case, case.current_turn + 1 if turn is None else turn, **kw)
 
 
 async def test_the_residual_a_retract_and_propose_turn_says_no_unconfirmed():
@@ -969,7 +1037,7 @@ async def test_the_residual_a_retract_and_propose_turn_says_no_unconfirmed():
 
 async def _residual_turn():
     engine, case = _revision_engine(), _rcc_case()
-    turn = case.current_turn
+    turn = case.current_turn + 1
     reply, result = await _process(
         engine,
         case,
@@ -991,7 +1059,7 @@ async def test_the_decline_tail_leaves_the_case_unverified_with_no_clause():
     does not hold, carried out, is stated (cause work and a fix's licence are
     refused on an unverified problem, so nothing else can move)."""
     engine, case = await _residual_turn()
-    turn = case.current_turn
+    turn = case.current_turn + 1
     reply, result = await _process(
         engine, case, "no", _response(), after_save=_accepted_unrecorded
     )
@@ -1078,14 +1146,15 @@ async def test_a_resolve_confirmation_states_neither_fact_it_confirms():
         c.root_cause_conclusion = None
         record_case_outcome(c, at=WritePoint.COMMIT)
         c.root_cause_conclusion = conclusion
-        _accepted_unrecorded(c)
+        _accepted_unrecorded(c, turn=c.current_turn)
         _accepted_unrecorded(c, fix_kind="interception", description="fail over")
 
     engine = _revision_engine()
     reply, _ = await _process(engine, case, "done", _response(), after_save=_stale)
     assert f"- **Root cause**: {conclusion.root_cause}" in reply
     assert "- **Solution**: restart the orders service (carried out turn 0)" in reply
-    assert reply.endswith(SEP + HEAD + "a workaround was carried out (turn 0).")
+    assert reply.endswith(SEP + HEAD + "a workaround was carried out (turn 1).")
+    assert "a fix was carried out" not in reply, "turn 0's, not this turn's"
 
 
 # ---------------------------------------------------------------------------
@@ -1101,9 +1170,19 @@ async def _exit_changes(engine, case, message, **kw) -> tuple:
     )
 
     record_case_outcome(case, at=WritePoint.COMMIT)
+    case.current_turn += 1
     baseline = outcome_baseline(case)
+    case.current_turn -= 1
     result = await _turn(engine, case, message, **kw)
+    assert case.current_turn == baseline.turn
     saved = compute_case_outcome(case.progress.outcome, case, at=WritePoint.COMMIT)
+    # Control: the same turn with a fix carried out states it.
+    control = copy.deepcopy(case)
+    _carried_out(control, baseline.turn)
+    moved = compute_case_outcome(
+        control.progress.outcome, control, at=WritePoint.COMMIT
+    )
+    assert _kinds(outcome_changes(baseline, moved)) == [OutcomeChange.FIX_CARRIED_OUT]
     return outcome_changes(baseline, saved), result
 
 

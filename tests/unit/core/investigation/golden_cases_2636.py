@@ -79,7 +79,9 @@ line now states ``pool_empty_reason``, and the confirmation names the
 confirming attempt. No other entry's render differed.
 
 #2811 S2c-3a re-rendered one B1d entry by hand, the same way:
-``cycle:offer:turn_replayed_rca_infeasible_close``. Its revision-confirm turn
+``cycle:offer:turn_replayed_rca_infeasible_close``, rendered on ``main`` at
+``77f3b9b8b``, where it equalled the stored entry, and on the S2c-3a branch
+at ``c31e9e4ae``, whose render is stored. Its revision-confirm turn
 moves the problem from unverified to verified, so its reply now ends with the
 outcome statement, "**Case record:** the problem is confirmed."; the rest of
 the entry is unchanged. No other entry's render differed.

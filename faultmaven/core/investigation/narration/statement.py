@@ -57,13 +57,15 @@ class Change(NamedTuple):
 @dataclass(frozen=True)
 class OutcomeBaseline:
     """The record at turn start, before any write of the turn: a deep copy,
-    the status its problem's hold or finding restores (``restores_to``), and
+    the status its problem's hold or finding restores (``restores_to``),
     whether its problem status is the live one (a failed write at the last
-    save leaves them apart, and no problem clause is then stated)."""
+    save leaves them apart, and no problem clause is then stated), and the
+    turn's number."""
 
     record: Optional[CaseOutcome]
     restores_to: Optional[ProblemStatus]
     problem_comparable: bool
+    turn: int
 
 
 _HOLDS = frozenset({ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED})
@@ -133,15 +135,17 @@ def _cause(prior: CaseOutcome, now: CaseOutcome) -> list:
     return []
 
 
-def _fixes(prior: CaseOutcome, now: CaseOutcome) -> list:
-    """Each attempt accepted this turn, by ``action_id``: one whose
-    ``accepted_in_turn`` the prior did not hold. Window 0 has none."""
+def _fixes(prior: CaseOutcome, now: CaseOutcome, turn: int) -> list:
+    """Each attempt accepted this turn, by ``action_id``: its
+    ``accepted_in_turn`` is this turn's and the prior did not hold one. An
+    earlier turn's acceptance a stale snapshot lacks is not this turn's.
+    Window 0 has none."""
     before = {a.action_id: a.accepted_in_turn for a in prior.attempts}
     return [
         Change(OutcomeChange.FIX_CARRIED_OUT, a)
         for a in now.attempts
         if a.action_id is not None
-        and a.accepted_in_turn is not None
+        and a.accepted_in_turn == turn
         and before.get(a.action_id) is None
     ]
 
@@ -156,7 +160,7 @@ def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
     return [
         *_problem(base, prior.problem.status, now.problem.status),
         *_cause(prior, now),
-        *_fixes(prior, now),
+        *_fixes(prior, now, base.turn),
     ]
 
 
@@ -225,8 +229,23 @@ def _unmet_close(params: dict, attempts) -> set:
     return _readiness(params, attempts) if params["suggest_close"] else set()
 
 
-def _identified_if(params: dict, *, lines: bool) -> set:
-    if params["identification_leg"] is None or (lines and not params["record_lines"]):
+_CAUSE_LINE = "- **The cause** — "
+
+
+def _deferred_resolve(params: dict, attempts) -> set:
+    """The deferred resolve prints the record lines alone: it names a cause
+    only on a cause line that is not the no-root label."""
+    named = any(
+        line.startswith(_CAUSE_LINE)
+        and not line[len(_CAUSE_LINE) :].startswith(NO_ROOT_ON_RECORD)
+        for line in params["record_lines"].splitlines()
+    )
+    return {(OutcomeChange.CAUSE_IDENTIFIED, None)} if named else set()
+
+
+def _backstop(params: dict, attempts) -> set:
+    """The backstop says it records the attribution when a cause is on record."""
+    if params["identification_leg"] is None:
         return set()
     return {(OutcomeChange.CAUSE_IDENTIFIED, None)}
 
@@ -253,9 +272,9 @@ def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
 #: summary, never the reply's, so it states nothing there.
 STATED_BY: dict[tuple, _Stated] = {
     (OfferCode.RCA_INFEASIBLE_CLOSE, None): _nothing,
-    (OfferCode.DEFERRED_RESOLVE, None): lambda p, a: _identified_if(p, lines=True),
+    (OfferCode.DEFERRED_RESOLVE, None): _deferred_resolve,
     (OfferCode.DEFERRED_CLOSE, None): _nothing,
-    (OfferCode.BACKSTOP_RESOLVE, None): lambda p, a: _identified_if(p, lines=False),
+    (OfferCode.BACKSTOP_RESOLVE, None): _backstop,
     (OfferCode.FALSE_ALARM_CLOSE, None): lambda p, a: {
         (OutcomeChange.PROBLEM_INVALIDATED, None)
     },
