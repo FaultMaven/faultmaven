@@ -19,15 +19,17 @@ are not refused (#2532).
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
 the Redis clock (``TIME``). A process has ONE member per case, counted here.
-Every turn writes it (:func:`hold_case`), joining or not, before it reads the
-tombstone; :func:`track` with ``case=`` counts a task synchronously, before its
-first step, so no window opens at a turn's release. The member goes with the
+Every turn, and every ``POST /cases/{case_id}/title`` call, writes it
+(:func:`hold_case`), joining or not, before it reads the tombstone (the
+in-turn auto-title rides its turn's hold); :func:`track` with ``case=`` counts
+a task synchronously, before its first step, so no window opens at a turn's
+release. The member goes with the
 last local holder. Renewals and releases are never tracked. A delete
 (:class:`CaseDeleteGate`) writes a tombstone and then reads the lease. Each
 side writes before it reads, so both cannot pass; both may refuse.
 
-**Residual, ruled (2026-11-04):** a turn whose lease write or tombstone read
-fails runs unguarded (logged once, counted) while a delete fails closed (503);
+**Residual, ruled (2026-11-04):** a turn (or a title call) whose lease
+write or tombstone read fails runs unguarded (logged once, counted) while a delete fails closed (503);
 a delete that passes meanwhile can race it. Standalone's Redis is in-process.
 """
 
@@ -65,8 +67,9 @@ TOMBSTONE_RENEW_SECONDS = 10.0
 DELETE_UNAVAILABLE_RETRY_AFTER_SECONDS = 10
 
 #: ``x-error-code``s. A delete refused while work on the case is in flight, a
-#: turn refused while a delete of its case runs (no ``Retry-After``: the client
-#: reloads the case), and a delete refused because the store is unreachable.
+#: turn or a title call refused while a delete of its case runs (no
+#: ``Retry-After``: the client reloads the case), and a delete refused because
+#: the store is unreachable.
 CASE_WORK_IN_PROGRESS = "CASE_WORK_IN_PROGRESS"
 CASE_DELETE_IN_PROGRESS = "CASE_DELETE_IN_PROGRESS"
 CASE_DELETE_UNAVAILABLE = "CASE_DELETE_UNAVAILABLE"
@@ -290,7 +293,8 @@ def let_leases_lapse() -> None:
 
 
 class CaseDeleteInProgress(Exception):
-    """A delete of the case runs: the turn refuses, and its lease is gone."""
+    """A delete of the case runs: the turn or title call refuses, and its lease
+    is gone."""
 
 
 class CaseWorkInProgress(Exception):
@@ -306,12 +310,13 @@ class CaseDeleteUnavailable(Exception):
 
 
 def _unguarded(reason: str, exc: Optional[BaseException]) -> None:
-    """A turn proceeds that a delete cannot see: logged once per reason, counted."""
+    """A turn or a title call proceeds that a delete cannot see: logged
+    once per reason, counted."""
     if reason not in _REPORTED:
         _REPORTED.add(reason)
         logger.warning(
-            "Case in-flight lease unavailable (%s%s): turns run without one, so a "
-            "delete may race them (#2096)",
+            "Case in-flight lease unavailable (%s%s): turns and title calls "
+            "run without one, so a delete may race them (#2096)",
             reason,
             f": {exception_class_chain(exc)}" if exc is not None else "",
         )
@@ -347,7 +352,7 @@ class _CaseLease:
         )
         try:
             await asyncio.shield(write)
-        except Exception as exc:  # noqa: BLE001 - the turn runs unleased (ruled)
+        except Exception as exc:  # noqa: BLE001 - the work runs unleased (ruled)
             self.error = exc
             return False
         if not self.ended and self.renewal is None:
@@ -442,7 +447,8 @@ def _release_soon(lease: _CaseLease) -> None:
 
 
 class CaseHold:
-    """A turn's hold on its case's lease. ``release`` it once, in a ``finally``."""
+    """A turn's or a title call's hold on its case's lease. ``release`` it
+    once, in a ``finally``."""
 
     def __init__(self, lease: _CaseLease) -> None:
         self._lease: Optional[_CaseLease] = lease
@@ -456,10 +462,11 @@ class CaseHold:
 
 
 async def hold_case(redis: Any, case: CaseKey) -> CaseHold:
-    """Write ``case``'s lease member for a turn, then read its tombstone.
+    """Write ``case``'s lease member for a turn or a title call, then read
+    its tombstone.
 
     Raises :class:`CaseDeleteInProgress`, having let the lease go, while a
-    delete of the case runs. If either command fails the turn proceeds
+    delete of the case runs. If either command fails the work proceeds
     unguarded (the module docstring's residual).
     """
     lease = _join(case, redis)
@@ -467,7 +474,7 @@ async def hold_case(redis: Any, case: CaseKey) -> CaseHold:
     try:
         landed = await lease.write()
         deleting = await redis.exists(tombstone_key(case)) if redis else False
-    except Exception as exc:  # noqa: BLE001 - the turn runs unguarded (ruled)
+    except Exception as exc:  # noqa: BLE001 - the work runs unguarded (ruled)
         landed, deleting, lease.error = False, False, exc
     except BaseException:
         await hold.release()
@@ -521,8 +528,8 @@ class CaseDeleteGate:
         return tombstone
 
     async def work_in_flight(self, case: CaseKey) -> bool:
-        """Whether a lease on ``case`` stands: a turn, or a task one spawned,
-        holds it on some replica (read as ``begin`` reads it, writing no
+        """Whether a lease on ``case`` stands: a turn, a task one spawned, or a
+        title call holds it on some replica (read as ``begin`` reads it, writing no
         tombstone). ``False`` with no store, where no lease is ever written.
         A read that fails raises: a caller that writes the case refuses on it.
         Read by ``fm-backfill-case-outcome`` before it writes a case (#2636).

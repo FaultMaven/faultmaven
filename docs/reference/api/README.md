@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.10.0
+**Version:** 15.11.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1799,12 +1799,12 @@ Only the case's CREATOR may delete it: delete is governance (ADR-020 D2).
 Any other reader — the driver included — is refused with 403.
 
 While a turn on the case, or work one started (its upload links, evidence
-indexing, a runbook draft), is still running, on any server, the delete
-answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
-A turn sent while the delete runs is refused with 409
-`CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads
-`deleting: true` while the delete's tombstone stands: until it is removed
-or lapses, or the case is gone (404) (#2510).
+indexing, a runbook draft), or a title generation on the case is still
+running, on any server, the delete answers 409 `CASE_WORK_IN_PROGRESS`
+with `Retry-After` and clears nothing. A turn or a title generation sent
+while the delete runs is refused with 409 `CASE_DELETE_IN_PROGRESS`, and
+`GET /cases/{case_id}` reads `deleting: true` while the delete's tombstone
+stands: until it is removed or lapses, or the case is gone (404) (#2510).
 If whether work is in flight cannot be read, the delete answers 503
 `CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).
 
@@ -1821,7 +1821,7 @@ Returns 204 No Content on success.
 **Responses:**
 
 - `204` — Case deleted successfully
-- `409` — `CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.
+- `409` — `CASE_WORK_IN_PROGRESS`: a turn on the case, or work one started, or a title generation on the case is still running, or another delete of it is. Nothing was cleared; retry after `Retry-After` seconds.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 - `503` — `CASE_DELETE_UNAVAILABLE`: whether work on the case is in flight could not be read. Nothing was cleared; retry after `Retry-After` seconds.
 
@@ -2443,6 +2443,12 @@ Generate a concise, case-specific title from case messages and metadata.
   driver's (ADR-020 D2), so any other reader is refused here before any
   title is generated (#2806).
 - 404 ``CASE_NOT_FOUND``: the caller cannot read the case.
+- 409 ``CASE_DELETE_IN_PROGRESS``: the case is being deleted; nothing was
+  generated or written. The call holds the case's in-flight lease while it
+  generates and writes the title, as a turn does, so a delete of the case
+  meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
+- 409 ``IDEMPOTENCY_KEY_REUSE``: the ``Idempotency-Key`` was used for a
+  different request body; nothing was generated or written.
 - 422: ValidationException body — see ``api/exception_handlers.py``
   and ``docs/architecture/specifications/exception-contract.md``.
   Raised when there is insufficient meaningful context to generate
@@ -2472,6 +2478,7 @@ Generate a concise, case-specific title from case messages and metadata.
 - `200` — Successful Response ([`TitleResponse`](#titleresponse))
 - `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
+- `409` — Conflict; nothing was generated or written. Told apart by `x-error-code`: `CASE_DELETE_IN_PROGRESS` (the case is being deleted: reload the case); `IDEMPOTENCY_KEY_REUSE` (the `Idempotency-Key` was used for a different request body: use a new key).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

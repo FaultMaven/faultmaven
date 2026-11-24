@@ -649,6 +649,7 @@ class TestOutsideATurn:
                 # keyword is the route's (a title is a write, #1898).
                 return SimpleNamespace(
                     case_id=case_id,
+                    enterprise_id=ENTERPRISE,  # the route's lease key (#2580)
                     title=state["title"],
                     description="",
                     is_terminal=False,

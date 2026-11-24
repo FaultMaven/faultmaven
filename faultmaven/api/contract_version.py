@@ -151,6 +151,36 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.11.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/title` holds the case's in-flight lease "
+            "while it generates and writes the title: it declares a 409 "
+            "(`CASE_DELETE_IN_PROGRESS`, `IDEMPOTENCY_KEY_REUSE`), and "
+            "`DELETE /cases/{case_id}` answers "
+            "its 409 `CASE_WORK_IN_PROGRESS` while a title generation on the "
+            "case runs (#2580). No schema moves."
+        ),
+        body=r"""* `POST /cases/{case_id}/title` answers **409** `CASE_DELETE_IN_PROGRESS`,
+  with no `Retry-After` and the turn route's detail, while a delete of the
+  case runs: no title was generated and nothing was written. Reload the case,
+  as for a turn refused the same way. The same 409 also declares
+  `IDEMPOTENCY_KEY_REUSE`, which a keyed title call already received when its
+  key was reused with a different body; it was never declared.
+* `DELETE /cases/{case_id}` answers its existing **409**
+  `CASE_WORK_IN_PROGRESS`, with `Retry-After`, while a title generation on
+  the case runs, as it does while a turn runs. Nothing was cleared.
+
+The title call reads and saves the case's PII redaction registry and writes
+its row; a delete passing under it could leave the registry the delete had
+erased. A keyed title call still caches its answer after it releases the
+lease (the #2624 residual).
+
+MINOR because every client survives it: each answer is a refusal that changed
+nothing, the delete's 409 is already declared, and a client that does not
+know a code keeps the existing title.""",
+    ),
+    ContractChange(
         version="15.10.0",
         level="MINOR",
         title=(
