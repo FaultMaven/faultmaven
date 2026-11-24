@@ -575,9 +575,18 @@ def parked_count(client: Any) -> Optional[int]:
 
 def replay_mutex(client: Any) -> Any:
     """The lock each replay of ``client``'s parked messages holds from marking
-    them sent until it has put them on the queue. No public accessor; an SDK
-    that moved it raises AttributeError."""
+    them in progress (the count reads 0) until it has put them on the queue.
+    The monitor's recovery replay only tries it: one that finds it held
+    replays nothing. No public accessor; an SDK that moved it raises
+    AttributeError."""
     return client._streamer._fallback_replay_manager._db_manager._replay_mutex
+
+
+def queue_drained(client: Any) -> bool:
+    """Has ``client``'s streamer sent all it queued: its workers idle, its queue
+    and its batcher empty (the check the SDK's own flush waits on). No public
+    accessor; an SDK that moved it raises AttributeError."""
+    return bool(client._streamer._all_done())
 
 
 def _built_client() -> Any:
@@ -592,7 +601,7 @@ def connection_state() -> tuple[str, Optional[int]]:
 
     ``server_connection`` is ``connected``, ``disconnected`` (a send or a
     connection ping failed, so the SDK parks every later trace until a ping
-    succeeds or a delete replays them), ``no_client``, or
+    succeeds or a case delete on that worker replays them), ``no_client``, or
     ``unknown`` when the SDK's internals moved. ``parked_messages`` counts the
     parked traces; None when unknown. Blocking (a SQLite count): run it off the
     event loop.

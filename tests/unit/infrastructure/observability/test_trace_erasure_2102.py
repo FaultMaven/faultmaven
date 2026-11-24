@@ -75,14 +75,17 @@ class _FakeClient:
         self.monitor = _FakeMonitor(connected)
         #: What the SDK's replay database holds unsent; a failed send parks one.
         self.parked = 0
+        #: What each read of the SDK's queue answers, in turn; then drained.
+        self.queue_reads: list = []
         self._streamer = SimpleNamespace(
+            _all_done=lambda: self.queue_reads.pop(0) if self.queue_reads else True,
             _fallback_replay_manager=SimpleNamespace(
                 _monitor=self.monitor,
                 _db_manager=SimpleNamespace(
                     failed_messages_count=lambda: self.parked,
                     _replay_mutex=threading.Lock(),
                 ),
-            )
+            ),
         )
         self.flushes: list = []
         self.trace_reads: list = []
@@ -461,6 +464,42 @@ class TestWhatThisPodHolds:
 
         assert client.trace_reads == [] and client.deleted == []
         assert not replay.locked()
+
+    async def test_a_queue_not_drained_is_flushed_again_and_read_again(self):
+        client = _FakeClient(traces=["t1"])
+        client.queue_reads = [False]
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 1
+
+        assert len(client.flushes) == 2
+
+    async def test_a_queue_still_not_drained_refuses_before_the_read(self):
+        client = _FakeClient(traces=["t1"])
+        client.queue_reads = [False, False]
+
+        with pytest.raises(ServiceException, match="llm_traces.*did not reach"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+
+    async def test_the_replay_lock_is_free_during_every_flush(self):
+        """The monitor's recovery replay only tries the lock: held across a
+        flush, it would replay nothing and strand the parked traces."""
+        client = _FakeClient(traces=["t1"], connected=False, send_fails=True)
+        replay = client._streamer._fallback_replay_manager._db_manager._replay_mutex
+        held: list = []
+        real = client.flush
+
+        def flush(timeout=None):
+            held.append(replay.locked())
+            return real(timeout)
+
+        client.flush = flush
+
+        with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert held == [False, False]
 
     async def test_two_deletes_on_one_pod_deliver_one_at_a_time(self, monkeypatch):
         """The SDK's replay is a non-blocking mutex: a flush that overlaps another

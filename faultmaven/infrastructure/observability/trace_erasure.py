@@ -177,10 +177,12 @@ class LLMTraceEraser:
         accessor. Delivery is then read from the parked count, not from the
         flag: the monitor's own ping can lower it while the sends succeed, or
         raise it while a trace that failed to send waits for the monitor's
-        replay, which would land after the search. That replay marks its
-        traces sent (the count reads 0) before it queues them, holding the
-        SDK's replay lock throughout; so the count is read holding that lock,
-        after a second flush has sent what a finished replay queued.
+        replay, which would land after the search. That replay marks them in
+        progress (the count reads 0) before it queues them, holding the SDK's
+        replay lock throughout; so the count and the queue are read holding
+        that lock, and once more after a second flush when they are not clear.
+        The lock is never held across a flush: the monitor's recovery replay
+        only tries it, and one that finds it held strands the parked traces.
         """
         timeout = self._flush_timeout_seconds
         try:
@@ -189,14 +191,10 @@ class LLMTraceEraser:
             if not monitor.has_server_connection:
                 monitor.reset()
             flushed = client.flush(timeout=timeout)
-            if not mutex.acquire(timeout=timeout):
-                raise _refused(owner, "a replay of parked traces did not finish")
-            try:
-                # Its own replay step returns at once: this thread holds the lock.
+            parked, drained = self._settled(client, mutex, owner)
+            if parked != 0 or not drained:
                 flushed = client.flush(timeout=timeout) and flushed
-                parked = opik_sdk.parked_count(client)
-            finally:
-                mutex.release()
+                parked, drained = self._settled(client, mutex, owner)
         except AttributeError as exc:
             raise _refused(owner, "the Opik SDK's replay path has changed") from exc
         if parked is None:
@@ -204,8 +202,21 @@ class LLMTraceEraser:
         if parked:
             raise _refused(owner, "a send failed: the backend is unreachable")
         # A trace still queued here would land after the search and survive it.
-        if not flushed:
+        if not (flushed and drained):
             raise _refused(owner, "queued traces did not reach the backend")
+
+    def _settled(
+        self, client: Any, mutex: Any, owner: str
+    ) -> tuple[Optional[int], bool]:
+        """The parked count, and whether the SDK's queue is drained, read
+        holding its replay lock, so no replay is between marking its traces
+        in progress and queuing them. Released before any flush."""
+        if not mutex.acquire(timeout=self._flush_timeout_seconds):
+            raise _refused(owner, "a replay of parked traces did not finish")
+        try:
+            return opik_sdk.parked_count(client), opik_sdk.queue_drained(client)
+        finally:
+            mutex.release()
 
 
 class UnavailableTraceEraser:

@@ -269,7 +269,7 @@ class TestAPingRacingTheDeletesFlush:
         monitor replays the trace, which would land after the search."""
         monitor = opik_sdk.replay_monitor(client)
         manager = client._streamer._fallback_replay_manager
-        decided = threading.Event()
+        decided, pinged = threading.Event(), []
         real_replay, real_flush = manager._replay_failed_messages, client.flush
 
         def replay():
@@ -279,8 +279,10 @@ class TestAPingRacingTheDeletesFlush:
 
         def flush(timeout=None):
             flushed = real_flush(timeout=timeout)
-            _ping(clock)
-            _until(lambda: monitor.has_server_connection, "the good ping")
+            if not pinged:
+                pinged.append(1)
+                _ping(clock)
+                _until(lambda: monitor.has_server_connection, "the good ping")
             return flushed
 
         monkeypatch.setattr(manager, "_replay_failed_messages", replay)
@@ -291,17 +293,16 @@ class TestAPingRacingTheDeletesFlush:
         try:
             with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
                 await _eraser(client).erase_case(CASE, ENTERPRISE)
-            assert opik_sdk.connection_state() == ("connected", 1)
+            assert opik_sdk.parked_count(client) == 1
         finally:
             backend.accepting = True
             decided.set()
-        _until(backend.received.is_set, "the monitor's replay")
 
-    async def test_the_delete_waits_out_a_replay_that_has_marked_its_traces_sent(
+    async def test_the_delete_waits_out_a_replay_that_has_marked_its_traces_in_progress(
         self, backend, client, clock, monkeypatch
     ):
-        """The monitor's replay has marked the parked trace sent (the count
-        reads 0) and not yet queued it: the delete waits for its replay lock
+        """The monitor's replay has marked the parked trace in progress (the
+        count reads 0) and not yet queued it: the delete waits for its replay lock
         and returns only after the trace is delivered."""
         manager = client._streamer._fallback_replay_manager
         db = manager._db_manager
@@ -335,3 +336,42 @@ class TestAPingRacingTheDeletesFlush:
         order.append(f"erase returned {await erase}")
 
         assert order == ["delivered", "erase returned 0"]
+
+    async def test_a_backend_back_during_the_delete_leaves_nothing_stranded(
+        self, backend, client, clock, monkeypatch
+    ):
+        """The backend comes back during the delete's second flush and the
+        monitor's recovery replay runs then. That replay only tries the SDK's
+        replay lock, so the delete must not hold it across a flush: it would
+        replay nothing, and the trace would stay parked on a connected pod."""
+        manager = client._streamer._fallback_replay_manager
+        recovered, flushes = threading.Event(), []
+        real_replay, real_flush = manager._replay_failed_messages, client.flush
+
+        def replay():
+            real_replay()
+            if threading.current_thread() is manager:
+                recovered.set()
+
+        def flush(timeout=None):
+            flushes.append(1)
+            if len(flushes) == 2:
+                backend.accepting = True
+                _ping(clock)
+                recovered.wait(10)
+            return real_flush(timeout=timeout)
+
+        _park(backend, client)
+        monkeypatch.setattr(manager, "_replay_failed_messages", replay)
+        monkeypatch.setattr(client, "flush", flush)
+
+        (outcome,) = await asyncio.gather(
+            _eraser(client).erase_case(CASE, ENTERPRISE), return_exceptions=True
+        )
+        for _ in range(3):
+            _ping(clock)
+
+        assert recovered.is_set() and len(flushes) == 2
+        _until(backend.received.is_set, "the parked trace's delivery")
+        assert opik_sdk.connection_state() == ("connected", 0)
+        assert outcome == 0
