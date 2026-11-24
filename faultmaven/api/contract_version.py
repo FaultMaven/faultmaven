@@ -151,6 +151,26 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.12.0",
+        level="MINOR",
+        title=(
+            "`POST /knowledge/convert` refuses a document with no text to read "
+            "(a scanned PDF, a whitespace-only file) with 422 `NO_TEXT_LAYER` "
+            "(#2593)."
+        ),
+        body=r"""* `NO_TEXT_LAYER` (422): no text could be read from the document, in any
+  format. That is a PDF no page of which has text pypdf can read (a scanned
+  image), a PDF with no pages or with a page tree pypdf reads as empty, or a
+  DOCX, text, Markdown or HTML file with no text to read (an image-only DOCX,
+  a whitespace-only file). It was `FILE_CORRUPT`.
+  The `detail` is unchanged; nothing else moves.
+
+Nothing structural moves: conversion error codes and their headers are not in
+the OpenAPI schema or `contract-notes.json`. MINOR because every client
+survives it: one that does not know a code shows its generic error with the
+`detail`.""",
+    ),
+    ContractChange(
         version="15.11.0",
         level="MINOR",
         title=(

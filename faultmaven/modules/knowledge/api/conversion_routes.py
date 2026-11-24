@@ -395,6 +395,7 @@ async def convert_document(
             ConversionErrorCode.FILE_EMPTY: 422,
             ConversionErrorCode.FILE_CORRUPT: 422,
             ConversionErrorCode.ENCODING_ERROR: 422,
+            ConversionErrorCode.NO_TEXT_LAYER: 422,
             ConversionErrorCode.DOCUMENT_TOO_SHORT: 422,
             ConversionErrorCode.DOCUMENT_TOO_COMPLEX: 422,
             ConversionErrorCode.NOT_ACTIONABLE: 422,

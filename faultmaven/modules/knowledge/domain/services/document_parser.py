@@ -27,17 +27,40 @@ logger = logging.getLogger(__name__)
 
 class DocumentRefusal(ValueError):
     """A refusal this parser words itself: a hand-written sentence for the
-    caller (a missing parser library, an undecodable text file, an image-only
-    PDF). ``extract_document_text`` passes its text on; anything else an
-    extractor raises is a parser library's own exception, whose text can name
-    the file's server path (python-docx: ``Package not found at '/tmp/…'``), so
-    only its class is passed on (#836)."""
+    caller (an unsupported format, a missing parser library, an undecodable
+    text file, an image-only PDF, no text at all). ``extract_document_text``
+    passes its text on; anything else an extractor raises is a parser library's
+    own exception, whose text can name the file's server path (python-docx:
+    ``Package not found at '/tmp/…'``), so only its class is passed on (#836).
+
+    ``code`` is its ``ConversionErrorCode`` value, set where it is raised and
+    mapped by ``preparation.prepare``, never read from its wording (#2593). A
+    plain string: the preparation worker imports no pydantic."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+    def __reduce__(self):
+        # ``code`` is not in ``args``, so the default reduction would call
+        # ``__init__`` without it: pickle and copy would raise TypeError.
+        return (_rebuilt_refusal, (type(self), self.args), self.__dict__)
 
 
 class DocumentTooComplex(DocumentRefusal):
     """pypdf's budgets refused the whole document, or refused pages and no other
-    page had text. Mapped by type to ``DOCUMENT_TOO_COMPLEX``, never
-    ``FILE_CORRUPT`` (#2153)."""
+    page had text: ``DOCUMENT_TOO_COMPLEX``, never ``FILE_CORRUPT`` (#2153)."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="DOCUMENT_TOO_COMPLEX")
+
+
+def _rebuilt_refusal(cls: type, args: tuple) -> DocumentRefusal:
+    """A ``DocumentRefusal`` of ``cls`` with ``args``; ``__reduce__``'s state
+    restores ``code``."""
+    refusal = cls.__new__(cls)
+    refusal.args = args
+    return refusal
 
 
 _TOO_COMPLEX = (
@@ -143,7 +166,8 @@ class DocumentParser:
         Raises:
             DocumentTooComplex: pypdf refused the whole document for its limits.
             MemoryError: past the preparation worker's memory limit (#2622).
-            ValueError: If the file format is unsupported or parsing fails.
+            DocumentRefusal: the parser's own refusal, with its code.
+            ValueError: a parser library's exception, named by its class.
         """
         fmt = self._detect_format(file_path, content_type)
 
@@ -157,14 +181,18 @@ class DocumentParser:
 
         extractor = extractors.get(fmt)
         if not extractor:
-            raise ValueError(f"Unsupported format: {fmt}")
+            raise DocumentRefusal(
+                f"Unsupported format: {fmt}", code="UNSUPPORTED_FORMAT"
+            )
 
         try:
             extracted = extractor(file_path)
         except (DocumentTooComplex, MemoryError):
             raise
         except DocumentRefusal as e:
-            raise ValueError(f"Failed to parse {file_path.name}: {e}") from e
+            raise DocumentRefusal(
+                f"Failed to parse {file_path.name}: {e}", code=e.code
+            ) from e
         except Exception as e:
             if _out_of_memory(e):
                 raise MemoryError(f"parsing {file_path.name}") from e
@@ -183,9 +211,10 @@ class DocumentParser:
         if isinstance(extracted, str):
             extracted = ParsedDocument(extracted)
         if not extracted.text.strip():
-            raise ValueError(
+            raise DocumentRefusal(
                 f"No extractable text found in {file_path.name}. "
-                "The file may be image-only (scanned PDF) or empty."
+                "The file may be image-only (scanned PDF) or empty.",
+                code="NO_TEXT_LAYER",
             )
 
         # ONE normalisation for all five extractors (#1403). The txt/markdown/html
@@ -216,9 +245,10 @@ class DocumentParser:
         if ext in self.SUPPORTED_EXTENSIONS:
             return self.SUPPORTED_EXTENSIONS[ext]
 
-        raise ValueError(
+        raise DocumentRefusal(
             f"Unsupported file type: {ext or content_type}. "
-            f"Supported: PDF, DOCX, TXT, Markdown, HTML"
+            f"Supported: PDF, DOCX, TXT, Markdown, HTML",
+            code="UNSUPPORTED_FORMAT",
         )
 
     def _extract_pdf(self, file_path: Path) -> ParsedDocument:
@@ -233,7 +263,9 @@ class DocumentParser:
         try:
             from pypdf import PdfReader
         except ImportError:
-            raise DocumentRefusal("pypdf is required for PDF parsing")
+            raise DocumentRefusal(
+                "pypdf is required for PDF parsing", code="FILE_CORRUPT"
+            )
 
         try:
             reader = PdfReader(str(file_path))
@@ -273,7 +305,8 @@ class DocumentParser:
             raise DocumentTooComplex(_TOO_COMPLEX)
         if not pages:
             raise DocumentRefusal(
-                "No extractable text in PDF. The file may be scanned/image-only."
+                "No extractable text in PDF. The file may be scanned/image-only.",
+                code="NO_TEXT_LAYER",
             )
 
         return ParsedDocument("\n\n".join(pages), page_count, tuple(skipped))
@@ -292,7 +325,9 @@ class DocumentParser:
             from docx import Document
             from docx.enum.style import WD_STYLE_TYPE
         except ImportError:
-            raise DocumentRefusal("python-docx is required for DOCX parsing")
+            raise DocumentRefusal(
+                "python-docx is required for DOCX parsing", code="FILE_CORRUPT"
+            )
 
         doc = Document(str(file_path))
 
@@ -355,7 +390,8 @@ class DocumentParser:
         except UnicodeDecodeError:
             raise DocumentRefusal(
                 "Cannot decode file — it is not valid UTF-8 or Latin-1 text. "
-                "Please re-save the file as UTF-8 and try again."
+                "Please re-save the file as UTF-8 and try again.",
+                code="ENCODING_ERROR",
             )
 
     def _extract_txt(self, file_path: Path) -> str:
@@ -386,7 +422,9 @@ class DocumentParser:
         try:
             from bs4 import BeautifulSoup
         except ImportError:
-            raise DocumentRefusal("beautifulsoup4 is required for HTML parsing")
+            raise DocumentRefusal(
+                "beautifulsoup4 is required for HTML parsing", code="FILE_CORRUPT"
+            )
 
         raw_html = self._read_text_with_fallback(file_path)
         soup = BeautifulSoup(raw_html, "html.parser")

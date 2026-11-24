@@ -20,7 +20,7 @@ from faultmaven.infrastructure.security.secret_patterns import (
 )
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
-    DocumentTooComplex,
+    DocumentRefusal,
     ParsedDocument,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
@@ -533,9 +533,11 @@ def prepare(
     enter(1)
     try:
         parsed = DocumentParser().extract_document_text(file_path, content_type)
-    except DocumentTooComplex as e:
-        return _refusal("DOCUMENT_TOO_COMPLEX", str(e))
+    except DocumentRefusal as e:
+        return _refusal(e.code, str(e))
     except ValueError as e:
+        # A parser library's own exception: "Failed to parse {name}
+        # ({ClassName})", its text withheld (#836).
         error_msg = str(e)
         if "encoding" in error_msg.lower() or "decode" in error_msg.lower():
             return _refusal("ENCODING_ERROR", error_msg)
