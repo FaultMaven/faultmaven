@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.11.0",
+  "contractVersion": "15.12.0",
   "entries": [
+    {
+      "body": "* `NO_TEXT_LAYER` (422): no page of the PDF has text pypdf can read, as\n  in a scanned image or a PDF with no pages. It was `FILE_CORRUPT`. The\n  `detail` is unchanged; nothing else moves.\n\nNothing structural moves: conversion error codes and their headers are not in\nthe OpenAPI schema or `contract-notes.json`. MINOR because every client\nsurvives it: one that does not know a code shows its generic error with the\n`detail`.",
+      "level": "MINOR",
+      "title": "`POST /knowledge/convert` refuses a PDF with no text layer (a scanned image) with 422 `NO_TEXT_LAYER` (#2593).",
+      "version": "15.12.0"
+    },
     {
       "body": "* `POST /cases/{case_id}/title` answers **409** `CASE_DELETE_IN_PROGRESS`,\n  with no `Retry-After` and the turn route's detail, while a delete of the\n  case runs: no title was generated and nothing was written. Reload the case,\n  as for a turn refused the same way. The same 409 also declares\n  `IDEMPOTENCY_KEY_REUSE`, which a keyed title call already received when its\n  key was reused with a different body; it was never declared.\n* `DELETE /cases/{case_id}` answers its existing **409**\n  `CASE_WORK_IN_PROGRESS`, with `Retry-After`, while a title generation on\n  the case runs, as it does while a turn runs. Nothing was cleared.\n\nThe title call reads and saves the case's PII redaction registry and writes\nits row; a delete passing under it could leave the registry the delete had\nerased. A keyed title call still caches its answer after it releases the\nlease (the #2624 residual).\n\nMINOR because every client survives it: each answer is a refusal that changed\nnothing, the delete's 409 is already declared, and a client that does not\nknow a code keeps the existing title.",
       "level": "MINOR",

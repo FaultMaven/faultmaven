@@ -4,6 +4,7 @@ Tests text extraction from PDF, DOCX, TXT, Markdown, and HTML formats.
 pypdf and beautifulsoup4 are mocked; DOCX files are built with python-docx.
 """
 
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -765,12 +766,11 @@ def _pdf_with_filter(name: bytes) -> bytes:
 
 
 class TestParseFailureClassification:
-    """``preparation.prepare`` classifies a parse failure by words in its
-    message ("encoding"/"decode", "unsupported"). Since #836 a parser library's
-    own exception contributes only its CLASS to that message, because its text
-    can name the file's server path. The parser's own refusals
-    (``DocumentRefusal``) keep their sentence. These pin what that does to the
-    classification, both ways."""
+    """``preparation.prepare`` classifies a parser library's own exception by
+    words in its message ("encoding"/"decode", "unsupported"). Since #836 that
+    exception contributes only its CLASS to the message, because its text can
+    name the file's server path. The parser's own refusals
+    (``DocumentRefusal``) keep their sentence and carry their code (#2593)."""
 
     @pytest.mark.unit
     def test_a_foreign_extractor_error_is_file_corrupt(self, tmp_path):
@@ -790,29 +790,220 @@ class TestParseFailureClassification:
         assert result["reason"].endswith("(NotImplementedError)")
 
     @pytest.mark.unit
-    def test_the_parsers_own_decode_refusal_is_still_an_encoding_error(
+    def test_a_library_decode_error_is_still_an_encoding_error(
         self, tmp_path, monkeypatch
     ):
-        """``DocumentRefusal`` keeps its sentence, so "Cannot decode" still
-        reaches the classifier. Raised from the extractor directly: through real
-        input it is unreachable, because the Latin-1 fallback decodes any
-        bytes."""
-        from faultmaven.modules.knowledge.domain.services.document_parser import (
-            DocumentRefusal,
-        )
+        """The class name is all that reaches the classifier, and it still
+        decides: a library's ``UnicodeDecodeError`` is ENCODING_ERROR."""
         from faultmaven.modules.knowledge.domain.services.preparation import prepare
 
-        def refuse(self, file_path):
-            raise DocumentRefusal(
-                "Cannot decode file — it is not valid UTF-8 or Latin-1 text. "
-                "Please re-save the file as UTF-8 and try again."
-            )
+        def fail(self, file_path):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "at /srv/tmp/notes")
 
-        monkeypatch.setattr(DocumentParser, "_extract_txt", refuse)
-        notes = tmp_path / "notes.txt"
-        notes.write_text("some text that will not be read", encoding="utf-8")
+        monkeypatch.setattr(DocumentParser, "_extract_html", fail)
+        page = tmp_path / "page.html"
+        page.write_text("<p>text</p>", encoding="utf-8")
 
-        result = prepare(notes, "text/plain", lambda stage: None)
+        result = prepare(page, "text/html", lambda stage: None)
 
-        assert result["refused"] == "ENCODING_ERROR"
-        assert "Cannot decode file" in result["reason"]
+        assert result == {
+            "refused": "ENCODING_ERROR",
+            "reason": "Failed to parse page.html (UnicodeDecodeError)",
+        }
+
+
+# ---------------------------------------------------------------------------
+# A parser refusal's code comes from its raise site, never its wording (#2593)
+# ---------------------------------------------------------------------------
+
+
+def _blank_page_pdf(tmp_path: Path) -> tuple[Path, str]:
+    """A real PDF of one blank page: no text layer, as a scanned image."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(612, 792)
+    path = tmp_path / "scan.pdf"
+    with path.open("wb") as out:
+        writer.write(out)
+    return path, "application/pdf"
+
+
+def _undecodable_txt(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+    """Through the real fallback reader, over a file neither codec decodes:
+    unreachable from real bytes, because Latin-1 decodes any byte."""
+
+    class _Undecodable:
+        name = "notes.txt"
+
+        def read_text(self, encoding):
+            raise UnicodeDecodeError(encoding, b"\xff", 0, 1, "invalid")
+
+    monkeypatch.setattr(
+        DocumentParser,
+        "_extract_txt",
+        lambda self, file_path: self._read_text_with_fallback(_Undecodable()),
+    )
+    path = tmp_path / "notes.txt"
+    path.write_text("some text that will not be read", encoding="utf-8")
+    return path, "text/plain"
+
+
+def _unknown_format(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+    """A format with no extractor: unreachable while every detected format
+    has one."""
+    monkeypatch.setattr(DocumentParser, "_detect_format", lambda self, *a: "rtf")
+    path = tmp_path / "notes.txt"
+    path.write_text("text", encoding="utf-8")
+    return path, "text/plain"
+
+
+def _without(module: str, name: str, header: bytes, content_type: str):
+    """A file whose parser library cannot be imported."""
+
+    def build(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+        monkeypatch.setitem(sys.modules, module, None)
+        path = tmp_path / name
+        path.write_bytes(header + b" body")
+        return path, content_type
+
+    return build
+
+
+def _file(name: str, body: bytes, content_type: str):
+    def build(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
+        path = tmp_path / name
+        path.write_bytes(body)
+        return path, content_type
+
+    return build
+
+
+#: Every parser-worded refusal: how it is reached, its code, its detail. Each
+#: code and detail but NO_TEXT_LAYER's is main's (the image-only PDF answered
+#: FILE_CORRUPT); the detail is unchanged for every one (#2593).
+_REFUSALS = [
+    pytest.param(
+        lambda tmp_path, monkeypatch: _blank_page_pdf(tmp_path),
+        "NO_TEXT_LAYER",
+        "Failed to parse scan.pdf: No extractable text in PDF. The file may be "
+        "scanned/image-only.",
+        id="image-only-pdf",
+    ),
+    pytest.param(
+        _undecodable_txt,
+        "ENCODING_ERROR",
+        "Failed to parse notes.txt: Cannot decode file — it is not valid UTF-8 "
+        "or Latin-1 text. Please re-save the file as UTF-8 and try again.",
+        id="undecodable-text",
+    ),
+    pytest.param(
+        _without("pypdf", "a.pdf", b"%PDF-1.4", "application/pdf"),
+        "FILE_CORRUPT",
+        "Failed to parse a.pdf: pypdf is required for PDF parsing",
+        id="no-pypdf",
+    ),
+    pytest.param(
+        _without("docx", "a.docx", b"PK\x03\x04", "application/msword"),
+        "FILE_CORRUPT",
+        "Failed to parse a.docx: python-docx is required for DOCX parsing",
+        id="no-python-docx",
+    ),
+    pytest.param(
+        _without("bs4", "a.html", b"<p>x</p>", "text/html"),
+        "FILE_CORRUPT",
+        "Failed to parse a.html: beautifulsoup4 is required for HTML parsing",
+        id="no-beautifulsoup4",
+    ),
+    pytest.param(
+        _file("blank.txt", b"  \n\n ", "text/plain"),
+        "FILE_CORRUPT",
+        "No extractable text found in blank.txt. The file may be image-only "
+        "(scanned PDF) or empty.",
+        id="no-text",
+    ),
+    pytest.param(
+        _file("notes.rtf", b"text", "application/rtf"),
+        "UNSUPPORTED_FORMAT",
+        "Unsupported file type: .rtf. Supported: PDF, DOCX, TXT, Markdown, HTML",
+        id="unsupported-file-type",
+    ),
+    pytest.param(
+        _unknown_format,
+        "UNSUPPORTED_FORMAT",
+        "Unsupported format: rtf",
+        id="unsupported-format",
+    ),
+]
+
+
+class TestRefusalCodeByType:
+    """A ``DocumentRefusal`` carries its code from its raise site: wording it
+    differently cannot move it, and the image-only PDF is NO_TEXT_LAYER."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("build, code, detail", _REFUSALS)
+    def test_each_refusal_answers_its_code_and_detail(
+        self, tmp_path, monkeypatch, build, code, detail
+    ):
+        from faultmaven.modules.knowledge.domain.services.preparation import prepare
+
+        path, content_type = build(tmp_path, monkeypatch)
+
+        result = prepare(path, content_type, lambda stage: None)
+
+        assert result == {"refused": code, "reason": detail}
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("build, code, detail", _REFUSALS)
+    def test_a_reworded_refusal_keeps_its_code(
+        self, tmp_path, monkeypatch, build, code, detail
+    ):
+        """Each sentence reworded to hold the words the library-exception
+        classifier reads as another code."""
+        from faultmaven.modules.knowledge.domain.services import document_parser
+        from faultmaven.modules.knowledge.domain.services.preparation import prepare
+
+        misleading = (
+            "This file is unsupported."
+            if code == "ENCODING_ERROR"
+            else "This file cannot be decoded."
+        )
+
+        class Reworded(document_parser.DocumentRefusal):
+            def __init__(self, message: str, *, code: str) -> None:
+                super().__init__(misleading, code=code)
+
+        monkeypatch.setattr(document_parser, "DocumentRefusal", Reworded)
+        path, content_type = build(tmp_path, monkeypatch)
+
+        result = prepare(path, content_type, lambda stage: None)
+
+        assert result == {"refused": code, "reason": misleading}
+
+
+@pytest.mark.unit
+def test_post_convert_answers_an_image_only_pdf_with_no_text_layer(tmp_path):
+    """Through the route, with the real service and preprocessor: 422
+    ``NO_TEXT_LAYER``, where main answered ``FILE_CORRUPT``. The detail names
+    the route's temp file, so only its sentence is asserted."""
+    from tests.unit.modules.knowledge.test_document_preprocessor_existing_runbook import (
+        _app_with_real_service,
+    )
+
+    path, content_type = _blank_page_pdf(tmp_path)
+
+    with _app_with_real_service() as client:
+        response = client.post(
+            "/api/v1/knowledge/convert",
+            data={"scope": "personal"},
+            files={"file": ("scan.pdf", path.read_bytes(), content_type)},
+        )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["error_code"] == "NO_TEXT_LAYER"
+    assert body["detail"].startswith("Failed to parse ")
+    assert body["detail"].endswith(
+        ".pdf: No extractable text in PDF. The file may be scanned/image-only."
+    )
