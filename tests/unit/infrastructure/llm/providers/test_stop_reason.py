@@ -87,6 +87,7 @@ class TestNormalizeStopReason:
             # Safety — must NOT read as truncation, the recovery is opposite
             ("content_filter", StopReason.CONTENT_FILTER),
             ("SAFETY", StopReason.CONTENT_FILTER),
+            ("BLOCK_REASON_UNSPECIFIED", StopReason.CONTENT_FILTER),  # Gemini
             # Tool handoff
             ("tool_calls", StopReason.TOOL_CALLS),
             ("tool_use", StopReason.TOOL_CALLS),
@@ -453,3 +454,169 @@ class TestLocalProvider:
 
         assert result.stop_reason is StopReason.STOP
         assert result.is_truncated is False
+
+
+# --------------------------------------------------------------------------
+# A refusal stated in the provider's own field (#2694)
+# --------------------------------------------------------------------------
+
+
+_REFUSAL = {
+    "role": "assistant",
+    "content": None,
+    "refusal": "I'm sorry, I can't assist with that request.",
+}
+
+
+_TOOL_CALL = {
+    "id": "call_1",
+    "type": "function",
+    "function": {"name": "search_file", "arguments": "{}"},
+}
+
+
+def _openai_completion(message: dict, finish_reason: str = "stop") -> dict:
+    """A chat completion; on a refusal ``finish_reason`` stays ``"stop"``."""
+    return {
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
+    }
+
+
+_ANSWERED = {"content": {"parts": [{"text": "an answer"}]}, "finishReason": "STOP"}
+
+_OPENAI_SHAPED = pytest.mark.parametrize(
+    "provider_factory",
+    [
+        lambda: OpenAIProvider(
+            _config("openai", "https://api.openai.com/v1", "gpt-4o")
+        ),
+        lambda: FireworksProvider(
+            _config("fireworks", "https://api.fireworks.ai/inference/v1", "m")
+        ),
+        lambda: GroqProvider(
+            _config("groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b")
+        ),
+        lambda: LocalProvider(_config("local", "http://vllm:8000/v1", "hermes")),
+    ],
+    ids=["openai", "fireworks", "groq", "local-compat"],
+)
+
+
+@pytest.mark.asyncio
+class TestRefusalIsContentFilter:
+    """Read from the finish field alone, an OpenAI-shaped refusal was ``STOP``
+    with no body (the local transport raised on it), and a blocked Gemini
+    prompt ``UNKNOWN``: both ran the truncation ladder as a cut body."""
+
+    @_OPENAI_SHAPED
+    @pytest.mark.parametrize(
+        "message,expected,content",
+        [
+            (_REFUSAL, StopReason.CONTENT_FILTER, ""),
+            ({"content": "an answer", "refusal": None}, StopReason.STOP, "an answer"),
+            ({"content": "an answer"}, StopReason.STOP, "an answer"),
+        ],
+        ids=["refusal", "refusal-null", "refusal-absent"],
+    )
+    async def test_message_refusal(self, provider_factory, message, expected, content):
+        provider = provider_factory()
+        session = _mock_aiohttp_session(_openai_completion(message))
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is expected
+        # A str, never None: HuggingFace's low-confidence branch takes len() of it.
+        assert result.content == content
+
+    @_OPENAI_SHAPED
+    async def test_refusal_beside_tool_calls_keeps_the_tool_calls(
+        self, provider_factory
+    ):
+        """Working tool calls are not dropped as a refusal."""
+        provider = provider_factory()
+        message = {**_REFUSAL, "tool_calls": [_TOOL_CALL]}
+        session = _mock_aiohttp_session(_openai_completion(message, "tool_calls"))
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is StopReason.TOOL_CALLS
+        assert result.tool_calls
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            # A blocked prompt: no candidates, the block in promptFeedback.
+            # OTHER is not in the alias table, and is still a block.
+            ({"promptFeedback": {"blockReason": "SAFETY"}}, StopReason.CONTENT_FILTER),
+            ({"promptFeedback": {"blockReason": "OTHER"}}, StopReason.CONTENT_FILTER),
+            (
+                {
+                    "candidates": [],
+                    "promptFeedback": {"blockReason": "BLOCK_REASON_UNSPECIFIED"},
+                },
+                StopReason.CONTENT_FILTER,
+            ),
+            # With candidates, finishReason keeps the reading.
+            ({"candidates": [_ANSWERED], "promptFeedback": {}}, StopReason.STOP),
+            (
+                {
+                    "candidates": [_ANSWERED],
+                    "promptFeedback": {"blockReason": "SAFETY"},
+                },
+                StopReason.STOP,
+            ),
+        ],
+        ids=[
+            "blocked-safety",
+            "blocked-other",
+            "blocked-unspecified-empty-candidates",
+            "answered",
+            "answered-beside-block",
+        ],
+    )
+    async def test_gemini_prompt_feedback(self, body, expected):
+        provider = GeminiProvider(
+            _config("gemini", "https://generativelanguage.googleapis.com/v1beta", "g")
+        )
+        body = {**body, "usageMetadata": {"promptTokenCount": 8, "totalTokenCount": 8}}
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is expected
+
+    async def test_gemini_blocked_prompt_on_a_structured_call(self):
+        """A block is not a cut: the structured call's MAX_TOKENS raise stays out."""
+        provider = GeminiProvider(
+            _config("gemini", "https://generativelanguage.googleapis.com/v1beta", "g")
+        )
+        body = {"promptFeedback": {"blockReason": "SAFETY"}}
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(
+                provider,
+                prompt=vetted("hi"),
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "Answer", "schema": schema},
+                },
+            )
+
+        assert result.stop_reason is StopReason.CONTENT_FILTER
+        assert result.content == ""
+
+    @pytest.mark.parametrize(
+        "content,expected", [(" \n", ""), ("  partial  ", "partial")]
+    )
+    async def test_local_content_filter_body(self, content, expected):
+        """A blank body on a block is returned as ""; a real one still stripped."""
+        provider = LocalProvider(_config("local", "http://vllm:8000/v1", "hermes"))
+        body = _openai_completion({"content": content}, "content_filter")
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is StopReason.CONTENT_FILTER
+        assert result.content == expected

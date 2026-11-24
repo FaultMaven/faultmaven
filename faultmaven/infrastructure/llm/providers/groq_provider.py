@@ -23,8 +23,8 @@ from .base import (
     BaseLLMProvider,
     LLMResponse,
     ProviderConfig,
+    choice_stop_reason,
     extract_provider_error_code,
-    normalize_stop_reason,
     post_waiting_out_rate_limits,
 )
 
@@ -199,10 +199,10 @@ class GroqProvider(BaseLLMProvider):
                 message = choice["message"]
 
                 # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
-                stop_reason = normalize_stop_reason(choice.get("finish_reason"))
+                stop_reason = choice_stop_reason(choice)
 
-                # Extract content (may be None if tool_calls present)
-                content = message.get("content", "")
+                # Extract content (empty if tool_calls present, or on a refusal)
+                content = message.get("content") or ""
                 if content:
                     content = self._validate_response_content(content)
 

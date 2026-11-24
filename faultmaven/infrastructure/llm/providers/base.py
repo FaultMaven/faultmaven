@@ -151,7 +151,7 @@ class StopReason(str, Enum):
 
     STOP = "stop"  # Model finished on its own (or hit a stop sequence)
     MAX_TOKENS = "max_tokens"  # Output cut at the generation cap — INCOMPLETE
-    CONTENT_FILTER = "content_filter"  # Blocked by the provider's safety layer
+    CONTENT_FILTER = "content_filter"  # Blocked by its safety layer, or refused
     TOOL_CALLS = "tool_calls"  # Stopped to hand control back for a tool call
     UNKNOWN = "unknown"  # No signal parsed — NOT a claim that it completed
 
@@ -185,7 +185,7 @@ _STOP_REASON_ALIASES: Dict[str, "StopReason"] = {
     "blocklist": StopReason.CONTENT_FILTER,  # Gemini
     # Gemini's "blocked for a reason it did not name" — still a block, and the
     # Gemini provider treated it as one before this table existed.
-    "blocked_reason_unspecified": StopReason.CONTENT_FILTER,
+    "block_reason_unspecified": StopReason.CONTENT_FILTER,
     "spii": StopReason.CONTENT_FILTER,  # Gemini
     "image_safety": StopReason.CONTENT_FILTER,  # Gemini
     "refusal": StopReason.CONTENT_FILTER,
@@ -213,6 +213,21 @@ def normalize_stop_reason(raw: Any) -> StopReason:
     if not text:
         return StopReason.UNKNOWN
     return _STOP_REASON_ALIASES.get(text, StopReason.UNKNOWN)
+
+
+def choice_stop_reason(choice: Dict[str, Any]) -> StopReason:
+    """The stop reason of one OpenAI-shaped ``choices[]`` entry.
+
+    A refusal is stated in ``message.refusal``, not in ``finish_reason``, which
+    stays ``"stop"`` beside an empty body (#2694). Read alone, the finish field
+    hands the refusal on as a natural stop with nothing in it. A message that
+    carries tool calls is not a refusal, whatever else it says.
+    """
+    message = choice.get("message") or {}
+    refusal = message.get("refusal")
+    if isinstance(refusal, str) and refusal and not message.get("tool_calls"):
+        return StopReason.CONTENT_FILTER
+    return normalize_stop_reason(choice.get("finish_reason"))
 
 
 def extract_provider_error_code(body: Any) -> Optional[str]:

@@ -23,8 +23,8 @@ from .base import (
     LLMResponse,
     ProviderConfig,
     ReasoningIntent,
+    choice_stop_reason,
     extract_provider_error_code,
-    normalize_stop_reason,
     post_waiting_out_rate_limits,
 )
 
@@ -1083,10 +1083,10 @@ class OpenAIProvider(BaseLLMProvider):
                     # max_completion_tokens and is INCOMPLETE — the caller has to
                     # be able to see that, so it travels on the response instead
                     # of being dropped here (#1094).
-                    stop_reason = normalize_stop_reason(choice.get("finish_reason"))
+                    stop_reason = choice_stop_reason(choice)
 
-                    # Extract content (may be None if tool_calls present)
-                    content = message.get("content", "")
+                    # Extract content (empty if tool_calls present, or on a refusal)
+                    content = message.get("content") or ""
                     if content:
                         content = self._validate_response_content(content)
 
