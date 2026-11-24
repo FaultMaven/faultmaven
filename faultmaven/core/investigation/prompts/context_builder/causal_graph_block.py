@@ -257,9 +257,9 @@ _RECOVERY_NOTES: dict[str, str] = {
     # persists) or mints a root carrying none of the held node's evidence
     # links, landing at CANDIDATE with zero supports. The produces edge is
     # named explicitly because ``_attach`` DECLINES a re-root whose new
-    # chain does not reach D — omit it and the re-root is silently refused,
-    # the hold persists, and the relinked evidence strands on a validated,
-    # hypothesis-less orphan root.
+    # chain does not reach D — omit it and the re-root is refused (with a
+    # feedback line, #3029), the hold persists, and the relinked evidence
+    # strands on a validated, hypothesis-less orphan root.
     BLOCK_REASON_RESTATEMENT: (
         " — fully supported, but its statement adds no content beyond what "
         "the problem and the other hypotheses already say, so MORE "
