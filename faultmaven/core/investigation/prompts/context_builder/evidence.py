@@ -358,6 +358,19 @@ def _is_stored(uf) -> bool:
     return uf is not None and uf.has_stored_content
 
 
+def _truncated_marker(remaining_chars: int, uf, lookup: str = "") -> str:
+    """The marker on an extract cut short: the per-item cap here, the head of
+    the fallback stub (``templates/fallback.py``).
+
+    It says whether FaultMaven holds the whole item (#2401): a stored file is
+    held whole, so the model is not left to guess that the user's data ends
+    where the prompt's copy does. ``lookup`` is the tool sentence, empty unless
+    ``search_file`` is given and can read the file (#1939, #2375).
+    """
+    held = " FaultMaven holds the whole item." if _is_stored(uf) else ""
+    return f"[TRUNCATED: {remaining_chars:,} more characters not shown.{held}{lookup}]"
+
+
 def _build_hash_first_seen(case) -> Dict[str, int]:
     """Map each ``content_hash`` to the earliest turn it appeared on.
 
@@ -845,11 +858,14 @@ def _render_orphan_file_block(
         if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
             remaining_chars = len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
             file_extract = file_extract[:EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM]
-            truncation_note = (
-                f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
-                "Use search_file with the file_id above for specific lookups.]"
-                if readable
-                else f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
+            truncation_note = "\n" + _truncated_marker(
+                remaining_chars,
+                uf,
+                (
+                    " Use search_file with the file_id above for specific lookups."
+                    if readable
+                    else ""
+                ),
             )
         body = ""
         if uf.filename:
@@ -1354,14 +1370,17 @@ def _render_evidence_block(
             if confidence_advisory:
                 body += f"{confidence_advisory}\n"
             body += file_extract
-            if (
-                truncated
-                and has(given_tools, "search_file")
-                and _is_stored(ev_file_meta)
-            ):
-                body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
-            elif truncated:
-                body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown.]"
+            if truncated:
+                body += "\n" + _truncated_marker(
+                    remaining_chars,
+                    ev_file_meta,
+                    (
+                        " Use search_file with the evidence id above to search "
+                        "for specific content in the raw file."
+                        if has(given_tools, "search_file") and _is_stored(ev_file_meta)
+                        else ""
+                    ),
+                )
             result += (
                 fence.element("file_extract", body, attrs=role_attr, indent="    ")
                 + "\n"

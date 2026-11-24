@@ -253,6 +253,7 @@ TRIAGE SUMMARY QUALITY (when summarizing uploaded evidence):
 - Enumerate key entities: If the structural index shows multiple actors, sources, or error types,
   name the top ones with counts. If it shows specific error messages, quote them.
   If it shows a timeline, state the range.
+- {unseen_text}
 
 {inquiry_state}
 

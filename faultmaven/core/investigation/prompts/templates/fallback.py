@@ -22,9 +22,13 @@ from faultmaven.core.investigation.prompts.context_builder.causal_graph_block im
 from faultmaven.core.investigation.prompts.context_builder.evidence import (
     _file_backed_attr,
     _label_attr,
+    _truncated_marker,
 )
 from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
     NarrationFold,
+)
+from faultmaven.core.investigation.prompts.context_builder.text_shaping import (
+    _parse_extract,
 )
 from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
@@ -183,7 +187,9 @@ def _fallback_stub_block(
     resolver, one answer. Removing them would re-couple this render's naming to
     however the aggregate happens to be ordered.
 
-    ``head`` is the file's OWN CONTENT, so it can forge a complete
+    ``head`` is the start of the file's extract, parsed as the full render
+    parses it, and ends with the cut marker when the extract is longer
+    (#2401). It is the file's OWN CONTENT, so it can forge a complete
     ``<uploaded_file>`` element exactly as the full render's body channels could
     (#1217). It is fenced for the same reason and by the same mechanism.
 
@@ -210,7 +216,13 @@ def _fallback_stub_block(
             seen_file_ids.add(row.file_id)
             # Canonical row for this id, so the name matches <evidence>.
             uf = (find(row.file_id) if find is not None else None) or row
-            head = (uf.structural_index or "")[:head_chars].replace("\n", " ")
+            # The extract the full render shows, parsed the same way, so the
+            # count below is of the same text (#2401).
+            extract = _parse_extract(uf.structural_index or "")[0]
+            head = extract[:head_chars].replace("\n", " ")
+            if len(extract) > head_chars:
+                # A cut head says so, as the full render's cut does (#2401).
+                head += " " + _truncated_marker(len(extract) - head_chars, uf)
             n_stored += uf.has_stored_content
             stubs.append(
                 fence.element(
