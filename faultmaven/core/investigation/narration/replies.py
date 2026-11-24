@@ -197,8 +197,9 @@ def _reported_or(reported: Sequence[int], otherwise: str) -> str:
     if not reported:
         return otherwise
     return (
-        f"The user reported carrying out a change (turn {max(reported)}); it "
-        "was not registered as a fix of the identified cause."
+        f"The user reported carrying out a proposed action (turn "
+        f"{max(reported)}); it was not registered as a fix of the identified "
+        "cause."
     )
 
 

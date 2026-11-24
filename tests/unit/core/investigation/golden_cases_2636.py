@@ -86,9 +86,11 @@ moves the problem from unverified to verified, so its reply now ends with the
 outcome statement, "**Case record:** the problem is confirmed."; the rest of
 the entry is unchanged. No other entry's render differed.
 
-#3039 (INV-49) re-rendered two B1c entries by hand, the same way:
-``cycle:licence_downgraded_once_it_holds`` and
-``cycle:licence_downgraded_while_it_is_down``, each equal to the stored
+#3039 (INV-49) re-rendered four B1c entries by hand, the same way:
+``cycle:licence_downgraded_once_it_holds``,
+``cycle:licence_downgraded_while_it_is_down``,
+``cycle:licence_withdrawn_once_it_holds`` and
+``cycle:licence_withdrawn_while_it_is_down``, each equal to the stored
 entry on ``main`` at ``68ec0ac01``; on the #3039 branch each refusal ends with
 the sentence that the user's report is recorded ("The user's report is
 recorded: <act:0> is on record as carried out at turn 5 …"), which is

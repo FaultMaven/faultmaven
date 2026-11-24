@@ -1205,14 +1205,21 @@ def _withdrawn_before(bearer: Any, held_since_turn: int) -> bool:
     )
 
 
-def _refuse_withdrawn(metadata: dict[str, Any], action_id: str, licensed: bool) -> None:
+def _refuse_withdrawn(
+    metadata: dict[str, Any],
+    action_id: str,
+    licensed: bool,
+    recorded: Optional[int] = None,
+) -> None:
     """The ruled refusal of a fix withdrawn ``license_lost``: the withdrawn
-    line once the license holds again, else the license line."""
+    line once the license holds again, else the license line; ``recorded``,
+    the turn the user's report was recorded at (INV-49)."""
     record_decision(
         metadata,
         NoticeCode.FIX_LICENCE_REFUSED,
         variant="withdrawn" if licensed else "licence",
         subject=action_id,
+        **({} if recorded is None else {"recorded": recorded}),
     )
 
 
@@ -1237,6 +1244,36 @@ def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
 def _report_justified(case: Case, metadata: dict[str, Any]) -> bool:
     """The verdict ``_registration_justified`` reads, without its feedback."""
     return not metadata.get(FIX_JUSTIFICATION_KEY) or justification_skipped(case)
+
+
+#: The 3D downgrade's reason (a WORKAROUND with no SYMPTOM_EVIDENCE on the
+#: case): the marker that a DIAGNOSTIC was a workaround, which a report of
+#: carrying it out names through ``mitigation_accepted`` (INV-49).
+NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON = (
+    "Your previous MITIGATION proposal was downgraded to "
+    "DIAGNOSTIC because no SYMPTOM_EVIDENCE existed on "
+    "the case. A mitigation must target an observed "
+    "failure, not an unverified user claim. Inspect the "
+    "case data (pod logs / status / metrics / config "
+    "snapshot), file SYMPTOM_EVIDENCE for what you find, "
+    "then re-propose the mitigation grounded in that "
+    "evidence."
+)
+
+
+def is_workaround_downgrade(action: Any) -> bool:
+    """The action is a WORKAROUND 3D downgraded to DIAGNOSTIC."""
+    return action.downgrade_reason == NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON
+
+
+def _stamp_report(
+    case: Case, action: Any, metadata: dict[str, Any], turn: int, carried: bool
+) -> Optional[int]:
+    """Stamp a refused report (``record_reported_change``) when it stands: a
+    carried one was justified on its hold turn, a live one is justified now."""
+    if not (carried or _report_justified(case, metadata)):
+        return None
+    return record_reported_change(action, turn)
 
 
 def record_reported_change(action: Any, turn: int) -> Optional[int]:
@@ -1274,21 +1311,16 @@ def reported_change_turns(case: Case) -> list[int]:
 
 
 def _downgraded_workaround(case: Case) -> Any:
-    """The newest pending DIAGNOSTIC that 3D downgraded from a WORKAROUND
-    (its ``Solution`` row, minted with it, is a WORKAROUND): what an
-    unregistered ``mitigation_accepted`` reports carrying out (INV-49)."""
-    workarounds = {
-        fix_identity(s.immediate_action)
-        for s in case.solutions
-        if s.solution_type == SolutionType.WORKAROUND
-    }
+    """The newest pending WORKAROUND 3D downgraded to DIAGNOSTIC
+    (``is_workaround_downgrade``): what an unregistered
+    ``mitigation_accepted`` reports carrying out (INV-49)."""
     return next(
         (
             a
             for a in reversed(case.proposed_actions)
             if a.state == "pending"
             and a.action_type == InvestigationActionType.DIAGNOSTIC
-            and fix_identity(a.description) in workarounds
+            and is_workaround_downgrade(a)
         ),
         None,
     )
@@ -1322,7 +1354,12 @@ def _what_is_named(action: Any) -> str:
 
 
 def _fix_named_by(
-    case: Case, ref: str, action: Any, metadata: dict[str, Any], proposed: set
+    case: Case,
+    ref: str,
+    action: Any,
+    metadata: dict[str, Any],
+    proposed: set,
+    report_turn: Optional[int] = None,
 ) -> Optional[tuple[str, str]]:
     """The fix a ref naming ``action`` resolves to, type-matched (INV-32): a
     SOLUTION's own; a DIAGNOSTIC's only when a NEWER SOLUTION bears it, or a
@@ -1335,11 +1372,18 @@ def _fix_named_by(
             identity not in proposed
             and (bearer is None or actions.index(bearer) < actions.index(action))
         ):
-            if (
-                action.action_type == InvestigationActionType.DIAGNOSTIC
-                and _report_justified(case, metadata)
-            ):
-                turn = record_reported_change(action, case.current_turn)
+            turn = (
+                _stamp_report(
+                    case,
+                    action,
+                    metadata,
+                    case.current_turn if report_turn is None else report_turn,
+                    carried=False,
+                )
+                if action.action_type == InvestigationActionType.DIAGNOSTIC
+                else None
+            )
+            if turn is not None:
                 _refuse_fix_ref(
                     case,
                     metadata,
@@ -1443,9 +1487,11 @@ def _resolve_fix_identity(
     metadata: dict[str, Any],
     *,
     holding: bool,
+    report_turn: Optional[int] = None,
 ) -> Optional[tuple[str, str]]:
     """Step 1: the fix identity an acceptance names, and how a refusal would
     describe what its ref names; None once a notice has settled it.
+    ``report_turn``: the turn a refused report is recorded at (INV-49).
 
     An ACTION_ID gives the named action's fix; ``new_index_N`` the Nth entry of
     this response's ``solutions_to_add``; no ref, with no fix registered yet,
@@ -1494,6 +1540,7 @@ def _resolve_fix_identity(
                 entry.action,
                 metadata,
                 {entry.identity} if entry.is_fix else set(),
+                report_turn,
             )
         if not entry.is_fix:
             _refuse_fix_ref(
@@ -1506,7 +1553,7 @@ def _resolve_fix_identity(
         _refuse_fix_ref(case, metadata, ref, "no action on this case")
         return None
     proposed = {e.identity for e in entries if e.is_fix} if holding else set()
-    return _fix_named_by(case, ref, named, metadata, proposed)
+    return _fix_named_by(case, ref, named, metadata, proposed, report_turn)
 
 
 def _bearer_registers(
@@ -1549,12 +1596,9 @@ def _bearer_registers(
     ``licensed`` is the M5 license at this decision, computed once by a
     carried decision; a live turn passes nothing (its downgrade proves the
     license down) and reads it here only for a superseded bearer."""
+    turn = case.current_turn if reported_in is None else reported_in
     if bearer.action_type != InvestigationActionType.SOLUTION:
-        recorded = None
-        if carried or _report_justified(case, metadata):
-            recorded = record_reported_change(
-                bearer, case.current_turn if reported_in is None else reported_in
-            )
+        recorded = _stamp_report(case, bearer, metadata, turn, carried)
         record_decision(
             metadata,
             NoticeCode.FIX_LICENCE_REFUSED,
@@ -1573,13 +1617,24 @@ def _bearer_registers(
             licensed = _license_holds(case, metadata)
         if licensed and (carried or bearer.superseded_reason == "reproposal"):
             return True
-        _refuse_withdrawn(metadata, bearer.action_id, licensed)
+        _refuse_withdrawn(
+            metadata,
+            bearer.action_id,
+            licensed,
+            _stamp_report(case, bearer, metadata, turn, carried),
+        )
         return False
+    recorded = _stamp_report(case, bearer, metadata, turn, carried)
     _refuse_fix_ref(
         case,
         metadata,
         bearer.action_id,
         f"{bearer.action_id}, a {bearer.state} SOLUTION",
+        recorded=(
+            ""
+            if recorded is None
+            else recorded_change_clause(bearer.action_id, recorded)
+        ),
     )
     return False
 
@@ -1625,7 +1680,12 @@ def _hold_settles(
         _note_failed_fix(case, bearer, metadata)
         return True
     if _withdrawn_before(bearer, pending_revision(case).held_since_turn):
-        _refuse_withdrawn(metadata, bearer.action_id, _license_holds(case, metadata))
+        _refuse_withdrawn(
+            metadata,
+            bearer.action_id,
+            _license_holds(case, metadata),
+            _stamp_report(case, bearer, metadata, case.current_turn, carried=False),
+        )
         return True
     return False
 
@@ -1690,8 +1750,21 @@ def decide_fix_acceptance(
             _ignore_fix_report(case, metadata, "unaccepted")
         return None
     entries = _fix_entries(proposals, held, fixes)
+    # The turn a refused report is recorded at (INV-49): the user's previous
+    # message when the model declares it (#2427), on a live turn only; a hold
+    # turn carries its decision at this turn.
+    report_turn = (
+        max(1, case.current_turn - 1)
+        if declared and held is None
+        else case.current_turn
+    )
     resolved = _resolve_fix_identity(
-        case, ref, entries, metadata, holding=held is not None
+        case,
+        ref,
+        entries,
+        metadata,
+        holding=held is not None,
+        report_turn=report_turn,
     )
     if resolved is None:
         return None
@@ -1708,7 +1781,9 @@ def decide_fix_acceptance(
     if bearer is None:
         _refuse_fix_ref(case, metadata, ref, what)
         return None
-    if not _bearer_registers(case, bearer, metadata, carried=False):
+    if not _bearer_registers(
+        case, bearer, metadata, carried=False, reported_in=report_turn
+    ):
         return None
     if not _registration_justified(case, metadata):
         return None
@@ -1740,7 +1815,12 @@ def _register_carried_fix(
     if bearer.action_type == InvestigationActionType.SOLUTION and _withdrawn_before(
         bearer, metadata.get(REPLAY_HELD_SINCE_KEY, 0)
     ):
-        _refuse_withdrawn(metadata, bearer.action_id, licensed)
+        _refuse_withdrawn(
+            metadata,
+            bearer.action_id,
+            licensed,
+            _stamp_report(case, bearer, metadata, carried.turn, carried=True),
+        )
         return None
     registers = _bearer_registers(
         case,
@@ -2176,10 +2256,13 @@ def _apply_stage_gate_signals(
             "before setting the milestone."
         )
         workaround = _downgraded_workaround(case)
-        if workaround is not None and _report_justified(case, metadata):
+        if workaround is not None:
+            # Local import: statement_revision imports this module.
+            from .statement_revision import emission_turn
+
             notice += recorded_change_clause(
                 workaround.action_id,
-                record_reported_change(workaround, case.current_turn),
+                record_reported_change(workaround, emission_turn(case, metadata)),
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (

@@ -29,6 +29,7 @@ from faultmaven.core.investigation.cause_assurance import fix_windows
 from faultmaven.core.investigation.milestone_engine import response_application
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     FIX_JUSTIFICATION_KEY,
+    NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON,
     reported_change_turns,
 )
 from faultmaven.core.investigation.narration.replies import closed_line
@@ -43,6 +44,7 @@ from faultmaven.modules.case.contracts import ClosureReason
 from faultmaven.modules.case.domain.models.solution import (
     InvestigationActionType,
     ProposedAction,
+    Solution,
     SolutionType,
 )
 from tests.unit.core.investigation.narrated import narrated
@@ -391,7 +393,7 @@ class TestTheRecordRenders:
         before = build_investigation_context(_downgraded_case(), "status pasted")
         assert "<pending_action>" in before["pending_action"]
         assert "IF_CARRIED_OUT: set solution_accepted" in before["pending_action"]
-        assert "Changes the user reported making" not in before["pending_action"]
+        assert "Actions the user reported carrying out" not in before["pending_action"]
 
         after = build_investigation_context(_reported_case(), "status pasted")
         assert "<pending_action>" not in after["pending_action"]
@@ -414,7 +416,7 @@ class TestTheRecordRenders:
 
         block = user_changes_block(case, _Fold())
 
-        assert "[... 3 earlier changes omitted ...]" in block
+        assert "[... 3 earlier actions omitted ...]" in block
         assert "[T3]" not in block and "[T4]" in block and "[T11]" in block
 
 
@@ -424,7 +426,7 @@ class TestTheClosureLine:
             ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE, "chain", (), reported=[4]
         )
         assert "No fix was carried out" not in line
-        assert "The user reported carrying out a change (turn 4)" in line
+        assert "The user reported carrying out a proposed action (turn 4)" in line
         assert "not registered as a fix of the identified cause" in line
 
     def test_with_no_report_the_line_is_unchanged(self):
@@ -439,3 +441,134 @@ class TestTheClosureLine:
     def test_the_turns_come_from_the_unregistered_reports(self):
         assert reported_change_turns(_reported_case()) == [5]
         assert reported_change_turns(_downgraded_case()) == []
+
+
+@pytest.mark.asyncio
+class TestReviewCases:
+    """The review of #3049: the report's own turn, refused SOLUTION bearers,
+    the workaround marker and the cue."""
+
+    async def test_a_report_declared_in_the_previous_message_is_dated_there(self):
+        case = _downgraded_case()
+        action = _diagnostic(case)
+        case.current_turn = 6
+
+        await _apply(
+            case,
+            milestones=MilestoneUpdates(
+                solution_accepted=True,
+                accepted_action_ref=action.action_id,
+                accepted_fix_reported_in="previous_message",
+            ),
+        )
+
+        assert action.reported_done_in_turn == 5
+
+    @pytest.mark.parametrize("state", ["superseded", "rejected"])
+    async def test_a_refused_solution_bearer_is_recorded(self, state):
+        """A SOLUTION withdrawn while its cause was down, or rejected, is
+        refused; the user's report of carrying it out is still recorded."""
+        case = _case(leading_likelihood=0.4)
+        case.current_turn = 6
+        solution = ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description=_FIX,
+            proposed_in_turn=4,
+            state=state,
+            superseded_reason="license_lost" if state == "superseded" else None,
+            superseded_in_turn=5 if state == "superseded" else None,
+        )
+        case.proposed_actions.append(solution)
+
+        metadata = await _apply(
+            case,
+            milestones=MilestoneUpdates(
+                solution_accepted=True, accepted_action_ref=solution.action_id
+            ),
+        )
+
+        assert solution.reported_done_in_turn == 6
+        assert solution.state == state
+        assert case.progress.solution_accepted is False
+        assert reported_change_turns(case) == [6]
+        assert "is on record as carried out at turn 6" in _notices(case, metadata)
+
+    async def test_mitigation_accepted_never_stamps_a_downgraded_fix(self):
+        """Only the 3D marker makes a DIAGNOSTIC a workaround: an M5 copy
+        sharing a workaround's text is not stamped by mitigation_accepted."""
+        case = _downgraded_case()
+        action = _diagnostic(case)
+        case.solutions.append(
+            Solution(
+                solution_id="sol_000000000001",
+                solution_type=SolutionType.WORKAROUND,
+                title="Solution: workaround",
+                immediate_action=action.description,
+            )
+        )
+
+        await _apply(case, milestones=MilestoneUpdates(mitigation_accepted=True))
+
+        assert action.reported_done_in_turn is None
+
+    async def test_an_unjustified_solution_report_does_not_hold_back_a_workaround(
+        self,
+    ):
+        case = _case(leading_likelihood=0.4)
+        case.evidence.clear()
+        await _apply(
+            case,
+            solutions_to_add=[
+                SolutionToAdd(
+                    description="Restart billing-exporter",
+                    solution_type=SolutionType.WORKAROUND,
+                    estimated_impact="restores scraping",
+                    risks="low",
+                )
+            ],
+        )
+        action = _diagnostic(case)
+        case.current_turn = 5
+        metadata = _meta()
+        metadata[FIX_JUSTIFICATION_KEY] = "solution_accepted lacks a justification"
+
+        await _apply(
+            case, metadata, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        assert action.reported_done_in_turn == 5
+
+
+class TestTheCue:
+    def _pending(self, case, fold):
+        from faultmaven.core.investigation.prompts.context_builder.assembly import (
+            _if_carried_out,
+        )
+
+        return _if_carried_out(_diagnostic(case), fold)
+
+    def test_a_downgraded_fix_is_named_while_the_cause_is_down(self):
+        cue = self._pending(_downgraded_case(), _Fold())
+        assert "set solution_accepted, with accepted_action_ref: act_" in cue
+
+    def test_once_the_cause_is_identified_the_cue_registers(self):
+        cue = self._pending(_downgraded_case(), _Fold(leg="rcc"))
+        assert "re-propose it as a SolutionToAdd" in cue
+        assert "registers it as the fix" in cue
+
+    def test_a_downgraded_workaround_is_reported_by_mitigation_accepted(self):
+        case = _downgraded_case()
+        _diagnostic(case).downgrade_reason = NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON
+        cue = self._pending(case, _Fold(leg="rcc"))
+        assert "set mitigation_accepted" in cue
+        assert "solution_accepted" not in cue
+
+    def test_a_recorded_workaround_says_why_and_gets_no_register_line(self):
+        case = _reported_case()
+        _diagnostic(case).downgrade_reason = NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON
+
+        block = user_changes_block(case, _Fold(leg="chain"))
+
+        assert "not registered as the mitigation (no symptom evidence" in block
+        assert USER_CHANGES_REGISTER_LINE not in block

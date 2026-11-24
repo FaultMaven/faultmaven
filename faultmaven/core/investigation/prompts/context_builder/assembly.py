@@ -15,6 +15,7 @@ from faultmaven.core.investigation.kb_question import (
     take_over_pushed,
 )
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    is_workaround_downgrade,
     unregistered_reported_changes,
 )
 from faultmaven.core.investigation.narration.prompt_state import (
@@ -77,6 +78,7 @@ logger = logging.getLogger(__name__)
 USER_CHANGES_MAX = 8
 #: What the block names itself as to the narration fold.
 _USER_CHANGES = "user changes"
+_PENDING_ACTION = "pending action"
 USER_CHANGE_DESCRIPTION_CHARS = 300
 
 #: How the model reads a change the user reported making (INV-49). The
@@ -98,6 +100,39 @@ USER_CHANGES_REGISTER_LINE = (
     "SolutionToAdd and set solution_accepted with accepted_action_ref "
     "new_index_N naming it."
 )
+
+
+def _record_names_a_cause(fold: NarrationFold, block: str) -> bool:
+    """The outcome record holds an identified cause; False with no record."""
+    outcome = fold.outcome(block)
+    return outcome is not None and outcome.cause.identification_leg is not None
+
+
+def _if_carried_out(action: Any, fold: NarrationFold) -> str:
+    """The ``<pending_action>`` cue for a downgraded action (INV-49): how a
+    report of carrying it out is put on record. A downgraded workaround is
+    reported through ``mitigation_accepted``; a downgraded fix, once the
+    record holds an identified cause, through the re-proposal that registers
+    it, else by naming it, which records it and registers nothing."""
+    if is_workaround_downgrade(action):
+        return (
+            "IF_CARRIED_OUT: set mitigation_accepted when the user reports "
+            "carrying this out: the report is recorded as carried out "
+            "(<user_changes>); it registers no mitigation\n"
+        )
+    if _record_names_a_cause(fold, _PENDING_ACTION):
+        return (
+            "IF_CARRIED_OUT: the root cause is established now: when the user "
+            "reports carrying this out, re-propose it as a SolutionToAdd and "
+            "set solution_accepted with accepted_action_ref new_index_N naming "
+            "it, which registers it as the fix\n"
+        )
+    return (
+        "IF_CARRIED_OUT: set solution_accepted, with "
+        f"accepted_action_ref: {action.action_id}, when the user reports "
+        "carrying this out: the report is recorded as carried out "
+        "(<user_changes>); it registers no fix\n"
+    )
 
 
 def user_changes_block(case: Case, fold: NarrationFold) -> str:
@@ -126,9 +161,12 @@ def user_changes_block(case: Case, fold: NarrationFold) -> str:
     if not rows:
         return ""
     omitted = max(0, len(rows) - USER_CHANGES_MAX)
-    lines = ["<user_changes>", "Changes the user reported making (engine record):"]
+    lines = [
+        "<user_changes>",
+        "Actions the user reported carrying out (engine record):",
+    ]
     if omitted:
-        lines.append(f"[... {omitted} earlier changes omitted ...]")
+        lines.append(f"[... {omitted} earlier actions omitted ...]")
     for turn, action, is_registered in rows[omitted:]:
         text = " ".join((action.description or "").split())
         if len(text) > USER_CHANGE_DESCRIPTION_CHARS:
@@ -139,17 +177,23 @@ def user_changes_block(case: Case, fold: NarrationFold) -> str:
                 if action.action_type == InvestigationActionType.MITIGATION
                 else "registered as the fix"
             )
+        elif is_workaround_downgrade(action):
+            status = (
+                "recorded as carried out; not registered as the mitigation (no "
+                "symptom evidence was on record for it)"
+            )
         else:
             status = (
-                "recorded as carried out; not registered as a fix (no root "
-                "cause was established for it)"
+                "recorded as carried out; not registered as a fix (its root "
+                "cause was not established when it was reported)"
             )
         lines.append(f"- [T{turn}] {action.action_id}: {text} — {status}")
     lines.append(USER_CHANGES_RULE)
-    if any(not row[2] for row in rows[omitted:]):
-        outcome = fold.outcome(_USER_CHANGES)
-        if outcome is not None and outcome.cause.identification_leg is not None:
-            lines.append(USER_CHANGES_REGISTER_LINE)
+    if any(
+        not is_registered and not is_workaround_downgrade(action)
+        for _turn, action, is_registered in rows[omitted:]
+    ) and _record_names_a_cause(fold, _USER_CHANGES):
+        lines.append(USER_CHANGES_REGISTER_LINE)
     lines.append("</user_changes>")
     return "\n".join(lines)
 
@@ -1108,13 +1152,9 @@ def build_investigation_context(
             # recover on this turn (e.g. by gathering the missing
             # evidence and re-proposing).
             elif action_type_upper == "DIAGNOSTIC":
-                # INV-49: a report of carrying it out is recorded, not lost.
-                pending_action_str += (
-                    "IF_CARRIED_OUT: set solution_accepted, with "
-                    f"accepted_action_ref: {action.action_id}, when the user "
-                    "reports carrying this out: the report is recorded as "
-                    "carried out (<user_changes>); it registers no fix\n"
-                )
+                # INV-49: a report of carrying it out is recorded, not lost;
+                # the cue names the path that also registers what can.
+                pending_action_str += _if_carried_out(action, narration_fold)
             if getattr(action, "downgrade_reason", None):
                 pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
             pending_action_str += "</pending_action>"
