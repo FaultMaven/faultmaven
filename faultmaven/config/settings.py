@@ -35,8 +35,8 @@ from typing import (
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
-from faultmaven.config.deployment_coherence import coherence_refuses_local_auth
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+from faultmaven.config.local_auth_refusal import coherence_refuses_local_auth
 from faultmaven.config.secret_file import (
     prepare_secret_file_for_read,
     publish_secret_once,

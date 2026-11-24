@@ -23,6 +23,12 @@ from __future__ import annotations
 import logging
 from typing import Any, List
 
+from faultmaven.config.local_auth_refusal import (
+    _auth_mode_name,
+    _cloud_without_oauth,
+    _multi_tenant_outside_cloud,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,60 +80,6 @@ def _storage_backend_name(settings: Any) -> str:
     if backend is None:
         return ""
     return str(getattr(backend, "value", backend)).strip().lower()
-
-
-def _auth_mode_name(auth: Any) -> str:
-    """Return the configured auth mode as a plain lowercase name.
-
-    ``AuthMode`` is a ``(str, Enum)``, so ``str(member)`` yields
-    ``'AuthMode.OAUTH'`` — matching on that is how the cloud auth gate refused
-    every correctly-configured cloud boot while the standalone warning stayed
-    dead (#881). Read ``.value`` when present, and normalize so a plain-string
-    override matches too. Both call sites share this one predicate so they
-    cannot drift apart again.
-    """
-    mode = getattr(auth, "auth_mode", None)
-    if mode is None:
-        return "local"
-    return str(getattr(mode, "value", mode)).strip().lower()
-
-
-def _cloud_without_oauth(settings: Any) -> bool:
-    """A cloud deployment whose ``AUTH_MODE`` is not ``oauth`` (check 1 below)."""
-    return bool(settings.is_cloud) and _auth_mode_name(settings.auth) != "oauth"
-
-
-def _multi_tenant_outside_cloud(settings: Any) -> bool:
-    """``TENANT_PROVIDER=multi`` outside cloud (``_check_tenant_provider_coherent``).
-
-    The mint reads this while the settings are being built, so it names the
-    provider by the settings' own enum, not through the tenancy factory, whose
-    import pulls in the domain models. It reads the value as the factory's
-    ``coerce_provider_name`` does (unset is not multi; an enum by its value; a
-    string lower-cased), and a test pins the two to agree.
-    """
-    from faultmaven.config.settings import TenantProvider
-
-    providers = getattr(settings, "providers", None)
-    requested = getattr(providers, "tenant_provider", None)
-    if requested is None:
-        return False
-    name = str(getattr(requested, "value", requested)).lower()
-    return name == TenantProvider.MULTI.value and not settings.is_cloud
-
-
-def coherence_refuses_local_auth(settings: Any) -> bool:
-    """Whether this gate refuses a local-auth run from its settings alone.
-
-    True for a cloud deployment not on OAuth (check 1 of ``_check_cloud``) and
-    for ``TENANT_PROVIDER=multi`` outside cloud. Each rule is read by its own
-    check in the gate and, through this predicate, by the local HS256 secret's
-    mint (``resolve_local_jwt_secret``), which runs while the settings are
-    built, before the gate. A local-auth run of such settings never starts, so
-    the mint reads, writes, sets and exports no secret for it (#2705); one
-    predicate keeps the mint from drifting from the gate.
-    """
-    return _cloud_without_oauth(settings) or _multi_tenant_outside_cloud(settings)
 
 
 def _check_cloud(settings: Any) -> List[str]:

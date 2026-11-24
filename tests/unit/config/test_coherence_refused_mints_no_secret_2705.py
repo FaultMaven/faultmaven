@@ -18,9 +18,9 @@ import pytest
 from faultmaven.config import settings as S
 from faultmaven.config.deployment_coherence import (
     DeploymentCoherenceError,
-    coherence_refuses_local_auth,
     validate_deployment_coherence,
 )
+from faultmaven.config.local_auth_refusal import coherence_refuses_local_auth
 from faultmaven.models.exceptions import ConfigurationError
 from tests.utils import delenv_every_spelling
 

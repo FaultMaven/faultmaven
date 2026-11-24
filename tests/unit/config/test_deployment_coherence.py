@@ -398,7 +398,7 @@ def test_auth_mode_name_reads_the_real_enum():
     """`AuthMode` is a `(str, Enum)`: `str(member)` is 'AuthMode.OAUTH', not
     'oauth'. The gate compared on that, so the cloud auth check refused every
     correct cloud boot and the standalone warning was dead code (#881)."""
-    from faultmaven.config.deployment_coherence import _auth_mode_name
+    from faultmaven.config.local_auth_refusal import _auth_mode_name
 
     for member, expected in (
         (AuthMode.OAUTH, "oauth"),
