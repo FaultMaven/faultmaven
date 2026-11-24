@@ -151,6 +151,27 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.12.0",
+        level="MINOR",
+        title=(
+            "`TraceBackendStatus.ping_interval_s` on `GET /admin/config/status` "
+            "is a number where it was an integer, and follows the backend URL "
+            "form; `server_connection` reads `disconnected` after a failed "
+            "connection ping as well as a failed send (#2573)."
+        ),
+        body=r"""* `ping_interval_s` is the interval `opik_sdk.configure` applied: the trace
+  SDK's own default, a number of seconds, when the backend URL has no path
+  (the form checked live); under any other form, whose ping would reach the
+  host root, one so long the SDK in effect never pings, as before. It was the
+  latter for every form.
+* `server_connection` reads `disconnected` once either a send or a
+  connection ping failed: at the lowered interval the SDK pings, and a
+  failed ping parks traces as a failed send does.
+
+MINOR because every client survives it: the field is operator-only and read
+for display, its value is still a JSON number, and the enum is unchanged.""",
+    ),
+    ContractChange(
         version="15.11.0",
         level="MINOR",
         title=(

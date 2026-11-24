@@ -169,23 +169,27 @@ class LLMTraceEraser:
     def _deliver_queued(self, client: Any, owner: str) -> None:
         """Send what this pod holds for the backend, so the search can find it.
 
-        ``flush`` returning True is not delivery. After one connection failure
+        ``flush`` returning True is not delivery. After a failed send or ping
         the SDK parks every later trace in a local database with no send, and
         replays them only while its monitor's flag is True, which otherwise
-        waits for the next ping, up to ``opik_sdk.PING_INTERVAL_S`` away
-        (#2573). So the flag is reset here, through the SDK's internals as it
-        has no public accessor. After the flush, a flag that is False again
-        means a send failed, so the backend is unreachable.
+        waits for the next ping (``opik_sdk.ping_interval_for``, #2573). So the
+        flag is reset here, through the SDK's internals as it has no public
+        accessor. Delivery is then read from the parked count after the flush,
+        not from the flag: the monitor's own ping can lower it while the sends
+        succeed, or raise it while a trace that failed to send waits for the
+        monitor's replay, which would land after the search.
         """
         try:
             monitor = opik_sdk.replay_monitor(client)
             if not monitor.has_server_connection:
                 monitor.reset()
             flushed = client.flush(timeout=self._flush_timeout_seconds)
-            connected = monitor.has_server_connection
+            parked = opik_sdk.parked_count(client)
         except AttributeError as exc:
             raise _refused(owner, "the Opik SDK's replay path has changed") from exc
-        if not connected:
+        if parked is None:
+            raise _refused(owner, "the Opik SDK's replay database cannot be read")
+        if parked:
             raise _refused(owner, "a send failed: the backend is unreachable")
         # A trace still queued here would land after the search and survive it.
         if not flushed:

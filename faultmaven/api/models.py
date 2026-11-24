@@ -865,22 +865,26 @@ class TraceBackendStatus(BaseModel):
             "searches; null when configuration did not resolve one."
         )
     )
-    ping_interval_s: Optional[int] = Field(
+    ping_interval_s: Optional[float] = Field(
         description=(
-            "Seconds between the SDK's connection pings. After a failed send "
-            "the SDK parks every later trace until a ping succeeds or a delete "
-            "replays them, so this bounds how long a parked trace waits. Null "
-            "when no trace backend is configured."
+            "Seconds between the SDK's connection pings. After a failed send or "
+            "ping the SDK parks every later trace until a ping succeeds or a "
+            "delete replays them, so this bounds how long a parked trace waits. "
+            "The SDK's own interval when the backend URL has no path, the form "
+            "checked live; under any other form, whose ping would reach the "
+            "host root, one so long the SDK in effect never pings. Null when no "
+            "trace backend is configured."
         )
     )
     server_connection: Literal["connected", "disconnected", "no_client", "unknown"] = (
         Field(
             description=(
                 "The serving worker's SDK client's view of its backend: "
-                "'connected'; 'disconnected' after a failed send, while it "
-                "parks traces locally; 'no_client' when that worker process has "
-                "built none; 'unknown' when the SDK's internals could not be "
-                "read. Other workers and replicas are not reported."
+                "'connected'; 'disconnected' after a send or a connection ping "
+                "failed, while it parks traces locally; 'no_client' when that "
+                "worker process has built none; 'unknown' when the SDK's "
+                "internals could not be read. Other workers and replicas are "
+                "not reported."
             )
         )
     )

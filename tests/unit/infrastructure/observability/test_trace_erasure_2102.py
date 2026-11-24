@@ -73,8 +73,13 @@ class _FakeClient:
         self.trace_page = self.span_page = None
         self.flushed, self.send_fails = flushed, send_fails
         self.monitor = _FakeMonitor(connected)
+        #: What the SDK's replay database holds unsent; a failed send parks one.
+        self.parked = 0
         self._streamer = SimpleNamespace(
-            _fallback_replay_manager=SimpleNamespace(_monitor=self.monitor)
+            _fallback_replay_manager=SimpleNamespace(
+                _monitor=self.monitor,
+                _db_manager=SimpleNamespace(failed_messages_count=lambda: self.parked),
+            )
         )
         self.flushes: list = []
         self.trace_reads: list = []
@@ -99,6 +104,7 @@ class _FakeClient:
         )
         if self.send_fails:
             self.monitor.has_server_connection = False
+            self.parked = 1
         return self.flushed
 
     @staticmethod
@@ -427,6 +433,16 @@ class TestWhatThisPodHolds:
 
         assert client.trace_reads == [] and client.deleted == []
 
+    @pytest.mark.parametrize("count", [-1, None], ids=["closed-or-failed", "moved"])
+    async def test_an_unreadable_replay_database_refuses_before_the_read(self, count):
+        client = _FakeClient(traces=["t1"])
+        client.parked = count
+
+        with pytest.raises(ServiceException, match="llm_traces.*replay database"):
+            await _eraser(client).erase_case(CASE, ENTERPRISE)
+
+        assert client.trace_reads == [] and client.deleted == []
+
     async def test_two_deletes_on_one_pod_deliver_one_at_a_time(self, monkeypatch):
         """The SDK's replay is a non-blocking mutex: a flush that overlaps another
         returns at once, with its case's traces still parked."""
@@ -471,8 +487,15 @@ class TestWhatThisPodHolds:
                     )
                 )
             },
+            {
+                "_streamer": SimpleNamespace(
+                    _fallback_replay_manager=SimpleNamespace(
+                        _monitor=_FakeMonitor(connected=True)
+                    )
+                )
+            },
         ],
-        ids=["no-monitor", "no-reset"],
+        ids=["no-monitor", "no-reset", "no-database"],
     )
     async def test_an_sdk_that_changed_fails_closed_naming_the_store(self, changed):
         client = _FakeClient(traces=["t1"])

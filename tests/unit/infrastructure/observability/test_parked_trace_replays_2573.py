@@ -1,13 +1,20 @@
-"""A trace parked after a failed send is re-sent once the backend is back and
-the SDK's connection monitor pings, at the interval ``opik_sdk.configure`` sets
-(#2573). On the real Opik SDK against a stub on a port this test binds.
+"""The Opik SDK at the ping interval ``opik_sdk.configure`` applies to a backend
+URL with no path (#2573), on the real SDK against a stub on a port this test
+binds.
 
-At 999999 s the monitor never pinged again, so a replica that lost the backend
-once parked every later trace for the rest of its life.
+- A trace parked after a failed send is re-sent at the monitor's next ping once
+  the backend is back. At 999999 s the monitor never pinged again, so a replica
+  that lost the backend once parked every later trace for its life.
+- At that interval the monitor's own ping can race the case delete's flush.
+  The eraser reads delivery from the parked count, not from the monitor's flag.
+
+The monitor's clock is frozen and moved by the test, so it pings exactly when a
+test moves it one interval on, and never on its own.
 """
 
 import atexit
 import gzip
+import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,26 +25,38 @@ import pytest
 opik = pytest.importorskip("opik")
 
 import tenacity  # noqa: E402
-from opik.api_objects import opik_client  # noqa: E402
-from opik.config import OpikConfig  # noqa: E402
+from opik import httpx_client  # noqa: E402
+from opik.healthcheck import connection_monitor  # noqa: E402
 from opik.rest_client_configurator import retry_decorator  # noqa: E402
 
 from faultmaven.config.settings import ObservabilitySettings  # noqa: E402
+from faultmaven.exceptions import ServiceException  # noqa: E402
 from faultmaven.infrastructure.observability import opik_sdk  # noqa: E402
+from faultmaven.infrastructure.observability.trace_erasure import (  # noqa: E402
+    LLMTraceEraser,
+)
 
 pytestmark = pytest.mark.unit
 
 MARK = "parked-trace-2573"
-SDK_DEFAULT = OpikConfig.model_fields["connection_monitor_ping_interval"].default
+CASE = "case_aabb20262573"
+ENTERPRISE = "00000000-0000-0000-0000-000000000002"
+EMPTY_PAGE = json.dumps({"page": 1, "size": 0, "total": 0, "content": []}).encode()
 
 
 class _Backend:
-    """Answers every GET (the ping included) 200 and every write 204, and records
-    the write bodies. HTTP/1.0, so a stopped server's port is really closed."""
+    """One listening socket for the whole test. ``accepting`` False holds each
+    write unanswered past the client's read timeout, the failure the SDK parks
+    a message on; ``ping_ok`` False answers the ping 503. Every other read is an
+    empty page. ``on_delivery`` runs before a write carrying ``MARK`` is
+    answered."""
 
-    def __init__(self, port=0):
-        self.bodies: list = []
+    def __init__(self):
+        self.accepting = True
+        self.ping_ok = True
+        self.on_delivery = None
         self.received = threading.Event()
+        self.released = threading.Event()
         backend = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -53,30 +72,40 @@ class _Backend:
                 self.wfile.write(data)
 
             def do_GET(self):
-                self._answer(200, b'{"healthy":true}')
+                if self.path.endswith("/is-alive/ping"):
+                    return self._answer(200 if backend.ping_ok else 503, b"{}")
+                self._answer(200, EMPTY_PAGE)
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("content-length") or 0))
                 if self.headers.get("content-encoding") == "gzip":
                     body = gzip.decompress(body)
-                backend.bodies.append(body)
+                if not backend.accepting:
+                    backend.released.wait(10)
+                    return
                 if MARK.encode() in body:
+                    if backend.on_delivery is not None:
+                        backend.on_delivery()
                     backend.received.set()
                 self._answer(204)
 
             do_PATCH = do_PUT = do_POST
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(target=self._server.serve_forever)
         self._thread.start()
-        self.port = self._server.server_address[1]
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def release(self):
+        """Answer every write again, and the ones held."""
+        self.accepting = True
+        self.released.set()
 
     def stop(self):
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
-            self._thread.join()
-            self._server = None
+        self.release()
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join()
 
 
 def _until(condition, what):
@@ -89,20 +118,29 @@ def _until(condition, what):
 
 
 @pytest.fixture
-def backends():
-    started: list = []
-    yield started
-    for backend in started:
-        backend.stop()
+def backend():
+    backend = _Backend()
+    yield backend
+    backend.stop()
 
 
 @pytest.fixture
-def client(backends, monkeypatch):
-    """The process's client, built as a traced call builds it after
-    ``opik_sdk.configure`` points the SDK at the stub; ended after."""
-    import opik.config
+def clock(monkeypatch):
+    """The monitor's clock, frozen: ``clock.now`` moves only when a test moves it."""
+    clock = SimpleNamespace(now=time.time())
+    monkeypatch.setattr(
+        connection_monitor, "time", SimpleNamespace(time=lambda: clock.now)
+    )
+    return clock
 
-    backends.append(_Backend())
+
+@pytest.fixture
+def client(backend, clock, monkeypatch):
+    """The process's client, built as a traced call builds it after
+    ``opik_sdk.configure`` points the SDK at the stub, once it has pinged."""
+    import opik.config
+    from opik.api_objects import opik_client
+
     for name in (
         "OPIK_URL_OVERRIDE",
         "OPIK_PROJECT_NAME",
@@ -117,43 +155,116 @@ def client(backends, monkeypatch):
     monkeypatch.setattr(
         opik_sdk, "_track_disable_prior_value", opik_sdk._TRACK_DISABLE_UNRECORDED
     )
-    # One attempt per send: the failed send needs no 11 s of SDK retries.
+    # One attempt per send, failing at a short read timeout: the SDK's retries
+    # and its 100 s read timeout are not what is tested.
     monkeypatch.setattr(
         retry_decorator,
         "opik_rest_retry",
         tenacity.retry(stop=tenacity.stop_after_attempt(1), reraise=True),
     )
+    monkeypatch.setattr(httpx_client, "READ_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(opik_client, "_global_singleton", None)
-    url = f"http://127.0.0.1:{backends[0].port}"
     settings = SimpleNamespace(
-        observability=ObservabilitySettings(opik_enabled=True, opik_url_override=url)
+        observability=ObservabilitySettings(
+            opik_enabled=True, opik_url_override=backend.url
+        )
     )
     record = opik_sdk.configure(settings)
-    assert record.configured and record.ping_interval_s == opik_sdk.PING_INTERVAL_S
+    assert record.ping_interval_s == opik_sdk.SDK_PING_INTERVAL_S
 
     client = opik_sdk.cached_client()
     atexit.unregister(client.end)
+    monitor = opik_sdk.replay_monitor(client)
+    assert monitor.ping_interval == opik_sdk.SDK_PING_INTERVAL_S
+    _until(lambda: monitor.last_beat == clock.now, "the monitor's first ping")
     yield client
+    backend.release()
     client.end(timeout=1)
 
 
-def test_a_parked_trace_is_resent_at_the_next_ping(backends, client):
-    monitor = opik_sdk.replay_monitor(client)
-    assert monitor.ping_interval == SDK_DEFAULT
-    _until(lambda: monitor.last_beat > float("-inf"), "the monitor's first ping")
-    port = backends[0].port
-    backends[0].stop()
+def _ping(clock):
+    """One interval of the SDK's own passes: the monitor pings at its next tick."""
+    clock.now += opik_sdk.SDK_PING_INTERVAL_S
 
+
+def _park(backend, client):
+    """One send of a trace fails, so the SDK parks it."""
+    backend.accepting = False
     client.trace(name=MARK)
     client.flush(timeout=10)
     assert opik_sdk.connection_state() == ("disconnected", 1)
 
-    backends.append(_Backend(port))
-    # One interval of the SDK's default passes since the last ping, no sleep.
-    monitor.last_beat -= SDK_DEFAULT
 
-    _until(backends[1].received.is_set, "the replay of the parked trace")
+def _eraser(client):
+    return LLMTraceEraser("faultmaven", client_factory=lambda: client)
+
+
+def test_a_parked_trace_is_resent_at_the_next_ping(backend, client, clock):
+    _park(backend, client)
+    backend.accepting = True
+
+    _ping(clock)
+
+    _until(backend.received.is_set, "the replay of the parked trace")
     _until(
         lambda: opik_sdk.connection_state() == ("connected", 0),
         "the parked count clearing",
     )
+
+
+class TestAPingRacingTheDeletesFlush:
+    async def test_a_failed_ping_while_the_replay_is_delivered_lets_it_proceed(
+        self, backend, client, clock
+    ):
+        """The monitor's ping fails mid-flush and lowers the flag, while the
+        replayed trace is delivered: nothing is parked, so the delete runs."""
+        monitor = opik_sdk.replay_monitor(client)
+        _park(backend, client)
+
+        def ping_fails_mid_send():
+            backend.ping_ok = False
+            _ping(clock)
+            _until(lambda: not monitor.has_server_connection, "the failed ping")
+
+        backend.on_delivery = ping_fails_mid_send
+        backend.accepting = True
+
+        assert await _eraser(client).erase_case(CASE, ENTERPRISE) == 0
+
+        assert backend.received.is_set()
+        assert opik_sdk.connection_state() == ("disconnected", 0)
+
+    async def test_a_good_ping_before_the_monitors_replay_refuses(
+        self, backend, client, clock, monkeypatch
+    ):
+        """The flush's send fails, then a good ping raises the flag before the
+        monitor replays the trace, which would land after the search."""
+        monitor = opik_sdk.replay_monitor(client)
+        manager = client._streamer._fallback_replay_manager
+        decided = threading.Event()
+        real_replay, real_flush = manager._replay_failed_messages, client.flush
+
+        def replay():
+            if threading.current_thread() is manager:
+                decided.wait(10)
+            real_replay()
+
+        def flush(timeout=None):
+            flushed = real_flush(timeout=timeout)
+            _ping(clock)
+            _until(lambda: monitor.has_server_connection, "the good ping")
+            return flushed
+
+        monkeypatch.setattr(manager, "_replay_failed_messages", replay)
+        monkeypatch.setattr(client, "flush", flush)
+        backend.accepting = False
+        client.trace(name=MARK)
+
+        try:
+            with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
+                await _eraser(client).erase_case(CASE, ENTERPRISE)
+            assert opik_sdk.connection_state() == ("connected", 1)
+        finally:
+            backend.accepting = True
+            decided.set()
+        _until(backend.received.is_set, "the monitor's replay")
