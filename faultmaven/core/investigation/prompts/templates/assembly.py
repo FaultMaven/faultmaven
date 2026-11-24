@@ -36,7 +36,6 @@ from faultmaven.modules.case.contracts import (
 from .blocks import (
     _DIAGNOSTIC_REASONING_BLOCK,
     _OBSERVATION_TIME_BLOCK,
-    _WORKING_VOCABULARY_RULE,
     AGENT_META_INSTRUCTIONS,
     evidence_grounding_block,
     knowledge_query_instructions,
@@ -637,11 +636,9 @@ def get_prompt_for_case(
             # what a re-cited file carries is ABSENCE (#512). Keep the
             # definition on those turns and nothing else from the block: a
             # general-knowledge answer still must not go hunting case evidence,
-            # which is what the waiver is for. The working-vocabulary rule
-            # stays too: the base still names the ROOT-CAUSE TEST on those
-            # turns, and the reply is still the user's to read (#2494).
+            # which is what the waiver is for.
             evidence_grounding = (
-                _OBSERVATION_TIME_BLOCK + "\n" + _WORKING_VOCABULARY_RULE + "\n\n"
+                _OBSERVATION_TIME_BLOCK
                 if waive_grounding
                 else evidence_grounding_block(given_tools)
             )

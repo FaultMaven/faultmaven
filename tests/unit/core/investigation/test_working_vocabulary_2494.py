@@ -33,20 +33,26 @@ from faultmaven.core.investigation.prompts.templates.blocks import (
     _WORKING_VOCABULARY_RULE,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
+    DEGRADED_NO_TOOLS_NOTICE,
     get_fallback_prompt_for_case,
 )
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
     InvestigationActionType,
     InvestigationStage,
     MitigationRecord,
     ProblemStatus,
     ProposedAction,
 )
+from faultmaven.modules.case.domain.models.solution import Solution, SolutionType
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from tests.case_builders import inquiry_case, investigating_case
-from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
+from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN, NO_TOOLS
 
 pytestmark = pytest.mark.unit
 
@@ -66,10 +72,6 @@ _WITHDRAWN = render_notice(
     NoticeCode.SOLUTION_OFFER_WITHDRAWN, {"held_open": True}, None, []
 )[0]
 _INQUIRY_NOTICE = "SYSTEM: proposed_problem_statement was not recorded: it was empty."
-
-
-def _flat(text: str) -> str:
-    return " ".join(text.split())
 
 
 def _shows_the_test(text: str) -> bool:
@@ -107,88 +109,65 @@ def _with_notice(case: Case, notice: str) -> Case:
     return case
 
 
-# ---------------------------------------------------------------------------
-# The rule
-# ---------------------------------------------------------------------------
-
-
-def test_the_property_is_stated_once_and_the_full_rule_adds_examples():
-    prop = _flat(_WORKING_VOCABULARY_PROPERTY)
-    assert "NEVER let WORKING VOCABULARY reach the user" in prop
-    assert (
-        "a term that takes its meaning only from this prompt, or that names "
-        "FaultMaven's own machinery" in prop
-    )
-    assert "Say the reasoning in plain words" in prop
-    # The full rule is the property plus examples, never a restatement.
-    assert _WORKING_VOCABULARY_RULE.startswith(_WORKING_VOCABULARY_PROPERTY)
-    text = _flat(_WORKING_VOCABULARY_RULE[len(_WORKING_VOCABULARY_PROPERTY) :])
-    assert "takes its meaning" not in text
-    # Every channel the user reads.
-    for field in ("agent_response", "suggested_follow_ups", "any action you propose"):
-        assert field in text
-    # The test's name, its alias and its clause letters are the examples.
-    assert 'the ROOT-CAUSE TEST, its alias "why-stopping" and its clause letters' in (
-        text
-    )
-    # The ruling's unacceptable words, and its acceptable ones.
-    for term in ('"WORKAROUND" as a label', '"SYSTEM:"', '"the engine"'):
-        assert term in text
-    assert '"intercept" or "interception" as a category name' in text
-    assert (
-        'A lower-case "workaround", or "intercept" as an ordinary verb in a '
-        "sentence that stands on its own, is plain words" in text
-    )
-    # Both are .format()-ed into templates.
-    assert "{" not in _WORKING_VOCABULARY_RULE and "}" not in _WORKING_VOCABULARY_RULE
-
-
-def test_the_test_points_at_the_rule():
-    last = _flat(_ROOT_CAUSE_TEST_BLOCK.splitlines()[-2] + " ")
-    last += _flat(_ROOT_CAUSE_TEST_BLOCK.splitlines()[-1])
-    assert 'alias "why-stopping" and its clause letters are WORKING' in last
-    assert "they never reach the user (see that rule)" in last
-    assert "{" not in _ROOT_CAUSE_TEST_BLOCK and "}" not in _ROOT_CAUSE_TEST_BLOCK
-
-
-# ---------------------------------------------------------------------------
-# Every prompt that shows the test carries the rule
-# ---------------------------------------------------------------------------
-
-
 def _terminal(state: CaseState) -> Case:
+    """A terminal case with a hypothesis and a solution on record."""
+    case = _case()
+    hyp = Hypothesis(
+        statement="A schema cache grows without bound",
+        category=HypothesisCategory.CONFIG,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=2,
+        rationale="r",
+        state=HypothesisState.VALIDATED,
+    )
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    case.solutions = [
+        Solution(
+            solution_type=SolutionType.CONFIG_CHANGE,
+            title="Bound the schema cache",
+            longterm_fix="Cap the cache and evict the oldest entries.",
+        )
+    ]
     stamp = "resolved_at" if state == CaseState.RESOLVED else "closed_at"
     update = {"state": state, stamp: datetime.now(UTC)}
     if state == CaseState.CLOSED:
         update["closure_reason"] = "solution_deferred"
-    return _case().model_copy(update=update)
+    return case.model_copy(update=update)
 
 
 def _render(key: str) -> str:
-    """One prompt of the matrix. The open-case ones carry the previous turn's
-    notice: the held-open withdrawal, which names the test, while
-    investigating; a "SYSTEM:" line in inquiry."""
+    """One prompt of the matrix, keyed ``<kind>:<case>[/<mode>]``. The
+    open-case ones carry the previous turn's notice: the held-open withdrawal,
+    which names the test, while investigating; a "SYSTEM:" line in inquiry.
+    ``degraded`` is the #662 recovery: the fallback for no tools, plus its
+    notice."""
     kind, _, rest = key.partition(":")
-    build = get_fallback_prompt_for_case if kind == "fallback" else get_prompt_for_case
-    if rest.startswith("inquiry"):
+    name, _, mode = rest.partition("/")
+    if name == "inquiry":
         case = _with_notice(
             inquiry_case(statement="Pods are OOM-killed"), _INQUIRY_NOTICE
         )
-    elif rest in ("resolved", "closed"):
-        case = _terminal(CaseState(rest))
+    elif name in ("resolved", "closed"):
+        case = _terminal(CaseState(name))
     else:
-        case = _with_notice(_case(rest.partition("/")[0]), _WITHDRAWN)
-    mode = rest.partition("/")[2] or None
-    if kind == "fallback":
-        return build(case, "what now?", given_tools=DEFAULT_GIVEN)
-    return build(case, "what now?", processing_mode=mode, given_tools=DEFAULT_GIVEN)
+        case = _with_notice(_case(name), _WITHDRAWN)
+    if kind == "main":
+        return get_prompt_for_case(
+            case, "what now?", processing_mode=mode or None, given_tools=DEFAULT_GIVEN
+        )
+    given = DEFAULT_GIVEN if kind == "fallback" and mode != "no_tools" else NO_TOOLS
+    prompt = get_fallback_prompt_for_case(case, "what now?", given_tools=given)
+    return prompt + DEGRADED_NO_TOOLS_NOTICE if kind == "degraded" else prompt
 
 
 _OPEN = [f"main:{s}/{m}" for s in _STAGES for m in _MODES] + [
     "main:inquiry",
     "main:inquiry/agent_meta",
     "fallback:diagnosis",
+    "fallback:diagnosis/no_tools",
+    "degraded:diagnosis",
     "fallback:inquiry",
+    "degraded:inquiry",
 ]
 _TERMINAL = [f"{k}:{s}" for k in ("main", "fallback") for s in ("resolved", "closed")]
 
@@ -197,8 +176,7 @@ _TERMINAL = [f"{k}:{s}" for k in ("main", "fallback") for s in ("resolved", "clo
 def test_every_prompt_that_shows_a_named_term_carries_the_property_once(key):
     """Main prompts carry the full rule, the size-bounded fallbacks the
     property alone. The rule names the terms itself, so what the prompt shows
-    is read with it taken out. Knowledge-query and meta turns waive the
-    grounding block the rule sits in, yet the base still names the test."""
+    is read with it taken out."""
     prompt = _render(key)
     bare = prompt.replace(_WORKING_VOCABULARY_RULE, "").replace(
         _WORKING_VOCABULARY_PROPERTY, ""
@@ -209,7 +187,17 @@ def test_every_prompt_that_shows_a_named_term_carries_the_property_once(key):
     if shown:
         assert prompt.count(_WORKING_VOCABULARY_PROPERTY) == 1
         full = prompt.count(_WORKING_VOCABULARY_RULE)
-        assert full == (0 if key.startswith("fallback:") else 1)
+        assert full == (1 if key.startswith("main:") else 0)
+
+
+def test_the_full_rule_composes_the_property_and_the_test_points_at_it():
+    """One statement in two sizes, never restated; the test block's last line
+    names the rule's heading and claims nothing of its own."""
+    heading, _, rest = _WORKING_VOCABULARY_RULE.partition(": ")
+    assert rest.startswith(_WORKING_VOCABULARY_PROPERTY)
+    assert _ROOT_CAUSE_TEST_BLOCK.splitlines()[-1].endswith(f"see {heading}.")
+    for text in (_WORKING_VOCABULARY_RULE, _ROOT_CAUSE_TEST_BLOCK):
+        assert "{" not in text and "}" not in text
 
 
 @pytest.mark.parametrize("key", ["main:diagnosis/triage", "fallback:diagnosis"])

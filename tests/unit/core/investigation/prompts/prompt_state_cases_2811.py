@@ -24,6 +24,15 @@ resolution lines. Its output on ``main`` is
 ``render_all`` with this file copied into a ``git archive`` extract of that
 commit, never typed by hand. The clock is frozen at ``NOW`` while a fixture
 is built and rendered (``frozen``).
+
+#2494 re-rendered the four entries that carry the resolve-decline chip sentences,
+by hand: each equalled its stored entry on ``main`` at ``68ec0ac01``, and on
+the #2494 branch the sentences name the chip as "the 'Mark it resolved' button
+under your reply" (and "the 'Close without resolving' button"), and the
+chip feedback reads "The 'Mark it resolved' and 'Close without resolving'
+buttons are attached under this reply.", in place of "the engine's ...
+action" and "The engine has attached its ... actions to this reply.". The rest
+of each entry is unchanged. No other entry's render differed.
 """
 
 from __future__ import annotations

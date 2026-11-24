@@ -1088,7 +1088,8 @@ class TestThePointersFollowTheChips:
         feedback = reask_feedback(self._declined(on_hold=on_hold))
         assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
         assert (RESOLVE_DECLINED_ACTIONS in feedback) is not on_hold
-        assert ("attached its 'Mark it resolved'" in feedback) is not on_hold
+        attached = "'Close without resolving' buttons are attached"
+        assert (attached in feedback) is not on_hold
 
 
 # ---------------------------------------------------------------------------

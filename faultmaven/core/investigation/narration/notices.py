@@ -52,11 +52,11 @@ RESOLVE_DECLINED_RULE = (
 #: offer leaves both off.
 RESOLVE_DECLINED_REOPEN_ACTION = (
     "A user who changes their mind without a new verification uses the "
-    "engine's 'Mark it resolved' action: point them to it."
+    "'Mark it resolved' button under your reply: point them to it."
 )
 RESOLVE_DECLINED_CLOSE_ACTION = (
-    "A user who wants to close the case instead uses the engine's 'Close "
-    "without resolving' action: point them to it."
+    "A user who wants to close the case instead uses the 'Close without "
+    "resolving' button under your reply: point them to it."
 )
 RESOLVE_DECLINED_ACTIONS = (
     f"{RESOLVE_DECLINED_REOPEN_ACTION} {RESOLVE_DECLINED_CLOSE_ACTION}"
@@ -175,8 +175,8 @@ DECLINED_RESOLVE_FEEDBACK = (
 
 #: Added to it only when the reply carries the engine's two chips (#2472).
 _DECLINED_RESOLVE_CHIPS_FEEDBACK = (
-    "The engine has attached its 'Mark it resolved' and 'Close without "
-    "resolving' actions to this reply."
+    "The 'Mark it resolved' and 'Close without resolving' buttons are "
+    "attached under this reply."
 )
 
 

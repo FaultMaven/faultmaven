@@ -465,10 +465,9 @@ WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION:
 # proposed resolving on a renewal. One copy, in the investigation base: the
 # sites that decide a node is the root (chain emission and re-rooting, runbook
 # Cause attribution, proposing the remediation, recording causal absence) name
-# it as "the ROOT-CAUSE TEST" rather than restating it. That name is the
-# model's working vocabulary, never the user's: the block ends by pointing at
-# ``_WORKING_VOCABULARY_RULE`` (#2494). No braces: the base template is
-# .format()-ed.
+# it as "the ROOT-CAUSE TEST" rather than restating it; the name is the
+# model's, never the user's (WORKING VOCABULARY, #2494). No braces: the base
+# template is .format()-ed.
 _ROOT_CAUSE_TEST_BLOCK = """\
 ROOT-CAUSE TEST (the why-stopping rule):
 A cause is the ROOT CAUSE only when it passes BOTH clauses:
@@ -502,8 +501,7 @@ intercept it there: say so, and set `verification_updates.rca_infeasible`
 true with an `rca_infeasible_rationale` saying why. Once the interception is
 verified, FaultMaven offers to close on the symptom's absence instead of waiting
 for a root it cannot reach.
-This test's name, its alias "why-stopping" and its clause letters are WORKING
-VOCABULARY: they never reach the user (see that rule).\
+Naming this test to the user: see WORKING VOCABULARY.\
 """
 
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
@@ -701,6 +699,26 @@ about the user's intent, do NOT fire the state change. Instead:
 # it. INQUIRY, the fallback stub and TERMINAL do not (the design doc's
 # outcome-statement paragraph says why). The engine's "**Case record:**" line
 # under the reply is what keeps its promise.
+# What the user reads takes its meaning from the conversation alone (#2494):
+# replies named the ROOT-CAUSE TEST and its clauses to a user who never saw
+# them. A property, not a word list. The reduced fallbacks carry the property
+# alone (their size is bounded); the investigation and inquiry prompts carry the
+# full rule, the property plus examples. No braces: templates are .format()-ed.
+_WORKING_VOCABULARY_PROPERTY = """\
+Use plain words with the user, never a term defined only here or in the schema,
+or naming FaultMaven's machinery, unless they ask about FaultMaven."""
+_WORKING_VOCABULARY_RULE = (
+    "WORKING VOCABULARY: "
+    + _WORKING_VOCABULARY_PROPERTY
+    + """ That covers every text the user reads, the statements you record
+included. For example: the ROOT-CAUSE TEST, its alias "why-stopping" and its
+clause letters; "WORKAROUND" as a label; "SYSTEM:"; "the engine"; "intercept"
+or "interception" as a category name. Say "a restart only clears it until it
+builds up again", not "it fails clause (b)". A lower-case "workaround", or
+"intercept" as an ordinary verb in a sentence that stands on its own, is plain
+words."""
+)
+
 _OUTCOME_FIELDS_RULE = (
     "State that the problem is confirmed or that a root cause is identified "
     "only through the structured fields; the engine states what the case "
@@ -841,37 +859,7 @@ ABSOLUTELY FORBIDDEN:
 - NEVER claim to have accessed, "looked at", or "checked" data, systems, or
   services you did not receive in evidence context"""
 
-# What the user reads takes its meaning from the conversation alone (#2494).
-# The prompt names its own rules as shorthand (the ROOT-CAUSE TEST, its
-# clauses), and replies repeated them to a user who has never seen the rule.
-# Stated as a property, with examples, not as a word list: a list would ban
-# plain English and miss the next private term. Two sizes, one statement: the
-# property alone, for the reduced fallbacks (``templates/fallback.py``), whose
-# size is bounded (test_fenced_channels.py, a third of min_viable); and the
-# full rule, the property plus its examples, rendered once in every other
-# prompt that shows a term it names: beside the id rule below, on the
-# investigation turns that waive grounding (``templates/assembly.py``) and in
-# the inquiry prompt (``templates/inquiry.py``). No braces: those templates
-# are .format()-ed.
-_WORKING_VOCABULARY_PROPERTY = """\
-- NEVER let WORKING VOCABULARY reach the user: a term that takes its meaning
-  only from this prompt, or that names FaultMaven's own machinery. Say the
-  reasoning in plain words."""
-
-_WORKING_VOCABULARY_RULE = (
-    _WORKING_VOCABULARY_PROPERTY + """ This covers agent_response and the text of
-  suggested_follow_ups and of any action you propose; the user has never seen
-  this prompt. For example: the ROOT-CAUSE TEST, its alias "why-stopping" and
-  its clause letters ("fails clause (b)"); "WORKAROUND" as a label; "SYSTEM:";
-  "the engine"; "intercept" or "interception" as a category name. Plain words
-  instead: "a larger limit only delays the crash, because the classes keep
-  being generated and nothing frees them". A lower-case "workaround", or
-  "intercept" as an ordinary verb in a sentence that stands on its own, is
-  plain words."""
-)
-
-_GROUNDING_FORBIDDEN_REST = (
-    """
+_GROUNDING_FORBIDDEN_REST = """
 - NEVER assert or infer specific system details (values, names, configurations)
   not explicitly present in the sources above. Speculative hedges ("probably",
   "likely", "typically") do not exempt you from this rule.
@@ -887,9 +875,6 @@ _GROUNDING_FORBIDDEN_REST = (
   The user cannot see these. Use the evidence label attribute instead (e.g., "in
   the nginx error log", "in the pasted stack trace"), and restate a hypothesis
   in words. IDs are only for state_updates and evidence_trail fields.
-"""
-    + _WORKING_VOCABULARY_RULE
-    + """
 
 CONFIDENCE MARKERS (per-evidence signal quality):
 - An evidence tag carrying `confidence="low"` means the classifier was unsure
@@ -897,7 +882,6 @@ CONFIDENCE MARKERS (per-evidence signal quality):
   that doesn't reflect the actual content. Treat its file_extract as
   tentative — do not assert specific findings from it ("the logs show X")
   without first confirming """
-)
 
 _RECLASSIFICATION_WITH_TOOL = """\
 RECLASSIFICATION:
@@ -908,7 +892,7 @@ RECLASSIFICATION:
   tag; the data_type must be one of the DataType enum values.
 - After a successful reclassification, the re-extracted structural index
   replaces the old one on the next turn. Reference the update briefly in
-  your response ("reclassified as logs_and_errors") so the user sees the
+  your response ("I'll treat server.log as a log file now") so the user sees the
   correction landed.
 """
 
