@@ -1,5 +1,6 @@
 import logging
 import re
+from bisect import bisect_right
 from typing import Any
 
 from faultmaven.core.investigation.schemas import StateDrop
@@ -170,8 +171,8 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
 # claim of its kind, conditionals and a copied "**Case record:**" clause
 # included, so the count is an upper bound.
 # The names are the counter's closed ``set`` label values.
-# An auxiliary may carry one adverb before or after "been" ("has now been",
-# "was finally", "is now").
+# An auxiliary may carry up to two adverbs, one before and one after "been"
+# ("has now been", "was finally", "is now", "has now been fully").
 _ADV = r"(?:now|finally|also|still|already|indeed|\w+ly)"
 _AUX = rf"(?:is|was|has(?: {_ADV})? been)(?: {_ADV})?"
 OUTCOME_PROSE_SETS: dict[str, re.Pattern[str]] = {
@@ -213,11 +214,14 @@ def outcome_prose_sets(agent_text: str | None) -> tuple[str, ...]:
     """The outcome-prose sets *agent_text* states unnegated, each once, in
     ``OUTCOME_PROSE_SETS`` order (#2811 S2c-3b)."""
     text = agent_text or ""
+    # Each clause break's end, found once per reply: a match's clause starts
+    # at the last end at or before it (linear in the reply, not per match).
+    ends = [b.end() for b in _CLAUSE_BREAK.finditer(text)]
     found = []
     for name, pattern in OUTCOME_PROSE_SETS.items():
         for match in pattern.finditer(text):
-            breaks = _CLAUSE_BREAK.finditer(text, 0, match.start())
-            start = max((b.end() for b in breaks), default=0)
+            i = bisect_right(ends, match.start())
+            start = ends[i - 1] if i else 0
             if not _OUTCOME_PROSE_NEGATIONS.search(text, start, match.start()):
                 found.append(name)
                 break

@@ -20,7 +20,10 @@ import pytest
 
 from faultmaven.config.settings import get_settings
 from faultmaven.core.investigation import lifecycle_metrics
-from faultmaven.core.investigation.milestone_engine import turn_completion
+from faultmaven.core.investigation.milestone_engine import (
+    response_synthesis,
+    turn_completion,
+)
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.milestone_engine.errors import MilestoneEngineError
 from faultmaven.core.investigation.milestone_engine.response_synthesis import (
@@ -122,6 +125,34 @@ def test_a_negation_in_an_earlier_clause_does_not_hide_a_claim(text, sets):
 )
 def test_an_auxiliary_with_an_adverb_and_the_hyphenated_form_count(text, sets):
     assert outcome_prose_sets(text) == sets
+
+
+class _CountingBreaks:
+    """``_CLAUSE_BREAK`` that counts the characters each scan reads."""
+
+    def __init__(self, pattern):
+        self.pattern = pattern
+        self.scans = 0
+        self.scanned = 0
+
+    def finditer(self, text, pos=0, endpos=None):
+        end = len(text) if endpos is None else endpos
+        self.scans += 1
+        self.scanned += end - pos
+        return self.pattern.finditer(text, pos, end)
+
+
+@pytest.mark.parametrize("negated", [10, 200])
+def test_the_clause_breaks_are_scanned_once_per_reply(monkeypatch, negated):
+    """The #3045 delta: every negated match re-scanned the reply from its
+    start, quadratic in a looping reply. The breaks are found in one pass,
+    however many matches the negation check reads."""
+    breaks = _CountingBreaks(response_synthesis._CLAUSE_BREAK)
+    monkeypatch.setattr(response_synthesis, "_CLAUSE_BREAK", breaks)
+    text = "not the issue is resolved " * negated + ". The root cause is confirmed."
+
+    assert outcome_prose_sets(text) == ("root_cause",)
+    assert (breaks.scans, breaks.scanned) == (1, len(text))
 
 
 def test_a_copied_engine_clause_counts():
