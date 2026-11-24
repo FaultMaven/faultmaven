@@ -151,6 +151,20 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.15.1",
+        level="PATCH",
+        title=(
+            "`POST /cases/{case_id}/turns`: the 503 `DATABASE_UNAVAILABLE` "
+            "detail names an unreachable database as well as a timeout (#3056)."
+        ),
+        body=r"""Corrects 15.15.0, which sent a refused database connection to the turn
+route's 503 without changing its detail. The detail said "The database did not
+answer in time", even when the database refused the connection. It now reads
+"The database could not be reached or did not answer in time, so this request
+was not saved. Please retry shortly." No status, code, header or schema
+changed. Clients branch on `x-error-code`, never on the text.""",
+    ),
+    ContractChange(
         version="15.15.0",
         level="MINOR",
         title=(
