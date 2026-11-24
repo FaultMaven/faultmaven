@@ -2,10 +2,13 @@
 
 Replies repeated the prompt's private shorthand ("fails clause (b) of the
 Root-Cause Test") to a user who has never seen the rule. One rule, stated as a
-property, is in every prompt that shows the test's name, alias or clause
-letters, and each emitter of the name outside the templates (the held-open
-withdrawal notice, the M5 downgrade reason, the response schemas) renders only
-into such a prompt.
+property, is in every prompt that shows a term it names ("ROOT-CAUSE TEST",
+"why-stopping", "the engine", "SYSTEM:", "WORKAROUND"), exactly once: in full
+with its examples in the main prompts, as the property alone in the
+size-bounded fallbacks. Each emitter of the test's name outside the templates
+(the held-open withdrawal notice, the M5 downgrade reason, the response
+schemas) renders only into such a prompt. The terms stay in the model-facing
+text: they are the model's vocabulary.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from faultmaven.core.investigation.prompts.templates.assembly import (
 )
 from faultmaven.core.investigation.prompts.templates.blocks import (
     _ROOT_CAUSE_TEST_BLOCK,
+    _WORKING_VOCABULARY_PROPERTY,
     _WORKING_VOCABULARY_RULE,
 )
 from faultmaven.core.investigation.prompts.templates.fallback import (
@@ -33,6 +37,7 @@ from faultmaven.core.investigation.prompts.templates.fallback import (
 )
 from faultmaven.modules.case.contracts import (
     Case,
+    CaseState,
     InvestigationActionType,
     InvestigationStage,
     MitigationRecord,
@@ -40,15 +45,27 @@ from faultmaven.modules.case.contracts import (
     ProposedAction,
 )
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
-from tests.case_builders import investigating_case
+from tests.case_builders import inquiry_case, investigating_case
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
 #: How the prompt spells the test, its alias and its clauses.
 _TEST_TERMS = ("ROOT-CAUSE TEST", "why-stopping", "clause (b)", "clause b")
+#: The terms the rule names that the model-facing text shows.
+_NAMED_TERMS = (
+    "ROOT-CAUSE TEST",
+    "why-stopping",
+    "the engine",
+    "SYSTEM:",
+    "WORKAROUND",
+)
 _STAGES = ("diagnosis", "mitigation", "treatment")
 _MODES = ("triage", "directed_analysis", "knowledge_query", "agent_meta")
+_WITHDRAWN = render_notice(
+    NoticeCode.SOLUTION_OFFER_WITHDRAWN, {"held_open": True}, None, []
+)[0]
+_INQUIRY_NOTICE = "SYSTEM: proposed_problem_statement was not recorded: it was empty."
 
 
 def _flat(text: str) -> str:
@@ -95,13 +112,18 @@ def _with_notice(case: Case, notice: str) -> Case:
 # ---------------------------------------------------------------------------
 
 
-def test_the_rule_is_a_property_with_the_test_as_its_example():
-    text = _flat(_WORKING_VOCABULARY_RULE)
-    assert "NEVER put working vocabulary in what the user reads" in text
+def test_the_property_is_stated_once_and_the_full_rule_adds_examples():
+    prop = _flat(_WORKING_VOCABULARY_PROPERTY)
+    assert "NEVER let WORKING VOCABULARY reach the user" in prop
     assert (
         "a term that takes its meaning only from this prompt, or that names "
-        "FaultMaven's own machinery" in text
+        "FaultMaven's own machinery" in prop
     )
+    assert "Say the reasoning in plain words" in prop
+    # The full rule is the property plus examples, never a restatement.
+    assert _WORKING_VOCABULARY_RULE.startswith(_WORKING_VOCABULARY_PROPERTY)
+    text = _flat(_WORKING_VOCABULARY_RULE[len(_WORKING_VOCABULARY_PROPERTY) :])
+    assert "takes its meaning" not in text
     # Every channel the user reads.
     for field in ("agent_response", "suggested_follow_ups", "any action you propose"):
         assert field in text
@@ -117,9 +139,7 @@ def test_the_rule_is_a_property_with_the_test_as_its_example():
         'A lower-case "workaround", or "intercept" as an ordinary verb in a '
         "sentence that stands on its own, is plain words" in text
     )
-    # The reasoning stays, in plain words.
-    assert "Say the reasoning in plain words instead" in text
-    # It is .format()-ed into the base's slot and into the fallback template.
+    # Both are .format()-ed into templates.
     assert "{" not in _WORKING_VOCABULARY_RULE and "}" not in _WORKING_VOCABULARY_RULE
 
 
@@ -136,30 +156,69 @@ def test_the_test_points_at_the_rule():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("stage", _STAGES)
-@pytest.mark.parametrize("mode", _MODES)
-def test_every_investigating_prompt_carries_the_rule(stage, mode):
-    """The knowledge-query and meta turns waive the grounding block the rule
-    sits in, but the base still names the test on them."""
-    prompt = get_prompt_for_case(
-        _case(stage), "what now?", processing_mode=mode, given_tools=DEFAULT_GIVEN
+def _terminal(state: CaseState) -> Case:
+    stamp = "resolved_at" if state == CaseState.RESOLVED else "closed_at"
+    update = {"state": state, stamp: datetime.now(UTC)}
+    if state == CaseState.CLOSED:
+        update["closure_reason"] = "solution_deferred"
+    return _case().model_copy(update=update)
+
+
+def _render(key: str) -> str:
+    """One prompt of the matrix. The open-case ones carry the previous turn's
+    notice: the held-open withdrawal, which names the test, while
+    investigating; a "SYSTEM:" line in inquiry."""
+    kind, _, rest = key.partition(":")
+    build = get_fallback_prompt_for_case if kind == "fallback" else get_prompt_for_case
+    if rest.startswith("inquiry"):
+        case = _with_notice(
+            inquiry_case(statement="Pods are OOM-killed"), _INQUIRY_NOTICE
+        )
+    elif rest in ("resolved", "closed"):
+        case = _terminal(CaseState(rest))
+    else:
+        case = _with_notice(_case(rest.partition("/")[0]), _WITHDRAWN)
+    mode = rest.partition("/")[2] or None
+    if kind == "fallback":
+        return build(case, "what now?", given_tools=DEFAULT_GIVEN)
+    return build(case, "what now?", processing_mode=mode, given_tools=DEFAULT_GIVEN)
+
+
+_OPEN = [f"main:{s}/{m}" for s in _STAGES for m in _MODES] + [
+    "main:inquiry",
+    "main:inquiry/agent_meta",
+    "fallback:diagnosis",
+    "fallback:inquiry",
+]
+_TERMINAL = [f"{k}:{s}" for k in ("main", "fallback") for s in ("resolved", "closed")]
+
+
+@pytest.mark.parametrize("key", _OPEN + _TERMINAL)
+def test_every_prompt_that_shows_a_named_term_carries_the_property_once(key):
+    """Main prompts carry the full rule, the size-bounded fallbacks the
+    property alone. The rule names the terms itself, so what the prompt shows
+    is read with it taken out. Knowledge-query and meta turns waive the
+    grounding block the rule sits in, yet the base still names the test."""
+    prompt = _render(key)
+    bare = prompt.replace(_WORKING_VOCABULARY_RULE, "").replace(
+        _WORKING_VOCABULARY_PROPERTY, ""
     )
-    assert _shows_the_test(prompt)
-    assert prompt.count(_WORKING_VOCABULARY_RULE) == 1
+    shown = [t for t in _NAMED_TERMS if t in bare]
+    # The open-case prompts show one (the matrix bites); terminal ones none.
+    assert bool(shown) == (key in _OPEN)
+    if shown:
+        assert prompt.count(_WORKING_VOCABULARY_PROPERTY) == 1
+        full = prompt.count(_WORKING_VOCABULARY_RULE)
+        assert full == (0 if key.startswith("fallback:") else 1)
 
 
-@pytest.mark.parametrize("fallback", [False, True])
-def test_the_held_open_withdrawal_reaches_only_prompts_with_the_rule(fallback):
+@pytest.mark.parametrize("key", ["main:diagnosis/triage", "fallback:diagnosis"])
+def test_the_held_open_withdrawal_reaches_only_prompts_with_the_rule(key):
     """The fallback has no ROOT-CAUSE TEST block, but the previous turn's
     held-open withdrawal names the test (critique 1(b), amendment 4)."""
-    (notice,) = render_notice(
-        NoticeCode.SOLUTION_OFFER_WITHDRAWN, {"held_open": True}, None, []
-    )
-    case = _with_notice(_case(), notice)
-    build = get_fallback_prompt_for_case if fallback else get_prompt_for_case
-    prompt = build(case, "what now?", given_tools=DEFAULT_GIVEN)
+    prompt = _render(key)
     assert "ROOT-CAUSE TEST, clause b" in prompt
-    assert _WORKING_VOCABULARY_RULE in prompt
+    assert _WORKING_VOCABULARY_PROPERTY in prompt
 
 
 def test_the_why_open_downgrade_reason_reaches_a_prompt_with_the_rule():
