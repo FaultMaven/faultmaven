@@ -188,7 +188,12 @@ async def _apply_turn_response(
     early = {key: metadata[key] for key in SYSTEM_NOTICE_KEYS if key in metadata}
     early_repairs = list(metadata.get("validation_repairs") or [])
     early_decisions = list(metadata.get(DECISIONS_KEY) or [])
+    # A transition made before the LLM call (a Gate 1 section 0c committed,
+    # #3048) is this turn's, and the response's fresh ``False`` does not undo it.
+    transitioned_early = bool(metadata.get("status_transitioned"))
     metadata.update(response_metadata)
+    if transitioned_early:
+        metadata["status_transitioned"] = True
     if early.get("system_notices"):
         for key in SYSTEM_NOTICE_KEYS:
             metadata.pop(key, None)
@@ -254,7 +259,9 @@ async def _apply_turn_response(
     #
     # ``status_transitioned`` is one of the arms
     # ``check_if_progress_made`` scores, and ``_check_automatic_transitions``
-    # is its only writer on this path — five lines AFTER the read above.
+    # writes it on this path — five lines AFTER the read above. (A Gate 1 that
+    # section 0c commits transitions before the LLM call, and the flag is
+    # carried across the merge above, #3048.)
     # So an automatic INQUIRY→INVESTIGATING transition never counted as
     # progress, and ``turns_without_progress`` climbed through a turn
     # that demonstrably advanced the case. Measured on the local corpus

@@ -22,7 +22,10 @@ investigation code changed between them; the other 93 entries re-captured
 identical). #3046 S3a-2 (the deciders read the record's carried FAILED
 verdicts) regenerated, with this generator on its branch, the entries of
 the fixtures it changes on purpose: ``2595_unkinded_failure_rebound`` and
-``D:carried_turn``. The clock is frozen while a fixture is built and
+``D:carried_turn``. #3048 (the turn that commits Gate 1 runs as
+INVESTIGATING) regenerated ``gate_one`` the same way: its confirming click is
+now the first INVESTIGATING turn, which seeds the problem node ``D``, so its
+graph block renders. The clock is frozen while a fixture is built and
 rendered.
 """
 

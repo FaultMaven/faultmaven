@@ -869,14 +869,14 @@ class ResponseApplier:
         # Consent binds to the wording the user was SHOWN, so a revision that
         # arrives on a consent turn is not applied. Two shapes reach here:
         #
-        #   - The DECIDE click. Section 0c has already set
-        #     ``problem_statement_confirmed`` earlier in THIS turn, and the
-        #     turn still renders an InquiryResponse. Without this guard the
-        #     LLM's same-turn rewording replaced the statement after consent
-        #     and ``_transition_to_investigating`` copied the new text into
-        #     ``case.description`` — framing the investigation on wording the
-        #     user never saw, which is the hole this whole change exists to
-        #     close, left open on the click path.
+        #   - A Gate 1 already committed (``problem_statement_confirmed``).
+        #     Without this guard the LLM's same-turn rewording replaced the
+        #     statement after consent and ``_transition_to_investigating``
+        #     copied the new text into ``case.description`` — framing the
+        #     investigation on wording the user never saw. On the turn path a
+        #     Gate 1 section 0c commits (the DECIDE click) no longer reaches
+        #     here: the case is INVESTIGATING before the prompt and answers on
+        #     the investigation schema (#3048).
         #   - The LLM path relaying a plain "yes" while re-emitting the field
         #     with cosmetic edits. Refusing the consent there would be worse
         #     than useless: the engine re-presents the reword, the user says
@@ -973,8 +973,8 @@ class ResponseApplier:
         # wording the user SAW is handled on the write side above. See
         # ``gate1_statement_is_confirmable`` and the captured
         # _statement_at_turn_start at the top of this method. The flag commits
-        # only when ``screened`` (#1794): a click commits at section 0c, before
-        # this runs, and so arrives here already confirmed.
+        # only when ``screened`` (#1794): a click commits at section 0c, and
+        # its turn is INVESTIGATING before the call (#3048).
         if (
             screened
             and case.inquiry.proposed_problem_statement
@@ -1001,9 +1001,8 @@ class ResponseApplier:
             # "ok, don't start yet", the card's own payload typed out. The flag
             # stays an honest reading; the engine commits nothing, Gate 1 stays
             # pending and composes its card. Gated on ``not
-            # problem_statement_confirmed`` above, exactly: a click-committed
-            # Gate 1 hands the LLM the card's payload text, which is not bare,
-            # and that turn refused nothing.
+            # problem_statement_confirmed`` above, exactly: a committed Gate 1
+            # refuses nothing here.
             inquiry_handshake_deferred_total.labels(reason="not_bare").inc()
             logger.info(
                 f"Gate 1 not committed for case {case.case_id}: the LLM read a "

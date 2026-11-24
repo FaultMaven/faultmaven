@@ -179,10 +179,13 @@ def _commit_gate1(case: Case, *, via: str) -> None:
     ``via`` names the reader, for the log line only.
 
     There is no path fork (redesign R5): the investigation proceeds
-    opportunistically once INVESTIGATING begins. Nothing transitions here:
-    ``_check_automatic_transitions`` fires INQUIRY -> INVESTIGATING on Gate 1
-    alone. Committed before the LLM call, so the write guard in
-    ``_apply_inquiry_updates`` drops a same-turn rewording of the statement.
+    opportunistically once INVESTIGATING begins. Nothing transitions here: the
+    engine runs ``TransitionManager.transition_on_gate1`` after section 0c and
+    the turn's INQUIRY KB step, before the prompt is built, so the turn this
+    commits on is the first INVESTIGATING turn. It is prompted and answered on
+    the investigation schema, and records and verifies from the data submitted
+    before the confirmation (#3048). It is never answered on the INQUIRY
+    schema, so the statement changes only by a revision the user re-confirms.
     """
     case.inquiry.problem_statement_confirmed = True
     case.inquiry.problem_statement_confirmed_at = datetime.now(UTC)
@@ -1371,6 +1374,16 @@ class MilestoneEngine:
                 # no files. Beside a question lookup too: that searched what
                 # the message asked, this the symptom the case states.
                 await self.kb_prefetcher.prefetch_symptom(case, symptom)
+            # A Gate 1 section 0c committed moves the case to INVESTIGATING
+            # here, before the prompt and the schema read the state (#3048):
+            # data the user submitted before confirming is evidence of the
+            # confirmed problem, recorded and verified on this turn. After
+            # INQUIRY's KB step above, so context from another query is
+            # dropped first and the transition's search of the same statement
+            # is the one already run. Its side effects run once; the check
+            # after the response finds the case INVESTIGATING. A Gate 1 the
+            # model's flag commits still transitions after the response.
+            await self.transitions.transition_on_gate1(case, metadata)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             # The state the prompt is rendered in, and whether the model
             # answered from the minimal fallback instead (#2811 S2c-3b).

@@ -199,7 +199,10 @@ async def _generate_turn_response(
 
     prompt = _build_prompt(given)
 
-    # Determine schema based on status/stage
+    # Determine schema based on status/stage. A turn whose Gate 1 section 0c
+    # committed is INVESTIGATING here: the engine transitioned it before the
+    # prompt (#3048). Only a Gate 1 the model's own flag commits is answered
+    # on ``InquiryResponse``, and transitions after the response.
     if case.state == CaseState.INQUIRY:
         schema_model = InquiryResponse
         logger.info(

@@ -216,6 +216,41 @@ class TransitionManager:
         # context_builder so the LLM sees relevant runbooks from turn 1.
         await self.kb_prefetcher.prefetch_symptom(case, case.description)
 
+    async def transition_on_gate1(self, case: Case, metadata: dict[str, Any]) -> bool:
+        """INQUIRY -> INVESTIGATING on a committed Gate 1, or nothing; returns
+        whether the case moved.
+
+        The one writer of the edge, run at two points (#3048): before the
+        prompt is built, for a Gate 1 section 0c committed (a click, a mint or
+        a bare typed consent), so that turn is the first INVESTIGATING turn;
+        and at step 1 of ``check_automatic_transitions``, for a Gate 1 the
+        model's ``user_confirmed_investigation`` committed. Whichever runs
+        first moves the case; the other finds it INVESTIGATING.
+
+        Gate 1 is the problem-statement confirmation, so that is what this
+        reads. It used to be an OR across two fields that every writer sets
+        together — ``decided_to_investigate`` and ``problem_statement_confirmed
+        and problem_confirmation`` — which made the second arm load-bearing
+        only for cases carrying no ``problem_confirmation`` and hid the fact
+        that the first field has no independent meaning. One condition, one
+        gate (#1607).
+        """
+        if not (
+            case.state == CaseState.INQUIRY and case.inquiry.problem_statement_confirmed
+        ):
+            return False
+        await self._transition_to_investigating(case)
+        metadata["status_transitioned"] = True
+        case.action_history.append(
+            CaseAction(
+                from_state=CaseState.INQUIRY,
+                to_state=CaseState.INVESTIGATING,
+                triggered_by="system",
+                reason="Problem statement confirmed",
+            )
+        )
+        return True
+
     async def check_automatic_transitions(
         self,
         case: Case,
@@ -227,7 +262,9 @@ class TransitionManager:
 
         Automatic Transitions (non-terminal):
         - INQUIRY -> INVESTIGATING when problem_statement_confirmed=True
-          (Gate 1 — the single condition; see gate1_passed below)
+          (Gate 1 — the single condition; ``transition_on_gate1``). Here only
+          for a Gate 1 the model's flag committed: one section 0c committed
+          moved the case before the prompt was built (#3048).
 
         v3: INQUIRY -> RESOLVED edge removed. KB-driven cases follow the
         standard INVESTIGATING path, and the RESOLVED disposition requires the
@@ -242,8 +279,6 @@ class TransitionManager:
           opens the offer it earns. Nothing terminal executes here: the user
           answers an offer on a later turn, at the engine's gate (0b).
         """
-        old_status = case.state
-
         # 0. A resolution request the previous turn remembered (#2408). A
         # model ``resolved`` the case had not earned opened no offer: the
         # readiness ask went below its reply, with no chips. This turn is the
@@ -267,27 +302,10 @@ class TransitionManager:
         # work in the transcript before committing. (The recommendation
         # itself is still computed from user-claimed urgency; making the
         # recommendation evidence-derived is deferred follow-up.)
-        if case.state == CaseState.INQUIRY:
-            # Gate 1 is the problem-statement confirmation, so that is what
-            # this reads. It used to be an OR across two fields that every
-            # writer sets together — ``decided_to_investigate`` and
-            # ``problem_statement_confirmed and problem_confirmation`` — which
-            # made the second arm load-bearing only for cases carrying no
-            # ``problem_confirmation`` and hid the fact that the first field
-            # has no independent meaning. One condition, one gate (#1607).
-            gate1_passed = case.inquiry.problem_statement_confirmed
-            if gate1_passed:
-                await self._transition_to_investigating(case)
-                metadata["status_transitioned"] = True
-                case.action_history.append(
-                    CaseAction(
-                        from_state=old_status,
-                        to_state=CaseState.INVESTIGATING,
-                        triggered_by="system",
-                        reason="Problem statement confirmed",
-                    )
-                )
-                return case
+        # A Gate 1 section 0c committed moved the case before the call; this
+        # moves one the model's flag committed.
+        if await self.transition_on_gate1(case, metadata):
+            return case
 
         # 2. Handle ProposedTransition from LLM response (User-Agent Handshake)
         response_obj = metadata.get("response_obj")
