@@ -8076,7 +8076,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.14.0"
+    "version": "15.15.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12231,7 +12231,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.",
+            "description": "Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database could not be reached or did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds; sent with `DATABASE_UNAVAILABLE` and `REVOCATION_STATE_UNKNOWN`, never with an unlabelled 503.",
@@ -13036,7 +13036,7 @@
             }
           },
           "503": {
-            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.",
+            "description": "Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database could not be reached or did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds; sent with every labelled 503 above, never with an unlabelled one.",

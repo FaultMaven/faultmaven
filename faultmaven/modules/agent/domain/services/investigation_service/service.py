@@ -13,7 +13,7 @@ This service wraps the MilestoneEngine and provides:
 import asyncio
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 
 from faultmaven.config.tenant_context import get_current_billing_organization_id
 from faultmaven.core.investigation.case_telemetry import (
@@ -47,10 +47,12 @@ from faultmaven.exceptions import (
     CaseNotDriverError,
     CommitOutcomeUnknown,
     DatabaseTimeout,
+    DatabaseUnavailable,
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
     ValidationException,
+    is_database_unavailable,
     walk_cause_chain,
 )
 from faultmaven.infrastructure.observability.tracing import trace
@@ -128,6 +130,22 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_database_failure_as_itself(failure: Exception, where: str) -> NoReturn:
+    """Raise the ``DatabaseTimeout`` or ``DatabaseUnavailable`` on ``failure``'s
+    chain as itself (#2280, #2670): ``failure`` when it is one, else a new one
+    of the same type, from ``failure``. Only for an ``is_database_unavailable``
+    failure."""
+    if isinstance(failure, (DatabaseTimeout, DatabaseUnavailable)):
+        raise failure
+    if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(failure)):
+        raise DatabaseTimeout(
+            f"The database did not answer {where}: {failure}"
+        ) from failure
+    raise DatabaseUnavailable(
+        f"The database could not be reached {where}: {failure}"
+    ) from failure
 
 
 # Longest filename fragment a choice label will carry. Long enough to keep
@@ -358,6 +376,8 @@ class InvestigationService:
                 it (403 ``CASE_NOT_DRIVER``, #2806)
             DatabaseTimeout: The database did not answer in time, wherever in
                 the preparation (#2280); nothing is committed.
+            DatabaseUnavailable: The database could not be reached, wherever
+                in the preparation (#2670); nothing is committed.
             ServiceException: If turn processing fails
             asyncio.CancelledError: Re-raised, never swallowed: the route's
                 ``wait_for`` cancels this on a timeout, and a coroutine that
@@ -664,18 +684,15 @@ class InvestigationService:
             # the load, and the case is not committed at this turn number, so a
             # consumer dedups on (case_id, turn) preferring the non-error row.
             _abandon()
-            # The database's own timeout passes through as itself (#2280), so
-            # the route can answer "the database is unavailable, nothing was
-            # saved" rather than a timeout of the turn or a generic failure.
-            # Looked for on the cause chain: the engine and the repositories
-            # wrap it on its way here.
-            if isinstance(e, DatabaseTimeout):
-                raise
-            if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(e)):
-                raise DatabaseTimeout(
-                    f"The database did not answer while a turn on case "
-                    f"{case_id} was being prepared: {e}"
-                ) from e
+            # The database's own timeout or unreachability passes through as
+            # itself (#2280, #2670), so the route can answer "the database is
+            # unavailable, nothing was saved" rather than a timeout of the turn
+            # or a generic failure. Looked for on the cause chain: the engine
+            # and the repositories wrap it on its way here.
+            if is_database_unavailable(e):
+                _raise_database_failure_as_itself(
+                    e, f"while a turn on case {case_id} was being prepared"
+                )
             logger.error(
                 f"Failed to process turn for case {case_id}: {exception_log_name(e)}"
             )
@@ -729,6 +746,8 @@ class InvestigationService:
                 back does not raise (``SessionlessCaseRepository.save``).
             DatabaseTimeout: The database did not answer a statement before
                 the COMMIT; nothing is committed (#2813).
+            DatabaseUnavailable: The database could not be reached before the
+                COMMIT; nothing is committed (#2670).
             ServiceException: The commit failed; nothing is committed.
         """
         try:
@@ -775,13 +794,10 @@ class InvestigationService:
                     f"The commit of the turn on case {prepared.case.case_id} "
                     f"went unanswered: {e}"
                 ) from e
-            if any(isinstance(cause, DatabaseTimeout) for cause in chain):
-                if isinstance(e, DatabaseTimeout):
-                    raise
-                raise DatabaseTimeout(
-                    f"The database did not answer while the turn on case "
-                    f"{prepared.case.case_id} was committed: {e}"
-                ) from e
+            if is_database_unavailable(e):
+                _raise_database_failure_as_itself(
+                    e, f"while the turn on case {prepared.case.case_id} was committed"
+                )
             raise ServiceException(
                 f"Turn processing failed: {str(e)}",
                 details={"error_code": getattr(e, "error_code", None)},

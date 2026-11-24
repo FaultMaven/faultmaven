@@ -537,10 +537,19 @@ class TestTranscriptReadFailuresAreErrors:
         assert resp.json()["resource_type"] == "Case"
         audit_repo.record_access.assert_awaited_once()
 
-    def test_a_database_timeout_on_the_read_is_500(self, audit_repo, grant_repo):
+    def test_a_database_timeout_on_the_read_is_503(self, audit_repo, grant_repo):
+        """Answered at the request boundary as the database's (#2670)."""
         client = self._client(audit_repo, grant_repo, _case(), DatabaseTimeout())
 
         resp = client.get(CONTENT_PATHS[1])
 
-        assert resp.status_code == 500
+        assert resp.status_code == 503
+        assert resp.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
+        assert resp.headers["retry-after"] == "5"
+        # The access-audit row above committed: the detail claims nothing
+        # about what was saved.
+        assert resp.json()["detail"] == (
+            "The database could not be reached or did not answer in time. "
+            "Please retry shortly."
+        )
         audit_repo.record_access.assert_awaited_once()

@@ -157,6 +157,51 @@ builtins in the tuple instead would have labelled it at the price of labelling
 every arithmetic bug in the package the same way, so the precision comes from
 where the catch is rather than from a type the classifier has to trust.
 
+## Unavailable database (a failure that reaches the request boundary)
+
+A database that did not answer, or could not be reached, is a dependency
+failure, not a verdict on the request (#2280, #2670). Answered where it reaches
+the request boundary with no route's own answer: `get_exception_handlers()`
+registers `database_unavailable_handler` for `DatabaseTimeout` and
+`DatabaseUnavailable`, and `service_error_handler`,
+`service_exception_handler` and `internal_server_error_handler` answer one
+found on the cause chain of what they receive, before anything else.
+
+| Signal | HTTP | `x-error-code` | Retry-After |
+|--------|------|----------------|-------------|
+| `is_database_unavailable` (a `DatabaseTimeout` or `DatabaseUnavailable` on the cause chain, and no `CommitOutcomeUnknown`) on a GET or HEAD | 503 | `DATABASE_UNAVAILABLE` | 5 |
+| the same on any other method | 503 | `DATABASE_UNAVAILABLE` | — |
+
+A GET or HEAD is safe to retry, so it is invited, with a detail that claims
+nothing about what was saved: "The database could not be reached or did not
+answer in time. Please retry shortly." A GET can commit before the database
+fails (an access-audit row, its own exit COMMIT). Any other method may have
+saved: an earlier session of the same request may have committed. Its detail
+is "The
+database could not be reached. Reload before retrying: the request may have
+been saved.", with no `Retry-After`, because neither idempotency (2xx only)
+nor dedup absorbs a resend (`database_unavailable_write_http_exception`).
+
+`get_db_session` names both: a timeout as `DatabaseTimeout`, and a connect
+failure (any `ConnectionError`, an unresolvable name, a Unix socket with no
+server, an unreachable host or network, an `OSError` with no errno, SQLSTATE
+class `08`, `57P01`-`57P03` or `53300`; never a `PermissionError`) as
+`DatabaseUnavailable`, the latter
+only before the session's transaction began and before anything on it
+committed. The same driver error later is a dropped connection whose work may
+have landed, and passes through as itself. `28P01`, `3D000` and a
+`PermissionError` are configuration faults and stay a 500. A client TLS
+misconfiguration (a certificate file the configuration names that is missing,
+a server refusing the SSL upgrade) is configuration too, but it arrives as a `FileNotFoundError` or a
+bare `ConnectionError`, which no type tells from a connect failure, so it
+answers 503. Only the case repository's save marks a
+COMMIT it cannot vouch for as `CommitOutcomeUnknown`, which is never
+"unavailable"; `get_db_session`'s own exit COMMIT is not marked, and its
+timeout is a plain `DatabaseTimeout`, answered by method.
+
+Not every route reaches the boundary with it: a route arm that catches the
+failure and answers it, or swallows it, answers what it always did (#1632).
+
 ## LLM Provider Failures (turn endpoints)
 
 An LLM turn can fail deep in a provider call, and reaches the route as a
@@ -206,6 +251,7 @@ applies it only on typed evidence:
 
 | Uncaught failure | HTTP | `x-error-code` | Retry-After |
 |------------------|------|----------------|-------------|
+| a database failure on the cause chain (`is_database_unavailable`) | 503 | `DATABASE_UNAVAILABLE` | 5 on GET/HEAD, — otherwise ([above](#unavailable-database-a-failure-that-reaches-the-request-boundary)) |
 | a model-content refusal on the cause chain | 500 | `SERVICE_ERROR` | — |
 | `QUOTA_EXHAUSTED` declared by type anywhere on the cause chain (no wording fallback) | 402 | `QUOTA_EXHAUSTED` | — |
 | an LLM failure on the cause chain (`is_llm_failure`): an `LLMException`, an `LLMProviderError`, the LLM's open breaker (`is_llm_breaker`), or an `ExternalCallTimeout` whose `service` is `LLM_BREAKER_SERVICE` (another service's breaker or deadline, or one naming none, is not) | the table above | | |

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.14.0
+**Version:** 15.15.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2195,7 +2195,7 @@ Supports pagination and includes metadata about message retrieval status.
 - `200` — Successful Response ([`CaseMessagesResponse`](#casemessagesresponse))
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `503` — Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.
+- `503` — Unavailable; the conversation could not be read, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database could not be reached or did not answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.
 
 ---
 
@@ -2582,7 +2582,7 @@ likely to do so again, so retry at most once (it carries no `Retry-After`);
 - `409` — Conflict. Told apart by `x-error-code`: `TURN_IN_PROGRESS` (a turn with this `Idempotency-Key` is still running: retry with the same key after `Retry-After` seconds, the longest the running turn can still hold its claim — an upper bound, not when it finishes; it may finish sooner); `IDEMPOTENCY_KEY_REUSE` (the key was used for a different turn); `IDEMPOTENCY_REPLAY_UNAVAILABLE` (the turn committed but its response can no longer be replayed: reload the case); `CASE_VERSION_CONFLICT` (another writer changed the case while this turn ran; nothing committed); `CASE_TERMINAL` (the case is resolved or closed and refuses new data, a status change or a file reclassification; a text-only question is still answered); `CASE_DELETE_IN_PROGRESS` (a delete of the case is running; nothing of the turn ran: reload the case, and while it reads `deleting: true` show it read-only and read it again until it is gone (404) or `deleting` clears).
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 - `500` — `TURN_OUTCOME_UNKNOWN`: the turn may have committed. Its commit failed without the database saying it rolled back (it stopped answering during it, or the connection was lost), or answering it failed after the commit. Retry with the same `Idempotency-Key`: a committed turn is answered from its receipt, one that did not commit runs. Without a key, reload the case before sending the turn again. No `Retry-After` is sent. Any other `x-error-code` on a 500 means nothing of the turn committed. A 500 with no `x-error-code` failed outside the route (after it answered, or before it ran) and says nothing about the turn: treat it as `TURN_OUTCOME_UNKNOWN`.
-- `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.
+- `503` — Unavailable; nothing of the turn committed, and a retry after `Retry-After` seconds is safe. Told apart by `x-error-code`: `DATABASE_UNAVAILABLE` (the database could not be reached or did not answer while the turn was being prepared or before its commit); `TENANT_TURN_CAP_UNAVAILABLE` (the usage allowance could not be checked); `LLM_OVER_CAPACITY`, `LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI provider could not answer usably); `REVOCATION_STATE_UNKNOWN` (the authentication every route requires could not read the token revocation store). A 503 with neither header is an unlabelled one: a service the route depends on is not available.
 - `504` — Timeout; nothing of the turn committed. Told apart by `x-error-code`: `REQUEST_TIMEOUT` (the turn used its whole ceiling, `limits.turnCeilingSeconds` on `GET /api/v1/meta/capabilities`, on this input; the same input is likely to exhaust it again, so a client retries at most once, and no `Retry-After` is sent); `LLM_TIMEOUT` (the AI provider timed out: transient, retry after `Retry-After` seconds).
 
 ---

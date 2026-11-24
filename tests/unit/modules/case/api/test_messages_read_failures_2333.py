@@ -32,8 +32,8 @@ SECRET = "db-password=hunter2 at 10.0.0.5"
 CASE_ID = "case_aabb11223344"
 PATH = f"/api/v1/cases/{CASE_ID}/messages"
 UNAVAILABLE_DETAIL = (
-    "The database did not answer in time, so the conversation could not be "
-    "loaded. Please retry shortly."
+    "The database could not be reached or did not answer in time, so the "
+    "conversation could not be loaded. Please retry shortly."
 )
 
 

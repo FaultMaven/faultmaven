@@ -62,14 +62,13 @@ from faultmaven.exceptions import (
     AuthorizationError,
     CaseNotDriverError,
     CommitOutcomeUnknown,
-    DatabaseTimeout,
     NotFoundError,
     PermissionDeniedException,
     RawModelContentRefused,
     ServiceException,
     SessionException,
     ValidationException,
-    walk_cause_chain,
+    is_database_unavailable,
 )
 from faultmaven.infrastructure.concurrency import inflight
 from faultmaven.infrastructure.concurrency.request_fingerprint import (
@@ -161,10 +160,11 @@ async def _turn_gated_for_viewer(
     return turn.model_copy(update={"sources": sources or []})
 
 
-#: The 503 a transcript read answers when the database does not answer (#2333).
+#: The 503 a transcript read answers when the database could not be reached or
+#: did not answer (#2333, #2670).
 MESSAGES_UNAVAILABLE_DETAIL = (
-    "The database did not answer in time, so the conversation could not be "
-    "loaded. Please retry shortly."
+    "The database could not be reached or did not answer in time, so the "
+    "conversation could not be loaded. Please retry shortly."
 )
 
 _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
@@ -172,8 +172,9 @@ _MESSAGES_UNAVAILABLE_RESPONSE: dict = {
         "description": (
             "Unavailable; the conversation could not be read, and a retry "
             "after `Retry-After` seconds is safe. Told apart by "
-            f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database did not "
-            "answer in time); `REVOCATION_STATE_UNKNOWN` (the authentication "
+            f"`x-error-code`: `{DATABASE_UNAVAILABLE}` (the database could not "
+            "be reached or did not answer in time); `REVOCATION_STATE_UNKNOWN` "
+            "(the authentication "
             "every route requires could not read the token revocation store). "
             "A 503 with neither header is an unlabelled one: a service the "
             "route depends on is not available."
@@ -268,11 +269,12 @@ async def get_case_messages_enhanced(
     except HTTPException:
         raise
     except Exception as e:
-        # A database timeout on the access check's read or the service's: either
-        # way nothing could be read, which is a retryable 503, never an empty
-        # transcript (#2333). Looked for on the cause chain: an inner session's
-        # timeout reaches here wrapped in a ``RepositoryException``.
-        if any(isinstance(cause, DatabaseTimeout) for cause in walk_cause_chain(e)):
+        # A database timeout or an unreachable database on the access check's
+        # read or the service's: either way nothing could be read, which is a
+        # retryable 503, never an empty transcript (#2333, #2670). Looked for on
+        # the cause chain: an inner session's failure reaches here wrapped in a
+        # ``RepositoryException``.
+        if is_database_unavailable(e):
             logger.error(
                 "Messages of case %s not read: %s",
                 case_id,
@@ -553,8 +555,9 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
         "description": (
             "Unavailable; nothing of the turn committed, and a retry after "
             "`Retry-After` seconds is safe. Told apart by `x-error-code`: "
-            f"`{DATABASE_UNAVAILABLE}` (the database did not answer while the "
-            "turn was being prepared or before its commit); "
+            f"`{DATABASE_UNAVAILABLE}` (the database could not be reached or "
+            "did not answer while the turn was being prepared or before its "
+            "commit); "
             "`TENANT_TURN_CAP_UNAVAILABLE` (the usage "
             "allowance could not be checked); `LLM_OVER_CAPACITY`, "
             "`LLM_PROVIDER_UNAVAILABLE` and `LLM_INVALID_RESPONSE` (the AI "
@@ -1064,12 +1067,15 @@ async def submit_turn(
                         ),
                         timeout=agent_timeout,
                     )
-                except DatabaseTimeout as unavailable:
-                    # The database did not answer while the turn was prepared
-                    # (#2280). The preparation commits nothing, so this is the
-                    # 503 the revocation read answers for the same cause, not a
-                    # timeout of the turn: REQUEST_TIMEOUT would tell the client
-                    # the same input will exhaust the ceiling again.
+                except Exception as unavailable:
+                    if not is_database_unavailable(unavailable):
+                        raise
+                    # The database did not answer or could not be reached while
+                    # the turn was prepared (#2280, #2670). The preparation
+                    # commits nothing, so this is the 503 the revocation read
+                    # answers for the same cause, not a timeout of the turn:
+                    # REQUEST_TIMEOUT would tell the client the same input will
+                    # exhaust the ceiling again.
                     logger.error(
                         "Turn on case %s not prepared: %s",
                         case_id,
@@ -1088,10 +1094,13 @@ async def submit_turn(
                     # mode); nothing of this one committed. Answered below with
                     # the committed turn, as its retry would be.
                     committed_elsewhere = True
-                except DatabaseTimeout as unavailable:
-                    # A statement BEFORE the COMMIT went unanswered (an
-                    # unanswered COMMIT is ``CommitOutcomeUnknown``), so nothing
-                    # committed: the preparation's 503 (#2813).
+                except Exception as unavailable:
+                    if not is_database_unavailable(unavailable):
+                        raise
+                    # A statement BEFORE the COMMIT went unanswered or could not
+                    # reach the database (an unanswered COMMIT is
+                    # ``CommitOutcomeUnknown``), so nothing committed: the
+                    # preparation's 503 (#2813, #2670).
                     logger.error(
                         "Turn on case %s not committed: %s",
                         case_id,

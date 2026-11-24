@@ -23,7 +23,9 @@ Usage:
             result = await session.execute(query)
 """
 
+import errno
 import logging
+import socket
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -37,7 +39,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
-from faultmaven.exceptions import DatabaseTimeout, walk_cause_chain
+from faultmaven.exceptions import (
+    CommitOutcomeUnknown,
+    DatabaseTimeout,
+    DatabaseUnavailable,
+    walk_cause_chain,
+)
 from faultmaven.infrastructure.persistence.db_errors import sqlstate
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.infrastructure.persistence.pg_connection import (
@@ -347,6 +354,8 @@ async def get_db_session(
     - Automatic commit on success
     - Automatic rollback on exception
     - A database timeout raised as ``DatabaseTimeout`` (#2280)
+    - A connect failure before the transaction began raised as
+      ``DatabaseUnavailable`` (#2670)
     - Session cleanup
 
     Args:
@@ -359,6 +368,9 @@ async def get_db_session(
         DatabaseTimeout: The database did not answer in time: a driver or pool
             timeout, or the server's statement_timeout, escaped the session,
             bare or wrapped.
+        DatabaseUnavailable: The database could not be reached: a connect
+            failure (``_is_connect_failure``) before this session's
+            transaction began and before anything on it committed.
 
     Example:
         async with get_db_session() as session:
@@ -368,6 +380,12 @@ async def get_db_session(
     """
     factory = get_session_factory(database_url)
     session = factory()
+    # Where the session got to, for the unavailable arm below: a transaction
+    # begins only once a connection is checked out, so a failure before that
+    # never reached the server. Marked by the session's own events, never by an
+    # eager checkout (#935).
+    event.listen(session.sync_session, "after_begin", _mark_began)
+    event.listen(session.sync_session, "after_commit", _mark_committed)
 
     try:
         # The PostgreSQL RLS tenant scope is applied per-transaction by the
@@ -385,9 +403,85 @@ async def get_db_session(
             raise DatabaseTimeout(
                 f"The database did not answer in time: {failure}"
             ) from failure
+        # A connect failure is the database's only while nothing reached it:
+        # the same driver error after the first statement is a dropped
+        # connection, whose work may have landed (#2670).
+        if not (
+            session.info.get(_BEGAN) or session.info.get(_COMMITTED)
+        ) and _is_connect_failure(failure):
+            raise DatabaseUnavailable(
+                f"The database could not be reached: {failure}"
+            ) from failure
         raise
     finally:
         await session.close()
+
+
+#: ``session.info`` keys ``get_db_session`` marks: a transaction began on the
+#: session (a connection was checked out), and a commit completed on it.
+_BEGAN = "faultmaven_transaction_began"
+_COMMITTED = "faultmaven_committed"
+
+
+def _mark_began(session, _transaction, _connection) -> None:
+    session.info[_BEGAN] = True
+
+
+def _mark_committed(session) -> None:
+    session.info[_COMMITTED] = True
+
+
+#: The errnos of an ``OSError`` that says the host or its network cannot be
+#: reached.
+_UNREACHABLE_ERRNOS = frozenset({errno.EHOSTUNREACH, errno.ENETUNREACH})
+
+#: SQLSTATEs that say the server will not take a connection: ``57P01``-``57P03``
+#: (shutting down, crashed, not yet accepting) and ``53300`` (too many
+#: connections), beside class ``08`` (connection exception). Never ``28P01`` or
+#: ``3D000``: a wrong password or database name is configuration, and stays the
+#: logged 500 an operator must act on.
+_UNAVAILABLE_SQLSTATES = frozenset({"57P01", "57P02", "57P03", "53300"})
+
+
+def _is_connect_failure(failure: BaseException) -> bool:
+    """A connect failure on ``failure``'s cause chain, not yet named.
+
+    Read by type, errno or SQLSTATE, never by message (the driver raises
+    each unwrapped at pool checkout): any ``ConnectionError`` (refused, reset,
+    aborted, a broken pipe), an unresolvable name, a Unix socket with no server
+    (``FileNotFoundError``), an unreachable host or network, an ``OSError``
+    with no errno (asyncio's "Multiple exceptions" when every address of a
+    host failed), or a SQLSTATE in ``_UNAVAILABLE_SQLSTATES`` or class ``08``,
+    whether on a ``DBAPIError`` or on the driver's own exception. Never a
+    ``PermissionError``: a socket the server's user cannot open is
+    configuration. A client TLS misconfiguration (a certificate file the
+    configuration names that is missing, a server refusing the SSL upgrade) is
+    configuration too, but arrives as a ``FileNotFoundError`` or a bare
+    ``ConnectionError``, which no type, errno or SQLSTATE tells from a connect
+    failure: it is named unavailable, and answers 503. Nothing with ``CommitOutcomeUnknown``, ``DatabaseTimeout``
+    or ``DatabaseUnavailable`` on its chain: each is already named.
+    """
+    chain = list(walk_cause_chain(failure))
+    if any(
+        isinstance(cause, (CommitOutcomeUnknown, DatabaseTimeout, DatabaseUnavailable))
+        for cause in chain
+    ):
+        return False
+    for cause in chain:
+        if isinstance(cause, PermissionError):
+            continue
+        if isinstance(cause, (ConnectionError, FileNotFoundError, socket.gaierror)):
+            return True
+        if isinstance(cause, OSError) and (
+            cause.errno is None or cause.errno in _UNREACHABLE_ERRNOS
+        ):
+            return True
+        code = sqlstate(cause) or getattr(cause, "sqlstate", None)
+        if isinstance(code, str) and (
+            code.startswith("08") or code in _UNAVAILABLE_SQLSTATES
+        ):
+            return True
+    return False
 
 
 #: SQLSTATE ``query_canceled``: what PostgreSQL sends when its own

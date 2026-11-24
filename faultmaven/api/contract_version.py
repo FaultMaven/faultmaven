@@ -151,6 +151,41 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.15.0",
+        level="MINOR",
+        title=(
+            "A database that cannot be reached, or does not answer, is **503** "
+            "`DATABASE_UNAVAILABLE` where the failure reaches the request "
+            "boundary with no route's own answer, in place of a 500 (#2670). "
+            "No schema moves."
+        ),
+        body=r"""Before, a refused, reset or unresolvable database connection answered
+500 `Internal server error` on a route that did not catch it, and a database
+timeout did the same outside the turn and messages routes. Now either one that
+reaches the request boundary, raised or wrapped, is **503**
+`DATABASE_UNAVAILABLE`:
+
+* GET or HEAD: `Retry-After: 5` and the detail "The database could not be
+  reached or did not answer in time. Please retry shortly." A retried read is
+  safe, though the first may have written (an access-audit row);
+* any other method: no `Retry-After`, and the detail "The database could not
+  be reached. Reload before retrying: the request may have been saved." An
+  earlier step of the request may have committed, so reload before sending it
+  again.
+
+A connect failure is named only before the request's database transaction
+began; one after it, and a commit whose outcome is unknown, answer as before. A
+wrong password or database name (SQLSTATE `28P01`, `3D000`) stays a 500. A
+route that catches the failure itself answers what it did: `POST
+/cases/{case_id}/turns` keeps its 503 with `Retry-After` (now for an
+unreachable database too), `GET /cases/{case_id}/messages` its own 503, whose
+detail now reads "The database could not be reached or did not answer in time,
+so the conversation could not be loaded. Please retry shortly."
+
+MINOR: a 503 with a code the turn route already answered, on a failure that
+was a 500; a client that does not know the code treats it as a generic 5xx.""",
+    ),
+    ContractChange(
         version="15.14.0",
         level="MINOR",
         title=(

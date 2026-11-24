@@ -220,6 +220,7 @@ async def test_a_refused_checkout_is_503_not_500(superuser_engine, monkeypatch):
     from sqlalchemy.exc import SQLAlchemyError
 
     from faultmaven.api.routes.admin_usage import get_llm_usage
+    from faultmaven.exceptions import walk_cause_chain
     from faultmaven.infrastructure.persistence.database import (
         close_database,
         reset_engine,
@@ -262,8 +263,9 @@ async def test_a_refused_checkout_is_503_not_500(superuser_engine, monkeypatch):
         "Retry-After": "5",
     }
     assert role not in str(refused.value.detail)
-    # The asyncpg path, not the SQLAlchemy one: the store error's cause is
-    # asyncpg's own, unwrapped.
-    cause = refused.value.__context__.__cause__
-    assert isinstance(cause, asyncpg.PostgresError), type(cause)
-    assert not isinstance(cause, SQLAlchemyError)
+    # The asyncpg path, not the SQLAlchemy one: asyncpg's own error is on the
+    # store error's cause chain, behind the session's ``DatabaseUnavailable``
+    # (#2670), and SQLAlchemy wrapped nothing on the way.
+    chain = list(walk_cause_chain(refused.value.__context__))
+    assert any(isinstance(cause, asyncpg.PostgresError) for cause in chain), chain
+    assert not any(isinstance(cause, SQLAlchemyError) for cause in chain), chain

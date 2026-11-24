@@ -58,6 +58,7 @@ from faultmaven.api.middleware.client_ip import (
 )
 from faultmaven.api.middleware.principal import read_request_principal
 from faultmaven.config.protection import get_trusted_proxies
+from faultmaven.exceptions import is_database_unavailable
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
@@ -418,9 +419,12 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                     "api", duration * 1000.0, success=False
                 )
 
-            # Unhandled exceptions surface as 500s
+            # Unhandled exceptions surface as 500s, a database failure as the
+            # 503 ``internal_server_error_handler`` answers it with (#2670)
             request_counter.labels(
-                method=request.method, endpoint=endpoint, status_code="500"
+                method=request.method,
+                endpoint=endpoint,
+                status_code="503" if is_database_unavailable(e) else "500",
             ).inc()
             request_duration.labels(method=request.method, endpoint=endpoint).observe(
                 duration
