@@ -470,7 +470,7 @@ class TestAppliedFixRecovery:
         feedback = "\n".join(metadata.get("system_notices") or [])
         assert "'solution_accepted' was not registered" in feedback
         assert "ONE response" in feedback
-        assert "do not ask them to accept it again" in feedback
+        assert "do not ask them to accept or confirm it again" in feedback
         # Only for a cause that stands: the notice also answers a fix withdrawn
         # because its cause fell, which a fresh conclusion must not re-license.
         assert "the root cause stands established" in feedback
