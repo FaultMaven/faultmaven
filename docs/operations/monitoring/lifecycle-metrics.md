@@ -296,6 +296,18 @@ Kill switch: `FAULTMAVEN_CHAIN_AUTHORED_CONCLUSION=false` restores conclusion-wi
 
 Matrix row: INV-41 in `investigation-invariants.md`; methodology §7.7 (#673 gate and the precedence it now carries).
 
+## Outcome prose in the model's reply (#2811)
+
+- `faultmaven_narration_outcome_prose_total{provider, set}` — an INVESTIGATING model turn whose own `agent_response` states an outcome in prose, against the prompt's rule to state the problem confirmed or a root cause identified only through the structured fields (the engine states the record under the reply). One increment per matching `set` per turn: `root_cause` ("the root cause is identified / confirmed / eliminated …"), `fix` ("the fix worked / held …"), `problem` ("the issue is resolved / fixed …"), `problem_confirmed` ("the problem is confirmed", "the symptom is verified"), `mitigation` ("the mitigation is verified / holding …"). The phrase sets are `response_synthesis.OUTCOME_PROSE_SETS`; a phrase whose clause holds a negation from a closed list before it is not counted, and a synthesized placeholder never is. Every series exists from import, at 0.
+
+**What it is (and isn't).** An **upper bound**: a conditional ("once the root cause is confirmed") and an engine clause the model copied both count. It never changes a reply. It is the baseline the INV-40 widening (S2c-4) is decided on, read per provider against that provider's turn volume:
+
+```promql
+sum by (provider, set) (rate(faultmaven_narration_outcome_prose_total[7d]))
+/ on (provider) group_left
+sum by (provider) (rate(faultmaven_llm_requests_total{status="success"}[7d]))
+```
+
 ## Conventions for adding new lifecycle metrics
 
 Any new counter added to `lifecycle_metrics.py` should follow the same shape:

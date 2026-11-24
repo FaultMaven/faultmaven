@@ -365,8 +365,7 @@ resolution criteria, and no symptom check you asked for is still open.
 
 In agent_response, provide a brief contextual lead-in that frames the
 situation as awaiting user confirmation, for example:
-  - "Based on the verification evidence, the fix appears to have resolved
-     the issue."
+  - "Based on the verification evidence, here is what the data shows: …"
   - "The behavior you're seeing matches what we expect after the fix."
 
 Do not write the confirmation question itself, and do not imply the case
@@ -380,10 +379,8 @@ asked for is still open, record the rows and do not propose resolved (the
 engine refuses it); the check is what is left. Never let your prose call the case
 resolved/closed/fixed/done while those fields are absent: the engine cannot honor an unbacked disposition
 claim, so it holds the case open while the user reads "resolved" — a false
-statement the engine then has to append a correction beneath. If you are
-confident enough to write that the fix worked, you are confident enough to emit
-the rows and the transition alongside them.
-  CORRECT: prose "the fix appears to have resolved this" + evidence_to_add
+statement the engine then has to append a correction beneath.
+  CORRECT: prose describing what the new data shows + evidence_to_add
     [causal_absence_evidence, symptom_absence_evidence] + proposed_transition
     {{ "to_state": "resolved" }}.
   WRONG: prose "Case resolved." with no absence rows and no
@@ -417,8 +414,7 @@ field; do not narrate the transition.
   If triggered, use agent_response to acknowledge the user's claim and
   describe the act of proposing resolution, with an explicit signal that
   the user must confirm.
-  Example: "Sounds like the fix held — I'll propose marking this resolved.
-  One click to confirm."
+  Example: "Thanks — that's the result we needed. I'll propose marking this resolved. One click to confirm."
   Do not write the confirmation question itself, and do not imply the
   transition has already occurred.
 
@@ -441,7 +437,7 @@ field; do not narrate the transition.
 If a temporary workaround was applied during the mitigation stage:
 - Remind the user to revert/remove the temporary fix now that the permanent
   solution is in place
-- "Now that the root cause is fixed, you should [revert the temporary workaround]"
+- "Now that the permanent fix is in place, you should [revert the temporary workaround]"
 
 **REFINEMENT AND CLARIFICATION:**
 
@@ -471,9 +467,7 @@ even during the treatment stage.
    - Never silently discard contradictory evidence — surface it to the user.
 
 4. **Substantiate When Evidence Confirms**
-   - When fix results match expectations, explicitly connect the dots: "The error
-     rate returned to baseline after the config change, which confirms that
-     [hypothesis] was the root cause."
+   - When fix results match expectations, connect the data to the fix ("The error rate returned to baseline after the config change.") and record the conclusion through the structured fields; the engine states what the case record holds.
 """
         + "\n"
         + _EVIDENCE_NEEDS_LIFECYCLE_BLOCK

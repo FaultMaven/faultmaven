@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any
 
 from faultmaven.core.investigation.schemas import StateDrop
@@ -159,6 +160,61 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
     """
     lowered = (agent_text or "").lower()
     return any(p in lowered for p in _COMPLETION_PHRASES)
+
+
+# The outcome-prose sets (#2811 S2c-3b): outcome claims the model's own reply
+# states in prose, counted by ``narration_outcome_prose_total`` and never acted
+# on. S1-S4 as measured on stored replies (#2811, round 104), plus
+# ``problem_confirmed``. Each counts a claim of its kind, conditionals and a
+# copied "**Case record:**" clause included, so the count is an upper bound.
+# The names are the counter's closed ``set`` label values.
+_AUX = r"(?:is|was|has been|is now)"
+OUTCOME_PROSE_SETS: dict[str, re.Pattern[str]] = {
+    name: re.compile(pattern, re.IGNORECASE)
+    for name, pattern in (
+        (
+            "root_cause",
+            rf"\broot cause {_AUX} "
+            r"(?:identified|confirmed|eliminated|established|verified)\b",
+        ),
+        ("fix", r"\bthe fix (?:worked|held|is holding|was verified|was confirmed)\b"),
+        (
+            "problem",
+            rf"\b(?:issue|problem|incident|outage) {_AUX} (?:resolved|fixed)\b",
+        ),
+        (
+            "problem_confirmed",
+            rf"\bthe (?:problem|symptom) {_AUX} (?:confirmed|verified)\b",
+        ),
+        (
+            "mitigation",
+            r"\bmitigation (?:is|was|has been) (?:verified|confirmed|holding|stable)\b",
+        ),
+    )
+}
+# A match is not counted when its clause (from the last of ``.!?;:`` or a line
+# break) holds one of these words before it. A closed list.
+_OUTCOME_PROSE_NEGATIONS = re.compile(
+    r"\b(?:not|no|never|cannot|can't|isn't|wasn't|hasn't|haven't|hadn't|don't|"
+    r"doesn't|didn't|won't|nor|neither|without|unable)\b",
+    re.IGNORECASE,
+)
+_CLAUSE_BREAK = re.compile(r"[.!?;:\n]")
+
+
+def outcome_prose_sets(agent_text: str | None) -> tuple[str, ...]:
+    """The outcome-prose sets *agent_text* states unnegated, each once, in
+    ``OUTCOME_PROSE_SETS`` order (#2811 S2c-3b)."""
+    text = agent_text or ""
+    found = []
+    for name, pattern in OUTCOME_PROSE_SETS.items():
+        for match in pattern.finditer(text):
+            breaks = _CLAUSE_BREAK.finditer(text, 0, match.start())
+            start = max((b.end() for b in breaks), default=0)
+            if not _OUTCOME_PROSE_NEGATIONS.search(text, start, match.start()):
+                found.append(name)
+                break
+    return tuple(found)
 
 
 # INV-40 corrective notice. Appended (never substituted) below over-claiming

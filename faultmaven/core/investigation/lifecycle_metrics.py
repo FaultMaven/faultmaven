@@ -848,6 +848,34 @@ narration_overclaim_total = Counter(
     label_values={"provider": _PROVIDERS},
 )
 
+# The prose half of the outcome rule (#2811 S2c-3b). Every investigating prompt
+# asks the model to state the problem confirmed or a root cause identified
+# only through the structured fields, and the engine states the record under
+# the reply. This counts, per ``set``, the INVESTIGATING model turns whose own
+# ``agent_response`` still states an outcome in prose
+# (``response_synthesis.OUTCOME_PROSE_SETS``): once per matching set per turn,
+# a synthesized placeholder never. It never changes a reply. The sets count
+# conditionals and copied engine clauses, so it is an upper bound; it is the
+# baseline INV-40's widening is decided on (S2c-4).
+_OUTCOME_PROSE_SET_LABELS = (
+    "root_cause",
+    "fix",
+    "problem",
+    "problem_confirmed",
+    "mitigation",
+)
+narration_outcome_prose_total = Counter(
+    "faultmaven_narration_outcome_prose_total",
+    "An INVESTIGATING model turn's own agent_response stated an outcome in "
+    "prose, by phrase ``set`` (root_cause, fix, problem, problem_confirmed, "
+    "mitigation) and CHAT ``provider``: one increment per matching set per "
+    "turn; synthesized placeholders and negated phrases are not counted. An "
+    "upper bound (conditionals and copied engine clauses count). Count only: "
+    "the reply is unchanged (#2811).",
+    ["provider", "set"],
+    label_values={"provider": _PROVIDERS, "set": _OUTCOME_PROSE_SET_LABELS},
+)
+
 
 # INV-41 (#673 dual-authoring retirement gate, §7.7). #673 — retire the LLM
 # free-text conclusion and derive it from the validated chain — is the design's

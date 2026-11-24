@@ -7,6 +7,7 @@ from .blocks import (
     _DATA_CITATION_RULE,
     _EXCLUSION_GROUNDS_BLOCK,
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
+    _OUTCOME_FIELDS_RULE,
     _OUTCOME_PROMPT_BLOCK,
     _PROMPT_FENCE_RULE,
     _READING_DISCIPLINE_BLOCK,
@@ -60,6 +61,12 @@ INVESTIGATION_BASE = (
 
 """
     + _READING_DISCIPLINE_BLOCK
+    + """
+
+"""
+    # Above {evidence_grounding}, which a knowledge-query or meta turn waives:
+    # the rule holds on every turn of this template (#2811 S2c-3b).
+    + _OUTCOME_FIELDS_RULE
     + """
 
 {evidence_grounding}EVIDENCE FROM ATTACHMENTS (CRITICAL — READ THIS):

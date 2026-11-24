@@ -1371,6 +1371,8 @@ class MilestoneEngine:
                 # the message asked, this the symptom the case states.
                 await self.kb_prefetcher.prefetch_symptom(case, symptom)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
+            # The state the prompt is rendered in (#2811 S2c-3b).
+            prompted_state = case.state
             response_obj = await _generate_turn_response(
                 self.deps.investigation_tools,
                 self.deps.llm_provider,
@@ -1451,6 +1453,7 @@ class MilestoneEngine:
                 summary_payload=summary_payload,
                 validation_repairs=record_inputs.validation_repairs,
                 baseline=baseline,
+                prompted_state=prompted_state,
             )
 
         except Exception as e:

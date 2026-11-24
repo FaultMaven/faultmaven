@@ -20,6 +20,7 @@ from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
     engine_owned_affordance_served_total,
+    narration_outcome_prose_total,
     narration_overclaim_total,
 )
 from faultmaven.core.investigation.milestone_engine.regeneration import (
@@ -66,6 +67,7 @@ from .response_synthesis import (
     _narration_asserts_disposition,
     _prose_with_gate_notice,
     is_agent_response_synthesized,
+    outcome_prose_sets,
     state_drop_note,
     state_drop_of,
 )
@@ -276,8 +278,13 @@ async def _compose_turn_reply(
     summary_payload,
     validation_repairs,
     baseline: OutcomeBaseline | None = None,
+    prompted_state: CaseState | None = None,
 ):
-    """Compose the final agent-facing reply text, gate prose, follow-ups and telemetry for the turn."""
+    """Compose the final agent-facing reply text, gate prose, follow-ups and telemetry for the turn.
+
+    ``prompted_state`` is the state the model's prompt was rendered in; the
+    outcome-prose counter counts INVESTIGATING turns only (#2811 S2c-3b).
+    """
     # What each offer prose the narration published states, and the record
     # the outcome statement reads (#2811 S2c-3a).
     stated_by_prose = metadata.pop(OUTCOME_STATED_KEY, None) or {}
@@ -584,6 +591,14 @@ async def _compose_turn_reply(
                 "state": case_updated.state.value,
             },
         )
+
+    # The outcome prose the model's own reply states (#2811 S2c-3b), on a
+    # turn whose prompt carried the rule: counted, never acted on.
+    if prompted_state == CaseState.INVESTIGATING and not response_synthesized:
+        for prose_set in outcome_prose_sets(response_obj.agent_response):
+            narration_outcome_prose_total.labels(
+                provider=_resolve_chat_provider_name(llm_provider), set=prose_set
+            ).inc()
 
     # The turn record (step 6) summarized the RAW LLM text; the gate,
     # summary, and INV-40 compositions above changed only the returned

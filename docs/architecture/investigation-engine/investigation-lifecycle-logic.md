@@ -1235,6 +1235,24 @@ the turn and the turn's own prose does not state it
   its drop note. The summary re-record runs because the text changed. S4
   publishes the composed statement as a field and never recomputes it from
   stored records.
+- **The rule line** (#2811 S2c-3b, ruled wording): "State that the problem
+  is confirmed or that a root cause is identified only through the
+  structured fields; the engine states what the case record holds under
+  your reply." It sits in `INVESTIGATION_BASE`'s cached prefix (#613), above
+  the evidence-grounding block, so every stage and the knowledge-query and
+  meta turns carry it. INQUIRY does not: there, confirming the problem means
+  agreeing the statement, and the problem is not yet confirmed. The fallback
+  stub does not: it is a last-resort prompt with a tight token budget.
+  TERMINAL does not: its turns take the terminal path, whose reply carries
+  no statement. The grounding rules' "never state that a problem is
+  resolved or fixed without verification evidence" precede the rule and
+  stand. Naming the cause's content ("state the root cause in one sentence
+  before proposing the fix") is not a record claim and stays; the window
+  verdict and mitigation lines of the TREATMENT and MITIGATION prompts are
+  S3's. `narration_outcome_prose_total{provider,set}` counts the
+  INVESTIGATING model turns whose own reply still states an outcome in
+  prose, as an upper bound, and never changes the reply
+  ([lifecycle metrics](../../operations/monitoring/lifecycle-metrics.md)).
 - **Residuals.** Only the turn's own changes are stated: the menu close's
   revision cancel, the save-time refold and REST edits change facts that no
   statement reports. One response that retracts a confirmed symptom and

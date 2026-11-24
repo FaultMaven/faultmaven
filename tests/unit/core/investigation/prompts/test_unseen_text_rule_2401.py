@@ -253,7 +253,7 @@ def test_an_unstored_cut_item_is_neither_held_nor_sent_to_search_file():
 
 
 def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
-    """Six cited pastes at a 25,000-token target: the budget squeeze cuts
+    """Six cited pastes at a 25,400-token target: the budget squeeze cuts
     <evidence_collected> mid-item, with its own marker and no per-item one."""
     ids = [f"file_3031{i:08x}" for i in range(6)]
     case = _case(11).model_copy(
@@ -262,7 +262,7 @@ def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
             "evidence": [_row(f"ev_3031{i:08x}", f) for i, f in enumerate(ids)],
         }
     )
-    monkeypatch.setattr(get_settings().model_context, "prompt_target_tokens", 25_000)
+    monkeypatch.setattr(get_settings().model_context, "prompt_target_tokens", 25_400)
 
     prompt = get_prompt_for_case(
         case,
