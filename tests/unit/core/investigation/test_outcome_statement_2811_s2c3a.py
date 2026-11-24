@@ -573,6 +573,39 @@ def test_an_earlier_turns_fix_a_stale_snapshot_lacks_is_not_this_turns():
     assert _kinds(outcome_changes(_base(stale), now)) == [OutcomeChange.FIX_CARRIED_OUT]
 
 
+def test_the_baseline_holds_the_actions_accepted_at_turn_start():
+    case, _root, _hyp = _identified_case()
+    fix = _fix(case, turn=6)
+    pending = fix.model_copy(
+        update={"action_id": "act_00000000aaaa", "state": "pending"}
+    )
+    case.proposed_actions.append(pending)
+    assert turn_narration.outcome_baseline(case).accepted == {fix.action_id}
+
+
+@pytest.mark.parametrize("accepted_at_start", [True, False], ids=["stale", "control"])
+def test_a_stale_snapshot_through_the_real_baseline(accepted_at_start):
+    """A record folded before a fix accepted at turn 6, the baseline taken at
+    turn 7: the fix is not turn 7's. Control: the same case whose action was
+    not yet accepted at turn start states it."""
+    case, _root, _hyp = _identified_case()
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    fix = _fix(case, turn=6)
+    case.current_turn = 7
+    if not accepted_at_start:
+        fix.state = "pending"
+    base = turn_narration.outcome_baseline(case)
+    fix.state = "accepted"
+    record_case_outcome(case, at=WritePoint.COMMIT)
+    statement = outcome_statement(
+        outcome_changes(base, case.progress.outcome), frozenset()
+    )
+    if accepted_at_start:
+        assert statement is None
+    else:
+        assert statement == HEAD + "a fix was carried out (turn 6)."
+
+
 def test_an_interception_states_a_workaround():
     case, _root, _hyp = _identified_case()
     before = _record(case)
