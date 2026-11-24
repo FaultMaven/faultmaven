@@ -19,7 +19,11 @@ reaches it.
 file copied into a ``git archive`` extract of ``main``, never typed by hand:
 at 0c4b76c6a, and again at 507c7e6c3 when ``C:refuted`` was added (no
 investigation code changed between them; the other 93 entries re-captured
-identical). The clock is frozen while a fixture is built and rendered.
+identical). #3046 S3a-2 (the deciders read the record's carried FAILED
+verdicts) regenerated, with this generator on its branch, the entries of
+the fixtures it changes on purpose: ``2595_unkinded_failure_rebound`` and
+``D:carried_turn``. The clock is frozen while a fixture is built and
+rendered.
 """
 
 from __future__ import annotations

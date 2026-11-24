@@ -1067,11 +1067,15 @@ terminal_summary_total = Counter(
 # disagrees with it is a disagreement, counted here by the record's field once,
 # when a saved record first carries it (#2689: after the save commits; the
 # record keeps the turn it was first read), and the carried verdict stands.
-# In this stage the deciders still read fresh derivations, so a disagreement
-# is a case where a decider and the record disagree; stage S3 switches the
-# deciders. Labelled by field only: never a case, user or tenant.
+# The window deciders read the carried verdicts (#3046 S3a-2), so an
+# ``attempts.window`` disagreement is the fresh read the record overrides;
+# the deciders that still derive fresh switch at S3d (#3053).
+# ``attempts.window.disconfirmation`` is no disagreement: a FAILED window
+# that took a later disconfirmation pair, once (#2728). Labelled by field
+# only: never a case, user or tenant.
 _OUTCOME_RECORD_FIELDS = (
     "attempts.window",
+    "attempts.window.disconfirmation",
     "attempts.accepted_in_turn",
     "resolution.confirmed_row_ids",
     "closure",
@@ -1085,13 +1089,15 @@ _OUTCOME_RECORD_FIELDS = (
 case_outcome_conflicts_total = Counter(
     "faultmaven_case_outcome_conflicts_total",
     "A carried final verdict in the case outcome record disagreed with a "
-    "fresh derivation (#2615), counted once when a saved record first "
-    "carries it (#2689); or a decision narrated after the cycle's stored "
-    "record disagreed with it (#2636), counted after the turn commits. "
-    "Labelled by the record field "
-    "(attempts.window|attempts.accepted_in_turn|resolution.confirmed_row_ids|"
-    "closure) or the narrated code (narration.<code>, each code a decision "
-    "is compared to the record by).",
+    "fresh derivation (#2615), or a FAILED window took a later "
+    "disconfirmation pair, an addition (#2728), counted once when a saved "
+    "record first carries it (#2689); or a decision narrated after the "
+    "cycle's stored record disagreed with it (#2636), counted after the turn "
+    "commits. Labelled by the record field "
+    "(attempts.window|attempts.window.disconfirmation|"
+    "attempts.accepted_in_turn|resolution.confirmed_row_ids|closure) or the "
+    "narrated code (narration.<code>, each code a decision is compared to the "
+    "record by).",
     labelnames=["field"],
     label_values={"field": _OUTCOME_RECORD_FIELDS},
 )

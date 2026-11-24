@@ -19,7 +19,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from faultmaven.core.investigation.cause_assurance import fix_windows
+from faultmaven.core.investigation.cause_assurance import (
+    FIX_FAILED,
+    FIX_UNKNOWN,
+    carried_fix_windows,
+    fix_windows,
+)
 from faultmaven.core.investigation.milestone_engine import stage_gates
 from faultmaven.core.investigation.milestone_engine.response_application import (
     WHY_OPEN_DOWNGRADE_REASON,
@@ -1617,14 +1622,9 @@ async def test_a_bare_acceptance_of_a_downgraded_fix_gets_the_license_line():
     assert _LICENSE in "\n".join(meta["system_notices"])
 
 
-async def test_a_carry_whose_copy_an_earlier_bundle_staged_is_a_reassertion():
-    """E3 (P11), under the general rule (#2256): bundle 14 stages the re-send
-    of the failed X, bundle 15 carries the acceptance; the license is down at
-    confirmation, so the replay mints X a DIAGNOSTIC in bundle 14, and bundle
-    14's recompute restores the license. At bundle 15 the copy yields to the
-    accepted X: no false license line. The revision leaves no FAILED window on
-    record, so X is the standing fix and the carry a re-assertion, absorbed
-    (``_note_failed_fix`` says nothing while identity keeps the fix)."""
+async def _e3(*, licence_down: bool) -> tuple:
+    """E3 (P11): bundle 14 stages the re-send of the failed X, bundle 15
+    carries the acceptance, and the revision is confirmed at 16."""
     eng, case = await _relapsed()
     (first,) = _solutions(case)
     case.current_turn = 14
@@ -1637,26 +1637,60 @@ async def test_a_carry_whose_copy_an_earlier_bundle_staged_is_a_reassertion():
         solutions_to_add=[_fix(_FIRST)],
         milestones=_accepted("new_index_0"),
     )
-    _license_down(case)
-
+    if licence_down:
+        _license_down(case)
     meta = await _confirm(eng, case, 16)
+    return case, first, meta
 
+
+async def test_a_carry_of_a_failed_fix_through_a_revision_gets_the_re_propose_line():
+    """E3 (P11), under the general rule (#2256): the license is down at
+    confirmation, so the replay mints X a DIAGNOSTIC in bundle 14, and bundle
+    14's recompute restores the license. The confirmed revision keeps X's
+    FAILED window (#2569: the record's verdict, carried; the fresh read
+    re-binds the relapse row to nothing), so X does not stand and the carry
+    of X gets ``_note_failed_fix``'s line, as a live turn's does. Changed on
+    purpose by #3046 S3a-2: ``main`` read the window afresh as unknown and
+    absorbed the carry as a re-assertion of a standing X."""
+    case, first, meta = await _e3(licence_down=True)
+
+    assert [(w.fix_turn, w.state) for w in fix_windows(case)][-1] == (
+        6,
+        FIX_UNKNOWN,
+    ), "premise: the fresh read re-binds the relapse row to nothing"
+    window = carried_fix_windows(case)[-1]
+    assert (window.fix_turn, window.state, window.failure_turn) == (6, FIX_FAILED, 13)
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
-    assert stage_gates.standing_fix_action(case, _FIRST) is first
+    assert stage_gates.standing_fix_action(case, _FIRST) is None
     assert (first.state, first.accepted_in_turn) == ("accepted", 6)
     assert len(case.action_attempts) == 1
-    # #2555: the only notice is the unbound line for the re-checks recorded
-    # before the hold, told once the revision commits; no licence line.
     (line,) = narrated(case, meta)
-    assert "name nothing they re-check that binds" in line
-    assert "was not registered" not in line
+    assert f"SOLUTION {first.action_id} is registered, and its fix window failed" in (
+        line
+    )
+    assert "was not registered" in line and _LICENSE not in line
+
+
+async def test_a_hold_turns_carried_fix_registers_dated_to_the_hold_turn():
+    """#2570: the hold turn's re-send was staged by bundle 14, so bundle 15's
+    carried acceptance has no entry of its own; with the license up at the
+    replay it registers the re-run of the failed X dated to the hold turn
+    (15) that carried it, not a turn late."""
+    case, first, _meta = await _e3(licence_down=False)
+
+    assert [(d, s, t) for d, s, t in _states(case)] == [
+        (_FIRST, "accepted", 6),
+        (_FIRST, "accepted", 15),
+    ]
+    assert len(case.action_attempts) == 2
+    assert [w.fix_turn for w in carried_fix_windows(case)] == [None, 6, 15]
 
 
 async def test_a_carried_re_run_of_a_failed_fix_gets_the_re_propose_line():
     """The state rule at the function (#2256): a carried bearer that is the
     ACCEPTED X whose window FAILED gets ``_note_failed_fix``'s accurate line,
-    as a live turn does, never silence. (Through the engine, a revision commit
-    leaves no FAILED window on record, so E3 above is a re-assertion.)"""
+    as a live turn does, never silence, as E3 above does through the engine
+    (#2569)."""
     _eng, case = await _relapsed()
     (first,) = _solutions(case)
     assert stage_gates.standing_fix_action(case, _FIRST) is None

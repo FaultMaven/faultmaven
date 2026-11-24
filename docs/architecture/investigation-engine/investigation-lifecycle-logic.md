@@ -1040,9 +1040,10 @@ cycle is `turn_application._apply_turn_response`, #2615 Q8 (a), #2636):
    revision's staged-work replay, and the re-check of a remembered resolution
    request; then the model generates its response.
 2. **Step 1** — the response applied (`process_response_structured`): state
-   updates, gate milestones and their side effects, the apply-step openers
-   (deferred, false-alarm, rca-infeasible), and the first recompute
-   (`_recompute_assessment_state`).
+   updates, gate milestones and their side effects, the same-cycle mint of
+   the outcome record before the chain emission (#3046 S3a-2), the
+   apply-step openers (deferred, false-alarm, rca-infeasible), and the first
+   recompute (`_recompute_assessment_state`).
 3. **The apply step's refusals and repairs**, merged with the accumulators
    written before the model was called.
 4. **Step 3b** — the offer record's lapse rule (`_lapse_and_record`).
@@ -1117,6 +1118,37 @@ written*, as amended by #2811, ruled 2026-11-15):
   sections and carries the finals already marked, the prior's `folded_under`
   (so a terminal write that raised is still repaired), and on a terminal case
   the closure a terminal write folded. The write point is a `WritePoint`.
+- **The deciders read the carried view** (#3046 S3a-2). Every decider of a
+  fix window, and the prompt's window verdicts, read `carried_fix_windows`:
+  the fresh read (`fix_windows`) with each final FAILED window of the record
+  laid over it, so a re-root, a pool move, a re-read or a confirmed statement
+  revision never reverses one; only a new fix opens a window that can. The
+  fresh read is the fold's (`outcome.py`) and `_date_to_the_report`'s pair
+  guard's alone. **The overlay rule:** a final FAILED window is matched to a
+  fresh window by its `action_id`, through the action's current
+  `accepted_in_turn` (window 0 as `action_id` None). It takes the record's
+  state, `observed`, relief and failure turns, and its disconfirmation pair,
+  or the fresh pair while it has none. The span and the cause rows are the
+  fresh read's (the row rule is S3b's), save that an unkinded window ends at
+  the first attempt at or after its carried failure and holds no row past
+  it. A final window whose attempt no longer reads (an orphan) is not laid
+  over anything; a withdrawn attempt's drops out. Until S3b, a carried
+  FAILED window pairs the record's verdict with fresh rows. Inside one
+  computation of the record, `_attempts` folds the fresh read and every
+  other section, and each decider it calls, reads the windows those attempts
+  carry (seeded in the computation's memo), so the record agrees with itself.
+- **A later disconfirmation reaches the record** (#2728). When the carried
+  and fresh windows are both FAILED, the carried pair is None and the fresh
+  one is set, a minting fold takes the fresh pair, once and final from then
+  on. It is an addition, not a disagreement: counted once on
+  `case_outcome_conflicts_total{field="attempts.window.disconfirmation"}`,
+  never under `attempts.window`.
+- **The same-cycle mint** (#2582). Step 1 writes the record once more, before
+  the chain emission (a replayed bundle's at `WritePoint.REPLAY`): a window
+  the cycle's deciders read FAILED (the solutions step and the stage gates)
+  is minted before the emission's re-root (`attach_root`) can erase the
+  citation it was read through. No step between the evidence and that write
+  re-roots, and none reads a window's verdict before the solutions step.
 - **Computed on demand for narration** (`narration_outcome`): folded in memory
   over the stored record, stored nowhere, minting nothing. The turn's
   narration folds it once, at its entry, when the cycle's write failed and a
@@ -1155,8 +1187,9 @@ written*, as amended by #2811, ruled 2026-11-15):
   `<fix_verification>` block (S2b-1a and S2b-1b-i, `narration.fix_verification`),
   rendered from the record, the identity fields, `content(id)`
   (`content_by_id`: a proposed action's description, a need's current
-  request text; never a row), the window verdicts ruling Q1 (a) keeps fresh until S3
-  (`FixVerificationFresh`) and the needs pool (`narration.needs.NeedsView`).
+  request text; never a row), the window verdicts the deciders read (the
+  carried view, #3046 S3a-2; `FixVerificationFresh`) and the needs pool
+  (`narration.needs.NeedsView`).
   A need's state is the pool's own, never an outcome fact (ruled 2026-11-17),
   so the narrators read it through that one typed, text-free view, read at
   most once per prompt assembly; the held need, why it holds
@@ -1200,8 +1233,8 @@ the turn and the turn's own prose does not state it
   attempt a fix; window 0 has none). The cause has fallen when a root fell
   and the confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also
   holds an identified root, and HELD_OPEN or IDENTIFICATION_CONTESTED can
-  mask the reason). Windows, mitigation and bookkeeping are not read (S3 adds the
-  first two).
+  mask the reason). Windows, mitigation and bookkeeping are not read (S3c of
+  #3046 adds the first two).
 - **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
   copy of the record before any write of the turn, and the actions accepted
   then) and the turn-final record: the cycle's, or the narration's fold
@@ -1251,7 +1284,7 @@ the turn and the turn's own prose does not state it
   both blocks, so the rule stands alone there. Naming the cause's content
   ("state the root cause in one sentence before proposing the fix") is not
   a record claim and stays; the window verdict and mitigation lines of the
-  TREATMENT and MITIGATION prompts are S3's. The line costs about 37 tokens
+  TREATMENT and MITIGATION prompts are S3c's (#3046). The line costs about 37 tokens
   of the prefix, so the budget backstop's starvation boundary moved up by
   that much, and a turn that falls back is given no rule.
   `narration_outcome_prose_total{provider,set}` counts the INVESTIGATING

@@ -13,7 +13,7 @@ outcome-bearing decision. The one exception is the closure reason's model
 rendering (pin 6's model half, ruling Q2 (a)), which is the value itself.
 
 The fresh inputs are what the record does not hold: ``mitigation.verified``
-(ruling Q1 (a) keeps it fresh until stage S3; the record drops it after a
+(ruling Q1 (a) keeps it fresh until stage S3d, #3053; the record drops it after a
 bound relapse), the symptom's currency (the wall clock), and the offer facts,
 which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
 2026-11-20: whether an offer is open, and each standing decline's turn, a
@@ -50,7 +50,7 @@ RESOLUTION_OMITTED = "The case's resolution could not be read this turn."
 
 #: The problem statuses that put the case on hold, under which the reply
 #: carries no reopen chip: ``problem_status.problem_on_hold`` is the
-#: deciders' twin of this set (stage S3).
+#: deciders' twin of this set (stage S3d, #3053).
 ON_HOLD = (ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED)
 
 #: The stage gates, in the order the prompt lists them.

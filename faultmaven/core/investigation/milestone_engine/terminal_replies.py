@@ -67,7 +67,8 @@ def _reply_outcome(case) -> Optional[CaseOutcome]:
 
 def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
     """The confirmation's two record facts, derived from the case, when the
-    fold raised: the decider's decide-time read (A4), removed at stage S3.
+    fold raised: the decider's decide-time read (A4), removed at stage S3d
+    (#3053).
     The fold derives them through these same two functions, so a failure
     inside one of them raises again here, as the decider's read did on
     ``main``; only a fold failure outside them renders from this fallback."""

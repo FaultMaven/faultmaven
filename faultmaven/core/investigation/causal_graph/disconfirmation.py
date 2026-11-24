@@ -10,9 +10,9 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
     FixWindow,
+    carried_fix_windows,
     counterfactual_link_decisive,
     fix_application_turn,
-    fix_windows,
     latest_decided_fix_window,
     stance_declared_confident,
     subject_index,
@@ -404,7 +404,7 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
         if decided.fix_turn is None and _has_undatable_solution_acceptance(case):
             return "undatable_acceptance"
         return "relapse"
-    latest = fix_windows(case)[-1]
+    latest = carried_fix_windows(case)[-1]
     if (
         latest.fix_turn is None
         and fix_application_turn(case) is not None

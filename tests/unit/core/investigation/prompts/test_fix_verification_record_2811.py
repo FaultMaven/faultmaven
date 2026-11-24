@@ -26,6 +26,7 @@ import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.cause_assurance import (
+    carried_fix_windows,
     fix_windows,
     pending_symptom_check,
     subject_index,
@@ -117,8 +118,9 @@ async def _shows_closure(case, block, want):
 
 async def _shows_accepted_in_turn(case, block, want):
     """The record's carried turn is printed; the window's verdict is the one
-    ``main`` reads at the action's current turn."""
-    assert "executed turn 7: succeeded" in want, "premise: main's fresh read"
+    the deciders read at the action's current turn (the record's FAILED,
+    matched by action id, #3046 S3a-2)."""
+    assert "executed turn 7: failed at turn 9" in want, "premise: the current turn"
     return block == want.replace("executed turn 7:", "executed turn 6:")
 
 
@@ -259,7 +261,8 @@ def test_the_needs_view_holds_the_rulings_reading():
 
 def _fresh(case, outcome):
     subjects = subject_index(case)
-    return block_module._fresh(case, outcome, subjects, fix_windows(case, subjects))
+    windows = carried_fix_windows(case, subjects)
+    return block_module._fresh(case, outcome, subjects, windows)
 
 
 #: What this block's ``content`` reads: actions and needs, never a row.
@@ -447,14 +450,17 @@ async def test_a_need_reads_its_current_text():
     )
 
 
-async def test_a_carried_turn_keeps_the_fresh_verdict():
-    """The window is read at the action's current turn, not the carried one."""
+async def test_a_re_dated_attempt_keeps_its_carried_verdict():
+    """The window is read at the action's current turn, not the carried one,
+    and the record's FAILED verdict is laid over it, matched by action id
+    (#3046 S3a-2); the fresh read alone says it succeeded."""
     case = await build("D:carried_turn")
     outcome = narration_outcome(case)
     (attempt,) = [a for a in outcome.attempts if a.action_id]
     assert attempt.accepted_in_turn == 6, "premise: carried"
+    assert fix_windows(case)[-1].state == "succeeded", "premise: the fresh read"
     fix = _fresh(case, outcome).fixes[attempt.action_id]
-    assert fix.state == "succeeded"
+    assert (fix.state, fix.failure_turn) == ("failed", 9)
 
 
 # ---------------------------------------------------------------------------

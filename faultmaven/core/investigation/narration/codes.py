@@ -53,8 +53,9 @@ class NoticeCode(StrEnum):
     MITIGATION_DISPOSED = "mitigation_disposed"
     # B1c: each rendered from its params alone, the facts its decider read
     # (decide-time, A4), but PENDING_CHECK, rendered from the record when no
-    # switched decision of the cycle disagrees with it (#2811 S2b-2c); stage
-    # S3 switches the deciders to the record.
+    # switched decision of the cycle disagrees with it (#2811 S2b-2c). The
+    # window deciders read the record's carried verdicts (#3046 S3a-2); stage
+    # S3d (#3053) switches the rest.
     ABSENCE_IN_FAILED_WINDOW = "absence_in_failed_window"
     UNBOUND_RECHECKS = "unbound_rechecks"
     FAILED_FIX_NOT_REREGISTERED = "failed_fix_not_reregistered"

@@ -5,11 +5,11 @@
 ``narration_outcome``), the case's identity (``CaseIdentity``), the text of an
 action or a need by id (``content_by_id``, ruling 5's ``content(id)``, which
 for this block reads actions and needs only, never an evidence row), the
-window verdicts ruling Q1 (a) keeps read fresh until the deciders switch
-(stage S3), which the call site computes with today's deciders and passes in
-as ``FixVerificationFresh``, and the needs pool (``NeedsView``, ruling 2 of
-2026-11-17), read only where the need lines print. It renders the whole
-block. The held need, its mark and ``DECLINE_STILL_BINDS`` are the record's
+window verdicts the deciders read (the record's final FAILED verdicts over
+the fresh read, ``carried_fix_windows``, #3046 S3a-2), which the call site
+computes and passes in as ``FixVerificationFresh``, and the needs pool
+(``NeedsView``, ruling 2 of 2026-11-17), read only where the need lines
+print. It renders the whole block. The held need, its mark and ``DECLINE_STILL_BINDS`` are the record's
 (``resolution.pending_check_need_id`` and ``pending_check_reason``, written
 from ``pending_symptom_check`` whatever readiness answered, and
 ``declined_stands``; S2b-1b-i). A need whose text does not read raises, so
@@ -132,9 +132,9 @@ class FixFresh:
 
 @dataclass(frozen=True)
 class FixVerificationFresh:
-    """The verdicts ruling Q1 (a) keeps read fresh until stage S3, computed
-    at the call site by today's deciders. It holds no text: ids, turns,
-    flags and codes only."""
+    """The window verdicts the deciders read (``carried_fix_windows``, #3046
+    S3a-2), computed at the call site. It holds no text: ids, turns, flags
+    and codes only."""
 
     fixes: Mapping[str, FixFresh] = field(default_factory=dict)
     """Each dated attempt's window, by action id, read at the action's

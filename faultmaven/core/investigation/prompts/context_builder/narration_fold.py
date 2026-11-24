@@ -53,8 +53,8 @@ def _currency_note(case: Case) -> str:
 
 
 def _fix_confirmed(case: Case) -> bool:
-    """The latest decided fix window SUCCEEDED (ruling Q1 (a) keeps it fresh
-    until stage S3)."""
+    """The latest decided fix window SUCCEEDED, as the deciders read it (the
+    carried view, #3046 S3a-2)."""
     from .causal_graph_block import fix_confirmed
 
     return fix_confirmed(case)

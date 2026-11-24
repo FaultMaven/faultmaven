@@ -9,8 +9,8 @@ the confirmed rows at RESOLVED. A conflict between a carried verdict and a fresh
 derivation is logged and counted, and the carried verdict stands.
 
 The narration step reads it (#2636 B1b): the withdrawal and mitigation notices
-state its verdicts. The other narrators (S2), the deciders (S3) and the report
-and API (S4) switch to it stage by stage.
+state its verdicts. The other narrators (S2), the deciders (S3, #3046, and
+S3d, #3053) and the report and API (S4) switch to it stage by stage.
 
 Every enum here is APPEND-ONLY. A stored case names its members by value, so a
 member renamed or removed would fail every load of that case. The members are
@@ -386,7 +386,8 @@ class AttemptOutcome(BaseModel):
 
 
 class Demotion(BaseModel):
-    """An M6 demotion with its pair rows (final). No writer yet: stage S3."""
+    """An M6 demotion with its pair rows (final). No writer yet: stage S3b
+    (#3046)."""
 
     hypothesis_id: str
     root_id: str

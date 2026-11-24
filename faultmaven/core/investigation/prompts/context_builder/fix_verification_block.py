@@ -55,7 +55,7 @@ from typing import Optional
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     _dated_fixes,
-    fix_windows,
+    carried_fix_windows,
     mitigation_attempt_turn,
     subject_index,
 )
@@ -108,8 +108,8 @@ def _shown(case: Case) -> bool:
 
 
 def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
-    """The verdicts ruling Q1 (a) keeps read fresh until stage S3, by today's
-    deciders: each dated attempt's window, joined by action id at the
+    """The window verdicts the deciders read (``windows``, the carried view,
+    #3046 S3a-2): each dated attempt's window, joined by action id at the
     action's current execution turn; what the latest window says of the
     problem; and, where its ask prints, whether the gate would refuse
     ``mitigation_verified`` (True elsewhere). A
@@ -172,7 +172,7 @@ def build_fix_verification_block(
         if outcome is None:
             return _OMITTED_BLOCK
         subjects = subject_index(case)
-        windows = fix_windows(case, subjects)
+        windows = carried_fix_windows(case, subjects)
         fresh = _fresh(case, outcome, subjects, windows)
         lines = render_fix_verification(
             outcome,

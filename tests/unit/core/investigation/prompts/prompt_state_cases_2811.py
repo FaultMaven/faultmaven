@@ -33,6 +33,11 @@ chip feedback reads "The 'Mark it resolved' and 'Close without resolving'
 buttons are attached under this reply.", in place of "the engine's ...
 action" and "The engine has attached its ... actions to this reply.". The rest
 of each entry is unchanged. No other entry's render differed.
+
+#3046 S3a-2 (the deciders read the record's carried FAILED verdicts)
+regenerated, with this generator on its branch, the entries of the fixtures
+it changes on purpose: ``2595_unkinded_failure_rebound`` and
+``D:carried_turn``.
 """
 
 from __future__ import annotations

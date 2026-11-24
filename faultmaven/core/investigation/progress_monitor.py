@@ -45,7 +45,7 @@ from typing import Dict, List, Optional
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
-    fix_windows,
+    carried_fix_windows,
 )
 from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_MIN_REFUTED,
@@ -671,7 +671,7 @@ class ProgressMonitor:
         A remediation is a record with its own fix window (#2105); an
         interception opens none, so it neither counts nor lifts it (#2036
         D2.3). For ``solution`` this triggers on N+ FAILED dated windows
-        (``fix_windows``), unless the latest window SUCCEEDED: a fix that
+        (``carried_fix_windows``), unless the latest window SUCCEEDED: a fix that
         worked after the failed ones is no failure cycle. A relapsed window 0
         is no recorded attempt,
         and a late-registered fix can fail both it and its own window (#2501).
@@ -680,7 +680,7 @@ class ProgressMonitor:
         reading: N+ accepted MITIGATION actions with the record not verified.
         """
         if action_type == "solution":
-            windows = fix_windows(case)
+            windows = carried_fix_windows(case)
             if windows[-1].state == FIX_SUCCEEDED:
                 return False
             failed = _failed_attempts(windows)
@@ -829,7 +829,7 @@ class ProgressMonitor:
         stage_name = stage.value if stage else "current"
 
         failed_count = (
-            _failed_attempts(fix_windows(case))
+            _failed_attempts(carried_fix_windows(case))
             if action_type == "solution"
             else sum(1 for a in case.proposed_actions if a.state == "accepted")
         )

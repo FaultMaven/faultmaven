@@ -15,8 +15,13 @@ adds one fixture per declared difference.
 output on ``main`` is ``fix_verification_oracle_2811.json``, captured by
 running ``render_all`` with this file copied into that tree, never typed by
 hand: at 9b4d0b1e1, and at 92e98cdbf for ``NEEDS`` and the parity corpus's
-``held_check_on_a_false_alarm``. Ids are made deterministic while a fixture
-is built (``_deterministic_ids``), so the capture is compared byte for byte.
+``held_check_on_a_false_alarm``. #3046 S3a-2 (the deciders read the
+record's carried FAILED verdicts) regenerated, with this generator on its
+branch, the entries of the fixtures it changes on purpose: the #2582 and
+#2595 fixtures, and ``D:carried_turn``, whose entry keeps the action's
+current turn (its declared difference) beside the carried verdict. Ids are
+made deterministic while a fixture is built (``_deterministic_ids``), so
+the capture is compared byte for byte.
 """
 
 from __future__ import annotations

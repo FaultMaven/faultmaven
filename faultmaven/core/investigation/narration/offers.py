@@ -17,7 +17,7 @@ written (#2636 B1d). For an offer in ``RECORD_PROSE``, when no switched
 decision of the cycle disagrees with the record on a field it was decided
 from, the narration step takes the outcome facts those params state from the
 record (``record_params``, #2811 S2b-2c); when one does, and for every other
-offer until stage S3 switches its decider, the params are the ones its
+offer until stage S3d (#3053) switches its decider, the params are the ones its
 decider read (decide-time, A4).
 
 The "Root cause" ask carries why the cause cannot be confirmed yet
@@ -25,7 +25,7 @@ The "Root cause" ask carries why the cause cannot be confirmed yet
 the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when
 ``notices.empty_pool_text`` gives a line for the record's cause. The
 decide-time message (``ResolutionReadiness.message``) keeps the ask without
-it until stage S3 gives its decider the record.
+it until stage S3d (#3053) gives its decider the record.
 """
 
 from typing import Optional, Sequence
@@ -421,7 +421,7 @@ def _readiness(params: dict) -> str:
 #: from (``codes.DECIDED_FROM``); when one does, every one renders its
 #: decider's params.
 #: ``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the confirmation and closure
-#: proposals render their decider's params until stage S3 switches their
+#: proposals render their decider's params until stage S3d (#3053) switches their
 #: deciders.
 RECORD_PROSE = frozenset(
     {
@@ -487,7 +487,7 @@ def render_offer(code: str, params: dict) -> str:
     its record from ``params``: for an offer in ``RECORD_PROSE``, the facts
     the record states (``record_params``) where the narration has a record
     no switched decision of the cycle disagrees with; otherwise, and for every
-    other offer until stage S3 switches its decider to the record, the facts
+    other offer until stage S3d (#3053) switches its decider to the record, the facts
     its decider read (A4)."""
     if code == OfferCode.RCA_INFEASIBLE_CLOSE:
         # The mitigation's record (#2100, C1), never a verdict it does not hold.

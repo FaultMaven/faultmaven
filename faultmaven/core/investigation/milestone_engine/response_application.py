@@ -50,6 +50,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
 )
 from faultmaven.core.investigation.narration.codes import NoticeCode
 from faultmaven.core.investigation.offers import answer_offer, open_terminal_offer
+from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.problem_status import (
     cause_work_accepted,
     cause_work_staged,
@@ -98,6 +99,7 @@ from faultmaven.modules.case.contracts import (
     SolutionFeasible,
     SolutionType,
     TurnOutcome,
+    WritePoint,
 )
 
 from .affordances import (
@@ -2069,6 +2071,20 @@ class ResponseApplier:
         # always populated from the emitted chain; cause_state/M6 derive from the
         # real emitted chains. (cause_state derivation never reads the graph for
         # truth — see _recompute_assessment_state.)
+        #
+        # The same-cycle mint (#2582, #3046 S3a-2): a window this cycle's
+        # deciders read FAILED (steps 5 and 5b) is minted into the record
+        # before the chain's re-root (``attach_root``) can erase the citation
+        # it was read through, so the cycle's record carries it. Nothing
+        # between the evidence (step 2) and here re-roots.
+        record_case_outcome(
+            case,
+            at=(
+                WritePoint.REPLAY
+                if metadata.get(REPLAY_METADATA_KEY)
+                else WritePoint.CYCLE
+            ),
+        )
         _apply_chain_emission(case, updates, metadata)
         _settle_fix_attempts(case, metadata)
         # Orphan-chain resolution (B2c invariant: every chain explaining D is

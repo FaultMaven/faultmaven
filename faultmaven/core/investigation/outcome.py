@@ -23,13 +23,23 @@ commit (``turn_settlement.settle_turn``), the REST close's retry helper and
 the backfill's save. A dry run, a failed or cancelled commit, a retried
 attempt and a commit only the turn receipt vouches for count nothing. A fold
 that reads it gone drops it, so its return, read at a later turn, counts
-again, within one turn's folds too. In this stage the deciders still read
-fresh derivations, so a disagreement is a place where a decider and the
-record disagree; stage S3 switches them.
+again, within one turn's folds too.
+
+The window deciders read the carried verdicts (#3046 S3a-2): every one reads
+``carried_fix_windows``, the fresh read with each final FAILED window laid
+over it (``carry_verdicts``), and inside a computation the list its fold
+carries, so the record's sections read the windows it holds. An
+``attempts.window`` disagreement is then the fresh read the record
+overrides. The other deciders still derive fresh until S3d (#3053), so
+their disagreement is a place where a decider and the record disagree. A
+FAILED window with no disconfirmation pair takes a later one, once, at a
+minting point, counted as ``attempts.window.disconfirmation`` (#2728).
 
 Where it is written (``record_case_outcome``): at the end of each decision
-cycle (``_apply_turn_response``, after every decider, before the save), after
-each bundle of a statement-revision replay, at both terminal transitions, and
+cycle (``_apply_turn_response``, after every decider, before the save), and
+in each investigation apply before the chain emission (a cycle's, or a
+replayed bundle's: the same-cycle mint, #2582), after each bundle of a
+statement-revision replay, at both terminal transitions, and
 at the two save helpers (#2811): a turn's commit (``commit_turn_plan``) and
 the case service's write (``update_case_with_retry``), each after the save's
 offer lapse (``record_before_save``), and at case creation, the out-of-band
@@ -65,6 +75,7 @@ from faultmaven.core.investigation.cause_assurance import (
     _is_remediation,
     _outcome_computation,
     _pool_legs,
+    carry_verdicts,
     cause_pool_empty_reason,
     cause_recheck_status,
     confirmation_stamp_rows,
@@ -77,6 +88,7 @@ from faultmaven.core.investigation.cause_assurance import (
     mitigation_settled,
     off_cause_attempt,
     pending_symptom_check,
+    seed_carried_windows,
     subject_index,
     symptom_elimination_rows,
     unbound_post_fix_rows,
@@ -242,6 +254,11 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 
+#: The record field a later disconfirmation pair of a FAILED window is
+#: counted under (#2728): an addition, never a disagreement.
+_LATER_PAIR = "attempts.window.disconfirmation"
+
+
 class _Disagreements:
     """The disagreements one computation reads, keyed by field and entry: the
     record keeps the turn each was first read, and each is logged when it
@@ -259,6 +276,15 @@ class _Disagreements:
             self.read[key] = self.known[key]
             return
         self.read[key] = self.case.current_turn
+        if field == _LATER_PAIR:
+            logger.info(
+                "Case %s: the outcome record's FAILED window %s takes the later "
+                "disconfirmation pair %s (#2728)",
+                getattr(self.case, "case_id", None),
+                key,
+                fresh,
+            )
+            return
         logger.warning(
             "Case %s: the outcome record's carried %s (%s) disagrees with a "
             "fresh derivation (%s); the carried verdict stands (#2615)",
@@ -336,11 +362,16 @@ def compute_case_outcome(
         windows = fix_windows(case, subjects)
         if prior is not None:
             prior = _upgraded(prior, case, subjects, windows)
-        status = cause_recheck_status(case, subjects=subjects, windows=windows)
         statement = current_statement(case)
         seen = _Disagreements(case, prior)
-        unbound = _unbound_rechecks(prior, case, subjects, windows)
         fold = _Fold(prior, case, subjects, windows, statement, seen, mint)
+        # The attempts fold the fresh read; every other section, and every
+        # decider it calls, reads the windows they carry (#3046 S3a-2).
+        attempts = _attempts(fold)
+        fold.windows = windows = carry_verdicts(case, windows, attempts, subjects)
+        seed_carried_windows(case, windows)
+        status = cause_recheck_status(case, subjects=subjects, windows=windows)
+        unbound = _unbound_rechecks(prior, case, subjects, windows)
         return CaseOutcome(
             shape=CURRENT_OUTCOME_SHAPE,
             # An off-cycle fold carries it: only a minting one moves a record to
@@ -352,7 +383,7 @@ def compute_case_outcome(
                 statement=statement,
             ),
             cause=_cause(case, subjects, status),
-            attempts=_attempts(fold),
+            attempts=attempts,
             demotions=list(prior.demotions) if prior is not None else [],
             resolution=_resolution(fold, status),
             unbound_rechecks=unbound,
@@ -560,7 +591,7 @@ def _attempts(fold: _Fold) -> list[AttemptOutcome]:
     observed. Folded over the prior: a FAILED window and an
     ``accepted_in_turn`` are carried once final (``final_at``), and a final
     FAILED window whose attempt no longer reads at all is kept."""
-    case, windows, mint = fold.case, fold.windows, fold.mint
+    case, windows, mint, seen = fold.case, fold.windows, fold.mint, fold.seen
     by_turn = {w.fix_turn: w for w in windows[1:]}
     fresh = []
     if windows[0].observed:
@@ -612,16 +643,24 @@ def _attempts(fold: _Fold) -> list[AttemptOutcome]:
                 update["accepted_in_turn"] = old.accepted_in_turn
         if old.window is not None and old.window.final_at is not None:
             new = attempt.window
+            update["window"] = old.window
             if new is None or new.state != FIX_FAILED:
                 fresh_state = new.state if new else None
-                fold.seen.add(
-                    "attempts.window", attempt.action_id, FIX_FAILED, fresh_state
-                )
-            update["window"] = old.window
+                seen.add("attempts.window", attempt.action_id, FIX_FAILED, fresh_state)
+            elif old.window.disconfirmation is None and new.disconfirmation:
+                # A later disconfirmation of the FAILED window (#2728): taken
+                # once, at a minting point, and counted as an addition.
+                if mint is not None:
+                    seen.add(_LATER_PAIR, attempt.action_id, None, new.disconfirmation)
+                    update["window"] = old.window.model_copy(
+                        update={"disconfirmation": new.disconfirmation}
+                    )
+            elif f"{_LATER_PAIR}:{attempt.action_id}" in seen.known:
+                seen.add(_LATER_PAIR, attempt.action_id, None, None)
         out.append(attempt.model_copy(update=update) if update else attempt)
     for old in carried.values():
         if old.window is not None and old.window.final_at is not None:
-            fold.seen.add("attempts.window", old.action_id, FIX_FAILED, None)
+            seen.add("attempts.window", old.action_id, FIX_FAILED, None)
             out.append(old)
     return out
 

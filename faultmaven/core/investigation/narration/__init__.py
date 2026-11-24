@@ -11,7 +11,8 @@ the cycle's record, B1c's and B1d's render the facts their deciders read
 (#2636), but the held check's and the offers' in ``offers.RECORD_PROSE``,
 which state the record when no such decision of the cycle disagrees with it
 on a field it was decided from, and else all their deciders' facts (#2811
-S2b-2c); the other offers wait for stage S3. ``fix_verification`` renders the prompt's
+S2b-2c); the other offers wait for stage S3d (#3053). ``fix_verification``
+renders the prompt's
 ``<fix_verification>`` block from the record (#2811 S2b-1a), its need lines
 from the needs pool's typed view (``needs.NeedsView``, S2b-1b-i);
 ``evidence_needs`` renders the

@@ -18,6 +18,7 @@ import pytest
 
 from faultmaven.core.investigation import problem_status as ps
 from faultmaven.core.investigation.milestone_engine import (
+    response_application,
     turn_application,
     turn_completion,
     turn_narration,
@@ -1192,6 +1193,8 @@ async def test_a_placeholder_keeps_its_flag_with_the_statement_under_it():
 
 
 def _cycle_write_fails(monkeypatch) -> None:
+    """Both of the cycle's writes fail: the same-cycle mint before the chain
+    emission (#3046 S3a-2) and the write at the cycle's end."""
     real = turn_application.record_case_outcome
 
     def _write(case, *, at, **kw):
@@ -1200,6 +1203,7 @@ def _cycle_write_fails(monkeypatch) -> None:
         return real(case, at=at, **kw)
 
     monkeypatch.setattr(turn_application, "record_case_outcome", _write)
+    monkeypatch.setattr(response_application, "record_case_outcome", _write)
 
 
 async def test_a_failed_cycle_write_states_from_the_narrations_fold(monkeypatch):
