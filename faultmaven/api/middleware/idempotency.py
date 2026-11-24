@@ -1,10 +1,10 @@
 """Idempotency Middleware
 
 Answers a keyed POST (``Idempotency-Key``) carrying an ``Authorization``
-header, valid or not, on every route not declared ``never_replayed``, from a Redis entry its 2xx answer wrote (one hour
-TTL). A retry with the same body gets that answer back, marked
-``X-Idempotency-Replayed: true``; one with a different body is 409
-``IDEMPOTENCY_KEY_REUSE``.
+header, valid or not, on every route not declared ``never_replayed``, from a
+Redis entry its 2xx answer wrote (one hour TTL). A retry with the same body
+gets that answer back, marked ``X-Idempotency-Replayed: true``; one with a
+different body is 409 ``IDEMPOTENCY_KEY_REUSE``.
 
 **Claim, then look up, then answer (#2655).** A miss alone proves nothing: a
 duplicate overlapping the first request would miss too and run again (a keyed
@@ -18,15 +18,18 @@ no entry (a non-2xx, never cached) → it takes the claim, looks up again, and
 runs; past the bound, on a Redis error while waiting, or on a failed lookup
 under any claim → 409 ``IDEMPOTENCY_REQUEST_IN_PROGRESS`` with
 ``Retry-After``, a moment, since a retry waits again. A waiter never runs
-unclaimed. No claim store (it failed) runs unclaimed, as before, reported
-once.
+unclaimed. No claim store (it failed on the first attempt) runs unclaimed, as
+before, reported once, whether or not the lookup then reads.
 
 The claim is released on every answer and on an exception, and on a
-cancellation before the route runs; never on one after: a cancelled holder may
-have committed, so its claim lapses at the TTL instead. The route thus runs once per 2xx answer, except: a cache write
-that failed (swallowed, so the answer still goes out), a holder that died
-between its commit and the cache write, and a route that commits then answers
-5xx. In each the next holder runs again.
+cancellation before the route runs, best effort: a cancel of the anyio scope
+(a shutdown) can cut that release short, and the claim then lapses at its TTL,
+a delay of at most the lease, never a second run. It is never released on a
+cancellation after the route starts: a cancelled holder may have committed,
+so its claim lapses at the TTL instead. The route thus runs once per 2xx
+answer, except: a cache write that failed (swallowed, so the answer still goes
+out), a holder that died between its commit and the cache write, and a route
+that commits then answers 5xx. In each the next holder runs again.
 """
 
 import asyncio
@@ -510,9 +513,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         idempotency_key: str,
     ) -> "tuple[Optional[OwnedClaim], Optional[Response]]":
         """The lookup under the claim. Nothing has run yet, so the claim goes
-        on any exit but running the route, a cancellation included. A failed
-        read is the in-progress 409, never a run: a request that won a claim
-        just released may be the duplicate of one that answered."""
+        on any exit but running the route, a cancellation included (best
+        effort). Under a held claim a failed read is the in-progress 409, never
+        a run: a request that won a claim just released may be the duplicate
+        of one that answered. With no claim (the store failed on the first
+        attempt) it runs unclaimed, as the fast path's failed read would."""
         try:
             raw = await self.redis_client.get(cache_key)
             entry = json.loads(raw) if raw else None
@@ -521,6 +526,8 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 f"Idempotency lookup under the claim could not read: "
                 f"{exception_log_name(e)}"
             )
+            if claim is None:
+                return None, None
             await self._release(claim)
             return None, self._in_progress()
         except BaseException:

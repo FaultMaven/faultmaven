@@ -358,12 +358,20 @@ def _refuse_pipeline(*args, **kwargs):
     raise ConnectionError("redis unreachable")
 
 
-@pytest.mark.parametrize("store", ["claim-store-fails", "no-redis-client"])
+@pytest.mark.parametrize(
+    "store", ["claim-store-fails", "redis-down", "no-redis-client"]
+)
 async def test_without_a_claim_store_the_route_runs_unclaimed(rig, monkeypatch, store):
+    """Redis down entirely included: no read, claim or cache write works, and
+    the request still runs, as before the claim."""
     if store == "no-redis-client":
         rig.no_redis = True
     else:
         monkeypatch.setattr(rig.fake, "set", _raise)
+    if store == "redis-down":
+        for command in ("get", "mget"):
+            monkeypatch.setattr(rig.fake, command, _raise)
+        monkeypatch.setattr(rig.fake, "pipeline", _refuse_pipeline)
     async with _client(rig.app) as client:
         answer = await _post(client)
 
