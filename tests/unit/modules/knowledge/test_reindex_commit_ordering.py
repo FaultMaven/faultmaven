@@ -208,6 +208,17 @@ def _service(state, *, commit_raises=None, commit_lands=True):
     return service, repo, calls
 
 
+@pytest.fixture(autouse=True)
+def _gate_stubbed():
+    """The runbook security gate, stubbed for every test here (#3037). Its
+    real worker must start within GATE_START_SECONDS, and on a loaded runner
+    one that does not ends the update with GateUnavailable before its chunks
+    are written. None of these tests is about the gate; its worker has its
+    own tests."""
+    with patch(_GATE, autospec=True):
+        yield
+
+
 def _kinds(calls):
     return [kind for kind, _ in calls if kind != "chunk_updated_at"]
 
@@ -244,15 +255,16 @@ async def _until(step, reached, updates, calls):
         for task in updates
         if not task.done()
     ]
+    # Read before the cancel: a cancelled update abandons its queued encode.
+    slot = index_slot.index_admission
+    held = (slot.queued(), slot.encoding_for_seconds(), slot.waiting_for_host_lock)
     for task in updates:
         task.cancel()
     await asyncio.gather(*updates, return_exceptions=True)
-    slot = index_slot.index_admission
     pytest.fail(
         f"{step} not reached; updates ended: {ended}; the others wait at: "
-        f"{waits}; calls: {calls}; KB slot: {slot.queued()} queued, encoding "
-        f"for {slot.encoding_for_seconds()} s, waiting for the host lock "
-        f"{slot.waiting_for_host_lock}"
+        f"{waits}; calls: {calls}; KB slot: {held[0]} queued, encoding for "
+        f"{held[1]} s, waiting for the host lock {held[2]}"
     )
 
 
@@ -538,10 +550,7 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     repo.update_fields = AsyncMock(side_effect=in_order)
     first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
-    # The security gate's real worker must start within GATE_START_SECONDS; on
-    # a loaded runner it can end an update with GateUnavailable or GateBusy
-    # before its chunks are written (#3037). Its worker has its own tests.
-    with patch(_REPO, return_value=repo), patch(_GATE, autospec=True):
+    with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             updates = [
                 asyncio.create_task(
