@@ -98,8 +98,9 @@ USER_CHANGES_REGISTER_LINE = (
     "The root cause is established now. If a change recorded above as not a "
     "fix is the fix of that cause, register it: re-propose it, with its "
     "description unchanged, as a SolutionToAdd and set solution_accepted with "
-    "accepted_action_ref new_index_N naming it. A reworded re-proposal is "
-    "another fix, and the change stays listed as not registered."
+    "accepted_action_ref new_index_N naming it. A reworded re-proposal "
+    "registers as another fix and leaves this change listed; once one has, do "
+    "not register the change again."
 )
 
 

@@ -266,7 +266,8 @@ class TestTheReportIsRecorded:
         ]
         assert solution.state == "accepted"
         assert solution.accepted_in_turn == 8
-        assert solution.accepted_in_turn != action.reported_done_in_turn
+        assert action.state != "accepted" and action.accepted_in_turn is None
+        assert [w.fix_turn for w in fix_windows(case)] == [None, 8]
         assert reported_change_turns(case) == [5]
 
     async def test_a_reported_workaround_is_recorded_by_mitigation_accepted(self):
@@ -400,7 +401,8 @@ class TestTheRecordRenders:
         so the line the model reads says so."""
         block = user_changes_block(_reported_case(), _Fold(leg="chain"))
         assert "re-propose it, with its description unchanged" in block
-        assert "A reworded re-proposal is another fix" in block
+        assert "A reworded re-proposal registers as another fix" in block
+        assert "do not register the change again" in block
 
     def test_a_superseded_reported_change_still_renders(self):
         """``_retire_shadowed_diagnostic_asks`` may supersede it: the block

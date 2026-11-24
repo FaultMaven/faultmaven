@@ -1909,13 +1909,13 @@ class ResponseApplier:
                             "Downgraded from SOLUTION: when proposed, no root "
                             "cause was established; a permanent fix needs one, "
                             "and a diagnostic test is not a fix (M5). To register "
-                            "a real fix, send in ONE response a "
-                            "root_cause_conclusion backed by evidence and the "
-                            "fix as a SolutionToAdd; the conclusion counts once "
-                            "the symptom is verified and no rival cause is "
+                            "a fix, send in ONE response an evidence-backed "
+                            "root_cause_conclusion and the fix, worded as "
+                            "proposed, as a SolutionToAdd; the conclusion counts "
+                            "once the symptom is verified and no rival cause is "
                             "contested. If the user already applied that fix, also "
                             "set solution_accepted, accepted_action_ref naming it. "
-                            "Or propose a WORKAROUND mitigation."
+                            "Or propose a WORKAROUND."
                         )
                     )
 
