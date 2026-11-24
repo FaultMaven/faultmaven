@@ -50,6 +50,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.infrastructure import index_slot
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
@@ -211,29 +212,47 @@ def _kinds(calls):
     return [kind for kind, _ in calls if kind != "chunk_updated_at"]
 
 
-#: The event-loop turns a racing update may take to reach the step a test waits
-#: for. With the security gate's worker stubbed, only the KB slot's thread hop
-#: runs between: 5-182 turns measured (#3037).
-_RACE_TURNS = 100_000
+#: A hang guard, not a timing assertion: it bounds only the stall in which both
+#: racing updates stay alive and waiting, so a hung worker becomes a failure
+#: with its state (#3037). A step reached or an update ended wakes the wait
+#: first.
+_HANG_GUARD_SECONDS = 60.0
 
 
-async def _until(reached, calls, updates, step):
-    """Yield to the loop until ``reached()``, at most ``_RACE_TURNS`` turns: a
-    stall fails with the calls seen and where each update waits, instead of
-    hanging its worker until the job is cancelled (#3037)."""
-    for _ in range(_RACE_TURNS):
-        if reached():
-            return
-        await asyncio.sleep(0)
+async def _until(step, reached, updates, calls):
+    """Wait until ``reached`` is set, failing at once if an update ends first
+    (#3037): a polling loop cannot see a dead task, and spun forever. On a
+    failure the updates are cancelled and awaited before the test's patches
+    are left, so none outlives them."""
+    waiter = asyncio.ensure_future(reached.wait())
+    try:
+        async with asyncio.timeout(_HANG_GUARD_SECONDS):
+            await asyncio.wait({waiter, *updates}, return_when=asyncio.FIRST_COMPLETED)
+    except TimeoutError:
+        pass
+    finally:
+        waiter.cancel()
+    if reached.is_set():
+        return
+    ended = [
+        "cancelled" if task.cancelled() else repr(task.exception())
+        for task in updates
+        if task.done()
+    ]
     waits = [
         [f"{f.f_code.co_name}:{f.f_lineno}" for f in task.get_stack()]
         for task in updates
+        if not task.done()
     ]
     for task in updates:
         task.cancel()
+    await asyncio.gather(*updates, return_exceptions=True)
+    slot = index_slot.index_admission
     pytest.fail(
-        f"{step} not reached in {_RACE_TURNS} loop turns; calls: {calls}; "
-        f"the updates wait at: {waits}"
+        f"{step} not reached; updates ended: {ended}; the others wait at: "
+        f"{waits}; calls: {calls}; KB slot: {slot.queued()} queued, encoding "
+        f"for {slot.encoding_for_seconds()} s, waiting for the host lock "
+        f"{slot.waiting_for_host_lock}"
     )
 
 
@@ -500,16 +519,29 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
     gates = {NEW_CONTENT: asyncio.Event(), OTHER_CONTENT: asyncio.Event()}
     write = repo.update_fields.side_effect
 
+    add = service._vector_store.add_documents.side_effect
+    both_added, committed = asyncio.Event(), asyncio.Event()
+
+    async def add_then_signal(*args, **kwargs):
+        await add(*args, **kwargs)
+        if _kinds(calls).count("vector_add") >= 2:
+            both_added.set()
+
     async def in_order(item_id, fields, **kwargs):
         await gates[fields["content"]].wait()
-        return await write(item_id, fields, **kwargs)
+        try:
+            return await write(item_id, fields, **kwargs)
+        finally:
+            committed.set()
 
+    service._vector_store.add_documents = AsyncMock(side_effect=add_then_signal)
     repo.update_fields = AsyncMock(side_effect=in_order)
     first = OTHER_CONTENT if last == NEW_CONTENT else NEW_CONTENT
 
-    # The security gate's real worker (a process spawn) would put an unbounded
-    # number of loop turns before the first wait's step; it has its own tests.
-    with patch(_REPO, return_value=repo), patch(_GATE, new=AsyncMock()):
+    # The security gate's real worker must start within GATE_START_SECONDS; on
+    # a loaded runner it can end an update with GateUnavailable or GateBusy
+    # before its chunks are written (#3037). Its worker has its own tests.
+    with patch(_REPO, return_value=repo), patch(_GATE, autospec=True):
         with patch(_EMBED_TEXTS, new=MagicMock(return_value=[[0.1] * 1024])):
             updates = [
                 asyncio.create_task(
@@ -519,16 +551,9 @@ async def test_two_racing_updates_serve_the_content_that_committed(last):
                 )
                 for c in (NEW_CONTENT, OTHER_CONTENT)
             ]
-            await _until(
-                lambda: _kinds(calls).count("vector_add") >= 2,
-                calls,
-                updates,
-                "both updates' vector_add",
-            )
+            await _until("both updates' vector_add", both_added, updates, calls)
             gates[first].set()
-            await _until(
-                lambda: "sql_commit" in _kinds(calls), calls, updates, "a sql_commit"
-            )
+            await _until("a sql_commit", committed, updates, calls)
             gates[last].set()
             await asyncio.gather(*updates)
 
