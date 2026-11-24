@@ -65,7 +65,7 @@ ENTERPRISE = "00000000-0000-0000-0000-000000000002"
 BODY = "Provider 400: invalid request near 'a line of the case evidence'"
 
 #: Set by the connection monitor's first tick, which is its one ping at the
-#: interval these tests run with (``client`` clears it).
+#: 999999 s ``client`` sets (``client`` clears it).
 _first_tick = threading.Event()
 
 
@@ -227,6 +227,9 @@ def backend():
 def client(backend, monkeypatch):
     """A real client on the stub, the process's own, ended with every thread it
     started: no test leaves one behind."""
+    # 999999 s, not the interval ``configure`` applies to the stub's URL: these
+    # tests own the monitor's flag. The ping at that interval racing the
+    # eraser's flush is ``test_parked_trace_replays_2573.py``'s (#2573).
     monkeypatch.setenv("OPIK_CONNECTION_MONITOR_PING_INTERVAL", "999999")
     monkeypatch.delenv("OPIK_TRACK_DISABLE", raising=False)
     # Content on, a record no configure writes today (#2616 K0): the eraser
@@ -307,9 +310,10 @@ async def _route(*, case_id=CASE, conversion_id=None, fails=False):
 
 
 def _after_the_first_ping(client):
-    """The monitor, once it has pinged. It pings on its first tick and, at this
-    interval, never again. Until then a test does not own the flag: a good ping
-    restores it, and one that lands on a stopped backend lowers it mid-erase."""
+    """The monitor, once it has pinged. It pings on its first tick and, at the
+    interval ``client`` sets, never again. Until then a test does not own the
+    flag: a good ping restores it, and one that lands on a stopped backend
+    lowers it mid-erase."""
     assert _first_tick.wait(10), "the monitor never ticked"
     return client._streamer._fallback_replay_manager._monitor
 

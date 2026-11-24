@@ -49,7 +49,8 @@ def opik_stand_in(monkeypatch):
         "active", os.environ.get("OPIK_TRACK_DISABLE") != "true"
     )
     config = types.ModuleType("opik.config")
-    config.update_session_config = lambda *a, **k: None
+    state["session"] = {}
+    config.update_session_config = state["session"].__setitem__
     fake.config = config
 
     monkeypatch.setitem(sys.modules, "opik", fake)
@@ -205,8 +206,39 @@ def test_the_record_resolves_the_project_once(opik_stand_in):
 
     assert (named.project, unnamed.project) == ("faultmaven", "faultmaven")
     assert named.url == "http://localhost:5173/api/"
-    assert named.ping_interval_s == opik_sdk.PING_INTERVAL_S == 999999
+    assert named.ping_interval_s == opik_sdk.UNCHECKED_PING_INTERVAL_S
     assert opik_sdk.backend() is unnamed
+
+
+UNCHECKED = opik_sdk.UNCHECKED_PING_INTERVAL_S
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "observability, interval",
+    [
+        (
+            {"opik_url_override": "http://opik-backend.opik-system.svc:8080"},
+            opik_sdk.SDK_PING_INTERVAL_S,
+        ),
+        ({"opik_url_override": "https://www.comet.com/opik/api"}, UNCHECKED),
+        ({"opik_url_override": "http://opik.internal:8080/prefix/"}, UNCHECKED),
+        ({"opik_use_local": True}, UNCHECKED),
+    ],
+    ids=["override-no-path", "comet-hosted", "prefixed-override", "use-local"],
+)
+def test_the_ping_interval_follows_the_url_form(opik_stand_in, observability, interval):
+    """The SDK's own interval only where the URL has no path, the form #2616
+    Q9 checked live; every other form pings the host root (#2573)."""
+    import os
+
+    assert 1.0 <= opik_sdk.SDK_PING_INTERVAL_S < UNCHECKED
+
+    record = opik_sdk.configure(_settings(**observability))
+
+    assert record.ping_interval_s == interval
+    assert os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] == str(interval)
+    assert opik_stand_in["session"]["connection_monitor_ping_interval"] == interval
 
 
 @pytest.mark.unit

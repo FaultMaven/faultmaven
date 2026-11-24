@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.12.0
+**Version:** 15.13.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5641,7 +5641,7 @@ Read-only environment configuration status for dashboard display.
 - `session_storage` (string, required) — 'redis' or 'fakeredis (inmemory)' — the Redis client the session store actually uses, not the configured one; 'not initialized' before the composition root has set it
 - `session_ttl_seconds` (object, required) — The TTL the session store the process built sets on every session write: SESSION_TIMEOUT_MINUTES in seconds, read from the store rather than from settings. A session lapses this long after its last write (creation, resumption, a heartbeat, an update). Null before the composition root has built the store.
 - `timestamp` (string, required)
-- `trace_backend` (object, required) — The LLM trace SDK's process policy (crash reporting, content capture, project, ping interval) and the serving worker's trace client: whether its last send reached the backend, and how many traces it holds unsent.
+- `trace_backend` (object, required) — The LLM trace SDK's process policy (crash reporting, content capture, project, ping interval) and the serving worker's trace client: whether it reaches the backend, and how many traces it holds unsent.
 - `turn_timing` (object, required) — The resolved turn ceiling and response bound for the chat provider in force, as clients read them on GET /api/v1/meta/capabilities.
 - `vector_storage` (string, required) — What the running process's KB and evidence ChromaDB clients talk to: 'chromadb (server)', 'chromadb (persistent, split: kb + evidence)', 'disabled' when neither was built, or a per-client breakdown when they differ
 
@@ -7035,10 +7035,10 @@ moved reads ``unknown`` and null, never ``disconnected`` or 0.
 
 - `capture_content` (boolean, required) — Whether spans carry prompts and responses (OPIK_CAPTURE_CONTENT). False in every process this release starts: true is refused at startup until a retention bound for the trace store is verified (#2616 K0). An exception's message and traceback are not recorded either way, only its class.
 - `parked_messages` (object, required) — Traces the serving worker process holds in the SDK's local replay database, unsent; null when it has built no client, its database is not open, or the SDK's internals could not be read. Other workers and replicas are not counted.
-- `ping_interval_s` (object, required) — Seconds between the SDK's connection pings. After a failed send the SDK parks every later trace until a ping succeeds or a delete replays them, so this bounds how long a parked trace waits. Null when no trace backend is configured.
+- `ping_interval_s` (object, required) — Seconds between the SDK's connection pings. After a failed send or ping the SDK parks every later trace until a ping succeeds or a delete on that worker replays them, so this bounds how long a parked trace waits. The SDK's own interval when the backend URL has no path, the form checked live; under any other form, whose ping would reach the host root, one so long the SDK in effect never pings. Null when no trace backend is configured.
 - `project` (object, required) — The Opik project traces are written to and the case delete searches; null when configuration did not resolve one.
 - `sentry_reporting` (boolean, required) — Whether the trace SDK's crash reporting (Comet's Sentry) is active in this process. Off unless OPIK_SENTRY_ENABLE=true is set in the environment or .env.
-- `server_connection` (string, required) — The serving worker's SDK client's view of its backend: 'connected'; 'disconnected' after a failed send, while it parks traces locally; 'no_client' when that worker process has built none; 'unknown' when the SDK's internals could not be read. Other workers and replicas are not reported.
+- `server_connection` (string, required) — The serving worker's SDK client's view of its backend: 'connected'; 'disconnected' after a send or a connection ping failed, while it parks traces locally; 'no_client' when that worker process has built none; 'unknown' when the SDK's internals could not be read. Other workers and replicas are not reported.
 
 ---
 

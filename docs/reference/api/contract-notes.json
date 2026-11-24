@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.12.0",
+  "contractVersion": "15.13.0",
   "entries": [
+    {
+      "body": "* `ping_interval_s` is the interval `opik_sdk.configure` applied: the trace\n  SDK's own default, a number of seconds, when the backend URL has no path\n  (the form checked live); under any other form, whose ping would reach the\n  host root, one so long the SDK in effect never pings, as before. It was the\n  latter for every form.\n* `server_connection` reads `disconnected` once either a send or a\n  connection ping failed: at the lowered interval the SDK pings, and a\n  failed ping parks traces as a failed send does.\n\nMINOR because every client survives it: the field is operator-only and read\nfor display, its value is still a JSON number, and the enum is unchanged.",
+      "level": "MINOR",
+      "title": "`TraceBackendStatus.ping_interval_s` on `GET /admin/config/status` is a number where it was an integer, and follows the backend URL form; `server_connection` reads `disconnected` after a failed connection ping as well as a failed send (#2573).",
+      "version": "15.13.0"
+    },
     {
       "body": "* `NO_TEXT_LAYER` (422): no text could be read from the document, in any\n  format. That is a PDF no page of which has text pypdf can read (a scanned\n  image), a PDF with no pages or with a page tree pypdf reads as empty, or a\n  DOCX, text, Markdown or HTML file with no text to read (an image-only DOCX,\n  a whitespace-only file). It was `FILE_CORRUPT`.\n  The `detail` is unchanged; nothing else moves.\n\nNothing structural moves: conversion error codes and their headers are not in\nthe OpenAPI schema or `contract-notes.json`. MINOR because every client\nsurvives it: one that does not know a code shows its generic error with the\n`detail`.",
       "level": "MINOR",

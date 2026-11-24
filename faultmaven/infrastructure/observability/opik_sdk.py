@@ -18,6 +18,7 @@ import functools
 import inspect
 import logging
 import os
+import urllib.parse
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -70,11 +71,37 @@ try:
 except ImportError:
     SPAN_TAGGING_AVAILABLE = False
 
-#: The SDK's connection-monitor ping interval. Its default is 10 s, but its ping
-#: URL drops the ``/opik/api/`` prefix (``urljoin`` with an absolute path), so it
-#: stays this high until each deployment's URL form passes a live check (#2573,
-#: the #2616 ruling, Q9). A parked trace waits this long for a replay.
-PING_INTERVAL_S = 999999
+#: The SDK's own connection-monitor ping interval, floored at 1 s. After a
+#: failed send or ping the SDK parks every later trace until a ping succeeds, so
+#: a parked trace waits at most this long once the backend is back (#2573).
+try:
+    from opik.config import OpikConfig
+
+    SDK_PING_INTERVAL_S = max(
+        1.0,
+        float(OpikConfig.model_fields["connection_monitor_ping_interval"].default),
+    )
+except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+    SDK_PING_INTERVAL_S = 10.0
+
+#: The interval for a URL form no live check has covered: in effect, no ping.
+#: The SDK pings ``urljoin(base, "/is-alive/ping")``, which drops a path prefix,
+#: and reads any answer but 200 as a lost connection that parks every trace.
+#: Comet's hosted ``/opik/api/``, a prefixed ``OPIK_URL_OVERRIDE`` and
+#: ``OPIK_USE_LOCAL``'s ``{opik_local_url}/api/`` would ping the host root, so
+#: there a parked trace waits for a delete on its pod or a restart.
+UNCHECKED_PING_INTERVAL_S = 999999.0
+
+
+def ping_interval_for(url: str) -> float:
+    """The interval :func:`configure` applies for ``url``: the SDK's own when its
+    path is ``/``, the form #2616 Q9 checked live (the cluster's
+    ``OPIK_URL_OVERRIDE`` answered 200 on ``/is-alive/ping``), else
+    :data:`UNCHECKED_PING_INTERVAL_S`."""
+    if urllib.parse.urlsplit(url).path == "/":
+        return SDK_PING_INTERVAL_S
+    return UNCHECKED_PING_INTERVAL_S
+
 
 NOT_CONFIGURED = "tracing was not configured in this process"
 
@@ -104,7 +131,8 @@ class TraceBackend:
     url: Optional[str] = None
     project: Optional[str] = None
     workspace: Optional[str] = None
-    ping_interval_s: Optional[int] = None
+    #: The ping interval :func:`configure` applied: :func:`ping_interval_for`.
+    ping_interval_s: Optional[float] = None
     sentry_reporting: bool = False
     #: ``OPIK_CAPTURE_CONTENT``: spans carry prompts and responses. False in
     #: every record this release writes, since :func:`configure` refuses True.
@@ -293,7 +321,8 @@ def _configure(settings: Any, resolved: dict) -> Optional[str]:
     os.environ["OPIK_WORKSPACE"] = workspace
     if api_key:
         os.environ["OPIK_API_KEY"] = api_key
-    os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] = str(PING_INTERVAL_S)
+    ping_interval = ping_interval_for(url)
+    os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] = str(ping_interval)
     # And an OpikConfig already built in this process.
     try:
         import opik.config
@@ -302,7 +331,7 @@ def _configure(settings: Any, resolved: dict) -> Optional[str]:
             ("url_override", url),
             ("project_name", project),
             ("workspace", workspace),
-            ("connection_monitor_ping_interval", PING_INTERVAL_S),
+            ("connection_monitor_ping_interval", ping_interval),
             *((("api_key", api_key),) if api_key else ()),
         ):
             opik.config.update_session_config(key, value)
@@ -312,7 +341,7 @@ def _configure(settings: Any, resolved: dict) -> Optional[str]:
     logger.info(
         f"Opik tracing initialized: url={url}, project={project}, workspace={workspace}"
     )
-    resolved["ping_interval_s"] = PING_INTERVAL_S
+    resolved["ping_interval_s"] = ping_interval
     return None
 
 
@@ -533,6 +562,33 @@ def replay_monitor(client: Any) -> Any:
     return client._streamer._fallback_replay_manager._monitor
 
 
+def parked_count(client: Any) -> Optional[int]:
+    """The messages ``client`` holds parked in the SDK's replay database after a
+    failed send or ping; None when that database is not open, or failed.
+    Blocking (a SQLite count). No public accessor; an SDK that moved it raises
+    AttributeError."""
+    manager = client._streamer._fallback_replay_manager
+    count = manager._db_manager.failed_messages_count()
+    # -1: the database is not open, or failed.
+    return count if isinstance(count, int) and count >= 0 else None
+
+
+def replay_mutex(client: Any) -> Any:
+    """The lock each replay of ``client``'s parked messages holds from marking
+    them in progress (the count reads 0) until it has put them on the queue.
+    The monitor's recovery replay only tries it: one that finds it held
+    replays nothing. No public accessor; an SDK that moved it raises
+    AttributeError."""
+    return client._streamer._fallback_replay_manager._db_manager._replay_mutex
+
+
+def queue_drained(client: Any) -> bool:
+    """Has ``client``'s streamer sent all it queued: its workers idle, its queue
+    and its batcher empty (the check the SDK's own flush waits on). No public
+    accessor; an SDK that moved it raises AttributeError."""
+    return bool(client._streamer._all_done())
+
+
 def _built_client() -> Any:
     """The client this process has already built, or None. Never builds one."""
     from opik.api_objects.opik_client import get_current_client_raw
@@ -543,8 +599,9 @@ def _built_client() -> Any:
 def connection_state() -> tuple[str, Optional[int]]:
     """``(server_connection, parked_messages)`` of the client already built (#2573).
 
-    ``server_connection`` is ``connected``, ``disconnected`` (a send failed, so
-    the SDK parks every later trace until a replay), ``no_client``, or
+    ``server_connection`` is ``connected``, ``disconnected`` (a send or a
+    connection ping failed, so the SDK parks every later trace until a ping
+    succeeds or a delete on that worker replays them), ``no_client``, or
     ``unknown`` when the SDK's internals moved. ``parked_messages`` counts the
     parked traces; None when unknown. Blocking (a SQLite count): run it off the
     event loop.
@@ -564,11 +621,9 @@ def connection_state() -> tuple[str, Optional[int]]:
     except AttributeError:
         server = "unknown"
     try:
-        count = manager._db_manager.failed_messages_count()
+        parked = parked_count(client)
     except AttributeError:
-        count = None
-    # -1: the database is not open, or failed.
-    parked = count if isinstance(count, int) and count >= 0 else None
+        parked = None
     return server, parked
 
 

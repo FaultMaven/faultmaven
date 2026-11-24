@@ -42,7 +42,13 @@ replica holds for the backend, including traces it parked after a connection
 failure, then searches traces and spans, then deletes. No purge is queued for
 later, so the delete fails when:
 
-- the backend cannot be reached, or the queued traces are not sent in time;
+- the backend cannot be reached (a trace is still parked after the send), or
+  the queued traces, or a replay of parked ones already running, are not sent
+  in time;
+- the Opik SDK's replay database cannot be read: it lasts until that worker
+  restarts, and `GET /admin/config/status` shows it as `parked_messages: null`;
+- the Opik SDK's replay path has changed (an SDK upgrade moved the internals
+  the delete reads);
 - the backend answers an error, or pages that disagree with their total;
 - `OPIK_ENABLED` and a backend URL are set but this process did not configure
   tracing: the Opik SDK is not installed, configuring it raised, or the
@@ -173,10 +179,13 @@ read reports it.
   asynchronously, so a trace can stay visible for a while after the delete
   answers. It also ingests asynchronously, so a trace sent just before the
   search may not be found by it.
-- **Traces on another replica (#2573).** After a connection failure the SDK
-  parks traces in a SQLite database on that pod. A parked trace replays only
-  when a delete runs on that pod, or after the SDK's ping interval of 999999 s
-  (`opik_sdk.PING_INTERVAL_S`), which is about 11.6 days. A trace parked or
+- **Traces on another replica (#2573).** After a failed send or connection
+  ping the SDK parks traces in a SQLite database on that pod. A parked trace
+  replays only when a delete runs on that pod, or at the monitor's next ping
+  once the backend is back (`opik_sdk.ping_interval_for`): within the SDK's
+  default interval when the backend URL has no path, the form checked live,
+  and in effect never under any other form, whose ping would reach the host
+  root. A trace parked or
   still batched on another replica is invisible to the delete and can land
   after it. `GET /admin/config/status` reports it under `trace_backend` for
   the worker process that served the request: `server_connection` reads
