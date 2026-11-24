@@ -232,20 +232,20 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
         return None
     subjects = subject_index(case)
 
-    def of_this_cause(rows) -> bool:
+    def of_this_cause(rows, read: FixWindow) -> bool:
         return any(
             subjects.addresses(row, {root.node_id}, windows=True)
             or (
-                row in window.confirmed_cause_rows
+                row in read.confirmed_cause_rows
                 and subjects.addresses(row, {root.node_id})
             )
             for row in rows
         )
 
-    if of_this_cause(window.carried_pair_rows()):
+    if of_this_cause(window.carried_pair_rows(), window):
         return window
     fresh = window.as_fresh()
-    if fresh.disconfirmation is None or not of_this_cause(fresh.cause_rows):
+    if fresh.disconfirmation is None or not of_this_cause(fresh.cause_rows, fresh):
         return None
     return fresh
 

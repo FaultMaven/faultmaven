@@ -80,6 +80,7 @@ from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 impo
 from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
     _row as _row_1927,
 )
+from tests.utils import terminal_verdict
 
 pytestmark = pytest.mark.unit
 
@@ -347,22 +348,36 @@ async def test_a_carried_pair_refutes_no_cause_identified_since():
     assert _engine_rows(case) == []
 
 
-@pytest.mark.parametrize("intercepted", [False, True], ids=["plain", "intercepted"])
-async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause(
-    intercepted,
-):
+@pytest.mark.parametrize("variant", ["plain", "intercepted", "intercepted-cited"])
+async def test_a_carried_pair_hides_no_later_failure_of_the_deeper_cause(variant):
     """The review delta's scenario A on the same case: A2's cited datum
     re-checked gone at 9, the problem still present at 10. The carried pair
     (7, 8) has left the window, so M6 reads the fresh read's pair, (9, 10),
     and refutes A2 with it, as ``main`` does. With an interception at 9 the
     carried window ends there (its failure was at 8) and holds neither row;
-    M6's fallback is the fresh window itself, with its own rows."""
+    M6's fallback is the fresh window itself, with its own rows. Cited: the
+    re-check names a row A2's verdict cites with no SUPPORTS link, which
+    binds through the citation alone (#2557), so M6 reads it among the fresh
+    window's confirmed rows."""
     case, _root, hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    intercepted = variant != "plain"
     if intercepted:
         _fix(case, turn=9, fix_kind="interception")
         case.proposed_actions[-1].description = "restart the pgbouncer pods"
     deeper = case.causal_nodes[hyp.root_node_id]
     (basis,) = deeper.metadata["root_terminal_evidence_ids"]
+    if variant == "intercepted-cited":
+        why = _row(
+            case,
+            _C.CAUSAL_EVIDENCE,
+            turn=8,
+            evidence_id=_eid("why_a2"),
+            summary="pgbouncer.ini was copied from a dev template",
+        )
+        deeper.metadata.update(terminal_verdict(basis, why.evidence_id))
+        linked = {link.evidence_id for link in deeper.evidence_links}
+        assert why.evidence_id not in linked, "premise: cited, not linked"
+        basis = why.evidence_id
     _row(
         case,
         _C.CAUSAL_ABSENCE_EVIDENCE,
