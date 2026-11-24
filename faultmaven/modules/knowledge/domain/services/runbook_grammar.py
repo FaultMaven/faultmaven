@@ -150,7 +150,7 @@ def offset_in_spans(spans: list[tuple[int, int]]) -> Callable[[int], bool]:
     time for offsets asked in ascending order (#2635).
 
     ``spans`` is cut into runs that are each sorted and disjoint: ``code_spans``
-    gives two, the fences and then the inline spans (an inline span can reach
+    gives at most two, the fences and then the inline spans (an inline span can reach
     into a fence, so the two are not one run). Each run keeps a pointer to its
     first span not yet ended, which moves forward only; an offset below the
     previous one re-seats it by bisect. A linear scan of every span per offset
