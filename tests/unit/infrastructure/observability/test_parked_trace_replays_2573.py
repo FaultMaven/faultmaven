@@ -265,11 +265,12 @@ class TestAPingRacingTheDeletesFlush:
     async def test_a_good_ping_before_the_monitors_replay_refuses(
         self, backend, client, clock, monkeypatch
     ):
-        """The flush's send fails, then a good ping raises the flag before the
-        monitor replays the trace, which would land after the search."""
+        """The flush's send fails, then, after the delete's second flush, a good
+        ping raises the flag before the monitor replays the trace, which would
+        land after the search."""
         monitor = opik_sdk.replay_monitor(client)
         manager = client._streamer._fallback_replay_manager
-        decided, pinged = threading.Event(), []
+        decided, flushes = threading.Event(), []
         real_replay, real_flush = manager._replay_failed_messages, client.flush
 
         def replay():
@@ -279,8 +280,8 @@ class TestAPingRacingTheDeletesFlush:
 
         def flush(timeout=None):
             flushed = real_flush(timeout=timeout)
-            if not pinged:
-                pinged.append(1)
+            flushes.append(1)
+            if len(flushes) == 2:
                 _ping(clock)
                 _until(lambda: monitor.has_server_connection, "the good ping")
             return flushed
@@ -293,10 +294,11 @@ class TestAPingRacingTheDeletesFlush:
         try:
             with pytest.raises(ServiceException, match="llm_traces.*unreachable"):
                 await _eraser(client).erase_case(CASE, ENTERPRISE)
-            assert opik_sdk.parked_count(client) == 1
+            assert opik_sdk.connection_state() == ("connected", 1)
         finally:
             backend.accepting = True
             decided.set()
+        _until(backend.received.is_set, "the monitor's replay")
 
     async def test_the_delete_waits_out_a_replay_that_has_marked_its_traces_in_progress(
         self, backend, client, clock, monkeypatch

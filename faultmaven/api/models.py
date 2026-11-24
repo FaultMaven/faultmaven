@@ -869,7 +869,7 @@ class TraceBackendStatus(BaseModel):
         description=(
             "Seconds between the SDK's connection pings. After a failed send or "
             "ping the SDK parks every later trace until a ping succeeds or a "
-            "case delete on that worker replays them, so this bounds how long a "
+            "delete on that worker replays them, so this bounds how long a "
             "parked trace waits. "
             "The SDK's own interval when the backend URL has no path, the form "
             "checked live; under any other form, whose ping would reach the "

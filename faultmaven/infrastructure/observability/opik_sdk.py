@@ -601,7 +601,7 @@ def connection_state() -> tuple[str, Optional[int]]:
 
     ``server_connection`` is ``connected``, ``disconnected`` (a send or a
     connection ping failed, so the SDK parks every later trace until a ping
-    succeeds or a case delete on that worker replays them), ``no_client``, or
+    succeeds or a delete on that worker replays them), ``no_client``, or
     ``unknown`` when the SDK's internals moved. ``parked_messages`` counts the
     parked traces; None when unknown. Blocking (a SQLite count): run it off the
     event loop.

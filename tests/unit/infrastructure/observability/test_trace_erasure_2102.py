@@ -451,7 +451,7 @@ class TestWhatThisPodHolds:
 
     async def test_a_replay_that_does_not_finish_refuses_before_the_read(self):
         """The monitor's replay holds the SDK's replay lock past the flush
-        timeout: what it marked sent may not be queued yet."""
+        timeout: what it marked in progress may not be queued yet."""
         client = _FakeClient(traces=["t1"])
         replay = client._streamer._fallback_replay_manager._db_manager._replay_mutex
         eraser = LLMTraceEraser(
