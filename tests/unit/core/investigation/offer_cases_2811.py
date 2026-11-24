@@ -26,6 +26,16 @@ at 5a1d3b130 only in its "Root cause" line (``main``: the bare ask).
 by hand: it equalled the stored entry on ``main`` at 77f3b9b8b, and its
 reply on the S2c-3a branch at c31e9e4ae, which is stored, ends with the
 outcome statement "**Case record:** the problem is confirmed.".
+
+#2494 re-rendered the eleven entries that carry the resolve-decline chip sentences,
+by hand: each equalled its stored entry on ``main`` at ``68ec0ac01``, and on
+the #2494 branch the sentences name the chip as "the 'Mark it resolved' button
+under your reply" (and "the 'Close without resolving' button"), and the
+chip feedback reads "The 'Mark it resolved' and 'Close without resolving'
+buttons are attached under this reply.", in place of "the engine's ...
+action" and "The engine has attached its ... actions to this reply.". The rest
+of each entry is unchanged. No other entry's render differed.
+
 #3039 re-rendered ``turn:cycle:licence_downgraded_once_it_holds``,
 ``turn:cycle:licence_downgraded_while_it_is_down``,
 ``turn:cycle:licence_withdrawn_once_it_holds`` and

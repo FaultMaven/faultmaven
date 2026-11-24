@@ -12,6 +12,7 @@ from .blocks import (
     _PROMPT_FENCE_RULE,
     _READING_DISCIPLINE_BLOCK,
     _ROOT_CAUSE_TEST_BLOCK,
+    _WORKING_VOCABULARY_RULE,
 )
 from .tool_text import EVIDENCE_SEARCH_TOOLS, GivenTools, present
 
@@ -65,8 +66,12 @@ INVESTIGATION_BASE = (
 
 """
     # Above {evidence_grounding}, which a knowledge-query or meta turn waives:
-    # the rule holds on every turn of this template (#2811 S2c-3b).
+    # these rules hold on every turn of this template (#2811 S2c-3b, #2494).
     + _OUTCOME_FIELDS_RULE
+    + """
+
+"""
+    + _WORKING_VOCABULARY_RULE
     + """
 
 {evidence_grounding}EVIDENCE FROM ATTACHMENTS (CRITICAL — READ THIS):

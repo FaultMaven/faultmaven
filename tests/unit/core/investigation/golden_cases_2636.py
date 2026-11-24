@@ -86,6 +86,15 @@ moves the problem from unverified to verified, so its reply now ends with the
 outcome statement, "**Case record:** the problem is confirmed."; the rest of
 the entry is unchanged. No other entry's render differed.
 
+#2494 re-rendered the five entries that carry the resolve-decline chip sentences,
+by hand: each equalled its stored entry on ``main`` at ``68ec0ac01``, and on
+the #2494 branch the sentences name the chip as "the 'Mark it resolved' button
+under your reply" (and "the 'Close without resolving' button"), and the
+chip feedback reads "The 'Mark it resolved' and 'Close without resolving'
+buttons are attached under this reply.", in place of "the engine's ...
+action" and "The engine has attached its ... actions to this reply.". The rest
+of each entry is unchanged. No other entry's render differed.
+
 #3039 (INV-49) re-rendered four B1c entries by hand, the same way:
 ``cycle:licence_downgraded_once_it_holds``,
 ``cycle:licence_downgraded_while_it_is_down``,

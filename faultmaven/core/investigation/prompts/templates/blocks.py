@@ -465,7 +465,8 @@ WHEN THE USER QUESTIONS A CONCLUSION OR AN EXCLUSION:
 # proposed resolving on a renewal. One copy, in the investigation base: the
 # sites that decide a node is the root (chain emission and re-rooting, runbook
 # Cause attribution, proposing the remediation, recording causal absence) name
-# it as "the ROOT-CAUSE TEST" rather than restating it. No braces: the base
+# it as "the ROOT-CAUSE TEST" rather than restating it; the name is the
+# model's, never the user's (WORKING VOCABULARY, #2494). No braces: the base
 # template is .format()-ed.
 _ROOT_CAUSE_TEST_BLOCK = """\
 ROOT-CAUSE TEST (the why-stopping rule):
@@ -499,7 +500,8 @@ declines to go further, stop at the deepest state they can act on and
 intercept it there: say so, and set `verification_updates.rca_infeasible`
 true with an `rca_infeasible_rationale` saying why. Once the interception is
 verified, FaultMaven offers to close on the symptom's absence instead of waiting
-for a root it cannot reach.\
+for a root it cannot reach.
+Naming this test to the user: see WORKING VOCABULARY.\
 """
 
 # Follow-up suggestions block — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE.
@@ -703,6 +705,26 @@ _OUTCOME_FIELDS_RULE = (
     "record holds under your reply."
 )
 
+# What the user reads takes its meaning from the conversation alone (#2494):
+# replies named the ROOT-CAUSE TEST and its clauses to a user who never saw
+# them. A property, not a word list. The reduced fallbacks carry the property
+# alone (their size is bounded); the investigation and inquiry prompts carry the
+# full rule, the property plus examples. No braces: templates are .format()-ed.
+_WORKING_VOCABULARY_PROPERTY = """\
+Use plain words with the user, never a term defined only here or in the schema,
+or naming FaultMaven's machinery, unless they ask about FaultMaven."""
+_WORKING_VOCABULARY_RULE = (
+    "WORKING VOCABULARY: "
+    + _WORKING_VOCABULARY_PROPERTY
+    + """ That covers every text the user reads, the statements you record
+included. For example: the ROOT-CAUSE TEST, its alias "why-stopping" and its
+clause letters; "WORKAROUND" as a label; "SYSTEM:"; "the engine"; "intercept"
+or "interception" as a category name. Say "a restart only clears it until it
+builds up again", not "it fails clause (b)". A lower-case "workaround", or
+"intercept" as an ordinary verb in a sentence that stands on its own, is plain
+words."""
+)
+
 # Diagnostic reasoning requirements — injected into INVESTIGATION_BASE.
 # Set to empty string for knowledge_query mode (KNOWLEDGE_QUERY_INSTRUCTIONS
 # explicitly waives this — a general-knowledge answer doesn't need the
@@ -870,7 +892,7 @@ RECLASSIFICATION:
   tag; the data_type must be one of the DataType enum values.
 - After a successful reclassification, the re-extracted structural index
   replaces the old one on the next turn. Reference the update briefly in
-  your response ("reclassified as logs_and_errors") so the user sees the
+  your response ("I'll treat server.log as a log file now") so the user sees the
   correction landed.
 """
 

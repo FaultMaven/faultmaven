@@ -38,6 +38,7 @@ from faultmaven.core.investigation.prompts.fence import (
 from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.utils.model_context import MIN_PROMPT_BUDGET
 
+from .blocks import _WORKING_VOCABULARY_PROPERTY
 from .tool_text import NO_TOOLS, GivenTools, has, tools_line
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,12 @@ def _fallback_fence_rule(block_names: list[str]) -> str:
     return _FALLBACK_FENCE_RULE_TEMPLATE.format(blocks=", ".join(seen))
 
 
-FALLBACK_INQUIRY_TEMPLATE = """You are FaultMaven, a troubleshooting assistant.
+# Both open-case fallbacks carry the working-vocabulary property (#2494), the
+# rule's compact form, which fits this prompt's size bound: they show the
+# previous turn's "SYSTEM:" notices, this one names "the engine", and the
+# investigation one is answered against schemas that name the ROOT-CAUSE TEST.
+FALLBACK_INQUIRY_TEMPLATE = (
+    """You are FaultMaven, a troubleshooting assistant.
 {tools_this_turn}
 
 STATE: INQUIRY
@@ -89,11 +95,16 @@ PROBLEM: {problem_summary}
 
 SAFETY: Only reference data from uploads or conversation history. Do not confabulate.
 Respond in JSON: {{"agent_response": "...", "state_updates": {{...}}}}
+"""
+    + _WORKING_VOCABULARY_PROPERTY
+    + """
 
 Respond helpfully. If detecting a problem, set proposed_problem_statement — the engine presents it and asks for confirmation, so do not do either yourself.
 """
+)
 
-FALLBACK_INVESTIGATION_TEMPLATE = """You are FaultMaven investigating an issue.
+FALLBACK_INVESTIGATION_TEMPLATE = (
+    """You are FaultMaven investigating an issue.
 {tools_this_turn}
 
 STATE: INVESTIGATING
@@ -111,9 +122,13 @@ SAFETY RULES (always apply):
 - Only reference data from uploaded evidence or conversation history. Do not confabulate.
 - Never classify evidence as causal_evidence without a hypothesis existing first.
 - Respond in JSON: {{"agent_response": "...", "state_updates": {{...}}}}
+"""
+    + _WORKING_VOCABULARY_PROPERTY
+    + """
 
 Continue investigation. Focus on the most critical next step.
 """
+)
 
 FALLBACK_TERMINAL_TEMPLATE = """You are FaultMaven. Case is {state}.
 {tools_this_turn}

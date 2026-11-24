@@ -529,6 +529,6 @@ def test_the_decline_prompt_and_feedback_name_the_close_chip():
     feedback = reask_feedback(case)
     assert feedback.startswith(DECLINED_RESOLVE_FEEDBACK)
     assert (
-        "attached its 'Mark it resolved' and 'Close without resolving' actions"
+        "The 'Mark it resolved' and 'Close without resolving' buttons are attached"
         in feedback
     )

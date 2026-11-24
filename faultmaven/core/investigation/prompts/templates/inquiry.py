@@ -9,6 +9,7 @@ from .blocks import (
     _PROMPT_FENCE_RULE,
     _READING_DISCIPLINE_BLOCK,
     _TROUBLESHOOTING_DOMAINS,
+    _WORKING_VOCABULARY_RULE,
 )
 from .tool_text import GivenTools, has
 
@@ -101,6 +102,12 @@ CONVERSATION HISTORY:
 
 """
     + _READING_DISCIPLINE_BLOCK
+    + """
+
+"""
+    # This prompt names "the engine", and its notices are "SYSTEM:" lines
+    # (#2494).
+    + _WORKING_VOCABULARY_RULE
     + """
 
 {agent_meta_instructions}YOUR ROLE IN INQUIRY:
