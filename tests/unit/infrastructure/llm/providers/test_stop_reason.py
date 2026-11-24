@@ -87,6 +87,7 @@ class TestNormalizeStopReason:
             # Safety — must NOT read as truncation, the recovery is opposite
             ("content_filter", StopReason.CONTENT_FILTER),
             ("SAFETY", StopReason.CONTENT_FILTER),
+            ("BLOCK_REASON_UNSPECIFIED", StopReason.CONTENT_FILTER),  # Gemini
             # Tool handoff
             ("tool_calls", StopReason.TOOL_CALLS),
             ("tool_use", StopReason.TOOL_CALLS),
@@ -467,10 +468,17 @@ _REFUSAL = {
 }
 
 
-def _openai_completion(message: dict) -> dict:
+_TOOL_CALL = {
+    "id": "call_1",
+    "type": "function",
+    "function": {"name": "search_file", "arguments": "{}"},
+}
+
+
+def _openai_completion(message: dict, finish_reason: str = "stop") -> dict:
     """A chat completion; on a refusal ``finish_reason`` stays ``"stop"``."""
     return {
-        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
     }
 
@@ -503,23 +511,37 @@ class TestRefusalIsContentFilter:
 
     @_OPENAI_SHAPED
     @pytest.mark.parametrize(
-        "message,expected",
+        "message,expected,content",
         [
-            (_REFUSAL, StopReason.CONTENT_FILTER),
-            ({"content": "an answer", "refusal": None}, StopReason.STOP),
-            ({"content": "an answer"}, StopReason.STOP),
+            (_REFUSAL, StopReason.CONTENT_FILTER, ""),
+            ({"content": "an answer", "refusal": None}, StopReason.STOP, "an answer"),
+            ({"content": "an answer"}, StopReason.STOP, "an answer"),
         ],
         ids=["refusal", "refusal-null", "refusal-absent"],
     )
-    async def test_message_refusal(self, provider_factory, message, expected):
+    async def test_message_refusal(self, provider_factory, message, expected, content):
         provider = provider_factory()
         session = _mock_aiohttp_session(_openai_completion(message))
         with patch("aiohttp.ClientSession", return_value=session):
             result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is expected
-        # Content is read as before: empty for the refusal, the answer otherwise.
-        assert (result.content or "") == (message["content"] or "")
+        # A str, never None: HuggingFace's low-confidence branch takes len() of it.
+        assert result.content == content
+
+    @_OPENAI_SHAPED
+    async def test_refusal_beside_tool_calls_keeps_the_tool_calls(
+        self, provider_factory
+    ):
+        """Working tool calls are not dropped as a refusal."""
+        provider = provider_factory()
+        message = {**_REFUSAL, "tool_calls": [_TOOL_CALL]}
+        session = _mock_aiohttp_session(_openai_completion(message, "tool_calls"))
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(provider, prompt=vetted("hi"))
+
+        assert result.stop_reason is StopReason.TOOL_CALLS
+        assert result.tool_calls
 
     @pytest.mark.parametrize(
         "body,expected",
@@ -528,6 +550,13 @@ class TestRefusalIsContentFilter:
             # OTHER is not in the alias table, and is still a block.
             ({"promptFeedback": {"blockReason": "SAFETY"}}, StopReason.CONTENT_FILTER),
             ({"promptFeedback": {"blockReason": "OTHER"}}, StopReason.CONTENT_FILTER),
+            (
+                {
+                    "candidates": [],
+                    "promptFeedback": {"blockReason": "BLOCK_REASON_UNSPECIFIED"},
+                },
+                StopReason.CONTENT_FILTER,
+            ),
             # With candidates, finishReason keeps the reading.
             ({"candidates": [_ANSWERED], "promptFeedback": {}}, StopReason.STOP),
             (
@@ -538,7 +567,13 @@ class TestRefusalIsContentFilter:
                 StopReason.STOP,
             ),
         ],
-        ids=["blocked-safety", "blocked-other", "answered", "answered-beside-block"],
+        ids=[
+            "blocked-safety",
+            "blocked-other",
+            "blocked-unspecified-empty-candidates",
+            "answered",
+            "answered-beside-block",
+        ],
     )
     async def test_gemini_prompt_feedback(self, body, expected):
         provider = GeminiProvider(
@@ -550,3 +585,24 @@ class TestRefusalIsContentFilter:
             result = await send_to_model(provider, prompt=vetted("hi"))
 
         assert result.stop_reason is expected
+
+    async def test_gemini_blocked_prompt_on_a_structured_call(self):
+        """A block is not a cut: the structured call's MAX_TOKENS raise stays out."""
+        provider = GeminiProvider(
+            _config("gemini", "https://generativelanguage.googleapis.com/v1beta", "g")
+        )
+        body = {"promptFeedback": {"blockReason": "SAFETY"}}
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        session = _mock_aiohttp_session(body)
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = await send_to_model(
+                provider,
+                prompt=vetted("hi"),
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "Answer", "schema": schema},
+                },
+            )
+
+        assert result.stop_reason is StopReason.CONTENT_FILTER
+        assert result.content == ""

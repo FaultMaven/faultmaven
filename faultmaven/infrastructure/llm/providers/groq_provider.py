@@ -201,8 +201,8 @@ class GroqProvider(BaseLLMProvider):
                 # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
                 stop_reason = choice_stop_reason(choice)
 
-                # Extract content (may be None if tool_calls present)
-                content = message.get("content", "")
+                # Extract content (empty if tool_calls present, or on a refusal)
+                content = message.get("content") or ""
                 if content:
                     content = self._validate_response_content(content)
 
