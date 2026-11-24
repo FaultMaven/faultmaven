@@ -371,16 +371,16 @@
     "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed or a later fix followed it. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
   ],
   "cycle:licence_withdrawn_once_it_holds": [
-    "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it."
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
   ],
   "cycle:licence_withdrawn_while_it_is_down": [
-    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND). The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
   ],
   "cycle:licence_downgraded_once_it_holds": [
-    "SYSTEM: 'solution_accepted' was not registered: <act:0> was downgraded to a DIAGNOSTIC when it was proposed, because its root cause was not established then. The cause is established now: if the user carried out the fix, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it."
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> was downgraded to a DIAGNOSTIC when it was proposed, because its root cause was not established then. The cause is established now: if the user carried out the fix, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
   ],
   "cycle:licence_downgraded_while_it_is_down": [
-    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."
+    "SYSTEM: 'solution_accepted' was not registered: <act:0> targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND). The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
   ],
   "cycle:licence_carried_with_no_bearer": [
     "SYSTEM: 'solution_accepted' was not registered: the fix the user reported running at turn 6 targets a root cause that is no longer established, and a permanent fix needs one (M5). Re-ground the root cause with evidence first, or propose a temporary mitigation (WORKAROUND)."

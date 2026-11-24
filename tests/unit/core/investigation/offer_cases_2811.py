@@ -35,6 +35,14 @@ chip feedback reads "The 'Mark it resolved' and 'Close without resolving'
 buttons are attached under this reply.", in place of "the engine's ...
 action" and "The engine has attached its ... actions to this reply.". The rest
 of each entry is unchanged. No other entry's render differed.
+
+#3039 re-rendered ``turn:cycle:licence_downgraded_once_it_holds``,
+``turn:cycle:licence_downgraded_while_it_is_down``,
+``turn:cycle:licence_withdrawn_once_it_holds`` and
+``turn:cycle:licence_withdrawn_while_it_is_down`` by hand: each equalled the
+stored entry on ``main`` at 68ec0ac01, and on the #3039 branch, which is
+stored, its notice ends with the sentence that the user's report is recorded
+(INV-49).
 """
 
 from __future__ import annotations
