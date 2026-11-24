@@ -78,7 +78,7 @@ after each release that raises the record's shape (`CURRENT_OUTCOME_SHAPE`,
 - It marks no unbound re-check told (#2555): the next verified narrated turn
   names each still-unbound row once, five per line, then marks it.
 - It skips a case that needs a record while work on it is in flight: a turn,
-  or a task one spawned, holds the case's lease on some replica (the lease a
+  a task one spawned, or a title call holds the case's lease on some replica (the lease a
   case delete reads). A case whose lease cannot be read is skipped too. Both
   are listed, the exit status is 3 when no case failed, and a re-run picks
   them up. A case that does not need a record is left alone, and its lease is

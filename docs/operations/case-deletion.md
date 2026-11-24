@@ -224,13 +224,13 @@ read reports it.
 - **`deleting` is best-effort.** `false` means no delete is *known* to run:
   with no lease store, a failed tombstone read (logged once per process), or
   a tombstone that lapsed under a stalled delete, a read reports `false` while
-  a delete may still run. A client still handles the turn's 409
+  a delete may still run. A client still handles a turn's or title call's 409
   `CASE_DELETE_IN_PROGRESS` and the 404 as before.
 - **`deleting: true` with no delete running.** `deleting` reports the
   delete's tombstone, which a delete writes before it checks for work in
   flight and which lapses 30 s after it was written or last renewed unless it
   is removed. So it can read `true` for up to 30 s with no delete running, and
-  turns are refused for the same span. A client reading again sees it clear.
+  turns and title calls are refused for the same span. A client reading again sees it clear.
 - **A resume.** Resuming a session on the case
   (`POST /cases/sessions/{session_id}/resume/{case_id}`) is not a turn and
   holds no lease. One that passed its access check before the delete can

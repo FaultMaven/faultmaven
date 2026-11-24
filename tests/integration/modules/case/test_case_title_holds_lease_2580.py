@@ -11,15 +11,17 @@ it refuses while a delete runs.
 Driven through the MOUNTED case router with the app's exception handlers, the
 REAL ``CaseService`` over the production ``SessionlessCaseRepository`` on a
 SQLite file, the real registry eraser and delete gate over FakeRedis and a real
-regex sanitizer, under each ``SANITIZE_PII`` profile pinned (the registry
-exists only with it on). Only the model, and the conversation read (long enough
+regex sanitizer, under each ``SANITIZE_PII`` profile pinned (the registry is
+seeded under both; only with it on does the title call load and save it). Only
+the model, and the conversation read (long enough
 user chat that the title takes the model path), are stubbed. The bare app
 mounts no protection middleware, so the ``title_generation`` rate limit (5 per
 300 s) does not apply to the calls here.
 
 A title call cancelled under asyncio releases its hold in the route's
-``finally``. Only a cancelled anyio scope, which cancels every await in that
-``finally`` too, leaves the member to lapse on its TTL
+``finally``. A cancel that reaches the release itself, for example a cancelled
+anyio scope, which cancels every await in that ``finally`` too, leaves the
+member to lapse on its TTL
 (``inflight.LEASE_TTL_MS``), as a turn's does.
 """
 
@@ -103,7 +105,6 @@ class World:
     redis: Any
     model: AsyncMock
     gate: _GatedEraser
-    sanitize_pii: bool
 
     async def title(self) -> httpx.Response:
         return await self.client.post(f"{CASE}/title")
@@ -182,7 +183,7 @@ async def world(request, tmp_path, monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://testserver"
         ) as client:
-            yield World(client, repository, redis, model.route, gate, request.param)
+            yield World(client, repository, redis, model.route, gate)
     await inflight.drain()
     await engine.dispose()
 
@@ -207,9 +208,7 @@ async def test_a_delete_during_a_title_call_refuses_and_leaves_no_registry_behin
     assert refused.status_code == 409, refused.text
     assert refused.headers["x-error-code"] == "CASE_WORK_IN_PROGRESS"
     assert int(refused.headers["Retry-After"]) >= 1
-    assert await world.row()
-    if world.sanitize_pii:
-        assert await world.registry()
+    assert (await world.row(), await world.registry()) == (True, True)
 
     release.set()
     answer = await title
@@ -221,12 +220,9 @@ async def test_a_delete_during_a_title_call_refuses_and_leaves_no_registry_behin
     # (b) The registry key is present exactly when the case row is: before the
     # delete both stand, and the delete the released hold lets through takes
     # both.
-    if world.sanitize_pii:
-        assert (await world.row(), await world.registry()) == (True, True)
+    assert (await world.row(), await world.registry()) == (True, True)
     assert (await world.delete()).status_code == 204
-    assert not await world.row()
-    if world.sanitize_pii:
-        assert not await world.registry()
+    assert (await world.row(), await world.registry()) == (False, False)
 
 
 async def test_a_title_call_during_a_delete_is_refused_before_any_model_call(world):
@@ -241,13 +237,12 @@ async def test_a_title_call_during_a_delete_is_refused_before_any_model_call(wor
     assert answer.json()["detail"] == "This case is being deleted. Reload the case."
     assert "Retry-After" not in answer.headers
     world.model.assert_not_awaited()
-    if world.sanitize_pii:
-        assert not await world.registry()
+    assert not await world.registry()
     assert KEY not in inflight._LEASES
 
     world.gate.release.set()
     assert (await deleting).status_code == 204
-    assert not await world.row()
+    assert (await world.row(), await world.registry()) == (False, False)
 
 
 @pytest.mark.parametrize(
