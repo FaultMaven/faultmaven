@@ -19,15 +19,15 @@ are not refused (#2532).
 **Per case, across replicas.** A case's lease is the Redis sorted set
 ``case-inflight:{enterprise_id}:{case_id}``: holder tokens scored by expiry on
 the Redis clock (``TIME``). A process has ONE member per case, counted here.
-Every turn writes it (:func:`hold_case`), joining or not, before it reads the
-tombstone; :func:`track` with ``case=`` counts a task synchronously, before its
+Every turn, and every case title generation, writes it (:func:`hold_case`),
+joining or not, before it reads the tombstone; :func:`track` with ``case=`` counts a task synchronously, before its
 first step, so no window opens at a turn's release. The member goes with the
 last local holder. Renewals and releases are never tracked. A delete
 (:class:`CaseDeleteGate`) writes a tombstone and then reads the lease. Each
 side writes before it reads, so both cannot pass; both may refuse.
 
-**Residual, ruled (2026-11-04):** a turn whose lease write or tombstone read
-fails runs unguarded (logged once, counted) while a delete fails closed (503);
+**Residual, ruled (2026-11-04):** a turn (or a title generation) whose lease
+write or tombstone read fails runs unguarded (logged once, counted) while a delete fails closed (503);
 a delete that passes meanwhile can race it. Standalone's Redis is in-process.
 """
 
@@ -306,12 +306,13 @@ class CaseDeleteUnavailable(Exception):
 
 
 def _unguarded(reason: str, exc: Optional[BaseException]) -> None:
-    """A turn proceeds that a delete cannot see: logged once per reason, counted."""
+    """A turn or a title generation proceeds that a delete cannot see: logged
+    once per reason, counted."""
     if reason not in _REPORTED:
         _REPORTED.add(reason)
         logger.warning(
-            "Case in-flight lease unavailable (%s%s): turns run without one, so a "
-            "delete may race them (#2096)",
+            "Case in-flight lease unavailable (%s%s): turns and title generations "
+            "run without one, so a delete may race them (#2096)",
             reason,
             f": {exception_class_chain(exc)}" if exc is not None else "",
         )
@@ -442,7 +443,8 @@ def _release_soon(lease: _CaseLease) -> None:
 
 
 class CaseHold:
-    """A turn's hold on its case's lease. ``release`` it once, in a ``finally``."""
+    """A turn's or a title generation's hold on its case's lease. ``release`` it
+    once, in a ``finally``."""
 
     def __init__(self, lease: _CaseLease) -> None:
         self._lease: Optional[_CaseLease] = lease
@@ -456,10 +458,11 @@ class CaseHold:
 
 
 async def hold_case(redis: Any, case: CaseKey) -> CaseHold:
-    """Write ``case``'s lease member for a turn, then read its tombstone.
+    """Write ``case``'s lease member for a turn or a title generation, then read
+    its tombstone.
 
     Raises :class:`CaseDeleteInProgress`, having let the lease go, while a
-    delete of the case runs. If either command fails the turn proceeds
+    delete of the case runs. If either command fails the work proceeds
     unguarded (the module docstring's residual).
     """
     lease = _join(case, redis)

@@ -1058,9 +1058,10 @@ class CaseService(CaseDriverMixin, ICaseService):
         lease (``delete_gate``, #2096). A turn on the case, or a task one
         spawned (its settlement, upload links, vectorization, runbook
         conversion), holds the lease on any replica from before it writes
-        anything to its end, so while one is in flight the delete refuses and
-        clears nothing. A turn that starts meanwhile reads the tombstone and
-        refuses itself. The tombstone is renewed while the delete runs, and
+        anything to its end, and a title generation holds it while it
+        generates and writes the title (#2580), so while one is in flight the
+        delete refuses and clears nothing. A turn or a title generation that
+        starts meanwhile reads the tombstone and refuses itself. The tombstone is renewed while the delete runs, and
         the delete removes it when it is refused or fails. Otherwise (a
         successful delete, or a removal that failed or never ran) it lapses
         30 s after it was written or last renewed, and holds the case's turns
@@ -1094,8 +1095,6 @@ class CaseService(CaseDriverMixin, ICaseService):
           turn, and holds no lease;
         - a trace parked or still batched on another replica is invisible to the
           delete and can land after it (#2573);
-        - the title route holds no lease, so its trace can land after the delete
-          (#2580);
         - a keyed POST that holds no lease can cache its answer for replay after
           the replay eraser read the case's index (#2624).
 

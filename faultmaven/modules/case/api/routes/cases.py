@@ -38,11 +38,14 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.concurrency.inflight import (
+    CASE_DELETE_IN_PROGRESS,
     CASE_DELETE_UNAVAILABLE,
     CASE_WORK_IN_PROGRESS,
     DELETE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    CaseDeleteInProgress,
     CaseDeleteUnavailable,
     CaseWorkInProgress,
+    hold_case,
 )
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import ErrorDetail, ErrorResponse, TitleResponse
@@ -107,8 +110,9 @@ logger = logging.getLogger(__name__)
         409: {
             "description": (
                 f"`{CASE_WORK_IN_PROGRESS}`: a turn on the case, or work one "
-                "started, is still running, or another delete of it is. "
-                "Nothing was cleared; retry after `Retry-After` seconds."
+                "started, or a title generation on the case is still running, "
+                "or another delete of it is. Nothing was cleared; retry after "
+                "`Retry-After` seconds."
             ),
             "headers": {
                 "x-error-code": {
@@ -173,12 +177,12 @@ async def delete_case(
     Any other reader — the driver included — is refused with 403.
 
     While a turn on the case, or work one started (its upload links, evidence
-    indexing, a runbook draft), is still running, on any server, the delete
-    answers 409 `CASE_WORK_IN_PROGRESS` with `Retry-After` and clears nothing.
-    A turn sent while the delete runs is refused with 409
-    `CASE_DELETE_IN_PROGRESS`, and `GET /cases/{case_id}` reads
-    `deleting: true` while the delete's tombstone stands: until it is removed
-    or lapses, or the case is gone (404) (#2510).
+    indexing, a runbook draft), or a title generation on the case is still
+    running, on any server, the delete answers 409 `CASE_WORK_IN_PROGRESS`
+    with `Retry-After` and clears nothing. A turn or a title generation sent
+    while the delete runs is refused with 409 `CASE_DELETE_IN_PROGRESS`, and
+    `GET /cases/{case_id}` reads `deleting: true` while the delete's tombstone
+    stands: until it is removed or lapses, or the case is gone (404) (#2510).
     If whether work is in flight cannot be read, the delete answers 503
     `CASE_DELETE_UNAVAILABLE` with `Retry-After` and clears nothing (#2096).
 
@@ -1008,7 +1012,21 @@ async def update_case(
 @router.post(
     "/{case_id}/title",
     response_model=TitleResponse,
-    responses={**CASE_NOT_DRIVER_RESPONSE, **CASE_NOT_FOUND_RESPONSE},
+    responses={
+        **CASE_NOT_DRIVER_RESPONSE,
+        **CASE_NOT_FOUND_RESPONSE,
+        409: {
+            "description": (
+                f"`{CASE_DELETE_IN_PROGRESS}`: the case is being deleted; "
+                "nothing was generated or written. Reload the case."
+            ),
+            "headers": {
+                "x-error-code": {
+                    "schema": {"type": "string", "enum": [CASE_DELETE_IN_PROGRESS]}
+                },
+            },
+        },
+    },
     dependencies=[Depends(require_authentication)],
 )
 @trace("api_generate_case_title")
@@ -1040,6 +1058,10 @@ async def generate_case_title(
       driver's (ADR-020 D2), so any other reader is refused here before any
       title is generated (#2806).
     - 404 ``CASE_NOT_FOUND``: the caller cannot read the case.
+    - 409 ``CASE_DELETE_IN_PROGRESS``: the case is being deleted; nothing was
+      generated or written. The call holds the case's in-flight lease while it
+      generates and writes the title, as a turn does, so a delete of the case
+      meanwhile answers 409 ``CASE_WORK_IN_PROGRESS`` (#2580).
     - 422: ValidationException body — see ``api/exception_handlers.py``
       and ``docs/architecture/specifications/exception-contract.md``.
       Raised when there is insufficient meaningful context to generate
@@ -1121,6 +1143,21 @@ async def generate_case_title(
         # Previous: Blocked regeneration if title was "meaningful"
         # Now: Always regenerate (respects the substance gate + duplicate protection)
 
+        # The case's in-flight lease (#2096), taken as a turn takes it: the
+        # generation reads and saves the case's redaction registry and writes
+        # its row, which a delete erases. A delete refuses while this stands;
+        # one already running refuses this call before anything is read (#2580).
+        try:
+            case_hold = await hold_case(
+                getattr(request.app.state, "redis_client", None),
+                (case.enterprise_id, case.case_id),
+            )
+        except CaseDeleteInProgress:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This case is being deleted. Reload the case.",
+                headers={"x-error-code": CASE_DELETE_IN_PROGRESS},
+            ) from None
         try:
             generated_title, title_source, substance_length = (
                 await _generate_and_persist_title(
@@ -1143,6 +1180,8 @@ async def generate_case_title(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Title generation is temporarily unavailable",
             )
+        finally:
+            await case_hold.release()
 
         response.headers["x-title-source"] = (
             title_source  # Log source=llm vs fallback for telemetry

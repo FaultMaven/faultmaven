@@ -785,12 +785,13 @@ llm_usage_unpersisted_calls = Counter(
     label_values={"reason": _UNPERSISTED_REASONS},
 )
 
-# Turns that ran with no per-case in-flight lease (#2096): a delete of their
-# case cannot see them (``infrastructure/concurrency/inflight.py``).
+# Turns and case title generations that ran with no per-case in-flight lease
+# (#2096, #2580): a delete of their case cannot see them
+# (``infrastructure/concurrency/inflight.py``).
 case_unleased_turns = Counter(
     "case_unleased_turns_total",
-    "Turns that ran without a per-case in-flight lease, so a case delete could "
-    "not see them, by reason. no_store: no Redis client; store_error: the lease "
+    "Turns and case title generations that ran without a per-case in-flight "
+    "lease, so a case delete could not see them, by reason. no_store: no Redis client; store_error: the lease "
     "or tombstone command failed.",
     labelnames=["reason"],
     label_values={"reason": ("no_store", "store_error")},

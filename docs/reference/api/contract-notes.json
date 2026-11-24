@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.10.0",
+  "contractVersion": "15.11.0",
   "entries": [
+    {
+      "body": "* `POST /cases/{case_id}/title` answers **409** `CASE_DELETE_IN_PROGRESS`,\n  with no `Retry-After` and the turn route's detail, while a delete of the\n  case runs: no title was generated and nothing was written. Reload the case,\n  as for a turn refused the same way.\n* `DELETE /cases/{case_id}` answers its existing **409**\n  `CASE_WORK_IN_PROGRESS`, with `Retry-After`, while a title generation on\n  the case runs, as it does while a turn runs. Nothing was cleared.\n\nThe title call reads and saves the case's PII redaction registry and writes\nits row; a delete passing under it could leave the registry the delete had\nerased. A keyed title call still caches its answer after it releases the\nlease (the #2624 residual).\n\nMINOR because every client survives it: each answer is a refusal that changed\nnothing, the delete's 409 is already declared, and a client that does not\nknow a code keeps the existing title.",
+      "level": "MINOR",
+      "title": "`POST /cases/{case_id}/title` holds the case's in-flight lease while it generates and writes the title: it gains the 409 `CASE_DELETE_IN_PROGRESS`, and `DELETE /cases/{case_id}` answers its 409 `CASE_WORK_IN_PROGRESS` while a title generation on the case runs (#2580). No schema moves.",
+      "version": "15.11.0"
+    },
     {
       "body": "Nothing is saved: the upload writes no row, the draft stays a draft, and\nthe edit is not applied. No `Retry-After`.\n\n* Each code carries more than one cause, and the detail is a sentence per\n  cause that tells the user whether to retry or split the document. No field\n  carries the cause: branch on `x-error-code` and never parse the detail\n  text. This supersedes the `KNOWLEDGE_EMBEDDER_UNAVAILABLE` sentence 15.5.0\n  quoted; a token count that finds no slot within its wait is now\n  `KNOWLEDGE_EMBEDDER_TIMEOUT`.\n* `PUT` keeps its one detail for every re-index failure; only the header is\n  new.\n* `POST /knowledge/drafts/verify-batch` records such an item `failed` with\n  `Verification failed (EmbedderUnavailable)`, where it named\n  `KnowledgeBaseError`.\n\nMINOR by choice: all three operations already publish a 503 with\n`x-error-code`, and the 500 was never declared, so the published structure\ndoes not move; a client that treats any 5xx alike is unaffected.",
       "level": "MINOR",

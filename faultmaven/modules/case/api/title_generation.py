@@ -1121,8 +1121,9 @@ async def _generate_and_persist_title(
         raise ValidationException(
             "Cannot generate meaningful title from available context"
         )
-    # What the prompt added to the case registry, kept like a turn's (a save
-    # with nothing new writes nothing).
+    # What the prompt added to the case registry, kept like a turn's. A save
+    # with nothing new still writes back every entry it loaded and re-arms the
+    # TTL, so this runs only under the case's in-flight lease (#2580).
     await redaction_ctx.save()
 
     # The backstop (#1967): the disclosure gate once more, on exactly the

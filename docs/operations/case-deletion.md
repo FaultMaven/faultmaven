@@ -140,14 +140,16 @@ eraser fails every purge rather than skip it.
 A turn on the case holds the case's **in-flight lease** from before it writes
 anything until it has answered. So does every task a turn starts that outlives
 it: the turn's commit, its upload links, evidence vectorization and a runbook
-draft. The lease is shared by every API replica: a Redis sorted set,
-`case-inflight:{enterprise_id}:{case_id}`, of one member per process, renewed
-every 10 s and lapsing 30 s after its last renewal.
+draft. So does a title generation (`POST /cases/{case_id}/title`) while it
+generates and writes the title (#2580). The lease is shared by every API
+replica: a Redis sorted set, `case-inflight:{enterprise_id}:{case_id}`, of one
+member per process, renewed every 10 s and lapsing 30 s after its last
+renewal.
 
 | Answer | `x-error-code` | `Retry-After` | Meaning | Client action |
 |---|---|---|---|---|
-| Delete **409** | `CASE_WORK_IN_PROGRESS` | yes | A turn on the case, or work one started, is still running, or another delete of the case is. Nothing was cleared. | Retry after `Retry-After`; the work may run longer, so the retry may be refused again. |
-| Turn **409** | `CASE_DELETE_IN_PROGRESS` | no | A delete of the case is running. Nothing of the turn ran. | Reload the case. While it reads `deleting: true`, show it read-only and read it again (from 2 s, at most every 10 s, for at most 60 s) until it is gone (404) or `deleting` clears. |
+| Delete **409** | `CASE_WORK_IN_PROGRESS` | yes | A turn on the case, or work one started, or a title generation is still running, or another delete of the case is. Nothing was cleared. | Retry after `Retry-After`; the work may run longer, so the retry may be refused again. |
+| Turn or title **409** | `CASE_DELETE_IN_PROGRESS` | no | A delete of the case is running. Nothing of the turn ran, or no title was generated or written. | Reload the case. While it reads `deleting: true`, show it read-only and read it again (from 2 s, at most every 10 s, for at most 60 s) until it is gone (404) or `deleting` clears. |
 | Delete **503** | `CASE_DELETE_UNAVAILABLE` | yes | Whether work is in flight could not be read: Redis is unreachable. Nothing was cleared. | Retry after `Retry-After`. |
 
 How the two sides avoid a race: the delete first writes a tombstone,
@@ -181,8 +183,6 @@ read reports it.
   `disconnected` while that worker parks, and `parked_messages` counts what it
   holds. Each worker of each replica parks its own traces, so one response
   says nothing about the others.
-- **The title route (#2580).** It holds no lease, so its trace can land after
-  the delete.
 - **Traces recorded before #2102.** They carry no case tag, so they cannot be
   attributed to a case and a delete does not find them.
 - **Tracing turned off later (#2581).** With `OPIK_ENABLED` off or no backend
@@ -234,9 +234,11 @@ read reports it.
   holds no lease. One that passed its access check before the delete can
   re-write the session pointer.
 - **An answer cached for replay after the eraser read the index (#2624).** A
-  keyed POST on a case route that holds no lease (title, reports, close,
-  resume, or the create's own answer arriving late) can cache its answer after
-  the delete's eraser read the case's replay index. Only the same caller
+  keyed POST on a case route that holds no lease (reports, close, resume, or
+  the create's own answer arriving late) can cache its answer after the
+  delete's eraser read the case's replay index. So can a keyed title call:
+  it holds the lease while it generates and writes the title (#2580), but
+  caches its answer after it releases the lease. Only the same caller
   replaying the same key can read it, for at most 1 h.
 - **A lost replay index (#2624).** An eviction under a `volatile-*` policy, or
   a failover, can drop a case's replay index while its entries survive. The
