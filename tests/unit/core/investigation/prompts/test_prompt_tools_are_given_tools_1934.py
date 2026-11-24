@@ -655,7 +655,7 @@ def test_every_evidence_prompt_states_the_unseen_text_rule(row: str) -> None:
     assert not missing, missing
     assert ("search_file" in rule) is ("search_file" in g)
     # Non-vacuity: the columns really render a cut item.
-    assert "[TRUNCATED:" in texts["diagnosis"]
+    assert re.search(r"\[TRUNCATED: [0-9,]+ more", texts["diagnosis"])
 
 
 @pytest.mark.parametrize("row", sorted(ROWS))

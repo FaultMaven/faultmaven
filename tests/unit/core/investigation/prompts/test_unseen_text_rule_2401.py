@@ -278,9 +278,11 @@ def test_a_budget_squeeze_cut_renders_beside_the_rule(monkeypatch):
     for marker in (
         "[... Content truncated due to context limit ...]",
         "[...truncated...]",
-        "`[...]`",
     ):
-        assert marker in flat_rule
+        assert f"`{marker}`" in flat_rule
+    # A bare [...] replaces a whole section, never part of an item, and users
+    # type it in their own pastes: the rule does not name it.
+    assert "`[...]`" not in flat_rule
     assert flat_rule in _flat(prompt)
 
 
