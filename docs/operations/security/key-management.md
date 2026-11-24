@@ -230,6 +230,8 @@ shred -vfz -n 10 prod_keys.txt
 - HashiCorp Vault
 - Kubernetes Secrets (encrypted at rest)
 
+A cloud deployment never writes or reads the local-auth HS256 secret file. A cloud boot refused for `AUTH_MODE=local` could, before #2705, leave one at `data/.jwt_secret` (`JWT_SECRET_FILE`) on its volume: delete it. It is inert, since a cloud deployment accepts no HS256 token, but it is a signing secret nothing needs.
+
 **AWS Secrets Manager Example**:
 ```bash
 # Store private key

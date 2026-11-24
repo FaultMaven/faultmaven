@@ -35,6 +35,7 @@ from typing import (
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, DotEnvSettingsSource, EnvSettingsSource
 
+from faultmaven.config.deployment_coherence import coherence_refuses_local_auth
 from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
 from faultmaven.config.secret_file import (
     prepare_secret_file_for_read,
@@ -1708,6 +1709,12 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
         returns, judging nothing.
       - ``settings.security.jwt_secret_key`` is set (an explicit value always
         wins): it is judged, and the function returns.
+      - The deployment coherence gate refuses these settings from the settings
+        alone (``coherence_refuses_local_auth``: a cloud deployment, or
+        ``TENANT_PROVIDER=multi`` outside cloud): it returns, reading, writing,
+        setting and exporting nothing. Local auth never runs there, and a
+        secret written for it would sit, foreign to the corrected run, on that
+        deployment's volume (#2705).
       - Otherwise it reads the secret file
         (``settings.security.jwt_secret_file``) or generates a secret, and
         judges that value before it is published, set or exported. The file is
@@ -1731,10 +1738,11 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
     (every other letter case of the name removed) for child processes and
     settings built later.
 
-    A gate that runs after get_settings() (deployment coherence) and refuses a
-    persistent-database run can still follow a write here — of the same file a
-    corrected run writes. Moving persistence behind every gate is a lifecycle
-    redesign left to the owner (#1778 review, R6).
+    A gate that runs after get_settings() and refuses a persistent-database
+    run can still follow a write here — of the same file a corrected run
+    writes. The coherence gate's refusals from settings alone are excluded
+    above. Moving persistence behind every gate is a lifecycle redesign left
+    to the owner (#1778 review, R6).
 
     On a filesystem error in the persistent path it logs a warning and sets no
     secret. Where the deployment may degrade, local auth then fails with a
@@ -1753,6 +1761,8 @@ def resolve_local_jwt_secret(settings: "FaultMavenSettings") -> None:
             "JWT_SECRET_KEY",
             secret_path,
         )
+        return
+    if coherence_refuses_local_auth(settings):
         return
 
     logger = logging.getLogger(__name__)
@@ -1896,11 +1906,13 @@ class SecuritySettings(BaseSettings):
     # install needs no JWT_SECRET_KEY — set the env var to override. It is
     # generated and persisted (jwt_secret_file) only when the database is
     # persistent; otherwise an existing file is read, or an ephemeral per-process
-    # secret is used (#1703). OAuth/RS256 ignores this.
+    # secret is used (#1703). None of this happens for settings the coherence
+    # gate refuses (cloud, or TENANT_PROVIDER=multi outside cloud; #2705).
+    # OAuth/RS256 ignores this.
     jwt_secret_key: Optional[SecretStr] = Field(
         default=None,
         validation_alias="JWT_SECRET_KEY",
-        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (JWT_SECRET_FILE, data/.jwt_secret by default) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
+        description="HS256 secret for local auth; if unset in local mode, get_settings() generates and persists one (JWT_SECRET_FILE, data/.jwt_secret by default) when the database is persistent, and otherwise reads an existing file or uses an ephemeral per-process secret (override via JWT_SECRET_KEY); under DEPLOYMENT_MODE=cloud or TENANT_PROVIDER=multi, which the coherence gate refuses with local auth, none is generated or read. Unused in OAuth/RS256 mode.",
     )
     # Where resolve_local_jwt_secret() keeps the local HS256 secret. A field, so
     # JWT_SECRET_FILE binds as every setting does: any letter case (the last
@@ -1913,7 +1925,9 @@ class SecuritySettings(BaseSettings):
             "The local-mode HS256 secret file. With JWT_SECRET_KEY unset it is "
             "read when it holds a secret, and written when one is generated with "
             "a persistent database; with JWT_SECRET_KEY set it is only named in "
-            "that key's refusal when the key cannot sign. Unused in OAuth/RS256 "
+            "that key's refusal when the key cannot sign. Neither read nor "
+            "written under DEPLOYMENT_MODE=cloud or TENANT_PROVIDER=multi, which "
+            "the coherence gate refuses with local auth. Unused in OAuth/RS256 "
             "mode."
         ),
     )
