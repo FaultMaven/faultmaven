@@ -248,17 +248,17 @@ Matrix row: INV-37 in `investigation-invariants.md`; lifecycle-logic §1.2 (SUGG
 
 **What it is (and isn't).** This is a **provider-health** signal, not a per-case verdict and not an engine gate — it never changes engine behavior. A single honest UNRESOLVED case that never crosses is normal (the case may simply have no groundable cause from available data). The signal is in the crossing rate **normalized by that provider's investigation volume**: a provider carrying heavy investigation traffic but crossing the gate rarely is mis-provisioned (too weak to populate a differential — the incident shape, `gemini-3.1-flash-lite` spinning without ever crossing). Read it beside the boot-time tool-calling capability gate (`config/investigation_capability.py`): that gate catches a provider that *can't* gather evidence at startup; this metric catches, at runtime, a provider that *doesn't* build a differential.
 
-The load-bearing read is a **ratio** — crossings over volume — using the existing per-provider LLM-request counter (`faultmaven_llm_requests_total{provider}`, `infrastructure/observability/tracing.py`) as the volume denominator (there is no per-provider case counter, and this metric deliberately does not add one — the request counter is the available volume signal):
+The load-bearing read is a **ratio** — crossings over volume — using the per-provider turn counter `faultmaven_investigating_model_turns_total{provider, prompt}` (`lifecycle_metrics.py`: one increment per INVESTIGATING model turn whose reply is the model's own, by the prompt it answered from) as the volume denominator. There is no per-provider case counter; the router's `llm_requests_total` counts routed calls, several per turn, not turns:
 
 ```promql
 # Per-provider crossing rate — the numerator.
 sum by (provider) (rate(faultmaven_work_gate_crossed_total[24h]))
 
 # Provider floor: crossings per unit of that provider's investigation volume.
-# A value near zero for a provider with non-trivial request volume is the
+# A value near zero for a provider with non-trivial turn volume is the
 # mis-provisioning signal.
   sum by (provider) (rate(faultmaven_work_gate_crossed_total[24h]))
-/ sum by (provider) (rate(faultmaven_llm_requests_total{status="success"}[24h]))
+/ sum by (provider) (rate(faultmaven_investigating_model_turns_total[24h]))
 ```
 
 Matrix row: INV-39 in `investigation-invariants.md`; insufficient-evidence-handling §5.2 (provider floor).
@@ -298,14 +298,17 @@ Matrix row: INV-41 in `investigation-invariants.md`; methodology §7.7 (#673 gat
 
 ## Outcome prose in the model's reply (#2811)
 
-- `faultmaven_narration_outcome_prose_total{provider, set}` — an INVESTIGATING model turn whose own `agent_response` states an outcome in prose, against the prompt's rule to state the problem confirmed or a root cause identified only through the structured fields (the engine states the record under the reply). One increment per matching `set` per turn: `root_cause` ("the root cause is identified / confirmed / eliminated …"), `fix` ("the fix worked / held …"), `problem` ("the issue is resolved / fixed …"), `problem_confirmed` ("the problem is confirmed", "the symptom is verified"), `mitigation` ("the mitigation is verified / holding …"). The phrase sets are `response_synthesis.OUTCOME_PROSE_SETS`; a phrase whose clause holds a negation from a closed list before it is not counted, and a synthesized placeholder never is. Every series exists from import, at 0.
+- `faultmaven_narration_outcome_prose_total{provider, set}` — an INVESTIGATING model turn whose own `agent_response` states an outcome in prose, against the prompt's rule to state the problem confirmed or a root cause identified only through the structured fields (the engine states the record under the reply). One increment per matching `set` per turn: `root_cause` ("the root cause is identified / confirmed / eliminated …"), `fix` ("the fix worked / held …"), `problem` ("the issue is resolved / fixed …"), `problem_confirmed` ("the problem is confirmed", "the symptom is verified"), `mitigation` ("the mitigation is verified / holding …"). The phrase sets are `response_synthesis.OUTCOME_PROSE_SETS` (an auxiliary may carry one adverb: "has now been resolved"). A phrase whose clause holds a negation from a closed list before it is not counted; the clause starts after the last `.!?;:,`, line break, em dash, spaced hyphen or "but". A synthesized placeholder is never counted, nor a turn answered from the minimal fallback prompt (the budget backstop's starvation or overflow fallback, or the provider context-length retry), which carries no rule (`assembly.PromptReport`). Every series exists from import, at 0.
+- `faultmaven_investigating_model_turns_total{provider, prompt}` — its denominator: one increment per INVESTIGATING model turn whose reply is the model's own, `prompt` = `full` (the investigating template, which carries the rule) or `fallback` (the minimal fallback prompt). Every series exists from import, at 0.
+
+The rule line costs about 37 tokens of the cached prefix, so the budget backstop's starvation boundary (template overhead + reserve + margin + `min_viable`) moved up by that much: a turn that sat within 37 tokens of it now falls back, and counts only as `prompt="fallback"` volume.
 
 **What it is (and isn't).** An **upper bound**: a conditional ("once the root cause is confirmed") and an engine clause the model copied both count. It never changes a reply. It is the baseline the INV-40 widening (S2c-4) is decided on, read per provider against that provider's turn volume:
 
 ```promql
-sum by (provider, set) (rate(faultmaven_narration_outcome_prose_total[7d]))
+  sum by (provider, set) (rate(faultmaven_narration_outcome_prose_total[7d]))
 / on (provider) group_left
-sum by (provider) (rate(faultmaven_llm_requests_total{status="success"}[7d]))
+  sum by (provider) (rate(faultmaven_investigating_model_turns_total{prompt="full"}[7d]))
 ```
 
 ## Conventions for adding new lifecycle metrics

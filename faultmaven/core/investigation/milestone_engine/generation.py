@@ -1806,6 +1806,7 @@ class StructuredOutputGenerator:
         redaction_ctx: CaseRedactionContext,
         kb_lookup: Optional[Any] = None,
         kb_rendered: Optional[list] = None,
+        prompt_report: Optional[Any] = None,
     ) -> BaseInteractionResponse:
         """Structured-output generation with runtime context-length recovery.
 
@@ -1820,7 +1821,9 @@ class StructuredOutputGenerator:
         verdict the fallback carries (§5.6 of ``orchestration-capabilities.md``).
         ``kb_rendered`` is the turn's report of the KB entries its prompt
         carried; the fallback carries only the lookup's, so the retry narrows
-        the report to them, as the budget fallback does.
+        the report to them, as the budget fallback does. ``prompt_report``
+        (``assembly.PromptReport``) is marked as a fallback when the retry
+        answers, as the budget fallback marks it.
         """
         refusal = RefusalState()  # one per engine call (#1770)
         starve = StarveState()  # one per engine call (#2802)
@@ -1896,6 +1899,8 @@ class StructuredOutputGenerator:
                     # pushed runbook; citing one it was not shown is worse
                     # than citing none.
                     kb_rendered[:] = lookup_entries_only(kb_rendered)
+                if prompt_report is not None:
+                    prompt_report.fallback = True
                 return degraded
             raise
 

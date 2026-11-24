@@ -1244,14 +1244,21 @@ the turn and the turn's own prose does not state it
   agreeing the statement, and the problem is not yet confirmed. The fallback
   stub does not: it is a last-resort prompt with a tight token budget.
   TERMINAL does not: its turns take the terminal path, whose reply carries
-  no statement. The grounding rules' "never state that a problem is
-  resolved or fixed without verification evidence" precede the rule and
-  stand. Naming the cause's content ("state the root cause in one sentence
-  before proposing the fix") is not a record claim and stays; the window
-  verdict and mitigation lines of the TREATMENT and MITIGATION prompts are
-  S3's. `narration_outcome_prose_total{provider,set}` counts the
-  INVESTIGATING model turns whose own reply still states an outcome in
-  prose, as an upper bound, and never changes the reply
+  no statement. On a stage turn the grounding rules' "never state that a
+  problem is resolved or fixed without verification evidence" follow the
+  rule and stand (the evidence-grounding block directly under it, the
+  diagnostic-reasoning block later); a knowledge-query or meta turn waives
+  both blocks, so the rule stands alone there. Naming the cause's content
+  ("state the root cause in one sentence before proposing the fix") is not
+  a record claim and stays; the window verdict and mitigation lines of the
+  TREATMENT and MITIGATION prompts are S3's. The line costs about 37 tokens
+  of the prefix, so the budget backstop's starvation boundary moved up by
+  that much, and a turn that falls back is given no rule.
+  `narration_outcome_prose_total{provider,set}` counts the INVESTIGATING
+  model turns whose prompt carried the rule and whose own reply still
+  states an outcome in prose, as an upper bound, and never changes the
+  reply; a turn answered from the fallback prompt (`assembly.PromptReport`)
+  is not counted
   ([lifecycle metrics](../../operations/monitoring/lifecycle-metrics.md)).
 - **Residuals.** Only the turn's own changes are stated: the menu close's
   revision cancel, the save-time refold and REST edits change facts that no

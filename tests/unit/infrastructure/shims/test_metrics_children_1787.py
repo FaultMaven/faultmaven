@@ -197,6 +197,10 @@ named = {
         "faultmaven_narration_outcome_prose_total",
         {"provider": "unknown", "set": "problem_confirmed"},
     ),
+    "model_turns": REGISTRY.get_sample_value(
+        "faultmaven_investigating_model_turns_total",
+        {"provider": "unknown", "prompt": "fallback"},
+    ),
 }
 
 from faultmaven.infrastructure.shims.metrics import DECLARED_CHILDREN, LAZY_DECLARED
@@ -265,6 +269,7 @@ def test_every_bounded_series_is_exported_at_zero_from_import(tmp_path):
         "unleased_no_store": 0.0,
         "client_mismatch": 0.0,
         "outcome_prose": 0.0,
+        "model_turns": 0.0,
     }
     assert len(result["declared"]) == len(set(result["declared"]))
     assert result["undeclared"] == []

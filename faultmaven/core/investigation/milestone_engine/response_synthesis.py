@@ -164,20 +164,25 @@ def _narration_asserts_disposition(agent_text: str | None) -> bool:
 
 # The outcome-prose sets (#2811 S2c-3b): outcome claims the model's own reply
 # states in prose, counted by ``narration_outcome_prose_total`` and never acted
-# on. S1-S4 as measured on stored replies (#2811, round 104), plus
-# ``problem_confirmed``. Each counts a claim of its kind, conditionals and a
-# copied "**Case record:**" clause included, so the count is an upper bound.
+# on. S1-S4 as measured on stored replies (#2811, round 104), widened to an
+# adverb in the auxiliary, "root-cause", the mitigation's auxiliaries and "the
+# fix is verified" (#3045 review), plus ``problem_confirmed``. Each counts a
+# claim of its kind, conditionals and a copied "**Case record:**" clause
+# included, so the count is an upper bound.
 # The names are the counter's closed ``set`` label values.
-_AUX = r"(?:is|was|has been|is now)"
+# An auxiliary may carry one adverb before or after "been" ("has now been",
+# "was finally", "is now").
+_ADV = r"(?:now|finally|also|still|already|indeed|\w+ly)"
+_AUX = rf"(?:is|was|has(?: {_ADV})? been)(?: {_ADV})?"
 OUTCOME_PROSE_SETS: dict[str, re.Pattern[str]] = {
     name: re.compile(pattern, re.IGNORECASE)
     for name, pattern in (
         (
             "root_cause",
-            rf"\broot cause {_AUX} "
+            rf"\broot[- ]cause {_AUX} "
             r"(?:identified|confirmed|eliminated|established|verified)\b",
         ),
-        ("fix", r"\bthe fix (?:worked|held|is holding|was verified|was confirmed)\b"),
+        ("fix", rf"\bthe fix (?:worked|held|{_AUX} (?:holding|verified|confirmed))\b"),
         (
             "problem",
             rf"\b(?:issue|problem|incident|outage) {_AUX} (?:resolved|fixed)\b",
@@ -188,18 +193,20 @@ OUTCOME_PROSE_SETS: dict[str, re.Pattern[str]] = {
         ),
         (
             "mitigation",
-            r"\bmitigation (?:is|was|has been) (?:verified|confirmed|holding|stable)\b",
+            rf"\bmitigation {_AUX} (?:verified|confirmed|holding|stable)\b",
         ),
     )
 }
-# A match is not counted when its clause (from the last of ``.!?;:`` or a line
-# break) holds one of these words before it. A closed list.
+# A match is not counted when its clause holds one of these words before it.
+# A closed list. The clause starts after the last of ``.!?;:,``, a line break,
+# an em dash, a spaced hyphen or "but", so a negation elsewhere in the
+# sentence ("No, the issue is resolved.") hides nothing.
 _OUTCOME_PROSE_NEGATIONS = re.compile(
     r"\b(?:not|no|never|cannot|can't|isn't|wasn't|hasn't|haven't|hadn't|don't|"
     r"doesn't|didn't|won't|nor|neither|without|unable)\b",
     re.IGNORECASE,
 )
-_CLAUSE_BREAK = re.compile(r"[.!?;:\n]")
+_CLAUSE_BREAK = re.compile(r"[.!?;:,\n—]| - |\bbut\b", re.IGNORECASE)
 
 
 def outcome_prose_sets(agent_text: str | None) -> tuple[str, ...]:

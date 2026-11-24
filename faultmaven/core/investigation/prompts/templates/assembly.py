@@ -66,6 +66,17 @@ from .treatment import mitigation_instructions, treatment_instructions
 
 logger = logging.getLogger(__name__)
 
+
+@dataclasses.dataclass
+class PromptReport:
+    """What a turn's last prompt build sent (#2811 S2c-3b): ``fallback`` when
+    the minimal fallback prompt replaced the assembled one (the budget
+    backstop here, or the provider context-length retry in ``generation``).
+    The fallback carries no outcome rule, so its turn is not counted."""
+
+    fallback: bool = False
+
+
 # =============================================================================
 # DEGRADED MODE INSTRUCTIONS
 # =============================================================================
@@ -443,6 +454,7 @@ def get_prompt_for_case(
     kb_rendered: Optional[List[Dict[str, Any]]] = None,
     terminal_affordances: TerminalAffordances = NO_TERMINAL_AFFORDANCES,
     kb_lookup: Optional[KbLookup] = None,
+    prompt_report: Optional[PromptReport] = None,
 ) -> str:
     """Build the final prompt based on case state and stage.
 
@@ -491,6 +503,9 @@ def get_prompt_for_case(
         terminal_affordances: What a terminal Q&A turn offers below its reply
             (#1955), built from the suggestion list the engine attaches to it.
             The default offers nothing, so the prompt points at no suggestion.
+        prompt_report: When given, set on every build to whether the minimal
+            fallback replaced the assembled prompt, as ``kb_rendered`` is
+            refilled: the last build is the prompt the model answered from.
 
     Returns:
         Formatted prompt for the LLM
@@ -674,10 +689,14 @@ def get_prompt_for_case(
         kb_lookup=kb_lookup,
         narration_fold=narration_fold,
     )
-    if kb_rendered is not None and prompt != rendered.get("prompt"):
-        # The overflow/starvation backstop returned the minimal fallback in
-        # place of the assembled prompt. It carries no pushed KB context, only
-        # the lookup's verdict, which names its candidates by title.
+    # The overflow/starvation backstop returned the minimal fallback in place
+    # of the assembled prompt.
+    fell_back = prompt != rendered.get("prompt")
+    if prompt_report is not None:
+        prompt_report.fallback = fell_back
+    if kb_rendered is not None and fell_back:
+        # It carries no pushed KB context, only the lookup's verdict, which
+        # names its candidates by title.
         kb_rendered[:] = lookup_entries_only(kb_rendered)
     return prompt
 

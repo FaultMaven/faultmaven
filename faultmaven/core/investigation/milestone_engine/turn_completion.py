@@ -20,6 +20,7 @@ from faultmaven.core.investigation.kb_push import TURN_METADATA_KB_PROMPTED
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
     engine_owned_affordance_served_total,
+    investigating_model_turns_total,
     narration_outcome_prose_total,
     narration_overclaim_total,
 )
@@ -279,11 +280,15 @@ async def _compose_turn_reply(
     validation_repairs,
     baseline: OutcomeBaseline | None = None,
     prompted_state: CaseState | None = None,
+    prompt_fallback: bool = False,
 ):
     """Compose the final agent-facing reply text, gate prose, follow-ups and telemetry for the turn.
 
-    ``prompted_state`` is the state the model's prompt was rendered in; the
-    outcome-prose counter counts INVESTIGATING turns only (#2811 S2c-3b).
+    ``prompted_state`` is the state the model's prompt was rendered in and
+    ``prompt_fallback`` whether the model answered from the minimal fallback
+    prompt instead (``assembly.PromptReport``): the outcome-prose counter
+    counts only INVESTIGATING turns whose prompt carried the rule (#2811
+    S2c-3b).
     """
     # What each offer prose the narration published states, and the record
     # the outcome statement reads (#2811 S2c-3a).
@@ -592,13 +597,21 @@ async def _compose_turn_reply(
             },
         )
 
-    # The outcome prose the model's own reply states (#2811 S2c-3b), on a
-    # turn whose prompt carried the rule: counted, never acted on.
+    # The outcome prose the model's own reply states (#2811 S2c-3b): counted,
+    # never acted on, on an INVESTIGATING turn whose prompt was the
+    # investigating template, which carries the rule. A turn answered from the
+    # minimal fallback (the budget backstop or the context-length retry) was
+    # never given the rule: it counts toward the volume only.
     if prompted_state == CaseState.INVESTIGATING and not response_synthesized:
-        for prose_set in outcome_prose_sets(response_obj.agent_response):
-            narration_outcome_prose_total.labels(
-                provider=_resolve_chat_provider_name(llm_provider), set=prose_set
-            ).inc()
+        provider = _resolve_chat_provider_name(llm_provider)
+        investigating_model_turns_total.labels(
+            provider=provider, prompt="fallback" if prompt_fallback else "full"
+        ).inc()
+        if not prompt_fallback:
+            for prose_set in outcome_prose_sets(response_obj.agent_response):
+                narration_outcome_prose_total.labels(
+                    provider=provider, set=prose_set
+                ).inc()
 
     # The turn record (step 6) summarized the RAW LLM text; the gate,
     # summary, and INV-40 compositions above changed only the returned
