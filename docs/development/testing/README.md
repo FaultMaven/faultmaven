@@ -75,6 +75,8 @@ pytest -v
 pytest -k "test_pattern"
 ```
 
+**A hung test names itself.** A test still running after `faulthandler_timeout` (5 minutes, `pytest.ini`) writes a labelled block to stderr, naming its xdist worker, its nodeid and, for an async test or fixture, the await chain of each task on its event loop, then every thread's stack (`tests/hang_report.py`, #3078).
+
 ### Line-level coverage comparisons
 
 The coverage total is reliable at the default settings, but the per-line data is not. SQLAlchemy's async engine switches greenlets on every database call, and coverage misattributes the lines that run across those switches (#2206). It records lines against the wrong file, some of them past that file's end, and misses real ones. Measured on `tests/integration/modules/knowledge`, a default run against a greenlet-aware one:
