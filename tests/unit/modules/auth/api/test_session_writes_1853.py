@@ -219,7 +219,9 @@ async def test_post_accepts_metadata_at_the_bound(world):
 
     assert response.status_code == 201, response.text[:300]
     stored = await world.service.get_session(response.json()["session_id"])
-    assert stored.metadata == {"session_type": "troubleshooting", **metadata}
+    # The type is a field of its own (#2772): metadata holds the client's only.
+    assert stored.metadata == metadata
+    assert stored.session_type == "troubleshooting"
 
 
 # ---------------------------------------------------------------------------

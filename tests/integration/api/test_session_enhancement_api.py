@@ -42,10 +42,8 @@ def sample_session():
         client_id="client_xyz",
         created_at=datetime.now(timezone.utc),
         last_activity=datetime.now(timezone.utc),
-        metadata={
-            "session_type": "troubleshooting",
-            "timeout_minutes": 180,
-        },
+        session_type="troubleshooting",
+        metadata={"timeout_minutes": 180},
     )
 
 
@@ -190,7 +188,7 @@ def test_search_sessions_success(client, mock_session_service, sample_session):
             client_id="client_abc",
             created_at=datetime.now(timezone.utc),
             last_activity=datetime.now(timezone.utc),
-            metadata={"session_type": "troubleshooting"},
+            session_type="troubleshooting",
         ),
     ]
     mock_session_service.search_sessions.return_value = sessions

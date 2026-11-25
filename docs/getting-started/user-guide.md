@@ -87,6 +87,8 @@ curl -X POST \
 # Response includes:
 # - session_id: Your session identifier
 # - session_resumed: Whether an existing session was resumed
+# - session_type: The type the session was created with (a resume keeps it;
+#   a session_type key in metadata is not the type)
 ```
 
 ### Step 2: Create a Case

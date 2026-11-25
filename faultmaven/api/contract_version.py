@@ -151,6 +151,34 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.15.2",
+        level="PATCH",
+        title=(
+            "Sessions: `session_type` is the server's, set once from the create "
+            "request's typed field; a `session_type` key in `metadata` is no "
+            "longer the session's type (#2772). No schema moves."
+        ),
+        body=r"""Before, `POST /sessions` stored the typed `session_type` inside the
+session's `metadata` and then merged the client's `metadata` over it, so a
+`metadata.session_type` replaced the validated field, and a later `PUT
+/sessions/{session_id}` could change or drop it. Now the type is a field of its
+own, set from `session_type` on create (absent or null: `troubleshooting`), and
+no `metadata` write changes it. What a client can observe:
+
+* `POST /sessions` echoes the stored type: a resume answers the type the
+  session was created with, not the request's;
+* `GET /sessions` lists each session's type, and `?session_type=` filters on
+  it. Before, every row read `troubleshooting` and any other filter value
+  matched nothing;
+* `metadata` holds only what the client wrote, so the `PUT
+  /sessions/{session_id}` response and the `POST /sessions/search` rows no
+  longer carry a `session_type` key the server added, and a search `query` of
+  `troubleshooting` no longer matches every session through it.
+
+A `session_type` key a client puts in `metadata` is stored as any other client
+key and means nothing to the server.""",
+    ),
+    ContractChange(
         version="15.15.1",
         level="PATCH",
         title=(

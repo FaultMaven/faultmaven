@@ -158,6 +158,7 @@ class AuthSessionService:
         client_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         provider_session_id: Optional[str] = None,
+        session_type: str = "troubleshooting",
     ) -> Tuple[SessionContext, bool]:
         """Create new session or resume existing session for (user, client) pair
 
@@ -169,6 +170,9 @@ class AuthSessionService:
             metadata: Additional session metadata (authentication context only)
             provider_session_id: The IdP session an SSO login opened, which
                 logout ends. Server-set: no route passes a client's value.
+            session_type: The new session's type, from the create request's
+                typed field, never from ``metadata`` (#2772). A resumed
+                session keeps its stored type.
 
         Returns:
             Tuple of (SessionContext, resumed: bool)
@@ -210,6 +214,7 @@ class AuthSessionService:
             updated_at=now,
             metadata=metadata or {},
             provider_session_id=provider_session_id,
+            session_type=session_type,
         )
 
         await self._persist(session)

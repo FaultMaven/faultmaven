@@ -315,12 +315,9 @@ async def create_session(
         timeout_minutes = ttl_seconds // 60 if ttl_seconds is not None else None
 
         metadata = {}
-        if request:
-            if request.session_type:
-                metadata["session_type"] = request.session_type
-            if request.metadata:
-                validate_client_session_metadata(request.metadata)
-                metadata.update(request.metadata)
+        if request and request.metadata:
+            validate_client_session_metadata(request.metadata)
+            metadata.update(request.metadata)
 
         # WHOSE identity this session is minted for is the SERVER's answer.
         #
@@ -356,6 +353,11 @@ async def create_session(
             user_id,
             metadata=metadata if metadata else None,
             client_id=request.client_id if request else None,
+            # The typed field, never ``metadata``: a ``session_type`` key there
+            # is an inert client key, not the session's type (#2772). An
+            # explicit null keeps the default.
+            session_type=(request.session_type if request else None)
+            or "troubleshooting",
         )
 
         # Handle both new session and resumed session scenarios
@@ -387,7 +389,8 @@ async def create_session(
             "user_id": user_id,
             "client_id": request.client_id if request else None,
             "timeout_minutes": timeout_minutes,
-            "session_type": metadata.get("session_type", "troubleshooting"),
+            # The stored type: a resume keeps the type it was created with.
+            "session_type": session.session_type,
             "was_resumed": was_resumed,
         }
         logger.info(
@@ -410,7 +413,7 @@ async def create_session(
                 else None
             ),
             "status": session.status,
-            "session_type": metadata.get("session_type", "troubleshooting"),
+            "session_type": session.session_type,
             "session_resumed": was_resumed,
             "timeout_minutes": timeout_minutes,
             "message": f"Session {action_verb} successfully",
@@ -599,42 +602,10 @@ async def list_sessions(
         # Get sessions from SessionManager and apply filters/pagination
         all_sessions = await session_service.list_sessions(user_id=scope)
 
-        # Apply session type filtering
+        # The type is the session's server-set field (#2772); a
+        # ``session_type`` key in its metadata is not it.
         if session_type:
-            filtered_sessions = []
-            for session in all_sessions:
-                try:
-                    # Check session metadata for session_type or usage_type
-                    session_data = None
-                    if (
-                        hasattr(session_service, "session_manager")
-                        and hasattr(session_service.session_manager, "session_store")
-                        and hasattr(
-                            session_service.session_manager.session_store, "get"
-                        )
-                    ):
-                        session_data = (
-                            await session_service.session_manager.session_store.get(
-                                session.session_id
-                            )
-                        )
-
-                    if session_data:
-                        metadata_type = (
-                            session_data.get("session_type") or "troubleshooting"
-                        )
-                        if metadata_type == session_type:
-                            filtered_sessions.append(session)
-                    elif session_type == "troubleshooting":  # Default type
-                        filtered_sessions.append(session)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to get session metadata for {session.session_id}: {exception_log_name(e)}"
-                    )
-                    # Include session if we can't determine its type and filter is for default type
-                    if session_type == "troubleshooting":
-                        filtered_sessions.append(session)
-            all_sessions = filtered_sessions
+            all_sessions = [s for s in all_sessions if s.session_type == session_type]
 
         # Apply pagination
         total = len(all_sessions)
@@ -643,30 +614,6 @@ async def list_sessions(
         # Format response
         sessions_response = []
         for session in paginated_sessions:
-            # Get session metadata for display
-            session_type_val = "troubleshooting"  # default
-            try:
-                session_data = None
-                if (
-                    hasattr(session_service, "session_manager")
-                    and hasattr(session_service.session_manager, "session_store")
-                    and hasattr(session_service.session_manager.session_store, "get")
-                ):
-                    session_data = (
-                        await session_service.session_manager.session_store.get(
-                            session.session_id
-                        )
-                    )
-
-                if session_data:
-                    session_type_val = (
-                        session_data.get("session_type") or "troubleshooting"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to get session metadata for display {session.session_id}: {exception_log_name(e)}"
-                )
-
             sessions_response.append(
                 {
                     "session_id": session.session_id,
@@ -676,7 +623,7 @@ async def list_sessions(
                         session.last_activity
                     ),
                     "status": "inquiry",
-                    "session_type": session_type_val,
+                    "session_type": session.session_type,
                     # The same two always-zero counters as the single-session
                     # read above, removed for the same reason.
                 }
