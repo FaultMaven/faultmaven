@@ -8079,7 +8079,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "16.0.0"
+    "version": "16.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11270,13 +11270,14 @@
             }
           },
           "409": {
-            "description": "`x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only.",
+            "description": "`x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. Nothing was written. A case found terminal, or the race lost, after the case was read answers the shared conflict body (`error`, `detail`, `status_code`, `resource_type`, `resource_id`, `conflict_reason`: `already_closed` or `concurrent_update`); the turn route's `x-expected-version` and `x-actual-version` are not sent.",
             "headers": {
               "x-error-code": {
                 "description": "Which conflict.",
                 "schema": {
                   "enum": [
-                    "CASE_TERMINAL"
+                    "CASE_TERMINAL",
+                    "CASE_VERSION_CONFLICT"
                   ],
                   "type": "string"
                 }
@@ -11440,13 +11441,14 @@
             }
           },
           "409": {
-            "description": "`x-error-code: CASE_TERMINAL`: the case is already resolved or closed. Unlabelled, with `conflict_reason: concurrent_update`: the case changed while closing; reload and retry.",
+            "description": "`x-error-code: CASE_TERMINAL`: the case is already resolved or closed. `CASE_VERSION_CONFLICT` (with `conflict_reason: concurrent_update`): the case changed while closing; reload and retry.",
             "headers": {
               "x-error-code": {
-                "description": "Which conflict; absent for a concurrent update.",
+                "description": "Which conflict.",
                 "schema": {
                   "enum": [
-                    "CASE_TERMINAL"
+                    "CASE_TERMINAL",
+                    "CASE_VERSION_CONFLICT"
                   ],
                   "type": "string"
                 }

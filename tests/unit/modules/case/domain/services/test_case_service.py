@@ -1748,8 +1748,9 @@ class TestCloseCase:
     @pytest.mark.asyncio
     async def test_occ_exhaustion_maps_to_conflict(self, service, mock_repo):
         """StaleCaseException after max retries is translated to the handled
-        ConflictError → 409 (mirrors the turn route's OCC posture)."""
-        from faultmaven.exceptions import ConflictError
+        ConflictError → 409 ``CASE_VERSION_CONFLICT``, the label every lost
+        version race carries (#2825)."""
+        from faultmaven.exceptions import CASE_VERSION_CONFLICT, ConflictError
         from faultmaven.modules.case.exceptions import StaleCaseException
 
         def _fresh_open(_case_id):
@@ -1763,4 +1764,4 @@ class TestCloseCase:
         with pytest.raises(ConflictError) as exc_info:
             await service.close_case("case_x", "user_123")
         assert exc_info.value.conflict_reason == "concurrent_update"
-        assert exc_info.value.error_code is None, "not a terminal case"
+        assert exc_info.value.error_code == CASE_VERSION_CONFLICT

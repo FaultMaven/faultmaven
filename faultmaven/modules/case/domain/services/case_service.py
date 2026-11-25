@@ -28,6 +28,8 @@ from faultmaven.config.tenant_context import (
     get_current_tenant_id,
 )
 from faultmaven.exceptions import (
+    CASE_TERMINAL,
+    CASE_VERSION_CONFLICT,
     AuthorizationError,
     CaseNotDriverError,
     ConflictError,
@@ -121,6 +123,28 @@ def _published_sources(stored: Any, *, message_id: str) -> Optional[List[Source]
                 "Dropped an unreadable KB source from message %s", message_id
             )
     return sources or None
+
+
+def _terminal_refusal(case_id: str, state: CaseState) -> ConflictError:
+    """A write refused because the case is resolved or closed (#1907)."""
+    return ConflictError(
+        f"Case {case_id} is already {state.value}",
+        resource_type="Case",
+        resource_id=case_id,
+        conflict_reason="already_closed",
+        error_code=CASE_TERMINAL,
+    )
+
+
+def _version_conflict(case_id: str, doing: str) -> ConflictError:
+    """A write that lost its version race on every attempt (#2825)."""
+    return ConflictError(
+        f"Case {case_id} changed while {doing}; reload and retry",
+        resource_type="Case",
+        resource_id=case_id,
+        conflict_reason="concurrent_update",
+        error_code=CASE_VERSION_CONFLICT,
+    )
 
 
 class CaseService(CaseDriverMixin, ICaseService):
@@ -562,15 +586,21 @@ class CaseService(CaseDriverMixin, ICaseService):
         ``POST /cases/{case_id}/close``) is refused with
         ``ValidationException`` before anything is read or written (#2823).
 
+        The write path is chosen on each fresh load, not on the access
+        check's read, so a case Gate 1 opened or a close landed on meanwhile
+        is written as it now stands (#2825):
+
         - **Metadata** (title, description): goes through the scoped
           ``update_metadata_fields`` repo method. Does NOT bump
-          ``cases.version`` and therefore cannot stale-conflict with an
-          in-flight turn save. A changed description, the statement in force
-          outside an investigation, carries the case outcome record folded
-          over it in the same scoped write (``_write_metadata``, #2811).
+          ``cases.version``, so an in-flight turn's save does not conflict
+          with it. A changed description, the statement in force outside an
+          investigation, carries the case outcome record folded over it in
+          the same scoped write, only while the version it was folded from
+          stands (``_write_metadata``, #2811).
         - **Statement edit** (description during INVESTIGATING, with any
           title alongside): goes through ``update_case_with_retry``, the
-          versioned ``save`` path with OCC retry on conflict.
+          versioned ``save`` path with OCC retry on conflict
+          (``_edit_statement``).
 
         Args:
             case_id: Case identifier
@@ -587,6 +617,9 @@ class CaseService(CaseDriverMixin, ICaseService):
             CaseNotDriverError: the caller reads it but does not drive it, at
                 the gate or because the driver changed while the update ran
                 (#2806).
+            ConflictError: ``CASE_TERMINAL``, the case was resolved or closed
+                while the update ran; ``CASE_VERSION_CONFLICT``, either write
+                lost its version race on every attempt (#2825).
         """
         if not case_id or not case_id.strip():
             raise ValidationException("Case ID cannot be empty")
@@ -610,80 +643,34 @@ class CaseService(CaseDriverMixin, ICaseService):
             # investigation writes (ADR-020 D2): a reader who does not
             # drive is refused ``CASE_NOT_DRIVER``, a caller who cannot read
             # the case ``CASE_NOT_FOUND`` (#2806).
-            existing = await self.require_case(case_id, user_id, driver_only=True)
-
-            # During an investigation the description IS the problem
-            # statement, held in three stores (description, the verification
-            # record, the causal graph's PROBLEM node); an edit takes the
-            # versioned path through the one writer that keeps them aligned.
-            edits_statement = (
-                "description" in updates and existing.state == CaseState.INVESTIGATING
-            )
-            if edits_statement:
-                from faultmaven.core.investigation.problem_status import (
-                    edit_statement_refusal,
-                )
-
-                refusal = edit_statement_refusal(existing, updates["description"] or "")
-                if refusal:
-                    raise ValidationException(f"description: {refusal}")
-
-            if not edits_statement:
-                # Scoped UPDATE, no version bump.
-                await self._write_metadata(case_id, updates)
-            else:
-                # Statement edit: versioned save with OCC retry; a title in
-                # the same call rides along on it.
-                from faultmaven.modules.case.utils import update_case_with_retry
-
-                async def apply(case: Case) -> None:
-                    # Re-checked on every fresh load: a reassignment that
-                    # landed after the gate above bumped ``version``, so the
-                    # retry reloads — and must not then write as a driver the
-                    # caller no longer is (ADR-020 D4).
-                    if user_id and case.effective_driver_id != user_id:
-                        raise CaseNotDriverError()
-                    for key, value in updates.items():
-                        if (
-                            key == "description"
-                            and case.state == CaseState.INVESTIGATING
-                        ):
-                            from faultmaven.core.investigation.problem_status import (
-                                edit_statement,
-                            )
-
-                            edit_statement(case, value)
-                        else:
-                            setattr(case, key, value)
-
-                from faultmaven.modules.case.exceptions import CaseNotFoundError
-
-                try:
-                    await update_case_with_retry(self.repository, case_id, apply)
-                except CaseNotFoundError:
-                    # Deleted between the gate and the retry's fresh load: the
-                    # answer an absent case gets, as ``close_case`` gives it.
-                    raise NotFoundError("Case", case_id)
+            await self.require_case(case_id, user_id, driver_only=True)
+            await self._write_metadata(case_id, updates, user_id)
 
             logger.info(f"Updated case {case_id}")
             return True
 
         except (ValidationException, NotFoundError, AuthorizationError, ConflictError):
-            # The access verdict, up front or under the retry: answered as
-            # what it is, never as a failed write.
+            # The access verdict or a conflict, up front or under the retry:
+            # answered as what it is, never as a failed write.
             raise
         except Exception as e:
             logger.error(f"Failed to update case {case_id}: {exception_log_name(e)}")
             raise ServiceException(f"Case update failed: {str(e)}") from e
 
-    async def _write_metadata(self, case_id: str, updates: Dict[str, Any]) -> None:
+    async def _write_metadata(
+        self, case_id: str, updates: Dict[str, Any], user_id: Optional[str]
+    ) -> None:
         """The scoped metadata write, which never bumps ``cases.version``. A
         changed description is the statement in force outside an
         investigation (``current_statement``), so the case outcome record is
         folded over it and written in the same scoped UPDATE, only while the
         version it was folded from stands; a write that lost that race folds
         again (#2811). An unchanged description is not written: the title is,
-        alone. Its disagreements are counted once, after the write."""
+        alone. Its disagreements are counted once, after the write.
+
+        Each fresh load decides (#2825): a terminal case is refused
+        ``CASE_TERMINAL``, and a description on an investigation is the
+        problem statement, handed to ``_edit_statement``."""
         from faultmaven.core.investigation.outcome import (
             disagreement_keys,
             record_case_outcome,
@@ -695,6 +682,10 @@ class CaseService(CaseDriverMixin, ICaseService):
             case = await self.repository.get(case_id)
             if case is None:
                 raise NotFoundError("Case", case_id)
+            if case.state.is_terminal:
+                raise _terminal_refusal(case_id, case.state)
+            if "description" in updates and case.state == CaseState.INVESTIGATING:
+                return await self._edit_statement(case_id, updates, user_id)
             stored, loaded = case.description, disagreement_keys(case.progress.outcome)
             if description is not None:
                 try:
@@ -718,12 +709,51 @@ class CaseService(CaseDriverMixin, ICaseService):
             ):
                 report_saved_disagreements(case_id, loaded, case.progress.outcome)
                 return
-        raise ConflictError(
-            f"Case {case_id} changed while its description was edited; retry",
-            resource_type="Case",
-            resource_id=case_id,
-            conflict_reason="concurrent_update",
+        raise _version_conflict(case_id, "its description was edited")
+
+    async def _edit_statement(
+        self, case_id: str, updates: Dict[str, Any], user_id: Optional[str]
+    ) -> None:
+        """The statement edit during an investigation: the description is the
+        problem statement, held in three stores (description, the
+        verification record, the causal graph's PROBLEM node) that only
+        ``edit_statement`` keeps aligned. A versioned save with OCC retry; a
+        title in the same call rides along on it."""
+        from faultmaven.core.investigation.problem_status import (
+            edit_statement,
+            edit_statement_refusal,
         )
+        from faultmaven.modules.case.exceptions import (
+            CaseNotFoundError,
+            StaleCaseException,
+        )
+        from faultmaven.modules.case.utils import update_case_with_retry
+
+        async def apply(case: Case) -> None:
+            # Re-checked on every fresh load: a reassignment that landed after
+            # the gate bumped ``version``, so the retry reloads — and must not
+            # then write as a driver the caller no longer is (ADR-020 D4).
+            if user_id and case.effective_driver_id != user_id:
+                raise CaseNotDriverError()
+            if case.state.is_terminal:
+                raise _terminal_refusal(case_id, case.state)
+            for key, value in updates.items():
+                if key == "description" and case.state == CaseState.INVESTIGATING:
+                    refusal = edit_statement_refusal(case, value or "")
+                    if refusal:
+                        raise ValidationException(f"description: {refusal}")
+                    edit_statement(case, value)
+                else:
+                    setattr(case, key, value)
+
+        try:
+            await update_case_with_retry(self.repository, case_id, apply)
+        except CaseNotFoundError:
+            # Deleted between the gate and the retry's fresh load: the answer
+            # an absent case gets, as ``close_case`` gives it.
+            raise NotFoundError("Case", case_id)
+        except StaleCaseException:
+            raise _version_conflict(case_id, "its statement was edited")
 
     @trace("case_service_get_or_create_case_for_session")
     async def get_or_create_case_for_session(
@@ -1184,7 +1214,6 @@ class CaseService(CaseDriverMixin, ICaseService):
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,
         )
-        from faultmaven.exceptions import CASE_TERMINAL, NotFoundError
         from faultmaven.modules.case.exceptions import (
             CaseNotFoundError,
             StaleCaseException,
@@ -1195,23 +1224,14 @@ class CaseService(CaseDriverMixin, ICaseService):
         # reader who does not drive it (#2806); a repository failure is a 5xx.
         case = await self.require_case(case_id, user_id, driver_only=True)
 
-        def _already_terminal(state: CaseState) -> ConflictError:
-            return ConflictError(
-                f"Case {case_id} is already {state.value}",
-                resource_type="Case",
-                resource_id=case_id,
-                conflict_reason="already_closed",
-                error_code=CASE_TERMINAL,
-            )
-
         if case.state.is_terminal:
-            raise _already_terminal(case.state)
+            raise _terminal_refusal(case_id, case.state)
 
         async def apply(fresh: Case) -> None:
             if fresh.effective_driver_id != user_id:
                 raise CaseNotDriverError()
             if fresh.state.is_terminal:
-                raise _already_terminal(fresh.state)
+                raise _terminal_refusal(case_id, fresh.state)
             execute_user_closure(fresh, user_id)
 
         # The retry helper's own exceptions subclass CaseException, which no
@@ -1225,12 +1245,7 @@ class CaseService(CaseDriverMixin, ICaseService):
         except StaleCaseException:
             # Lost the version race max_attempts times; caller should
             # reload and re-decide (mirrors the turn route's OCC posture).
-            raise ConflictError(
-                f"Case {case_id} changed while closing; reload and retry",
-                resource_type="Case",
-                resource_id=case_id,
-                conflict_reason="concurrent_update",
-            )
+            raise _version_conflict(case_id, "closing")
         logger.info(
             f"Closed case {case_id} via API, " f"reason: {updated_case.closure_reason}"
         )

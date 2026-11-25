@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Path
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.exceptions import CASE_VERSION_CONFLICT
 from faultmaven.models.api_models import (
     CaseDriverCandidate,
     CaseDriverCandidateList,
@@ -89,15 +90,15 @@ async def list_driver_candidates(
         "the target must be one of `GET /cases/{case_id}/driver-candidates`. "
         "Naming the creator hands the case back to them; naming the current "
         "driver changes nothing. A change bumps the case's version, so a turn "
-        "in flight fails with 409 `CASE_VERSION_CONFLICT`, and is recorded in "
-        "the audit log."
+        f"in flight fails with 409 `{CASE_VERSION_CONFLICT}`, and is recorded "
+        "in the audit log."
     ),
     responses={
         **_REFUSALS,
         409: {
             "description": (
-                "`CASE_VERSION_CONFLICT`: the case kept changing; reload and "
-                "retry. A resolved or closed case is NOT refused: its driver "
+                f"`{CASE_VERSION_CONFLICT}`: the case kept changing; reload "
+                "and retry. A resolved or closed case is NOT refused: its driver "
                 "can still be changed."
             )
         },

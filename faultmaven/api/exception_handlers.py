@@ -993,8 +993,9 @@ async def conflict_exception_handler(
 
     The response carries ``x-error-code`` when the raiser named one
     (``ConflictError.error_code``): a terminal case's refusal is
-    ``CASE_TERMINAL`` (#1907). The rest go out without the header and are
-    told apart by ``conflict_reason`` — none is raised on the turn route,
+    ``CASE_TERMINAL`` (#1907), a case's lost version race
+    ``CASE_VERSION_CONFLICT`` (#2825). The rest go out without the header and
+    are told apart by ``conflict_reason`` — none is raised on the turn route,
     where a client reads the header first.
 
     Args:
