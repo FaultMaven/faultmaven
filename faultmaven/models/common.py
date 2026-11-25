@@ -74,6 +74,13 @@ class SessionContext(BaseModel):
     status: Literal["active", "archived"] = Field(
         "active", description="Whether the session is archived; server-set"
     )
+    # Server-set only, from the create request's typed ``session_type``; in
+    # ``metadata`` a client could replace it on create or on update (#2772).
+    # A ``session_type`` key in client ``metadata`` is not the session's type.
+    # No route accepts it as an update.
+    session_type: str = Field(
+        "troubleshooting", description="The session's type, set at creation"
+    )
 
     # Timestamps
     created_at: datetime = Field(
