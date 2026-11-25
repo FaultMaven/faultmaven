@@ -75,7 +75,7 @@ pytest -v
 pytest -k "test_pattern"
 ```
 
-**A hung test names itself.** A test still running after 5 minutes dumps every thread's stack into the log (`faulthandler_timeout` in `pytest.ini`), and in CI a hung slice fails its test step, whose `timeout-minutes` is under its job's, so the job keeps its log (#3078).
+**A hung test names itself.** A test still running after `faulthandler_timeout` (5 minutes, `pytest.ini`) writes a labelled block to stderr, naming its xdist worker, its nodeid and, for an async test, the stack of each task on its event loop (`tests/hang_report.py`), beside faulthandler's dump of every thread's stack (#3078).
 
 ### Line-level coverage comparisons
 

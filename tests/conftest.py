@@ -97,7 +97,9 @@ from tests import chroma_clients  # noqa: E402
 # not with ``-p``, because the ``pytest`` console script does not put the
 # repository on ``sys.path`` before it loads ``-p`` plugins; this conftest is
 # imported with it there. Without ``--shard`` the plugin does nothing.
-pytest_plugins = ["tests.ci_shard"]
+# ``tests/hang_report.py`` names a test still running at ``faulthandler_timeout``
+# (pytest.ini) and its asyncio tasks' stacks, beside faulthandler's dump (#3078).
+pytest_plugins = ["tests.ci_shard", "tests.hang_report"]
 
 # "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
 # in-process FakeRedis without a connection (``redis_client.py``), the zero-
