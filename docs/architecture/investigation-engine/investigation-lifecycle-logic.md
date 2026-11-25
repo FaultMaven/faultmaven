@@ -1279,8 +1279,23 @@ the turn and the turn's own prose does not state it
   attempt a fix; window 0 has none). The cause has fallen when a root fell
   and the confirmation pool is empty (`pool_fallen`: `fallen_root_ids` also
   holds an identified root, and HELD_OPEN or IDENTIFICATION_CONTESTED can
-  mask the reason). Windows, mitigation and bookkeeping are not read (S3c of
-  #3046 adds the first two).
+  mask the reason). Then one fact per fix window of the turn-final record,
+  deduplicated on `fix_turn` (window 0 as none), in record order, after the
+  attempts (#3046 S3c): a window that moved into SUCCEEDED ("after the fix
+  carried out in turn t, the cause and the problem were both seen gone";
+  window 0 "before any fix was carried out in the case, …"), or into FAILED
+  ("…, the problem was seen gone, then seen again (turn f)" after a relief,
+  window 0's always; else "…, the problem was still present (turn f)"),
+  from anything else at turn start, absence included. `t` is the window's
+  `fix_turn`, the `accepted_in_turn` of every attempt sharing it. A window
+  leaving SUCCEEDED states nothing ("were seen gone" stays true of its turn,
+  and the cause clause carries the usual trigger; ruling of 2026-11-25, Q2),
+  nor does a FAILED one turning final, nor an attempt absent from the
+  turn-final record. The mitigation and bookkeeping are not read: the
+  mitigation's line moved to S3d (#3053), since the record's
+  `mitigation.verified` is relapse-adjusted while the unswitched readers
+  (the stage derivation, `milestone_inference`, `problem_status`, the
+  prompt) take the stored flag raw, so a line could contradict them.
 - **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
   copy of the record before any write of the turn, and the actions accepted
   then) and the turn-final record: the cycle's, or the narration's fold
@@ -1303,21 +1318,29 @@ the turn and the turn's own prose does not state it
   `RECORD_PROSE` is): read from the branch `_compose_turn_reply` took and the
   params its prose was rendered from. The resolve confirmation states a root
   cause when its root line names one, and the confirming attempt when it
-  names it "(carried out turn t)"; the backstop states the cause when one is
-  on record, and the deferred resolve when its record lines hold a cause
-  line naming one; the false-alarm close, and a readiness message
-  for a false alarm, the problem not present; the needs-info ask whose
-  "Root cause" line says the cause fell, that it fell. A model proposal's
-  prose is its offer's summary, not the reply's.
+  names it "(carried out turn t)", and then that attempt's window
+  SUCCEEDED too; the backstop states the cause when one is on record, and
+  the deferred resolve when its record lines hold a cause line naming one;
+  either one, when its record lines hold a cause line and a re-checked
+  problem line, the SUCCEEDED of the window the resolution confirms
+  through, the latest observed one; the false-alarm close, and a readiness
+  message for a false alarm, the problem not present; a readiness message
+  for a fix that did not hold, the latest window's FAILED; the needs-info
+  ask whose "Root cause" line says the cause fell, that it fell. A window's
+  key is its `fix_turn`, so stating it covers every attempt sharing the
+  window; the keys are read against the narration record's attempts, and
+  with no record no window verdict is stated. A model proposal's prose is
+  its offer's summary, not the reply's.
 - **Placement**: last, below the INV-40 notice; under a #1442 placeholder
   the placeholder and its flag are kept and the statement goes under it and
   its drop note. The summary re-record runs because the text changed. S4
   publishes the composed statement as a field and never recomputes it from
   stored records.
-- **The rule line** (#2811 S2c-3b, ruled wording): "State that the problem
-  is confirmed or that a root cause is identified only through the
-  structured fields; the engine states what the case record holds under
-  your reply." It sits in `INVESTIGATION_BASE`'s cached prefix (#613), above
+- **The rule line** (#2811 S2c-3b, ruled wording, widened by #3046 S3c):
+  "State that the problem is confirmed, that a root cause is identified, or
+  that a fix worked only through the structured fields; the engine states
+  what the case record holds under your reply." A fix that did not hold is
+  left out: TREATMENT asks for the failure's analysis in prose. It sits in `INVESTIGATION_BASE`'s cached prefix (#613), above
   the evidence-grounding block, so every stage and the knowledge-query and
   meta turns carry it. INQUIRY does not: there, confirming the problem means
   agreeing the statement, and the problem is not yet confirmed. The fallback
@@ -1329,8 +1352,10 @@ the turn and the turn's own prose does not state it
   diagnostic-reasoning block later); a knowledge-query or meta turn waives
   both blocks, so the rule stands alone there. Naming the cause's content
   ("state the root cause in one sentence before proposing the fix") is not
-  a record claim and stays; the window verdict and mitigation lines of the
-  TREATMENT and MITIGATION prompts are S3c's (#3046). The line costs about 37 tokens
+  a record claim and stays, as does TREATMENT's "verification evidence shows
+  the fix has held", a condition for proposing, not prose to emit (S3c,
+  #3046). The mitigation lines of the MITIGATION prompt are S3d's (#3053),
+  with the mitigation's statement line. The line costs about 43 tokens
   of the prefix, so the budget backstop's starvation boundary moved up by
   that much, and a turn that falls back is given no rule.
   `narration_outcome_prose_total{provider,set}` counts the INVESTIGATING

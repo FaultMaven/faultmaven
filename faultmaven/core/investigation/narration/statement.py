@@ -3,9 +3,9 @@
 ``outcome_changes`` compares the record at turn start (``OutcomeBaseline``) with
 the turn-final record over the closed field set (rulings of 2026-11-22 Q4 (a)
 and 2026-11-24): the problem's status, the identification leg and its fallen
-pool, and the accepted attempts. ``outcome_statement`` renders the changes the
-turn's own prose does not state (``stated``, ``offer_stated``) as one
-"**Case record:**" line. Both read the two records, the turn-start restore
+pool, the accepted attempts and their fix windows' verdicts (#3046 S3c).
+``outcome_statement`` renders the changes the turn's own prose does not state
+(``stated``, ``offer_stated``) as one "**Case record:**" line. Both read the two records, the turn-start restore
 target and the actions accepted at turn start alone (pin 2); the restore
 target's owners are the revision offer's and
 the invalidation's ``prior_status`` (``problem_status.restores_to``).
@@ -19,6 +19,8 @@ from faultmaven.modules.case.contracts import (
     AttemptOutcome,
     CaseOutcome,
     CauseOutcome,
+    FixWindowRecord,
+    FixWindowState,
     PoolEmptyReason,
     ProblemStatus,
     ResolutionReason,
@@ -41,17 +43,27 @@ class OutcomeChange(StrEnum):
     CAUSE_STANDS_AGAIN = "cause_stands_again"
     CAUSE_CLEARED = "cause_cleared"
     FIX_CARRIED_OUT = "fix_carried_out"
+    FIX_SUCCEEDED = "fix_succeeded"
+    FIX_FAILED = "fix_failed"
+
+
+_WINDOW_KINDS = frozenset({OutcomeChange.FIX_SUCCEEDED, OutcomeChange.FIX_FAILED})
 
 
 class Change(NamedTuple):
-    """One change; a fix's carries its attempt."""
+    """One change; a fix's carries its attempt, a window's the first attempt
+    of the record holding that window."""
 
     kind: OutcomeChange
     attempt: Optional[AttemptOutcome] = None
 
     @property
     def key(self) -> tuple:
-        """What ``stated`` names it by: its kind, and a fix's ``action_id``."""
+        """What ``stated`` names it by: its kind, and a fix's ``action_id`` or
+        a window's ``fix_turn`` (window 0: None), which every attempt sharing
+        the window shares (ruling of 2026-11-25, Q5)."""
+        if self.kind in _WINDOW_KINDS:
+            return (self.kind, self.attempt.window.fix_turn)
         return (self.kind, self.attempt.action_id if self.attempt else None)
 
 
@@ -152,10 +164,36 @@ def _fixes(prior: CaseOutcome, now: CaseOutcome, accepted: frozenset) -> list:
     ]
 
 
+def _windows(prior: CaseOutcome, now: CaseOutcome) -> list:
+    """One fact per fix window of the turn-final record, by ``fix_turn`` in
+    record order: moved into SUCCEEDED or into FAILED since the turn-start
+    record, where it may be absent. A window leaving SUCCEEDED states nothing
+    (ruling of 2026-11-25, Q2), nor does a FAILED one turning final; an
+    attempt absent from the turn-final record states nothing."""
+    before: dict = {}
+    for attempt in prior.attempts:
+        if attempt.window is not None:
+            before.setdefault(attempt.window.fix_turn, attempt.window.state)
+    changes, seen = [], set()
+    for attempt in now.attempts:
+        window = attempt.window
+        if window is None or window.fix_turn in seen:
+            continue
+        seen.add(window.fix_turn)
+        if window.state == before.get(window.fix_turn):
+            continue
+        if window.state == FixWindowState.SUCCEEDED:
+            changes.append(Change(OutcomeChange.FIX_SUCCEEDED, attempt))
+        elif window.state == FixWindowState.FAILED:
+            changes.append(Change(OutcomeChange.FIX_FAILED, attempt))
+    return changes
+
+
 def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
     """The closed-set facts this turn changed, in the statement's order;
     none on a record minted this turn (no baseline record) or with none now.
-    Windows, mitigation and bookkeeping are never read."""
+    Mitigation and bookkeeping are never read (the mitigation is S3d's,
+    #3053)."""
     prior = base.record
     if prior is None or now is None:
         return []
@@ -163,6 +201,7 @@ def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
         *_problem(base, prior.problem.status, now.problem.status),
         *_cause(prior, now),
         *_fixes(prior, now, base.accepted),
+        *_windows(prior, now),
     ]
 
 
@@ -179,7 +218,28 @@ _CLAUSES = {
 }
 
 
+def _window_clause(change: Change) -> str:
+    """The ruled copy (ruling of 2026-11-25, Q1): what was observed after the
+    fix of the window's turn, or before any fix for window 0, whose FAILED is
+    a relapse and so always follows a relief."""
+    window = change.attempt.window
+    if window.fix_turn is None:
+        after = "before any fix was carried out in the case"
+    else:
+        after = f"after the fix carried out in turn {window.fix_turn}"
+    if change.kind == OutcomeChange.FIX_SUCCEEDED:
+        return f"{after}, the cause and the problem were both seen gone"
+    if window.relief_turn is not None:
+        return (
+            f"{after}, the problem was seen gone, then seen again "
+            f"(turn {window.failure_turn})"
+        )
+    return f"{after}, the problem was still present (turn {window.failure_turn})"
+
+
 def _clause(change: Change) -> str:
+    if change.kind in _WINDOW_KINDS:
+        return _window_clause(change)
     if change.kind != OutcomeChange.FIX_CARRIED_OUT:
         return _CLAUSES[change.kind]
     # An unkinded attempt reads as a fix, as ``replies.closed_line`` reads it.
@@ -208,13 +268,27 @@ def _nothing(params: dict, attempts) -> set:
     return set()
 
 
+def _latest(windows) -> Optional[FixWindowRecord]:
+    """The window with the greatest ``fix_turn``, window 0 below every dated
+    one; None with none."""
+    return max(
+        windows,
+        key=lambda w: -1 if w.fix_turn is None else w.fix_turn,
+        default=None,
+    )
+
+
 def _readiness(params: dict, attempts) -> set:
     """A readiness message: the false alarm says the problem was not present,
-    and the "Root cause" ask with a fallen pool's user line says the cause
-    no longer stands."""
+    the fix that did not hold says the latest window FAILED, and the "Root
+    cause" ask with a fallen pool's user line says the cause no longer
+    stands."""
     stated = set()
     if params["reason"] == ResolutionReason.FALSE_ALARM:
         stated.add((OutcomeChange.PROBLEM_INVALIDATED, None))
+    latest = _latest([a.window for a in attempts if a.window is not None])
+    if params["reason"] == ResolutionReason.FIX_FAILED and latest is not None:
+        stated.add((OutcomeChange.FIX_FAILED, latest.fix_turn))
     cause = params.get("cause")
     if (
         params["reason"] == ResolutionReason.DOCUMENTATION_GAPS
@@ -232,6 +306,21 @@ def _unmet_close(params: dict, attempts) -> set:
 
 
 _CAUSE_LINE = "- **The cause** — "
+_PROBLEM_LINE = "- **The problem** — "
+
+
+def _seen_gone(record_lines: str, attempts) -> set:
+    """Record lines holding a cause line and a re-checked problem line say
+    the cause and the problem were seen gone in the window the resolution
+    confirms through, the latest observed one (ruling of 2026-11-25, Q5)."""
+    lines = record_lines.splitlines()
+    latest = _latest([a.window for a in attempts if a.window and a.window.observed])
+    if latest is None or not (
+        any(line.startswith(_CAUSE_LINE) for line in lines)
+        and any(line.startswith(_PROBLEM_LINE) for line in lines)
+    ):
+        return set()
+    return {(OutcomeChange.FIX_SUCCEEDED, latest.fix_turn)}
 
 
 def _deferred_resolve(params: dict, attempts) -> set:
@@ -242,19 +331,25 @@ def _deferred_resolve(params: dict, attempts) -> set:
         and not line[len(_CAUSE_LINE) :].startswith(NO_ROOT_ON_RECORD)
         for line in params["record_lines"].splitlines()
     )
-    return {(OutcomeChange.CAUSE_IDENTIFIED, None)} if named else set()
+    stated = _seen_gone(params["record_lines"], attempts)
+    if named:
+        stated.add((OutcomeChange.CAUSE_IDENTIFIED, None))
+    return stated
 
 
 def _backstop(params: dict, attempts) -> set:
-    """The backstop says it records the attribution when a cause is on record."""
-    if params["identification_leg"] is None:
-        return set()
-    return {(OutcomeChange.CAUSE_IDENTIFIED, None)}
+    """The backstop prints the record lines, and says it records the
+    attribution when a cause is on record."""
+    stated = _seen_gone(params["record_lines"], attempts)
+    if params["identification_leg"] is not None:
+        stated.add((OutcomeChange.CAUSE_IDENTIFIED, None))
+    return stated
 
 
 def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
     """The resolve confirmation: a cause when its root line names one, and
-    the confirming attempt when it is named as carried out."""
+    the confirming attempt, and its window's SUCCEEDED, when it is named as
+    carried out."""
     stated = set()
     if params["root"] != NO_ROOT_ON_RECORD:
         stated.add((OutcomeChange.CAUSE_IDENTIFIED, None))
@@ -267,6 +362,7 @@ def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
         )
     ):
         stated.add((OutcomeChange.FIX_CARRIED_OUT, attempt.action_id))
+        stated.add((OutcomeChange.FIX_SUCCEEDED, attempt.window.fix_turn))
     return stated
 
 
@@ -292,6 +388,7 @@ STATED_BY: dict[tuple, _Stated] = {
 def offer_stated(
     code: str, params: dict, attempts: Sequence[AttemptOutcome] = ()
 ) -> frozenset:
-    """What the prose ``code`` rendered from ``params`` states, as
-    ``(OutcomeChange, action_id | None)`` keys."""
+    """What the prose ``code`` rendered from ``params`` states, as ``Change``
+    keys; ``attempts``: the turn-final record's, without which no window
+    verdict is stated."""
     return frozenset(STATED_BY[(code, params.get("composer"))](params, attempts))

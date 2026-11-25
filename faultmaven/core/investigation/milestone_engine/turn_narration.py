@@ -27,7 +27,7 @@ collected (``NARRATION_CONFLICTS_KEY``) and counted after the turn commits
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from faultmaven.core.investigation.narration import codes as narration_codes
 from faultmaven.core.investigation.narration.codes import (
@@ -57,7 +57,7 @@ from faultmaven.core.investigation.narration.statement import (
 from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.problem_status import restores_to
-from faultmaven.modules.case.contracts import AnswerKind, CaseOutcome
+from faultmaven.modules.case.contracts import AnswerKind, AttemptOutcome, CaseOutcome
 
 from .stage_gates import _NOTICES_HEAD_KEY
 
@@ -249,12 +249,14 @@ def _narrate_offer(
     params: dict,
     outcome: Optional[CaseOutcome],
     request_text: Optional[str],
+    attempts: Sequence[AttemptOutcome],
 ) -> None:
     """Publish the offer's prose under its key, and write it as the summary
     of the offer it opened while that offer is open. For an offer in
     ``RECORD_PROSE`` the prose states ``outcome`` (``record_params``), the
     record where no switched decision of the narration disagrees with it
-    (``_switched_outcome``), else its decider's params. An offer that lapsed in
+    (``_switched_outcome``), else its decider's params. What the prose states
+    is read against ``attempts``, the narration record's. An offer that lapsed in
     the cycle that opened it shows nothing: no prose, so no confirmation pair
     (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
     if _lapsed(case, params.get("proposal_id")):
@@ -265,7 +267,7 @@ def _narrate_offer(
     if code in PROSE_KEYS:
         metadata[PROSE_KEYS[code]] = text
         metadata.setdefault(OUTCOME_STATED_KEY, {})[PROSE_KEYS[code]] = offer_stated(
-            code, params
+            code, params, attempts
         )
     proposal_id = params.get("proposal_id")
     if proposal_id is not None and not summarize_offer(case, proposal_id, text):
@@ -368,11 +370,12 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     content = content_by_id(case, need_id) if need_id is not None else None
     request_text = content.text if content is not None else None
     switched = _switched_outcome(case, log, outcome)
+    attempts = outcome.attempts if outcome is not None else ()
     for entry in log:
         code, params = entry["code"], entry["params"]
         agreed = switched if _switched(code, params) else outcome
         if code in _OFFER_CODES:
-            _narrate_offer(case, metadata, code, params, agreed, request_text)
+            _narrate_offer(case, metadata, code, params, agreed, request_text, attempts)
             continue
         if entry["token"] is None:
             continue

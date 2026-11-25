@@ -684,7 +684,10 @@ async def test_a_fix_dated_back_to_its_report_is_this_turns():
     case.current_turn = 11
     base = outcome_baseline(case)
     await lag._registered(eng, case, lag._PREVIOUS)
-    assert _this_turns_fixes(base, case) == HEAD + "a fix was carried out (turn 10)."
+    assert _this_turns_fixes(base, case) == (
+        HEAD + "a fix was carried out (turn 10); after the fix carried out in turn "
+        "10, the cause and the problem were both seen gone."
+    )
 
 
 async def test_a_fix_carried_through_a_hold_is_the_confirming_turns():
@@ -891,11 +894,13 @@ def test_the_confirmation_states_what_its_lines_name():
     assert offer_stated(OfferCode.REQUEST_READY, params, record.attempts) == {
         (I, None),
         (X, fix.action_id),
+        (OutcomeChange.FIX_SUCCEEDED, 6),
     }
     # No leg: the root line is "no root cause on record".
     no_leg = {**params, "root": NO_ROOT_ON_RECORD}
     assert offer_stated(OfferCode.REQUEST_READY, no_leg, record.attempts) == {
-        (X, fix.action_id)
+        (X, fix.action_id),
+        (OutcomeChange.FIX_SUCCEEDED, 6),
     }
     # No description: the latest solution is named, not the attempt.
     bare = confirmation_params(record, _CONTENT, lambda _id: None)
@@ -1267,7 +1272,13 @@ async def test_a_resolve_confirmation_states_neither_fact_it_confirms(monkeypatc
     assert f"- **Root cause**: {conclusion.root_cause}" in reply
     assert "- **Solution**: restart the orders service (carried out turn 1)" in reply
     assert HEAD not in reply
-    assert seen == [[OutcomeChange.CAUSE_IDENTIFIED, OutcomeChange.FIX_CARRIED_OUT]]
+    assert seen == [
+        [
+            OutcomeChange.CAUSE_IDENTIFIED,
+            OutcomeChange.FIX_CARRIED_OUT,
+            OutcomeChange.FIX_SUCCEEDED,
+        ]
+    ]
 
 
 # ---------------------------------------------------------------------------
