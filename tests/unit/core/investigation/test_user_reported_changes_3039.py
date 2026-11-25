@@ -231,6 +231,45 @@ class TestTheReportIsRecorded:
         assert action.reported_done_in_turn == 5  # never cleared
         assert reported_change_turns(case) == []  # registered under its identity
 
+    async def test_a_reworded_re_proposal_registers_as_another_fix(self):
+        """#3047: a fix's identity is its description, so a re-proposal that
+        rewords the reported change registers as another fix at its own turn,
+        and the report stays listed as not registered (never backdated)."""
+        case = _downgraded_case()
+        action = _diagnostic(case)
+        await _apply(
+            case,
+            milestones=MilestoneUpdates(
+                solution_accepted=True, accepted_action_ref=action.action_id
+            ),
+        )
+        case.current_turn = 8
+
+        await _apply(
+            case,
+            root_cause_conclusion=SimpleNamespace(
+                root_cause="ExecStart points at a binary the upgrade moved",
+                mechanism="systemd cannot exec the configured path (203/EXEC)",
+                evidence_ids=["ev_000000000001"],
+                likelihood=0.85,
+            ),
+            solutions_to_add=_fix_entry("Correct the unit's executable path"),
+            milestones=MilestoneUpdates(
+                solution_accepted=True, accepted_action_ref="new_index_0"
+            ),
+        )
+
+        (solution,) = [
+            a
+            for a in case.proposed_actions
+            if a.action_type == InvestigationActionType.SOLUTION
+        ]
+        assert solution.state == "accepted"
+        assert solution.accepted_in_turn == 8
+        assert action.state != "accepted" and action.accepted_in_turn is None
+        assert [w.fix_turn for w in fix_windows(case)] == [None, 8]
+        assert reported_change_turns(case) == [5]
+
     async def test_a_reported_workaround_is_recorded_by_mitigation_accepted(self):
         """The mitigation twin: a WORKAROUND 3D downgraded (no symptom
         evidence), reported through ``mitigation_accepted``."""
@@ -356,6 +395,12 @@ class TestTheRecordRenders:
         assert USER_CHANGES_REGISTER_LINE not in user_changes_block(
             case, _Fold(record=False)
         )
+
+    def test_the_register_line_asks_for_the_description_unchanged(self):
+        """#3047: the register path matches by description (``fix_identity``),
+        so the line the model reads says so."""
+        block = user_changes_block(_reported_case(), _Fold(leg="chain"))
+        assert "re-propose it, with its description unchanged" in block
 
     def test_a_superseded_reported_change_still_renders(self):
         """``_retire_shadowed_diagnostic_asks`` may supersede it: the block
@@ -554,7 +599,9 @@ class TestTheCue:
 
     def test_once_the_cause_is_identified_the_cue_registers(self):
         cue = self._pending(_downgraded_case(), _Fold(leg="rcc"))
-        assert "re-propose it as a SolutionToAdd" in cue
+        assert (
+            "re-propose it, with its description unchanged, as a SolutionToAdd" in cue
+        )
         assert "registers it as the fix" in cue
 
     def test_a_downgraded_workaround_is_reported_by_mitigation_accepted(self):

@@ -1472,7 +1472,7 @@ async def test_a_failed_fix_re_sent_and_downgraded_gets_the_license_line(at):
 
     assert case.proposed_actions[-1].action_type == InvestigationActionType.DIAGNOSTIC
     assert _LICENSE in feedback
-    assert "re-propose it as a SolutionToAdd" not in feedback
+    assert "re-propose it" not in feedback
     assert len(case.action_attempts) == 1
 
 
