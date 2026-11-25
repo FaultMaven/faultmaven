@@ -119,10 +119,11 @@ def get_database_url(*, require_persistent: bool) -> str:
     exit 1, as the app refuses it (#1789), and so is one whose query names a
     Postgres root input outside the TLS root set or holds a key that is not a
     plain option name (``pg_root_inputs_in_url``, #2787). Otherwise offline
-    (``--sql``) opens no database: the URL only names the dialect, so a
-    non-persistent one is not refused, an empty or blank value falls back to
-    the default file URL, and a value that does not parse as a database URL
-    names no dialect and is refused, exit 1 (#2754).
+    (``--sql``) opens no database: the URL only names the dialect, so a value
+    that parses is not refused, even a non-persistent one (an in-memory SQLite
+    URL); an empty or blank value falls back to the default file URL; and a
+    value that does not parse (``:memory:`` included) names no dialect and is
+    refused, exit 1 (#2754).
 
     Returns:
         str: Database connection URL

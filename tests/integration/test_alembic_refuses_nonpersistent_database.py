@@ -12,9 +12,10 @@ migration Job reported success. A set-but-empty value fell back to
 ``DatabaseSettings`` reader the app's settings are built from, so a lowercase
 ``database_url`` counts as it does for the app — and, in online mode, refuses
 through the same exit helper as the ``fm-*`` commands, exiting 1. Offline
-(``--sql``) opens no database, so a non-persistent URL is not refused there: an
-empty or blank value takes the default file's dialect, and only a value that
-does not parse as a database URL, which names no dialect, is refused (#2754).
+(``--sql``) opens no database: a value that parses is not refused there, even a
+non-persistent one (an in-memory SQLite URL); an empty or blank value takes the
+default file's dialect; and a value that does not parse (``:memory:`` included)
+names no dialect and is refused, exit 1 (#2754).
 Only the URL is read: a database setting alembic never uses does not refuse a
 migration.
 
