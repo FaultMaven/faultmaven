@@ -2296,14 +2296,26 @@ def _apply_stage_gate_signals(
         if fix is not None:
             # A fix is reported through the fix channel, by name: stamp
             # nothing here, and say how (#3039 re-run). Self-contained:
-            # <pending_action> may render another action.
+            # <pending_action> may render another action. The route is the
+            # IF_CARRIED_OUT cue's: the re-proposal that registers it while
+            # the M5 licence holds, else the ref that records it.
             aid = fix.action_id
+            dated = (
+                " (accepted_fix_reported_in previous_message when they "
+                "reported it in the previous message)"
+            )
+            route = (
+                "re-propose it, with its description unchanged, as a "
+                "SolutionToAdd and set solution_accepted with "
+                f"accepted_action_ref new_index_N naming it{dated}: that "
+                "registers it as the fix"
+                if _license_holds(case, metadata)
+                else f"set solution_accepted with accepted_action_ref {aid}"
+                f"{dated} to put it on record"
+            )
             notice += (
                 f" DIAGNOSTIC {aid} is a downgraded fix. Only if the user "
-                f"reported carrying out {aid}, set solution_accepted with "
-                f"accepted_action_ref {aid} (accepted_fix_reported_in "
-                "previous_message when they reported it in the previous "
-                "message) to put it on record."
+                f"reported carrying out {aid}, {route}."
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (

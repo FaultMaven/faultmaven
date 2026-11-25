@@ -720,6 +720,28 @@ class TestReviewCases:
             in _notices(case, metadata)
         )
 
+    async def test_with_the_licence_the_notice_names_the_registering_route(
+        self, monkeypatch
+    ):
+        """Once the M5 licence holds, the notice gives the cue's route: the
+        re-proposal that registers the fix, not the ref that only records."""
+        from faultmaven.core.investigation.milestone_engine import stage_gates
+
+        monkeypatch.setattr(stage_gates, "_license_holds", lambda *a, **k: True)
+        case = _downgraded_case()
+        fix = _diagnostic(case)
+
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        text = _notices(case, metadata)
+        assert f"DIAGNOSTIC {fix.action_id} is a downgraded fix" in text
+        assert "re-propose it, with its description unchanged" in text
+        assert "registers it as the fix" in text
+        assert f"accepted_action_ref {fix.action_id}" not in text
+        assert fix.reported_done_in_turn is None
+
     async def test_a_mitigation_report_with_nothing_downgraded_names_nothing(self):
         """``case_0bab2dc5aa92`` turn 6 shape: the user reports a change no
         stored action holds (the downgraded fix comes a turn later)."""
