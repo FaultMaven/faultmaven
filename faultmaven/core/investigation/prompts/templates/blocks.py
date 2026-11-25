@@ -704,15 +704,16 @@ about the user's intent, do NOT fire the state change. Instead:
       "No — [the alternative action]"\
 """
 
-# The outcome rule (#2811 S2c-3b, ruled wording): in INVESTIGATION_BASE's
+# The outcome rule (#2811 S2c-3b, ruled wording; a fix that worked added by
+# #3046 S3c): in INVESTIGATION_BASE's
 # cached prefix, so every stage and the knowledge-query and meta turns carry
 # it. INQUIRY, the fallback stub and TERMINAL do not (the design doc's
 # outcome-statement paragraph says why). The engine's "**Case record:**" line
 # under the reply is what keeps its promise.
 _OUTCOME_FIELDS_RULE = (
-    "State that the problem is confirmed or that a root cause is identified "
-    "only through the structured fields; the engine states what the case "
-    "record holds under your reply."
+    "State that the problem is confirmed, that a root cause is identified, or "
+    "that a fix worked only through the structured fields; the engine states "
+    "what the case record holds under your reply."
 )
 
 # What the user reads takes its meaning from the conversation alone (#2494):

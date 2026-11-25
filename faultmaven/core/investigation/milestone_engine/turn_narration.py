@@ -50,10 +50,7 @@ from faultmaven.core.investigation.narration.offers import (
     record_params,
     render_offer,
 )
-from faultmaven.core.investigation.narration.statement import (
-    OutcomeBaseline,
-    offer_stated,
-)
+from faultmaven.core.investigation.narration.statement import OutcomeBaseline
 from faultmaven.core.investigation.offers import offer_view, summarize_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.problem_status import restores_to
@@ -71,8 +68,10 @@ OUTCOME_WRITTEN_KEY = "outcome_written"
 #: commit plan by ``_finalize_turn`` and counted after the commit (#2689).
 NARRATION_CONFLICTS_KEY = "narration_conflicts"
 
-#: What each published offer prose states (``narration.statement.offer_stated``),
-#: by its ``PROSE_KEYS`` key: turn-local, popped by ``_compose_turn_reply``.
+#: Each published offer prose's code and the params it was rendered from, by
+#: its ``PROSE_KEYS`` key: turn-local, popped by ``_compose_turn_reply``, which
+#: reads what it states (``narration.statement.offer_stated``) against the
+#: record the outcome statement compares.
 OUTCOME_STATED_KEY = "outcome_stated"
 
 #: The unbound re-check lines this narration told, as ``(line, ids)`` pairs,
@@ -254,7 +253,8 @@ def _narrate_offer(
     of the offer it opened while that offer is open. For an offer in
     ``RECORD_PROSE`` the prose states ``outcome`` (``record_params``), the
     record where no switched decision of the narration disagrees with it
-    (``_switched_outcome``), else its decider's params. An offer that lapsed in
+    (``_switched_outcome``), else its decider's params; its code and those
+    params go under ``OUTCOME_STATED_KEY``. An offer that lapsed in
     the cycle that opened it shows nothing: no prose, so no confirmation pair
     (ruled 2026-11-12, R2). Any other answer keeps the prose (#2770)."""
     if _lapsed(case, params.get("proposal_id")):
@@ -264,9 +264,7 @@ def _narrate_offer(
     text = render_offer(code, params)
     if code in PROSE_KEYS:
         metadata[PROSE_KEYS[code]] = text
-        metadata.setdefault(OUTCOME_STATED_KEY, {})[PROSE_KEYS[code]] = offer_stated(
-            code, params
-        )
+        metadata.setdefault(OUTCOME_STATED_KEY, {})[PROSE_KEYS[code]] = (code, params)
     proposal_id = params.get("proposal_id")
     if proposal_id is not None and not summarize_offer(case, proposal_id, text):
         logger.info(
