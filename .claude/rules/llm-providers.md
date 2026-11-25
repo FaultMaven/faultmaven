@@ -302,8 +302,9 @@ provider first waits it out at its POST (`post_waiting_out_rate_limits`,
 `rate_limit_wait` in `providers/base.py`: at most 2 re-sends per POST, each
 wait within a 20 s cap and taken only when twice it is less than what is left
 of the enclosing call's timeout and of the turn's spendable budget, so the
-call's deadline bounds all its waits; a quota 429 is not waited on). Nor is a
-caller remedy, context overflow or output truncation (#2858). A ladder with
+call's deadline bounds all its waits; a quota 429 is not waited on). Nor does
+the breaker count a caller remedy (context overflow, output truncation; #2858);
+provider health still records one that carries no 4xx status. A ladder with
 either in it can pay the fourth attempt, which `with_retry`'s turn-budget
 refusal stops when it would not fit, so the turn is never overrun.
 On a turn with tools
