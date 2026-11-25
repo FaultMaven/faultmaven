@@ -174,9 +174,10 @@ not on its first read: a case resolved or closed meanwhile answers 409
 `CASE_TERMINAL` (it answered 200 and wrote the edit), and a case that entered
 its investigation meanwhile gets the problem-statement edit, refused 400 when
 that edit is not allowed. A caller the case was handed away from meanwhile is
-refused 403 `CASE_NOT_DRIVER`. A title alone is unchanged: written without a
-version check, so it never conflicts with a turn's save, and the route's own
-gate still refuses it on a resolved or closed case.
+refused 403 `CASE_NOT_DRIVER`, a title-only edit included. A title-only edit
+still carries no version check, so it never conflicts with a turn's save, and
+on a resolved or closed case it is still refused 409 `CASE_TERMINAL` by the
+route's own gate, as before.
 
 MINOR: a declared 409 code added on two routes.""",
     ),

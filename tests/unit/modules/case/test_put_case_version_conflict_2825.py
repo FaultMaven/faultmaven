@@ -23,8 +23,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.config.tenant_context import (
+    get_current_enterprise_id,
+    set_current_enterprise_id,
+)
 from faultmaven.exceptions import (
     CASE_NOT_DRIVER,
     CASE_TERMINAL,
@@ -38,6 +40,7 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     StatementRecordKind,
 )
+from faultmaven.modules.case.domain.models.evidence import is_default_case_title
 from faultmaven.modules.case.domain.services.case_service import CaseService
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
@@ -295,13 +298,21 @@ def test_gate_1_committing_inside_the_scoped_write_hands_off_on_the_retry(
     _assert_statement(_load(api, case_id), EDITED)
 
 
-@pytest.mark.parametrize("investigating", [False, True], ids=["metadata", "statement"])
+@pytest.mark.parametrize(
+    ("investigating", "lands_at_load"),
+    [(False, 1), (True, 2)],
+    ids=["metadata", "statement"],
+)
 def test_a_hand_off_after_the_access_read_refuses_the_write(
-    api, monkeypatch, investigating
+    api, monkeypatch, investigating, lands_at_load
 ):
-    """ADR-020 D4 on both write paths: once the access reads pass, every load
-    shows the case driven by someone else; 403 ``CASE_NOT_DRIVER``, nothing
-    written (on the metadata path it answered 200 and wrote the edit)."""
+    """ADR-020 D4 on both write paths: from the write's ``lands_at_load``-th
+    load on, the case is driven by someone else; 403 ``CASE_NOT_DRIVER``,
+    nothing written. On the metadata path the hand-off meets
+    ``_write_metadata``'s own load (it answered 200 and wrote the edit); on
+    the statement path ``_write_metadata``'s load still shows the caller
+    driving and hands off, so the retry mutator's fresh load is what refuses
+    it."""
     client, auth, service = api
     case_id = _create(api)
     repository = service.repository
@@ -309,12 +320,14 @@ def test_a_hand_off_after_the_access_read_refuses_the_write(
         client.portal.call(_open_investigation, repository, repository.save, case_id)
     before = _load(api, case_id)
     real_get = repository.get
-    handed_off = []
+    handed_off, loads = [], []
 
     async def get(case_id):
         case = await real_get(case_id)
-        if handed_off and case is not None:
-            case.driver_id = "someone-else"
+        if handed_off:
+            loads.append(case_id)
+            if len(loads) >= lands_at_load and case is not None:
+                case.driver_id = "someone-else"
         return case
 
     async def hand_off(case_id, _user_id):
@@ -331,6 +344,7 @@ def test_a_hand_off_after_the_access_read_refuses_the_write(
 
     assert response.status_code == 403, response.text
     assert response.headers["x-error-code"] == CASE_NOT_DRIVER
+    assert len(loads) == lands_at_load
     after = client.portal.call(real_get, case_id)
     assert (after.title, after.description, after.version) == (
         before.title,
@@ -352,6 +366,7 @@ async def test_a_title_alone_names_a_resolved_placeholder_case():
         resolved_at=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
         closed_at=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
     )
+    previous = get_current_enterprise_id()
     set_current_enterprise_id(case.enterprise_id)
     try:
         repository = InMemoryCaseRepository()
@@ -366,4 +381,46 @@ async def test_a_title_alone_names_a_resolved_placeholder_case():
         assert refused.value.error_code == CASE_TERMINAL
         assert (await repository.get(case.case_id)).description != EDITED
     finally:
-        set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)
+        set_current_enterprise_id(previous)
+
+
+async def _make_titleable(repository, save, case_id: str, resolved: bool) -> None:
+    """A placeholder case with a problem statement (the title gate's
+    substance), resolved here or left for the close route."""
+    case = await repository.get(case_id)
+    case.inquiry.proposed_problem_statement = STATEMENT
+    case.description = STATEMENT
+    if resolved:
+        now = datetime.now(timezone.utc)
+        fields = {"state": CaseState.RESOLVED, "resolved_at": now, "closed_at": now}
+        case = type(case).model_validate({**dict(case), **fields})
+    await save(case)
+
+
+@pytest.mark.parametrize("terminal", ["resolved", "closed"])
+def test_the_title_route_names_a_terminal_placeholder_case(api, terminal):
+    """``POST /cases/{case_id}/title`` on the real app and store: a resolved or
+    closed case still holding its placeholder is named, its version kept (a
+    title alone carries no version)."""
+    client, auth, service = api
+    created = client.post("/api/v1/cases", json={}, headers=auth)
+    assert created.status_code == 201, created.text
+    case_id = created.json()["case_id"]
+    repository = service.repository
+    client.portal.call(
+        _make_titleable, repository, repository.save, case_id, terminal == "resolved"
+    )
+    if terminal == "closed":
+        closed = client.post(f"/api/v1/cases/{case_id}/close", headers=auth)
+        assert closed.status_code == 200, closed.text
+    before = _load(api, case_id)
+    assert before.state.is_terminal
+    assert is_default_case_title(before.title), before.title
+
+    response = client.post(f"/api/v1/cases/{case_id}/title", headers=auth)
+
+    assert response.status_code == 200, response.text
+    after = _load(api, case_id)
+    assert after.title == response.json()["title"]
+    assert not is_default_case_title(after.title)
+    assert (after.state, after.version) == (before.state, before.version)
