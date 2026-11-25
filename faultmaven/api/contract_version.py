@@ -151,6 +151,32 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.17.0",
+        level="MINOR",
+        title=(
+            "OAuth `client_id` is at most 255 characters (`maxLength`) on "
+            "`GET`/`POST /auth/oauth/authorize`, `POST /auth/oauth/token` and "
+            "`POST /auth/oauth/revoke`, and `/token`'s `redirect_uri` at most "
+            "2048; `/revoke` refuses a refresh token naming another client with "
+            "**400** `invalid_grant` (#2765)."
+        ),
+        body=r"""A longer `client_id` or `redirect_uri` is refused at validation, before any
+log or service call: 400 `invalid_request` at `/token` and `/revoke`, 422 at
+`/authorize`. Service account provisioning already caps a client id at 255
+characters.
+
+RFC 7009 §2.1: `/revoke` now compares the `client_id` in the request with the
+client a refresh token names. A refresh token naming another client is refused
+with 400 `invalid_grant`, "The token was not issued to this client.", under
+any `token_type_hint`, and stays usable. The 400 is already documented. A token
+naming no client (an access token, a refresh token minted before client
+binding, #2750) is revoked under any `client_id`, and an invalid or expired token
+still answers 200.
+
+MINOR: every first-party client sends a short `client_id` and `redirect_uri`
+and revokes only its own tokens, so no existing flow changes.""",
+    ),
+    ContractChange(
         version="15.16.0",
         level="MINOR",
         title=(

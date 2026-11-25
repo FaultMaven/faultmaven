@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.16.0",
+  "contractVersion": "15.17.0",
   "entries": [
+    {
+      "body": "A longer `client_id` or `redirect_uri` is refused at validation, before any\nlog or service call: 400 `invalid_request` at `/token` and `/revoke`, 422 at\n`/authorize`. Service account provisioning already caps a client id at 255\ncharacters.\n\nRFC 7009 \u00a72.1: `/revoke` now compares the `client_id` in the request with the\nclient a refresh token names. A refresh token naming another client is refused\nwith 400 `invalid_grant`, \"The token was not issued to this client.\", under\nany `token_type_hint`, and stays usable. The 400 is already documented. A token\nnaming no client (an access token, a refresh token minted before client\nbinding, #2750) is revoked under any `client_id`, and an invalid or expired token\nstill answers 200.\n\nMINOR: every first-party client sends a short `client_id` and `redirect_uri`\nand revokes only its own tokens, so no existing flow changes.",
+      "level": "MINOR",
+      "title": "OAuth `client_id` is at most 255 characters (`maxLength`) on `GET`/`POST /auth/oauth/authorize`, `POST /auth/oauth/token` and `POST /auth/oauth/revoke`, and `/token`'s `redirect_uri` at most 2048; `/revoke` refuses a refresh token naming another client with **400** `invalid_grant` (#2765).",
+      "version": "15.17.0"
+    },
     {
       "body": "Before, `POST /sessions` stored `session_type` in `metadata` and merged\nthe client's `metadata` over it, so `metadata.session_type` replaced the field,\nand `PUT /sessions/{session_id}` could change or drop it. Now:\n\n* `POST /sessions` sets the type from `session_type` (absent or null:\n  `troubleshooting`; longer than 64 characters: **422**, nothing created) and\n  echoes the stored one; a resume answers the type the session was created\n  with;\n* `GET /sessions` rows report the type, and `?session_type=` filters on it\n  (before, every row read `troubleshooting`);\n* `GET /sessions` rows and the `POST /sessions/{session_id}/heartbeat` response\n  report the session's `status`, `active` or `archived` (both always read\n  `inquiry`);\n* the `PUT /sessions/{session_id}` response and the `POST /sessions/search` rows\n  carry `session_type` at the top level; `metadata` holds only what the client\n  wrote, so a search `query` of `troubleshooting` no longer matches through it.\n\nA `session_type` key in client `metadata` is an ordinary client key. A session\nminted before this version reads as `troubleshooting` and keeps its\n`metadata.session_type` until a `PUT` replaces it; during a rolling update, a\nwrite served by an older server drops the type.",
       "level": "MINOR",
