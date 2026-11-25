@@ -470,7 +470,6 @@ class MilestoneEngine:
         *,
         redaction_ctx: Any | None,
         typed_message: str | None = None,
-        state_report_allowed: bool | None = None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -515,10 +514,6 @@ class MilestoneEngine:
                 generated text or the service's composed implicit query.
                 ``None`` means ``user_message`` is what the user typed (a
                 direct engine call).
-            state_report_allowed: May the message's state report be asked
-                about: a typed or chosen query may, a generated or composed
-                one may not (#2717). ``None`` means it may when the message
-                read for blocks is not blank.
 
         Writes nothing the turn owns (#1882). The case is mutated in memory
         and returned; the rows the turn produced (report rows)
@@ -590,7 +585,6 @@ class MilestoneEngine:
                     typed=typed,
                     redaction_ctx=redaction_ctx,
                     typed_message=typed_message,
-                    state_report_allowed=state_report_allowed,
                 )
                 result["commit_plan"] = plan
             except BaseException:
@@ -665,7 +659,6 @@ class MilestoneEngine:
         typed: bool = False,
         redaction_ctx: Any | None,
         typed_message: str | None = None,
-        state_report_allowed: bool | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a
@@ -1479,12 +1472,11 @@ class MilestoneEngine:
             # never mint one. The offer never holds the turn's own work back;
             # it reasons from the block as the user's claim. Blocks are located
             # only in what the user typed, never in a chosen chip, a client's
-            # generated text or the composed query of a turn carrying only data;
-            # a typed or chosen message may still be asked for a state (#2717).
+            # generated text or the composed query of a turn carrying only data
+            # (#2717); the state request is asked whoever wrote the query.
             chat_data_offer = mint_chat_data_offer(
                 case_updated,
                 user_message=(user_message if typed_message is None else typed_message),
-                state_report_allowed=state_report_allowed,
                 named_blocks=getattr(response_obj, "chat_data_blocks", None),
                 state_report=getattr(response_obj, "system_state_report", None),
                 submitted_data=bool(attachments),

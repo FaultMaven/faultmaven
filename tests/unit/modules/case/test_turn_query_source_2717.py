@@ -72,8 +72,11 @@ class TestTheQuerySourceField:
         (payload,) = route.seen
         assert payload.query_source == source
 
-    async def test_absent_it_is_typed(self, route):
-        response = await route.post(TURNS, data={"query": "It's stable now."})
+    @pytest.mark.parametrize(
+        "sent", [{}, {"query_source": ""}], ids=["absent", "empty"]
+    )
+    async def test_absent_or_empty_it_is_typed(self, route, sent):
+        response = await route.post(TURNS, data={"query": "It's stable now.", **sent})
 
         assert response.status_code == _STOPPED, response.text
         (payload,) = route.seen

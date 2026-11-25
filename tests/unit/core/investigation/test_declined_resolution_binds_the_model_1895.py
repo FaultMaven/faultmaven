@@ -817,7 +817,6 @@ async def _at_the_boundary(service, case, proposal_id):
         case=case,
         user_message="Mark this case resolved.",
         typed_message="",
-        state_report_allowed=True,
         from_state=case.state.value,
         to_state="resolved",
         user_confirmed=False,

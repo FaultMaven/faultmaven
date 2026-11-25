@@ -159,7 +159,6 @@ def seen(mock_milestone_engine):
         user_id=None,
         redaction_ctx=None,
         typed_message=None,
-        state_report_allowed=None,
     ):
         captured["attachments"] = copy.deepcopy(attachments)
         captured["aggregate_ids"] = [f.file_id for f in case.uploaded_files]

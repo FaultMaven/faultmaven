@@ -128,7 +128,6 @@ def mint_chat_data_offer(
     named_blocks: Optional[Sequence[object]],
     state_report: Optional[object] = None,
     submitted_data: bool = False,
-    state_report_allowed: Optional[bool] = None,
     reverse: Callable[[str], str] = lambda text: text,
 ) -> Optional[ChatDataOffer]:
     """Record the offer for this turn's message, or None when nothing is offered.
@@ -147,23 +146,18 @@ def mint_chat_data_offer(
     the reported state, and the engine cannot tell which upload shows what
     (#1938).
 
-    ``user_message`` is what the user typed: blocks are located only in it.
-    ``state_report_allowed`` says whether the message may be asked about its
-    state report, which a chosen chip may be with nothing typed (#2717);
-    ``None`` reads it as "the typed message is not blank".
+    ``user_message`` is what the user typed: blocks are located only in it
+    (#2717). The state request does not read it: it is asked whoever wrote the
+    turn's query.
 
-    Nothing is offered on a terminal case (it takes no new data), or when the
-    typed message is blank and no state report may be asked about.
+    Nothing is offered on a terminal case (it takes no new data).
     """
     if submitted_data:
         close_state_requests(case)
-    typed = bool((user_message or "").strip())
-    if state_report_allowed is None:
-        state_report_allowed = typed
-    if case.is_terminal or not (typed or state_report_allowed):
+    if case.is_terminal:
         return None
     blocks: List[str] = []
-    if typed and named_blocks:
+    if (user_message or "").strip() and named_blocks:
         anchors = [
             (
                 reverse(getattr(block, "first_line", "") or ""),
@@ -194,11 +188,7 @@ def mint_chat_data_offer(
             ):
                 seen.add(key)
                 blocks.append(block)
-    request = (
-        (getattr(state_report, "request", None) or "").strip() or None
-        if state_report_allowed
-        else None
-    )
+    request = (getattr(state_report, "request", None) or "").strip() or None
     if request is not None and _state_request_open(case):
         request = None
     if not blocks and request is None:

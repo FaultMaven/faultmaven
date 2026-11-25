@@ -723,7 +723,6 @@ def _locking_engine(sanitizer, redis, script):
         typed=False,
         redaction_ctx,
         typed_message=None,
-        state_report_allowed=None,
     ):
         prompt, reply, hold = script[user_message]
         engine.sent.append(await redaction_ctx.asanitize(prompt))

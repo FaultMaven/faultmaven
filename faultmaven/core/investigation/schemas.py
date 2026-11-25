@@ -338,11 +338,10 @@ class TurnPayload:
         return ""
 
     @property
-    def state_report_allowed(self) -> bool:
-        """May the message's report of the system's state be asked about? A
-        message the user typed or chose may; a generated or composed one may
-        not (#2717)."""
-        return self.has_query and self.query_source != "generated"
+    def users_query(self) -> str:
+        """The query the user wrote, typed or chosen, or ``""`` for a client's
+        generated one (#2717)."""
+        return "" if self.query_source == "generated" else (self.query or "")
 
 
 # =============================================================================

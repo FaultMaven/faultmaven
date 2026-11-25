@@ -693,9 +693,8 @@ async def submit_turn(
                 "Who wrote `query`: `typed` (the user typed it into the "
                 "message box), `chosen` (the user chose it: a chip or a status "
                 "change) or `generated` (the client wrote it). Only typed text "
-                "is searched for system output to offer back as data; a typed "
-                "or chosen message may still be asked for the output behind a "
-                "state it reports."
+                "is searched for system output to offer back as data. Absent "
+                "or empty, it is `typed`."
             ),
         ),
     ] = "typed",
@@ -890,13 +889,7 @@ async def submit_turn(
                         "input_type": input_type,
                         "source_url": source_url,
                         "observed_at": observed_at,
-                        # Only when not the default, so a typed turn's
-                        # fingerprint is the one an earlier release stored.
-                        **(
-                            {"query_source": query_source}
-                            if query_source != "typed"
-                            else {}
-                        ),
+                        "query_source": query_source,
                     },
                     [(f.filename or "", content) for f, content in file_contents],
                 ),

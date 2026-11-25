@@ -136,7 +136,6 @@ def engine():
         user_id=None,
         redaction_ctx=None,
         typed_message=None,
-        state_report_allowed=None,
     ):
         case.updated_at = datetime.now(timezone.utc)
         return {

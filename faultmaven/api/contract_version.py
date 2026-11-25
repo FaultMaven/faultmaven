@@ -160,15 +160,14 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         body=r"""Says who wrote `query`: the user typed it into the message box
 (`typed`), the user chose it, a chip or a status change (`chosen`), or the
 client wrote it (`generated`, such as a sentence composed for a paste sent
-with an empty box). Any other value is a 422.
+with an empty box). Absent or empty, it is `typed`; any other value is a 422.
 
 Only a `typed` query is searched for system output to offer back as data (the
-"Yes, save it as data" choice). A `typed` or `chosen` query can still get the
-"Submit the output" request for a state it reports; a `generated` one gets
-neither, and neither does the server's own composed query on a turn carrying
-only data.
+"Yes, save it as data" choice). The server's own composed query on a turn
+carrying only data is no longer searched either, so such a turn offers no
+block even from a client that does not send the field. The "Submit the output"
+request for a reported state is asked whoever wrote the query.
 
-Absent, the field is `typed`, so a client that does not send it is unchanged.
 Under an `Idempotency-Key`, a retry whose `query_source` differs is a
 different turn (409 `IDEMPOTENCY_KEY_REUSE`).
 

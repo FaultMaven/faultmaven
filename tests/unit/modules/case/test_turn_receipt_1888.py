@@ -640,8 +640,7 @@ class TestAKeyReusedForADifferentTurn:
 
     async def test_query_source_typed_sent_explicitly_is_the_same_turn(self, world):
         """``typed`` is the default: a retry naming it is the turn that left it
-        out, and a typed turn's fingerprint is the one earlier releases stored
-        (#2717)."""
+        out (#2717)."""
         await world.seed(_investigating_case())
         first = await world.post(PASTE)
         assert first.status_code == 200, first.text
@@ -1177,6 +1176,7 @@ class TestAnUnreplayableReceipt:
                         "input_type": None,
                         "source_url": None,
                         "observed_at": None,
+                        "query_source": "typed",
                     },
                     [],
                 ),

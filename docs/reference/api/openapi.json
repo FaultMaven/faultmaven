@@ -1111,7 +1111,7 @@
           },
           "query_source": {
             "default": "typed",
-            "description": "Who wrote `query`: `typed` (the user typed it into the message box), `chosen` (the user chose it: a chip or a status change) or `generated` (the client wrote it). Only typed text is searched for system output to offer back as data; a typed or chosen message may still be asked for the output behind a state it reports.",
+            "description": "Who wrote `query`: `typed` (the user typed it into the message box), `chosen` (the user chose it: a chip or a status change) or `generated` (the client wrote it). Only typed text is searched for system output to offer back as data. Absent or empty, it is `typed`.",
             "enum": [
               "typed",
               "chosen",

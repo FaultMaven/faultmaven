@@ -1,4 +1,4 @@
-"""The chat-data offer reads only what the user typed (#2717).
+"""The chat-data offer searches only what the user typed for blocks (#2717).
 
 A turn carrying only data has no words of the user's: the service composes its
 query ("I've pasted some text … tell me what you find") so the model knows to
@@ -165,9 +165,10 @@ class TestATurnCarryingOnlyDataOffersNothing:
         assert saved.chat_data_offers[0].state == ChatDataOfferState.SAVED
         assert _NOTE not in response.agent_response
 
-    async def test_its_data_still_answers_a_waiting_state_request(self, rig):
-        """Nothing is read from the composed query, a state report included;
-        the data the turn carries still closes the request that was waiting."""
+    async def test_its_data_answers_a_waiting_request_and_a_new_one_is_asked(self, rig):
+        """The composed query is not searched for blocks, but the state request
+        is asked whoever wrote the query: the turn's data closes the request
+        that was waiting, and the model's new one is minted."""
         waiting = ChatDataOffer(turn=5, request="the output of timedatectl")
         rig.case.chat_data_offers.append(waiting)
         rig.engine.generator.generate_structured_output.side_effect = None
@@ -179,14 +180,14 @@ class TestATurnCarryingOnlyDataOffersNothing:
             )
         )
 
-        response, saved = await _turn(
-            rig, TurnPayload(query="", attachments=[_paste()])
-        )
+        _, saved = await _turn(rig, TurnPayload(query="", attachments=[_paste()]))
 
-        (answered,) = saved.chat_data_offers
+        answered, asked = saved.chat_data_offers
         assert answered.offer_id == waiting.offer_id
         assert answered.decided_at_turn == saved.current_turn
-        assert "the output of chronyc" not in response.agent_response
+        assert asked.blocks == []
+        assert asked.request == "the output of chronyc"
+        assert asked.decided_at_turn is None
 
 
 class TestTypedOutputIsStillOffered:
@@ -259,8 +260,8 @@ class TestOnlyTypedTextIsSearchedForBlocks:
 
 
 class TestTheStateRequest:
-    """A typed or chosen message may be asked for the output behind a state it
-    reports; a generated one may not."""
+    """The state request is asked whoever wrote the query: only the block
+    search reads typed text."""
 
     async def test_a_chosen_query_reporting_a_state_is_asked_for_it(self, rig):
         _model_reports_a_state(rig)
@@ -272,14 +273,16 @@ class TestTheStateRequest:
         assert offer.blocks == []
         assert offer.request == "the output of kubectl get pods"
 
-    async def test_a_generated_query_reporting_a_state_is_not_asked(self, rig):
+    async def test_a_generated_query_reporting_a_state_is_asked_for_it(self, rig):
         _model_reports_a_state(rig)
 
         _, saved = await _turn(
             rig, TurnPayload(query="It's stable now.", query_source="generated")
         )
 
-        assert saved.chat_data_offers == []
+        (offer,) = saved.chat_data_offers
+        assert offer.blocks == []
+        assert offer.request == "the output of kubectl get pods"
 
 
 class TestTypedTurnsCarryingAnIntentStillMint:
@@ -325,17 +328,18 @@ class TestTypedTurnsCarryingAnIntentStillMint:
         assert _offered(response)
 
 
-class TestTheTelemetryCountsOnlyTypedText:
-    async def test_a_generated_query_counts_no_typed_chars(self, rig, caplog):
+class TestTheTelemetryCountsTheUsersQuery:
+    async def test_a_generated_query_counts_no_chars(self, rig, caplog):
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
             await _turn(rig, TurnPayload(query=_WITH_OUTPUT, query_source="generated"))
 
         (row,) = [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
         assert row.user_message_chars == 0
 
-    async def test_a_typed_query_counts_its_chars(self, rig, caplog):
+    @pytest.mark.parametrize("source", ["typed", "chosen"])
+    async def test_a_typed_or_chosen_query_counts_its_chars(self, rig, caplog, source):
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
-            await _turn(rig, TurnPayload(query=_WITH_OUTPUT))
+            await _turn(rig, TurnPayload(query=_WITH_OUTPUT, query_source=source))
 
         (row,) = [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
         assert row.user_message_chars == len(_WITH_OUTPUT)

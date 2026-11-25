@@ -117,13 +117,11 @@ def engine(seen):
         typed: bool = False,
         redaction_ctx=None,
         typed_message: Optional[str] = None,
-        state_report_allowed: Optional[bool] = None,
     ) -> dict[str, Any]:
         seen["attachments"] = copy.deepcopy(attachments)
         seen["intent_type"] = intent_type
         seen["user_message"] = user_message
         seen["typed_message"] = typed_message
-        seen["state_report_allowed"] = state_report_allowed
         seen["intent_data"] = copy.deepcopy(intent_data)
         case.updated_at = datetime.now(timezone.utc)
         return {
@@ -301,7 +299,6 @@ class TestEveryRouteHandsTheEngineWhatTheUserTyped:
         assert seen["intent_type"] == name
         assert seen["user_message"].startswith("I've submitted app.log")
         assert seen["typed_message"] == ""
-        assert seen["state_report_allowed"] is False
 
     async def test_a_typed_message_is_handed_as_typed(
         self, name, service, repo, case, seen
@@ -314,11 +311,8 @@ class TestEveryRouteHandsTheEngineWhatTheUserTyped:
         )
 
         assert seen["user_message"] == seen["typed_message"] == "here it is"
-        assert seen["state_report_allowed"] is True
 
-    async def test_a_chosen_message_is_not_typed_but_may_report_a_state(
-        self, name, service, repo, case, seen
-    ):
+    async def test_a_chosen_message_is_not_typed(self, name, service, repo, case, seen):
         await repo.save(case)
         await service.process_turn(
             case_id=case.case_id,
@@ -328,7 +322,6 @@ class TestEveryRouteHandsTheEngineWhatTheUserTyped:
 
         assert seen["user_message"] == "here it is"
         assert seen["typed_message"] == ""
-        assert seen["state_report_allowed"] is True
 
 
 class TestTheGreetingHeuristicDoesNotSwallowData:

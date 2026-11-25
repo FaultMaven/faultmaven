@@ -207,14 +207,14 @@ def _emit_committed_turn(
         validation_repairs=int(turn_telemetry.get("validation_repairs", 0)),
         repair_pattern=turn_telemetry.get("repair_pattern"),
         state_drop=turn_telemetry.get("state_drop"),
-        # What the user typed, not ``query``: on an attachment-only turn
+        # The user's query, not ``query``: on an attachment-only turn
         # ``query`` has been replaced by ``generate_implicit_query``'s
-        # engine-composed sentence, and a chosen or generated query is not
-        # the user's typing either (#2717); reporting its length would say
-        # the user wrote a paragraph on a turn they typed nothing. This
-        # field's whole job is telling "user went silent" apart from
-        # "user wrote a paragraph that produced nothing".
-        user_message_chars=len(payload.typed_message),
+        # engine-composed sentence, and a client's generated query is not the
+        # user's either (#2717); reporting its length would say the user
+        # wrote a paragraph on a turn they wrote nothing. This field's whole
+        # job is telling "user went silent" apart from "user wrote a
+        # paragraph that produced nothing".
+        user_message_chars=len(payload.users_query),
         attachment_count=len(attachment_metadata or []),
     )
 
