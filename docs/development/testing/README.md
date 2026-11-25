@@ -75,6 +75,8 @@ pytest -v
 pytest -k "test_pattern"
 ```
 
+**A hung test names itself.** A test still running after 5 minutes dumps every thread's stack into the log (`faulthandler_timeout` in `pytest.ini`), and in CI a hung slice fails its test step, whose `timeout-minutes` is under its job's, so the job keeps its log (#3078).
+
 ### Line-level coverage comparisons
 
 The coverage total is reliable at the default settings, but the per-line data is not. SQLAlchemy's async engine switches greenlets on every database call, and coverage misattributes the lines that run across those switches (#2206). It records lines against the wrong file, some of them past that file's end, and misses real ones. Measured on `tests/integration/modules/knowledge`, a default run against a greenlet-aware one:

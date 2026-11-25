@@ -450,6 +450,9 @@ jobs:
           echo "✓ Standalone dependencies verified"
 
       - name: Run Tests (Standalone)
+        # Under the job's 30 so a hang fails this step and the job keeps its log,
+        # pytest's faulthandler dump included (#3078); slowest green step 11m05s.
+        timeout-minutes: 25
         run: |
           # Attribute the wall clock. Until #1450 nothing ever did, so every
           # discussion of why this job got slower was an argument rather than
@@ -744,6 +747,9 @@ jobs:
 
       - name: Run the real-Redis tests
         if: matrix.slice == 1
+        # Past the 5-minute faulthandler dump, and leaves the suite step its 25
+        # inside the job's 30 (#3078); slowest green step 0m18s.
+        timeout-minutes: 10
         # The test modules that reach the job's Redis, and nothing else, each
         # in a pytest call of its own. test_real_redis_stores.py exists to
         # drive the server (its `real_redis` fixture skips where no Redis is
@@ -792,6 +798,9 @@ jobs:
           FM_TEST_REQUIRE_REDIS: "1"
 
       - name: Run Tests (Cloud)
+        # Under the job's 30 so a hang fails this step and the job keeps its log,
+        # pytest's faulthandler dump included (#3078); slowest green step 12m00s.
+        timeout-minutes: 25
         run: |
           # Same flags as Test Standalone, including the floor rather than a
           # top-N. See the note there for why. This job's selection is the
@@ -999,6 +1008,9 @@ jobs:
         run: alembic upgrade head
 
       - name: Run PostgreSQL Integration Tests
+        # Under the job's 25 so a hang fails this step and keeps the log (#3078);
+        # slowest green step 5m49s.
+        timeout-minutes: 20
         run: |
           # `pipefail` must be set explicitly. GitHub only uses
           # `bash --noprofile --norc -eo pipefail {0}` when a step declares
@@ -1119,6 +1131,9 @@ jobs:
         run: alembic upgrade head
 
       - name: Run PostgreSQL Integration Tests
+        # Under the job's 25 so a hang fails this step and keeps the log (#3078);
+        # slowest green step 5m54s.
+        timeout-minutes: 20
         run: |
           # As test-postgres: explicit pipefail, and fail on a skipped or empty run.
           set -o pipefail
@@ -1322,6 +1337,9 @@ jobs:
           python-version: "3.11"
 
       - name: Run Packaging Tests
+        # Under the job's 10 so a hang fails this step and keeps the log (#3078);
+        # slowest green step 1m20s.
+        timeout-minutes: 8
         run: |
           sh scripts/install-lockfile.sh requirements/test.txt
           pip install -e . --no-deps
