@@ -942,12 +942,10 @@ def is_rate_limit_throttle(exc: BaseException) -> bool:
 def counts_against_breaker(exc: BaseException) -> bool:
     """Whether ``call_external`` records ``exc`` on its circuit breaker.
 
-    A failure that declares a caller remedy (:data:`CALLER_REMEDY_CATEGORIES`,
-    read through the ``__cause__`` chain) never counts, retryable or not: it is
-    a verdict on the request, which the caller must change (#2858). A
-    non-retryable failure counts only when it is service-scoped (quota,
+    A non-retryable failure counts only when it is service-scoped (quota,
     rejected credentials); a request-scoped one says nothing about the service.
-    Any other failure counts, except a throttle (#2793).
+    Any other failure counts, except a throttle (#2793). A caller remedy
+    (:data:`CALLER_REMEDY_CATEGORIES`) never counts, retryable or not (#2858).
     """
     if declared_llm_category(exc) in CALLER_REMEDY_CATEGORIES:
         return False

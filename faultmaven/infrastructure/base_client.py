@@ -611,10 +611,8 @@ class BaseExternalClient(ABC):
                     #   opening the breaker stops pointless calls, and the latched
                     #   error_code keeps the open-breaker error mapping to 402
                     #   rather than a generic 500 (the case_b639fac38fe0 chain).
-                    # * CALLER-REMEDY (``CALLER_REMEDY_CATEGORIES``: context
-                    #   overflow, output truncation) — NOT counted, retryable or
-                    #   not: the provider answered, and only the caller changing
-                    #   the request (a smaller prompt, a bigger cap) helps (#2858).
+                    # * CALLER-REMEDY (``CALLER_REMEDY_CATEGORIES``) — NOT counted,
+                    #   retryable or not: only changing the request helps (#2858).
                     #
                     # ``failed_calls`` counts all three, so none becomes invisible.
                     if getattr(call_error, "retryable", True) is False:
@@ -661,10 +659,8 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        # Neither a caller remedy (#2858) nor a throttle (a
-                        # 429 the provider's own waits did not outlast: the
-                        # service is up and busy, #2793) is counted against
-                        # the shared breaker; each logs its own reason.
+                        # Neither a caller remedy (#2858) nor a throttle, a 429 the
+                        # provider's waits did not outlast (#2793), is counted.
                         if self.circuit_breaker and counts_against_breaker(call_error):
                             self.circuit_breaker.record_failure(call_error)
                         if (
