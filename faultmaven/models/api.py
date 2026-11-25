@@ -615,16 +615,25 @@ class Message(BaseModel):
     sources: Optional[List[Source]] = Field(
         None,
         description=(
-            "On an assistant row: the knowledge-base runbooks that turn's "
-            "prompt carried — pre-fetched, or found for the user's question "
-            "about the knowledge base (`metadata.trigger`) — exactly as the "
+            "On an assistant row: the knowledge-base sections the model was "
+            "given on that turn — pre-fetched, found for the user's question "
+            "about the knowledge base, or cited from the assistant's own kb_qa "
+            "search (`metadata.trigger`) — exactly as the "
             "live `TurnResponse.sources` "
             "returned them, `new_this_turn` included, and gated the same way "
             "for the reader making this request: an excerpt of a runbook the "
             "reader cannot open, or one with no `metadata.document_id`, is "
             "returned with empty `content`, null `confidence` and "
-            '`metadata` of only `{"access": "restricted"}`. Null on a row '
-            "whose prompt carried none (and on every user or system row)."
+            '`metadata` of only `{"access": "restricted", "runbook": n}`. '
+            "`n` is an integer from 1, numbered by first appearance among this "
+            "row's redacted entries and derived from nothing else, never the "
+            "runbook's id: entries sharing `n` are sections of one runbook. "
+            "Numbers are per list, so the same `n` in two rows says nothing "
+            "about whether they are one runbook. The operator break-glass "
+            "transcript (`/admin/cases/{case_id}/messages`) returns the stored "
+            "copy, ungated and with no `runbook` key. "
+            "Null on a row whose turn listed none (and on every user or "
+            "system row)."
         ),
     )
 
