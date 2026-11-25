@@ -15,14 +15,16 @@ Environment Variables:
     DATABASE_URL: The database to migrate, bound as the app's settings bind it
         (in any case). Unset: ``data/faultmaven.db``
         (SQLite) under the project root. Set to a value that configures no
-        persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
-        value that does not parse), an online migration refuses and exits 1
-        (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. A value with leading or trailing whitespace
-        (#1789), or whose query names a Postgres root input outside the TLS
-        root set or holds a key that is not a plain option name (#2787), is
-        refused in both modes, exit 1. Only the URL is
-        read: no other database setting is validated here.
+        persistent database (empty or blank, ``:memory:``, an in-memory
+        SQLite URL, a value that does not parse), an online migration refuses
+        and exits 1 (#1704). Offline (``--sql``) opens no database and only
+        takes the dialect from the URL: an empty or blank value takes the
+        default file's, and a value that does not parse as a database URL
+        (``:memory:`` included) is refused, exit 1 (#2754). A value with
+        whitespace around non-blank content (#1789), or whose query names a
+        Postgres root input outside the TLS root set or holds a key that is
+        not a plain option name (#2787), is refused in both modes, exit 1.
+        Only the URL is read: no other database setting is validated here.
 
 Usage:
     alembic upgrade head
@@ -54,7 +56,9 @@ from alembic import context
 
 from faultmaven.config.settings import (
     DatabaseUrlWhitespaceError,
+    _parse_database_url,
     configured_database_url,
+    describe_database_url,
 )
 from faultmaven.config.tls_root_set import (
     apply_root_set,
@@ -111,12 +115,15 @@ def get_database_url(*, require_persistent: bool) -> str:
     (``database_url`` included). Only the URL is read; no other database field
     is validated, so a setting alembic never uses cannot refuse a migration.
 
-    A value with leading or trailing whitespace is refused in both modes, exit
-    1, as the app refuses it (#1789), and so is one whose query names a
+    A value with whitespace around non-blank content is refused in both modes,
+    exit 1, as the app refuses it (#1789), and so is one whose query names a
     Postgres root input outside the TLS root set or holds a key that is not a
-    plain option name (``pg_root_inputs_in_url``, #2787). Otherwise offline (``--sql``) opens no database: the URL only names
-    the dialect, so it is not refused, and an empty value falls back to the
-    default file URL.
+    plain option name (``pg_root_inputs_in_url``, #2787). Otherwise offline
+    (``--sql``) opens no database: the URL only names the dialect, so a value
+    that parses is not refused, even a non-persistent one (an in-memory SQLite
+    URL); an empty or blank value falls back to the default file URL; and a
+    value that does not parse (``:memory:`` included) names no dialect and is
+    refused, exit 1 (#2754).
 
     Returns:
         str: Database connection URL
@@ -125,17 +132,30 @@ def get_database_url(*, require_persistent: bool) -> str:
         url = configured_database_url()
     except DatabaseUrlWhitespaceError as exc:
         exit_refusing(str(exc))
-    root_inputs = pg_root_inputs_in_url(url) if url else []
+    # A blank value is no database, as every reader of the setting treats it
+    # (``require_no_surrounding_whitespace``): it decides as the empty one does,
+    # and a message shows the value as set (#2754).
+    named = url if url and url.strip() else ""
+    root_inputs = pg_root_inputs_in_url(named) if named else []
     if root_inputs:
         exit_refusing(pg_url_refusal(root_inputs))
     if require_persistent and url is not None:
-        # Set but EMPTY refuses too, rather than falling back to the default
-        # file: the app's predicate refuses an empty URL, and the migration must
+        # Set but EMPTY or BLANK refuses too, rather than falling back to the
+        # default file: the app's predicate refuses both, and the migration must
         # agree with the app on which database a value names (#1704). Judged on
         # the value as configured, before any driver conversion.
         require_persistent_database_url_or_exit(url)
-    if url:
-        return _convert_async_url(url)
+    if named:
+        # Refuses offline only: online, the persistence gate above refused a
+        # value that does not parse already.
+        if _parse_database_url(named) is None:
+            exit_refusing(
+                f"DATABASE_URL={describe_database_url(url)} does not parse as a "
+                "database URL, so it names no dialect to render SQL for. Unset "
+                "DATABASE_URL to render for the default SQLite file, or give a "
+                "database URL."
+            )
+        return _convert_async_url(named)
 
     # Default to SQLite for development
     sqlite_path = project_root / "data" / "faultmaven.db"
