@@ -22,10 +22,13 @@ decider read (decide-time, A4).
 
 The "Root cause" ask carries why the cause cannot be confirmed yet
 (``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
-the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when
-``notices.empty_pool_text`` gives a line for the record's cause. The
-decide-time message (``ResolutionReadiness.message``) keeps the ask without
-it until stage S3d (#3053) gives its decider the record.
+the needs-info request (``RESOLUTION_NEEDS_INFO``) and on the reopen chip's
+refusal (``transition_turns._refusal_readiness_ask``, through
+``record_params``, #3053 S3d-1), exactly when ``notices.empty_pool_text``
+gives a line for the record's cause. The decide-time message
+(``ResolutionReadiness.message``) keeps the ask without it; the reopen chip's
+reply states it only for an ask with no "Root cause" in it, and when the
+fold raised.
 """
 
 from typing import Optional, Sequence
