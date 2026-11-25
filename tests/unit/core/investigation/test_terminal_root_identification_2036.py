@@ -447,6 +447,11 @@ def test_m5_recovery_names_the_why_when_the_cause_is_held():
     assert len(WHY_OPEN_DOWNGRADE_REASON) <= 500  # ProposedAction.downgrade_reason
     assert "ROOT-CAUSE TEST, clause b" in WHY_OPEN_DOWNGRADE_REASON
     assert "WORKAROUND" in WHY_OPEN_DOWNGRADE_REASON
+    # A user who already ran it reports it by the cue, not by a mitigation
+    # (#3039 re-run: mitigation_accepted cannot name a downgraded fix).
+    assert "if they have, report it as IF_CARRIED_OUT says" in (
+        WHY_OPEN_DOWNGRADE_REASON
+    )
 
     case, _root_node, hyp = _open_chain_case()
     _recompute_cause_state_from_chain(case)

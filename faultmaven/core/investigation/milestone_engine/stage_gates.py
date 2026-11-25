@@ -1329,6 +1329,23 @@ def _downgraded_workaround(case: Case) -> Any:
     )
 
 
+def _downgraded_fix(case: Case) -> Any:
+    """The newest pending fix M5 downgraded to DIAGNOSTIC: a downgrade reason
+    that is not the 3D marker. ``mitigation_accepted`` never stamps it, since
+    the engine never infers which action an unnamed report means (INV-49)."""
+    return next(
+        (
+            a
+            for a in reversed(case.proposed_actions)
+            if a.state == "pending"
+            and a.action_type == InvestigationActionType.DIAGNOSTIC
+            and a.downgrade_reason
+            and not is_workaround_downgrade(a)
+        ),
+        None,
+    )
+
+
 def _refuse_fix_ref(
     case: Case, metadata: dict[str, Any], ref: Any, what: str, recorded: str = ""
 ) -> None:
@@ -2270,6 +2287,17 @@ def _apply_stage_gate_signals(
             notice += recorded_change_clause(
                 workaround.action_id,
                 record_reported_change(workaround, emission_turn(case, metadata)),
+            )
+        elif (fix := _downgraded_fix(case)) is not None:
+            # A fix is reported through the fix channel, by name: stamp
+            # nothing here, and say how (#3039 re-run).
+            aid = fix.action_id
+            notice += (
+                f" DIAGNOSTIC {aid} is a downgraded fix. Only if the user "
+                f"reported carrying out {aid}, set solution_accepted with "
+                f"accepted_action_ref {aid} (accepted_fix_reported_in "
+                "previous_message when they reported it in the previous "
+                "message): that records it."
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (

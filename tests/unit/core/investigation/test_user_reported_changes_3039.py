@@ -27,6 +27,9 @@ import pytest
 
 from faultmaven.core.investigation.cause_assurance import fix_windows
 from faultmaven.core.investigation.milestone_engine import response_application
+from faultmaven.core.investigation.milestone_engine.response_application import (
+    WHY_OPEN_DOWNGRADE_REASON,
+)
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     FIX_JUSTIFICATION_KEY,
     NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON,
@@ -539,11 +542,15 @@ class TestReviewCases:
         assert reported_change_turns(case) == [6]
         assert "is on record as carried out at turn 6" in _notices(case, metadata)
 
-    async def test_mitigation_accepted_never_stamps_a_downgraded_fix(self):
+    @pytest.mark.parametrize("reason", ["downgraded (M5)", WHY_OPEN_DOWNGRADE_REASON])
+    async def test_mitigation_accepted_never_stamps_a_downgraded_fix(self, reason):
         """Only the 3D marker makes a DIAGNOSTIC a workaround: an M5 copy
-        sharing a workaround's text is not stamped by mitigation_accepted."""
+        sharing a workaround's text is not stamped by mitigation_accepted.
+        The notice names the fix and the channel that records it
+        (``case_068b23d0c444`` turn 17, ``case_076a60d585b3`` turn 6)."""
         case = _downgraded_case()
         action = _diagnostic(case)
+        action.downgrade_reason = reason
         case.solutions.append(
             Solution(
                 solution_id="sol_000000000001",
@@ -553,9 +560,75 @@ class TestReviewCases:
             )
         )
 
-        await _apply(case, milestones=MilestoneUpdates(mitigation_accepted=True))
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
 
         assert action.reported_done_in_turn is None
+        aid = action.action_id
+        text = _notices(case, metadata)
+        assert "'mitigation_accepted' was not registered" in text
+        assert f"DIAGNOSTIC {aid} is a downgraded fix" in text
+        assert f"set solution_accepted with accepted_action_ref {aid}" in text
+        assert "on record as carried out" not in text
+
+    async def test_the_named_fix_is_recorded_at_the_report_turn(self):
+        """The turn after the notice, the model names the fix as told, with
+        the report in the previous message: stamped at the report's turn."""
+        case = _downgraded_case()
+        action = _diagnostic(case)
+        await _apply(case, milestones=MilestoneUpdates(mitigation_accepted=True))
+        case.current_turn = 6
+
+        await _apply(
+            case,
+            milestones=MilestoneUpdates(
+                solution_accepted=True,
+                accepted_action_ref=action.action_id,
+                accepted_fix_reported_in="previous_message",
+            ),
+        )
+
+        assert action.reported_done_in_turn == 5
+        assert action.state == "pending"
+        assert case.progress.solution_accepted is False
+
+    async def test_a_pending_workaround_wins_over_a_downgraded_fix(self):
+        """Both pending: the 3D workaround type-matches and is stamped; the
+        fix is neither stamped nor named."""
+        case = _downgraded_case()
+        fix = _diagnostic(case)
+        workaround = ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.DIAGNOSTIC,
+            description="Restart billing-exporter",
+            proposed_in_turn=4,
+            downgrade_reason=NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON,
+        )
+        case.proposed_actions.append(workaround)
+
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        assert workaround.reported_done_in_turn == 5
+        assert fix.reported_done_in_turn is None
+        assert "is a downgraded fix" not in _notices(case, metadata)
+
+    async def test_a_mitigation_report_with_nothing_downgraded_names_nothing(self):
+        """``case_0bab2dc5aa92`` turn 6 shape: the user reports a change no
+        stored action holds (the downgraded fix comes a turn later)."""
+        case = _case(leading_likelihood=0.4)
+        case.current_turn = 6
+
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        assert reported_change_turns(case) == []
+        text = _notices(case, metadata)
+        assert "'mitigation_accepted' was not registered" in text
+        assert "is a downgraded fix" not in text
 
     async def test_an_unjustified_solution_report_does_not_hold_back_a_workaround(
         self,
