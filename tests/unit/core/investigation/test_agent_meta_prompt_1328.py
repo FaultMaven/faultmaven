@@ -43,12 +43,10 @@ from faultmaven.core.investigation.prompts.templates.blocks import (
     evidence_grounding_block,
     knowledge_query_instructions,
 )
-from faultmaven.modules.agent.domain.services.investigation_service.attachments import (
-    _EVIDENCE_REROUTE_MODES,
-    _attachment_reroute,
-)
 from faultmaven.modules.agent.domain.services.query_classifier import (
+    EVIDENCE_REROUTE_MODES,
     ProcessingMode,
+    attachment_reroute,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -270,12 +268,12 @@ class TestEngineRouting:
 
     def test_fresh_upload_still_reroutes_agent_meta_to_directed_analysis(self):
         """#708 composes: an upload delivered with a meta question is analysed."""
-        assert ProcessingMode.AGENT_META in _EVIDENCE_REROUTE_MODES
-        assert ProcessingMode.TRIAGE in _EVIDENCE_REROUTE_MODES
-        assert ProcessingMode.KNOWLEDGE_QUERY in _EVIDENCE_REROUTE_MODES
-        for mode in _EVIDENCE_REROUTE_MODES:
+        assert ProcessingMode.AGENT_META in EVIDENCE_REROUTE_MODES
+        assert ProcessingMode.TRIAGE in EVIDENCE_REROUTE_MODES
+        assert ProcessingMode.KNOWLEDGE_QUERY in EVIDENCE_REROUTE_MODES
+        for mode in EVIDENCE_REROUTE_MODES:
             assert (
-                _attachment_reroute(CaseState.INVESTIGATING, mode)
+                attachment_reroute(CaseState.INVESTIGATING, mode)
                 == ProcessingMode.DIRECTED_ANALYSIS
             )
 
@@ -284,17 +282,17 @@ class TestEngineRouting:
         on a fresh case must characterise the file, not render the meta block
         ahead of the INQUIRY role. TRIAGE is INQUIRY's file-drop mode."""
         assert (
-            _attachment_reroute(CaseState.INQUIRY, ProcessingMode.AGENT_META)
+            attachment_reroute(CaseState.INQUIRY, ProcessingMode.AGENT_META)
             == ProcessingMode.TRIAGE
         )
         # The #708 scope is unchanged: other INQUIRY modes are not rerouted.
-        assert _attachment_reroute(CaseState.INQUIRY, ProcessingMode.TRIAGE) is None
+        assert attachment_reroute(CaseState.INQUIRY, ProcessingMode.TRIAGE) is None
         assert (
-            _attachment_reroute(CaseState.INQUIRY, ProcessingMode.KNOWLEDGE_QUERY)
+            attachment_reroute(CaseState.INQUIRY, ProcessingMode.KNOWLEDGE_QUERY)
             is None
         )
         assert (
-            _attachment_reroute(
+            attachment_reroute(
                 CaseState.INVESTIGATING, ProcessingMode.DIRECTED_ANALYSIS
             )
             is None

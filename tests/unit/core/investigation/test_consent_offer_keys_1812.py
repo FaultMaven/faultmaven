@@ -443,15 +443,15 @@ class TestAClickAnswersOnlyTheOfferItNames:
     async def test_k8_the_current_gate1_click_commits_and_refuses_nothing(
         self, refused
     ):
-        """The click commits at 0c, before the LLM. The LLM is then handed the
-        card's payload, which is not bare, and reads it honestly as a
-        confirmation: that turn refused nothing, so ``not_bare`` must not
-        move (``not problem_statement_confirmed`` gates it)."""
+        """The click commits at 0c, before the LLM, and the case is
+        INVESTIGATING before the prompt (#3048): the turn is answered on the
+        investigation schema, where the card's payload (not bare) is never
+        read as a consent, so that turn refuses nothing and ``not_bare`` does
+        not move."""
         case = _gate1_case()
         engine = _engine(
-            InquiryResponse(
-                agent_response="Starting the investigation.",
-                state_updates={"user_confirmed_investigation": True},
+            InvestigationResponse_Diagnosis(
+                agent_response="Starting the investigation.", state_updates={}
             )
         )
         with patch.object(

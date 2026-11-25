@@ -341,7 +341,7 @@
  },
  "gate_one": {
   "conclusion": "<working_conclusion>\nSTATEMENT: Verifying symptom - problem understanding in progress\nCONFIDENCE: 0%\nREASONING: Investigation in early stage - hypotheses not yet generated\n</working_conclusion>",
-  "graph": ""
+  "graph": "<causal_graph>\nChains built so far (D = the problem). REFERENCE these cn_... ids when extending \u2014 attach evidence or new rungs to an existing node rather than re-stating a cause already present as a new node. Reference a hypothesis by its [hyp_...] id in hypothesis_evidence_links and hypotheses_to_update.\n</causal_graph>"
  },
  "held_check": {
   "conclusion": "",

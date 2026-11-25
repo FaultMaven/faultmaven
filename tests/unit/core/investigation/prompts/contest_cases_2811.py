@@ -28,7 +28,11 @@ rendered. #3048 re-rendered, by hand, the ``<causal_graph>`` text of
 ``C:refused_count_held`` and ``C:held_open``, each equal to its stored entry on
 ``main``; on the #3048 branch the why-open and verdict-refused cues state
 clause (b) as the row that shows "how the state came to be" in place of
-"nothing renews or re-creates it". No other entry's render differed.
+"nothing renews or re-creates it". No other entry's render differed. #3048
+(the turn that commits Gate 1 runs as INVESTIGATING) regenerated
+``gate_one`` with this generator: its confirming click is now the first
+INVESTIGATING turn, which seeds the problem node ``D``, so its graph block
+renders.
 """
 
 from __future__ import annotations

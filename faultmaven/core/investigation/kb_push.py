@@ -57,8 +57,9 @@ KB_PROMPT_MAX_ENTRIES = 5
 #: Engine turn-metadata key: the entries THIS turn's prompt rendered, as the
 #: prompt build reports them (``kb_entries_rendered``). The turn response's ``sources`` and the assistant row are
 #: built from it, never from ``case.kb_context`` after the turn: a pre-fetch
-#: that fires while the turn's response is applied (Gate 1, the root-cause
-#: edge) writes context the answer never saw, and only the NEXT prompt carries.
+#: that fires while the turn's response is applied (a Gate 1 the model's own
+#: ``user_confirmed_investigation`` commits, the root-cause edge) writes
+#: context the answer never saw, and only the NEXT prompt carries.
 TURN_METADATA_KB_PROMPTED = "kb_prompted"
 
 

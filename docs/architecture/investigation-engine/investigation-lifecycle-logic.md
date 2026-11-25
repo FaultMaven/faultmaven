@@ -98,6 +98,19 @@ Confirmations reduce errors but create friction. Use conditional logic:
 - Turn N+1: User clicks [Yes] or types confirmation
 - Turn N+1 response: Agent transitions status
 
+> Data submitted before the statement is confirmed is evidence of the confirmed problem: the first INVESTIGATING turn records the symptom row from it and verifies.
+
+A Gate 1 the engine commits before the model call (a click, a minted or a bare
+typed consent, section 0c) moves the case to INVESTIGATING before the prompt is
+built, so that turn is the first INVESTIGATING turn: it is prompted and
+answered on the investigation schema, with the earlier uploads in its
+`<uploaded_file file_id=...>` blocks. A Gate 1 the model's own
+`user_confirmed_investigation` commits transitions after the response, as
+before (#3048). The statement's assessment (preliminary urgency, severity,
+temporal state) is part of what the user confirms: it comes from the INQUIRY
+turns before Gate 1, and a Gate 1 committed before the call takes it as it
+stands, so the confirming turn adds none.
+
 **Consent arriving with a statement write** — two different shapes, two
 different answers (INV-01):
 
@@ -111,10 +124,11 @@ different answers (INV-01):
   the consent is honoured — against **that** wording. The revision is
   **dropped**, not applied. Refusing here instead would loop: the engine would
   re-present the reword, the user would say yes again, and a model that
-  re-emits the field with cosmetic edits would reword again, forever. This is
-  also what protects the DECIDE click, where section 0c commits Gate 1 *before*
-  the LLM call and the same-turn rewording would otherwise reach
-  `case.description` through `_transition_to_investigating`.
+  re-emits the field with cosmetic edits would reword again, forever. The
+  DECIDE click needs no such guard: section 0c commits Gate 1 *before* the LLM
+  call and the case is INVESTIGATING before the prompt, so the model answers
+  on the investigation schema, where the statement changes only by an
+  evidence-backed revision the user re-confirms (§1.4.1).
 
 There is no recovery FLAG and no recovery turn. `handshake_deferred_at_turn`
 existed to tell the following turn to re-present — a proxy for "the user has

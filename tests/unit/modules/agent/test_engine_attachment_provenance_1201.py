@@ -123,7 +123,8 @@ class TestTheEngineDispatchMetadata:
 
     def test_the_rest_of_the_dict_is_unchanged(self):
         """The engine reads these keys by name; only source_type was in scope
-        for #1201. ``is_novel`` joined the dict with #1210."""
+        for #1201. ``is_novel`` joined the dict with #1210, ``evidence_bearing``
+        with #3048."""
         row = _row("nginx-error.log", "file_upload")
 
         meta = _meta(row)
@@ -143,6 +144,7 @@ class TestTheEngineDispatchMetadata:
             "summary",
             "storage_ref",
             "is_novel",
+            "evidence_bearing",
         }
 
     def test_absent_optional_fields_still_render_as_empty_strings(self):

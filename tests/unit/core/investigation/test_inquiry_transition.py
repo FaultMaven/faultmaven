@@ -32,6 +32,7 @@ from faultmaven.core.investigation.milestone_engine.transition_consent import (
     TYPED_CONFIRMATION_LINE,
     gate1_offer_key,
 )
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
     StructuredOutputMode,
@@ -1033,11 +1034,11 @@ class TestGate1PresentsItsStatement:
     ):
         """The click path binds consent to the wording the user clicked on.
 
-        Section 0c commits Gate 1 BEFORE the LLM call, and the turn still
-        renders an InquiryResponse. Without a guard the model's same-turn
-        rewording replaced the statement after consent, and the transition
-        copied the new text into ``case.description`` — framing the whole
-        investigation on wording the user never saw.
+        Section 0c commits Gate 1 BEFORE the LLM call, and the engine moves
+        the case to INVESTIGATING before the prompt (#3048), so the click turn
+        is answered on the investigation schema: it carries no
+        ``proposed_problem_statement``, and the description is the statement
+        the user saw. A model that re-emits the field anyway is not read.
         """
         seen = "Checkout API returns 503 for all users since 14:00 UTC"
         inquiry_case.inquiry.proposed_problem_statement = seen
@@ -1052,6 +1053,14 @@ class TestGate1PresentsItsStatement:
                 },
             }
         )
+        schemas = []
+        generate = engine.generator.generate_structured_output
+
+        async def _recording(prompt, schema_model, **kwargs):
+            schemas.append(schema_model)
+            return await generate(prompt, schema_model, **kwargs)
+
+        engine.generator.generate_structured_output = _recording
 
         result = await engine.process_turn(
             inquiry_case,
@@ -1063,6 +1072,8 @@ class TestGate1PresentsItsStatement:
         )
         updated = result["case_updated"]
 
+        assert schemas == [InvestigationResponse_Diagnosis]
+        assert updated.state == CaseState.INVESTIGATING
         assert updated.inquiry.proposed_problem_statement == seen
         assert updated.description == seen
 
