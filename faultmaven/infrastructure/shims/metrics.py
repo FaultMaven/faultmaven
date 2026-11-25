@@ -576,7 +576,7 @@ request_counter = Counter(
 #           its own declared budget, which is a different fault from latency
 #   300.0, 600.0 - up to MAX_AGENT_TIMEOUT_SECONDS, the product's maximum
 #           agent timeout; a local-model call under
-#           LLM_PROVIDER_TIMEOUT_OVERRIDES='{"ollama": 600}' lands here
+#           LLM_PROVIDER_TIMEOUT_OVERRIDES='{"local": 600}' lands here
 # One ladder for both request histograms (#1529). A routed LLM attempt's
 # ceiling is its provider's LLM_PROVIDER_TIMEOUT_OVERRIDES entry, else
 # LLM_REQUEST_TIMEOUT, clamped to the turn's remainder (registry.route_request,

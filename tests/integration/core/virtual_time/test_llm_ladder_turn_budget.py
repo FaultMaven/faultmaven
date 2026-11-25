@@ -816,14 +816,3 @@ class TestTheRoutersOuterBoundNeverCutsAnAttempt:
             outer = router._resolve_timeout()
             assert outer == pytest.approx(turn_budget.backstop_turn_budget(), abs=0.05)
             assert outer > turn_budget.spendable_turn_budget()
-
-    @pytest.mark.parametrize("backstop", [0.0, -1.0])
-    def test_a_spent_backstop_is_an_instant_bound_never_zero(
-        self, router, monkeypatch, backstop
-    ):
-        """``call_external`` reads ``0.0`` as unbounded and a negative value as
-        an instant timeout. Mutant: the backstop returned as it is."""
-        from faultmaven.infrastructure.llm import router as router_module
-
-        monkeypatch.setattr(router_module, "backstop_turn_budget", lambda: backstop)
-        assert router._resolve_timeout() < 0

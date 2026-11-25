@@ -803,7 +803,7 @@ read `LOCAL_LLM_URL`. Configure a custom base URL through the provider's
 settings field (`OPENAI_API_BASE`, `LOCAL_LLM_URL`, …); `default_base_url`
 above is the schema key that IS read.
 
-**Timeout Configuration**: one resolver, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`), gives a provider its `T`: its `LLM_PROVIDER_TIMEOUT_OVERRIDES` entry when it has one, which can lower `T` as well as raise it; otherwise `LLM_REQUEST_TIMEOUT` (defaults to 30s). An override `<= 0` is refused when the settings load. The schema declares no timeout: a slow local model needs an override like any other provider (#2983).
+**Timeout Configuration**: one resolver, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`), gives a provider its `T`: its `LLM_PROVIDER_TIMEOUT_OVERRIDES` entry when it has one, which can lower `T` as well as raise it; otherwise `LLM_REQUEST_TIMEOUT` (defaults to 30s). Both must be above 0: a value `<= 0` is refused when the settings load. The schema declares no timeout: a slow local model needs an override like any other provider (#2983).
 
 The same `T` bounds the provider's client and each attempt the router's walk makes on it: an attempt runs on its own provider's `T`, clamped to the turn's spendable budget, and a timeout there is recorded against that provider before the walk moves on to the next (`ProviderRegistry.route_request`).
 

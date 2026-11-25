@@ -302,7 +302,7 @@ class BaseExternalClient(ABC):
                 runs through :meth:`run_blocking`: in :attr:`blocking_executor`
                 when the client sets one, inline otherwise
             *args: Arguments to pass to the call function
-            timeout: Optional budget, applied with ``asyncio.wait_for`` to a
+            timeout: Optional budget, applied with ``asyncio.timeout`` to a
                 coroutine ``call_func``, and to a sync one that runs in a
                 :attr:`blocking_executor`. For a sync call it ends the
                 caller's AWAIT, not the call: that runs on in its thread, to
@@ -311,7 +311,7 @@ class BaseExternalClient(ABC):
                 caller could see a timeout for a write still landing and
                 compensate for it while it lands (#2056). A sync call that
                 runs inline, with no executor, is never bounded here:
-                ``wait_for`` cannot preempt the loop thread.
+                a timeout cannot preempt the loop thread.
             retries: Number of retry attempts on failure
             retry_delay: Base delay between retries (with exponential backoff)
             validate_response: Optional function to validate response
@@ -416,19 +416,21 @@ class BaseExternalClient(ABC):
                     # Execute with timeout
                     start_time = time.time()
 
-                    # Bound before the ``wait_for`` starts, so the task it
-                    # creates inherits the deadline (#2793).
+                    # Bound before the call starts, so a wait inside it reads
+                    # the deadline (#2793).
                     deadline_token = (
                         _call_deadline.set(time.monotonic() + timeout)
                         if timeout
                         else None
                     )
+                    # This call's own bound, so a timeout can be told from one
+                    # the call raised itself (#2983).
+                    own_bound = None
                     try:
                         if asyncio.iscoroutinefunction(call_func):
                             if timeout:
-                                result = await asyncio.wait_for(
-                                    call_func(*args, **kwargs), timeout=timeout
-                                )
+                                async with asyncio.timeout(timeout) as own_bound:
+                                    result = await call_func(*args, **kwargs)
                             else:
                                 result = await call_func(*args, **kwargs)
                         elif timeout and self.blocking_executor is not None:
@@ -436,13 +438,13 @@ class BaseExternalClient(ABC):
                             # call itself runs on in its thread to the client's
                             # own bound, which is why a write passes no timeout
                             # (see ``timeout`` above, #2056).
-                            result = await asyncio.wait_for(
-                                self.run_blocking(call_func, *args, **kwargs),
-                                timeout=timeout,
-                            )
+                            async with asyncio.timeout(timeout) as own_bound:
+                                result = await self.run_blocking(
+                                    call_func, *args, **kwargs
+                                )
                         else:
                             # Awaited to its end: with no timeout (a write), or
-                            # inline, where ``wait_for`` could not preempt it.
+                            # inline, where a timeout could not preempt it.
                             result = await self.run_blocking(call_func, *args, **kwargs)
                     finally:
                         if deadline_token is not None:
@@ -589,13 +591,21 @@ class BaseExternalClient(ABC):
                     # phrase list has "timeout", the sentence says "timed out",
                     # and a hung provider got zero retries (#1287). The class is
                     # still a ``TimeoutError``, so existing handlers are
-                    # unaffected.
+                    # unaffected. Only this call's own bound has a figure to
+                    # name; a timeout the call raised itself names none.
+                    if own_bound is not None and own_bound.expired():
+                        raise ExternalCallTimeout(
+                            f"External call to {self.service_name}.{operation_name} timed out after {timeout}s",
+                            service=self.service_name,
+                            operation=operation_name,
+                            timeout=timeout,
+                        )
                     raise ExternalCallTimeout(
-                        f"External call to {self.service_name}.{operation_name} timed out after {timeout}s",
+                        f"External call to {self.service_name}.{operation_name}"
+                        " timed out inside the call",
                         service=self.service_name,
                         operation=operation_name,
-                        timeout=timeout,
-                    )
+                    ) from timeout_error
 
                 except Exception as call_error:
                     last_exception = call_error
@@ -676,16 +686,19 @@ class BaseExternalClient(ABC):
                         ).isoformat()
 
                         # A throttle (a 429 the provider's own waits did not
-                        # outlast) says the service is up and busy, so it is
-                        # not counted against the shared breaker (#2793).
-                        throttled = not counts_against_breaker(call_error)
-                        if self.circuit_breaker and not throttled:
+                        # outlast) says the service is up and busy, and a call
+                        # refused for a spent turn reached no provider, so
+                        # neither is counted against the shared breaker
+                        # (``counts_against_breaker``, #2793, #2983).
+                        uncounted = not counts_against_breaker(call_error)
+                        if self.circuit_breaker and not uncounted:
                             self.circuit_breaker.record_failure(call_error)
-                        if throttled:
+                        if uncounted:
                             self.logger.warning(
-                                f"Rate-limited on {self.service_name}.{operation_name}"
-                                f" — a throttle, not counted against the circuit"
-                                f" breaker: {exception_class_chain(call_error)}",
+                                f"{self.service_name}.{operation_name} failed"
+                                f" without counting against the circuit breaker"
+                                f" (a throttle, or a spent turn):"
+                                f" {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
                             )

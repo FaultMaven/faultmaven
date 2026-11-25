@@ -17,11 +17,15 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import get_current_enterprise_id
-from faultmaven.core.investigation.turn_budget import backstop_turn_budget
+from faultmaven.core.investigation.turn_budget import (
+    backstop_turn_budget,
+    spendable_turn_budget,
+)
 from faultmaven.exceptions import (
     LLM_BREAKER_SERVICE,
     CallShapeUnsupported,
     LLMOutputFloorError,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
 )
@@ -451,13 +455,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         spendable bound, and outside a turn it is ``None``: the walk is bounded
         by its attempts.
 
-        A spent backstop (``<= 0``) is returned negative, which ``call_external``
-        reads as an instant timeout (it reads ``0.0`` as unbounded).
+        Always positive when read: ``route`` refuses a call before it once the
+        spendable budget, which ends earlier, is spent.
         """
-        backstop = backstop_turn_budget()
-        if backstop is not None and backstop <= 0:
-            return min(backstop, -1e-3)
-        return backstop
+        return backstop_turn_budget()
 
     @_opik_track_llm("llm_router_route")
     async def route(
@@ -707,6 +708,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     status="cached",
                 ).inc()
                 return cached_response
+
+        # A spent turn: no provider can be given an attempt, so none is called
+        # and nothing records a failure (#2983).
+        spendable = spendable_turn_budget()
+        if spendable is not None and spendable <= 0:
+            raise LLMTurnBudgetSpent()
 
         # Route through registry with BaseExternalClient wrapping
         request_started = time.monotonic()
@@ -966,10 +973,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # refused (#1998). No error metric, no SLA failure, no "all
             # providers failed" — a refusal says nothing about any provider.
             raise
-        except CallShapeUnsupported:
+        except (CallShapeUnsupported, LLMTurnBudgetSpent):
             # Not a provider failure: no provider in the chain can carry this
-            # call's shape (#2016). The refusal surfaces itself, with no error
-            # metric or SLA failure.
+            # call's shape (#2016), or the turn was spent before one was tried
+            # (#2983). The refusal surfaces itself, with no error metric or
+            # SLA failure.
             raise
         except LLMOutputFloorError:
             # Not a provider failure — the provider answered; the answer is one

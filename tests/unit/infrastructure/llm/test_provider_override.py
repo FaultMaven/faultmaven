@@ -131,6 +131,7 @@ class TestRegistryProviderOverride:
         registry._providers = {}
         registry._provider_states = {}
         registry._provider_classes = {}
+        registry.settings = None  # each attempt's T then reads the live settings
         registry._fallback_chain = list(provider_names)
 
         # Provider state objects (so route_request can update health).

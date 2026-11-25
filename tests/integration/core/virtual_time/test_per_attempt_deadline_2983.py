@@ -22,7 +22,12 @@ import pytest
 from faultmaven.config import retry_budget
 from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
 from faultmaven.core.investigation.turn_budget import bind_turn_deadline
-from faultmaven.exceptions import TURN_BUDGET_EXHAUSTED, LLMAttemptTimeout
+from faultmaven.exceptions import (
+    TURN_BUDGET_EXHAUSTED,
+    LLMAttemptTimeout,
+    LLMTurnBudgetSpent,
+)
+from faultmaven.infrastructure.llm import router as router_module
 from faultmaven.infrastructure.llm.dispatch import route_model_call
 from faultmaven.infrastructure.llm.providers import base as providers_base
 from faultmaven.infrastructure.llm.providers import registry as registry_module
@@ -198,20 +203,90 @@ class TestTheTurnBudget:
         assert sends(fallback) == []
         assert health(router, "gemini") == 0 and health(router, "fireworks") == 0
 
-    async def test_a_spent_turn_stops_the_walk_before_any_attempt(self, monkeypatch):
-        """Under the reserves already: nothing is sent and nothing recorded."""
+    @pytest.mark.parametrize("left", [4.0, 3.0], ids=["under-4.5s", "under-3.75s"])
+    @pytest.mark.parametrize("path", ["router", "walk"])
+    async def test_a_spent_turn_calls_no_provider_and_records_nothing(
+        self, monkeypatch, left, path
+    ):
+        """Under the step and commit reserves (4.5 s), and under the backstop's
+        (3.75 s): the call is refused before any provider, and neither the
+        breaker nor any provider's health records it. ``walk`` lifts the
+        router's own check, so the walk's stop is what refuses it, through
+        ``call_external``; the router refuses before entering it. Mutants: the
+        walk's stop raises a timeout (recorded); no router refusal."""
         primary, fallback = adapter("gemini"), adapter("fireworks")
         router = rig(monkeypatch, [primary, fallback], {})
+        if path == "walk":
+            monkeypatch.setattr(router_module, "spendable_turn_budget", lambda: None)
 
-        with bind_turn_deadline(4.0):
+        with bind_turn_deadline(left):
             _, error, elapsed = await timed(
                 route_model_call(router, prompt=vetted("p"))
             )
 
-        assert isinstance(error, LLMAttemptTimeout) and error.provider == "gemini"
+        assert isinstance(error, LLMTurnBudgetSpent)
+        assert not isinstance(error, TimeoutError)
+        assert error.error_code == TURN_BUDGET_EXHAUSTED
         assert elapsed == pytest.approx(0.0)
         assert sends(primary) == sends(fallback) == []
         assert health(router, "gemini") == 0 and health(router, "fireworks") == 0
+        assert router.circuit_breaker.failure_count == 0
+        entered = router.connection_metrics["total_calls"]
+        assert entered == (1 if path == "walk" else 0)
+
+    async def test_its_outcome_is_the_turn_budgets(self):
+        """In the ladder and at the HTTP boundary: ``TURN_BUDGET_EXHAUSTED``,
+        503 with ``Retry-After``, never a deadline-shaped retry."""
+        from faultmaven.api.exception_handlers import llm_service_error_http_exception
+        from faultmaven.core.investigation.llm_error_handler import (
+            ErrorAction,
+            is_deadline_shaped,
+        )
+
+        result = await LLMErrorHandler(RetryConfig()).handle_error(LLMTurnBudgetSpent())
+        assert result.action is ErrorAction.FAIL
+        assert result.error_code == TURN_BUDGET_EXHAUSTED
+        assert not is_deadline_shaped(LLMTurnBudgetSpent())
+        http = llm_service_error_http_exception(LLMTurnBudgetSpent())
+        assert http.status_code == 503 and http.headers["Retry-After"] == "30"
+
+    @pytest.mark.parametrize("turn", [None, 120.0], ids=["outside", "inside"])
+    async def test_a_providers_own_timeout_names_no_bound(self, monkeypatch, turn):
+        """A provider raising a ``TimeoutError`` of its own: ``call_external``
+        names no figure it did not set (``None`` outside a turn, the backstop
+        inside one). Mutant: the wrap always names ``timeout``."""
+
+        async def times_out_itself(**kwargs):
+            raise TimeoutError("socket read timed out")
+
+        stub = adapter("gemini")
+        stub._generate = times_out_itself
+        router = rig(monkeypatch, [stub], {})
+
+        with bind_turn_deadline(turn):
+            _, error, _ = await timed(route_model_call(router, prompt=vetted("p")))
+
+        assert str(error) == (
+            "External call to LLM_Providers.route_llm_request timed out inside "
+            "the call"
+        )
+        assert error.timeout is None
+        assert type(error.__cause__) is TimeoutError
+
+    async def test_an_attempt_reads_the_registrys_own_settings(self, monkeypatch):
+        """The attempt's ``T`` comes from the settings the registry built its
+        clients with, not the live ones. Mutant: ``provider_timeout(name)``."""
+        router = rig(monkeypatch, [adapter("groq")], {"groq": 50})
+        router.registry.settings = SimpleNamespace(
+            llm=SimpleNamespace(
+                provider_timeout_overrides={"groq": 7}, request_timeout=int(BASE)
+            )
+        )
+
+        _, error, elapsed = await timed(route_model_call(router, prompt=vetted("p")))
+
+        assert isinstance(error, LLMAttemptTimeout)
+        assert elapsed == pytest.approx(7.0)
 
     @pytest.mark.parametrize(
         "own,waited,elapsed", [(45, 12.0, 22.0), (20, None, 10.0)], ids=["45s", "20s"]
@@ -275,6 +350,7 @@ async def test_a_non_strict_chain_that_hangs_is_refused_its_retry(monkeypatch):
 
 
 def _settings(provider, *, strict, overrides=None, pinned=None):
+    """Settings that configure gemini and fireworks (their keys), no other."""
     return SimpleNamespace(
         llm=SimpleNamespace(
             provider=provider,
@@ -282,6 +358,8 @@ def _settings(provider, *, strict, overrides=None, pinned=None):
             provider_timeout_overrides=overrides or {},
             strict_provider_mode=strict,
             structured_output_provider=pinned,
+            gemini_api_key="k",
+            fireworks_api_key="k",
         ),
         agent=SimpleNamespace(timeout_for_provider=lambda _name: 120),
     )
@@ -289,15 +367,11 @@ def _settings(provider, *, strict, overrides=None, pinned=None):
 
 @pytest.fixture
 def initialised(monkeypatch):
-    """The registry's initialised providers, without building any."""
+    """No registry exists: the report must not build one."""
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
-    names = ["gemini", "fireworks"]
-    monkeypatch.setattr(
-        registry_module,
-        "get_registry",
-        lambda: SimpleNamespace(get_available_providers=lambda: names),
-    )
-    return names
+    monkeypatch.setattr(registry_module, "_registry", None)
+    yield
+    assert registry_module._registry is None, "the report built the registry"
 
 
 class TestTheLadderReportPricesTheRoutedWalk:
@@ -311,8 +385,9 @@ class TestTheLadderReportPricesTheRoutedWalk:
         assert budget.fits
 
     def test_a_non_strict_chain_is_priced_at_its_sum(self, initialised):
-        """Both initialised providers hang: 60 s an attempt, ``2·60 + 2`` does
-        not fit. Mutant: CHAT's ``T`` alone."""
+        """Both configured providers hang: 60 s an attempt, ``2·60 + 2`` does
+        not fit, and no registry is built for it. Mutants: CHAT's ``T`` alone;
+        the chain read from ``get_registry()``."""
         budget = retry_budget.describe_retry_ladder_budget(
             _settings("gemini", strict=False)
         )

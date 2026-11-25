@@ -50,6 +50,7 @@ from faultmaven.exceptions import (
     TURN_BUDGET_EXHAUSTED,
     CircuitBreakerError,
     LLMErrorCategory,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
@@ -621,6 +622,16 @@ class LLMErrorHandler:
         # Track error for pattern detection
         error_type = type(error).__name__
         self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
+
+        # The router refused the call for a spent turn, before any provider
+        # (#2983): the budget's own outcome, as the ladder's refusal reports it.
+        if isinstance(error, LLMTurnBudgetSpent):
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                message="The request budget is spent. Please try again in a few minutes.",
+                error_code=TURN_BUDGET_EXHAUSTED,
+                retry_count=retry_count,
+            )
 
         # A refusal (#1770) is the engine's own typed signal too, and final.
         if isinstance(error, ProviderRefusalError):

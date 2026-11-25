@@ -46,10 +46,10 @@ class TestProviderTimeout:
         s = _mk_settings(
             monkeypatch,
             request_timeout=30,
-            overrides={"fireworks": 180, "ollama": 600},
+            overrides={"fireworks": 180, "local": 600},
         )
         assert provider_timeout("fireworks", s) == 180
-        assert provider_timeout("ollama", s) == 600
+        assert provider_timeout("local", s) == 600
 
     def test_an_override_below_the_base_lowers_it(self, monkeypatch):
         """An override is that provider's ``T`` outright, not ``max`` with the
@@ -82,3 +82,10 @@ class TestProviderTimeout:
         an instant timeout, so neither is a usable ``T``."""
         with pytest.raises(ValidationError, match=f"refused: groq={seconds}"):
             _mk_settings(monkeypatch, request_timeout=30, overrides={"groq": seconds})
+
+    @pytest.mark.parametrize("seconds", [0, -5])
+    def test_a_base_at_or_below_zero_is_refused_at_load(self, monkeypatch, seconds):
+        """``LLM_REQUEST_TIMEOUT`` is every provider's ``T`` without an
+        override, so it is held to the same bound."""
+        with pytest.raises(ValidationError, match="greater than 0"):
+            _mk_settings(monkeypatch, request_timeout=seconds, overrides={})

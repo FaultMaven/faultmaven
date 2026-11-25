@@ -25,6 +25,7 @@ from faultmaven.exceptions import (
     LLMAttemptTimeout,
     LLMErrorCategory,
     LLMException,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
     is_rate_limit_throttle,
@@ -1038,17 +1039,18 @@ class ProviderRegistry:
             if not state:
                 continue
 
-            # This attempt's deadline (#2983): the provider's own ``T``, clamped
-            # to what the turn can still spend. A spent turn stops the walk
-            # here, charging nothing to the providers it never tried.
-            own_timeout = provider_timeout(provider_name)
+            # This attempt's deadline (#2983): the provider's own ``T``, from the
+            # settings its client was built with, clamped to what the turn can
+            # still spend. A spent turn stops the walk here, charging nothing
+            # to the providers it never tried; with none tried, nothing failed.
+            own_timeout = provider_timeout(provider_name, self.settings)
             spendable = spendable_turn_budget()
             if spendable is not None and spendable <= 0:
                 self.logger.warning(
                     f"Turn budget spent; {provider_name} and the rest of the "
                     "chain not tried"
                 )
-                last_error = last_error or LLMAttemptTimeout(provider_name, 0.0)
+                last_error = last_error or LLMTurnBudgetSpent()
                 break
             attempt_timeout = (
                 own_timeout if spendable is None else min(own_timeout, spendable)

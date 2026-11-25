@@ -141,7 +141,7 @@ class TestTheDeadlineShapedLadder:
 # boundary, and the boundary is where the previous analysis went wrong. Spans
 # both sides of 33/34 at the default 120s turn, the shipped default, the two
 # configurations measured on real deployments, and the values the documentation
-# itself invites (`{"fireworks": 180, "ollama": 600}`).
+# itself invites (`{"fireworks": 180, "local": 600}`).
 #
 # The boundary counts the commit reserve (#1882): a ladder fits when it ends
 # with the step reserve AND the turn's commit reserve still unspent, so at a

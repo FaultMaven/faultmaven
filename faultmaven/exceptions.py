@@ -184,9 +184,10 @@ class UsageStoreUnavailable(Exception):
 class ExternalCallTimeout(ExternalServiceException, TimeoutError):
     """A call to an external service exceeded its CLIENT-SIDE deadline.
 
-    Raised by ``BaseExternalClient.call_external`` when its ``asyncio.wait_for``
-    expires — the dependency never answered, so there is no provider status
-    code and no provider wording to classify from.
+    Raised by ``BaseExternalClient.call_external`` when its own timeout
+    expires, or the call raised a timeout of its own (then naming no figure) —
+    the dependency never answered, so there is no provider status code and no
+    provider wording to classify from.
 
     ``retryable`` is declared here, by the code that raises, rather than
     inferred downstream from the message text. The site used to raise a bare
@@ -386,6 +387,22 @@ PROVIDER_CIRCUIT_OPEN = "PROVIDER_CIRCUIT_OPEN"
 # ``LLM_REQUEST_TIMEOUT`` against ``AGENT_REQUEST_TIMEOUT`` — which
 # ``GET /admin/config/status`` reports directly.
 TURN_BUDGET_EXHAUSTED = "TURN_BUDGET_EXHAUSTED"
+
+
+class LLMTurnBudgetSpent(Exception):
+    """A routed call refused before any provider was called: the turn's
+    spendable budget is spent (#2983).
+
+    No provider was contacted, so neither the circuit breaker
+    (``counts_against_breaker``) nor any provider's health records it. Not
+    deadline-shaped, and declares no ``retryable``: its ``error_code`` is the
+    outcome, ``TURN_BUDGET_EXHAUSTED`` (503, ``Retry-After``).
+    """
+
+    error_code = TURN_BUDGET_EXHAUSTED
+
+    def __init__(self) -> None:
+        super().__init__("The turn's budget is spent; no LLM provider was called.")
 
 
 # Stable error_code for "the LLM layer is not configured": no provider in the
@@ -959,8 +976,11 @@ def counts_against_breaker(exc: BaseException) -> bool:
 
     A non-retryable failure counts only when it is service-scoped (quota,
     rejected credentials); a request-scoped one says nothing about the service.
-    Any other failure counts, except a throttle (#2793).
+    Any other failure counts, except a throttle (#2793) and a call refused for
+    a spent turn, which reached no provider (``LLMTurnBudgetSpent``, #2983).
     """
+    if isinstance(exc, LLMTurnBudgetSpent):
+        return False
     if getattr(exc, "retryable", True) is False:
         return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
     return not is_rate_limit_throttle(exc)

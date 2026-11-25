@@ -295,7 +295,7 @@ a hung provider. Each attempt of the router's walk runs on its own provider's
 ceiling, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`, the
 one resolver, which the provider's client is built with too): its
 `LLM_PROVIDER_TIMEOUT_OVERRIDES` entry, which can lower as well as raise it,
-else `LLM_REQUEST_TIMEOUT`; an override `<= 0` is refused at settings load, and
+else `LLM_REQUEST_TIMEOUT`; either `<= 0` is refused at settings load, and
 the `local` schema carries no timeout of its own (#2983). So `T` is the chat
 provider's ceiling under `STRICT_PROVIDER_MODE=true` (a
 `STRUCTURED_OUTPUT_PROVIDER` pin's, when larger), and under non-strict the sum
@@ -364,7 +364,9 @@ attempt's timeout (`LLMAttemptTimeout`, naming the provider and its `t`) is
 raised inside the walk: recorded on that provider's health only when its own
 `T` was the binding bound, never on a cut the turn clamped; the walk moves on,
 and stops before an attempt once the budget is spent, charging nothing to the
-providers it did not try. A chain that exhausts reaches `call_external`, which
+providers it did not try. A call made with the budget already spent is refused
+before any provider (`LLMTurnBudgetSpent`, outcome `TURN_BUDGET_EXHAUSTED`) and
+recorded on neither the breaker nor provider health. A chain that exhausts reaches `call_external`, which
 passes the timeout through and records a circuit-breaker failure (an outer
 `wait_for` would cancel it instead, and `CancelledError` is invisible to
 `call_external`'s handlers). So the walk's outer bound

@@ -113,23 +113,30 @@ def routed_attempt_seconds(settings) -> float:
     Each attempt of a routed walk runs on its own provider's ``T``. Under
     ``STRICT_PROVIDER_MODE`` the walk is CHAT's provider alone, so its ``T``;
     otherwise the walk tries the whole chain (``registry.fallback_chain`` over
-    the initialised providers), so the sum of their ``T``. A
+    the providers *settings* configures, read from it alone, so the report
+    builds no registry), so the sum of their ``T``. A
     ``STRUCTURED_OUTPUT_PROVIDER`` pin routes the ladder's schema-bound calls to
     that one provider, so the price is the larger of the two. A provider that
     fails fast costs a fraction of this.
     """
+    from faultmaven.config.settings import unset_llm_variables
     from faultmaven.infrastructure.llm.provider_timeout import provider_timeout
     from faultmaven.infrastructure.llm.providers.registry import (
+        PROVIDER_SCHEMA,
         fallback_chain,
-        get_registry,
+        required_env_vars,
     )
     from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 
     chat = resolve_chat_provider_name(settings)
     chain = [chat]
     if not settings.llm.strict_provider_mode:
-        initialised = get_registry().get_available_providers()
-        chain = fallback_chain(chat, initialised, strict=False) or chain
+        configured = [
+            name
+            for name in PROVIDER_SCHEMA
+            if not unset_llm_variables(settings.llm, required_env_vars(name))
+        ]
+        chain = fallback_chain(chat, configured, strict=False) or chain
     seconds = sum(provider_timeout(name, settings) for name in chain)
     pinned = settings.llm.structured_output_provider
     if pinned is not None:
