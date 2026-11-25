@@ -243,6 +243,8 @@ class _Sanitizer:
 
 
 def build_router(monkeypatch, chain: List[_Adapter], request_timeout: float):
+    for a in chain:  # each client is built with its resolved timeout (#2983)
+        a.config.timeout = int(request_timeout)
     registry = ProviderRegistry(settings=None)
     registry._providers = {a.LABEL: a for a in chain}
     registry._fallback_chain = [a.LABEL for a in chain]
@@ -546,14 +548,16 @@ class TestTheCountIsTheLeastSpentOfTheFailingProviders:
     async def test_a_chain_whose_second_provider_is_fresh_keeps_the_retry(
         self, monkeypatch
     ):
-        """Prior ``{a: 1}``; each attempt ``a`` answers 504 and ``b`` hangs:
-        ``b`` has spent nothing, so the retry is granted (never-zero for
-        ``b``). The prior names the dispatch's keys, ``label/model``; the
-        control hands both providers a spent deadline and is refused the
-        retry, so the keys are seen to match. Mutant: ``min`` → ``max``."""
+        """Prior ``{a: 1}``; each attempt ``a`` answers 504 and ``b`` hangs
+        until its own client's timeout: ``b`` has spent nothing, so the retry
+        is granted (never-zero for ``b``). The prior names the dispatch's keys,
+        ``label/model``; the control hands both providers a spent deadline and
+        is refused the retry, so the keys are seen to match. Mutant: ``min`` →
+        ``max``."""
         a = adapter("a", single=[answers_504, answers_504])
         b = adapter("b")
         router = build_router(monkeypatch, [a, b], request_timeout=30.0)
+        times_out_after(b, 30.0)
         monkeypatch.setattr(
             registry_module.ProviderRegistry,
             "_get_routing_order",

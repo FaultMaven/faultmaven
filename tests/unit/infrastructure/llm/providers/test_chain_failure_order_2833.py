@@ -11,6 +11,7 @@ Every test drives ``route_request`` on a two-provider registry whose providers
 are stubs that raise or answer; nothing reaches a network.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -97,6 +98,7 @@ class _Stub:
 
     def __init__(self, failure=None, response=None):
         self.raised = []
+        self.config = SimpleNamespace(timeout=30)
 
         def send(**_):
             self.raised.append(failure())

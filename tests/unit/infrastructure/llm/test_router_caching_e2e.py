@@ -211,6 +211,7 @@ class TestCachePromptForwarding:
         mock_registry = MagicMock()
         mock_registry.get_available_providers.return_value = ["anthropic"]
         mock_registry.get_fallback_chain.return_value = ["anthropic"]
+        mock_registry.walk_timeout.return_value = 30.0
         mock_registry.route_request = AsyncMock(
             return_value=LLMResponse(
                 content="ok",
@@ -240,6 +241,7 @@ class TestCachePromptForwarding:
         mock_registry = MagicMock()
         mock_registry.get_available_providers.return_value = ["anthropic"]
         mock_registry.get_fallback_chain.return_value = ["anthropic"]
+        mock_registry.walk_timeout.return_value = 30.0
         mock_registry.route_request = AsyncMock(
             return_value=LLMResponse(
                 content="ok",
@@ -271,6 +273,7 @@ def _mock_registry(confidence: float = 0.9, model: str = "gpt-4o"):
     registry = MagicMock()
     registry.get_available_providers.return_value = ["openai"]
     registry.get_fallback_chain.return_value = ["openai"]
+    registry.walk_timeout.return_value = 30.0
     registry.route_request = AsyncMock(
         return_value=LLMResponse(
             content="check the kubelet",

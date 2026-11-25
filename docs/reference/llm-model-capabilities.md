@@ -584,6 +584,6 @@ LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180}'
 LLM errors carry retryability information:
 - **4xx errors** (client errors): Non-retryable, fail fast
 - **5xx errors** (server errors): Retryable with backoff
-- **Timeouts**: Non-retryable. Per-provider ceiling resolves via `LLM_PROVIDER_TIMEOUT_OVERRIDES.<provider>` first, falling back to `LLM_REQUEST_TIMEOUT`. See [adding-llm-providers.md](../guides/adding-llm-providers.md) for the three-layer resolution rule.
+- **Timeouts**: Non-retryable. Per-provider ceiling resolves via `LLM_PROVIDER_TIMEOUT_OVERRIDES.<provider>` first, then the provider's schema default (local: 60 s), then `LLM_REQUEST_TIMEOUT`. See [adding-llm-providers.md](../guides/adding-llm-providers.md) for the three-layer resolution rule.
 
 See `LLMException` in `faultmaven/exceptions.py` for the retryability system.

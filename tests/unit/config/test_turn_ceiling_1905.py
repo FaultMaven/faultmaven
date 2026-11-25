@@ -132,7 +132,7 @@ class TestTheOtherReadersReadIt:
             llm=SimpleNamespace(
                 provider="groq",
                 request_timeout=30,
-                timeout_for_provider=lambda _name: 30,
+                provider_timeout_overrides={},
             ),
             agent=SimpleNamespace(timeout_for_provider=lambda _name: 120),
         )

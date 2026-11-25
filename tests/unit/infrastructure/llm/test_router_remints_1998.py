@@ -470,7 +470,7 @@ async def test_a_router_whose_registry_is_a_double_still_refuses(monkeypatch):
         "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
     )
     router = LLMRouter()
-    monkeypatch.setattr(router, "_resolve_timeout", lambda: None)
+    monkeypatch.setattr(router, "_resolve_timeout", lambda *_: None)
     with (
         sanitize_pii_pinned(False),
         pytest.raises(

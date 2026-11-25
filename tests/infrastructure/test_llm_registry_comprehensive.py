@@ -302,11 +302,8 @@ class TestProviderConfiguration:
         """Test provider config creation when API key is available (using dependency injection)."""
         from pydantic import SecretStr
 
-        # Arrange - Create mock settings with test values.
-        # NOTE: ``_create_provider_config`` now calls
-        # ``llm_settings.timeout_for_provider(name)`` to honour per-provider
-        # overrides — wire the Mock to return ``request_timeout`` by default
-        # so providers without an override pick up the global value.
+        # Arrange - Create mock settings with test values; no timeout
+        # override, so the provider picks up the global value.
         mock_settings = Mock()
         mock_settings.llm = Mock()
         mock_settings.llm.fireworks_api_key = SecretStr("fw-test-123")
@@ -314,7 +311,7 @@ class TestProviderConfiguration:
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
-        mock_settings.llm.timeout_for_provider.return_value = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Act - Inject mock settings into registry
         registry = ProviderRegistry(settings=mock_settings)
@@ -329,8 +326,6 @@ class TestProviderConfiguration:
         assert config.max_retries == 3
         assert config.timeout == 30
         assert config.confidence_score == schema["confidence_score"]
-        # Resolution went through the override-aware path, not the raw default.
-        mock_settings.llm.timeout_for_provider.assert_called_with("fireworks")
 
     def test_provider_config_creation_without_api_key(self):
         """Test provider config creation when API key is missing."""
@@ -342,6 +337,7 @@ class TestProviderConfiguration:
         mock_settings.llm.fireworks_base_url = "http://test.com"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Create registry with mock settings that have no API key
         registry = ProviderRegistry(settings=mock_settings)
@@ -360,6 +356,7 @@ class TestProviderConfiguration:
         mock_settings.llm.local_model = "llama2:7b"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Act - Inject mock settings into registry
         registry = ProviderRegistry(settings=mock_settings)
@@ -385,6 +382,7 @@ class TestProviderConfiguration:
         mock_settings.llm.local_model = None  # Missing required model
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Create registry with mock settings that have no local LLM config
         registry = ProviderRegistry(settings=mock_settings)
@@ -398,11 +396,11 @@ class TestProviderConfiguration:
     # Per-provider timeout override priority
     # ============================================================
     #
-    # Pre-fix, ``_create_provider_config`` read ``llm_settings.request_timeout``
-    # directly, silently ignoring ``LLM_PROVIDER_TIMEOUT_OVERRIDES``. The fix
-    # delegates to ``llm_settings.timeout_for_provider(name)`` so slow
-    # providers (Fireworks/DeepSeek reasoning, cold-cached Ollama) can carry
-    # their own ceiling without widening the global default.
+    # ``provider_client_timeout``: the provider's
+    # ``LLM_PROVIDER_TIMEOUT_OVERRIDES`` entry when set, else its schema
+    # default (local's 60), else ``LLM_REQUEST_TIMEOUT``, so slow providers
+    # (Fireworks/DeepSeek reasoning, cold-cached Ollama) can carry their own
+    # ceiling without widening the global default (#2983).
 
     def test_per_provider_override_takes_precedence_over_global_default(self):
         """``LLM_PROVIDER_TIMEOUT_OVERRIDES.fireworks`` wins over
@@ -416,11 +414,7 @@ class TestProviderConfiguration:
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
-        # Production behaviour: timeout_for_provider("fireworks") returns the
-        # override; any other name falls back to request_timeout.
-        mock_settings.llm.timeout_for_provider.side_effect = lambda name: (
-            180 if name == "fireworks" else 30
-        )
+        mock_settings.llm.provider_timeout_overrides = {"fireworks": 180}
 
         registry = ProviderRegistry(settings=mock_settings)
         schema = PROVIDER_SCHEMA["fireworks"]
@@ -428,37 +422,29 @@ class TestProviderConfiguration:
 
         assert config is not None
         assert config.timeout == 180
-        mock_settings.llm.timeout_for_provider.assert_called_with("fireworks")
 
-    def test_schema_timeout_wins_over_provider_override(self):
-        """A schema-level timeout (e.g. the ``local`` provider's 60s) is the
-        most-specific value and must beat the env-supplied override.
-
-        The resolver is ``schema.get("timeout") or timeout_for_provider(...)``
-        — a truthy schema value short-circuits before the override is
-        consulted.
-        """
+    def test_an_override_for_local_reaches_its_client(self):
+        """An operator's ``local`` override beats the schema's 60 s default,
+        which applies only with no override (``test_local_provider_config_creation``).
+        On main the schema value shadowed the override (#2983)."""
         mock_settings = Mock()
         mock_settings.llm = Mock()
         mock_settings.llm.local_url = "http://localhost:11434"
         mock_settings.llm.local_model = "llama3.2"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
-        # Even if a "local" override is set, the schema timeout takes
-        # precedence — schema is the most-specific layer.
-        mock_settings.llm.timeout_for_provider.return_value = 999
+        mock_settings.llm.provider_timeout_overrides = {"local": 300}
 
         registry = ProviderRegistry(settings=mock_settings)
         schema = PROVIDER_SCHEMA["local"]
         config = registry._create_provider_config("local", schema)
 
         assert config is not None
-        assert config.timeout == 60  # From the schema, not from the override
-        mock_settings.llm.timeout_for_provider.assert_not_called()
+        assert config.timeout == 300
 
     def test_no_override_falls_through_to_global_default(self):
-        """When ``timeout_for_provider`` returns the global default (provider
-        not listed in the override map), config.timeout reflects that."""
+        """A provider not listed in the override map (another one is) gets
+        the global default."""
         from pydantic import SecretStr
 
         mock_settings = Mock()
@@ -468,7 +454,7 @@ class TestProviderConfiguration:
         mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 45
-        mock_settings.llm.timeout_for_provider.return_value = 45  # No override → global
+        mock_settings.llm.provider_timeout_overrides = {"fireworks": 180}
 
         registry = ProviderRegistry(settings=mock_settings)
         schema = PROVIDER_SCHEMA["openai"]
@@ -476,7 +462,6 @@ class TestProviderConfiguration:
 
         assert config is not None
         assert config.timeout == 45
-        mock_settings.llm.timeout_for_provider.assert_called_with("openai")
 
     def test_provider_initialization_success(self, clean_env, mock_provider_classes):
         """Test successful provider initialization."""
@@ -561,6 +546,7 @@ class TestFallbackChain:
 
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Act - Inject mock settings and patch provider classes
         with patch.multiple(
@@ -618,6 +604,7 @@ class TestFallbackChain:
         mock_settings.llm.local_model = "llama2:7b"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -766,6 +753,7 @@ class TestFallbackChain:
 
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Make all providers fail
         for provider in mock_provider_classes.values():
@@ -1006,6 +994,7 @@ class TestProviderHealthAndStatus:
         mock_settings.llm.local_model = "llama2:7b"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -1183,6 +1172,7 @@ class TestApiKeySecurity:
         mock_settings.llm.fireworks_base_url = "https://api.fireworks.ai/inference/v1"
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         with patch.multiple(
             "faultmaven.infrastructure.llm.providers.registry",
@@ -1224,6 +1214,7 @@ class TestApiKeySecurity:
             mock_settings.llm.openai_base_url = "https://api.openai.com/v1"
             mock_settings.llm.max_retries = 3
             mock_settings.llm.request_timeout = 30
+            mock_settings.llm.provider_timeout_overrides = {}
 
             # Act - Create registry with mock settings
             registry = ProviderRegistry(settings=mock_settings)
@@ -1449,6 +1440,7 @@ class TestErrorHandlingAndEdgeCases:
         mock_settings.llm.local_model = None
         mock_settings.llm.max_retries = 3
         mock_settings.llm.request_timeout = 30
+        mock_settings.llm.provider_timeout_overrides = {}
 
         # Create a mock provider for openai
         mock_openai = Mock(spec=BaseLLMProvider)

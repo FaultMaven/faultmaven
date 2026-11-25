@@ -141,27 +141,9 @@ class GroqProvider(BaseLLMProvider):
             if tool_choice:
                 payload["tool_choice"] = tool_choice
 
-        # Add response format if specified in kwargs.
+        # Fitted to this model's capability by the dispatch (#2836).
         response_format = kwargs.pop("response_format", None)
         if response_format:
-
-            # Per-model capability check: not every Groq-hosted model
-            # supports strict json_schema, so degrade to json_object when
-            # the capability indicates anything weaker than STRICT.
-            if response_format.get("type") == "json_schema":
-                capability = self.get_structured_output_capability(effective_model)
-                from faultmaven.infrastructure.llm.structured_output_capability import (
-                    StructuredOutputCapability,
-                )
-
-                if capability != StructuredOutputCapability.STRICT:
-                    # Model doesn't support strict json_schema, fall back to json_object
-                    self.logger.warning(
-                        f"Model {effective_model} has capability={capability.value}, "
-                        f"falling back to json_object mode"
-                    )
-                    response_format = {"type": "json_object"}
-
             payload["response_format"] = response_format
 
         # Add any additional kwargs, filtering out None values

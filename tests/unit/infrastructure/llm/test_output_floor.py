@@ -75,6 +75,7 @@ def mock_registry():
     registry = MagicMock()
     registry.get_available_providers.return_value = ["openai"]
     registry.get_fallback_chain.return_value = ["openai"]
+    registry.walk_timeout.return_value = 30.0
     registry.route_request = AsyncMock(
         return_value=_response("x" * 8000, StopReason.STOP)
     )

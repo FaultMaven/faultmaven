@@ -109,8 +109,7 @@ def model_retry_ladders(
 
 def describe_retry_ladder_budget(settings) -> RetryLadderBudget:
     """Model both retry ladders for *settings*' resolved chat provider: its
-    turn ceiling, and its per-call ``T`` (``max(LLM_REQUEST_TIMEOUT,
-    LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])``)."""
+    turn ceiling, and its per-call ``T`` (``resolve_request_timeout``)."""
     from faultmaven.config.turn_ceiling import resolve_turn_ceiling
     from faultmaven.infrastructure.llm.router import resolve_request_timeout
 

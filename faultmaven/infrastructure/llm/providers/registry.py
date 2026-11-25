@@ -360,6 +360,21 @@ PROVIDER_SCHEMA = {
 }
 
 
+def provider_client_timeout(llm_settings, provider_name: Optional[str]) -> int:
+    """The seconds one attempt on ``provider_name``'s client may take.
+
+    Its ``LLM_PROVIDER_TIMEOUT_OVERRIDES`` entry when the operator set one,
+    else its schema default (``local``: 60), else ``LLM_REQUEST_TIMEOUT``
+    (``request_timeout``). The one statement of that precedence: the client
+    is built with it, and ``resolve_request_timeout`` reads it (#2983).
+    """
+    overrides = llm_settings.provider_timeout_overrides
+    if provider_name in overrides:
+        return overrides[provider_name]
+    schema = PROVIDER_SCHEMA.get(provider_name or "", {})
+    return schema.get("timeout") or llm_settings.request_timeout
+
+
 class ProviderRegistry:
     """Central registry for managing LLM providers"""
 
@@ -618,14 +633,7 @@ class ProviderRegistry:
                 )
                 return None
 
-        # Get timeout and max_retries from schema or settings.
-        # Prefer the per-provider override so slow models (Fireworks/DeepSeek,
-        # local Ollama) get their own ceiling without widening the global default.
-        # Note: `or` falls through on schema timeout=0, which is fine — 0 is
-        # not a meaningful HTTP timeout and would never be set intentionally.
-        timeout = schema.get("timeout") or llm_settings.timeout_for_provider(
-            provider_name
-        )
+        timeout = provider_client_timeout(llm_settings, provider_name)
         max_retries = schema.get("max_retries", llm_settings.max_retries)
 
         # The provider must accept every model a role can resolve to, not just
@@ -822,6 +830,24 @@ class ProviderRegistry:
         """Get list of all provider names defined in schema"""
         self._ensure_initialized()
         return list(PROVIDER_SCHEMA.keys())
+
+    def walk_timeout(self, provider_override: Optional[str] = None) -> float:
+        """The seconds a :meth:`route_request` walk may take: the sum of the
+        client timeouts of the providers it may try, ``provider_override``'s
+        alone when it is initialized, else the fallback chain's. Each attempt
+        stays bounded by its own client, so a fallback is never cut by the
+        primary's ceiling (#2983). 0 when no provider is routable.
+        """
+        self._ensure_initialized()
+        if provider_override in self._providers:
+            names = [provider_override]
+        else:
+            names = self._fallback_chain
+        return float(
+            sum(
+                self._providers[n].config.timeout for n in names if n in self._providers
+            )
+        )
 
     def get_fallback_chain(self) -> List[str]:
         """Get the current fallback chain"""
