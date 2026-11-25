@@ -26,6 +26,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     CHAT_DATA_OFFER_EVENTS_TOTAL,
 )
 from faultmaven.modules.case.contracts import (
+    MAX_CHAT_DATA_ANCHORS,
     MAX_CHAT_DATA_BLOCK_CHARS,
     MAX_CHAT_DATA_BLOCKS,
     Case,
@@ -203,7 +204,7 @@ def mint_chat_data_offer(
                 reverse(getattr(block, "first_line", "") or ""),
                 reverse(getattr(block, "last_line", "") or ""),
             )
-            for block in named_blocks
+            for block in list(named_blocks)[:MAX_CHAT_DATA_ANCHORS]
         ]
         found, unmatched = locate_blocks(searched, anchors)
         if unmatched:

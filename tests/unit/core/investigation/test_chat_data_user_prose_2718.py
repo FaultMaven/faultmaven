@@ -21,7 +21,11 @@ import pytest
 from faultmaven.core.investigation import chat_data
 from faultmaven.core.investigation.chat_data import mint_chat_data_offer
 from faultmaven.core.investigation.schemas import ChatDataBlock
-from faultmaven.modules.case.contracts import MAX_CHAT_DATA_BLOCKS, Case
+from faultmaven.modules.case.contracts import (
+    MAX_CHAT_DATA_ANCHORS,
+    MAX_CHAT_DATA_BLOCKS,
+    Case,
+)
 from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
@@ -252,3 +256,21 @@ class TestTheCapCountsOfferedBlocksOnly:
         assert offer is not None
         assert offer.blocks == [_LOG]
         assert dropped == MAX_CHAT_DATA_BLOCKS
+
+    def test_at_most_the_anchor_bound_is_located(self):
+        """Locating costs anchors times lines: a model naming more anchors
+        than the bound has only the bound searched for."""
+        named = [
+            ChatDataBlock(first_line=f"absent {i}", last_line=f"absent {i}")
+            for i in range(MAX_CHAT_DATA_ANCHORS + 10)
+        ]
+        counter = MagicMock()
+        with patch(
+            "faultmaven.core.investigation.chat_data.CHAT_DATA_OFFER_EVENTS_TOTAL",
+            counter,
+        ):
+            offer = mint_chat_data_offer(_case(), user_message=_LOG, named_blocks=named)
+
+        assert offer is None
+        counter.labels.assert_called_once_with(event="block_unmatched")
+        counter.labels.return_value.inc.assert_called_once_with(MAX_CHAT_DATA_ANCHORS)

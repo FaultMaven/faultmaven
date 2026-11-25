@@ -27,6 +27,9 @@ from pydantic import BaseModel, Field, model_validator
 
 #: Most blocks one offer carries; a message naming more is offered its first ones.
 MAX_CHAT_DATA_BLOCKS = 5
+#: Most block anchors of one message the engine locates. Locating costs anchors
+#: times lines; the bound leaves room for prose blocks that take no slot (#2718).
+MAX_CHAT_DATA_ANCHORS = 50
 #: Longest block an offer carries, in characters. A paste this long belongs in
 #: the client's data box, which every client opens for a multi-line paste.
 MAX_CHAT_DATA_BLOCK_CHARS = 100_000

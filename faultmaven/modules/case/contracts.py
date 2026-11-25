@@ -522,6 +522,7 @@ from faultmaven.modules.case.domain.models.causal import (
     ValidationMethod,
 )
 from faultmaven.modules.case.domain.models.chat_data import (
+    MAX_CHAT_DATA_ANCHORS,
     MAX_CHAT_DATA_BLOCK_CHARS,
     MAX_CHAT_DATA_BLOCKS,
     ChatDataOffer,
@@ -972,6 +973,7 @@ __all__ = [
     "ChatDataOffer",
     "block_key",
     "ChatDataOfferState",
+    "MAX_CHAT_DATA_ANCHORS",
     "MAX_CHAT_DATA_BLOCKS",
     "MAX_CHAT_DATA_BLOCK_CHARS",
     "ProblemInvalidation",

@@ -592,7 +592,8 @@ words; the user declares what is data (#1930).
   I connect`) is the user's account and is dropped too; the user can
   still paste the output as data. Dropped blocks take no slot of the
   five-block cap (`MAX_CHAT_DATA_BLOCKS`), which applies to the blocks
-  offered.
+  offered; the engine locates at most the first 50 named blocks
+  (`MAX_CHAT_DATA_ANCHORS`).
 - Only what the user typed into the message box is searched for
   blocks. Not the server's composed query on a turn carrying only data
   ("I've pasted some text … tell me what you find"), not a client's
