@@ -96,9 +96,9 @@ USER_CHANGES_RULE = (
 #: is established (INV-49: the engine never promotes a recorded change).
 USER_CHANGES_REGISTER_LINE = (
     "The root cause is established now. If a change recorded above as not a "
-    "fix is the fix of that cause, register it: re-propose it as a "
-    "SolutionToAdd and set solution_accepted with accepted_action_ref "
-    "new_index_N naming it."
+    "fix is the fix of that cause, register it: re-propose it, with its "
+    "description unchanged, as a SolutionToAdd and set solution_accepted with "
+    "accepted_action_ref new_index_N naming it."
 )
 
 
@@ -123,9 +123,10 @@ def _if_carried_out(action: Any, fold: NarrationFold) -> str:
     if _record_names_a_cause(fold, _PENDING_ACTION):
         return (
             "IF_CARRIED_OUT: the root cause is established now: when the user "
-            "reports carrying this out, re-propose it as a SolutionToAdd and "
-            "set solution_accepted with accepted_action_ref new_index_N naming "
-            "it, which registers it as the fix\n"
+            "reports carrying this out, re-propose it, with its description "
+            "unchanged, as a SolutionToAdd and set solution_accepted with "
+            "accepted_action_ref new_index_N naming it, which registers it as "
+            "the fix\n"
         )
     return (
         "IF_CARRIED_OUT: set solution_accepted, with "

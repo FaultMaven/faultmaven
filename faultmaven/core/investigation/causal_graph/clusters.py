@@ -18,7 +18,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.modules.case.contracts import CausalEdge, CausalNode, NodeState
 
-from .projection import _standing_hypotheses
+from .projection import standing_hypotheses
 from .queries import _state, incoming_and_groups
 from .similarity import _mutual_mirror
 
@@ -361,7 +361,7 @@ def mece_contested_root_ids(case: Case) -> set:
     nodes = case.causal_nodes
     root_ids = {
         h.root_node_id
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
         if h.root_node_id and _state(h.root_node_id, nodes) == NodeState.VALIDATED
     }
     if len(root_ids) < 2:

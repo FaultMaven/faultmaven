@@ -13,6 +13,9 @@ import sys
 import traceback
 from typing import Callable, Optional, TypeVar
 
+from faultmaven.core.investigation.causal_graph.projection import standing_hypotheses
+from faultmaven.core.investigation.causal_graph.queries import chain_evidence_links
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
@@ -20,7 +23,12 @@ from faultmaven.core.investigation.narration.needs import NeedsView
 from faultmaven.core.investigation.narration.prompt_state import PromptStateFresh
 from faultmaven.core.investigation.offers import offer_view
 from faultmaven.core.investigation.outcome import narration_outcome
-from faultmaven.modules.case.contracts import Case, CaseOutcome, WritePoint
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseOutcome,
+    EvidenceCategory,
+    WritePoint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +50,27 @@ def _symptom_stale(case: Case) -> bool:
     )
 
     return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _causal_evidence_unclaimed(case: Case) -> bool:
+    """No hypothesis stands and a non-engine causal_evidence row is on record
+    that no hypothesis holds, in any state, through its flat evidence links or
+    its chain's (``chain_evidence_links``), any stance: the rows that refuted
+    or retired an earlier hypothesis are held, so they do not count (#3048)."""
+    hypotheses = [h for h in case.hypotheses.values() if h]
+    if any(True for _ in standing_hypotheses(case)):
+        return False
+    held = {
+        getattr(link, "evidence_id", None)
+        for h in hypotheses
+        for link in chain_evidence_links(case, h)
+    }
+    return any(
+        getattr(e, "category", None) == EvidenceCategory.CAUSAL_EVIDENCE
+        and getattr(e, "collected_by", None) != ENGINE_EVIDENCE_AUTHOR
+        and getattr(e, "evidence_id", None) not in held
+        for e in (getattr(case, "evidence", None) or [])
+    )
 
 
 def _currency_note(case: Case) -> str:
@@ -118,6 +147,7 @@ class NarrationFold:
                 mitigation_verified=self._once(_stored_mitigation_verified),
                 symptom_stale=self._once(_symptom_stale),
                 offers=self._once(offer_view),
+                causal_evidence_unclaimed=self._once(_causal_evidence_unclaimed),
             )
         return self._fresh
 

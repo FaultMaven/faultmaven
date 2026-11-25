@@ -30,7 +30,7 @@ from faultmaven.modules.case.contracts import (
     NodeType,
 )
 
-from .projection import _standing_hypotheses
+from .projection import standing_hypotheses
 from .queries import and_constraints_satisfied
 from .similarity import _FRAME_OWNER_JACCARD, ROOT_NOVELTY_MIN_FRACTION, _mutual_mirror
 
@@ -542,7 +542,7 @@ def _frame_components(case: Case) -> tuple:
         anchors |= _content_tokens(anchor)
     hyp_token_sets = []
     if getattr(case, "hypotheses", None):
-        for h in _standing_hypotheses(case):
+        for h in standing_hypotheses(case):
             if h.statement:
                 tokens = _content_tokens(h.statement)
                 if tokens:

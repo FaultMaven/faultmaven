@@ -397,7 +397,7 @@ def test_with_no_cause_in_the_pool_the_feedback_says_why_it_is_empty():
     assert f"Post-fix row(s) {row.evidence_id} name nothing" in feedback
     assert (
         f"none can confirm the cause while what produced {root.node_id} is "
-        "open; re-send root_is_terminal true citing why it arose, then "
+        "open; re-send root_is_terminal true citing how its state came to be, then "
         "re-check it."
     ) in feedback
     assert "none supports the root cause alone yet." not in feedback

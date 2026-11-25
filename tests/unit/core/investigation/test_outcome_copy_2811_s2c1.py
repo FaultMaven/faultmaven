@@ -210,7 +210,7 @@ _BY_REASON = {
     PoolEmptyReason.HELD_OPEN: (
         {"held_open_root_ids": _IDS},
         f"none can confirm the cause while what produced {_FIVE} is open; "
-        "re-send root_is_terminal true citing why it arose, then re-check it.",
+        "re-send root_is_terminal true citing how its state came to be, then re-check it.",
     ),
     PoolEmptyReason.IDENTIFICATION_CONTESTED: (
         {"contested_root_ids": ["cn_a", "cn_b"]},

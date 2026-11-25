@@ -3,6 +3,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -10,6 +11,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -19,6 +21,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -26,6 +29,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -35,6 +39,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -42,6 +47,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -51,6 +57,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -58,6 +65,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -67,6 +75,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -74,6 +83,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -83,6 +93,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -90,6 +101,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -105,6 +117,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -112,6 +125,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -121,6 +135,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -128,6 +143,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -137,6 +153,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -144,6 +161,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -153,6 +171,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -160,6 +179,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -168,14 +188,16 @@
   "prompt:E:fallback": {
     "steered": {
       "hold": null,
+      "zone": "cause",
       "resolve_declined": null,
       "verifying_rows_missing": true,
-      "zone": "cause"
+      "hypothesis_cue": true
     },
-    "steered_text": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
+    "steered_text": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nCausal evidence is on record but no hypothesis stands: add the hypothesis that evidence points to (hypotheses_to_add, with its root node and root_node_ref) this turn, and link the rows to it.\n\nNo row is on record as what showed the problem: cite the symptom_evidence rows already on record that showed it in symptom_verification_evidence_ids. Until then no re-check can confirm the problem gone.\n",
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -185,6 +207,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -192,6 +215,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -201,6 +225,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -208,6 +233,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -217,6 +243,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -224,6 +251,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -233,6 +261,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -240,6 +269,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -249,6 +279,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -256,6 +287,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -264,14 +296,16 @@
   "prompt:E:verifying_names_no_row": {
     "steered": {
       "hold": null,
+      "zone": "cause",
       "resolve_declined": null,
       "verifying_rows_missing": false,
-      "zone": "cause"
+      "hypothesis_cue": true
     },
-    "steered_text": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n",
+    "steered_text": "\n**INVESTIGATION PROGRESS: Root cause analysis**\nSymptoms are confirmed. When evaluating evidence, focus on hypotheses\nexplaining the root cause. Two independent causal observations grounding a\nhypothesis's chain root, and that hypothesis marking the root terminal\n(root_is_terminal: the ROOT-CAUSE TEST's why-stopping verdict, citing its\ncausal_evidence in terminal_basis_evidence_ids), are what let the engine mark\nthe cause identified.\n\nIf new data shows the symptom claim itself was wrong — misread data, the wrong\nsystem, an artefact — do not absorb it as noise. Say so, record it, and set\nsymptom_verified=False with a justification; if the data shows what the\nproblem actually is, send the revised_problem_statement for the user to\nconfirm, or problem_invalidated if it was never present. (The problem merely\nnot occurring right now is NOT that: an existing problem is investigable\nwhether or not it is currently firing.)\n\nCausal evidence is on record but no hypothesis stands: add the hypothesis that evidence points to (hypotheses_to_add, with its root node and root_node_ref) this turn, and link the rows to it.\n",
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -281,6 +315,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -288,6 +323,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -297,6 +333,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -304,6 +341,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -317,6 +355,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -328,6 +367,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -341,6 +381,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -352,6 +393,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -365,6 +407,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -376,6 +419,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -385,6 +429,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -392,6 +437,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -401,6 +447,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -408,6 +455,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -417,6 +465,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -424,6 +473,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -433,6 +483,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -440,6 +491,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -452,6 +504,7 @@
         "kind": "false_alarm"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -459,6 +512,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -468,6 +522,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -475,6 +530,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -484,6 +540,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -491,6 +548,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -500,6 +558,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -507,6 +566,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -519,6 +579,7 @@
         "kind": "revision"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -526,6 +587,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -535,6 +597,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -542,6 +605,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -551,6 +615,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -558,6 +623,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -567,6 +633,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -574,6 +641,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -583,6 +651,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -590,6 +659,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -599,6 +669,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -606,6 +677,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -619,6 +691,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -630,6 +703,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -639,6 +713,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -646,6 +721,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -659,6 +735,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -670,6 +747,7 @@
         "held": true,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -682,6 +760,7 @@
         "kind": "false_alarm"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -689,6 +768,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -698,6 +778,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -705,6 +786,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -714,6 +796,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -721,6 +804,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -730,6 +814,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -737,6 +822,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -753,6 +839,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -764,6 +851,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -777,6 +865,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -788,6 +877,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -801,6 +891,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -812,6 +903,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -821,6 +913,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -828,6 +921,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -837,6 +931,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -844,6 +939,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -853,6 +949,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -860,6 +957,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -869,6 +967,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -876,6 +975,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -885,6 +985,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -892,6 +993,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -901,6 +1003,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -908,6 +1011,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -917,6 +1021,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -924,6 +1029,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -933,6 +1039,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -940,6 +1047,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -949,6 +1057,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -956,6 +1065,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -969,6 +1079,7 @@
         "held": false,
         "this_turn": false
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -980,6 +1091,7 @@
         "held": false,
         "this_turn": false
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -993,6 +1105,7 @@
         "held": false,
         "this_turn": false
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1004,6 +1117,7 @@
         "held": false,
         "this_turn": false
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1013,6 +1127,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -1020,6 +1135,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1032,6 +1148,7 @@
         "kind": "false_alarm"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1039,6 +1156,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1048,6 +1166,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "verify"
     },
@@ -1055,6 +1174,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1064,6 +1184,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1071,6 +1192,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1080,6 +1202,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1087,6 +1210,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1099,6 +1223,7 @@
         "kind": "revision"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1106,6 +1231,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1115,6 +1241,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "verify"
     },
@@ -1122,6 +1249,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1131,6 +1259,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause_stale"
     },
@@ -1138,6 +1267,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1147,6 +1277,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "verify"
     },
@@ -1154,6 +1285,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1163,6 +1295,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1170,6 +1303,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1179,6 +1313,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "pending"
     },
@@ -1186,6 +1321,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1195,6 +1331,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "pending"
     },
@@ -1202,6 +1339,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1211,6 +1349,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1218,6 +1357,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1227,6 +1367,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "pending"
     },
@@ -1234,6 +1375,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1243,6 +1385,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "pending"
     },
@@ -1250,6 +1393,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1259,6 +1403,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1266,6 +1411,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1275,6 +1421,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1282,6 +1429,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1291,6 +1439,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1298,6 +1447,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1307,6 +1457,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1314,6 +1465,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1323,6 +1475,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1330,6 +1483,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1339,6 +1493,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1346,6 +1501,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1355,6 +1511,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1362,6 +1519,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1371,6 +1529,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1378,6 +1537,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1387,6 +1547,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1394,6 +1555,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1403,6 +1565,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1410,6 +1573,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1419,6 +1583,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1426,6 +1591,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1435,6 +1601,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1442,6 +1609,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1451,6 +1619,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1458,6 +1627,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1467,6 +1637,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1474,6 +1645,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1483,6 +1655,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1490,6 +1663,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1499,6 +1673,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1506,6 +1681,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1515,6 +1691,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1522,6 +1699,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1531,6 +1709,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1538,6 +1717,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1547,6 +1727,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1554,6 +1735,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1563,6 +1745,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "verify"
     },
@@ -1570,6 +1753,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1579,6 +1763,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1586,6 +1771,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1598,6 +1784,7 @@
         "kind": "false_alarm"
       },
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1605,6 +1792,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1614,6 +1802,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1621,6 +1810,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1630,6 +1820,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1637,6 +1828,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1646,6 +1838,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": true,
       "zone": "cause"
     },
@@ -1653,6 +1846,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1666,6 +1860,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "cause"
     },
@@ -1677,6 +1872,7 @@
         "held": false,
         "this_turn": true
       },
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1686,6 +1882,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "solution"
     },
@@ -1693,6 +1890,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1702,6 +1900,7 @@
     "steered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": "pending"
     },
@@ -1709,6 +1908,7 @@
     "unsteered": {
       "hold": null,
       "resolve_declined": null,
+      "hypothesis_cue": false,
       "verifying_rows_missing": false,
       "zone": null
     },
@@ -1998,7 +2198,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: 'solution_accepted' was not registered: <act:0> was downgraded to a DIAGNOSTIC when it was proposed, because its root cause was not established then. The cause is established now: if the user carried out the fix, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
+      "SYSTEM: 'solution_accepted' was not registered: <act:0> was downgraded to a DIAGNOSTIC when it was proposed, because its root cause was not established then. The cause is established now: if the user carried out the fix, re-propose it, with its description unchanged, as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
     ],
     "prose": {}
   },
@@ -2016,7 +2216,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
+      "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it, with its description unchanged, as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."
     ],
     "prose": {}
   },
@@ -2180,7 +2380,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). Not qualifying: <ev:1> (recorded at turn 3, before the root was posited). Its why stays open."
+      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. Not qualifying: <ev:1> (recorded at turn 3, before the root was posited). Its why stays open."
     ],
     "prose": {}
   },
@@ -2189,7 +2389,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. None cited. Its why stays open."
     ],
     "prose": {}
   },
@@ -2208,7 +2408,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+      "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. None cited. Its why stays open."
     ],
     "prose": {}
   },
@@ -2278,7 +2478,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show why it arose (RE-ROOT if a deeper cause produced it), then re-check one of them."
+      "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show how its state came to be (RE-ROOT if a deeper cause produced it), then re-check one of them."
     ],
     "prose": {}
   },
@@ -2324,7 +2524,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing why it arose, then re-check it."
+      "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing how its state came to be, then re-check it."
     ],
     "prose": {}
   },

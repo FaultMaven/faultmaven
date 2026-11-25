@@ -17,7 +17,8 @@ The fresh inputs are what the record does not hold: ``mitigation.verified``
 bound relapse), the symptom's currency (the wall clock), and the offer facts,
 which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
 2026-11-20: whether an offer is open, and each standing decline's turn, a
-reader of its own). Each is a reader, asked only where the line it selects
+reader of its own), and whether a causal_evidence row no hypothesis holds is
+on record while none stands (#3048: the hypothesis cue's reader). Each is a reader, asked only where the line it selects
 prints, as ``main`` read it; the prompt assembly's ``NarrationFold`` reads
 each at most once (``NarrationFold.fresh``).
 """
@@ -41,7 +42,7 @@ MILESTONES_OMITTED = "The milestone state could not be read this turn."
 
 #: The focus emphasis's one line when the record or a fresh input could not
 #: be read this turn, in place of the problem hold, the zone, the resolve
-#: decline and the verifying-rows lines.
+#: decline, the hypothesis cue and the verifying-rows lines.
 PROGRESS_OMITTED = "The case's progress could not be read this turn."
 
 #: The fallback prompt's resolution line when the record could not be read
@@ -77,6 +78,10 @@ class PromptStateFresh:
     offers: Callable[[], OfferView]
     """The offer facts (``offers.offer_view``, #2811 S2b-2d); each decline's
     turn is read where its line asks for it."""
+    causal_evidence_unclaimed: Callable[[], bool]
+    """No hypothesis stands and a non-engine causal_evidence row is on record
+    that no hypothesis holds, through its links or its chain's (#3048); asked
+    only on a verified problem in a cause zone."""
 
 
 class MilestoneStatus(NamedTuple):
@@ -226,6 +231,9 @@ class FocusSelection(NamedTuple):
     """Selected only where no hold is."""
     resolve_declined: Optional[ResolveDeclined]
     verifying_rows_missing: bool
+    hypothesis_cue: bool
+    """Verified, in a cause zone (the cause not identified), no hypothesis
+    stands and a causal_evidence row no hypothesis holds is on record (#3048)."""
 
 
 def focus_selection(
@@ -238,8 +246,9 @@ def focus_selection(
 ) -> FocusSelection:
     """The focus emphasis's lines: on a ``steered`` turn (no knowledge_query
     or agent_meta mode) the problem hold, else, where ``zoned`` (DIAGNOSIS),
-    the zone; the standing resolve decline on every turn; on a steered turn,
-    the verifying rows missing. Each fresh input is asked only where its line
+    the zone; the standing resolve decline on every turn; on a steered
+    DIAGNOSIS turn in a cause zone, the hypothesis cue (#3048); on a steered turn, the
+    verifying rows missing. Each fresh input is asked only where its line
     is decided, in this order."""
     hold = problem_hold(outcome, fresh) if steered else None
     zone = focus_zone(outcome, fresh) if zoned and hold is None else None
@@ -248,6 +257,12 @@ def focus_selection(
         zone=zone,
         resolve_declined=resolve_declined(outcome, fresh, current_turn),
         verifying_rows_missing=steered and verifying_rows_missing(outcome),
+        hypothesis_cue=(
+            steered
+            and zone in (FocusZone.CAUSE, FocusZone.CAUSE_STALE)
+            and outcome.problem.status == ProblemStatus.VERIFIED
+            and fresh.causal_evidence_unclaimed()
+        ),
     )
 
 

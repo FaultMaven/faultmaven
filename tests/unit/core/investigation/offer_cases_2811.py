@@ -43,6 +43,20 @@ of each entry is unchanged. No other entry's render differed.
 stored entry on ``main`` at 68ec0ac01, and on the #3039 branch, which is
 stored, its notice ends with the sentence that the user's report is recorded
 (INV-49).
+
+#3048 (the why-stopping bar stated as what the record shows) re-rendered, by
+hand, the entries below: each equalled its stored entry on ``main``, and on the
+#3048 branch the notices carry the new clause (b) wording ("how its state
+came to be") in place of "nothing renews it" and "why it arose":
+``turn:cycle:turn_chain_emission_root_terminal_refused``,
+``turn:cycle:root_terminal_refused_with_none_cited``,
+``turn:cycle:root_terminal_refused_on_a_row_before_the_root``,
+``turn:cycle:unbound_with_no_pool`` and ``turn:cycle:unbound_on_an_uncited_pool_root``;
+and ``prompt:E:fallback`` and ``prompt:E:verifying_names_no_row``, whose steered
+focus text gains the hypothesis cue line (verified, no hypothesis stands, a
+causal_evidence row no hypothesis holds). Every entry's ``steered`` and
+``unsteered`` selection gains ``hypothesis_cue`` (false but in those two
+steered selections). No other entry's render differed.
 """
 
 from __future__ import annotations

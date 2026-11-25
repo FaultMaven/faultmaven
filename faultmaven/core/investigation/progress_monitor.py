@@ -42,6 +42,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
+from faultmaven.core.investigation.causal_graph.projection import standing_hypotheses
+from faultmaven.core.investigation.causal_graph.queries import is_chain_root_validated
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
@@ -297,6 +299,7 @@ class ProgressMonitor:
             milestone_info=milestone_info,
             investigative_turns=investigative_turns,
             repair=repair,
+            pending_text=self._held_open_pending_text(case, milestone_name),
         )
 
         result = ProgressCheckResult(
@@ -423,6 +426,48 @@ class ProgressMonitor:
     # Prompt Injection Builder
     # =========================================================================
 
+    @staticmethod
+    def _held_open_pending_text(case: Case, milestone_name: str) -> Optional[str]:
+        """What ``root_cause_identified`` is waiting on while a validated root
+        is held open (#3048), not another validation: a validated root marked
+        ``False`` is asked to re-root onto the mechanism its verdict names, a
+        validated root with no verdict for that verdict, and a set holding
+        both gets both lines. None for every other case (an unvalidated held
+        root included), so the generic description stands."""
+        if milestone_name != "root_cause_identified":
+            return None
+        if not getattr(case.progress, "cause_identification_held_open", False):
+            return None
+        # The flag also holds for an unvalidated root the model marked
+        # ``False``: that case keeps the generic text.
+        validated = [
+            case.causal_nodes[h.root_node_id]
+            for h in standing_hypotheses(case)
+            if is_chain_root_validated(h, case.causal_nodes)
+        ]
+        if not validated:
+            return None
+        lines = []
+        if any(node.root_terminal is False for node in validated):
+            # The model said a mechanism produces the state.
+            lines.append(
+                "A validated root stands and its why-stopping verdict is "
+                "false, which says a mechanism produces its state: re-root the "
+                "hypothesis onto that mechanism, or, if the record shows "
+                "otherwise, re-send root_is_terminal true citing the "
+                "causal_evidence row, recorded since the root was posited, "
+                "that shows how its state came to be"
+            )
+        if any(node.root_terminal is not False for node in validated):
+            lines.append(
+                "A validated root stands and its why-stopping verdict is "
+                "pending: set root_is_terminal true citing the causal_evidence "
+                "row, recorded since the root was posited, that shows how its "
+                "state came to be, or re-root the hypothesis onto the mechanism "
+                "above it"
+            )
+        return "; ".join(lines)
+
     def _build_prompt_injection(
         self,
         stage: InvestigationStage,
@@ -430,6 +475,7 @@ class ProgressMonitor:
         milestone_info: dict,
         investigative_turns: int,
         repair: Optional[RepairAction],
+        pending_text: Optional[str] = None,
     ) -> str:
         """
         Build the prompt injection text for transparent mode.
@@ -443,6 +489,8 @@ class ProgressMonitor:
             milestone_info: Milestone dependency info
             investigative_turns: Number of investigative turns since last milestone
             repair: Repair action if a pattern was detected
+            pending_text: What the pending milestone needs, when it differs
+                from the milestone's generic description
 
         Returns:
             Prompt injection text
@@ -454,7 +502,7 @@ class ProgressMonitor:
             f"PROGRESS TRANSPARENCY: The investigation has been in "
             f"{stage.value.upper()} for {investigative_turns} investigative turns "
             f"without reaching the next milestone.\n"
-            f"Pending milestone: {milestone_name} — {milestone_info['description']}.\n"
+            f"Pending milestone: {milestone_name} — {pending_text or milestone_info['description']}.\n"
             f"In your response, provide case-specific guidance on what evidence "
             f"would advance this milestone. Be concrete: name specific files, "
             f"services, time ranges, or commands based on what you know about "

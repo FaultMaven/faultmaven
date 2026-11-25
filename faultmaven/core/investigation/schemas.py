@@ -950,22 +950,24 @@ class HypothesisToAdd(BaseModel):
         default=None,
         description=(
             "The why-stopping verdict on this hypothesis's root (clause b of the "
-            "ROOT-CAUSE TEST). true: nothing the user's side controls will produce "
-            "this state again once it is corrected (a one-off change or defect, "
-            "or a cause out of their reach). false: something will (a lifetime "
-            "nothing renews, a job that rewrites the value), or you have not yet "
-            "seen what produced it. The engine identifies the cause only at a "
-            "validated root marked true that cites terminal_basis_evidence_ids."
+            "ROOT-CAUSE TEST). true: a causal_evidence row on record shows how "
+            "the state came to be (a single act such as a person's edit or a "
+            "one-off change, a defect, or a control never put in place) and no "
+            "row on record shows a mechanism that produces it again; a mechanism "
+            "found later reopens the verdict. false: a row shows such a mechanism "
+            "(a fixed lifetime with no renewal, a job that rewrites the value), "
+            "or no row yet shows how the state came to be. Proving that no other "
+            "writer exists is not asked. The engine identifies the cause only at "
+            "a validated root marked true that cites terminal_basis_evidence_ids."
         ),
     )
     terminal_basis_evidence_ids: Optional[List[IdRef]] = Field(
         default=None,
         description=(
             "With root_is_terminal true: the causal_evidence rows (ev_... or "
-            "'new_index_N' of a row in evidence_to_add) showing that nothing "
-            "controllable in scope produces this root state, such as how it was "
-            "issued or set, its lifetime, and that nothing renews or rewrites "
-            "it. A row showing only that the state exists is not one. A true "
+            "'new_index_N' of a row in evidence_to_add) showing how this root "
+            "state came to be, such as how it was issued or set and by what "
+            "act. A row showing only that the state exists is not one. A true "
             "verdict citing no causal_evidence row recorded since the root was "
             "posited is refused."
         ),

@@ -475,12 +475,16 @@ A cause is the ROOT CAUSE only when it passes BOTH clauses:
     can ask included) would eliminate the problem PERMANENTLY, not until the
     next expiry, restart, refill or recurrence; and
 (b) it is not the consequence of a cause above it that the user's side can
-    control. A cause sits above a state when something will produce the state
-    AGAIN after it is reset: a fixed lifetime that nothing renews, a job that
-    keeps writing the value, a leak that refills the disk. A state set once by
-    a person or by a one-off event, that nothing will re-create, passes (b):
-    correcting it is the remediation, and what might have prevented it is
-    advice, not a rung.
+    control. The record decides (b): a causal_evidence row shows how the state
+    came to be (a single act such as a person's edit or a one-off change, a
+    defect, or a control never put in place), and no row on record shows a
+    mechanism that produces it again. A mechanism found later reopens the
+    verdict. A cause sits above a state when a row shows such a mechanism: a
+    fixed lifetime with no renewal, a job that keeps writing the value, a leak
+    that refills the disk. A state set once by a person or by a one-off event
+    passes (b): correcting it is the remediation, and what might have
+    prevented it is advice, not a rung. Proving that no other writer exists is
+    not asked.
 Expiries, exhausted quotas and pools, full disks, crashed processes and
 drifted configs are states that MAY have a cause above them. Before treating
 one as the root, ask for what would show whether it will recur and why it
@@ -489,7 +493,7 @@ rotates, bounds or reconciles it. When that evidence shows the cause above it,
 RE-ROOT the hypothesis there; the state stays on the chain as a rung. Record
 the verdict as root_is_terminal on the hypothesis rooted there: the engine
 identifies the cause only at a validated root marked true that cites, in
-terminal_basis_evidence_ids, the causal_evidence row showing why it arose.
+terminal_basis_evidence_ids, the causal_evidence row showing how it came to be.
 A fix that only renews, regenerates, restarts or refills such a state
 INTERCEPTS it. It removes the symptom, not the cause: a mitigation, or a
 defensive fix if it is kept, never the remediation.

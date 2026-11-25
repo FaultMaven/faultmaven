@@ -146,8 +146,9 @@ NO_PENDING_SOLUTION_NOTICE = (
     "the user reported carrying out a change, put it on record in ONE "
     "response, justified by their report, and do not ask them to accept "
     "or confirm it again: name its ACTION_ID with accepted_action_ref "
-    "when <pending_action> shows it, else re-propose it as a "
-    "SolutionToAdd and set solution_accepted with accepted_action_ref "
+    "when <pending_action> shows it, else re-propose it, with its "
+    "description unchanged, as a SolutionToAdd and set solution_accepted "
+    "with accepted_action_ref "
     "new_index_N naming it. It registers as the fix when the root cause "
     "stands established; otherwise it is recorded as carried out "
     "(<user_changes>) and counts as no fix until the cause is "
@@ -467,7 +468,7 @@ _EMPTY_POOL_BY_IDS = {
     PoolEmptyReason.HELD_OPEN: (
         "held_open_root_ids",
         "none can confirm the cause while what produced {ids} is open; re-send "
-        "root_is_terminal true citing why it arose, then re-check it.",
+        "root_is_terminal true citing how its state came to be, then re-check it.",
     ),
     PoolEmptyReason.IDENTIFICATION_CONTESTED: (
         "contested_root_ids",
@@ -535,8 +536,8 @@ def unbound_lines(
     elif params["pool_roots"]:
         cause_text = (
             f"{why}; re-send root_is_terminal true citing the causal_evidence "
-            "rows that show why it arose (RE-ROOT if a deeper cause produced "
-            "it), then re-check one of them."
+            "rows that show how its state came to be (RE-ROOT if a deeper "
+            "cause produced it), then re-check one of them."
         )
     else:
         cause_text = (
@@ -679,9 +680,9 @@ def _root_refused(params: dict, outcome, log) -> list:
         f"Root {params['node_id']} was NOT marked terminal: root_is_terminal true "
         "must cite, in terminal_basis_evidence_ids, a causal_evidence row "
         f"recorded since this root was posited (turn "
-        f"{params['posited_turn']}) showing that nothing controllable "
-        "produces its state (how it was issued or set, its lifetime, that "
-        "nothing renews it). "
+        f"{params['posited_turn']}) showing how its state came to be (how it "
+        "was issued or set), with no row on record showing a mechanism that "
+        "produces it again. "
         + (f"Not qualifying: {'; '.join(refused)}. " if refused else "None cited. ")
         + "Its why stays open."
     ]
@@ -732,16 +733,18 @@ def _licence_refused_line(params: dict, subject: str) -> str:
             f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
             "withdrawn while its root cause was not established, and a withdrawn "
             "fix does not register by its ACTION_ID. If the user carried it out, "
-            "re-propose it as a SolutionToAdd and set solution_accepted with "
-            "accepted_action_ref new_index_N naming it."
+            "re-propose it, with its description unchanged, as a SolutionToAdd "
+            "and set solution_accepted with accepted_action_ref new_index_N "
+            "naming it."
         )
     if params["variant"] == "downgraded":
         return (
             f"SYSTEM: 'solution_accepted' was not registered: {subject} was "
             "downgraded to a DIAGNOSTIC when it was proposed, because its root "
             "cause was not established then. The cause is established now: if the "
-            "user carried out the fix, re-propose it as a SolutionToAdd and set "
-            "solution_accepted with accepted_action_ref new_index_N naming it."
+            "user carried out the fix, re-propose it, with its description "
+            "unchanged, as a SolutionToAdd and set solution_accepted with "
+            "accepted_action_ref new_index_N naming it."
         )
     return license_notice(subject)
 
