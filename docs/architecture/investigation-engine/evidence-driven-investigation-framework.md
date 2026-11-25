@@ -574,11 +574,14 @@ words; the user declares what is data (#1930).
   already offered on the case is never offered again, and a state
   request is not repeated while an earlier one waits with no data
   submitted since.
-- Only what the user typed is read for blocks or a state report. A
-  turn carrying only data has a message the user did not type (the
-  composed query, "I've pasted some text … tell me what you find"), so
-  nothing is offered or asked for on it. Its data still answers any
-  request that was waiting (#2717).
+- Only what the user typed into the message box is searched for
+  blocks. Not the server's composed query on a turn carrying only data
+  ("I've pasted some text … tell me what you find"), not a client's
+  generated text, not a chip the user chose: the client says which with
+  the turn's `query_source` (`typed`, `chosen`, `generated`; default
+  `typed`). A typed or chosen message can still get the state request;
+  a generated or composed one gets neither. A turn's data still answers
+  any request that was waiting (#2717).
 - ONE `ChatDataOffer` per message is recorded on
   `Case.chat_data_offers` (persisted in `cases.metadata`). It is minted
   on the live turn only (not in the statement-revision replay) and

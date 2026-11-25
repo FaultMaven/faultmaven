@@ -1109,6 +1109,17 @@
             ],
             "title": "Query"
           },
+          "query_source": {
+            "default": "typed",
+            "description": "Who wrote `query`: `typed` (the user typed it into the message box), `chosen` (the user chose it: a chip or a status change) or `generated` (the client wrote it). Only typed text is searched for system output to offer back as data; a typed or chosen message may still be asked for the output behind a state it reports.",
+            "enum": [
+              "typed",
+              "chosen",
+              "generated"
+            ],
+            "title": "Query Source",
+            "type": "string"
+          },
           "source_url": {
             "anyOf": [
               {
@@ -8076,7 +8087,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.15.1"
+    "version": "15.16.0"
   },
   "openapi": "3.1.0",
   "paths": {

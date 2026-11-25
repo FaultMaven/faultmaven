@@ -714,11 +714,12 @@ async def _preprocess_turn_uploads(
 ):
     """Preprocess each attachment, re-route the classification for a fresh evidence-bearing upload, and derive the query.
 
-    Returns the query the engine is given and, beside it, what the user typed
-    (``payload.query or ""``). They differ on a turn carrying only data: its
-    query is the composed ``generate_implicit_query`` sentence, which the user
-    never wrote, so nothing that reads the user's own words may read it
-    (#2717).
+    Returns the query the engine is given and, beside it, the turn's one
+    decision of what the user typed (#2717): ``typed_message`` (the only text
+    searched for chat data; ``""`` on a chosen, generated or composed query)
+    and ``state_report_allowed`` (a typed or chosen query may be asked for the
+    output behind a state it reports). The composed ``generate_implicit_query``
+    sentence of a turn carrying only data is neither: the user never wrote it.
     """
     uploaded_files_this_turn: List["UploadedFile"] = []
     preprocess_results: List[_PreprocessedAttachment] = []
@@ -789,7 +790,8 @@ async def _preprocess_turn_uploads(
 
     # Determine query (explicit or implicit)
     query = payload.query
-    typed_message = payload.query or ""
+    typed_message = payload.typed_message
+    state_report_allowed = payload.state_report_allowed
     if not payload.has_query and payload.has_attachments:
         query = generate_implicit_query(
             uploaded_files_this_turn,
@@ -800,5 +802,6 @@ async def _preprocess_turn_uploads(
         preprocess_results,
         query,
         typed_message,
+        state_report_allowed,
         uploaded_files_this_turn,
     )

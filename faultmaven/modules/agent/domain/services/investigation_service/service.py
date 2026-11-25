@@ -408,7 +408,7 @@ class InvestigationService:
                 emit_case_turn(
                     case,
                     path=TurnPath.ERROR,
-                    user_message_chars=len(payload.query or ""),
+                    user_message_chars=len(payload.typed_message),
                     attachment_count=len(payload.attachments or []),
                 )
 
@@ -452,6 +452,7 @@ class InvestigationService:
                 preprocess_results,
                 query,
                 typed_message,
+                state_report_allowed,
                 uploaded_files_this_turn,
             ) = await _preprocess_turn_uploads(
                 self.file_storage_service,
@@ -550,6 +551,7 @@ class InvestigationService:
                     preprocess_results=preprocess_results,
                     query=query,
                     typed_message=typed_message,
+                    state_report_allowed=state_report_allowed,
                     user_id=user_id,
                     user_message_obj=user_message_obj,
                     redaction_ctx=redaction_ctx,
@@ -901,6 +903,7 @@ class InvestigationService:
         preprocess_results,
         query,
         typed_message,
+        state_report_allowed,
         user_id,
         user_message_obj,
         redaction_ctx,
@@ -909,8 +912,9 @@ class InvestigationService:
 
         ``redaction_ctx`` is the turn's one case redaction context (#1956):
         every model call below, and the engine, sends through it.
-        ``typed_message`` is what the user typed, which every engine call is
-        given beside ``query`` (#2717).
+        ``typed_message`` and ``state_report_allowed`` are the turn's one
+        decision of what the user typed, which every engine call is given
+        beside ``query`` (#2717).
         """
         if (
             intent_type == IntentType.CONVERSATION
@@ -1169,6 +1173,7 @@ class InvestigationService:
                     case=case,
                     user_message=query or "",
                     typed_message=typed_message,
+                    state_report_allowed=state_report_allowed,
                     kb_question=classification.kb_question,
                     from_state=intent.from_state if intent else None,
                     to_state=intent.to_state if intent else None,
@@ -1185,6 +1190,7 @@ class InvestigationService:
                     case=case,
                     user_message=query or "",
                     typed_message=typed_message,
+                    state_report_allowed=state_report_allowed,
                     kb_question=classification.kb_question,
                     confirmation_value=(intent.confirmation_value if intent else None),
                     proposal_id=(intent.proposal_id if intent else None),
@@ -1198,6 +1204,7 @@ class InvestigationService:
                     case=case,
                     user_message=query or "",
                     typed_message=typed_message,
+                    state_report_allowed=state_report_allowed,
                     kb_question=classification.kb_question,
                     hypothesis_id=intent.hypothesis_id if intent else None,
                     action=intent.action if intent else None,
@@ -1252,6 +1259,7 @@ class InvestigationService:
                 user_message=query or "",
                 attachments=attachment_metadata or None,
                 typed_message=typed_message,
+                state_report_allowed=state_report_allowed,
                 intent_type=intent_type.value,
                 intent_data={
                     **(intent.model_dump(exclude_unset=True) if intent else {}),
@@ -1300,7 +1308,8 @@ class InvestigationService:
         *,
         redaction_ctx: Any,
         kb_question: Optional[KbQuestion] = None,
-        typed_message: Optional[str] = None,
+        typed_message: str,
+        state_report_allowed: bool,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1327,8 +1336,10 @@ class InvestigationService:
             redaction_ctx: The turn's case redaction context, handed to the
                 engine (#1956).
             typed_message: What the user typed, handed to the engine beside
-                ``user_message``, which on a turn carrying only data is the
-                composed implicit query (#2717).
+                ``user_message``, which may be a chosen chip, a client's
+                generated text or the composed implicit query (#2717).
+            state_report_allowed: May the message's state report be asked
+                about (a typed or chosen query), handed to the engine (#2717).
 
         Returns:
             Result dict with agent response and updated case
@@ -1384,6 +1395,7 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             typed_message=typed_message,
+            state_report_allowed=state_report_allowed,
             intent_type="status_transition",
             intent_data={
                 "from_state": from_state,
@@ -1410,7 +1422,8 @@ class InvestigationService:
         *,
         redaction_ctx: Any,
         kb_question: Optional[KbQuestion] = None,
-        typed_message: Optional[str] = None,
+        typed_message: str,
+        state_report_allowed: bool,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1436,6 +1449,7 @@ class InvestigationService:
             redaction_ctx: The turn's case redaction context (#1956).
             typed_message: What the user typed (see
                 ``_handle_status_transition``; #2717).
+            state_report_allowed: See ``_handle_status_transition`` (#2717).
 
         Returns:
             Result dict with agent response and updated case
@@ -1449,6 +1463,7 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             typed_message=typed_message,
+            state_report_allowed=state_report_allowed,
             intent_type="confirmation",
             intent_data={
                 "value": confirmation_value,
@@ -1473,7 +1488,8 @@ class InvestigationService:
         *,
         redaction_ctx: Any,
         kb_question: Optional[KbQuestion] = None,
-        typed_message: Optional[str] = None,
+        typed_message: str,
+        state_report_allowed: bool,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1488,6 +1504,7 @@ class InvestigationService:
                 ``_handle_status_transition``; #1229).
             typed_message: What the user typed (see
                 ``_handle_status_transition``; #2717).
+            state_report_allowed: See ``_handle_status_transition`` (#2717).
 
         Returns:
             Result dict with agent response and updated case
@@ -1507,6 +1524,7 @@ class InvestigationService:
             user_message=user_message,
             attachments=attachments,
             typed_message=typed_message,
+            state_report_allowed=state_report_allowed,
             intent_type="hypothesis_action",
             intent_data={
                 "hypothesis_id": hypothesis_id,

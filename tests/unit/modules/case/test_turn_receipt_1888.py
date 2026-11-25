@@ -619,6 +619,7 @@ class TestAKeyReusedForADifferentTurn:
             {"observed_at": "2026-10-08T09:00:00Z"},
             {"intent_type": "conversation"},
             {"intent_data": json.dumps({"note": "x"})},
+            {"query_source": "chosen"},
         ],
         ids=lambda changed: next(iter(changed)),
     )
@@ -636,6 +637,20 @@ class TestAKeyReusedForADifferentTurn:
         assert world.generate.await_count == 1
         assert world.reserve.await_count == 1
         assert (await world.committed()).current_turn == 5
+
+    async def test_query_source_typed_sent_explicitly_is_the_same_turn(self, world):
+        """``typed`` is the default: a retry naming it is the turn that left it
+        out, and a typed turn's fingerprint is the one earlier releases stored
+        (#2717)."""
+        await world.seed(_investigating_case())
+        first = await world.post(PASTE)
+        assert first.status_code == 200, first.text
+
+        retry = await world.post({**PASTE, "query_source": "typed"})
+
+        assert retry.status_code == 200, retry.text
+        assert retry.headers[IDEMPOTENCY_REPLAYED_HEADER] == "true"
+        assert world.generate.await_count == 1
 
 
 # ---------------------------------------------------------------------------

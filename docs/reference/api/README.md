@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.15.1
+**Version:** 15.16.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5042,6 +5042,7 @@ Limits a client applies before sending, and the turn's time bounds.
 - `observed_at` (object, optional)
 - `pasted_content` (object, optional)
 - `query` (object, optional)
+- `query_source` (string, optional) — Who wrote `query`: `typed` (the user typed it into the message box), `chosen` (the user chose it: a chip or a status change) or `generated` (the client wrote it). Only typed text is searched for system output to offer back as data; a typed or chosen message may still be asked for the output behind a state it reports.
 - `source_url` (object, optional)
 
 ---

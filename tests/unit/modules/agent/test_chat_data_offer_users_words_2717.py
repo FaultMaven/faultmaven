@@ -14,11 +14,13 @@ saw offered.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.core.investigation.case_telemetry import TELEMETRY_LOGGER_NAME
 from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import (
     Attachment,
@@ -202,3 +204,138 @@ class TestTypedOutputIsStillOffered:
         assert offer.blocks == [_OUTPUT]
         assert _NOTE in response.agent_response
         assert _offered(response)
+
+
+def _reports_a_state(prompt, schema_model, **kwargs):
+    """The model reads the message as a report of the system's state, with no
+    output showing it, and names the output that would."""
+    return InvestigationResponse_Diagnosis(
+        agent_response="Good to hear.",
+        state_updates={},
+        system_state_report=StateReport(request="the output of kubectl get pods"),
+    )
+
+
+def _model_reports_a_state(rig):
+    rig.engine.generator.generate_structured_output.side_effect = _reports_a_state
+
+
+_WITH_OUTPUT = f"The pods won't start:\n\n{_OUTPUT}"
+
+
+class TestOnlyTypedTextIsSearchedForBlocks:
+    """The client says who wrote ``query`` (``query_source``): only a typed
+    query is searched for output the user typed."""
+
+    async def test_a_generated_query_naming_a_block_offers_nothing(self, rig):
+        response, saved = await _turn(
+            rig, TurnPayload(query=_WITH_OUTPUT, query_source="generated")
+        )
+
+        given = rig.engine.generator.generate_structured_output.await_args
+        assert given.kwargs["user_message"] == _WITH_OUTPUT, "the model saw it"
+        assert saved.chat_data_offers == []
+        assert _NOTE not in response.agent_response
+        assert not _offered(response)
+
+    async def test_a_chosen_query_naming_a_block_offers_no_block(self, rig):
+        response, saved = await _turn(
+            rig, TurnPayload(query=_WITH_OUTPUT, query_source="chosen")
+        )
+
+        assert saved.chat_data_offers == []
+        assert not _offered(response)
+
+    async def test_an_empty_query_and_a_paste_sent_as_generated_offers_nothing(
+        self, rig
+    ):
+        response, saved = await _turn(
+            rig,
+            TurnPayload(query="", attachments=[_paste()], query_source="generated"),
+        )
+
+        assert saved.chat_data_offers == []
+        assert not _offered(response)
+
+
+class TestTheStateRequest:
+    """A typed or chosen message may be asked for the output behind a state it
+    reports; a generated one may not."""
+
+    async def test_a_chosen_query_reporting_a_state_is_asked_for_it(self, rig):
+        _model_reports_a_state(rig)
+
+        await _turn(rig, TurnPayload(query="It's stable now.", query_source="chosen"))
+
+        saved = await rig.repo.get(rig.case.case_id)
+        (offer,) = saved.chat_data_offers
+        assert offer.blocks == []
+        assert offer.request == "the output of kubectl get pods"
+
+    async def test_a_generated_query_reporting_a_state_is_not_asked(self, rig):
+        _model_reports_a_state(rig)
+
+        _, saved = await _turn(
+            rig, TurnPayload(query="It's stable now.", query_source="generated")
+        )
+
+        assert saved.chat_data_offers == []
+
+
+class TestTypedTurnsCarryingAnIntentStillMint:
+    """No intent backstop: an intent does not make a typed query untyped."""
+
+    async def test_a_typed_turn_the_resolver_minted_an_intent_for(self, rig):
+        """The resolver reads the typed text as a chip's confirmation; the
+        engine is told the intent was minted from typed text."""
+        resolved = {"type": "confirmation", "confirmation_value": True}
+        rig.service.intent_resolver.resolve = AsyncMock(return_value=resolved)
+        rig.case.last_suggestions = [
+            {
+                "label": "Yes, check the pods",
+                "payload": "Yes, check the pods",
+                "action_type": "DECIDE",
+                "intent": resolved,
+                "offered_turn": rig.case.current_turn,
+            }
+        ]
+        process_turn = AsyncMock(wraps=rig.engine.process_turn)
+        rig.engine.process_turn = process_turn
+
+        response, saved = await _turn(rig, TurnPayload(query=_WITH_OUTPUT))
+
+        assert process_turn.await_args.kwargs["typed"] is True, "premise: minted"
+        (offer,) = saved.chat_data_offers
+        assert offer.blocks == [_OUTPUT]
+        assert _offered(response)
+
+    async def test_a_typed_turn_sent_with_an_intent_and_no_query_source(self, rig):
+        """The simulator's shape: the persona's own words with a control's
+        intent, and no ``query_source``."""
+        response, saved = await _turn(
+            rig,
+            TurnPayload(
+                query=_WITH_OUTPUT,
+                intent=QueryIntent(type=IntentType.CONVERSATION),
+            ),
+        )
+
+        (offer,) = saved.chat_data_offers
+        assert offer.blocks == [_OUTPUT]
+        assert _offered(response)
+
+
+class TestTheTelemetryCountsOnlyTypedText:
+    async def test_a_generated_query_counts_no_typed_chars(self, rig, caplog):
+        with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
+            await _turn(rig, TurnPayload(query=_WITH_OUTPUT, query_source="generated"))
+
+        (row,) = [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
+        assert row.user_message_chars == 0
+
+    async def test_a_typed_query_counts_its_chars(self, rig, caplog):
+        with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
+            await _turn(rig, TurnPayload(query=_WITH_OUTPUT))
+
+        (row,) = [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
+        assert row.user_message_chars == len(_WITH_OUTPUT)

@@ -1603,6 +1603,8 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
             await service._handle_status_transition(
                 case=case,
                 user_message="",
+                typed_message="",
+                state_report_allowed=False,
                 from_state=case.state.value,
                 to_state=to_state,
                 user_confirmed=True,
@@ -1645,6 +1647,8 @@ class TestEarnedEdgesAreRefusedAtTheBoundary:
         await service._handle_status_transition(
             case=case,
             user_message="",
+            typed_message="",
+            state_report_allowed=False,
             from_state=case.state.value,
             to_state="closed",
             user_confirmed=True,
