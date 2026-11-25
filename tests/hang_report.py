@@ -12,7 +12,8 @@ stack itself (``faulthandler.dump_traceback``, holding the GIL).
 pytest's own dump is pushed ``_FALLBACK_S`` later, for a hang that holds the
 GIL and so stops this thread. At the same instant it killed xdist workers
 silently: faulthandler's C watchdog reads every thread's frames without the
-GIL, and this thread was running Python.
+GIL, and this thread was running Python. Under ``faulthandler_exit_on_timeout``
+the plugin stays off, so pytest's dump exits on time.
 
 The block is one ``os.write``: a pipe keeps a write of up to PIPE_BUF (4096
 bytes on Linux) whole, so a block that size or smaller does not interleave with
@@ -175,6 +176,8 @@ _FALLBACK_S = 30
 def pytest_configure(config: pytest.Config) -> None:
     try:
         timeout = float(config.getini("faulthandler_timeout") or 0)
+        if config.getini("faulthandler_exit_on_timeout"):
+            timeout = 0.0  # pytest's own dump then exits the process: stay out
     except ValueError:  # `-p no:faulthandler` unregisters the option
         timeout = 0.0
     if timeout <= 0:
