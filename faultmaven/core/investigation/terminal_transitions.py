@@ -1337,6 +1337,14 @@ def _cause_recheck_names(case: "Case", window) -> dict:
     return {}
 
 
+def cause_recheck_names(case: "Case") -> dict:
+    """The two names the cause re-check ask states, for the latest fix window
+    (``_cause_recheck_names``): content the record does not hold, read by a
+    reader whose record holds the ``RELIEF_WITHOUT_CAUSE_RECHECK`` gap
+    (#3053 S3d-2, the reopen chip's refusal). Decides nothing."""
+    return _cause_recheck_names(case, latest_fix_window(case))
+
+
 def _relief_without_cause_recheck(
     case: "Case", window, subjects: "SubjectIndex | None" = None
 ) -> bool:

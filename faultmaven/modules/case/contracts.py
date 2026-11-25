@@ -640,6 +640,7 @@ from faultmaven.modules.case.domain.models.outcome import (
     WritePoint,
 )
 from faultmaven.modules.case.domain.models.problem import (
+    PROBLEM_ON_HOLD,
     InquiryData,
     InvestigationStage,
     PendingRevision,
@@ -979,6 +980,7 @@ __all__ = [
     "ProblemInvalidation",
     "ProblemStatementRecord",
     "ProblemStatus",
+    "PROBLEM_ON_HOLD",
     "ProblemVerification",
     "StagedCauseWork",
     "StatementRecordKind",

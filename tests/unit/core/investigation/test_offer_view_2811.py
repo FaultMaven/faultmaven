@@ -49,7 +49,6 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.core.investigation.narration.offer_view import OfferView
 from faultmaven.core.investigation.narration.prompt_state import (
-    ON_HOLD,
     PROGRESS_OMITTED,
     ResolveDeclined,
     focus_selection,
@@ -62,7 +61,11 @@ from faultmaven.core.investigation.prompts.context_builder.narration_fold import
     NarrationFold,
 )
 from faultmaven.core.investigation.prompts.templates import assembly as templates
-from faultmaven.modules.case.contracts import AnswerKind, ProblemStatus
+from faultmaven.modules.case.contracts import (
+    PROBLEM_ON_HOLD,
+    AnswerKind,
+    ProblemStatus,
+)
 from tests.case_builders import investigating_case, with_declined_offer
 from tests.unit.core.investigation import offer_cases_2811 as oc
 from tests.unit.core.investigation import (
@@ -229,7 +232,7 @@ def test_the_folds_offers_are_offer_view(name):
 # ---------------------------------------------------------------------------
 
 
-def test_on_hold_is_problem_on_holds_set():
+def test_problem_on_hold_reads_the_one_hold_set():
     held = {
         status
         for status in ProblemStatus
@@ -237,7 +240,7 @@ def test_on_hold_is_problem_on_holds_set():
             SimpleNamespace(progress=SimpleNamespace(problem_status=status))
         )
     }
-    assert set(ON_HOLD) == held
+    assert PROBLEM_ON_HOLD == held
 
 
 @pytest.mark.parametrize("name", [n for n in oc.PROMPT if n != "D:omitted"])

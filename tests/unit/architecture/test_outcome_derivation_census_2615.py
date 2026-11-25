@@ -31,7 +31,7 @@ Module level is ``<module>``. Three tables:
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
   ``completed_milestones``, ``solution_verified``, its alias property
   ``resolution_complete`` (no reader today), a mitigation's ``verified`` and
-  ``closure_reason``. ``verified`` has no receiver heuristic: all 14 reads
+  ``closure_reason``. ``verified`` has no receiver heuristic: all 13 reads
   today are ``MitigationRecord.verified``, and a future reader of another
   ``verified`` gets a row with its reason.
 * ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
@@ -447,7 +447,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "assess_close_summary": 1,
         "assess_closure_readiness": 1,
     },
-    (_TRANSITION_TURNS, "_resolve_on_reopen_chip"): {"assess_resolution_readiness": 1},
     # The record's write points (#2636): the end of a decision cycle and each
     # bundle of a statement-revision replay; the transitions are above.
     (_ME + "turn_application.py", "_apply_turn_response"): {"record_case_outcome": 1},
@@ -634,7 +633,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_closure"): {"closure_reason": 1},
     (_OUTCOME, "_mitigation"): {"verified": 1},
     (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
-    (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): {"verified": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
     # #2811 S2b-1c-i: the milestone status reads the record; the stored
     # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3d (#3053).
@@ -646,9 +644,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_VALIDATOR, "StateValidator._validate_state_consistency"): {
         "solution_verified": 1
     },
-    # Moved from stage_gates' ``_mitigation_settled`` with #2636, which the
-    # record and the stage gate share.
-    (_CA, "mitigation_settled"): {"verified": 1},
     # By ``getattr(mitigation, "verified", False)``.
     (_TT, "_mitigation_verified"): {"verified": 1},
     (_TT, "confirm_open_offer"): {"closure_reason": 1},
@@ -670,13 +665,13 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
         "solution_verified": 1,
         "verified": 1,
     },
-    (_PROGRESS, "InvestigationProgress.current_stage"): {
-        "solution_verified": 1,
-        "verified": 1,
-    },
+    (_PROGRESS, "InvestigationProgress.current_stage"): {"solution_verified": 1},
     (_PROGRESS, "InvestigationProgress.resolution_complete"): {"solution_verified": 1},
     (_PROGRESS, "InvestigationProgress.solution_ordering"): {"solution_verified": 1},
     (_PROGRESS, "MitigationRecord._verified_requires_accepted"): {"verified": 2},
+    # The one statement of when a mitigation is settled (#3053 Q2): the stage,
+    # ``cause_assurance.mitigation_settled`` and the monitor read it.
+    (_PROGRESS, "MitigationRecord.settled"): {"verified": 1},
     (_CASE + "domain/services/case_service.py", "CaseService.close_case"): {
         "closure_reason": 1
     },
@@ -765,8 +760,9 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         "(basis menu)",
     ),
     (_TRANSITION_TURNS, "_resolve_on_reopen_chip"): (
-        {"open_disposition_offer": 1},
-        "re-opens the declined resolve offer from the reopen chip (basis reopen)",
+        {"content_by_id": 1, "open_disposition_offer": 1},
+        "re-opens the declined resolve offer from the reopen chip (basis "
+        "reopen), or reads the held check's request text its refusal states",
     ),
     (_TRANSITIONS, "TransitionManager._apply_model_proposal"): (
         {"disposition_refusal": 1, "open_disposition_offer": 1},
@@ -871,6 +867,8 @@ CARRIED_VIEW_SITES: dict[tuple[str, str], int] = {
     (_DISCONF, "failed_fix_of"): 1,
     (_DISCONF, "m6_disconfirmation_basis"): 1,
     (_TT, "assess_resolution_readiness"): 1,
+    # The cause re-check ask's names, the reopen chip's refusal's content.
+    (_TT, "cause_recheck_names"): 1,
     (_MONITOR, "ProgressMonitor._detect_fix_failure_cycle"): 1,
     (_MONITOR, "ProgressMonitor._repair_fix_failure_cycle"): 1,
     (_PROBLEM, "invalidation_refusal"): 1,

@@ -304,6 +304,14 @@ class ProblemStatus(str, Enum):
     evidence shows a problem, or the user disputes the finding."""
 
 
+#: The problem statuses that put the case on hold (#3053 Q3): it waits on the
+#: user (a revision awaiting re-confirmation) or on new evidence (a false
+#: alarm) rather than investigating. The one statement of the set:
+#: ``problem_status.problem_on_hold`` reads it at the live status, the
+#: narration at the record's.
+PROBLEM_ON_HOLD = frozenset({ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED})
+
+
 class StatementRecordKind(str, Enum):
     """What happened to the problem statement at one point in the case."""
 

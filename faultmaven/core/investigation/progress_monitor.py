@@ -755,10 +755,10 @@ class ProgressMonitor:
 
         if action_type == "mitigation":
             # Post-redesign the mitigation verify gate lives on the
-            # mitigation record, not a progress boolean.
-            # A disposition settles it as well (#2100).
+            # mitigation record, not a progress boolean. A disposition
+            # settles it as well (#2100): the record's one rule (#3053 Q2).
             _stab = case.progress.mitigation
-            verified = bool(_stab is not None and (_stab.verified or _stab.disposition))
+            verified = _stab is not None and _stab.settled
         else:
             return False
 

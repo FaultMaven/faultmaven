@@ -30,6 +30,7 @@ from faultmaven.modules.case.domain.models.progress import (
     InvestigationProgress,
     MitigationRecord,
     investigation_stage,
+    mitigation_settled_of,
 )
 from faultmaven.modules.case.domain.models.turn import TurnOutcome, TurnProgress
 from tests.case_builders import make_case
@@ -331,7 +332,18 @@ def test_the_stage_rule_is_the_progress_rule(mitigation, solution):
         solution_verified=solution[1],
     )
 
-    assert investigation_stage(**gates) is progress.current_stage
+    assert (
+        investigation_stage(
+            mitigation_accepted=gates["mitigation_accepted"],
+            mitigation_settled=mitigation_settled_of(
+                verified=gates["mitigation_verified"],
+                disposed=gates["mitigation_disposed"],
+            ),
+            solution_accepted=gates["solution_accepted"],
+            solution_verified=gates["solution_verified"],
+        )
+        is progress.current_stage
+    )
     for state in CaseState:
         metadata = CaseMetadata.from_stored(**_stored(state=state.value, **gates))
         assert metadata.stage == stage_while_investigating(
@@ -362,8 +374,9 @@ def test_the_stage_each_gate_combination_derives(accepted_verified, solution, ex
     assert (
         investigation_stage(
             mitigation_accepted=accepted_verified[0],
-            mitigation_verified=accepted_verified[1],
-            mitigation_disposed=accepted_verified[2],
+            mitigation_settled=mitigation_settled_of(
+                verified=accepted_verified[1], disposed=accepted_verified[2]
+            ),
             solution_accepted=solution[0],
             solution_verified=solution[1],
         )

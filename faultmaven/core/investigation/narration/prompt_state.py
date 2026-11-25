@@ -28,6 +28,7 @@ from enum import StrEnum
 from typing import Callable, NamedTuple, Optional
 
 from faultmaven.modules.case.contracts import (
+    PROBLEM_ON_HOLD,
     CaseOutcome,
     ClosureReason,
     ProblemStatus,
@@ -48,11 +49,6 @@ PROGRESS_OMITTED = "The case's progress could not be read this turn."
 #: The fallback prompt's resolution line when the record could not be read
 #: this turn, in place of "Solution verified", the closure reason or "Closed".
 RESOLUTION_OMITTED = "The case's resolution could not be read this turn."
-
-#: The problem statuses that put the case on hold, under which the reply
-#: carries no reopen chip: ``problem_status.problem_on_hold`` is the
-#: deciders' twin of this set (stage S3d, #3053).
-ON_HOLD = (ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED)
 
 #: The stage gates, in the order the prompt lists them.
 GATES = (
@@ -201,13 +197,16 @@ def resolve_declined(
     None; whether a check holds the case is the record's
     (``resolution.pending_check_need_id``). The reply carries the reopen chip
     while no offer is open and the record's problem is not on hold
-    (``ON_HOLD``), as ``project_offers`` builds it; the decline's turn is the
+    (``PROBLEM_ON_HOLD``), as ``project_offers`` builds it; the decline's turn is the
     offer record's."""
     resolution = outcome.resolution
     if not resolution.declined_stands:
         return None
     offers = fresh.offers()
-    actions = offers.open_proposal_id is None and outcome.problem.status not in ON_HOLD
+    actions = (
+        offers.open_proposal_id is None
+        and outcome.problem.status not in PROBLEM_ON_HOLD
+    )
     return ResolveDeclined(
         actions=actions,
         held=actions and resolution.pending_check_need_id is not None,

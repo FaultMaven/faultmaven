@@ -19,20 +19,26 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
 from faultmaven.core.investigation.narration.codes import OfferCode
-from faultmaven.core.investigation.narration.offers import render_offer
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
+from faultmaven.core.investigation.narration.offers import record_params, render_offer
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
     false_alarm_close_declined_at,
     problem_on_hold,
 )
-from faultmaven.core.investigation.terminal_transitions import open_disposition_offer
+from faultmaven.core.investigation.terminal_transitions import (
+    cause_recheck_names,
+    open_disposition_offer,
+)
 from faultmaven.modules.case.contracts import (
     AnswerVia,
     CaseState,
+    ConfirmationGap,
     OfferBasis,
     OfferKind,
     ResolutionReason,
+    ResolutionVerdict,
 )
 
 from .cause_state import (
@@ -48,6 +54,7 @@ from .terminal_replies import (
     _compose_terminal_reply,
     _reply_outcome,
     _select_ack_follow_ups,
+    count_unreadable_record,
 )
 from .transition_consent import (
     TYPED_CONFIRMATION_LINE,
@@ -388,23 +395,63 @@ def _close_on_explicit_intent(
     }
 
 
-def _refusal_readiness_ask(case, readiness) -> str:
-    """The readiness ask the reopen chip's refusal states (#3053 S3d-1). An
-    ask for the root cause is the fresh one with the record's cause, from
-    the record folded for the moment (``_reply_outcome``): every param is
-    the decide-time one, so only its "Root cause" line, which then carries
-    the record's pool-empty line, is the record path's. Any other ask, and a
-    fold that raised (counted once), is the decide-time ``readiness.message``."""
-    if (
-        readiness.reason != ResolutionReason.DOCUMENTATION_GAPS
-        or "root cause" not in readiness.missing
-    ):
-        return readiness.message
-    outcome = _reply_outcome(case)
-    if outcome is None:
-        return readiness.message
-    params = {**readiness.offer_params(), "cause": outcome.cause}
-    return render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params)
+#: The reopen chip's reply when the record it decides from cannot be read
+#: this turn (#3053 Q11, ruled copy): nothing is opened.
+RECORD_UNREADABLE_LINE = (
+    "This case can't be marked resolved right now: the case record could not "
+    "be read this turn."
+)
+
+#: The reopen chip's refusal when the record no longer holds a resolution
+#: the user can confirm; the readiness ask follows.
+_NO_LONGER_STANDS = (
+    "This case can't be marked resolved right now: the confirmation that "
+    "earned the resolution no longer stands."
+)
+
+
+def _kept_chips(case) -> list:
+    """The case's reopen and close chips, which a refused or failed chip
+    reply keeps: Slack has no other way to close, and its close chip is
+    built only beside this one (#2222). None when the projection raises."""
+    try:
+        projection = project_offers(case)
+        if projection.reopen_chip is None:
+            return []
+        return [projection.reopen_chip, projection.close_chip]
+    except Exception:  # noqa: BLE001 — the reply stands without its chips
+        logger.exception("Case %s: the reply's chips could not be built", case.case_id)
+        return []
+
+
+def _chip_refusal(case, outcome, held) -> tuple[str, list]:
+    """The reopen chip's refusal and its chips, from the record folded for
+    the reply (#3053 S3d-2): the record's readiness ask (``record_params``
+    for ``RESOLUTION_NEEDS_INFO``), with ``held``, the held check's content
+    read by its id, and the cause re-check's names (``cause_recheck_names``)
+    under that gap. A held check with no text fails closed, counted once."""
+    resolution = outcome.resolution
+    if resolution.reason == ResolutionReason.PENDING_CHECK:
+        # The confirmation stands; a check the agent asked for after the fix
+        # is pending (#1906 D5.2), and the ask says so, keeping the chips.
+        if held is None:
+            logger.error(
+                "Case %s: the held check %s has no text",
+                case.case_id,
+                resolution.pending_check_need_id,
+            )
+            count_unreadable_record()
+            return RECORD_UNREADABLE_LINE, _kept_chips(case)
+        params = record_params(OfferCode.RESOLUTION_NEEDS_INFO, {}, outcome, held.text)
+        return render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params), _kept_chips(case)
+    names = (
+        cause_recheck_names(case)
+        if ConfirmationGap.RELIEF_WITHOUT_CAUSE_RECHECK in resolution.confirmation_gaps
+        else {}
+    )
+    params = record_params(OfferCode.RESOLUTION_NEEDS_INFO, names, outcome, None)
+    ask = render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params)
+    return (f"{_NO_LONGER_STANDS}\n\n{ask}" if ask else _NO_LONGER_STANDS), []
 
 
 def _resolve_on_reopen_chip(*, case, upload_report, user_message):
@@ -418,17 +465,15 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
     (INV-03): the canonical confirmation pair follows, as on every other
     opener. The user's own offer, so the decline does not bind it.
 
-    The bar is re-read here: the offer is made only when
-    ``assess_resolution_readiness`` is READY, the bar step 2 applies to the
-    model's proposal, and not while the problem statement is on hold (a
-    revision awaiting the user, when no transition is proposed). Otherwise
-    nothing is opened or recorded, and the reply says why.
+    The bar is read here, from one fold of the record (``_reply_outcome``,
+    #3053 S3d-2): the offer is made only when the record's resolution verdict
+    is READY, the bar step 2 applies to the model's proposal, and not while
+    the problem statement is on hold (a revision awaiting the user, when no
+    transition is proposed). The confirmation and the refusal's ask render
+    from that same fold. Otherwise nothing is opened or recorded, and the
+    reply says why; when the fold raises, or the held check's text cannot be
+    read, it says the record could not be read, counted once.
     """
-    from faultmaven.core.investigation.terminal_transitions import (
-        ResolutionReadiness,
-        assess_resolution_readiness,
-    )
-
     if problem_on_hold(case):
         agent_response = (
             "This case can't be marked resolved while its problem statement is "
@@ -448,32 +493,21 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
             "metadata": turn_metadata,
         }
 
-    readiness = assess_resolution_readiness(case)
-    if readiness.verdict != ResolutionReadiness.READY:
+    outcome = _reply_outcome(case)
+    if outcome is None:
+        agent_response, follow_ups = RECORD_UNREADABLE_LINE, _kept_chips(case)
+    elif outcome.resolution.verdict != ResolutionVerdict.READY:
         logger.info(
             f"Reopen chip for case {case.case_id} refused: resolution readiness "
-            f"is {readiness.verdict} (missing: {readiness.missing})."
+            f"is {outcome.resolution.verdict} (missing: "
+            f"{outcome.resolution.missing})."
         )
-        follow_ups: list = []
-        if readiness.pending_check is not None:
-            # The confirmation stands; a check the agent asked for after the
-            # fix is pending (#1906 D5.2), and the ask says so. The reply
-            # keeps the case's chips: Slack has no other way to close, and
-            # its close chip is built only beside this one (#2222).
-            agent_response = readiness.message
-            projection = project_offers(case)
-            if projection.reopen_chip is not None:
-                follow_ups = [projection.reopen_chip, projection.close_chip]
-        else:
-            agent_response = (
-                "This case can't be marked resolved right now: the confirmation "
-                "that earned the resolution no longer stands."
-            )
-            ask = _refusal_readiness_ask(case, readiness)
-            if ask:
-                agent_response = f"{agent_response}\n\n{ask}"
+        need_id = outcome.resolution.pending_check_need_id
+        pending = outcome.resolution.reason == ResolutionReason.PENDING_CHECK
+        held = content_by_id(case, need_id) if pending and need_id else None
+        agent_response, follow_ups = _chip_refusal(case, outcome, held)
     else:
-        agent_response = _build_resolution_confirmation(case)
+        agent_response = _build_resolution_confirmation(case, outcome)
         record = open_disposition_offer(
             case,
             kind=OfferKind.RESOLVE,

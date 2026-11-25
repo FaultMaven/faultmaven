@@ -1206,11 +1206,14 @@ written*, as amended by #2811, ruled 2026-11-15):
   whether or not the template shows them. The resolve confirmation folds it
   once per call, where it is decided (S2b-2b, `narration.replies`); the
   closed reply reads the closure the terminal transition wrote and folds only
-  when that write failed. The reopen chip's refusal folds it once, only when
-  its fresh readiness asks for the root cause, and states that fresh ask
-  with the record's cause, so its "Root cause" line carries the record's
-  pool-empty line as the needs-info request's does and nothing else in it
-  changes (#3053 S3d-1); a fold that raises gives the bare ask. The
+  when that write failed. The reopen chip decides and narrates from one
+  fold (#3053 S3d-2): the verdict, the confirmation and the refusal's ask
+  (the needs-info request's, its "Root cause" line with the record's
+  pool-empty line) are that fold's. When the fold raises, or the held
+  check's request text cannot be read, it fails closed, counted once: no
+  offer is opened, the case's chips are kept, and the reply is "This case
+  can't be marked resolved right now: the case record could not be read
+  this turn." The
   texts the confirmation names besides (the root cause, the latest
   solution, whether evidence or commands exist) are
   the case's content, read through one typed accessor, `ResolutionContent`
@@ -2188,6 +2191,11 @@ The UI stage label is a pure derived view over the action-compliance gates
 - `solution_accepted ∧ ¬solution_verified` → **"Resolving"**
 - else → **"Investigating"** (sub-phase distinguished by `symptom_verified` /
   `cause_state`, not by the stage enum)
+
+The stage reads `MitigationRecord.settled` (verified once, or disposed of,
+forward-only), the one definition of a settled mitigation, which the operator
+list, `cause_assurance.mitigation_settled` and the progress monitor read too
+(#3053 Q2).
 
 ### 2.4 Diagnostic Feasibility (Advisory Signal)
 
