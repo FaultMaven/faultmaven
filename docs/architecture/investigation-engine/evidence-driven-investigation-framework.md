@@ -576,16 +576,23 @@ words; the user declares what is data (#1930).
   submitted since.
 - A located block that is the user speaking to the assistant is dropped
   (`block_user_prose`, #2718): every non-blank line holds a double-quoted
-  or backticked span and opens with `You` plus a speech verb (`asked`,
-  `suggested`, `said`, `told`, `mentioned`, `wanted`, `proposed`,
-  `recommended`, `wrote`, `meant`) or with a first-person subject
-  (case-sensitive `I` plus a contraction `'ve`, `'m`, `'d`, `'ll`, or plus a
-  space and `have`, `haven't`, `ran`, `applied`, `did`, `didn't`, `made`,
-  `tried`, `get`, `got`, `see`, `saw`). One line of any other shape keeps
-  the block. Single quotes are not a quoted span: the second-person lines
-  programs print quote in them. A first-person line quoting output inline
-  (`I get "FATAL: …" when I connect`) is the user's account and is dropped
-  too; the user can still paste the output as data.
+  span (`"…"` or `“…”`) and opens, at its first character, with one of:
+  - `You`, any whitespace, and a speech verb (`asked`, `suggested`,
+    `said`, `told`, `mentioned`, `wanted`, `proposed`, `recommended`,
+    `wrote`, `meant`), case-insensitive;
+  - a first-person subject, case-sensitive: `I've` or `I'd` (`'` or `’`),
+    or `I`, one space and `haven't`, `ran`, `applied`, `did`, `didn't`,
+    `made`, `tried`, `get`, `got`, `see`, `saw` (`’` also counts in
+    `haven't` and `didn't`).
+
+  One line of any other shape keeps the block, and an indented line is
+  never prose. Single quotes and backticks are not a quoted span: the
+  lines programs and bots print in the second or first person quote with
+  them. A first-person line quoting output inline (`I get "FATAL: …" when
+  I connect`) is the user's account and is dropped too; the user can
+  still paste the output as data. Dropped blocks take no slot of the
+  five-block cap (`MAX_CHAT_DATA_BLOCKS`), which applies to the blocks
+  offered.
 - Only what the user typed into the message box is searched for
   blocks. Not the server's composed query on a turn carrying only data
   ("I've pasted some text … tell me what you find"), not a client's

@@ -407,7 +407,9 @@ shown to you with a file_id.
 - The user speaking to you is never output, whatever it quotes: your own words
   quoted back to you (You asked for "the chrony logs" — I can't get them), or
   a reply that only confirms or instructs (e.g. 'Go ahead.', Done: "restart
-  chronyd"). A program's own `Done` or `OK` line is output.
+  chronyd"). A program's own lines are output, even when they speak to the
+  user: a `Done` or `OK` line, or one telling them what to run (a warning, a
+  usage hint, a chart's NOTES).
 - Read the user's INTENT as well as the content. If the CURRENT message tells
   you the state of their system (it's stable, it's working now, the error is
   gone, the fix worked, it's still failing) and they submitted no data showing

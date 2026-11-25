@@ -4,21 +4,24 @@ The model names blocks of system output in the user's message; a reply that
 quotes the assistant ("You asked for "…" — …", "I haven't made "…"") was named
 as output and offered back for saving as data. A located block is dropped, and
 counted ``block_user_prose``, when every non-blank line holds a double-quoted
-or backticked span and opens with ``You`` plus a speech verb or with a
-first-person ``I`` subject. One line of any other shape keeps the block, and
-the second-person and level-letter lines programs print stay offered.
+span and opens, at its first character, with ``You`` plus a speech verb or
+with a first-person ``I`` subject. One line of any other shape keeps the block,
+and the second- and first-person and level-letter lines programs and bots print
+stay offered.
 """
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from faultmaven.core.investigation import chat_data
 from faultmaven.core.investigation.chat_data import mint_chat_data_offer
 from faultmaven.core.investigation.schemas import ChatDataBlock
-from faultmaven.modules.case.contracts import Case
+from faultmaven.modules.case.contracts import MAX_CHAT_DATA_BLOCKS, Case
 from tests.case_builders import investigating_case
 
 pytestmark = pytest.mark.unit
@@ -104,7 +107,7 @@ class TestTheReportedMessagesAreNotOffered:
         'I get "FATAL: password authentication failed for user app" when I connect',
         'I ran "kubectl get pods" and got: error: the server has no resource "pods"',
         "I’ve applied the change you suggested: “kubectl rollout restart deploy/x”.",
-        "I haven’t made `sudo chronyc makestep` yet",
+        'I haven’t made "sudo chronyc makestep" yet',
         'you told me to run "timedatectl status" first',
     ],
 )
@@ -142,7 +145,17 @@ def test_a_line_of_the_users_speech_is_dropped(line):
         "I tensorflow/core/common_runtime/placer.cc:54] save/Const: (Const): "
         '"/job:localhost/replica:0/task:0/device:CPU:0"',
         'I 2026-11-24 10:00:01 worker Started job "nightly-export"',
-        '    I reverted "bump chrony to 4.5"',
+        # A git log body: an indented line is never prose, verb or not.
+        '    I\'ve reverted "bump chrony to 4.5"',
+        # Bots and apps speak in the first or second person, quoting with
+        # backticks or in forms the observed replies never use.
+        "I've created incident `INC-4821` and paged `@db-oncall`.",
+        "You asked me to deploy `api` to `prod-eu`. Deploying now.",
+        "I'm sorry, I don't know the command `deploy-prod`.",
+        'I\'ll retry "orders" in 5s',
+        "I’ll remind you “check db” at 3:00PM today.",
+        # A container's shell prompt with no passwd entry.
+        'I have no name!@api:/app$ cat "/etc/hosts"',
         'I1124 10:00:01.123456 1 controller.go:88] syncing "orders/processing"',
         'I/ActivityManager( 123): Start proc "com.acme"',
         'I/O error on device "sda"',
@@ -181,9 +194,9 @@ class TestTheDropLeavesTheRestOfTheTurn:
         assert offer.blocks == [_LOG]
         assert dropped == 1
 
-    def test_a_dropped_block_does_not_hide_the_same_text_in_a_later_block(self):
-        """The dropped block is not taken as offered: the same line, later in
-        the message and followed by output, is offered with it."""
+    def test_the_same_text_in_a_later_mixed_block_is_offered(self):
+        """The same line, later in the message and followed by output, is
+        offered with it."""
         prose = 'I\'ve run "psql -c select 1" again'
         message = f"{prose}\n\nand the full run:\n{prose}\n{_LOG}"
         _, offer, dropped = _mint(
@@ -209,3 +222,33 @@ class TestTheDropLeavesTheRestOfTheTurn:
 
         assert offer is None
         assert dropped == 1
+
+    def test_nothing_of_a_dropped_block_is_logged(self, caplog):
+        prose = 'You asked for "the zx-marker-2718 log" — I can\'t get it.'
+        with caplog.at_level(logging.DEBUG):
+            _mint(
+                f"{prose}\n{_LOG}",
+                [_whole(prose), ChatDataBlock(first_line="absent", last_line="absent")],
+            )
+
+        mine = [r for r in caplog.records if r.name == chat_data.__name__]
+        assert mine, "positive control: the unmatched anchor is logged"
+        assert not any("zx-marker-2718" in r.getMessage() for r in caplog.records)
+
+
+class TestTheCapCountsOfferedBlocksOnly:
+    def test_prose_blocks_take_no_slot_of_the_cap(self):
+        """Five quoted replies named before a log line: the log line is
+        located and offered."""
+        replies = [
+            f'You asked for "log {i}" — I can\'t get it.'
+            for i in range(MAX_CHAT_DATA_BLOCKS)
+        ]
+        message = "\n\n".join([*replies, _LOG])
+        _, offer, dropped = _mint(
+            message, [_whole(reply) for reply in replies] + [_whole(_LOG)]
+        )
+
+        assert offer is not None
+        assert offer.blocks == [_LOG]
+        assert dropped == MAX_CHAT_DATA_BLOCKS

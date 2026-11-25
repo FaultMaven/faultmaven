@@ -96,10 +96,11 @@ def locate_blocks(
 
 # The user speaking to the assistant around a quoted span (#2718): "You asked
 # for "…" — …", "I haven't made "…"". A model names such a reply as output. The
-# quote excludes single quotes on purpose: the second-person lines programs
-# print quote in single quotes ("You asked to pull from the remote 'origin'"),
-# so admitting them would drop that output.
-_QUOTED_SPAN = re.compile(r'"[^"\n]*"|“[^”\n]*”|`[^`\n]*`')
+# quote is double quotes only, on purpose: programs and bots print their
+# second- and first-person lines with single quotes or backticks ("You asked to
+# pull from the remote 'origin'", "I've created incident `INC-4821`"), so
+# admitting those would drop that output.
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"|“[^”\n]*”')
 _SPEECH_TO_ASSISTANT = re.compile(
     r"You\s+(?:asked|suggested|said|told|mentioned|wanted|proposed|recommended"
     r"|wrote|meant)\b",
@@ -107,18 +108,21 @@ _SPEECH_TO_ASSISTANT = re.compile(
 )
 # Case-sensitive, and never a bare "I" plus whitespace: log formats open lines
 # with a level letter ("I (5012) wifi …", "i  functions: …", "I tensorflow/…").
+# Only the forms the observed replies use: an app's "I'll retry …" and a shell
+# prompt's "I have no name!@…" are output.
 _FIRST_PERSON = re.compile(
-    r"I(?:['’](?:ve|m|d|ll)\b| (?:have|haven['’]t|ran|applied|did|didn['’]t"
+    r"I(?:['’](?:ve|d)\b| (?:haven['’]t|ran|applied|did|didn['’]t"
     r"|made|tried|get|got|see|saw)\b)"
 )
 
 
 def _is_user_prose(block: str) -> bool:
     """Is every non-blank line of ``block`` the user speaking to the assistant:
-    opening with ``You`` and a speech verb, or with a first-person ``I``
-    subject, and holding a double-quoted or backticked span? One line of any
-    other shape keeps the block."""
-    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    opening, at its first character, with ``You`` and a speech verb or with a
+    first-person ``I`` subject, and holding a double-quoted span? One line of
+    any other shape keeps the block; an indented line (a ``git log`` body) is
+    never prose."""
+    lines = [line for line in block.splitlines() if line.strip()]
     return bool(lines) and all(
         _QUOTED_SPAN.search(line)
         and (_SPEECH_TO_ASSISTANT.match(line) or _FIRST_PERSON.match(line))
@@ -199,7 +203,7 @@ def mint_chat_data_offer(
                 reverse(getattr(block, "first_line", "") or ""),
                 reverse(getattr(block, "last_line", "") or ""),
             )
-            for block in list(named_blocks)[:MAX_CHAT_DATA_BLOCKS]
+            for block in named_blocks
         ]
         found, unmatched = locate_blocks(searched, anchors)
         if unmatched:
@@ -217,13 +221,14 @@ def mint_chat_data_offer(
         seen = _offered_block_keys(case)
         for block in found:
             if _is_user_prose(block):
-                # The user's own words stay a claim (#2718). Not added to
-                # ``seen``, and nothing of the block is logged.
+                # The user's own words stay a claim (#2718), and take no slot
+                # of the cap. Nothing of the block is logged.
                 CHAT_DATA_OFFER_EVENTS_TOTAL.labels(event="block_user_prose").inc()
                 continue
             key = block_key(block)
             if (
-                block.strip()
+                len(blocks) < MAX_CHAT_DATA_BLOCKS
+                and block.strip()
                 and len(block) <= MAX_CHAT_DATA_BLOCK_CHARS
                 and key not in seen
             ):
