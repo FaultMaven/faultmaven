@@ -67,11 +67,9 @@ def _permissive_default(raw_content: str, structural_index: str) -> SanityResult
     """
     if not structural_index or not structural_index.strip():
         return SanityResult(passed=False, reason="empty_output")
-    # Extractors emit these placeholders when they can't work with the
-    # content (e.g. 50MB cap tripped, content too short). Treat as a
-    # non-degenerate outcome — the extractor correctly refused to lie.
-    if structural_index.startswith("[File exceeds"):
-        return SanityResult(passed=True)
+    # Extractors emit this placeholder when the content has nothing to
+    # analyze. Treat as a non-degenerate outcome — the extractor correctly
+    # refused to lie.
     if structural_index.startswith("[No content to analyze"):
         return SanityResult(passed=True)
     if structural_index.startswith("[Failed to parse"):
