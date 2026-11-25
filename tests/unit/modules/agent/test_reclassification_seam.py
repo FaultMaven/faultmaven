@@ -442,6 +442,7 @@ class TestAMidTurnReclassificationSurvivesTheTurn:
             user_id: Optional[str] = None,
             typed: bool = False,
             redaction_ctx=None,
+            typed_message: Optional[str] = None,
         ) -> dict[str, Any]:
             # The shape ``MilestoneEngine._build_tool_context`` produces: the
             # tool is handed the case object the turn is holding.

@@ -712,7 +712,14 @@ async def _preprocess_turn_uploads(
     processing_mode,
     user_id,
 ):
-    """Preprocess each attachment, re-route the classification for a fresh evidence-bearing upload, and derive the query."""
+    """Preprocess each attachment, re-route the classification for a fresh evidence-bearing upload, and derive the query.
+
+    Returns the query the engine is given and, beside it, what the user typed
+    (``TurnPayload.typed_message``), the only text searched for chat-data
+    blocks (#2717). It is ``""`` on a chosen, generated or composed query: the
+    composed ``generate_implicit_query`` sentence of a turn carrying only data
+    is FaultMaven's own.
+    """
     uploaded_files_this_turn: List["UploadedFile"] = []
     preprocess_results: List[_PreprocessedAttachment] = []
     if payload.has_attachments:
@@ -782,9 +789,16 @@ async def _preprocess_turn_uploads(
 
     # Determine query (explicit or implicit)
     query = payload.query
+    typed_message = payload.typed_message
     if not payload.has_query and payload.has_attachments:
         query = generate_implicit_query(
             uploaded_files_this_turn,
             [a.filename for a in payload.attachments],
         )
-    return classification, preprocess_results, query, uploaded_files_this_turn
+    return (
+        classification,
+        preprocess_results,
+        query,
+        typed_message,
+        uploaded_files_this_turn,
+    )

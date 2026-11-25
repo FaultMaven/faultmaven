@@ -116,9 +116,12 @@ def engine(seen):
         user_id: Optional[str] = None,
         typed: bool = False,
         redaction_ctx=None,
+        typed_message: Optional[str] = None,
     ) -> dict[str, Any]:
         seen["attachments"] = copy.deepcopy(attachments)
         seen["intent_type"] = intent_type
+        seen["user_message"] = user_message
+        seen["typed_message"] = typed_message
         seen["intent_data"] = copy.deepcopy(intent_data)
         case.updated_at = datetime.now(timezone.utc)
         return {
@@ -161,9 +164,12 @@ def case(sample_case, sample_user_id):
     return sample_case
 
 
-def _payload(intent: QueryIntent, query: str = "here it is") -> TurnPayload:
+def _payload(
+    intent: QueryIntent, query: str = "here it is", query_source="typed"
+) -> TurnPayload:
     return TurnPayload(
         query=query,
+        query_source=query_source,
         attachments=[
             Attachment(content=CONTENT, filename="app.log", content_type="text/plain")
         ],
@@ -269,6 +275,53 @@ class TestEachServiceRoutedHandlerCarriesTheKbQuestion:
         )
         assert "kb_question" in seen["intent_data"]
         assert seen["intent_data"]["kb_question"] is None
+
+
+_ROUTES = {**INTENTS, "conversation": QueryIntent(type=IntentType.CONVERSATION)}
+
+
+@pytest.mark.parametrize("name", sorted(_ROUTES))
+class TestEveryRouteHandsTheEngineWhatTheUserTyped:
+    """#2717: on a turn carrying only data, ``user_message`` is the composed
+    implicit query. Every route into the engine hands it, beside that, what
+    the user typed, which is all the chat-data offer reads."""
+
+    async def test_a_turn_carrying_only_data_typed_nothing(
+        self, name, service, repo, case, seen
+    ):
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=_payload(_ROUTES[name], query=""),
+        )
+
+        assert seen["intent_type"] == name
+        assert seen["user_message"].startswith("I've submitted app.log")
+        assert seen["typed_message"] == ""
+
+    async def test_a_typed_message_is_handed_as_typed(
+        self, name, service, repo, case, seen
+    ):
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=_payload(_ROUTES[name], query="here it is"),
+        )
+
+        assert seen["user_message"] == seen["typed_message"] == "here it is"
+
+    async def test_a_chosen_message_is_not_typed(self, name, service, repo, case, seen):
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=_payload(_ROUTES[name], query_source="chosen"),
+        )
+
+        assert seen["user_message"] == "here it is"
+        assert seen["typed_message"] == ""
 
 
 class TestTheGreetingHeuristicDoesNotSwallowData:

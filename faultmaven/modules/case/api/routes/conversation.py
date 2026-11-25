@@ -52,7 +52,11 @@ from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_REPLAYED_HEADER,
 )
 from faultmaven.config.turn_ceiling import resolve_turn_ceiling
-from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.schemas import (
+    Attachment,
+    QuerySource,
+    TurnPayload,
+)
 from faultmaven.core.investigation.turn_budget import (
     TurnDeadlineExceeded,
     bind_turn_deadline,
@@ -680,6 +684,20 @@ async def submit_turn(
     input_type: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
     observed_at: Optional[str] = Form(None),
+    # ``Annotated`` so the Python default is a real ``"typed"`` for direct
+    # calls (#2717).
+    query_source: Annotated[
+        QuerySource,
+        Form(
+            description=(
+                "Who wrote `query`: `typed` (the user typed it into the "
+                "message box), `chosen` (the user chose it: a chip or a status "
+                "change) or `generated` (the client wrote it). Only typed text "
+                "is searched for system output to offer back as data. Absent "
+                "or empty, it is `typed`."
+            ),
+        ),
+    ] = "typed",
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
     current_user: UserDTO = Depends(require_authentication),
@@ -871,6 +889,7 @@ async def submit_turn(
                         "input_type": input_type,
                         "source_url": source_url,
                         "observed_at": observed_at,
+                        "query_source": query_source,
                     },
                     [(f.filename or "", content) for f, content in file_contents],
                 ),
@@ -1020,7 +1039,12 @@ async def submit_turn(
                     detail=f"Invalid fields for intent_type={intent_type!r}: {e}",
                 )
 
-        payload = TurnPayload(query=query, attachments=attachments, intent=intent)
+        payload = TurnPayload(
+            query=query,
+            attachments=attachments,
+            intent=intent,
+            query_source=query_source,
+        )
 
         # Process turn with configurable timeout (provider-aware — see ISS-058).
         try:

@@ -296,6 +296,10 @@ class Attachment:
     """
 
 
+QuerySource = Literal["typed", "chosen", "generated"]
+"""The turn route's ``query_source`` values (#2717)."""
+
+
 @dataclass
 class TurnPayload:
     """Universal turn payload — canonical input to the investigation pipeline.
@@ -310,6 +314,9 @@ class TurnPayload:
     query: Optional[str] = None
     attachments: List[Attachment] = field(default_factory=list)
     intent: Optional["QueryIntent"] = None
+    query_source: QuerySource = "typed"
+    """Who wrote ``query``, as the client declares it (#2717): the user typed
+    it, chose it (a chip), or the client generated it."""
 
     @property
     def has_attachments(self) -> bool:
@@ -318,6 +325,23 @@ class TurnPayload:
     @property
     def has_query(self) -> bool:
         return self.query is not None and self.query.strip() != ""
+
+    @property
+    def typed_message(self) -> str:
+        """What the user typed into the message box, or ``""`` (#2717).
+
+        Only this is searched for system output the user typed: not a chosen
+        chip, not a client's generated text, and not the server's composed
+        query (a blank query with attachments)."""
+        if self.has_query and self.query_source == "typed":
+            return self.query or ""
+        return ""
+
+    @property
+    def users_query(self) -> str:
+        """The query the user wrote, typed or chosen, or ``""`` for a client's
+        generated one (#2717)."""
+        return "" if self.query_source == "generated" else (self.query or "")
 
 
 # =============================================================================

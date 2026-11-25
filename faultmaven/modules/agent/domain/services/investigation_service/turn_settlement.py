@@ -101,7 +101,7 @@ class PreparedTurn:
         emit_case_turn(
             self.case,
             path=TurnPath.ERROR,
-            user_message_chars=len(self.payload.query or ""),
+            user_message_chars=len(self.payload.users_query),
             attachment_count=len(self.payload.attachments or []),
         )
 

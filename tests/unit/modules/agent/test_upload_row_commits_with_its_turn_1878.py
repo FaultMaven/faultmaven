@@ -158,6 +158,7 @@ class _Engine:
         user_id=None,
         typed=False,
         redaction_ctx=None,
+        typed_message=None,
     ):
         self.files_on_entry.append([f.filename for f in case.uploaded_files])
         self.attachments.append(attachments)

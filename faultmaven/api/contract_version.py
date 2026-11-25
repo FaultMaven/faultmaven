@@ -151,6 +151,29 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="15.18.0",
+        level="MINOR",
+        title=(
+            "`POST /cases/{case_id}/turns` takes the form field `query_source`: "
+            "`typed` (default), `chosen` or `generated` (#2717)."
+        ),
+        body=r"""Says who wrote `query`: the user typed it into the message box
+(`typed`), the user chose it, a chip or a status change (`chosen`), or the
+client wrote it (`generated`, such as a sentence composed for a paste sent
+with an empty box). Absent or empty, it is `typed`; any other value is a 422.
+
+Only a `typed` query is searched for system output to offer back as data (the
+"Yes, save it as data" choice). The server's own composed query on a turn
+carrying only data is no longer searched either, so such a turn offers no
+block even from a client that does not send the field. The "Submit the output"
+request for a reported state is unchanged by this version.
+
+Under an `Idempotency-Key`, a retry whose `query_source` differs is a
+different turn (409 `IDEMPOTENCY_KEY_REUSE`).
+
+MINOR: an optional request field.""",
+    ),
+    ContractChange(
         version="15.17.0",
         level="MINOR",
         title=(

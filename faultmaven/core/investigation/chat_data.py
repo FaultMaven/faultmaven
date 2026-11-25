@@ -125,6 +125,7 @@ def mint_chat_data_offer(
     case: Case,
     *,
     user_message: str,
+    typed_message: Optional[str] = None,
     named_blocks: Optional[Sequence[object]],
     state_report: Optional[object] = None,
     submitted_data: bool = False,
@@ -146,6 +147,10 @@ def mint_chat_data_offer(
     the reported state, and the engine cannot tell which upload shows what
     (#1938).
 
+    ``user_message`` is the message the turn was given, whoever wrote it.
+    ``typed_message`` is what the user typed of it, the only text blocks are
+    located in (#2717); ``None`` means ``user_message`` is what the user typed.
+
     Nothing is offered on a terminal case (it takes no new data) or for an empty
     message.
     """
@@ -153,8 +158,9 @@ def mint_chat_data_offer(
         close_state_requests(case)
     if not (user_message or "").strip() or case.is_terminal:
         return None
+    searched = user_message if typed_message is None else typed_message
     blocks: List[str] = []
-    if named_blocks:
+    if searched.strip() and named_blocks:
         anchors = [
             (
                 reverse(getattr(block, "first_line", "") or ""),
@@ -162,7 +168,7 @@ def mint_chat_data_offer(
             )
             for block in list(named_blocks)[:MAX_CHAT_DATA_BLOCKS]
         ]
-        found, unmatched = locate_blocks(user_message, anchors)
+        found, unmatched = locate_blocks(searched, anchors)
         if unmatched:
             CHAT_DATA_OFFER_EVENTS_TOTAL.labels(event="block_unmatched").inc(unmatched)
             logger.info(
