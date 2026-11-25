@@ -23,9 +23,10 @@ between a send site and its request or job boundary lets it through
 The check reads the values it is handed, never an attribute of the provider,
 so nothing a provider class or instance defines — an override, a mixin, a
 patched attribute, a property, a duck-typed class — changes what is checked or
-sees the call before it: the dispatch runs no provider code but ``_generate``,
-and only after the check. A refusal names the provider by its class's own
-name, read without invoking anything on it. The values it accepts are exact
+sees the call before it: the dispatch runs no provider code before the check,
+and after it only ``get_structured_output_capability`` (handed the model alone,
+:func:`_fit_to_provider`) and ``_generate``. A refusal names the provider by
+its class's own name, read without invoking anything on it. The values it accepts are exact
 builtins (``list``, ``dict``, ``str``, ``ModelText``), so no method of the
 caller's containers runs during the check either, and the adapter reads what
 was checked. Calling ``_generate`` (or an adapter's own transport callables)
@@ -78,6 +79,9 @@ from faultmaven.infrastructure.llm.providers.base import (
     PROVIDER_API_KWARGS,
     ROUTER_CONSUMED_KWARGS,
     LLMResponse,
+)
+from faultmaven.infrastructure.llm.structured_output_capability import (
+    StructuredOutputCapability,
 )
 from faultmaven.infrastructure.security.model_content import (
     BAD_SHAPE,
@@ -227,6 +231,36 @@ def _send_key(provider: Any, model: Any) -> str:
     return f"{label}/{model}" if type(model) is str and model else label
 
 
+#: The capabilities that take ``json_object`` in place of a strict schema.
+_BELOW_STRICT = (
+    StructuredOutputCapability.BEST_EFFORT,
+    StructuredOutputCapability.FUNCTION_CALLING,
+)
+
+
+def _fit_to_provider(provider: Any, kwargs: Dict[str, Any]) -> None:
+    """Fit a strict ``json_schema`` to what ``provider`` declares for its
+    ``model`` (#2836): the router shapes it for the primary, and a fallback
+    may declare less.
+
+    Below STRICT it becomes ``json_object`` (BEST_EFFORT and FUNCTION_CALLING
+    alike), and NONE gets no ``response_format``; the STRICT strategy already
+    puts the schema in the prompt. A ``json_object`` is never changed, and a
+    call shaped for its own provider is unchanged. ``tools`` a provider cannot
+    carry are each transport's to fit or refuse (#2016).
+    """
+    response_format = kwargs.get("response_format")
+    if type(response_format) is not dict:
+        return
+    if response_format.get("type") != "json_schema":
+        return
+    capability = provider.get_structured_output_capability(kwargs.get("model"))
+    if capability is StructuredOutputCapability.NONE:
+        del kwargs["response_format"]
+    elif capability in _BELOW_STRICT:
+        kwargs["response_format"] = {"type": "json_object"}
+
+
 async def send_to_model(
     provider: Any,
     *,
@@ -238,7 +272,8 @@ async def send_to_model(
     Every send ends here — through the router's registry, or straight to a
     concrete provider (the engine's dedicated DA provider, the connection
     check). The check runs on the values (:func:`model_call_violations`); a
-    violation is refused (:func:`refuse`) before any network I/O.
+    violation is refused (:func:`refuse`) before any network I/O, and the
+    call is fitted to the provider (:func:`_fit_to_provider`).
     ``_generate`` then receives plain values: exact ``str`` text (unwrapped
     with ``str.__str__``) and message dicts copied only where something
     changes.
@@ -277,6 +312,7 @@ async def send_to_model(
         value = kwargs.get(key)
         if type(value) is list or type(value) is tuple:
             kwargs[key] = type(value)(plain_text(item) for item in value)
+    _fit_to_provider(provider, kwargs)
     model = kwargs.pop("model", None)
     try:
         return await provider._generate(

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
-from faultmaven.exceptions import LLMException
+from faultmaven.exceptions import CallShapeUnsupported, LLMException
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
@@ -120,6 +120,16 @@ class FireworksProvider(BaseLLMProvider):
 
         # Get effective model
         effective_model = self.get_effective_model(model)
+
+        # A denylisted model cannot carry tools: refused as this call's shape,
+        # not the provider's health, so the registry tries the next provider
+        # with no penalty (#2016, #2836).
+        if tools and not self.supports_tool_calling(effective_model):
+            raise CallShapeUnsupported(
+                f"{self.provider_name} model {effective_model} does not support "
+                f"tool calling, and this call carries tools. Route tool-using "
+                f"calls to a tool-capable model (DA_PROVIDER / CHAT_PROVIDER)."
+            )
 
         # Prepare request
         headers = {
