@@ -1,10 +1,9 @@
 """A hung test names itself in the log (#3078).
 
-``faulthandler_timeout`` (pytest.ini) dumps every thread's stack when a test
-runs past it, and ``tests/hang_report.py`` writes, at the same timeout, one
-block naming the xdist worker, the test's nodeid and, for an async test, the
-stacks of its loop's tasks: faulthandler alone names no test, and for an async
-test shows only the event loop's ``select``.
+At ``faulthandler_timeout`` (pytest.ini) ``tests/hang_report.py`` writes one
+block naming the xdist worker, the test's nodeid and the await chain of each
+task on its event loop, then every thread's stack: faulthandler alone names no
+test, and for an async test shows only the event loop's ``select``.
 """
 
 import os
@@ -22,6 +21,7 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
+_SYNC_FRAME = 'test_sync.py", line 5 in test_hangs_sync'
 _BLOCK = re.compile(
     r"=== hung test \[(?P<worker>gw\d)\] (?P<nodeid>\S+): running past 1s ===\n"
     r"(?P<body>.*?)"
@@ -49,8 +49,13 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
         "import asyncio\n\n\nasync def test_hangs_async():\n"
         "    await asyncio.Event().wait()\n"
     )
+    (tmp_path / "test_fixture.py").write_text(
+        "import asyncio\n\nimport pytest\n\n\n@pytest.fixture\nasync def stuck():\n"
+        "    await asyncio.Event().wait()\n    yield\n\n\n"
+        "async def test_hangs_in_its_fixture(stuck):\n    pass\n"
+    )
     command = [sys.executable, "-m", "pytest", "-p", "tests.hang_report"]
-    command += ["-p", "no:cacheprovider", "-n", "2", "--dist", "loadfile"]
+    command += ["-p", "no:cacheprovider", "-n", "3", "--dist", "loadfile"]
     with subprocess.Popen(
         command,
         cwd=tmp_path,
@@ -68,7 +73,8 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
         try:
             for line in run.stderr:
                 stderr += line
-                if len(_BLOCK.findall(stderr)) == 2:
+                # The sync test's frame is in the thread dump after its block.
+                if len(_BLOCK.findall(stderr)) == 3 and _SYNC_FRAME in stderr:
                     break
         finally:
             guard.cancel()
@@ -79,7 +85,10 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
     assert set(blocks) == {
         "test_sync.py::test_hangs_sync",
         "test_async.py::test_hangs_async",
+        "test_fixture.py::test_hangs_in_its_fixture",
     }, stderr
-    assert {b["worker"] for b in blocks.values()} == {"gw0", "gw1"}
+    assert {b["worker"] for b in blocks.values()} == {"gw0", "gw1", "gw2"}
     assert "in test_hangs_async\n" in blocks["test_async.py::test_hangs_async"]["body"]
+    assert "in stuck\n" in blocks["test_fixture.py::test_hangs_in_its_fixture"]["body"]
     assert "no asyncio loop reached" in blocks["test_sync.py::test_hangs_sync"]["body"]
+    assert _SYNC_FRAME in stderr

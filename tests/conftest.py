@@ -98,7 +98,7 @@ from tests import chroma_clients  # noqa: E402
 # repository on ``sys.path`` before it loads ``-p`` plugins; this conftest is
 # imported with it there. Without ``--shard`` the plugin does nothing.
 # ``tests/hang_report.py`` names a test still running at ``faulthandler_timeout``
-# (pytest.ini) and its asyncio tasks' stacks, beside faulthandler's dump (#3078).
+# (pytest.ini) and its asyncio tasks' await chains, then dumps every thread (#3078).
 pytest_plugins = ["tests.ci_shard", "tests.hang_report"]
 
 # "No Redis" is an EMPTY ``REDIS_HOST``: the client factory then returns the
