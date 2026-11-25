@@ -157,15 +157,17 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "Sessions: `session_type` is the server's, set once from the create "
             "request's typed field, and no `metadata` write changes it; the "
             "`GET /sessions` rows report it, and they and the heartbeat report "
-            "the session's `status` (#2772). No schema moves."
+            "the session's `status` (#2772). `session_type` is at most 64 "
+            "characters (#3065)."
         ),
         body=r"""Before, `POST /sessions` stored `session_type` in `metadata` and merged
 the client's `metadata` over it, so `metadata.session_type` replaced the field,
 and `PUT /sessions/{session_id}` could change or drop it. Now:
 
 * `POST /sessions` sets the type from `session_type` (absent or null:
-  `troubleshooting`) and echoes the stored one; a resume answers the type the
-  session was created with;
+  `troubleshooting`; longer than 64 characters: **422**, nothing created) and
+  echoes the stored one; a resume answers the type the session was created
+  with;
 * `GET /sessions` rows report the type, and `?session_type=` filters on it
   (before, every row read `troubleshooting`);
 * `GET /sessions` rows and the `POST /sessions/{session_id}/heartbeat` response

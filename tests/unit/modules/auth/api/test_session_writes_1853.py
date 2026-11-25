@@ -576,7 +576,7 @@ async def test_a_write_that_meets_an_expired_session_evicts_it(world):
     lapsed = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     _record_edit(world, lambda r: r.update(expires_at=lapsed))()
 
-    assert await world.service.update_last_activity(world.own_id) is False
+    assert await world.service.update_last_activity(world.own_id) is None
     assert world.sync.get(world.key) is None
     assert world.own_id not in world.sync.smembers(f"sessions:user:{OWNER}")
 
@@ -594,7 +594,8 @@ async def test_a_resume_landing_between_the_eviction_read_and_delete_survives(
     )
     _interleave(monkeypatch, world, 1, resume)
 
-    assert await world.service.update_last_activity(world.own_id) is True
+    written = await world.service.update_last_activity(world.own_id)
+    assert written is not None and written.session_id == world.own_id
     stored = json.loads(world.sync.get(world.key))
     assert parse_utc_timestamp(stored["last_activity"]) > parse_utc_timestamp(MARKER)
     assert world.own_id in world.sync.smembers(f"sessions:user:{OWNER}")

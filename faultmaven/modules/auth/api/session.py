@@ -143,7 +143,9 @@ class AuthSessionCreateRequest(BaseModel):
             "expires_at report it."
         ),
     )
-    session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
+    session_type: Optional[str] = Field(
+        default="troubleshooting", min_length=1, max_length=64
+    )
     metadata: Optional[dict] = None
     client_id: Optional[str] = Field(
         None,
@@ -738,7 +740,8 @@ async def session_heartbeat(
             logger.error("Session service is not available")
             raise HTTPException(status_code=503, detail="Session service unavailable")
 
-        # Update session activity with specific error handling
+        # Update session activity with specific error handling; the session
+        # as written, or None when there is none to update
         try:
             result = await session_service.update_last_activity(session_id)
         except FileNotFoundError:
@@ -796,26 +799,12 @@ async def session_heartbeat(
         # identical block went with `/stats`; this is its twin, on the
         # highest-frequency route on the router.
 
-        # Get updated session to return current last_activity and its
-        # server-set status (best effort: the fallbacks answer only when this
-        # read fails)
-        last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
-        status = "active"  # fallback
-        try:
-            session = await session_service.get_session(session_id, validate=False)
-            if session and session.last_activity:
-                last_activity = _safe_datetime_to_utc_string(session.last_activity)
-            if session:
-                status = session.status
-        except Exception as e:
-            logger.warning(
-                f"Failed to get updated session info for {session_id}: {exception_log_name(e)}"
-            )
-
+        # The session as the heartbeat wrote it: no second read, which could
+        # fail or race a delete and report a status the session does not hold.
         return {
             "session_id": session_id,
-            "status": status,
-            "last_activity": last_activity,
+            "status": result.status,
+            "last_activity": _safe_datetime_to_utc_string(result.last_activity),
             "message": "Session heartbeat updated",
         }
     except HTTPException:

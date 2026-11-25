@@ -596,6 +596,7 @@
           "session_type": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "minLength": 1,
                 "type": "string"
               },

@@ -335,16 +335,16 @@ class AuthSessionService:
         return await self._mutate(session_id, apply)
 
     @trace("session_service_update_last_activity")
-    async def update_last_activity(self, session_id: str) -> bool:
+    async def update_last_activity(self, session_id: str) -> Optional[SessionContext]:
         """Update session last activity timestamp
 
         Args:
             session_id: Session identifier
 
         Returns:
-            True if updated successfully
+            The session as written, or None if there is no such session
         """
-        return await self._mutate(session_id, _touched) is not None
+        return await self._mutate(session_id, _touched)
 
     @trace("session_service_delete_session")
     async def delete_session(self, session_id: str) -> bool:

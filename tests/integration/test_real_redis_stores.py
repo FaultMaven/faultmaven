@@ -344,7 +344,8 @@ async def test_a_session_lives_session_timeout_minutes_past_its_last_write(
 
     # A heartbeat re-arms it, and moves the expiry the record states with it.
     await real_redis.pexpire(key, 3000)
-    assert await service.update_last_activity(session.session_id) is True
+    written = await service.update_last_activity(session.session_id)
+    assert written is not None and written.session_id == session.session_id
     assert timeout_ms - 5000 < await real_redis.pttl(key) <= timeout_ms
     stored = await service.get_session(session.session_id)
     assert stored.expires_at > session.expires_at

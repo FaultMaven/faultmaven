@@ -284,6 +284,92 @@ async def test_a_heartbeat_reports_the_sessions_status(world):
         assert beat.json()["status"] == status
 
 
+async def _archived(world) -> str:
+    created = await _create(world)
+    response = await world.client.post(
+        f"/api/v1/sessions/{created['session_id']}/archive"
+    )
+    assert response.status_code == 200, response.text[:300]
+    return created["session_id"]
+
+
+async def test_a_heartbeat_answers_from_the_session_it_wrote(world, monkeypatch):
+    """At ``f23a35ac4`` a failed re-read after the write answered ``active``."""
+    session_id = await _archived(world)
+
+    async def _unreadable(*_args, **_kwargs):
+        raise ConnectionError("store unreadable")
+
+    monkeypatch.setattr(world.service, "get_session", _unreadable)
+
+    beat = await world.client.post(f"/api/v1/sessions/{session_id}/heartbeat")
+
+    assert beat.status_code == 200, beat.text[:300]
+    assert beat.json()["status"] == "archived"
+
+
+async def test_a_delete_after_the_heartbeats_write_does_not_change_its_answer(
+    world, monkeypatch
+):
+    """At ``f23a35ac4`` the re-read found nothing and answered ``active``.
+
+    The heartbeat's write landed, so it answers 200 with the session it wrote.
+    """
+    session_id = await _archived(world)
+    touch = world.service.update_last_activity
+
+    async def _then_deleted(sid):
+        written = await touch(sid)
+        await world.store.delete_session(sid)
+        return written
+
+    monkeypatch.setattr(world.service, "update_last_activity", _then_deleted)
+
+    beat = await world.client.post(f"/api/v1/sessions/{session_id}/heartbeat")
+
+    assert beat.status_code == 200, beat.text[:300]
+    assert beat.json()["status"] == "archived"
+
+
+async def test_a_heartbeat_on_a_deleted_session_is_404(world):
+    created = await _create(world)
+    await world.store.delete_session(created["session_id"])
+
+    beat = await world.client.post(
+        f"/api/v1/sessions/{created['session_id']}/heartbeat"
+    )
+
+    assert beat.status_code == 404, beat.text[:300]
+
+
+# ---------------------------------------------------------------------------
+# #3065: the type is bounded
+# ---------------------------------------------------------------------------
+
+
+async def test_an_over_long_type_is_refused_and_nothing_is_stored(world):
+    """On ``main`` any length was stored and echoed."""
+    value = "t" * 65
+
+    response = await world.client.post("/api/v1/sessions", json={"session_type": value})
+
+    assert response.status_code == 422, response.text[:300]
+    # No session is answered. (The 422's own error list carries the input, as
+    # every request-validation 422 does.)
+    assert "session_id" not in response.json()
+    assert "session_type" not in response.json()
+    assert await world.redis.keys("*") == []
+
+
+async def test_a_type_at_the_bound_is_stored(world):
+    value = "t" * 64
+
+    created = await _create(world, session_type=value)
+
+    assert created["session_type"] == value
+    assert await _listed_type(world, created["session_id"]) == value
+
+
 # ---------------------------------------------------------------------------
 # Stores: every implementation writes and reads the field
 # ---------------------------------------------------------------------------
