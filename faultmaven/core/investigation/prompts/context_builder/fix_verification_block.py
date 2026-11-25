@@ -75,7 +75,6 @@ from faultmaven.core.investigation.narration.fix_verification import (
     content_by_id,
     render_fix_verification,
 )
-from faultmaven.core.investigation.outcome import _problem_rows
 from faultmaven.core.investigation.terminal_transitions import (
     _relief_without_cause_recheck,
 )
@@ -138,7 +137,7 @@ def _fresh(case: Case, outcome: CaseOutcome, subjects, windows):
         leg, turn = ProblemLeg.FAILED, latest.failure_turn
     elif _relief_without_cause_recheck(case, latest, subjects):
         leg, turn = ProblemLeg.RELIEF, latest.relief_turn
-        gone = tuple(_problem_rows(latest, subjects))
+        gone = tuple(e.evidence_id for e in latest.problem_rows)
     # The gate's refusal is read only where its line prints, as ``main`` read
     # it: a holding relief of a dated mitigation, in MITIGATION.
     seen = outcome.mitigation

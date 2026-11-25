@@ -466,6 +466,13 @@ cause_identification_held_mece_total = Counter(
 #   undatable acceptance, which keeps ``undatable_acceptance``; as for a dated
 #   window, the latest decided window's label, even while a newer fix is
 #   unobserved.
+# - ``no_own_cause_removal`` — the window FAILED with neither a relief nor a
+#   disconfirmation: the problem was seen again after a re-check of another
+#   root, before the fix's own cause was seen removed (#2586). It disproves
+#   nothing about the cause the fix addressed.
+# - ``pair_row_left`` — the window FAILED with no relief, and the record's
+#   pair was read through a cause row no longer the window's (a re-root):
+#   it disproves nothing about the cause now identified (#2586).
 # - ``interception``     — every fix run was an interception: none opens a
 #   fix window, so nothing disconfirms the cause (#2036 D2.3).
 # - ``resolution_confirmed`` — the window SUCCEEDED: the cause observed removed
@@ -486,6 +493,8 @@ _M6_REFUSAL_REASONS = (
     "no_cause_removal",
     "no_persistence",
     "relapse",
+    "no_own_cause_removal",
+    "pair_row_left",
     "interception",
     "resolution_confirmed",
 )

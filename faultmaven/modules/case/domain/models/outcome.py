@@ -352,7 +352,11 @@ class FixWindowRecord(BaseModel):
     cause_row_ids: List[str] = Field(default_factory=list)
     confirmed_cause_row_ids: List[str] = Field(default_factory=list)
     problem_row_ids: List[str] = Field(
-        default_factory=list, description="The rows that showed the problem gone"
+        default_factory=list,
+        description=(
+            "The rows that showed the problem gone; on a FAILED window, up "
+            "to its failure"
+        ),
     )
     cited_basis: Dict[str, List[str]] = Field(
         default_factory=dict,
@@ -362,9 +366,9 @@ class FixWindowRecord(BaseModel):
         default=None,
         description=(
             "The counterfactual pair. One a FAILED window takes later (#2728) "
-            "may cite rows outside cause_row_ids and problem_row_ids, which "
-            "keep the rows the failure was read on (the row rule is S3b's, "
-            "#2586)"
+            "adds its cause row and that row's citation to the window, and "
+            "nothing else: problem_row_ids keep the rows the failure was read "
+            "on (#2586)"
         ),
     )
     read_under: str = Field(
@@ -397,10 +401,14 @@ class AttemptOutcome(BaseModel):
 
 
 class Demotion(BaseModel):
-    """An M6 demotion with its pair rows (final). No writer yet: stage S3b
-    (#3046)."""
+    """A cause demoted on a failed fix of it, with the pair it was read on
+    (final, #2586): M6's own demotion, or the model's or the user's
+    refutation standing on the failed fix (``record_demotion``). One per
+    hypothesis and attempt (``action_id``; None for window 0). A demotion on
+    the cause's own evidence records none."""
 
     hypothesis_id: str
+    action_id: Optional[str] = None
     root_id: str
     fix_turn: Optional[int] = None
     cause_row_id: Optional[str] = None

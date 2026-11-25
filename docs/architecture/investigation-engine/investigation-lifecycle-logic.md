@@ -1142,31 +1142,51 @@ written*, as amended by #2811, ruled 2026-11-15):
   guard's alone. **The overlay rule:** a final FAILED window is matched to a
   fresh window by its `action_id`, through the action's current
   `accepted_in_turn` (window 0 as `action_id` None). It takes the record's
-  state, `observed`, relief and failure turns, and its disconfirmation pair,
-  or the fresh pair while it has none. The span and the cause rows are the
-  fresh read's (the row rule is S3b's), save that an unkinded window ends at
-  the first attempt at or after its carried failure and holds no row past
-  it. A final window whose attempt no longer reads (an orphan) is not laid
-  over anything; a withdrawn attempt's drops out. Until S3b, a carried
-  FAILED window pairs the record's verdict with fresh rows. M6 acts on a
-  carried pair only while its cause row is one of the window's, and
-  attributes it through that row alone (`FixWindow.carried_pair_rows`);
-  otherwise it reads the fresh read's pair with `main`'s attribution
-  (`FixWindow.m6_pair`, the failed-fix refusal's `relapse` label and the
-  absence notice's `disconfirmed` too). So a re-check of a cause identified
-  since never makes an old pair refute it, and an old pair never hides a
-  later failure the fresh read holds. Inside one
-  computation of the record, `_attempts` folds the fresh read and every
-  other section, and each decider it calls, reads the windows those attempts
-  carry (seeded in the computation's memo), so the record agrees with itself.
+  state, `observed`, relief and failure turns, its problem rows (those up
+  to its failure, as a fresh FAILED read holds, #2586), and its
+  disconfirmation pair, or the fresh pair
+  while it has none. The span, the cause and confirmed-cause rows, and the
+  turns a pair is read over are the fresh read's, save that an unkinded
+  window ends at the first attempt at or after its carried failure and
+  holds no row or turn past it. A final window whose attempt no longer
+  reads (an orphan) is not laid over anything; a withdrawn attempt's drops
+  out. Inside one computation of the record, `_attempts` folds the fresh
+  read and every other section, and each decider it calls, reads the
+  windows those attempts carry (seeded in the computation's memo), so the
+  record agrees with itself.
+- **A failed fix disconfirms a cause only through that cause's own pair**
+  (#2586, #3046 S3b). A kinded window's pair reads only its targets' rows
+  (their deepened-from lineage, its confirmed rows, the rows its targets
+  cite), never an unrelated fallen root's; its state still reads every
+  cause row. A pair names the row it was read through
+  (`FixWindow.pair_cause_row_id`): one of the cause now when its turn holds
+  one, which M6 names too; the record writes it, or the row a demotion on
+  that attempt named, so the record, M6 and the demotion name one row. A
+  FAILED window with no relief and no pair disproves nothing (refusal
+  `no_own_cause_removal`; the absence notice says the fix's own cause was
+  not shown removed), nor does one
+  whose carried pair's cause row has left the window (`pair_row_left`; the
+  notice says the re-check was of a cause re-rooted since). M6 attributes a
+  carried pair through its own cause row while that row is the window's
+  (`FixWindow.carried_pair_rows`), else through the pair over the rows that
+  address this cause (`FixWindow.pair_through`), in the window or else the
+  fresh one (an interception cuts the carried span). So a re-check of
+  another root never refutes a cause, and an old pair never hides a later
+  failure of it. A demotion on a failed fix (M6's `record` kind, or the
+  model's or the user's refutation standing on it) is recorded, final, on
+  `CaseOutcome.demotions` (`record_demotion`: the attempt that targeted
+  this cause or its deepened-from lineage, else an unkinded one; the
+  pair's rows; the turn), once per hypothesis and attempt; never with no
+  record, nor for an `evidence` demotion (which wins when both hold); one
+  before #2586 has none.
 - **A later disconfirmation reaches the record** (#2728). When the carried
   and fresh windows are both FAILED, the carried pair is None and the fresh
   one is set, a minting fold takes the fresh pair, once and final from then
   on. It is an addition, not a disagreement: counted once on
   `case_outcome_conflicts_total{field="attempts.window.disconfirmation"}`,
-  never under `attempts.window`. The taken pair may cite rows outside the
-  record window's `cause_row_ids` and `problem_row_ids`, which keep the rows
-  the failure was read on (the row rule is S3b's).
+  never under `attempts.window`. The pair's cause row and its citation join
+  the record window's `cause_row_ids` and `cited_basis`, and nothing else:
+  its `problem_row_ids` keep the rows the failure was read on (#2586).
 - **The same-cycle mint** (#2582). Step 1 writes the record once more, before
   the chain emission, at its own write point (`WritePoint.PRE_CHAIN`, a
   replayed bundle's too; a failed write is counted under `pre_chain` and

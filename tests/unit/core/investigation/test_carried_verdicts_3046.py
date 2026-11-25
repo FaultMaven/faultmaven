@@ -15,12 +15,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    _fix_failure_refusal,
+)
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
     _no_confirming_window,
     carried_fix_windows,
     fix_windows,
+    latest_decided_fix_window,
 )
 from faultmaven.core.investigation.milestone_engine import (
     response_application,
@@ -56,6 +60,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.unit.core.investigation import test_cause_leg_cited_basis_2557 as cited
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row, upload
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _cited_but_unlinked,
     _deepen,
@@ -309,6 +314,33 @@ async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     assert carried.disconfirmation == (7, 8)
     assert carried.carried_pair_rows() == () and carried.m6_pair is None
     assert hyp.state != HypothesisState.REFUTED and _engine_rows(case) == []
+
+
+async def test_a_carried_pair_whose_row_left_is_told_as_such():
+    """Review item 2: after the re-root the carried pair (7, 8) has left the
+    window, and an absence row at 9 is told why it confirms nothing. The
+    window has a pair, so it is not the no-pair shape."""
+    case, _root, _hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    _row(
+        case,
+        _C.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=9,
+        evidence_id=_eid("quiet9"),
+        summary="checkout answers 200",
+        rechecks=VERIFYING_ID,
+    )
+    case.current_turn = 9
+    window = latest_decided_fix_window(case)
+    assert window.disconfirmation == (7, 8) and window.m6_pair is None, "premise"
+    assert window.relief_turn is None, "premise"
+    metadata: dict = {}
+
+    assert stage_gates._flag_absence_inside_a_failed_fix_window(case, metadata)
+
+    assert _fix_failure_refusal(case, window) == "pair_row_left"
+    (notice,) = narrated(case, metadata)
+    assert "seen again at turn 8, after a re-check of a cause re-rooted since" in notice
+    assert "before the cause it addressed was shown removed" not in notice
 
 
 async def test_a_carried_pair_refutes_no_cause_identified_since():
@@ -617,13 +649,12 @@ def test_the_report_dating_guard_still_reads_the_fresh_pair():
     assert entry["params"]["reason"] == "decides_disconfirmation"
 
 
-def test_m6_attributes_as_on_main_where_the_carried_pair_does_not_decide():
+def test_m6_leaves_a_cause_whose_own_row_formed_no_pair():
     """The review delta's scenario B, #2586's sequence with the record written
-    each cycle. B's fix at 10 fails at 12 on a re-check of A's row (the pair
-    (11, 12)); B's own row is re-checked at 13. The carried pair's row does
-    not address B, so M6 reads the fresh read's pair with ``main``'s
-    attribution and demotes B at 13, as ``main`` does: the row rule and M6's
-    demotions record stay S3b's (#2586)."""
+    each cycle. B's fix at 10 fails at 12 on a re-check of A's row; B's own
+    row is re-checked at 13. The window's pair reads only rows of the fix's
+    target, B, so it has none, and the record holds the failure with no
+    pair: B is not demoted at 13 (#2586, #3046 S3b)."""
     case, b, hyp_b, rows = cited._kinded_a_fell_older_b_stands()
     record_case_outcome(case, at=WritePoint.CYCLE)
     cited._fix(case, 10, "remediation", [b.node_id], cited._FIX)
@@ -632,12 +663,14 @@ def test_m6_attributes_as_on_main_where_the_carried_pair_does_not_decide():
     _cycle(case, 12)
     cited._recheck(case, rows[0].evidence_id, turn=13, label="rc_b")
     case.current_turn = 13
-    assert carried_fix_windows(case)[-1].pair_carried, "premise: carried"
+    window = carried_fix_windows(case)[-1]
+    assert (window.state, window.failure_turn) == (FIX_FAILED, 12), "premise"
+    assert window.disconfirmation is None and not window.pair_carried
 
     _cycle(case, 13)
 
-    assert hyp_b.state == HypothesisState.REFUTED
-    assert [e.collected_at_turn for e in _engine_rows(case)] == [8, 13]
+    assert hyp_b.state == HypothesisState.VALIDATED
+    assert [e.collected_at_turn for e in _engine_rows(case)] == [8]
 
 
 # ---------------------------------------------------------------------------

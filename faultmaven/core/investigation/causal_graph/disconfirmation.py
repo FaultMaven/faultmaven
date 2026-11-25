@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -9,7 +10,11 @@ from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
     FIX_FAILED,
     FIX_SUCCEEDED,
+    SUBJECT_PROBLEM,
     FixWindow,
+    _dated_fixes,
+    _is_remediation,
+    _with_deepened_from,
     carried_fix_windows,
     counterfactual_link_decisive,
     fix_application_turn,
@@ -32,6 +37,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.modules.case.contracts import (
     CausalNode,
     CauseState,
+    Demotion,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -54,6 +60,7 @@ from .rcc import (
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, Hypothesis
 
+logger = logging.getLogger(__name__)
 
 _DISCONFIRMATION_REASON = (
     "counterfactual disconfirmation: the cause was addressed or confirmed "
@@ -213,11 +220,13 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
     candidate, not this one. The persistence row is bound too: it names a row that showed the problem,
     so a probe's own failure is not "the problem is back" (#2039). A pair
     carried from the record attributes only through its own cause row while
-    that row is in the window (``FixWindow.carried_pair_rows``, #3046 S3a-2);
-    otherwise the fresh read's pair attributes as on ``main``, so a re-check
-    of a cause identified since never turns an old pair against it, and the
-    old pair never hides a later failure the fresh read holds. The window
-    returned carries the pair that attributed."""
+    that row is in the window (``FixWindow.carried_pair_rows``, #3046 S3a-2).
+    Otherwise the pair is this cause's own (#2586): read over the window's
+    rows that address it (``FixWindow.pair_through``), or, failing that, over
+    the fresh window's (an interception cuts the carried span), so a re-check
+    of another root never fails it, and an old pair never hides a later
+    failure of it. The window returned carries the pair that attributed, and
+    its cause row (``pair_cause_row_id``)."""
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
     if (
         root is None
@@ -244,10 +253,78 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
 
     if of_this_cause(window.carried_pair_rows(), window):
         return window
-    fresh = window.as_fresh()
-    if fresh.disconfirmation is None or not of_this_cause(fresh.cause_rows, fresh):
-        return None
-    return fresh
+    for read in [window] if window.fresh is None else [window, window.fresh]:
+        mine = [row for row in read.cause_rows if of_this_cause((row,), read)]
+        pair = read.pair_through(subjects.observed(row) for row in mine)
+        if pair is not None:
+            at = [r for r in mine if subjects.observed(r) == pair[0]]
+            row = next(
+                (r for r in at if r.evidence_id == read.pair_cause_row_id), at[0]
+            )
+            return replace(
+                read,
+                disconfirmation=pair,
+                pair_carried=False,
+                pair_cause_row_id=row.evidence_id,
+            )
+    return None
+
+
+def record_demotion(case: Case, hyp: Hypothesis, window: FixWindow) -> None:
+    """Record on the outcome record that ``hyp`` fell to the failed fix
+    ``failed_fix_of`` attributed to it (#2586): the attempt, the pair's cause
+    row and the problem-bound row seen present at its persistence turn. Once
+    per hypothesis and attempt, and final. From M6, the model's refutation
+    and the user's, each standing on the failed fix. With no record, nothing
+    is recorded."""
+    outcome = case.progress.outcome
+    if outcome is None:
+        logger.info(
+            "Case %s: the demotion of %s is not recorded: no outcome record",
+            case.case_id,
+            hyp.hypothesis_id,
+        )
+        return
+    # The attempt that targeted this cause or one deepened into it; an
+    # unkinded one targets none, so the turn's first stands for it.
+    tried = [
+        a
+        for a in _dated_fixes(case)
+        if _is_remediation(a) and a.accepted_in_turn == window.fix_turn
+    ]
+    lineage = _with_deepened_from(case, {hyp.root_node_id})
+    action_id = next(
+        (a.action_id for a in tried if lineage & set(a.target_ids or ())),
+        next((a.action_id for a in tried if a.fix_kind is None), None),
+    )
+    if any(
+        (d.hypothesis_id, d.action_id) == (hyp.hypothesis_id, action_id)
+        for d in outcome.demotions
+    ):
+        return
+    subjects = subject_index(case)
+    problem_turn = window.m6_pair[1]
+    demotion = Demotion(
+        hypothesis_id=hyp.hypothesis_id,
+        action_id=action_id,
+        root_id=hyp.root_node_id or "",
+        fix_turn=window.fix_turn,
+        cause_row_id=window.pair_cause_row_id,
+        problem_row_id=next(
+            (
+                e.evidence_id
+                for e in subjects.rows.values()
+                if e.category == EvidenceCategory.SYMPTOM_EVIDENCE
+                and subjects.observed(e) == problem_turn
+                and subjects.subject(e, windows=True) == SUBJECT_PROBLEM
+            ),
+            None,
+        ),
+        turn=case.current_turn,
+    )
+    case.progress.outcome = outcome.model_copy(
+        update={"demotions": [*outcome.demotions, demotion]}
+    )
 
 
 def _registration_turn(case: Case, window: FixWindow) -> int:
@@ -351,7 +428,11 @@ def m6_disconfirmation_basis(
     cause re-check after the fix — "I ran it, still failing" may be an
     implementation error, which disconfirms nothing), ``no_persistence``,
     ``relapse`` (the problem seen gone after the fix, then seen again: the
-    counterfactual held, and the return disproves nothing about the cause).
+    counterfactual held, and the return disproves nothing about the cause),
+    ``no_own_cause_removal`` (FAILED with neither a relief nor a pair: the
+    problem seen again before the fix's own cause was seen removed, #2586),
+    ``pair_row_left`` (no relief, and a carried pair whose cause row has left
+    the window).
 
     The window is the ONE answer to "did the latest fix work?" (#1927): the
     readiness gate's legs exclude what a failed window holds, so M6 demotes
@@ -405,7 +486,10 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     latest window with a verdict (``latest_decided_fix_window``) FAILED by
     persistence. A newer window still waiting on its first observation does
     not erase it. A relapse — the problem seen gone after the fix, then seen
-    again — establishes no disconfirmation (``FixWindow.disconfirms_cause``).
+    again — establishes no disconfirmation (``FixWindow.disconfirms_cause``),
+    nor does a failure with no pair (``no_own_cause_removal``), or with a
+    carried pair whose cause row has left the window (``pair_row_left``,
+    #2586).
     A relapsed window 0 on a case with an undatable acceptance keeps that
     label, so the transition series stays visible (#2501). A case whose
     every dated fix was an interception is ``interception``: none opens a
@@ -416,7 +500,9 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
             return None
         if decided.fix_turn is None and _has_undatable_solution_acceptance(case):
             return "undatable_acceptance"
-        return "relapse"
+        if decided.relief_turn is not None:
+            return "relapse"
+        return "pair_row_left" if decided.disconfirmation else "no_own_cause_removal"
     latest = carried_fix_windows(case)[-1]
     if (
         latest.fix_turn is None
@@ -554,6 +640,9 @@ def demote_disconfirmed_cause_via_evidence(case: Case, *, count: bool = True) ->
       assert a failed fix it did not establish — that assertion, minted as a
       durable row, is what made #987 permanent.
 
+    A ``record`` demotion is recorded on the outcome record
+    (``record_demotion``); an ``evidence`` one, which wins when both hold, is
+    not, and a cause demoted before #2586 has its engine row and no entry.
     Either way the hypothesis's own state still governs downstream, so a
     genuinely disproven cause stops grounding ``cause_state`` regardless. The
     failed fix's rows stop standing as a resolution by derivation
@@ -585,6 +674,8 @@ def demote_disconfirmed_cause_via_evidence(case: Case, *, count: bool = True) ->
         HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
     if hyp.root_node_id:
         _attach_engine_refutation(case, hyp.root_node_id, reason, provenance)
+    if kind == "record":
+        record_demotion(case, hyp, trigger.window)
     # Retract the conclusion so the disposition layer cannot keep treating the
     # cause as known; the cause_state itself is re-derived from the (now refuted)
     # root by the caller's derive + recompute.

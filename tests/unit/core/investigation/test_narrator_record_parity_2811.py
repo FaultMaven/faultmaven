@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import (
+    FIX_FAILED,
     FIX_INTERCEPTION,
     FIX_SUCCEEDED,
     SUBJECT_PROBLEM,
@@ -78,11 +79,6 @@ DECLARED = {
     # ``assembly.py`` prints the stored ``mitigation.verified``; the record
     # holds it relapse-adjusted.
     "mitigation.verified": "#2609",
-    # The narrators read the carried view (#3046 S3a-2), the record's FAILED
-    # verdict over the fresh read, whose span and rows are fresh; the record
-    # keeps the rows it read the failure on (its problem rows). The row rule
-    # is S3b's (#2586).
-    "windows": "#2586",
 }
 
 
@@ -142,12 +138,18 @@ def derived(case) -> dict:
                 w.observed,
                 w.relief_turn,
                 w.failure_turn,
+                # A FAILED window's problem rows are final at its failure: the
+                # rows that showed the problem gone up to it (the shape-2
+                # rule, #2586).
                 sorted(
                     e.evidence_id
                     for e in subjects.rows.values()
                     if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
                     and subjects.subject(e) == SUBJECT_PROBLEM
                     and w.holds(subjects.observed(e))
+                    and (
+                        w.state != FIX_FAILED or subjects.observed(e) <= w.failure_turn
+                    )
                 ),
             )
             for w in (by_turn.get(a.accepted_in_turn) for a in attempts)
@@ -550,7 +552,7 @@ FIXTURES = {
     "held_check_then_interception": (_held_check_then_interception, set()),
     "2609_relapsed_mitigation": (_relapsed_mitigation, {"mitigation.verified"}),
     "2582_cited_failure_re_rooted": (_2582, set()),
-    "2595_unkinded_failure_rebound": (_2595, {"windows"}),
+    "2595_unkinded_failure_rebound": (_2595, set()),
 }
 
 
