@@ -15,10 +15,10 @@ Environment Variables:
     DATABASE_URL: The database to migrate, bound as the app's settings bind it
         (in any case). Unset: ``data/faultmaven.db``
         (SQLite) under the project root. Set to a value that configures no
-        persistent database (empty, ``:memory:``, an in-memory SQLite URL, a
-        value that does not parse), an online migration refuses and exits 1
-        (#1704); offline (``--sql``) opens no database and only takes the
-        dialect from it. A value with leading or trailing whitespace
+        persistent database (empty or blank, ``:memory:``, an in-memory
+        SQLite URL, a value that does not parse), an online migration refuses
+        and exits 1 (#1704); offline (``--sql``) opens no database and only
+        takes the dialect from it. A value with leading or trailing whitespace
         (#1789), or whose query names a Postgres root input outside the TLS
         root set or holds a key that is not a plain option name (#2787), is
         refused in both modes, exit 1. Only the URL is
@@ -115,8 +115,8 @@ def get_database_url(*, require_persistent: bool) -> str:
     1, as the app refuses it (#1789), and so is one whose query names a
     Postgres root input outside the TLS root set or holds a key that is not a
     plain option name (``pg_root_inputs_in_url``, #2787). Otherwise offline (``--sql``) opens no database: the URL only names
-    the dialect, so it is not refused, and an empty value falls back to the
-    default file URL.
+    the dialect, so it is not refused, and an empty or blank value falls back
+    to the default file URL.
 
     Returns:
         str: Database connection URL
@@ -125,6 +125,10 @@ def get_database_url(*, require_persistent: bool) -> str:
         url = configured_database_url()
     except DatabaseUrlWhitespaceError as exc:
         exit_refusing(str(exc))
+    # A blank value is no database, as every reader of the setting treats it
+    # (``require_no_surrounding_whitespace``): read it as the empty one (#2754).
+    if url is not None and not url.strip():
+        url = ""
     root_inputs = pg_root_inputs_in_url(url) if url else []
     if root_inputs:
         exit_refusing(pg_url_refusal(root_inputs))

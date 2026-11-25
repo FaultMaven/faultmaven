@@ -109,6 +109,7 @@ def _upgrade_head(
         {"DATABASE_URL": ":memory:"},
         {"DATABASE_URL": "sqlite+aiosqlite:///file:x?uri=true&vfs=memdb"},
         {"DATABASE_URL": ""},
+        {"DATABASE_URL": " "},
         {"database_url": "sqlite:///:memory:"},
     ],
     ids=[
@@ -118,6 +119,7 @@ def _upgrade_head(
         "bare-memory",
         "file-uri-vfs-memdb",
         "empty",
+        "blank",
         "lowercase-only-sqlite-memory",
     ],
 )
@@ -149,6 +151,27 @@ def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
     assert result.returncode == 0, result.stderr[-3000:]
     assert REFUSAL not in result.stderr
     assert "CREATE TABLE" in result.stdout
+
+
+@pytest.mark.parametrize("value", [" ", "\t"], ids=["space", "tab"])
+def test_offline_sql_reads_a_blank_url_as_an_empty_one(alembic_copy, value):
+    """A blank value is no database, as every reader treats it: ``--sql`` takes
+    the default file URL's dialect, as for an empty one, instead of handing the
+    blank to the URL parser and exiting on its traceback (#2754)."""
+    result = _upgrade_head(
+        alembic_copy,
+        {"DATABASE_URL": value},
+        "--sql",
+        target=LAST_SQLITE_OFFLINE_REVISION,
+    )
+    detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
+
+    assert result.returncode == 0, detail
+    # The log chain renders an uncaught exception's frames under this message
+    # (#2888), so "Traceback" alone would never appear.
+    assert "Uncaught exception" not in result.stderr, detail
+    assert "Traceback" not in result.stderr, detail
+    assert "CREATE TABLE" in result.stdout, detail
 
 
 def test_offline_sql_on_sqlite_stops_at_018(alembic_copy):
