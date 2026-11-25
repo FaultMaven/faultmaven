@@ -4,7 +4,8 @@ does (#3053 S3d-1, stage S3d of #2615).
 The refusal stated the decide-time message, built with no cause, so its ask
 lacked the pool-empty line (approved copy item 5, #2811 S2c-1b) the needs-info
 request shows for the same case. Only a refusal whose fresh readiness asks for
-the root cause reads the fold (``terminal_replies._reply_outcome``); every
+the root cause reads the fold (``terminal_replies._reply_outcome``), and only
+its cause: the refusal states the fresh ask with the record's cause. Every
 other refusal, and one whose fold raised, keeps today's text.
 """
 
@@ -20,6 +21,7 @@ from faultmaven.core.investigation.milestone_engine.turn_narration import (
     narrate_turn,
 )
 from faultmaven.core.investigation.narration.codes import OfferCode
+from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
@@ -82,7 +84,9 @@ def folds(monkeypatch) -> list:
 
 @pytest.mark.parametrize("reason", sorted(POOL_EMPTY))
 def test_the_refusal_states_the_record_paths_root_cause_ask(monkeypatch, folds, reason):
-    """The needs-info request's text on the same case, byte for byte."""
+    """The needs-info render of the fresh params with the record's cause,
+    which is the narrated needs-info request on the same case, byte for
+    byte."""
     case = POOL_EMPTY[reason]()
     readiness = assess_resolution_readiness(case)
     assert readiness.reason == ResolutionReason.DOCUMENTATION_GAPS, "premise"
@@ -96,9 +100,13 @@ def test_the_refusal_states_the_record_paths_root_cause_ask(monkeypatch, folds, 
     ((code, record_path),) = rendered
     assert code == OfferCode.RESOLUTION_NEEDS_INFO and not _conflicts(metadata)
 
+    cause = narration_outcome(case).cause
+    params = {**readiness.offer_params(), "cause": cause}
+    rendered_ask = render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params)
+
     text = _chip(case)
 
-    assert text == f"{_LEAD}\n\n{record_path}"
+    assert text == f"{_LEAD}\n\n{rendered_ask}" == f"{_LEAD}\n\n{record_path}"
     assert text == _today(case).replace(_ASK, f"{_ASK} {APPROVED[reason]}", 1)
     assert len(folds) == 1
 
@@ -113,6 +121,31 @@ def test_a_record_cause_with_no_pool_empty_reason_adds_no_line(monkeypatch, fold
 
     assert _chip(case) == _today(case)
     assert f"{_ASK}\n" in _today(case)
+    assert len(folds) == 1
+
+
+#: A fold whose readiness disagrees with the fresh one (a carried FAILED
+#: window, a pending need): the record's resolution, by what differs.
+DISAGREEING = {
+    "pending_check": {"reason": ResolutionReason.PENDING_CHECK},
+    "fix_failed": {"reason": ResolutionReason.FIX_FAILED},
+    "fix_off_cause": {"reason": ResolutionReason.FIX_OFF_CAUSE, "off_cause_turn": 3},
+    "no_root_cause": {"missing": ["solution"]},
+}
+
+
+@pytest.mark.parametrize("name", list(DISAGREEING))
+def test_a_disagreeing_fold_lends_only_its_cause(monkeypatch, folds, name):
+    """The fresh ask with the record's cause, whatever the record's reason,
+    missing items or gaps: no other text moves, and nothing raises."""
+    case = POOL_EMPTY[PoolEmptyReason.NO_CAUSE]()
+    outcome = narration_outcome(case)
+    resolution = outcome.resolution.model_copy(update=DISAGREEING[name])
+    record = outcome.model_copy(update={"resolution": resolution})
+    monkeypatch.setattr(terminal_replies, "narration_outcome", lambda _c: record)
+    line = APPROVED[PoolEmptyReason.NO_CAUSE]
+
+    assert _chip(case) == _today(case).replace(_ASK, f"{_ASK} {line}", 1)
     assert len(folds) == 1
 
 

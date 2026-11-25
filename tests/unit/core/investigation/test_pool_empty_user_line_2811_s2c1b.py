@@ -6,8 +6,9 @@ reason carries that reason's line beside the "Root cause" ask (approved copy
 item 5), exactly when ``empty_pool_text`` gives a line for the record's
 cause. The decide-time message (``ResolutionReadiness.message``) keeps the bare ask:
 the difference is accepted and pinned here. Its one reply with a "Root
-cause" ask, the reopen chip's refusal, states the record path's ask instead
-(#3053 S3d-1, ``test_reopen_chip_pool_line_3053``). Pin 6's user half: every
+cause" ask, the reopen chip's refusal, states it with the record's cause, so
+its "Root cause" line is the record path's (#3053 S3d-1,
+``test_reopen_chip_pool_line_3053``). Pin 6's user half: every
 ``PoolEmptyReason`` member has a line.
 """
 
@@ -205,8 +206,8 @@ def test_the_needs_info_request_says_why_the_cause_cannot_be_confirmed(
 def test_the_decide_time_ask_keeps_todays_text(monkeypatch, reason):
     """The ruling's accepted difference, on one folded case: the decide-time
     message (``ResolutionReadiness.message``) is today's ask; the record
-    path's carries the line. The reopen chip's refusal states the record
-    path's (#3053 S3d-1); whether the decider reads the record is S3d-2's."""
+    path's carries the line. The reopen chip's refusal takes the record's
+    cause (#3053 S3d-1); whether the decider reads the record is S3d-2's."""
     case, metadata = CYCLES[reason]()
     _stored(case, metadata)
     rendered = _spy(monkeypatch)

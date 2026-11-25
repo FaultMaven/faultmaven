@@ -19,7 +19,7 @@ from faultmaven.core.investigation.milestone_engine.turn_records import (
     _finish_deterministic_turn,
 )
 from faultmaven.core.investigation.narration.codes import OfferCode
-from faultmaven.core.investigation.narration.offers import _readiness, record_params
+from faultmaven.core.investigation.narration.offers import render_offer
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import open_terminal_offer
 from faultmaven.core.investigation.problem_status import (
@@ -389,12 +389,12 @@ def _close_on_explicit_intent(
 
 
 def _refusal_readiness_ask(case, readiness) -> str:
-    """The readiness ask the reopen chip's refusal states (#3053 S3d-1). A
-    "Root cause" ask is the record path's (``record_params`` for
-    ``RESOLUTION_NEEDS_INFO``), from the record folded for the moment
-    (``_reply_outcome``), so it carries the record's pool-empty line exactly
-    as the needs-info request does; any other ask, and a fold that raised
-    (counted once), is the decide-time ``readiness.message``."""
+    """The readiness ask the reopen chip's refusal states (#3053 S3d-1). An
+    ask for the root cause is the fresh one with the record's cause, from
+    the record folded for the moment (``_reply_outcome``): every param is
+    the decide-time one, so only its "Root cause" line, which then carries
+    the record's pool-empty line, is the record path's. Any other ask, and a
+    fold that raised (counted once), is the decide-time ``readiness.message``."""
     if (
         readiness.reason != ResolutionReason.DOCUMENTATION_GAPS
         or "root cause" not in readiness.missing
@@ -403,11 +403,8 @@ def _refusal_readiness_ask(case, readiness) -> str:
     outcome = _reply_outcome(case)
     if outcome is None:
         return readiness.message
-    return _readiness(
-        record_params(
-            OfferCode.RESOLUTION_NEEDS_INFO, readiness.offer_params(), outcome, None
-        )
-    )
+    params = {**readiness.offer_params(), "cause": outcome.cause}
+    return render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params)
 
 
 def _resolve_on_reopen_chip(*, case, upload_report, user_message):
