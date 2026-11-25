@@ -230,9 +230,9 @@ class AuthSessionService:
             validate: When True (default), enforce expiry — an expired session is
                 deleted and None is returned. When False, read the stored session
                 as-is: no expiry check and no delete side effect. Readers that only
-                want to observe session data (e.g. the heartbeat endpoint reporting
-                last_activity) must not destroy a session as a side effect of
-                reading it.
+                want to observe session data (e.g. ``end_idp_session`` reading an
+                expired session's IdP handle at logout) must not destroy a
+                session as a side effect of reading it.
 
         Returns:
             SessionContext if found (and unexpired when validate=True), None otherwise
