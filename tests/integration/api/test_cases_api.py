@@ -667,6 +667,7 @@ class TestUpdateCase:
         )
 
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        mock_case_service.require_case.assert_not_awaited()
         mock_case_service.update_case.assert_not_awaited()
 
     async def test_update_case_not_found(self, client, mock_case_service, headers):

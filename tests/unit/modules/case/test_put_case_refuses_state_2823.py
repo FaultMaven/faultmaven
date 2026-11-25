@@ -63,6 +63,29 @@ def test_the_real_app_refuses_state_and_changes_nothing(booted_app_client, body)
     assert snapshot() == before
 
 
+@pytest.mark.parametrize("case", ["absent", "closed"])
+def test_the_body_is_refused_before_the_case_is_read(booted_app_client, case):
+    """The published order (contract 16.0.0): 422, not the case's 404 or the
+    terminal case's 409; a body without ``state`` still gets those."""
+    client = booted_app_client
+    login = client.post("/api/v1/auth/dev-login", json={"username": "admin"})
+    auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    case_id, refused = "case_000000000000", 404
+    if case == "closed":
+        created = client.post("/api/v1/cases", json={"title": "2823"}, headers=auth)
+        case_id, refused = created.json()["case_id"], 409
+        closed = client.post(f"/api/v1/cases/{case_id}/close", headers=auth)
+        assert closed.status_code == 200, closed.text
+    path = f"/api/v1/cases/{case_id}"
+
+    response = client.put(path, json={"state": "closed"}, headers=auth)
+
+    assert response.status_code == 422, response.text
+    assert response.json()["errors"][0]["type"] == "extra_forbidden"
+    control = client.put(path, json={"title": "x"}, headers=auth)
+    assert control.status_code == refused, control.text
+
+
 @pytest.fixture
 async def stored_inquiry():
     yield await _stored(inquiry_case(user_id="u", enterprise_id="o", title="before"))

@@ -159,9 +159,11 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "answers **422** and changes nothing (#2823)."
         ),
         body=r"""`CaseUpdateRequest` loses `state` and refuses undeclared fields. Before, a
-non-terminal `state` was written raw, past the investigation's own transitions,
-and a terminal one answered 500 `UPDATE_CASE_ERROR`. A title in the same body
-is refused with it, not applied. State moves through the investigation; a case
+`state` the case's validators admitted (INVESTIGATING back to INQUIRY, the
+same state) was written raw, past the investigation's own transitions, and one
+they refused (a terminal state, INVESTIGATING before Gate 1) answered 500
+`UPDATE_CASE_ERROR`. A title in the same body is refused with it, not
+applied. State moves through the investigation; a case
 is closed with `POST /cases/{case_id}/close`.
 
 The 422 is the shared validation shape, `{"detail": "Validation error",

@@ -565,17 +565,17 @@ causal-graph reconciler.
 4. On `rowcount == 0`, the save probes the DB to distinguish "no row" (fresh insert, goes to version=1) from "row exists at different version" (raises `StaleCaseException`).
 5. On success, the passed-in `case.version` is mutated to the new version so subsequent in-flight saves within the same flow work without reloading.
 
-**Scoped updates don't bump version**. `update_evidence_vectorized`, `delete_evidence`, `delete_uploaded_file`, `update_activity_timestamp`, and `update_metadata_fields` either operate on child tables only or touch only cosmetic columns on `cases`. None of them interact with `cases.version`. This is intentional — they're the safe channel for writes that shouldn't invalidate a concurrent turn's save.
+**Scoped updates don't bump version**. `update_evidence_vectorized`, `delete_evidence`, `delete_uploaded_file`, `update_activity_timestamp`, and `update_metadata_fields` either operate on child tables only or touch only cosmetic columns on `cases`. None of them bump `cases.version` (`update_metadata_fields` checks it for a changed description, #2811). This is intentional — they're the safe channel for writes that shouldn't invalidate a concurrent turn's save.
 
-**Cosmetic metadata is not investigation state** (v2.6). `cases.title` and `cases.description` are user-facing labels — a dashboard rename, an LLM-generated title — not part of the milestone state machine. Going through `save(case)` would bump the version and stale-conflict any in-flight turn save (an LLM tool loop can hold the case in memory for tens of seconds; before this split, a title-generation request landing during a turn would force the turn to 409 even though the two writes touched disjoint fields). The scoped `update_metadata_fields(case_id, *, title=..., description=...)` method writes those columns directly with `UPDATE cases SET title=?, description=?, updated_at=? WHERE case_id=?` — no version predicate, no version increment.
+**Cosmetic metadata is not investigation state** (v2.6). `cases.title` and `cases.description` are user-facing labels — a dashboard rename, an LLM-generated title — not part of the milestone state machine. Going through `save(case)` would bump the version and stale-conflict any in-flight turn save (an LLM tool loop can hold the case in memory for tens of seconds; before this split, a title-generation request landing during a turn would force the turn to 409 even though the two writes touched disjoint fields). The scoped `update_metadata_fields(case_id, *, title=..., description=..., outcome=..., expected_version=...)` method writes those columns directly with `UPDATE cases SET ... WHERE case_id=?` and never increments the version. A title alone carries no version predicate; a changed description carries the outcome record folded over it and `expected_version`, so it lands only while the version it was folded from stands (#2811).
 
 Mapping at the service layer (`CaseService.update_case`):
 
-- `title`/`description` → `repo.update_metadata_fields(...)`. No OCC.
+- `title`, and `description` outside INVESTIGATING → `repo.update_metadata_fields(...)` via `_write_metadata`; never bumps the version. A title alone (or with an unchanged description) is unconditional; a changed description is written against the version it was read at (`expected_version`), re-read and retried up to three times, then `ConflictError`.
 - A `description` during INVESTIGATING (the problem statement, a `title` alongside riding with it) → `update_case_with_retry(...)`. Versioned save with retry on conflict: the statement edit keeps the verification record and the causal graph aligned.
 - Any other key, `state` and `closure_reason` included, raises `ValidationException` before any write; state moves through the investigation and `POST /cases/{id}/close` (#2823).
 
-This is the correct fix for the racing-writer pattern observed when a 49 s turn loop is interleaved with a `POST /title` and a `PUT /cases/{id}` (both metadata-only): under the v2.4 design, both bumped the version and the turn failed at save with `StaleCaseException`. Under v2.6, neither bumps the version, and the turn save succeeds.
+This is the correct fix for the racing-writer pattern observed when a 49 s turn loop is interleaved with a `POST /title` and a `PUT /cases/{id}` (both metadata-only): under the v2.4 design, both bumped the version and the turn failed at save with `StaleCaseException`. Under v2.6, a title or a description edit outside INVESTIGATING bumps no version, and the turn save succeeds; a statement edit during INVESTIGATING is a versioned save and can still stale-conflict a turn.
 
 **Handling conflicts at the caller**. Two patterns, chosen per use case:
 
@@ -592,15 +592,22 @@ This is the correct fix for the racing-writer pattern observed when a 49 s turn 
 ```python
 from faultmaven.modules.case.utils import update_case_with_retry
 
-# CaseService.update_case's statement edit: updates hold title/description only (#2823)
-async def apply(case: Case) -> None:
-    for key, value in updates.items():
-        if key == "description" and case.state == CaseState.INVESTIGATING:
-            edit_statement(case, value)
-        else:
-            setattr(case, key, value)
+async def update_case(self, case_id: str, updates: dict, user_id: str) -> bool:
+    # The statement edit; ``updates`` hold title/description only (#2823).
+    async def apply(case: Case) -> None:
+        # Re-checked on every fresh load: a reassignment bumps the version,
+        # so a retry must not write as a driver the caller no longer is
+        # (ADR-020 D4).
+        if case.effective_driver_id != user_id:
+            raise CaseNotDriverError()
+        for key, value in updates.items():
+            if key == "description" and case.state == CaseState.INVESTIGATING:
+                edit_statement(case, value)
+            else:
+                setattr(case, key, value)
 
-await update_case_with_retry(self.repository, case_id, apply)
+    await update_case_with_retry(self.repository, case_id, apply)
+    return True
 ```
 
 **Example — endpoint 409 handling**:
