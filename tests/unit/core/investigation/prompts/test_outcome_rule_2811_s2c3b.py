@@ -23,11 +23,12 @@ from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
-#: The ruled wording (#2811 comment 7118574166, Q1 (a)), verbatim.
+#: The ruled wording (#2811 comment 7118574166, Q1 (a); widened by #3046
+#: comment 7161149979, Q3 (a)), verbatim.
 RULE = (
-    "State that the problem is confirmed or that a root cause is identified "
-    "only through the structured fields; the engine states what the case "
-    "record holds under your reply."
+    "State that the problem is confirmed, that a root cause is identified, or "
+    "that a fix worked only through the structured fields; the engine states "
+    "what the case record holds under your reply."
 )
 _MSG = "what next?"
 

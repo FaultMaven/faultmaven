@@ -290,10 +290,18 @@ async def _compose_turn_reply(
     counts only INVESTIGATING turns whose prompt carried the rule (#2811
     S2c-3b).
     """
-    # What each offer prose the narration published states, and the record
-    # the outcome statement reads (#2811 S2c-3a).
-    stated_by_prose = metadata.pop(OUTCOME_STATED_KEY, None) or {}
+    # Each offer prose the narration published, and the record the outcome
+    # statement reads (#2811 S2c-3a), which every prose's ``stated`` is read
+    # against (#3046 S3c).
+    published = metadata.pop(OUTCOME_STATED_KEY, None) or {}
     now = _statement_record(case_updated, metadata, baseline)
+    attempts = now.attempts if now is not None else ()
+
+    def _stated_by(key: str) -> frozenset:
+        return (
+            offer_stated(*published[key], attempts) if key in published else frozenset()
+        )
+
     stated: frozenset = frozenset()
     response_synthesized = is_agent_response_synthesized(response_obj)
     agent_response_text = "" if response_synthesized else response_obj.agent_response
@@ -340,9 +348,7 @@ async def _compose_turn_reply(
         agent_response_text = _prose_with_gate_notice(
             agent_response_text, confirmation_message(confirmation)
         )
-        stated = offer_stated(
-            OfferCode.REQUEST_READY, confirmation, now.attempts if now else ()
-        )
+        stated = offer_stated(OfferCode.REQUEST_READY, confirmation, attempts)
         follow_ups = projection.pair
         gate_prose_appended = True
     elif metadata.get("resolution_suggest_close"):
@@ -351,7 +357,7 @@ async def _compose_turn_reply(
             agent_response_text,
             metadata["resolution_readiness_message"],
         )
-        stated = stated_by_prose.get("resolution_readiness_message", frozenset())
+        stated = _stated_by("resolution_readiness_message")
         follow_ups = projection.pair
         gate_prose_appended = True
     elif metadata.get("resolution_needs_info_first_pass"):
@@ -362,7 +368,7 @@ async def _compose_turn_reply(
             agent_response_text,
             metadata["resolution_needs_info_message"],
         )
-        stated = stated_by_prose.get("resolution_needs_info_message", frozenset())
+        stated = _stated_by("resolution_needs_info_message")
         gate_prose_appended = True
     elif offer_key is not None:
         # An engine-proposed offer (the rca-infeasible or false-alarm close,
@@ -373,7 +379,7 @@ async def _compose_turn_reply(
         agent_response_text = _prose_with_gate_notice(
             agent_response_text, metadata[offer_key]
         )
-        stated = stated_by_prose.get(offer_key, frozenset())
+        stated = _stated_by(offer_key)
         follow_ups = projection.pair
         gate_prose_appended = True
 
