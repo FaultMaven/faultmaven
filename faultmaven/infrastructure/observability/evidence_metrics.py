@@ -248,13 +248,23 @@ EVIDENCE_ROW_REFUSED_TOTAL = Counter(
 # made (one per message); state_requested: a message reported the state of
 # the user's system with no data, and its output was asked for;
 # block_unmatched: a block the model named was not found in the message and
-# was dropped; saved: the user saved the blocks as data.
+# was dropped; block_user_prose: a block the model named is the user speaking
+# to the assistant around a quote, and was dropped (#2718); saved: the user
+# saved the blocks as data.
 CHAT_DATA_OFFER_EVENTS_TOTAL = Counter(
     "faultmaven_chat_data_offer_events_total",
     "Chat-data offer lifecycle events: offered, state_requested, "
-    "block_unmatched, saved.",
+    "block_unmatched, block_user_prose, saved.",
     ["event"],
-    label_values={"event": ("offered", "state_requested", "block_unmatched", "saved")},
+    label_values={
+        "event": (
+            "offered",
+            "state_requested",
+            "block_unmatched",
+            "block_user_prose",
+            "saved",
+        )
+    },
 )
 
 __all__ = [

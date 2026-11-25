@@ -2020,7 +2020,9 @@ class OpenCaseResponse(BaseInteractionResponse):
 
     # No ``max_length``: a sixth block on a provider that does not enforce
     # ``maxItems`` would fail the whole response, which nothing can prune. The
-    # engine reads the first ``MAX_CHAT_DATA_BLOCKS``.
+    # engine locates the first ``MAX_CHAT_DATA_ANCHORS`` (50) and offers at most
+    # ``MAX_CHAT_DATA_BLOCKS`` of them, after dropping the user's own prose
+    # (#2718).
     chat_data_blocks: Optional[List[ChatDataBlock]] = Field(
         default=None,
         description=(
