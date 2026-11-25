@@ -19,6 +19,7 @@ it would have without the offer.
 """
 
 import logging
+import re
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from faultmaven.infrastructure.observability.evidence_metrics import (
@@ -91,6 +92,38 @@ def locate_blocks(
         blocks.append("\n".join(lines[start : end + 1]))
         cursor = end + 1
     return blocks, unmatched
+
+
+# The user speaking to the assistant around a quoted span (#2718): "You asked
+# for "…" — …", "I haven't made "…"". A model names such a reply as output. The
+# quote excludes single quotes on purpose: the second-person lines programs
+# print quote in single quotes ("You asked to pull from the remote 'origin'"),
+# so admitting them would drop that output.
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"|“[^”\n]*”|`[^`\n]*`')
+_SPEECH_TO_ASSISTANT = re.compile(
+    r"You\s+(?:asked|suggested|said|told|mentioned|wanted|proposed|recommended"
+    r"|wrote|meant)\b",
+    re.IGNORECASE,
+)
+# Case-sensitive, and never a bare "I" plus whitespace: log formats open lines
+# with a level letter ("I (5012) wifi …", "i  functions: …", "I tensorflow/…").
+_FIRST_PERSON = re.compile(
+    r"I(?:['’](?:ve|m|d|ll)\b| (?:have|haven['’]t|ran|applied|did|didn['’]t"
+    r"|made|tried|get|got|see|saw)\b)"
+)
+
+
+def _is_user_prose(block: str) -> bool:
+    """Is every non-blank line of ``block`` the user speaking to the assistant:
+    opening with ``You`` and a speech verb, or with a first-person ``I``
+    subject, and holding a double-quoted or backticked span? One line of any
+    other shape keeps the block."""
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    return bool(lines) and all(
+        _QUOTED_SPAN.search(line)
+        and (_SPEECH_TO_ASSISTANT.match(line) or _FIRST_PERSON.match(line))
+        for line in lines
+    )
 
 
 def _offered_block_keys(case: Case) -> set[str]:
@@ -183,6 +216,11 @@ def mint_chat_data_offer(
         # once.
         seen = _offered_block_keys(case)
         for block in found:
+            if _is_user_prose(block):
+                # The user's own words stay a claim (#2718). Not added to
+                # ``seen``, and nothing of the block is logged.
+                CHAT_DATA_OFFER_EVENTS_TOTAL.labels(event="block_user_prose").inc()
+                continue
             key = block_key(block)
             if (
                 block.strip()

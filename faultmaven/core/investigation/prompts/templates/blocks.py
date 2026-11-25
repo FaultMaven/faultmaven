@@ -404,6 +404,10 @@ shown to you with a file_id.
   A command line that introduces its output belongs to the block. Never name
   the user's own sentences, or a command they say they ran with no output
   shown. Leave the field empty when the message has no such block.
+- The user speaking to you is never output, whatever it quotes: your own words
+  quoted back to you (You asked for "the chrony logs" — I can't get them), or
+  a reply that only confirms or instructs (e.g. 'Go ahead.', Done: "restart
+  chronyd"). A program's own `Done` or `OK` line is output.
 - Read the user's INTENT as well as the content. If the CURRENT message tells
   you the state of their system (it's stable, it's working now, the error is
   gone, the fix worked, it's still failing) and they submitted no data showing
