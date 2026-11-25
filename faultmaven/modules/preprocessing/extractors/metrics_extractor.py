@@ -94,11 +94,6 @@ class MetricsAndPerformanceExtractor:
         5. Generate natural language summary
         """
         content = content.lstrip("\ufeff")
-        if len(content) > 50_000_000:
-            return ExtractResult(
-                file_extract="[File exceeds 50MB maximum size limit for extraction]"
-            )
-
         self.csv_skipped_rows = 0
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)

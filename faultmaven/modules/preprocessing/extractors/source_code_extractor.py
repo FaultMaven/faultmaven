@@ -152,11 +152,6 @@ class SourceCodeExtractor:
         5. Format as compact structural summary
         """
         content = content.lstrip("\ufeff")
-        if len(content) > 50_000_000:
-            return ExtractResult(
-                file_extract="[File exceeds 50MB maximum size limit for extraction]"
-            )
-
         if not has_content(content):
             return ExtractResult(file_extract=EMPTY_CONTENT_RESPONSE)
 

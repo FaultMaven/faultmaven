@@ -255,16 +255,6 @@ class TestPermissiveDefault:
         result = run_sanity_check(DataType.UNSTRUCTURED_TEXT, _LONG_CONTENT, "")
         assert result.passed is False
 
-    def test_file_too_large_placeholder_accepted(self):
-        """The extractor correctly refused because the file exceeded
-        its cap — that's not a degenerate outcome."""
-        result = run_sanity_check(
-            DataType.UNSTRUCTURED_TEXT,
-            _LONG_CONTENT,
-            "[File exceeds 50MB maximum size limit for extraction]",
-        )
-        assert result.passed is True
-
     def test_explicit_failed_to_parse_placeholder_rejected(self):
         """An explicit failure placeholder *is* degenerate — the
         extractor gave up. Retry should fire."""
