@@ -1,11 +1,13 @@
 """A hung test names itself in the log (#3078).
 
 At ``faulthandler_timeout`` (pytest.ini) ``tests/hang_report.py`` writes one
-block naming the xdist worker, the test's nodeid and the await chain of each
-task on its event loop, then every thread's stack: faulthandler alone names no
-test, and for an async test shows only the event loop's ``select``.
+block naming the xdist worker, the test's nodeid, the await chain of each task
+on its event loop and every thread's stack: faulthandler alone names no test,
+and for an async test shows only the event loop's ``select``. Each report is
+read from its own block, as one write keeps it whole beside other workers'.
 """
 
+import faulthandler
 import os
 import re
 import signal
@@ -16,6 +18,8 @@ from pathlib import Path
 
 import iniconfig
 import pytest
+
+from tests.hang_report import _Watch
 
 pytestmark = pytest.mark.unit
 
@@ -73,8 +77,7 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
         try:
             for line in run.stderr:
                 stderr += line
-                # The sync test's frame is in the thread dump after its block.
-                if len(_BLOCK.findall(stderr)) == 3 and _SYNC_FRAME in stderr:
+                if len(_BLOCK.findall(stderr)) == 3:
                     break
         finally:
             guard.cancel()
@@ -91,4 +94,51 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
     assert "in test_hangs_async\n" in blocks["test_async.py::test_hangs_async"]["body"]
     assert "in stuck\n" in blocks["test_fixture.py::test_hangs_in_its_fixture"]["body"]
     assert "no asyncio loop reached" in blocks["test_sync.py::test_hangs_sync"]["body"]
-    assert _SYNC_FRAME in stderr
+    assert _SYNC_FRAME in blocks["test_sync.py::test_hangs_sync"]["body"]
+
+
+def test_a_report_is_one_write_holding_its_thread_stacks(monkeypatch):
+    read_end, write_end = os.pipe()
+    writes: list[bytes] = []
+    drained: list[bytes] = []
+    written = threading.Event()
+    real_write = os.write
+
+    def record(fd, data):
+        if fd != write_end:
+            return real_write(fd, data)
+        writes.append(bytes(data))
+        n = real_write(fd, data)
+        written.set()
+        return n
+
+    def drain():
+        while chunk := os.read(read_end, 65536):
+            drained.append(chunk)
+
+    monkeypatch.setattr(os, "write", record)
+    # This run's own fallback dump stays armed.
+    monkeypatch.setattr(faulthandler, "cancel_dump_traceback_later", lambda: None)
+    reader = threading.Thread(target=drain)
+    reader.start()
+    watch = _Watch(0, write_end)
+    try:
+        watch.arm("fake.py::test_fake")  # past its deadline at once
+        assert written.wait(60), "no report written"  # a bound, not a measurement
+    finally:
+        watch.stop()
+        os.close(write_end)
+        reader.join()
+        os.close(read_end)
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    assert len(writes) == 1 and b"".join(drained) == writes[0]
+    report = writes[0].decode()
+    assert report.startswith(f"\n=== hung test [{worker}] fake.py::test_fake:")
+    assert report.endswith(f"=== end hung test [{worker}] fake.py::test_fake ===\n")
+    # This thread waits above: its frame is in the stacks inside the block.
+    assert re.search(
+        rf'File "{re.escape(__file__)}", line \d+ in '
+        r"test_a_report_is_one_write_holding_its_thread_stacks\n",
+        report,
+    ), report

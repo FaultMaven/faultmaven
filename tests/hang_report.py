@@ -4,10 +4,10 @@
 when a test runs past it, but the dump names no test, and for an ``async def``
 test the main thread's stack ends in the event loop's ``select`` with no frame
 of the test. At that timeout this plugin writes one labelled block to stderr:
-the xdist worker, the test's nodeid and the await chain of each task on the
-open asyncio loops of pytest-asyncio's runners, so a hang in an async test or
-in an async fixture's setup shows where it waits. Then it dumps every thread's
-stack itself (``faulthandler.dump_traceback``, holding the GIL).
+the xdist worker, the test's nodeid, the await chain of each task on the open
+asyncio loops of pytest-asyncio's runners, so a hang in an async test or in an
+async fixture's setup shows where it waits, and every thread's stack, dumped by
+the plugin itself (``faulthandler.dump_traceback``, holding the GIL).
 
 pytest's own dump is pushed ``_FALLBACK_S`` later, for a hang that holds the
 GIL and so stops this thread. At the same instant it killed xdist workers
@@ -15,9 +15,10 @@ silently: faulthandler's C watchdog reads every thread's frames without the
 GIL, and this thread was running Python. Under ``faulthandler_exit_on_timeout``
 the plugin stays off, so pytest's dump exits on time.
 
-The block is one ``os.write``: a pipe keeps a write of up to PIPE_BUF (4096
-bytes on Linux) whole, so a block that size or smaller does not interleave with
-another worker's output; a longer one can.
+A report is one write: faulthandler writes a frame line in several small
+writes, so the stacks go to a temporary file first and are read back into the
+block. A pipe keeps one write of up to PIPE_BUF (4096 bytes on Linux) whole;
+a longer report can still interleave with another worker's output.
 
 ``tests/conftest.py`` registers it (``pytest_plugins``); ``-p tests.hang_report``
 loads it elsewhere, with the repository on ``sys.path``.
@@ -32,6 +33,7 @@ import io
 import linecache
 import os
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -99,15 +101,25 @@ class _Watch:
                     return
                 running, self._running = self._running, None  # once per test
                 loops = list(self._loops)
-            block = _block(running, self.timeout, loops).encode("utf-8", "replace")
-            while block:
-                block = block[os.write(self.fd, block) :]
-            faulthandler.dump_traceback(self.fd, all_threads=True)
+            block = _block(running, self.timeout, loops, _thread_stacks())
+            report = block.encode("utf-8", "replace")
+            while report:
+                report = report[os.write(self.fd, report) :]
             faulthandler.cancel_dump_traceback_later()  # the fallback, now redundant
 
 
+def _thread_stacks() -> str:
+    with tempfile.TemporaryFile() as dump:
+        faulthandler.dump_traceback(dump, all_threads=True)
+        dump.seek(0)
+        return dump.read().decode("utf-8", "replace")
+
+
 def _block(
-    running: _Running, timeout: float, loops: list[asyncio.AbstractEventLoop]
+    running: _Running,
+    timeout: float,
+    loops: list[asyncio.AbstractEventLoop],
+    stacks: str,
 ) -> str:
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
     out = io.StringIO()
@@ -132,6 +144,7 @@ def _block(
                 _write_await_chain(task, out)
             except Exception as exc:
                 out.write(f"(stack of {task!r} unreadable: {exc!r})\n")
+    out.write(stacks)
     out.write(f"=== end hung test [{worker}] {running.nodeid} ===\n")
     return out.getvalue()
 
