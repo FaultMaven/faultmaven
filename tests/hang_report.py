@@ -15,10 +15,17 @@ silently: faulthandler's C watchdog reads every thread's frames without the
 GIL, and this thread was running Python. Under ``faulthandler_exit_on_timeout``
 the plugin stays off, so pytest's dump exits on time.
 
-A report is one write: faulthandler writes a frame line in several small
-writes, so the stacks go to a temporary file first and are read back into the
-block. A pipe keeps one write of up to PIPE_BUF (4096 bytes on Linux) whole;
-a longer report can still interleave with another worker's output.
+A report is one write, made holding a lock the run's workers share: one
+write alone is whole on a pipe only up to PIPE_BUF (4096 bytes on Linux), and
+faulthandler writes a frame line in several small writes, so the stacks go to
+a temporary file first and are read back into the block. The lock is an
+exclusive ``flock`` on a file named for the xdist run
+(``PYTEST_XDIST_TESTRUNUID``); without xdist there is one writer and no lock.
+A peer that holds it past ``_LOCK_POLLS`` waits (about 5 s) does not hold a
+report back: the report is written unlocked and its first line says so. When
+the temporary file fails, the block says so and faulthandler's dump follows
+it, inside the lock. pytest's own fallback dump, written only when the plugin
+did not report, is not locked.
 
 ``tests/conftest.py`` registers it (``pytest_plugins``); ``-p tests.hang_report``
 loads it elsewhere, with the repository on ``sys.path``.
@@ -27,17 +34,20 @@ loads it elsewhere, with the repository on ``sys.path``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import faulthandler
+import fcntl
 import gc
 import io
 import linecache
 import os
+import select
 import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterator, Optional
 
 import pytest
 
@@ -101,10 +111,21 @@ class _Watch:
                     return
                 running, self._running = self._running, None  # once per test
                 loops = list(self._loops)
-            block = _block(running, self.timeout, loops, _thread_stacks())
-            report = block.encode("utf-8", "replace")
-            while report:
-                report = report[os.write(self.fd, report) :]
+            try:
+                stacks = _thread_stacks()
+            except OSError as exc:  # EMFILE, ENOENT, EACCES: report without them
+                stacks = (
+                    f"(thread stacks unreadable from a temporary file: {exc!r};"
+                    " faulthandler's dump follows this block)\n"
+                )
+                dumped = False
+            else:
+                dumped = True
+            with _report_lock() as unlocked:
+                block = _block(running, self.timeout, loops, stacks, unlocked)
+                _write_all(self.fd, block.encode("utf-8", "replace"))
+                if not dumped:
+                    faulthandler.dump_traceback(self.fd, all_threads=True)
             faulthandler.cancel_dump_traceback_later()  # the fallback, now redundant
 
 
@@ -115,22 +136,68 @@ def _thread_stacks() -> str:
         return dump.read().decode("utf-8", "replace")
 
 
+_LOCK_POLL_S = 0.05
+_LOCK_POLLS = 100
+
+
+def _lock_poll() -> None:
+    time.sleep(_LOCK_POLL_S)
+
+
+@contextlib.contextmanager
+def _report_lock() -> Iterator[Optional[str]]:
+    """Hold the run's report lock; yield why not when the report goes unlocked."""
+    uid = os.environ.get("PYTEST_XDIST_TESTRUNUID")
+    if not uid:  # no xdist: this process is the only writer
+        yield None
+        return
+    path = os.path.join(tempfile.gettempdir(), f"faultmaven-hang-report-{uid}.lock")
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        yield f"lock file unopenable: {exc!r}"
+        return
+    try:
+        unlocked = f"lock still busy after {_LOCK_POLLS} waits"  # a hung peer
+        for attempt in range(_LOCK_POLLS + 1):
+            if attempt:
+                _lock_poll()
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            unlocked = None
+            break
+        yield unlocked
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    # Under the lock a short write keeps the report contiguous; a non-blocking
+    # stderr waits to be writable rather than ending the watch thread.
+    while data:
+        try:
+            data = data[os.write(fd, data) :]
+        except BlockingIOError:
+            select.select([], [fd], [])
+
+
 def _block(
     running: _Running,
     timeout: float,
     loops: list[asyncio.AbstractEventLoop],
     stacks: str,
+    unlocked: Optional[str],
 ) -> str:
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    note = f" (written unlocked: {unlocked})" if unlocked else ""
     out = io.StringIO()
-    out.write(
-        f"\n=== hung test [{worker}] {running.nodeid}: running past {timeout:g}s ===\n"
-    )
+    label = f"{running.nodeid}: running past {timeout:g}s{note}"
+    out.write(f"\n=== hung test [{worker}] {label} ===\n")
     open_loops = [loop for loop in loops if not loop.is_closed()]
     if not open_loops:
-        out.write(
-            "(no asyncio loop reached; the thread stacks follow from faulthandler)\n"
-        )
+        out.write("(no asyncio loop reached; the thread stacks are below)\n")
     for loop in open_loops:
         try:
             tasks = list(asyncio.all_tasks(loop))

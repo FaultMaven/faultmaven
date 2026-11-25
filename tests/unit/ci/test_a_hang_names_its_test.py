@@ -3,22 +3,27 @@
 At ``faulthandler_timeout`` (pytest.ini) ``tests/hang_report.py`` writes one
 block naming the xdist worker, the test's nodeid, the await chain of each task
 on its event loop and every thread's stack: faulthandler alone names no test,
-and for an async test shows only the event loop's ``select``. Each report is
-read from its own block, as one write keeps it whole beside other workers'.
+and for an async test shows only the event loop's ``select``. A report is one
+write made holding the run's report lock, so each is read from its own block.
 """
 
+import errno
 import faulthandler
+import fcntl
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
 import iniconfig
 import pytest
 
+from tests import hang_report
 from tests.hang_report import _Watch
 
 pytestmark = pytest.mark.unit
@@ -63,7 +68,12 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
     with subprocess.Popen(
         command,
         cwd=tmp_path,
-        env={"PYTHONPATH": str(REPO_ROOT), "PATH": "/usr/bin:/bin"},
+        # TMPDIR: the run's report lock file stays in tmp_path.
+        env={
+            "PYTHONPATH": str(REPO_ROOT),
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(tmp_path),
+        },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -97,48 +107,148 @@ def test_each_hung_test_is_named_with_its_worker_and_task_stacks(tmp_path):
     assert _SYNC_FRAME in blocks["test_sync.py::test_hangs_sync"]["body"]
 
 
-def test_a_report_is_one_write_holding_its_thread_stacks(monkeypatch):
-    read_end, write_end = os.pipe()
-    writes: list[bytes] = []
-    drained: list[bytes] = []
-    written = threading.Event()
-    real_write = os.write
+class _Reports:
+    """A ``_Watch`` past its deadline at once, writing to a drained pipe."""
 
-    def record(fd, data):
-        if fd != write_end:
-            return real_write(fd, data)
-        writes.append(bytes(data))
-        n = real_write(fd, data)
-        written.set()
-        return n
+    def __init__(self, monkeypatch, tmp_path):
+        self.read_end, self.write_end = os.pipe()
+        self.writes: list[bytes] = []
+        self.lock_path = tmp_path / "faultmaven-hang-report-t3085.lock"
+        self._drained: list[bytes] = []
+        self._each = threading.Semaphore(0)
+        real_write = os.write
+
+        def record(fd, data):
+            if fd != self.write_end:
+                return real_write(fd, data)
+            self.writes.append(bytes(data))
+            n = real_write(fd, data)
+            self._each.release()
+            return n
+
+        monkeypatch.setattr(os, "write", record)
+        # This run's own fallback dump stays armed.
+        monkeypatch.setattr(faulthandler, "cancel_dump_traceback_later", lambda: None)
+        monkeypatch.setenv("PYTEST_XDIST_TESTRUNUID", "t3085")  # a private lock
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        self._reader = threading.Thread(target=self._drain, daemon=True)
+        self._reader.start()
+        self._open = True
+        self.watch = _Watch(0, self.write_end)
+
+    def _drain(self):
+        while chunk := os.read(self.read_end, 65536):
+            self._drained.append(chunk)
+
+    def report(self, nodeid):
+        self.watch.arm(nodeid)
+        assert self._each.acquire(timeout=60), "no report"  # a bound, not a measurement
+
+    def close(self) -> str:
+        if self._open:
+            self._open = False
+            self.watch.stop()
+            os.close(self.write_end)
+            self._reader.join()
+            os.close(self.read_end)
+        # Stopped before monkeypatch restores what the thread calls.
+        assert not self.watch._thread.is_alive()
+        return b"".join(self._drained).decode()
+
+
+@pytest.fixture
+def reports(monkeypatch, tmp_path):
+    reports = _Reports(monkeypatch, tmp_path)
+    yield reports
+    reports.close()
+
+
+def test_a_report_is_one_write_holding_its_thread_stacks(reports):
+    reports.report("fake.py::test_fake")
+    out = reports.close()
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    assert len(reports.writes) == 1 and out == reports.writes[0].decode()
+    assert out.startswith(f"\n=== hung test [{worker}] fake.py::test_fake: ")
+    assert out.endswith(f"=== end hung test [{worker}] fake.py::test_fake ===\n")
+    # This thread waits in report(): its frame is in the stacks inside the block.
+    assert re.search(
+        rf'File "{re.escape(__file__)}", line \d+ in '
+        r"test_a_report_is_one_write_holding_its_thread_stacks\n",
+        out,
+    ), out
+
+
+def test_a_report_waits_for_another_workers_report(reports, monkeypatch):
+    held = os.open(reports.lock_path, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(held, fcntl.LOCK_EX)  # another worker is writing its report
+    polls = []
+
+    def poll():
+        polls.append(len(reports.writes))
+        fcntl.flock(held, fcntl.LOCK_UN)  # that report is done
+
+    monkeypatch.setattr(hang_report, "_lock_poll", poll)
+    try:
+        reports.report("fake.py::test_fake")
+    finally:
+        os.close(held)
+    assert polls == [0]  # it waited, and wrote nothing while it waited
+    assert "written unlocked" not in reports.close()
+
+
+def test_a_report_held_back_by_a_hung_peer_is_written_unlocked(reports, monkeypatch):
+    held = os.open(reports.lock_path, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(held, fcntl.LOCK_EX)  # held by a peer that never lets go
+    monkeypatch.setattr(hang_report, "_LOCK_POLLS", 0)
+    try:
+        reports.report("fake.py::test_fake")
+    finally:
+        os.close(held)
+    first_line = reports.close().splitlines()[1]
+    assert first_line.endswith("(written unlocked: lock still busy after 0 waits) ===")
+
+
+def test_a_report_survives_a_temporary_file_failure(reports, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", refuse)
+    reports.report("fake.py::test_first")
+    reports.report("fake.py::test_second")  # the watch thread lived on
+    out = reports.close()
+
+    for nodeid in ("fake.py::test_first", "fake.py::test_second"):
+        assert f"] {nodeid}: running past 0s ===\n" in out
+    assert out.count("(thread stacks unreadable from a temporary file: ") == 2
+    # faulthandler's own dump follows each block.
+    assert out.count("(most recent call first):") >= 2
+
+
+def test_a_full_non_blocking_stderr_waits_rather_than_raising(monkeypatch):
+    read_end, write_end = os.pipe()
+    os.set_blocking(write_end, False)
+    data = b"x" * (1 << 21)  # past any pipe's buffer: a write runs into EAGAIN
+    drained: list[bytes] = []
 
     def drain():
         while chunk := os.read(read_end, 65536):
             drained.append(chunk)
 
-    monkeypatch.setattr(os, "write", record)
-    # This run's own fallback dump stays armed.
-    monkeypatch.setattr(faulthandler, "cancel_dump_traceback_later", lambda: None)
     reader = threading.Thread(target=drain)
-    reader.start()
-    watch = _Watch(0, write_end)
-    try:
-        watch.arm("fake.py::test_fake")  # past its deadline at once
-        assert written.wait(60), "no report written"  # a bound, not a measurement
-    finally:
-        watch.stop()
-        os.close(write_end)
-        reader.join()
-        os.close(read_end)
+    real_select = select.select
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    assert len(writes) == 1 and b"".join(drained) == writes[0]
-    report = writes[0].decode()
-    assert report.startswith(f"\n=== hung test [{worker}] fake.py::test_fake:")
-    assert report.endswith(f"=== end hung test [{worker}] fake.py::test_fake ===\n")
-    # This thread waits above: its frame is in the stacks inside the block.
-    assert re.search(
-        rf'File "{re.escape(__file__)}", line \d+ in '
-        r"test_a_report_is_one_write_holding_its_thread_stacks\n",
-        report,
-    ), report
+    def wait_writable(*args):
+        if reader.ident is None:  # drain only once the write has waited
+            reader.start()
+        return real_select(*args)
+
+    monkeypatch.setattr(select, "select", wait_writable)
+    try:
+        hang_report._write_all(write_end, data)
+    finally:
+        os.close(write_end)
+        if reader.ident is not None:
+            reader.join()
+        os.close(read_end)
+    assert reader.ident is not None and b"".join(drained) == data
