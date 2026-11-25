@@ -469,6 +469,7 @@ class MilestoneEngine:
         typed: bool = False,
         *,
         redaction_ctx: Any | None,
+        typed_message: str | None = None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -507,6 +508,11 @@ class MilestoneEngine:
                 Required: ``None`` (said explicitly, by a direct engine call)
                 loads the case's context here, through the same loader, where a
                 model call needs it.
+            typed_message: The text the user typed this turn. On a turn
+                carrying only data, ``user_message`` is the service's composed
+                implicit query and this is ``""``: only this is read for the
+                chat-data offer (#2717). ``None`` means ``user_message`` is
+                what the user typed (a direct engine call).
 
         Writes nothing the turn owns (#1882). The case is mutated in memory
         and returned; the rows the turn produced (report rows)
@@ -577,6 +583,7 @@ class MilestoneEngine:
                     user_id=user_id,
                     typed=typed,
                     redaction_ctx=redaction_ctx,
+                    typed_message=typed_message,
                 )
                 result["commit_plan"] = plan
             except BaseException:
@@ -650,6 +657,7 @@ class MilestoneEngine:
         user_id: str | None = None,
         typed: bool = False,
         redaction_ctx: Any | None,
+        typed_message: str | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Refused FIRST, before any state is touched. INVESTIGATING is not a
@@ -1461,10 +1469,12 @@ class MilestoneEngine:
             # ride the response, not ``state_updates``, so a staged
             # statement-revision replay (which re-applies state updates) can
             # never mint one. The offer never holds the turn's own work back;
-            # it reasons from the block as the user's claim.
+            # it reasons from the block as the user's claim. It reads only what
+            # the user typed: a turn carrying only data offers nothing, since its
+            # ``user_message`` is FaultMaven's own composed query (#2717).
             chat_data_offer = mint_chat_data_offer(
                 case_updated,
-                user_message=user_message,
+                user_message=(user_message if typed_message is None else typed_message),
                 named_blocks=getattr(response_obj, "chat_data_blocks", None),
                 state_report=getattr(response_obj, "system_state_report", None),
                 submitted_data=bool(attachments),

@@ -574,6 +574,11 @@ words; the user declares what is data (#1930).
   already offered on the case is never offered again, and a state
   request is not repeated while an earlier one waits with no data
   submitted since.
+- Only what the user typed is read for blocks or a state report. A
+  turn carrying only data has a message the user did not type (the
+  composed query, "I've pasted some text … tell me what you find"), so
+  nothing is offered or asked for on it. Its data still answers any
+  request that was waiting (#2717).
 - ONE `ChatDataOffer` per message is recorded on
   `Case.chat_data_offers` (persisted in `cases.metadata`). It is minted
   on the live turn only (not in the statement-revision replay) and

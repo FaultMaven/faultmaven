@@ -97,6 +97,7 @@ def engine():
         user_id: Optional[str] = None,
         typed: bool = False,
         redaction_ctx=None,
+        typed_message: Optional[str] = None,
     ) -> dict[str, Any]:
         case.updated_at = datetime.now(timezone.utc)
         return {
