@@ -176,7 +176,9 @@ def test_a_failed_mint_counts_nothing(booted_app_client, registry, caplog, monke
     """Counted after the store write, so a mint that fails is not a mint."""
 
     class _StoreDown:
-        async def create_session(self, user_id, client_id=None, metadata=None):
+        async def create_session(
+            self, user_id, client_id=None, metadata=None, session_type=None
+        ):
             raise ConnectionError("session store unavailable")
 
     async def _service():

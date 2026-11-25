@@ -151,7 +151,7 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
-        version="15.16.0",
+        version="15.18.0",
         level="MINOR",
         title=(
             "`POST /cases/{case_id}/turns` takes the form field `query_source`: "
@@ -172,6 +172,64 @@ Under an `Idempotency-Key`, a retry whose `query_source` differs is a
 different turn (409 `IDEMPOTENCY_KEY_REUSE`).
 
 MINOR: an optional request field.""",
+    ),
+    ContractChange(
+        version="15.17.0",
+        level="MINOR",
+        title=(
+            "OAuth `client_id` is at most 255 characters (`maxLength`) on "
+            "`GET`/`POST /auth/oauth/authorize`, `POST /auth/oauth/token` and "
+            "`POST /auth/oauth/revoke`, and `/token`'s `redirect_uri` at most "
+            "2048; `/revoke` refuses a refresh token naming another client with "
+            "**400** `invalid_grant` (#2765)."
+        ),
+        body=r"""A longer `client_id` or `redirect_uri` is refused at validation, before any
+log or service call: 400 `invalid_request` at `/token` and `/revoke`, 422 at
+`/authorize`. Service account provisioning already caps a client id at 255
+characters.
+
+RFC 7009 §2.1: `/revoke` now compares the `client_id` in the request with the
+client a refresh token names. A refresh token naming another client is refused
+with 400 `invalid_grant`, "The token was not issued to this client.", under
+any `token_type_hint`, and stays usable. The 400 is already documented. A token
+naming no client (an access token, a refresh token minted before client
+binding, #2750) is revoked under any `client_id`, and an invalid or expired token
+still answers 200.
+
+MINOR: every first-party client sends a short `client_id` and `redirect_uri`
+and revokes only its own tokens, so no existing flow changes.""",
+    ),
+    ContractChange(
+        version="15.16.0",
+        level="MINOR",
+        title=(
+            "Sessions: `session_type` is the server's, set once from the create "
+            "request's typed field, and no `metadata` write changes it; the "
+            "`GET /sessions` rows report it, and they and the heartbeat report "
+            "the session's `status` (#2772). `session_type` is at most 64 "
+            "characters (#3065)."
+        ),
+        body=r"""Before, `POST /sessions` stored `session_type` in `metadata` and merged
+the client's `metadata` over it, so `metadata.session_type` replaced the field,
+and `PUT /sessions/{session_id}` could change or drop it. Now:
+
+* `POST /sessions` sets the type from `session_type` (absent or null:
+  `troubleshooting`; longer than 64 characters: **422**, nothing created) and
+  echoes the stored one; a resume answers the type the session was created
+  with;
+* `GET /sessions` rows report the type, and `?session_type=` filters on it
+  (before, every row read `troubleshooting`);
+* `GET /sessions` rows and the `POST /sessions/{session_id}/heartbeat` response
+  report the session's `status`, `active` or `archived` (both always read
+  `inquiry`);
+* the `PUT /sessions/{session_id}` response and the `POST /sessions/search` rows
+  carry `session_type` at the top level; `metadata` holds only what the client
+  wrote, so a search `query` of `troubleshooting` no longer matches through it.
+
+A `session_type` key in client `metadata` is an ordinary client key. A session
+minted before this version reads as `troubleshooting` and keeps its
+`metadata.session_type` until a `PUT` replaces it; during a rolling update, a
+write served by an older server drops the type.""",
     ),
     ContractChange(
         version="15.15.1",

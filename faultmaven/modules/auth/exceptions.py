@@ -98,6 +98,16 @@ class TokenInvalidError(TokenError):
         super().__init__(message, token_type=token_type, error_code="TOKEN_INVALID")
 
 
+class TokenClientMismatchError(TokenError):
+    """A revocation names a client other than the one the token was issued to.
+
+    RFC 7009 §2.1: the request is refused and nothing is revoked (#2765).
+    """
+
+    def __init__(self, message: str = "The token was not issued to this client."):
+        super().__init__(message, error_code="CLIENT_MISMATCH")
+
+
 class SessionError(AuthException):
     """Raised when session operations fail."""
 

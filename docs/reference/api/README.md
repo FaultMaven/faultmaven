@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.16.0
+**Version:** 15.18.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1161,7 +1161,9 @@ Args:
 Returns:
     Empty object (200 OK per RFC 7009), or an RFC 6749 §5.2 error body.
 
-Note: Returns 200 even if token doesn't exist (per RFC 7009)
+Note: Returns 200 even if token doesn't exist (per RFC 7009). A refresh
+token naming another client than `client_id` is refused with 400
+`invalid_grant` and stays usable (RFC 7009 §2.1).
 
 **Tags:** `oauth`
 

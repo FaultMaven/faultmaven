@@ -181,8 +181,8 @@ async def test_an_unknown_revocation_state_carries_its_frames(lines):
 
 
 class _Unanswerable:
-    """An activity result whose truth test raises: the heartbeat's outer
-    catch-all is the arm that catches it."""
+    """The session an activity update returns, whose truth test raises: the
+    heartbeat's outer catch-all is the arm that catches it."""
 
     def __bool__(self) -> bool:
         raise RuntimeError(f"result {MARKER}")

@@ -139,9 +139,6 @@ class AuthSessionService:
         else:
             self.max_sessions_per_user = max_sessions_per_user
 
-        # Compatibility alias
-        self.session_manager = self.session_store
-
     @property
     def session_ttl_seconds(self) -> Optional[int]:
         """The TTL the store gives every session write; None without a store."""
@@ -158,6 +155,7 @@ class AuthSessionService:
         client_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         provider_session_id: Optional[str] = None,
+        session_type: str = "troubleshooting",
     ) -> Tuple[SessionContext, bool]:
         """Create new session or resume existing session for (user, client) pair
 
@@ -169,6 +167,9 @@ class AuthSessionService:
             metadata: Additional session metadata (authentication context only)
             provider_session_id: The IdP session an SSO login opened, which
                 logout ends. Server-set: no route passes a client's value.
+            session_type: The new session's type, from the create request's
+                typed field, never from ``metadata`` (#2772). A resumed
+                session keeps its stored type.
 
         Returns:
             Tuple of (SessionContext, resumed: bool)
@@ -210,6 +211,7 @@ class AuthSessionService:
             updated_at=now,
             metadata=metadata or {},
             provider_session_id=provider_session_id,
+            session_type=session_type,
         )
 
         await self._persist(session)
@@ -228,9 +230,9 @@ class AuthSessionService:
             validate: When True (default), enforce expiry — an expired session is
                 deleted and None is returned. When False, read the stored session
                 as-is: no expiry check and no delete side effect. Readers that only
-                want to observe session data (e.g. the heartbeat endpoint reporting
-                last_activity) must not destroy a session as a side effect of
-                reading it.
+                want to observe session data (e.g. ``end_idp_session`` reading an
+                expired session's IdP handle at logout) must not destroy a
+                session as a side effect of reading it.
 
         Returns:
             SessionContext if found (and unexpired when validate=True), None otherwise
@@ -333,16 +335,16 @@ class AuthSessionService:
         return await self._mutate(session_id, apply)
 
     @trace("session_service_update_last_activity")
-    async def update_last_activity(self, session_id: str) -> bool:
+    async def update_last_activity(self, session_id: str) -> Optional[SessionContext]:
         """Update session last activity timestamp
 
         Args:
             session_id: Session identifier
 
         Returns:
-            True if updated successfully
+            The session as written, or None if there is no such session
         """
-        return await self._mutate(session_id, _touched) is not None
+        return await self._mutate(session_id, _touched)
 
     @trace("session_service_delete_session")
     async def delete_session(self, session_id: str) -> bool:

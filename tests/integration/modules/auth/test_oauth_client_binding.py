@@ -15,12 +15,18 @@ into two chains or two clients.
 A store read fault while validating a refresh token answers 500 on both paths
 and revokes nothing, and a token that is not ASCII or not a JWS is refused, never
 a 500 (#2165).
+
+``POST /auth/oauth/revoke`` refuses a refresh token naming another client with
+400 ``invalid_grant`` under any hint, writing nothing (RFC 7009 §2.1), and no
+OAuth request carries a ``client_id`` over 255 characters, or a
+``redirect_uri`` over 2048, into a log record (#2765).
 """
 
 import asyncio
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -54,6 +60,8 @@ OTHER = "another-client"
 SERVICE = "faultmaven-slack-agent"
 REDIRECT = "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/"
 TOKEN = "/api/v1/auth/oauth/token"
+REVOKE = "/api/v1/auth/oauth/revoke"
+AUTHORIZE = "/api/v1/auth/oauth/authorize"
 CODE_REFUSED = "[CLIENT_MISMATCH] Authorization code is not valid for this client"
 REFRESH_REFUSED = "[CLIENT_MISMATCH] Refresh token is not valid for this client"
 
@@ -340,13 +348,36 @@ async def test_a_claim_that_is_not_a_string_is_a_mismatch(env):
     _assert_refused(await _refresh(env.client, forged, COPILOT), REFRESH_REFUSED)
 
 
-async def test_an_overlong_client_is_never_bound(env, monkeypatch):
-    # Even a configured one: the cap is checked on its own.
-    allowed = [COPILOT, "c" * 256]
+@pytest.mark.parametrize("path", ["refresh", "validate", "mint"])
+async def test_the_service_refuses_an_overlong_client_before_any_log(
+    env, monkeypatch, caplog, path
+):
+    # Even a configured one: the cap is checked on its own. The routes refuse
+    # the value at validation (#2765); these three service methods refuse it
+    # themselves.
+    from faultmaven.models.exceptions import InvalidRequestError
+    from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
+
+    overlong = "c" * 256
+    allowed = [COPILOT, overlong]
     monkeypatch.setattr(env.service.settings, "oauth_allowed_clients", allowed)
     token = await _unbound_refresh_token(env)
+    request = OAuthAuthorizationDTO(
+        client_id=overlong, redirect_uri=REDIRECT, state="s", code_challenge="c" * 43
+    )
+    caplog.set_level(logging.DEBUG)
 
-    _assert_refused(await _refresh(env.client, token, "c" * 256), REFRESH_REFUSED)
+    with pytest.raises(InvalidRequestError) as refused:
+        if path == "refresh":
+            await env.service.refresh_access_token(token, client_id=overlong)
+        elif path == "validate":
+            await env.service.validate_authorization_request(request, user_id="u")
+        else:
+            await env.service.create_authorization_code("u", request)
+
+    assert overlong not in str(refused.value)
+    assert caplog.records, "the probe saw no record at all"
+    assert not _logged(caplog, overlong)
     assert await env.generator.validate_refresh_token(token) is not None
 
 
@@ -615,3 +646,209 @@ async def test_an_unusable_refresh_token_is_refused_not_a_500(env, path, token):
         response = await env.client.post(REFRESH, **_raw_json(refresh_token=token))
         assert response.status_code == 401, response.text
         assert "invalid, expired, or revoked" in response.text
+
+
+# ---- #2765: revocation is checked against the token's client ----------------
+
+
+async def _revoke(client, token, client_id, hint=None):
+    body = {"token": token, "client_id": client_id}
+    if hint is not None:
+        body["token_type_hint"] = hint
+    return await client.post(REVOKE, data=body)
+
+
+def _assert_not_this_client(response):
+    _assert_refused(response, "The token was not issued to this client.")
+
+
+@pytest.mark.parametrize("hint", ["refresh_token", "access_token", None])
+async def test_a_refresh_token_is_revoked_only_by_its_client(env, monkeypatch, hint):
+    token = await _bound_refresh_token(env.client)
+    recorded = []
+    monkeypatch.setattr(
+        env.service._metrics, "record_token_revocation", recorded.append
+    )
+
+    _assert_not_this_client(await _revoke(env.client, token, OTHER, hint))
+    assert env.revocations.revoked == {}
+    assert recorded == []
+    assert await env.generator.validate_refresh_token(token) is not None
+
+    assert (await _revoke(env.client, token, COPILOT, hint)).status_code == 200
+    assert await env.generator.validate_refresh_token(token) is None
+    refused = await _refresh(env.client, token, COPILOT)
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["error"] == "invalid_grant"
+
+
+async def test_an_already_revoked_token_is_still_refused_to_another_client(env):
+    # The check reads no revocation state, so the answer does not tell a
+    # revoked token from a live one.
+    token = await _bound_refresh_token(env.client)
+    assert (await _revoke(env.client, token, COPILOT)).status_code == 200
+
+    _assert_not_this_client(await _revoke(env.client, token, OTHER))
+
+
+async def test_a_token_naming_no_client_is_revoked_under_any_client(env):
+    code, verifier = await _code(env.client)
+    pair = (await _exchange(env.client, code, verifier, COPILOT)).json()
+    unbound = await _unbound_refresh_token(env)
+
+    response = await _revoke(env.client, pair["access_token"], OTHER, "access_token")
+    assert response.status_code == 200, response.text
+    assert await env.generator.validate_access_token(pair["access_token"]) is None
+
+    assert (await _revoke(env.client, unbound, OTHER)).status_code == 200
+    assert await env.generator.validate_refresh_token(unbound) is None
+
+
+async def test_an_internal_revoke_names_no_client_and_still_revokes(env):
+    token = await _bound_refresh_token(env.client)
+
+    await env.service.revoke_refresh_token(token, client_id=None)
+
+    assert await env.generator.validate_refresh_token(token) is None
+
+
+async def test_an_invalid_or_expired_token_still_answers_200(env):
+    token = await _bound_refresh_token(env.client)
+    expired = jwt.encode(
+        {**_claims(token), "exp": int(datetime.now(timezone.utc).timestamp()) - 60},
+        env.signing_key,
+        algorithm=env.algorithm,
+    )
+
+    for presented in ("not-a-jwt", expired):
+        response = await _revoke(env.client, presented, OTHER, "refresh_token")
+        assert response.status_code == 200, response.text
+    assert env.revocations.revoked == {}
+
+
+async def test_a_store_failure_on_the_matching_client_answers_503(env, monkeypatch):
+    token = await _bound_refresh_token(env.client)
+
+    async def unwritable(jti, ttl):
+        raise ConnectionError("store unavailable")
+
+    monkeypatch.setattr(env.revocations, "add_revoked_token", unwritable)
+
+    response = await _revoke(env.client, token, COPILOT, "refresh_token")
+    assert response.status_code == 503, response.text
+    assert response.json()["error"] == "temporarily_unavailable"
+
+
+# ---- #2765: a client_id over 255 characters reaches no log record -----------
+
+OVERLONG = "x" * 256
+LONGEST = "y" * 255
+
+
+def _logged(caplog, value):
+    """Whether any server record holds ``value``, in its message or any
+    attribute (``extra`` fields included). ``httpx`` is the test's own client
+    logging the URL it sent."""
+    return any(
+        value in record.getMessage()
+        or any(value in str(attribute) for attribute in vars(record).values())
+        for record in caplog.records
+        if record.name != "httpx"
+    )
+
+
+async def _send(env, request, client_id):
+    if request == "refresh":
+        token = await _bound_refresh_token(env.client)
+        return await _refresh(env.client, token, client_id)
+    if request == "refresh-json":
+        token = await _bound_refresh_token(env.client)
+        body = {
+            "grant_type": "refresh_token",
+            "refresh_token": token,
+            "client_id": client_id,
+        }
+        return await env.client.post(TOKEN, json=body)
+    if request == "authorization_code":
+        code, verifier = await _code(env.client)
+        return await _exchange(env.client, code, verifier, client_id)
+    if request == "revoke":
+        return await _revoke(env.client, "not-a-jwt", client_id)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": REDIRECT,
+        "state": "state-2765",
+        "code_challenge": "c" * 43,
+        "code_challenge_method": "S256",
+    }
+    if request == "authorize":
+        return await env.client.get(
+            AUTHORIZE, params={**params, "response_type": "code"}
+        )
+    return await env.client.post(
+        AUTHORIZE, json={**params, "approved": True, "scope": "openid"}
+    )
+
+
+REQUESTS = [
+    "refresh",
+    "refresh-json",
+    "authorization_code",
+    "revoke",
+    "authorize",
+    "approval",
+]
+
+
+@pytest.mark.parametrize("request_kind", REQUESTS)
+async def test_an_overlong_client_id_is_refused_before_any_log(
+    env, caplog, request_kind
+):
+    caplog.set_level(logging.DEBUG)
+
+    response = await _send(env, request_kind, OVERLONG)
+
+    if request_kind in ("authorize", "approval"):
+        assert response.status_code == 422, response.text
+    else:
+        assert response.status_code == 400, response.text
+        assert response.json()["error"] == "invalid_request"
+    assert caplog.records, "the probe saw no record at all"
+    assert not _logged(caplog, OVERLONG)
+
+
+@pytest.mark.parametrize("request_kind", ["refresh", "revoke", "authorize", "approval"])
+async def test_the_probe_finds_the_longest_admitted_client_id(
+    env, caplog, request_kind
+):
+    # Positive control: 255 characters pass validation and are logged, so the
+    # probe above would see an over-long value had it been admitted.
+    caplog.set_level(logging.DEBUG)
+
+    response = await _send(env, request_kind, LONGEST)
+
+    assert response.status_code != 422, response.text
+    assert _logged(caplog, LONGEST)
+
+
+async def test_an_overlong_redirect_uri_is_refused_before_any_log(env, caplog):
+    caplog.set_level(logging.DEBUG)
+    code, verifier = await _code(env.client)
+
+    for redirect, admitted in (("r" * 2049, False), ("s" * 2048, True)):
+        caplog.clear()
+        response = await env.client.post(
+            TOKEN,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": redirect,
+                "client_id": COPILOT,
+            },
+        )
+        assert response.status_code == 400, response.text
+        # 2048 passes validation and is logged by the exchange (positive
+        # control); 2049 is refused at validation and logged nowhere.
+        assert (response.json()["error"] == "invalid_request") is not admitted
+        assert _logged(caplog, redirect) is admitted

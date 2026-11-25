@@ -594,15 +594,19 @@ class TestTokenRevocation:
         """Test access token revocation."""
         access_token = "access_token_123"
 
-        await oauth_service.revoke_token(access_token)
+        await oauth_service.revoke_token(access_token, client_id="faultmaven-copilot")
 
-        mock_token_generator.revoke_access_token.assert_called_once_with(access_token)
+        mock_token_generator.revoke_access_token.assert_called_once_with(
+            access_token, client_id="faultmaven-copilot"
+        )
 
     @pytest.mark.asyncio
     async def test_revoke_refresh_token(self, oauth_service, mock_token_generator):
         """Test refresh token revocation."""
         refresh_token = "refresh_token_456"
 
-        await oauth_service.revoke_refresh_token(refresh_token)
+        await oauth_service.revoke_refresh_token(refresh_token, client_id=None)
 
-        mock_token_generator.revoke_refresh_token.assert_called_once_with(refresh_token)
+        mock_token_generator.revoke_refresh_token.assert_called_once_with(
+            refresh_token, client_id=None
+        )

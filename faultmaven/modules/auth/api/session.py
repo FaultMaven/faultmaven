@@ -143,7 +143,9 @@ class AuthSessionCreateRequest(BaseModel):
             "expires_at report it."
         ),
     )
-    session_type: Optional[str] = Field(default="troubleshooting", min_length=1)
+    session_type: Optional[str] = Field(
+        default="troubleshooting", min_length=1, max_length=64
+    )
     metadata: Optional[dict] = None
     client_id: Optional[str] = Field(
         None,
@@ -201,7 +203,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T10:00:00Z",
                                 "expires_at": "2025-01-15T10:30:00Z",
-                                "status": "inquiry",
+                                "status": "active",
                                 "session_type": "troubleshooting",
                                 "session_resumed": False,
                                 "timeout_minutes": 30,
@@ -216,7 +218,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T09:30:00Z",
                                 "expires_at": "2025-01-15T10:45:00Z",
-                                "status": "inquiry",
+                                "status": "active",
                                 "session_type": "troubleshooting",
                                 "session_resumed": True,
                                 "timeout_minutes": 30,
@@ -315,12 +317,9 @@ async def create_session(
         timeout_minutes = ttl_seconds // 60 if ttl_seconds is not None else None
 
         metadata = {}
-        if request:
-            if request.session_type:
-                metadata["session_type"] = request.session_type
-            if request.metadata:
-                validate_client_session_metadata(request.metadata)
-                metadata.update(request.metadata)
+        if request and request.metadata:
+            validate_client_session_metadata(request.metadata)
+            metadata.update(request.metadata)
 
         # WHOSE identity this session is minted for is the SERVER's answer.
         #
@@ -356,6 +355,11 @@ async def create_session(
             user_id,
             metadata=metadata if metadata else None,
             client_id=request.client_id if request else None,
+            # The typed field, never ``metadata``: a ``session_type`` key there
+            # is an inert client key, not the session's type (#2772). An
+            # explicit null keeps the default.
+            session_type=(request.session_type if request else None)
+            or "troubleshooting",
         )
 
         # Handle both new session and resumed session scenarios
@@ -381,15 +385,6 @@ async def create_session(
 
         action_verb = "resumed" if was_resumed else "created"
 
-        # Enhanced logging for session lifecycle tracking
-        log_details = {
-            "session_id": session.session_id,
-            "user_id": user_id,
-            "client_id": request.client_id if request else None,
-            "timeout_minutes": timeout_minutes,
-            "session_type": metadata.get("session_type", "troubleshooting"),
-            "was_resumed": was_resumed,
-        }
         logger.info(
             f"Session {action_verb} successfully: {session.session_id} (timeout: {timeout_minutes}min, client: {request.client_id if request else 'none'})"
         )
@@ -410,7 +405,8 @@ async def create_session(
                 else None
             ),
             "status": session.status,
-            "session_type": metadata.get("session_type", "troubleshooting"),
+            # The stored type: a resume keeps the type it was created with.
+            "session_type": session.session_type,
             "session_resumed": was_resumed,
             "timeout_minutes": timeout_minutes,
             "message": f"Session {action_verb} successfully",
@@ -599,42 +595,10 @@ async def list_sessions(
         # Get sessions from SessionManager and apply filters/pagination
         all_sessions = await session_service.list_sessions(user_id=scope)
 
-        # Apply session type filtering
+        # The type is the session's server-set field (#2772); a
+        # ``session_type`` key in its metadata is not it.
         if session_type:
-            filtered_sessions = []
-            for session in all_sessions:
-                try:
-                    # Check session metadata for session_type or usage_type
-                    session_data = None
-                    if (
-                        hasattr(session_service, "session_manager")
-                        and hasattr(session_service.session_manager, "session_store")
-                        and hasattr(
-                            session_service.session_manager.session_store, "get"
-                        )
-                    ):
-                        session_data = (
-                            await session_service.session_manager.session_store.get(
-                                session.session_id
-                            )
-                        )
-
-                    if session_data:
-                        metadata_type = (
-                            session_data.get("session_type") or "troubleshooting"
-                        )
-                        if metadata_type == session_type:
-                            filtered_sessions.append(session)
-                    elif session_type == "troubleshooting":  # Default type
-                        filtered_sessions.append(session)
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to get session metadata for {session.session_id}: {exception_log_name(e)}"
-                    )
-                    # Include session if we can't determine its type and filter is for default type
-                    if session_type == "troubleshooting":
-                        filtered_sessions.append(session)
-            all_sessions = filtered_sessions
+            all_sessions = [s for s in all_sessions if s.session_type == session_type]
 
         # Apply pagination
         total = len(all_sessions)
@@ -643,30 +607,6 @@ async def list_sessions(
         # Format response
         sessions_response = []
         for session in paginated_sessions:
-            # Get session metadata for display
-            session_type_val = "troubleshooting"  # default
-            try:
-                session_data = None
-                if (
-                    hasattr(session_service, "session_manager")
-                    and hasattr(session_service.session_manager, "session_store")
-                    and hasattr(session_service.session_manager.session_store, "get")
-                ):
-                    session_data = (
-                        await session_service.session_manager.session_store.get(
-                            session.session_id
-                        )
-                    )
-
-                if session_data:
-                    session_type_val = (
-                        session_data.get("session_type") or "troubleshooting"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to get session metadata for display {session.session_id}: {exception_log_name(e)}"
-                )
-
             sessions_response.append(
                 {
                     "session_id": session.session_id,
@@ -675,8 +615,8 @@ async def list_sessions(
                     "last_activity": _safe_datetime_to_utc_string(
                         session.last_activity
                     ),
-                    "status": "inquiry",
-                    "session_type": session_type_val,
+                    "status": session.status,
+                    "session_type": session.session_type,
                     # The same two always-zero counters as the single-session
                     # read above, removed for the same reason.
                 }
@@ -800,7 +740,8 @@ async def session_heartbeat(
             logger.error("Session service is not available")
             raise HTTPException(status_code=503, detail="Session service unavailable")
 
-        # Update session activity with specific error handling
+        # Update session activity with specific error handling; the session
+        # as written, or None when there is none to update
         try:
             result = await session_service.update_last_activity(session_id)
         except FileNotFoundError:
@@ -858,21 +799,12 @@ async def session_heartbeat(
         # identical block went with `/stats`; this is its twin, on the
         # highest-frequency route on the router.
 
-        # Get updated session to return current last_activity (best effort)
-        last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
-        try:
-            session = await session_service.get_session(session_id, validate=False)
-            if session and session.last_activity:
-                last_activity = _safe_datetime_to_utc_string(session.last_activity)
-        except Exception as e:
-            logger.warning(
-                f"Failed to get updated session info for {session_id}: {exception_log_name(e)}"
-            )
-
+        # The session as the heartbeat wrote it: no second read, which could
+        # fail or race a delete and report a status the session does not hold.
         return {
             "session_id": session_id,
-            "status": "inquiry",
-            "last_activity": last_activity,
+            "status": result.status,
+            "last_activity": _safe_datetime_to_utc_string(result.last_activity),
             "message": "Session heartbeat updated",
         }
     except HTTPException:
@@ -953,6 +885,7 @@ async def update_session(
             "last_activity": _safe_datetime_to_utc_string(
                 updated_session.last_activity
             ),
+            "session_type": updated_session.session_type,
             "metadata": updated_session.metadata,
             "message": "Session updated successfully",
         }
@@ -1025,6 +958,7 @@ async def search_sessions(
                         session.last_activity
                     ),
                     "status": session.status,
+                    "session_type": session.session_type,
                     "metadata": session.metadata,
                 }
             )

@@ -596,6 +596,7 @@
           "session_type": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "minLength": 1,
                 "type": "string"
               },
@@ -724,6 +725,7 @@
           },
           "client_id": {
             "description": "OAuth client ID",
+            "maxLength": 255,
             "title": "Client Id",
             "type": "string"
           },
@@ -8087,7 +8089,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.16.0"
+    "version": "15.18.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -9751,6 +9753,7 @@
             "required": true,
             "schema": {
               "description": "OAuth client ID",
+              "maxLength": 255,
               "title": "Client Id",
               "type": "string"
             }
@@ -9891,7 +9894,7 @@
     },
     "/api/v1/auth/oauth/revoke": {
       "post": {
-        "description": "OAuth 2.0 Token Revocation Endpoint.\n\nRevokes access tokens or refresh tokens (for logout). Accepts\n`application/x-www-form-urlencoded` (RFC 7009 \u00a72.1) or `application/json`;\nerrors use the RFC 6749 \u00a75.2 shape that RFC 7009 \u00a72.2.1 refers to.\n\nWhen to revoke:\n- User logs out: Revoke both access and refresh tokens\n- Security event: Revoke all tokens for user\n- Token rotation: Old refresh token revoked automatically\n\nArgs:\n    request: Raw request; the body is parsed per its content type\n    response: Used to attach the no-store headers\n    oauth_service: OAuth service dependency\n\nReturns:\n    Empty object (200 OK per RFC 7009), or an RFC 6749 \u00a75.2 error body.\n\nNote: Returns 200 even if token doesn't exist (per RFC 7009)",
+        "description": "OAuth 2.0 Token Revocation Endpoint.\n\nRevokes access tokens or refresh tokens (for logout). Accepts\n`application/x-www-form-urlencoded` (RFC 7009 \u00a72.1) or `application/json`;\nerrors use the RFC 6749 \u00a75.2 shape that RFC 7009 \u00a72.2.1 refers to.\n\nWhen to revoke:\n- User logs out: Revoke both access and refresh tokens\n- Security event: Revoke all tokens for user\n- Token rotation: Old refresh token revoked automatically\n\nArgs:\n    request: Raw request; the body is parsed per its content type\n    response: Used to attach the no-store headers\n    oauth_service: OAuth service dependency\n\nReturns:\n    Empty object (200 OK per RFC 7009), or an RFC 6749 \u00a75.2 error body.\n\nNote: Returns 200 even if token doesn't exist (per RFC 7009). A refresh\ntoken naming another client than `client_id` is refused with 400\n`invalid_grant` and stays usable (RFC 7009 \u00a72.1).",
         "operationId": "revoke_api_v1_auth_oauth_revoke_post",
         "requestBody": {
           "content": {
@@ -9901,6 +9904,7 @@
                 "properties": {
                   "client_id": {
                     "description": "OAuth client ID",
+                    "maxLength": 255,
                     "minLength": 1,
                     "title": "Client Id",
                     "type": "string"
@@ -9942,6 +9946,7 @@
                 "properties": {
                   "client_id": {
                     "description": "OAuth client ID",
+                    "maxLength": 255,
                     "minLength": 1,
                     "title": "Client Id",
                     "type": "string"
@@ -10043,6 +10048,7 @@
                 "properties": {
                   "client_id": {
                     "description": "OAuth client ID",
+                    "maxLength": 255,
                     "minLength": 1,
                     "title": "Client Id",
                     "type": "string"
@@ -10083,6 +10089,7 @@
                   "redirect_uri": {
                     "anyOf": [
                       {
+                        "maxLength": 2048,
                         "type": "string"
                       },
                       {
@@ -10119,6 +10126,7 @@
                 "properties": {
                   "client_id": {
                     "description": "OAuth client ID",
+                    "maxLength": 255,
                     "minLength": 1,
                     "title": "Client Id",
                     "type": "string"
@@ -10159,6 +10167,7 @@
                   "redirect_uri": {
                     "anyOf": [
                       {
+                        "maxLength": 2048,
                         "type": "string"
                       },
                       {
@@ -15941,7 +15950,7 @@
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": false,
                       "session_type": "troubleshooting",
-                      "status": "inquiry",
+                      "status": "active",
                       "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
@@ -15956,7 +15965,7 @@
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": true,
                       "session_type": "troubleshooting",
-                      "status": "inquiry",
+                      "status": "active",
                       "timeout_minutes": 30,
                       "user_id": "user_123"
                     }

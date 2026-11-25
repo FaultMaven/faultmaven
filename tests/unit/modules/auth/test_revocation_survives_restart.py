@@ -262,7 +262,7 @@ class TestARestartPreservesRevocations:
         refresh = await generator.generate_refresh_token(
             _user(), state_read_at=datetime.now(timezone.utc)
         )
-        await generator.revoke_refresh_token(refresh)
+        await generator.revoke_refresh_token(refresh, client_id=None)
         jti = jwt.decode(refresh, options={"verify_signature": False})["jti"]
 
         durable_db()
