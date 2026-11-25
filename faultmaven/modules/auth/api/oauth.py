@@ -141,6 +141,10 @@ SUPPORTED_GRANT_TYPES: tuple[str, ...] = get_args(GrantType)
 TokenTypeHint = Literal["access_token", "refresh_token"]
 SUPPORTED_TOKEN_TYPE_HINTS: tuple[str, ...] = get_args(TokenTypeHint)
 
+# The exchange logs `redirect_uri` before comparing it, so it is bounded at the
+# request model like `client_id` (#2765). 2048 is the common URL ceiling.
+MAX_REDIRECT_URI_LENGTH = 2048
+
 
 class TokenRequest(BaseModel):
     """OAuth token request (authorization_code or refresh_token grant).
@@ -161,6 +165,7 @@ class TokenRequest(BaseModel):
     )
     redirect_uri: Optional[str] = Field(
         default=None,
+        max_length=MAX_REDIRECT_URI_LENGTH,
         description="Redirect URI (required for authorization_code grant, must match)",
     )
     code_verifier: Optional[str] = Field(
@@ -922,9 +927,9 @@ async def revoke(
     Returns:
         Empty object (200 OK per RFC 7009), or an RFC 6749 §5.2 error body.
 
-    Note: Returns 200 even if token doesn't exist (per RFC 7009). A valid
-    token issued to another client than `client_id` is refused with 400
-    `invalid_grant` and stays live (RFC 7009 §2.1).
+    Note: Returns 200 even if token doesn't exist (per RFC 7009). A refresh
+    token naming another client than `client_id` is refused with 400
+    `invalid_grant` and stays usable (RFC 7009 §2.1).
     """
     try:
         params = await _read_oauth_params(request)
@@ -945,18 +950,18 @@ async def revoke(
         # Determine token type
         token_type = revoke_request.token_type_hint or "access_token"
 
-        # RFC 7009 §2.1: a token issued to another client is refused, under
-        # either hint (#2765).
+        # RFC 7009 §2.1: a refresh token naming another client is refused,
+        # under either hint (#2765).
         if token_type == "refresh_token":
             await oauth_service.revoke_refresh_token(
                 revoke_request.token, client_id=revoke_request.client_id
             )
-            logger.info(f"Revoked refresh token for client {revoke_request.client_id}")
         else:
             await oauth_service.revoke_token(
                 revoke_request.token, client_id=revoke_request.client_id
             )
-            logger.info(f"Revoked access token for client {revoke_request.client_id}")
+        # Also for a token that recorded nothing (invalid, forged, expired).
+        logger.info(f"Revocation request handled for client {revoke_request.client_id}")
 
     except OAuthProtocolError:
         raise

@@ -340,15 +340,14 @@ class IOAuthService(ABC):
             New access token and rotated refresh token
 
         Raises:
+            InvalidRequestError: client_id is over 255 characters (#2765).
             InvalidGrantError: If refresh token invalid, expired, or revoked.
                 A store read failure or any other unexpected exception
                 propagates (#2165).
         """
         ...
 
-    async def revoke_token(
-        self, token: str, *, client_id: Optional[str] = None
-    ) -> None:
+    async def revoke_token(self, token: str, *, client_id: Optional[str]) -> None:
         """Revoke access token (logout).
 
         Args:
@@ -362,7 +361,7 @@ class IOAuthService(ABC):
         ...
 
     async def revoke_refresh_token(
-        self, refresh_token: str, *, client_id: Optional[str] = None
+        self, refresh_token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke refresh token (prevents future token refresh).
 

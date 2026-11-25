@@ -1148,9 +1148,10 @@ token answers `invalid_grant` and is neither rotated nor revoked. A token that
 names no client (minted before the binding, or by a sign-in or mint that names
 none) is bound at its first refresh here, but only to a known client: one in
 `OAUTH_ALLOWED_CLIENTS`, or the service client `faultmaven-slack-agent`. The
-rotated refresh token names the presenting client. Under any other `client_id`,
-or one longer than 255 characters, the token is refused with `invalid_grant`
-before anything is minted or revoked.
+rotated refresh token names the presenting client. Under any other `client_id`
+the token is refused with `invalid_grant` before anything is minted or revoked.
+A `client_id` longer than 255 characters is refused as `invalid_request` at
+validation, before any log or service call (#2765).
 
 #### Mode-Agnostic Refresh: `POST /api/v1/auth/refresh`
 
@@ -2220,8 +2221,8 @@ is no client registry to reject a caller against.
 
 | Error Code | HTTP Status | Endpoint | Description |
 |------------|-------------|----------|-------------|
-| `invalid_request` | 400 | both | Missing, repeated, empty or unparseable parameters |
-| `invalid_grant` | 400 | `/token` | Code expired, replayed, PKCE failed, or refresh token revoked; or the code was issued to another client or names none; or the refresh token names another client, or names none and the client is not a known one, or the `client_id` is over 255 characters |
+| `invalid_request` | 400 | both | Missing, repeated, empty or unparseable parameters, or a `client_id` over 255 characters or a `redirect_uri` over 2048 |
+| `invalid_grant` | 400 | both | `/token`: code expired, replayed, PKCE failed, or refresh token revoked; or the code was issued to another client or names none; or the refresh token names another client, or names none and the client is not a known one. `/revoke`: the refresh token names another client |
 | `unsupported_grant_type` | 400 | `/token` | `grant_type` is neither `authorization_code` nor `refresh_token` |
 | `unsupported_token_type` | 400 | `/revoke` | `token_type_hint` is not a hint this server knows (RFC 7009 §2.2.1) |
 | `invalid_request` | 415 | both | Body is neither form-encoded nor JSON |

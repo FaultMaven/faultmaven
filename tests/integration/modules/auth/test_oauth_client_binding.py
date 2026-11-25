@@ -16,10 +16,10 @@ A store read fault while validating a refresh token answers 500 on both paths
 and revokes nothing, and a token that is not ASCII or not a JWS is refused, never
 a 500 (#2165).
 
-``POST /auth/oauth/revoke`` refuses a valid token naming another client with
+``POST /auth/oauth/revoke`` refuses a refresh token naming another client with
 400 ``invalid_grant`` under any hint, writing nothing (RFC 7009 §2.1), and no
-OAuth request carries a ``client_id`` over 255 characters into a log record
-(#2765).
+OAuth request carries a ``client_id`` over 255 characters, or a
+``redirect_uri`` over 2048, into a log record (#2765).
 """
 
 import asyncio
@@ -348,18 +348,35 @@ async def test_a_claim_that_is_not_a_string_is_a_mismatch(env):
     _assert_refused(await _refresh(env.client, forged, COPILOT), REFRESH_REFUSED)
 
 
-async def test_an_overlong_client_is_never_bound(env, monkeypatch):
-    # Even a configured one: the cap is checked on its own. The route refuses
-    # the value before the service (#2765), so the service is called directly:
-    # it keeps the bound by itself.
-    from faultmaven.models.exceptions import InvalidGrantError
+@pytest.mark.parametrize("path", ["refresh", "validate", "mint"])
+async def test_the_service_refuses_an_overlong_client_before_any_log(
+    env, monkeypatch, caplog, path
+):
+    # Even a configured one: the cap is checked on its own. The routes refuse
+    # the value at validation (#2765); the service keeps the bound by itself.
+    from faultmaven.models.exceptions import InvalidRequestError
+    from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
 
-    allowed = [COPILOT, "c" * 256]
+    overlong = "c" * 256
+    allowed = [COPILOT, overlong]
     monkeypatch.setattr(env.service.settings, "oauth_allowed_clients", allowed)
     token = await _unbound_refresh_token(env)
+    request = OAuthAuthorizationDTO(
+        client_id=overlong, redirect_uri=REDIRECT, state="s", code_challenge="c" * 43
+    )
+    caplog.set_level(logging.DEBUG)
 
-    with pytest.raises(InvalidGrantError, match="not valid for this client"):
-        await env.service.refresh_access_token(token, client_id="c" * 256)
+    with pytest.raises(InvalidRequestError) as refused:
+        if path == "refresh":
+            await env.service.refresh_access_token(token, client_id=overlong)
+        elif path == "validate":
+            await env.service.validate_authorization_request(request, user_id="u")
+        else:
+            await env.service.create_authorization_code("u", request)
+
+    assert overlong not in str(refused.value)
+    assert caplog.records, "the probe saw no record at all"
+    assert not _logged(caplog, overlong)
     assert await env.generator.validate_refresh_token(token) is not None
 
 
@@ -689,7 +706,7 @@ async def test_a_token_naming_no_client_is_revoked_under_any_client(env):
 async def test_an_internal_revoke_names_no_client_and_still_revokes(env):
     token = await _bound_refresh_token(env.client)
 
-    await env.service.revoke_refresh_token(token)
+    await env.service.revoke_refresh_token(token, client_id=None)
 
     assert await env.generator.validate_refresh_token(token) is None
 
@@ -811,3 +828,26 @@ async def test_the_probe_finds_the_longest_admitted_client_id(
 
     assert response.status_code != 422, response.text
     assert _logged(caplog, LONGEST)
+
+
+async def test_an_overlong_redirect_uri_is_refused_before_any_log(env, caplog):
+    caplog.set_level(logging.DEBUG)
+    code, verifier = await _code(env.client)
+
+    for redirect, admitted in (("r" * 2049, False), ("s" * 2048, True)):
+        caplog.clear()
+        response = await env.client.post(
+            TOKEN,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": verifier,
+                "redirect_uri": redirect,
+                "client_id": COPILOT,
+            },
+        )
+        assert response.status_code == 400, response.text
+        # 2048 passes validation and is logged by the exchange (positive
+        # control); 2049 is refused at validation and logged nowhere.
+        assert (response.json()["error"] == "invalid_request") is not admitted
+        assert _logged(caplog, redirect) is admitted

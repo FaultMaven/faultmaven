@@ -123,7 +123,7 @@ class TestLocalGeneratorWithProductionStore:
         assert await generator.validate_access_token(access) is not None
         assert await generator.validate_refresh_token(refresh) is not None
 
-        await generator.revoke_refresh_token(refresh)
+        await generator.revoke_refresh_token(refresh, client_id=None)
         assert await generator.validate_refresh_token(refresh) is None
         # The access token is untouched
         assert await generator.validate_access_token(access) is not None
@@ -136,7 +136,7 @@ class TestLocalGeneratorWithProductionStore:
         access = await generator.generate_access_token(
             _user(), state_read_at=datetime.now(timezone.utc)
         )
-        await generator.revoke_access_token(access)
+        await generator.revoke_access_token(access, client_id=None)
 
         keys = [k async for k in redis.scan_iter("*")]
         assert len(keys) == 1
@@ -167,7 +167,7 @@ class TestGeneratorRevocationVisibleToRequestPath:
             assert claims["sub"] == "user-767"
 
             # Revoke through the generator (the /oauth/revoke + logout path)
-            await generator.revoke_access_token(access)
+            await generator.revoke_access_token(access, client_id=None)
 
             # The request-path check must now reject it
             with pytest.raises(TokenRevocationError):
@@ -214,13 +214,13 @@ class TestFailurePosture:
         store.add_revoked_token = boom
 
         with pytest.raises(ConnectionError):
-            await generator.revoke_refresh_token(refresh)
+            await generator.revoke_refresh_token(refresh, client_id=None)
 
     async def test_revoke_tolerates_undecodable_token(self):
         store = _store(_fake_redis())
         generator = _generator(store)
         # RFC 7009: revoking an invalid token is success, not an error
-        await generator.revoke_access_token("not-a-jwt")
+        await generator.revoke_access_token("not-a-jwt", client_id=None)
 
     async def test_revoke_tolerates_malformed_exp_claims(self):
         """Crafted or ms-precision exp is an invalid-token case, not a 5xx.
@@ -239,7 +239,7 @@ class TestFailurePosture:
             token = pyjwt.encode(
                 {"jti": "jti-bad-exp", "exp": bad_exp}, SECRET, algorithm="HS256"
             )
-            await generator.revoke_access_token(token)
+            await generator.revoke_access_token(token, client_id=None)
 
         keys = [k async for k in redis.scan_iter("*")]
         assert keys == []  # nothing revoked, nothing raised
@@ -333,7 +333,7 @@ class TestLocalRouteGeneratorFactory:
             _user(), state_read_at=datetime.now(timezone.utc)
         )
         assert await generator.validate_refresh_token(refresh) is not None
-        await generator.revoke_refresh_token(refresh)
+        await generator.revoke_refresh_token(refresh, client_id=None)
         assert await generator.validate_refresh_token(refresh) is None
 
 

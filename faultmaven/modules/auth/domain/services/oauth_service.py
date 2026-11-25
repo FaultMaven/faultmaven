@@ -35,6 +35,19 @@ from faultmaven.modules.auth.infrastructure.metrics.oauth_metrics import (
 logger = logging.getLogger(__name__)
 
 
+def _refuse_overlong_client_id(client_id: str) -> None:
+    """Refuse a ``client_id`` over the cap, before any log carries it (#2765).
+
+    The routes refuse it at validation; the service keeps the bound by itself.
+    The message does not echo the value.
+    """
+    if len(client_id) > MAX_CLIENT_ID_LENGTH:
+        raise InvalidRequestError(
+            f"client_id is longer than {MAX_CLIENT_ID_LENGTH} characters",
+            error_code="INVALID_CLIENT_ID",
+        )
+
+
 class OAuthServiceImpl(IOAuthService):
     """OAuth 2.0 + PKCE service implementation.
 
@@ -98,8 +111,11 @@ class OAuthServiceImpl(IOAuthService):
 
         Raises:
             InvalidRequestError: If client_id, redirect_uri, or
-                code_challenge_method is not permitted.
+                code_challenge_method is not permitted, or client_id is
+                over ``MAX_CLIENT_ID_LENGTH``.
         """
+        _refuse_overlong_client_id(request.client_id)
+
         # Validate client_id
         if request.client_id not in self.settings.oauth_allowed_clients:
             logger.warning(
@@ -193,6 +209,8 @@ class OAuthServiceImpl(IOAuthService):
         # earlier, which is the residue of capturing here rather than at
         # request start.
         state_read_at = capture_state_read_at()
+
+        _refuse_overlong_client_id(request.client_id)
 
         logger.info(
             "OAuth authorization code requested",
@@ -625,6 +643,7 @@ class OAuthServiceImpl(IOAuthService):
             New access token and rotated refresh token
 
         Raises:
+            InvalidRequestError: client_id is over ``MAX_CLIENT_ID_LENGTH``.
             InvalidGrantError: If refresh token invalid, expired, or revoked,
                 or issued to another client. A store read failure or any other
                 unexpected exception propagates (#2165).
@@ -635,19 +654,7 @@ class OAuthServiceImpl(IOAuthService):
         # this grant redeems is already revocable.
         state_read_at = capture_state_read_at()
 
-        # Before the first log line, which carries the client id (#2765).
-        if len(client_id) > MAX_CLIENT_ID_LENGTH:
-            logger.warning(
-                "OAuth token refresh failed: client mismatch",
-                extra={"error": "CLIENT_MISMATCH"},
-            )
-            self._metrics.record_token_refresh(
-                client_id=client_id, success=False, error_code="CLIENT_MISMATCH"
-            )
-            raise InvalidGrantError(
-                "Refresh token is not valid for this client",
-                error_code="CLIENT_MISMATCH",
-            )
+        _refuse_overlong_client_id(client_id)
 
         logger.info(
             "OAuth token refresh requested",
@@ -875,9 +882,7 @@ class OAuthServiceImpl(IOAuthService):
 
         return payload.get("sub")  # 'sub' claim contains user_id
 
-    async def revoke_token(
-        self, token: str, *, client_id: Optional[str] = None
-    ) -> None:
+    async def revoke_token(self, token: str, *, client_id: Optional[str]) -> None:
         """Revoke access token (logout).
 
         Args:
@@ -901,7 +906,7 @@ class OAuthServiceImpl(IOAuthService):
         self._metrics.record_token_revocation("access_token")
 
     async def revoke_refresh_token(
-        self, refresh_token: str, *, client_id: Optional[str] = None
+        self, refresh_token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke refresh token (prevents future token refresh).
 

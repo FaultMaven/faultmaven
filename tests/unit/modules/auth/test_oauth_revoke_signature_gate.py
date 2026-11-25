@@ -292,7 +292,7 @@ class TestGenuineTokensAreStillRevoked:
             _user(), state_read_at=datetime.now(timezone.utc)
         )
 
-        await generator.revoke_refresh_token(refresh)
+        await generator.revoke_refresh_token(refresh, client_id=None)
 
         assert await generator.validate_refresh_token(refresh) is None
 
@@ -301,7 +301,9 @@ class TestGenuineTokensAreStillRevoked:
         redis = _fake_redis()
         generator = _hs256_generator(_store(redis))
 
-        await generator.revoke_access_token(_forged_tokens()["unsigned"])
+        await generator.revoke_access_token(
+            _forged_tokens()["unsigned"], client_id=None
+        )
 
         assert await _keys(redis) == []
 
@@ -444,7 +446,7 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
 
         # Deliberately the ACCESS method: nothing but the token's own claims
         # may decide the ceiling.
-        await generator.revoke_access_token(refresh)
+        await generator.revoke_access_token(refresh, client_id=None)
 
         ttl = await redis.ttl(f"revoked:token:jti:{jti}")
         assert ttl > ACCESS_MINUTES * 60

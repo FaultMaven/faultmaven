@@ -512,7 +512,7 @@ class TestRevocationArmsAreIndependent:
             _user(), state_read_at=datetime.now(timezone.utc)
         )
 
-        await generator.revoke_access_token(first)
+        await generator.revoke_access_token(first, client_id=None)
 
         assert await generator.validate_access_token(first) is None
         # The user's other token must survive a single-token revocation.

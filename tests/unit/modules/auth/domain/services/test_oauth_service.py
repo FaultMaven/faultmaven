@@ -605,7 +605,7 @@ class TestTokenRevocation:
         """Test refresh token revocation."""
         refresh_token = "refresh_token_456"
 
-        await oauth_service.revoke_refresh_token(refresh_token)
+        await oauth_service.revoke_refresh_token(refresh_token, client_id=None)
 
         mock_token_generator.revoke_refresh_token.assert_called_once_with(
             refresh_token, client_id=None

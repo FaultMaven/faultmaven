@@ -856,7 +856,7 @@ class IJWTTokenGenerator(ABC):
 
     @abstractmethod
     async def revoke_access_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke access token (add to revocation list).
 
@@ -874,7 +874,7 @@ class IJWTTokenGenerator(ABC):
 
     @abstractmethod
     async def revoke_refresh_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke refresh token (prevent future use).
 
@@ -1430,7 +1430,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def revoke_access_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke access token by adding jti to the revocation store.
 
@@ -1452,7 +1452,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def revoke_refresh_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke refresh token by adding jti to the revocation store.
 
@@ -2217,7 +2217,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def revoke_access_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke access token by adding jti to the revocation store.
 
@@ -2239,7 +2239,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
 
     async def revoke_refresh_token(
-        self, token: str, *, client_id: Optional[str] = None
+        self, token: str, *, client_id: Optional[str]
     ) -> None:
         """Revoke refresh token by adding jti to the revocation store.
 
