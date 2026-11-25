@@ -15,6 +15,7 @@ Each pin names the mutant it fails on.
 """
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -233,6 +234,23 @@ class TestTheTurnBudget:
         assert router.circuit_breaker.failure_count == 0
         entered = router.connection_metrics["total_calls"]
         assert entered == (1 if path == "walk" else 0)
+
+    async def test_the_walks_stop_is_logged_as_a_spent_turn(self, monkeypatch, caplog):
+        """No provider was tried, so the walk's stop is no chain failure: a
+        warning, never "All providers failed" at error with a traceback.
+        Mutant: the stop falls through to the chain-failure report."""
+        router = rig(monkeypatch, [adapter("gemini"), adapter("fireworks")], {})
+        monkeypatch.setattr(router_module, "spendable_turn_budget", lambda: None)
+
+        with caplog.at_level(logging.WARNING, logger=registry_module.__name__):
+            with bind_turn_deadline(4.0):
+                _, error, _ = await timed(route_model_call(router, prompt=vetted("p")))
+
+        assert isinstance(error, LLMTurnBudgetSpent)
+        walk = [r for r in caplog.records if r.name == registry_module.__name__]
+        assert [r.levelno for r in walk] == [logging.WARNING]
+        assert "Turn budget spent" in walk[0].getMessage()
+        assert walk[0].exc_info is None
 
     async def test_its_outcome_is_the_turn_budgets(self):
         """In the ladder and at the HTTP boundary: ``TURN_BUDGET_EXHAUSTED``,

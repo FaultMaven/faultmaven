@@ -349,7 +349,7 @@ def is_deadline_shaped(error: BaseException) -> bool:
 def spent_a_deadline(failure: BaseException) -> bool:
     """Whether one recorded send failure spent its provider a deadline (#2319).
 
-    A cancellation (the router's ceiling or a ``wait_for`` cut the send), or a
+    A cancellation (the attempt's own deadline or a ``wait_for`` cut the send), or a
     deadline-shaped failure (``is_deadline_shaped``) that is not a verdict on
     the request: an overflow or truncation 504 asks the caller to change the
     request, and says nothing about the provider.

@@ -1042,7 +1042,9 @@ class ProviderRegistry:
             # This attempt's deadline (#2983): the provider's own ``T``, from the
             # settings its client was built with, clamped to what the turn can
             # still spend. A spent turn stops the walk here, charging nothing
-            # to the providers it never tried; with none tried, nothing failed.
+            # to the providers it never tried; with none tried, nothing failed,
+            # so the refusal is raised here rather than reported as the
+            # chain's failure.
             own_timeout = provider_timeout(provider_name, self.settings)
             spendable = spendable_turn_budget()
             if spendable is not None and spendable <= 0:
@@ -1050,7 +1052,8 @@ class ProviderRegistry:
                     f"Turn budget spent; {provider_name} and the rest of the "
                     "chain not tried"
                 )
-                last_error = last_error or LLMTurnBudgetSpent()
+                if last_error is None and best_low_confidence_response is None:
+                    raise LLMTurnBudgetSpent()
                 break
             attempt_timeout = (
                 own_timeout if spendable is None else min(own_timeout, spendable)

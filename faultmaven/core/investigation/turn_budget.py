@@ -68,8 +68,10 @@ from typing import Dict, Iterator, List, Optional, Sequence
 _turn_deadline: ContextVar[Optional[float]] = ContextVar("turn_deadline", default=None)
 
 # The failures of the judged model call in progress, by send key, or None
-# outside one (#2319). One dict per binding: a send in the router's ``wait_for``
-# child task runs on a copy of this context, and appends to the same dict.
+# outside one (#2319). One dict per binding: a routed attempt's send runs under
+# its ``asyncio.timeout`` in the caller's task (#2983), and a send in a
+# ``wait_for`` child task (the ladder's backstop) on a copy of this context;
+# both append to the same dict.
 _model_failures: ContextVar[Optional[Dict[str, List[BaseException]]]] = ContextVar(
     "model_failures", default=None
 )
