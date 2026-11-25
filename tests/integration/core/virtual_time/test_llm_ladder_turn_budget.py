@@ -100,7 +100,7 @@ def virtual_deadline_clock(request, monkeypatch):
     what an attempt cost; both read ``time.monotonic()``. On a virtual loop
     they must read the same clock ``asyncio.wait_for`` schedules by, or the
     budget and the cancellation disagree about what time it is. The sync
-    tests (the router's clamp) have no loop to read, so they keep the real
+    tests (the router's outer bound) have no loop to read, so they keep the real
     clock — and ``virtual_now()`` raises rather than let one leak across.
     """
     if inspect.iscoroutinefunction(request.function):
@@ -491,7 +491,9 @@ class _HangingProvider(BaseExternalClient):
         return "never reached"
 
     async def route(self, configured_timeout, clamp):
-        """``clamp=True`` is what ``LLMRouter._resolve_timeout`` now does."""
+        """``clamp=True`` is what a routed attempt's own deadline does
+        (``ProviderRegistry.route_request``, #2983): the call's own bound,
+        clamped to the turn."""
         timeout = (
             clamp_to_turn_budget(configured_timeout) if clamp else configured_timeout
         )
@@ -791,18 +793,12 @@ class TestATruncationRetryKeepsItsRecoveryCode:
 
 
 @pytest.mark.integration
-class TestTheRouterAppliesTheClamp:
-    """The seam that makes the budget cover EVERY LLM call in a turn.
+class TestTheRoutersOuterBoundNeverCutsAnAttempt:
+    """The bound ``call_external`` puts around a routed walk (#2983).
 
-    ``LLMRouter._resolve_timeout`` is the sole source of the ``timeout`` handed
-    to ``call_external`` for a router-borne call, so clamping there bounds the
-    investigation ladder, intent classification (``intent_resolver``) and
-    KB/document answer synthesis (``document_qa_tool``) alike. Without it only
-    the one ``with_retry`` call site was budgeted, and a hang anywhere else in
-    the turn still produced the opaque 504 this work removes.
-
-    Asserted on the real router rather than on ``clamp_to_turn_budget``, which
-    is already unit-tested: the question here is whether the router calls it.
+    Each attempt clamps its own deadline to the spendable budget
+    (``ProviderRegistry.route_request``), so the walk's outer bound must end
+    later than any of them: the backstop inside a turn, nothing outside one.
     """
 
     @pytest.fixture(scope="class")
@@ -811,39 +807,23 @@ class TestTheRouterAppliesTheClamp:
 
         return LLMRouter()
 
-    def test_outside_a_turn_the_configured_ceiling_is_untouched(self, router):
-        assert router._resolve_timeout() == pytest.approx(router.request_timeout)
+    def test_outside_a_turn_the_walk_is_bounded_by_its_attempts(self, router):
+        """Mutant: the CHAT provider's ``T`` (``main``)."""
+        assert router._resolve_timeout() is None
 
-    def test_inside_a_turn_the_ceiling_is_cut_to_the_remaining_budget(self, router):
-        deadline = max(1.0, router.request_timeout / 10.0)
-        with bind_turn_deadline(deadline):
-            clamped = router._resolve_timeout()
+    def test_inside_a_turn_it_is_the_backstop_later_than_the_spendable(self, router):
+        with bind_turn_deadline(10.0):
+            outer = router._resolve_timeout()
+            assert outer == pytest.approx(turn_budget.backstop_turn_budget(), abs=0.05)
+            assert outer > turn_budget.spendable_turn_budget()
 
-        assert clamped < router.request_timeout
-        assert clamped == pytest.approx(
-            deadline
-            - turn_budget.TURN_BUDGET_RESERVE_SECONDS
-            - turn_budget.TURN_COMMIT_RESERVE_SECONDS,
-            abs=0.1,
-        )
+    @pytest.mark.parametrize("backstop", [0.0, -1.0])
+    def test_a_spent_backstop_is_an_instant_bound_never_zero(
+        self, router, monkeypatch, backstop
+    ):
+        """``call_external`` reads ``0.0`` as unbounded and a negative value as
+        an instant timeout. Mutant: the backstop returned as it is."""
+        from faultmaven.infrastructure.llm import router as router_module
 
-    def test_the_router_applies_the_SHARED_clamp_not_a_local_min(self, router):
-        """Pins the seam between the two halves of the breaker fix.
-
-        One test proves the router narrows its ceiling; another proves a call
-        cut short by ``clamp_to_turn_budget`` still records a breaker failure.
-        Neither is worth much unless the router narrows it with THAT function —
-        a hand-rolled ``min`` here would satisfy the first test and silently
-        drop the second's guarantee.
-        """
-        unbound = router._resolve_timeout()
-        with bind_turn_deadline(max(1.0, unbound / 10.0)):
-            assert router._resolve_timeout() == pytest.approx(
-                clamp_to_turn_budget(unbound), abs=0.05
-            )
-
-    def test_a_turn_longer_than_the_ceiling_leaves_it_alone(self, router):
-        """The clamp is a ceiling, never a floor: a generous turn must not
-        lengthen a deliberately short provider timeout."""
-        with bind_turn_deadline(router.request_timeout * 10):
-            assert router._resolve_timeout() == pytest.approx(router.request_timeout)
+        monkeypatch.setattr(router_module, "backstop_turn_budget", lambda: backstop)
+        assert router._resolve_timeout() < 0

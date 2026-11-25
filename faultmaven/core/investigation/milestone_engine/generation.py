@@ -178,14 +178,19 @@ def _is_refusal(response: Any, schema_model: Any) -> bool:
 def _reissue_budget(da_provider: Any) -> Optional[float]:
     """The receiving provider's request timeout ``T`` when the turn budget fits
     one attempt of it, else ``None``: the DA provider's own (``config.timeout``),
-    else the router's (``resolve_request_timeout``). Never the refused call's
-    own duration, which a refusal makes short."""
+    else that of the provider the router sends it to, ``STRUCTURED_OUTPUT_PROVIDER``
+    when set, else CHAT's (#2983). Never the refused call's own duration, which
+    a refusal makes short."""
     seconds = getattr(getattr(da_provider, "config", None), "timeout", None)
     if not isinstance(seconds, (int, float)):
         from faultmaven.config.settings import get_settings
-        from faultmaven.infrastructure.llm.router import resolve_request_timeout
+        from faultmaven.infrastructure.llm.provider_timeout import provider_timeout
+        from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
 
-        seconds = resolve_request_timeout(get_settings())
+        settings = get_settings()
+        pinned = settings.llm.structured_output_provider
+        receiver = pinned.value if pinned else resolve_chat_provider_name(settings)
+        seconds = provider_timeout(receiver, settings)
     affords = can_afford_next_attempt(spendable_turn_budget(), 0.0, float(seconds))
     return float(seconds) if affords else None
 
@@ -263,8 +268,8 @@ TOOLLESS_INFERENCE_OUTPUT_FLOOR = 2048
 # fraction of the starved attempt's own duration. Measured 2026-11-14 on Azure
 # gpt-6-luna-1 over three replayed single-shot turns: a starved attempt took
 # 52-63 s, and the same turns at "low" took at most 32 s and never starved (48
-# calls). The estimate only decides whether to try: the router clamps the
-# attempt to what is left. Not the retry ladder's own rule (the worst attempt
+# calls). The estimate only decides whether to try: the routed attempt is
+# clamped to what is left. Not the retry ladder's own rule (the worst attempt
 # observed, i.e. the starved one): the lowered attempt is cheaper by
 # construction, and that rule would refuse nearly every re-issue in a 120 s
 # turn. Not a bigger cap: at ~140 output tokens/s a doubled 16,000-token attempt
@@ -1076,7 +1081,7 @@ class StructuredOutputGenerator:
                 logger.warning("Tool loop: refused; re-issuing it reduced (#1770)")
                 call = _tool_loop_call(generate_kwargs["max_tokens"])
                 try:
-                    # The router clamps its own calls; a DA provider's is not.
+                    # A routed attempt clamps its own deadline; a DA provider's is not.
                     response = await (
                         asyncio.wait_for(call, clamp_to_turn_budget(seconds))
                         if direct_provider

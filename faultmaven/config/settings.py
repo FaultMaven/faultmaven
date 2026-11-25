@@ -589,15 +589,19 @@ class LLMSettings(BaseSettings):
         ),
     )
 
-    def timeout_for_provider(self, provider_name: Optional[str]) -> int:
-        """Return the per-provider timeout if set, else the global default.
-
-        Centralised so callers don't have to dict-lookup + fall back themselves.
-        Empty / unknown provider names return ``request_timeout`` unchanged.
-        """
-        if not provider_name:
-            return self.request_timeout
-        return self.provider_timeout_overrides.get(provider_name, self.request_timeout)
+    @field_validator("provider_timeout_overrides")
+    @classmethod
+    def _overrides_are_positive(cls, v: Dict[str, int]) -> Dict[str, int]:
+        """Refuse an override ``<= 0`` (#2983): an override is that provider's
+        ``T`` outright, and a call bound reads ``0`` as unbounded and a negative
+        value as an instant timeout."""
+        refused = [f"{name}={seconds}" for name, seconds in v.items() if seconds <= 0]
+        if refused:
+            raise ValueError(
+                "LLM_PROVIDER_TIMEOUT_OVERRIDES must give every provider a "
+                f"positive timeout in seconds; refused: {', '.join(refused)}"
+            )
+        return v
 
     # Provider behavior
     strict_provider_mode: bool = Field(

@@ -803,11 +803,9 @@ read `LOCAL_LLM_URL`. Configure a custom base URL through the provider's
 settings field (`OPENAI_API_BASE`, `LOCAL_LLM_URL`, …); `default_base_url`
 above is the schema key that IS read.
 
-**Timeout Configuration**: timeouts resolve in three layers, most-specific-wins:
+**Timeout Configuration**: one resolver, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`), gives a provider its `T`: its `LLM_PROVIDER_TIMEOUT_OVERRIDES` entry when it has one, which can lower `T` as well as raise it; otherwise `LLM_REQUEST_TIMEOUT` (defaults to 30s). An override `<= 0` is refused when the settings load. The schema declares no timeout: a slow local model needs an override like any other provider (#2983).
 
-1. **Per-provider override** — `LLM_PROVIDER_TIMEOUT_OVERRIDES` (a JSON-shaped dict) lets slow providers carve out their own ceiling. The registry calls `LLMSettings.timeout_for_provider(name)` so a provider not listed falls through to the global default.
-2. **Provider schema default** — `schema["timeout"]` in `registry.py` (set per provider when the schema is declared). Used when neither the env override nor a registry override is present. `0` is treated as unset (the registry uses `schema.get("timeout") or timeout_for_provider(name)`).
-3. **Global default** — `LLM_REQUEST_TIMEOUT` (defaults to 30s). Applied only when neither (1) nor (2) supplies a value.
+The same `T` bounds the provider's client and each attempt the router's walk makes on it: an attempt runs on its own provider's `T`, clamped to the turn's spendable budget, and a timeout there is recorded against that provider before the walk moves on to the next (`ProviderRegistry.route_request`).
 
 ```bash
 # Global default (all providers without an override)
@@ -817,10 +815,6 @@ LLM_REQUEST_TIMEOUT=30
 # local Ollama on cold-cached models). Resolved per provider name.
 LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180, "local": 120}'
 
-# Three-layer wrapping (each outer layer adds buffer over the inner):
-# - Infrastructure Layer: as resolved above (per provider)
-# - Service Layer: infrastructure + 2s buffer
-# - API Layer: service + 3s buffer
 ```
 
 The per-provider override exists because forcing slow providers under the global default produced false timeouts on legitimate long-running reasoning calls, while widening the global default delayed fail-fast behavior for fast providers.

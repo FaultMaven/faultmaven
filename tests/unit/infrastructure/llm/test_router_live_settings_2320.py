@@ -7,10 +7,10 @@ that switched the primary provider the router kept calling with the OLD
 provider's per-provider timeout, while ``GET /admin/config/status`` reported the
 new one from ``resolve_request_timeout(get_settings())``.
 
-The invariant: the router's per-call ceiling is always
-``resolve_request_timeout(get_settings())``, clamped to the turn, and its
-``request_timeout`` (the routing health report's figure) is that ceiling
-unclamped.
+The invariant: the router's ``request_timeout`` (the routing health report's
+figure, the CHAT provider's ``T``) is always
+``resolve_request_timeout(get_settings())``. Each routed attempt reads its own
+provider's ``T`` from the live settings too (``provider_timeout``, #2983).
 
 ``_ALLOWED_OVERRIDES`` has no timeout key, so a reload moves the ceiling only
 by switching the provider whose per-provider override applies; the base
@@ -70,13 +70,13 @@ async def test_a_reload_that_switches_the_provider_moves_the_routers_timeout(
     """The router built before the reload answers with the NEW provider's
     override, the figure the status report computes from the live settings."""
     router = LLMRouter()
-    assert router._resolve_timeout() == pytest.approx(OVERRIDES["openai"])
+    assert router.request_timeout == pytest.approx(OVERRIDES["openai"])
 
     await _reload_with(monkeypatch, {"primary_provider": "fireworks"})
 
     assert get_settings().llm.provider.value == "fireworks"  # the reload took
-    assert router._resolve_timeout() == pytest.approx(OVERRIDES["fireworks"])
-    assert router._resolve_timeout() == pytest.approx(
+    assert router.request_timeout == pytest.approx(OVERRIDES["fireworks"])
+    assert router.request_timeout == pytest.approx(
         resolve_request_timeout(get_settings())
     )
     assert router.request_timeout == pytest.approx(OVERRIDES["fireworks"])
@@ -91,20 +91,25 @@ async def test_a_provider_with_no_override_falls_back_to_the_live_base(
     router = LLMRouter()
     await _reload_with(monkeypatch, {"primary_provider": "anthropic"})
 
-    assert router._resolve_timeout() == pytest.approx(BASE_SECONDS)
+    assert router.request_timeout == pytest.approx(BASE_SECONDS)
 
 
 def test_request_timeout_reads_the_live_settings_when_the_env_is_unset(
     live_settings, monkeypatch
 ):
     """Env first, then the live settings: with ``LLM_REQUEST_TIMEOUT`` unset, a
-    change to the settings object reaches a router built before it."""
+    change to the settings object reaches a router built before it. The
+    primary's override is dropped, since an override is its ``T`` outright
+    (#2983)."""
     router = LLMRouter()
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT")
     object.__setattr__(get_settings().llm, "request_timeout", 75)
+    object.__setattr__(
+        get_settings().llm, "provider_timeout_overrides", {"fireworks": 300}
+    )
 
     assert router.request_timeout == pytest.approx(75)
-    assert router._resolve_timeout() == pytest.approx(
+    assert router.request_timeout == pytest.approx(
         resolve_request_timeout(get_settings())
     )
 
@@ -141,14 +146,14 @@ async def test_a_call_during_the_override_read_keeps_the_previous_ceiling(
     await reading.wait()
 
     async def a_call_during_the_read():
-        return router._resolve_timeout()
+        return router.request_timeout
 
     during = await asyncio.create_task(a_call_during_the_read())
     release.set()
     await reload
 
     assert during == pytest.approx(OVERRIDES["fireworks"])
-    assert router._resolve_timeout() == pytest.approx(BASE_SECONDS)
+    assert router.request_timeout == pytest.approx(BASE_SECONDS)
 
 
 async def test_a_rebuild_that_raises_keeps_the_previous_settings(
@@ -165,7 +170,7 @@ async def test_a_rebuild_that_raises_keeps_the_previous_settings(
         await _reload_with(monkeypatch, {"primary_provider": "anthropic"})
 
     assert get_settings() is previous
-    assert router._resolve_timeout() == pytest.approx(OVERRIDES["fireworks"])
+    assert router.request_timeout == pytest.approx(OVERRIDES["fireworks"])
 
 
 async def test_an_older_read_finishing_last_keeps_the_newer_state(

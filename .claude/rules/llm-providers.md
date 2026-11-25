@@ -290,10 +290,19 @@ chain, or a 504 or 524 status on any exception that carries one) spent a whole
 deadline and learned nothing, so it gets `max_deadline_retries=1` retry: `2T +
 2s`, the pure deadline-shaped cost. Every other retryable failure keeps
 `max_retries=3`, and `3T + 14s` bounds every ladder the breaker cuts, a mixed
-one included (a timeout, then slow 503s). `T` is the resolved per-call ceiling —
-`max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`, NOT
-`LLM_REQUEST_TIMEOUT` alone, which understates the shipped cluster shape
-threefold. Three PAID attempts on the long ladder, because the router's breaker
+one included (a timeout, then slow 503s). `T` is what one routed attempt costs
+a hung provider. Each attempt of the router's walk runs on its own provider's
+ceiling, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`, the
+one resolver, which the provider's client is built with too): its
+`LLM_PROVIDER_TIMEOUT_OVERRIDES` entry, which can lower as well as raise it,
+else `LLM_REQUEST_TIMEOUT`; an override `<= 0` is refused at settings load, and
+the `local` schema carries no timeout of its own (#2983). So `T` is the chat
+provider's ceiling under `STRICT_PROVIDER_MODE=true` (a
+`STRUCTURED_OUTPUT_PROVIDER` pin's, when larger), and under non-strict the sum
+over the fallback chain, the worst case of every provider hanging: at the
+defaults a two-provider chain's hang ladder is 122 s and does not fit a 120 s
+turn, so both hung fail the turn at about 60 s, while a primary that fails fast
+keeps the retry. Three PAID attempts on the long ladder, because the router's breaker
 opens on the third failure and short-circuits the fourth, plus the three
 backoffs (2 + 4 + 8; the eight seconds are spent before the attempt the breaker
 refuses); the deadline ladder stays under the breaker. A throttle 429 is not
@@ -347,12 +356,20 @@ them, so the turn used to be cancelled mid-ladder: the classification never ran
 and the caller got an opaque 504 instead of the honest 503 + `Retry-After`
 (#1278/#1292). `core/investigation/turn_budget.py` binds the deadline in a
 `ContextVar` at the one site that applies the `wait_for`.
-`LLMRouter._resolve_timeout` then **clamps every router-borne call's own
-timeout** to what is left (less both reserves) — which bounds intent
-classification and KB/document synthesis too, not just the ladder, and keeps a
-cut-short call on the path that records a circuit-breaker failure (an outer
-`wait_for` would cancel it, and `CancelledError` is invisible to
-`call_external`'s handlers). `with_retry` adds a later backstop clamp for
+`ProviderRegistry.route_request` then **clamps each attempt's own deadline**
+(its provider's `T`) to what is left (less both reserves), rebound as the
+call's deadline so a 429 wait spends the attempt's share — which bounds intent
+classification and KB/document synthesis too, not just the ladder. The
+attempt's timeout (`LLMAttemptTimeout`, naming the provider and its `t`) is
+raised inside the walk: recorded on that provider's health only when its own
+`T` was the binding bound, never on a cut the turn clamped; the walk moves on,
+and stops before an attempt once the budget is spent, charging nothing to the
+providers it did not try. A chain that exhausts reaches `call_external`, which
+passes the timeout through and records a circuit-breaker failure (an outer
+`wait_for` would cancel it instead, and `CancelledError` is invisible to
+`call_external`'s handlers). So the walk's outer bound
+(`LLMRouter._resolve_timeout`) is the later backstop inside a turn and none
+outside one. `with_retry` adds the same later backstop for
 providers reached without the router, and **refuses a retry** whose backoff plus
 another attempt of the worst cost observed *in that ladder* would not fit.
 Refusing the ladder's last iteration reports `RETRY_EXHAUSTED` (nothing that

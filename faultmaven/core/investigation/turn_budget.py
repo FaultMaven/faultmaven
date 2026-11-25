@@ -177,24 +177,25 @@ class TurnDeadlineExceeded(Exception):
 # A SECOND, smaller reserve, used only by the retry ladder's backstop clamp.
 #
 # Two things bound an LLM attempt against the turn deadline, and their order
-# matters. The provider call's own ``asyncio.wait_for`` (inside
-# ``BaseExternalClient.call_external``) is clamped to the spendable budget by
-# ``LLMRouter._resolve_timeout``; the retry ladder wraps the same call in a
-# second ``wait_for`` as a backstop for the paths that reach a provider without
-# the router.
+# matters. Each attempt of a routed walk runs on its own deadline, its
+# provider's ``T`` clamped to the spendable budget (``ProviderRegistry.
+# route_request``, #2983); the router's ``call_external`` around the walk and
+# the retry ladder's ``wait_for`` around the call are both this backstop, the
+# ladder's for the paths that reach a provider without the router.
 #
-# The PROVIDER-level clamp must win. When it is the one that fires,
-# ``call_external`` raises ``ExternalCallTimeout`` from its own
-# ``except asyncio.TimeoutError`` handler and RECORDS A CIRCUIT-BREAKER FAILURE.
-# When the outer backstop fires first, the inner coroutine is cancelled instead:
+# The ATTEMPT's deadline must win. When it is the one that fires, the timeout
+# is raised inside the walk, recorded against the provider, and reaches
+# ``call_external``, which RECORDS A CIRCUIT-BREAKER FAILURE. When the outer
+# backstop fires first, the inner coroutine is cancelled instead:
 # ``CancelledError`` is a ``BaseException``, so neither of ``call_external``'s
 # handlers runs, nothing is recorded, and the breaker never opens — the turn is
 # honest but the outage repeats at full cost on every subsequent turn, which is
 # exactly the half of #1278 the deadline alone does not fix.
 #
 # Making the backstop reserve strictly SMALLER than the step reserve puts the
-# backstop's deadline strictly LATER, so the provider clamp always gets there
-# first and the backstop only ever fires on a call the router never bounded.
+# backstop's deadline strictly LATER, so the attempt's deadline always gets
+# there first and the backstop only ever fires on a call the router never
+# bounded.
 # The ordering is an invariant, not a coincidence, and is asserted in tests.
 # Both subtract ``TURN_COMMIT_RESERVE_SECONDS`` as well, so the ordering is
 # unchanged by it and neither clamp spends the commit's room.
@@ -265,12 +266,13 @@ def spendable_turn_budget(reserve: Optional[float] = None) -> Optional[float]:
 
 
 def backstop_turn_budget() -> Optional[float]:
-    """The ladder's last-resort clamp, deliberately LATER than the provider's.
+    """The last-resort bound, deliberately LATER than any attempt's.
 
-    See ``TURN_BUDGET_BACKSTOP_RESERVE_SECONDS``: a call the router bounded is
-    cut by the provider's own timeout, which records the failure; this only
-    catches a call that reached a provider without going through the router.
-    It leaves the commit reserve unspent too (#1882).
+    See ``TURN_BUDGET_BACKSTOP_RESERVE_SECONDS``: a routed attempt is cut by
+    its own deadline, which records the failure; this bounds the router's walk
+    and the ladder's call, and only catches a call that reached a provider
+    without going through the router. It leaves the commit reserve unspent too
+    (#1882).
     """
     remaining = remaining_turn_budget()
     if remaining is None:
@@ -298,24 +300,15 @@ def check_commit_budget() -> None:
 
 
 def clamp_to_turn_budget(timeout: float) -> float:
-    """Bound one provider call's own timeout by what is left of the turn.
+    """Bound one direct provider call's timeout by what is left of the turn.
 
-    Applied at ``LLMRouter._resolve_timeout``, which is the single place a
-    router-borne LLM call learns its ceiling — so EVERY call made while
-    handling a turn is bounded by it, not just the ones the investigation
-    engine wraps in a retry ladder. Intent classification and KB/document
-    answer synthesis go through the same router and were otherwise free to
-    outlive the turn and produce the opaque 504 this work exists to remove.
-
-    Clamping the call's OWN timeout, rather than wrapping it in another
-    ``wait_for``, is what keeps the failure on the recorded path: the timeout
-    fires inside ``call_external``, which raises ``ExternalCallTimeout`` and
-    records a circuit-breaker failure. An outer wrapper cancels the coroutine
-    instead, and a cancellation is invisible to every handler there.
+    Applied to the tool loop's refusal re-issue on a dedicated DA provider,
+    which reaches its provider without the router (a routed attempt clamps its
+    own deadline, ``ProviderRegistry.route_request``, #2983).
 
     Returns ``timeout`` unchanged outside a bound turn. Never returns a
-    negative value — a spent budget yields ``0.0``, which ``asyncio.wait_for``
-    turns into an immediate, classified timeout rather than an unbounded call.
+    negative value: a spent budget yields ``0.0``, which ``asyncio.wait_for``
+    turns into an immediate timeout.
     """
     spendable = spendable_turn_budget()
     if spendable is None:

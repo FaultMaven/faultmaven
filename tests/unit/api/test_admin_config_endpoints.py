@@ -120,6 +120,15 @@ def mock_llm_provider():
     return provider
 
 
+def _strict_chat_provider(settings, overrides=None):
+    """One strict provider (anthropic, the fixture's), no structured-output
+    pin: the routed walk the ladder report prices is that provider's ``T``
+    alone (#2983), unchanged by the per-attempt deadline."""
+    settings.llm.strict_provider_mode = True
+    settings.llm.structured_output_provider = None
+    settings.llm.provider_timeout_overrides = overrides or {}
+
+
 @pytest.fixture
 def mock_settings():
     """Mock FaultMavenSettings for config endpoints."""
@@ -190,7 +199,8 @@ def mock_settings():
     # than on what it is about. These are the shipped code
     # defaults, which is a FITTING configuration — 3x30 + 14 = 104s inside 120s.
     settings.llm.request_timeout = 30
-    settings.llm.timeout_for_provider.return_value = 30
+    settings.llm.provider_timeout_overrides = {}
+    settings.llm.structured_output_provider = None
     settings.agent.agent_request_timeout = 120
     settings.agent.timeout_for_provider.return_value = 120
     # The self-service sign-up bounds (#1320, #1324), reported as VALUES
@@ -1522,6 +1532,7 @@ class TestGetEnvConfigStatus:
         the code.
         """
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
+        _strict_chat_provider(mock_settings)
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
@@ -1550,7 +1561,7 @@ class TestGetEnvConfigStatus:
         """
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
         mock_settings.llm.request_timeout = 30
-        mock_settings.llm.timeout_for_provider.return_value = 120
+        _strict_chat_provider(mock_settings, {"anthropic": 120})
         mock_settings.agent.timeout_for_provider.return_value = 240
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
@@ -1619,7 +1630,7 @@ class TestGetEnvConfigStatus:
         134s one does not, and the entry says so for each."""
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
         mock_settings.llm.request_timeout = 30
-        mock_settings.llm.timeout_for_provider.return_value = 40
+        _strict_chat_provider(mock_settings, {"anthropic": 40})
         mock_settings.agent.timeout_for_provider.return_value = 120
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
@@ -2920,7 +2931,7 @@ def _scenario_llm_retry_ladder_fits(settings, app, monkeypatch, reality):
     """
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     settings.llm.request_timeout = 30
-    settings.llm.timeout_for_provider.return_value = 30 if reality else 120
+    _strict_chat_provider(settings, {"anthropic": 30 if reality else 120})
     settings.agent.timeout_for_provider.return_value = 120 if reality else 240
 
 

@@ -253,6 +253,21 @@ class CircuitBreakerError(Exception):
 LLM_BREAKER_SERVICE = "LLM_Providers"
 
 
+class LLMAttemptTimeout(ExternalCallTimeout):
+    """One attempt of a routed walk ran out its deadline (#2983): ``provider``'s
+    own ``T``, or less when the turn's spendable budget clamped it. Raised
+    inside the walk, and passed through ``call_external`` unwrapped."""
+
+    def __init__(self, provider: str, timeout: float):
+        super().__init__(
+            f"LLM provider '{provider}' timed out after {timeout:g}s",
+            service=LLM_BREAKER_SERVICE,
+            operation="route_llm_request",
+            timeout=timeout,
+        )
+        self.provider = provider
+
+
 def is_llm_breaker(exc: BaseException, *, transient: bool = False) -> bool:
     """The LLM router's open breaker on the ``__cause__`` chain (``exc`` included).
 

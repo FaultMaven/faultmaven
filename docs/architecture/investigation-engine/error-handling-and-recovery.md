@@ -355,7 +355,14 @@ weaker evidence the provider is down.
 | Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
 | Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder the breaker cuts, a mixed one included (a timeout, then slow 503s). A ladder of throttle 429s is not cut by the breaker (§1.1, #2793) and can pay the fourth attempt; `with_retry`'s turn-budget refusal stops that attempt when it would not fit, so the turn is never overrun |
 
-`T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`.
+`T` is what one routed attempt costs a hung provider: each attempt of the
+router's walk runs on its own provider's `T` (its
+`LLM_PROVIDER_TIMEOUT_OVERRIDES` entry, else `LLM_REQUEST_TIMEOUT`, #2983), so
+under `STRICT_PROVIDER_MODE=true` it is the chat provider's and otherwise the
+sum over the fallback chain, the worst case of every provider hanging. At the
+defaults a non-strict two-provider chain's hang ladder is `2·60 + 2 = 122 s`,
+which does not fit a 120 s turn: both providers hung, the turn fails at about
+60 s; a primary that fails fast keeps the retry.
 The class is by kind, not by elapsed time: the handler has no `T` to compare an
 attempt against, so a non-504 5xx that arrives late keeps the full ladder. The
 floor is one retry, never zero (#1287). When the deadline cap stops a ladder the

@@ -1142,13 +1142,14 @@ class LLMErrorHandler:
             # This attempt's deadline-spending failures, by send key.
             attempt_deadlines: Dict[str, int] = {}
             try:
-                # BACKSTOP only. A router-borne call is already bounded by
-                # LLMRouter._resolve_timeout, whose clamp expires ~0.75s
-                # earlier (see TURN_BUDGET_BACKSTOP_RESERVE_SECONDS) and, being
-                # the call's own timeout, leaves the failure on the path that
-                # records a circuit-breaker failure. This wrapper exists for the
-                # paths that reach a provider WITHOUT the router; when it fires
-                # it cancels the coroutine, which no handler below can observe.
+                # BACKSTOP only. Each attempt of a router-borne walk is already
+                # bounded by its own deadline (ProviderRegistry.route_request,
+                # #2983), clamped to the spendable budget, which expires ~0.75s
+                # earlier (see TURN_BUDGET_BACKSTOP_RESERVE_SECONDS) and leaves
+                # the failure on the path that records a circuit-breaker
+                # failure. This wrapper exists for the paths that reach a
+                # provider WITHOUT the router; when it fires it cancels the
+                # coroutine, which no handler below can observe.
                 backstop = backstop_turn_budget()
                 with deadlines_spent_into(attempt_deadlines):
                     if backstop is None:

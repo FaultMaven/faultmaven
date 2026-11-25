@@ -13,9 +13,9 @@ import re
 import time
 from abc import ABC
 from concurrent.futures import Executor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, Iterator, Optional, TypeVar, Union
 
 from faultmaven.exceptions import (
     SERVICE_SCOPED_ERROR_CODES,
@@ -50,6 +50,18 @@ def remaining_call_time() -> Optional[float]:
     if deadline is None:
         return None
     return deadline - time.monotonic()
+
+
+@contextmanager
+def call_deadline(seconds: float) -> Iterator[None]:
+    """Rebind the enclosing call's deadline to ``seconds`` from now, for the
+    block: one attempt of a routed walk (#2983), so a wait inside it spends
+    the attempt's share, not the walk's."""
+    token = _call_deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _call_deadline.reset(token)
 
 
 def _provider_codes(error: BaseException) -> Dict[str, Any]:
@@ -561,6 +573,15 @@ class BaseExternalClient(ABC):
                         service=self.service_name,
                         timeout=timeout,
                     )
+
+                    # A typed timeout of this service, raised inside the call
+                    # (one attempt of a routed walk, #2983), already names
+                    # what ran out and after how long: passed through.
+                    if (
+                        isinstance(timeout_error, ExternalCallTimeout)
+                        and timeout_error.service == self.service_name
+                    ):
+                        raise
 
                     # Typed, and carrying its own ``retryable=True``. A bare
                     # ``TimeoutError`` left retryability to be guessed from this
