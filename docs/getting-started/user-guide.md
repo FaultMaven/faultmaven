@@ -87,6 +87,11 @@ curl -X POST \
 # Response includes:
 # - session_id: Your session identifier
 # - session_resumed: Whether an existing session was resumed
+# - session_type: The type the session was created with (a resume keeps it;
+#   a session_type key in metadata is not the type). A session created before
+#   API 15.16.0 reads as "troubleshooting" and keeps its metadata.session_type
+#   until a PUT replaces metadata; during a rolling update, a write served by
+#   an older server drops the type.
 ```
 
 ### Step 2: Create a Case

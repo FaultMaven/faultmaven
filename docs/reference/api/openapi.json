@@ -596,6 +596,7 @@
           "session_type": {
             "anyOf": [
               {
+                "maxLength": 64,
                 "minLength": 1,
                 "type": "string"
               },
@@ -8076,7 +8077,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.15.1"
+    "version": "15.16.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -15930,7 +15931,7 @@
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": false,
                       "session_type": "troubleshooting",
-                      "status": "inquiry",
+                      "status": "active",
                       "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
@@ -15945,7 +15946,7 @@
                       "session_id": "550e8400-e29b-41d4-a716-446655440000",
                       "session_resumed": true,
                       "session_type": "troubleshooting",
-                      "status": "inquiry",
+                      "status": "active",
                       "timeout_minutes": 30,
                       "user_id": "user_123"
                     }
