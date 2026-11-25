@@ -1949,11 +1949,17 @@ def fix_windows(
             subjects.observed(row) for row in pair_rows
         )
         # The row the pair is read through: one of the cause now, when the
-        # turn holds one (as M6 attributes it), else the turn's first.
+        # turn holds one (M6's predicate, ``failed_fix_of``), else the first.
         cause_turn = disconfirmation[0] if disconfirmation else None
         at = [e for e in pair_rows if subjects.observed(e) == cause_turn]
+        pool = subjects.pool_roots
         pair_row = next(
-            (e for e in at if subjects.addresses(e, subjects.pool_roots, windows=True)),
+            (
+                e
+                for e in at
+                if subjects.addresses(e, pool, windows=True)
+                or (e in confirmed_cause_rows and subjects.addresses(e, pool))
+            ),
             at[0] if at else None,
         )
         state, failure_turn, relief_turn = FIX_UNKNOWN, None, None

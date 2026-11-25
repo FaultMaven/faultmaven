@@ -568,3 +568,30 @@ def test_an_unkinded_windows_pair_names_the_row_m6_names(order, pre_chain):
     (demotion,) = case.progress.outcome.demotions
     pair = _record_window(case, fix).disconfirmation
     assert pair.cause_row_id == demotion.cause_row_id == _eid("rc_b")
+
+
+@pytest.mark.parametrize("pre_chain", [True, False], ids=["pre-chain", "cycle"])
+def test_a_row_the_cause_cites_unlinked_is_the_pair_row_m6_names(pre_chain):
+    """Delta F1 (part): an unkinded fix at 10; at 13 A's row is re-checked,
+    then a row B's verdict cites and nothing links; the problem present at
+    14. The pair's row is chosen by M6's own predicate, so the record, M6
+    and the demotion name the cited row, also when the pair is minted
+    before M6."""
+    why_b = cited._row("why_b", cited._CAUSAL, 9, "the worker pool was resized")
+    case, _b, hyp_b, _rows = cited._kinded_a_fell_older_b_stands(b_cites=[why_b])
+    case.evidence.append(why_b)
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    fix = cited._fix(case, 10, None, [], cited._FIX)
+    cited._recheck(case, _eid("pool_log"), turn=13, label="rc_a3")
+    cited._recheck(case, why_b.evidence_id, turn=13, label="rc_why")
+    _present(case, 14, "back3")
+    case.current_turn = 14
+    if pre_chain:
+        record_case_outcome(case, at=WritePoint.PRE_CHAIN)
+
+    _cycle(case, 14)
+
+    assert hyp_b.state == HypothesisState.REFUTED
+    (demotion,) = case.progress.outcome.demotions
+    pair = _record_window(case, fix).disconfirmation
+    assert pair.cause_row_id == demotion.cause_row_id == _eid("rc_why")
