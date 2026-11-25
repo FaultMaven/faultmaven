@@ -1315,7 +1315,7 @@ def reported_change_turns(case: Case) -> list[int]:
 
 def _downgraded_workaround(case: Case) -> Any:
     """The newest pending WORKAROUND 3D downgraded to DIAGNOSTIC
-    (``is_workaround_downgrade``) not yet reported: what an unregistered
+    (``is_workaround_downgrade``): what an unregistered
     ``mitigation_accepted`` reports carrying out (INV-49)."""
     return next(
         (
@@ -1323,7 +1323,6 @@ def _downgraded_workaround(case: Case) -> Any:
             for a in reversed(case.proposed_actions)
             if a.state == "pending"
             and a.action_type == InvestigationActionType.DIAGNOSTIC
-            and a.reported_done_in_turn is None
             and is_workaround_downgrade(a)
         ),
         None,
@@ -1332,20 +1331,21 @@ def _downgraded_workaround(case: Case) -> Any:
 
 def _downgraded_fix(case: Case) -> Any:
     """The newest pending fix M5 downgraded to DIAGNOSTIC (a downgrade reason
-    that is not the 3D marker) not yet reported. ``mitigation_accepted`` never stamps it, since
-    the engine never infers which action an unnamed report means (INV-49)."""
-    return next(
+    that is not the 3D marker), unless it is already on record as carried
+    out; never an older one behind it. ``mitigation_accepted`` never stamps
+    it: the engine never infers which fix an unnamed report means (INV-49)."""
+    fix = next(
         (
             a
             for a in reversed(case.proposed_actions)
             if a.state == "pending"
             and a.action_type == InvestigationActionType.DIAGNOSTIC
-            and a.reported_done_in_turn is None
             and a.downgrade_reason
             and not is_workaround_downgrade(a)
         ),
         None,
     )
+    return fix if fix is not None and fix.reported_done_in_turn is None else None
 
 
 def _refuse_fix_ref(
@@ -2282,22 +2282,28 @@ def _apply_stage_gate_signals(
             "before setting the milestone."
         )
         workaround = _downgraded_workaround(case)
+        stamped_now = False
         if workaround is not None:
             # Local import: statement_revision imports this module.
             from .statement_revision import emission_turn
 
+            stamped_now = workaround.reported_done_in_turn is None
             notice += recorded_change_clause(
                 workaround.action_id,
                 record_reported_change(workaround, emission_turn(case, metadata)),
             )
-        elif (fix := _downgraded_fix(case)) is not None:
+        fix = None if stamped_now else _downgraded_fix(case)
+        if fix is not None:
             # A fix is reported through the fix channel, by name: stamp
-            # nothing here, and say how (#3039 re-run).
+            # nothing here, and say how (#3039 re-run). Self-contained:
+            # <pending_action> may render another action.
             aid = fix.action_id
             notice += (
                 f" DIAGNOSTIC {aid} is a downgraded fix. Only if the user "
-                f"reported carrying out {aid}, report it as {aid}'s "
-                "IF_CARRIED_OUT line in <pending_action> says."
+                f"reported carrying out {aid}, set solution_accepted with "
+                f"accepted_action_ref {aid} (accepted_fix_reported_in "
+                "previous_message when they reported it in the previous "
+                "message) to put it on record."
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (

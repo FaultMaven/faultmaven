@@ -170,7 +170,7 @@ WHY_OPEN_DOWNGRADE_REASON = (
     "Downgraded from SOLUTION: when proposed, the cause had validated but its "
     "why was open (ROOT-CAUSE TEST, clause b), so a fix on it only intercepts "
     "a recurring state. Ask what produced the state, then re-root "
-    "there or mark the root terminal (root_is_terminal true, citing "
+    "onto it or mark the root terminal (root_is_terminal true, citing "
     "the causal_evidence row in terminal_basis_evidence_ids) and re-propose the "
     "fix. If the user has not run it, a WORKAROUND proposal restores service "
     "now; if they have, report it as IF_CARRIED_OUT says."
