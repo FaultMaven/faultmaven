@@ -632,7 +632,7 @@ class Message(BaseModel):
             "about whether they are one runbook. The operator break-glass "
             "transcript (`/admin/cases/{case_id}/messages`) returns the stored "
             "copy, ungated and with no `runbook` key. "
-            "Null on a row whose prompt carried none (and on every user or "
+            "Null on a row whose turn listed none (and on every user or "
             "system row)."
         ),
     )
