@@ -12,8 +12,11 @@ migration Job reported success. A set-but-empty value fell back to
 ``DatabaseSettings`` reader the app's settings are built from, so a lowercase
 ``database_url`` counts as it does for the app — and, in online mode, refuses
 through the same exit helper as the ``fm-*`` commands, exiting 1. Offline
-(``--sql``) opens no database, so it is not refused. Only the URL is read: a
-database setting alembic never uses does not refuse a migration.
+(``--sql``) opens no database, so a non-persistent URL is not refused there: an
+empty or blank value takes the default file's dialect, and only a value that
+does not parse as a database URL, which names no dialect, is refused (#2754).
+Only the URL is read: a database setting alembic never uses does not refuse a
+migration.
 
 Each case runs the real command, ``python -m alembic -c <copy>/alembic.ini
 upgrade head``, on a COPY of ``alembic.ini`` and ``alembic/`` in ``tmp_path``,
@@ -43,7 +46,7 @@ from pathlib import Path
 import pytest
 
 from faultmaven.config.persistent_database import DEFAULT_DATABASE_URL
-from faultmaven.config.settings import set_env_var
+from faultmaven.config.settings import describe_database_url, set_env_var
 
 pytestmark = pytest.mark.integration
 
@@ -128,10 +131,14 @@ def test_upgrade_head_refuses_a_non_persistent_database_url(alembic_copy, databa
     detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
 
     assert result.returncode == 1, detail
-    assert "❌ Refusing to run: DATABASE_URL=" in result.stderr, detail
+    # The value as set: a blank one is shown as given, never as the empty one.
+    (value,) = database_env.values()
+    shown = f"❌ Refusing to run: DATABASE_URL={describe_database_url(value)} "
+    assert shown in result.stderr, detail
     assert REFUSAL in result.stderr, detail
     assert DEFAULT_DATABASE_URL in result.stderr, detail
     assert "Running upgrade" not in result.stdout + result.stderr, detail
+    assert "Uncaught exception" not in result.stderr, detail
     assert "Traceback" not in result.stderr, detail
     assert not (
         alembic_copy / "data" / "faultmaven.db"
@@ -153,14 +160,24 @@ def test_offline_sql_opens_no_database_and_is_not_refused(alembic_copy):
     assert "CREATE TABLE" in result.stdout
 
 
-@pytest.mark.parametrize("value", [" ", "\t"], ids=["space", "tab"])
-def test_offline_sql_reads_a_blank_url_as_an_empty_one(alembic_copy, value):
+@pytest.mark.parametrize(
+    "database_env",
+    [
+        {"DATABASE_URL": " "},
+        {"DATABASE_URL": "\t"},
+        {"DATABASE_URL": "\n"},
+        {"DATABASE_URL": "\u00a0"},
+        {"database_url": " "},
+    ],
+    ids=["space", "tab", "newline", "no-break-space", "lowercase-only-space"],
+)
+def test_offline_sql_reads_a_blank_url_as_an_empty_one(alembic_copy, database_env):
     """A blank value is no database, as every reader treats it: ``--sql`` takes
     the default file URL's dialect, as for an empty one, instead of handing the
     blank to the URL parser and exiting on its traceback (#2754)."""
     result = _upgrade_head(
         alembic_copy,
-        {"DATABASE_URL": value},
+        database_env,
         "--sql",
         target=LAST_SQLITE_OFFLINE_REVISION,
     )
@@ -172,6 +189,32 @@ def test_offline_sql_reads_a_blank_url_as_an_empty_one(alembic_copy, value):
     assert "Uncaught exception" not in result.stderr, detail
     assert "Traceback" not in result.stderr, detail
     assert "CREATE TABLE" in result.stdout, detail
+
+
+@pytest.mark.parametrize(
+    "value",
+    [":memory:", "garbage", "postgresql://u:pw-marker-5150@h:5x/db"],
+    ids=["bare-memory", "not-a-url", "postgres-bad-port"],
+)
+def test_offline_sql_refuses_a_url_that_does_not_parse(alembic_copy, value):
+    """A value the URL parser refuses names no dialect: ``--sql`` refuses it,
+    exit 1, instead of exiting on the parser's traceback, and never shows a
+    password the value holds (#2754)."""
+    result = _upgrade_head(
+        alembic_copy,
+        {"DATABASE_URL": value},
+        "--sql",
+        target=LAST_SQLITE_OFFLINE_REVISION,
+    )
+    detail = f"stdout:\n{result.stdout[-2000:]}\nstderr:\n{result.stderr[-3000:]}"
+
+    assert result.returncode == 1, detail
+    assert "❌ Refusing to run: DATABASE_URL=" in result.stderr, detail
+    assert "does not parse as a database URL" in result.stderr, detail
+    assert "Uncaught exception" not in result.stderr, detail
+    assert "Traceback" not in result.stderr, detail
+    assert "pw-marker-5150" not in result.stdout + result.stderr, detail
+    assert "CREATE TABLE" not in result.stdout, detail
 
 
 def test_offline_sql_on_sqlite_stops_at_018(alembic_copy):
