@@ -18,11 +18,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
 from faultmaven.exceptions import (
+    CALLER_REMEDY_CATEGORIES,
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
     FaultMavenException,
     counts_against_breaker,
+    declared_llm_category,
+    is_rate_limit_throttle,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 from faultmaven.utils.exception_name import (
@@ -608,8 +611,12 @@ class BaseExternalClient(ABC):
                     #   opening the breaker stops pointless calls, and the latched
                     #   error_code keeps the open-breaker error mapping to 402
                     #   rather than a generic 500 (the case_b639fac38fe0 chain).
+                    # * CALLER-REMEDY (``CALLER_REMEDY_CATEGORIES``: context
+                    #   overflow, output truncation) — NOT counted, retryable or
+                    #   not: the provider answered, and only the caller changing
+                    #   the request (a smaller prompt, a bigger cap) helps (#2858).
                     #
-                    # ``failed_calls`` counts both, so neither becomes invisible.
+                    # ``failed_calls`` counts all three, so none becomes invisible.
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
@@ -654,13 +661,24 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        # A throttle (a 429 the provider's own waits did not
-                        # outlast) says the service is up and busy, so it is
-                        # not counted against the shared breaker (#2793).
-                        throttled = not counts_against_breaker(call_error)
-                        if self.circuit_breaker and not throttled:
+                        # Neither a caller remedy (#2858) nor a throttle (a
+                        # 429 the provider's own waits did not outlast: the
+                        # service is up and busy, #2793) is counted against
+                        # the shared breaker; each logs its own reason.
+                        if self.circuit_breaker and counts_against_breaker(call_error):
                             self.circuit_breaker.record_failure(call_error)
-                        if throttled:
+                        if (
+                            declared_llm_category(call_error)
+                            in CALLER_REMEDY_CATEGORIES
+                        ):
+                            self.logger.warning(
+                                f"Caller remedy on {self.service_name}.{operation_name}"
+                                f" — the request must change, not counted against"
+                                f" the circuit breaker: {exception_class_chain(call_error)}",
+                                client=self.client_name,
+                                service=self.service_name,
+                            )
+                        elif is_rate_limit_throttle(call_error):
                             self.logger.warning(
                                 f"Rate-limited on {self.service_name}.{operation_name}"
                                 f" — a throttle, not counted against the circuit"

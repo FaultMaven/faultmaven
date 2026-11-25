@@ -164,7 +164,7 @@ The `BaseExternalClient.call_external()` method checks `retryable` before retryi
 
 **Which failure a fallback chain raises** (#2832). The provider registry raises a provider's error directly (preserving retryability and `error_code`) rather than wrapping it in a generic exception. When no provider in a chain returned a response, the chain raises the highest-ranked failure, the later one on a tie. The ranks, highest first:
 
-1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation;
+1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation; never counted by the breaker, retryable or not (#2858);
 2. service-scoped: quota, rejected credentials (the breaker then latches their `error_code`);
 3. a 5xx, a timeout, or an unclassified failure (one with no status, such as "returned no choices"); the breaker counts the retryable ones;
 4. a throttle the provider's waits did not outlast;
