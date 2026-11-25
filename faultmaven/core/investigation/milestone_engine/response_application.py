@@ -867,22 +867,18 @@ class ResponseApplier:
         _statement_at_turn_start = case.inquiry.proposed_problem_statement
 
         # Consent binds to the wording the user was SHOWN, so a revision that
-        # arrives on a consent turn is not applied. Two shapes reach here:
-        #
-        #   - A Gate 1 already committed (``problem_statement_confirmed``).
-        #     Without this guard the LLM's same-turn rewording replaced the
-        #     statement after consent and ``_transition_to_investigating``
-        #     copied the new text into ``case.description`` — framing the
-        #     investigation on wording the user never saw. On the turn path a
-        #     Gate 1 section 0c commits (the DECIDE click) no longer reaches
-        #     here: the case is INVESTIGATING before the prompt and answers on
-        #     the investigation schema (#3048).
-        #   - The LLM path relaying a plain "yes" while re-emitting the field
-        #     with cosmetic edits. Refusing the consent there would be worse
-        #     than useless: the engine re-presents the reword, the user says
-        #     yes again, the model rewords again, and the case never leaves
-        #     INQUIRY. Dropping the reword instead commits the consent against
-        #     the text it was actually given for.
+        # arrives on a consent turn is not applied, or
+        # ``_transition_to_investigating`` would copy wording the user never
+        # saw into ``case.description``. The consent here is the LLM path
+        # relaying a plain "yes" while re-emitting the field with cosmetic
+        # edits. Refusing the consent there would be worse than useless: the
+        # engine re-presents the reword, the user says yes again, the model
+        # rewords again, and the case never leaves INQUIRY. Dropping the
+        # reword instead commits the consent against the text it was actually
+        # given for. Gate 1 is never already committed on entry: one section
+        # 0c commits (the DECIDE click, a bare typed consent) moves the case
+        # to INVESTIGATING before the prompt, so its turn answers on the
+        # investigation schema and never reaches here (#3048).
         #
         # A FIRST write arriving with consent is still applied — nothing stood
         # for the user to have seen, so there is no reword to protect, and the
@@ -896,11 +892,8 @@ class ResponseApplier:
         # nothing, and must not lose the revision it carries either.
         _llm_flag = bool(getattr(updates, "user_confirmed_investigation", False))
         screened = _llm_flag and gate1_bare_consent(user_message)
-        _consent_on_this_turn = screened or case.inquiry.problem_statement_confirmed
         _statement_stood = bool((_statement_at_turn_start or "").strip())
-        if updates.proposed_problem_statement and not (
-            _consent_on_this_turn and _statement_stood
-        ):
+        if updates.proposed_problem_statement and not (screened and _statement_stood):
             case.inquiry.proposed_problem_statement = updates.proposed_problem_statement
 
         # Convert and store problem_confirmation from LLM schema to domain model
@@ -979,7 +972,6 @@ class ResponseApplier:
             screened
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
-            and not case.inquiry.problem_statement_confirmed
             and gate1_statement_is_confirmable(_statement_at_turn_start)
         ):
             case.inquiry.problem_statement_confirmed = True
@@ -993,16 +985,13 @@ class ResponseApplier:
             _llm_flag
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
-            and not case.inquiry.problem_statement_confirmed
             and gate1_statement_is_confirmable(_statement_at_turn_start)
         ):
             # The flag on a confirmable statement, but the typed text is not
             # one bare consent token (#1794): "yes but it's the primary too",
             # "ok, don't start yet", the card's own payload typed out. The flag
             # stays an honest reading; the engine commits nothing, Gate 1 stays
-            # pending and composes its card. Gated on ``not
-            # problem_statement_confirmed`` above, exactly: a committed Gate 1
-            # refuses nothing here.
+            # pending and composes its card.
             inquiry_handshake_deferred_total.labels(reason="not_bare").inc()
             logger.info(
                 f"Gate 1 not committed for case {case.case_id}: the LLM read a "
@@ -1014,7 +1003,6 @@ class ResponseApplier:
             _llm_flag
             and case.inquiry.proposed_problem_statement
             and case.inquiry.proposed_problem_statement.strip()
-            and not case.inquiry.problem_statement_confirmed
             and not gate1_statement_is_confirmable(_statement_at_turn_start)
         ):
             # LLM tried to set the problem statement AND confirm investigation
@@ -1062,7 +1050,6 @@ class ResponseApplier:
             and updates.preliminary_urgency
             and updates.preliminary_urgency.level in ["CRITICAL", "HIGH"]
             and updates.preliminary_urgency.is_ongoing
-            and not case.inquiry.problem_statement_confirmed
         ):
             # Urgent incident detected — agent should present problem statement
             # and ask for confirmation in its response. Transition will happen on

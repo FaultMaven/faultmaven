@@ -195,6 +195,37 @@ def _commit_gate1(case: Case, *, via: str) -> None:
     )
 
 
+def _rerouted_for_state(
+    case: Case,
+    intent_data: dict[str, Any] | None,
+    attachments: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """``intent_data`` with its ``query_mode`` re-derived for the state the
+    prompt is built in (#3048).
+
+    The service applied ``attachment_reroute`` at intake, under INQUIRY. A
+    turn the engine moved to INVESTIGATING before the prompt takes the same
+    rule again, so a fresh evidence-bearing upload on it drives Directed
+    Analysis (#708) as on any INVESTIGATING turn. A copy: the caller's dict
+    is not changed. Nothing to re-derive without a ``query_mode`` (a turn the
+    service did not classify) or without an evidence-bearing attachment.
+    """
+    from faultmaven.modules.agent.domain.services.query_classifier import (
+        ProcessingMode,
+        attachment_reroute,
+    )
+
+    mode = (intent_data or {}).get("query_mode")
+    if mode not in {m.value for m in ProcessingMode} or not any(
+        a.get("evidence_bearing") for a in attachments or []
+    ):
+        return intent_data
+    rerouted = attachment_reroute(case.state, ProcessingMode(mode))
+    if rerouted is None:
+        return intent_data
+    return {**(intent_data or {}), "query_mode": rerouted.value}
+
+
 # KB pre-fetch (`_prefetch_kb_context`) fetch depth vs. prompt-surface cap.
 # Retrieval returns CHUNK-level results, so a single long runbook can occupy
 # several of the top-ranked slots. The fetch depth is the RERANKER'S candidate
@@ -1350,8 +1381,9 @@ class MilestoneEngine:
             # the prompt the model answered from (none for a template without
             # the slot or the minimal fallback). The turn's ``sources`` are
             # built from it. ``case.kb_context`` read afterwards would also
-            # hold what a pre-fetch fired during application below (Gate 1,
-            # the root-cause edge) wrote AFTER the answer.
+            # hold what a pre-fetch fired during application below (a Gate 1
+            # the model's flag commits, the root-cause edge) wrote AFTER the
+            # answer.
             metadata[TURN_METADATA_KB_PROMPTED] = []
             # Context pre-fetched for a previous driver is re-fetched for this
             # one before the prompt is built (ADR-020 D9), or cleared if it
@@ -1379,11 +1411,14 @@ class MilestoneEngine:
             # data the user submitted before confirming is evidence of the
             # confirmed problem, recorded and verified on this turn. After
             # INQUIRY's KB step above, so context from another query is
-            # dropped first and the transition's search of the same statement
-            # is the one already run. Its side effects run once; the check
+            # dropped first. The transition's search of the statement is
+            # skipped when that step's search of the same query completed (a
+            # hit or a miss, ``prefetch_symptom``); after a failed one it is
+            # tried again. Its side effects run once; the check
             # after the response finds the case INVESTIGATING. A Gate 1 the
             # model's flag commits still transitions after the response.
-            await self.transitions.transition_on_gate1(case, metadata)
+            if await self.transitions.transition_on_gate1(case, metadata):
+                intent_data = _rerouted_for_state(case, intent_data, attachments)
             redaction_ctx = await self._turn_redaction(case, redaction_ctx)
             # The state the prompt is rendered in, and whether the model
             # answered from the minimal fallback instead (#2811 S2c-3b).

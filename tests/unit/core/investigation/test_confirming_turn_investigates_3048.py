@@ -30,7 +30,9 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     EvidenceCategory,
     ProblemStatus,
+    TemporalState,
     UploadedFile,
+    UrgencyLevel,
 )
 from tests.case_builders import inquiry_case
 
@@ -276,3 +278,77 @@ async def test_a_decline_or_a_non_bare_reply_does_not_transition_early(consent):
     assert seam.calls[-1][0] is InquiryResponse
     assert case.state == CaseState.INQUIRY
     assert case.inquiry.problem_statement_confirmed is False
+
+
+async def test_the_t1_urgency_and_severity_reach_the_verification():
+    """The transition before the call hydrates the verification from what
+    INQUIRY recorded: T1's urgency and severity are on it after a T2 click."""
+    t1 = InquiryResponse(
+        agent_response="The paste shows the exporter unit failing.",
+        state_updates={
+            "proposed_problem_statement": STATEMENT,
+            "problem_confirmation": {
+                "problem_type": "unavailability",
+                "severity_guess": "high",
+            },
+            "preliminary_urgency": {
+                "level": "HIGH",
+                "is_ongoing": True,
+                "is_incident_report": True,
+                "impact_assessment": "billing metrics are missing",
+            },
+        },
+    )
+    seam = _Seam(
+        t1, InvestigationResponse_Diagnosis(agent_response="Looking.", state_updates={})
+    )
+    engine, case = await _after_t1(seam)
+
+    await engine.process_turn(case, **CLICK, redaction_ctx=None)
+
+    pv = case.problem_verification
+    assert pv.severity == "HIGH"
+    assert pv.urgency_level == UrgencyLevel.HIGH
+    assert pv.temporal_state == TemporalState.ONGOING
+
+
+async def test_an_upload_on_the_confirming_turn_forces_the_reading_tools():
+    """#708 on the turn the engine moved to INVESTIGATING: the service routed
+    the bare "yes" + paste under INQUIRY (TRIAGE, no reroute); the engine
+    re-derives the mode with the new state, so tools are forced as on any
+    INVESTIGATING turn with a fresh evidence-bearing upload."""
+    seam = _Seam(
+        _inquiry_reply(statement=STATEMENT),
+        InvestigationResponse_Diagnosis(agent_response="Looking.", state_updates={}),
+    )
+    engine, case = await _after_t1(seam)
+    fresh = UploadedFile(
+        file_id="file_3048a0000002",
+        filename="pasted-content-20261124T091000Z.txt",
+        size_bytes=len(PASTE),
+        uploaded_at_turn=2,
+        structural_index=PASTE,
+        storage_ref="local://case_3048aaaaaaaa/file_3048a0000002",
+    )
+    case.uploaded_files.append(fresh)
+    calls = []
+    seam_call = engine.generator.generate_structured_output.side_effect
+
+    async def _seam(prompt, schema_model, **kw):
+        calls.append(kw)
+        return await seam_call(prompt, schema_model, **kw)
+
+    engine.generator.generate_structured_output.side_effect = _seam
+    intent_data = {"query_mode": "triage"}
+
+    await engine.process_turn(
+        case,
+        "yes",
+        attachments=[{"file_id": fresh.file_id, "evidence_bearing": True}],
+        intent_data=intent_data,
+        redaction_ctx=None,
+    )
+
+    assert case.state == CaseState.INVESTIGATING
+    assert calls[-1]["force_tool_use"] is True
+    assert intent_data == {"query_mode": "triage"}  # the caller's dict untouched

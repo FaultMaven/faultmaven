@@ -106,7 +106,10 @@ built, so that turn is the first INVESTIGATING turn: it is prompted and
 answered on the investigation schema, with the earlier uploads in its
 `<uploaded_file file_id=...>` blocks. A Gate 1 the model's own
 `user_confirmed_investigation` commits transitions after the response, as
-before (#3048).
+before (#3048). The statement's assessment (preliminary urgency, severity,
+temporal state) is part of what the user confirms: it comes from the INQUIRY
+turns before Gate 1, and a Gate 1 committed before the call takes it as it
+stands, so the confirming turn adds none.
 
 **Consent arriving with a statement write** — two different shapes, two
 different answers (INV-01):
