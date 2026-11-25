@@ -353,7 +353,8 @@ async def test_the_service_refuses_an_overlong_client_before_any_log(
     env, monkeypatch, caplog, path
 ):
     # Even a configured one: the cap is checked on its own. The routes refuse
-    # the value at validation (#2765); the service keeps the bound by itself.
+    # the value at validation (#2765); these three service methods refuse it
+    # themselves.
     from faultmaven.models.exceptions import InvalidRequestError
     from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO
 

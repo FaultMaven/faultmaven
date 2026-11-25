@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 def _refuse_overlong_client_id(client_id: str) -> None:
     """Refuse a ``client_id`` over the cap, before any log carries it (#2765).
 
-    The routes refuse it at validation; the service keeps the bound by itself.
-    The message does not echo the value.
+    Guards ``validate_authorization_request``, ``create_authorization_code``
+    and ``refresh_access_token``; the routes' request models bound the rest
+    at validation. The message does not echo the value.
     """
     if len(client_id) > MAX_CLIENT_ID_LENGTH:
         raise InvalidRequestError(
