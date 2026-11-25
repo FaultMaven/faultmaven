@@ -383,16 +383,6 @@ async def create_session(
 
         action_verb = "resumed" if was_resumed else "created"
 
-        # Enhanced logging for session lifecycle tracking
-        log_details = {
-            "session_id": session.session_id,
-            "user_id": user_id,
-            "client_id": request.client_id if request else None,
-            "timeout_minutes": timeout_minutes,
-            # The stored type: a resume keeps the type it was created with.
-            "session_type": session.session_type,
-            "was_resumed": was_resumed,
-        }
         logger.info(
             f"Session {action_verb} successfully: {session.session_id} (timeout: {timeout_minutes}min, client: {request.client_id if request else 'none'})"
         )
@@ -413,6 +403,7 @@ async def create_session(
                 else None
             ),
             "status": session.status,
+            # The stored type: a resume keeps the type it was created with.
             "session_type": session.session_type,
             "session_resumed": was_resumed,
             "timeout_minutes": timeout_minutes,
@@ -622,7 +613,7 @@ async def list_sessions(
                     "last_activity": _safe_datetime_to_utc_string(
                         session.last_activity
                     ),
-                    "status": "inquiry",
+                    "status": session.status,
                     "session_type": session.session_type,
                     # The same two always-zero counters as the single-session
                     # read above, removed for the same reason.
@@ -900,6 +891,7 @@ async def update_session(
             "last_activity": _safe_datetime_to_utc_string(
                 updated_session.last_activity
             ),
+            "session_type": updated_session.session_type,
             "metadata": updated_session.metadata,
             "message": "Session updated successfully",
         }
@@ -972,6 +964,7 @@ async def search_sessions(
                         session.last_activity
                     ),
                     "status": session.status,
+                    "session_type": session.session_type,
                     "metadata": session.metadata,
                 }
             )

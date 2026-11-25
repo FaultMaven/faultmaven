@@ -139,9 +139,6 @@ class AuthSessionService:
         else:
             self.max_sessions_per_user = max_sessions_per_user
 
-        # Compatibility alias
-        self.session_manager = self.session_store
-
     @property
     def session_ttl_seconds(self) -> Optional[int]:
         """The TTL the store gives every session write; None without a store."""

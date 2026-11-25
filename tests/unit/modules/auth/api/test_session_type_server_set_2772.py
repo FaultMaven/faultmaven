@@ -174,6 +174,8 @@ async def test_a_metadata_update_never_changes_the_type(world):
         assert response.status_code == 200, response.text[:300]
         # metadata stays wholesale-replaceable: exactly what the client wrote.
         assert response.json()["metadata"] == metadata
+        # The type it used to carry in metadata, at the top level.
+        assert response.json()["session_type"] == "analysis"
         assert await _listed_type(world, session_id) == "analysis"
 
 
@@ -233,6 +235,36 @@ async def test_the_filter_counts_before_pagination(world):
     assert body["total_count"] == 3
     assert len(body["sessions"]) == 2
     assert {r["session_type"] for r in body["sessions"]} == {"analysis"}
+
+
+async def test_a_search_row_carries_the_type(world):
+    """At the previous head the type left the row with ``metadata``."""
+    created = await _create(world, session_type="analysis", metadata={"k": "v"})
+
+    response = await world.client.post("/api/v1/sessions/search", json={})
+
+    assert response.status_code == 200, response.text[:300]
+    (row,) = response.json()["sessions"]
+    assert row["session_id"] == created["session_id"]
+    assert row["session_type"] == "analysis"
+    assert row["metadata"] == {"k": "v"}
+
+
+async def test_a_list_row_reports_the_sessions_status(world):
+    """On ``main`` every row read ``inquiry``, archived or not."""
+    archived = await _create(world)
+    active = await _create(world)
+    response = await world.client.post(
+        f"/api/v1/sessions/{archived['session_id']}/archive"
+    )
+    assert response.status_code == 200, response.text[:300]
+
+    rows = (await world.client.get("/api/v1/sessions")).json()["sessions"]
+
+    assert {r["session_id"]: r["status"] for r in rows} == {
+        archived["session_id"]: "archived",
+        active["session_id"]: "active",
+    }
 
 
 # ---------------------------------------------------------------------------
