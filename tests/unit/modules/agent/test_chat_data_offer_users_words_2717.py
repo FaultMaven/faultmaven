@@ -39,6 +39,11 @@ from faultmaven.modules.agent.domain.services.investigation_service.service impo
     InvestigationService,
 )
 from faultmaven.modules.case.contracts import ChatDataOffer, ChatDataOfferState
+from faultmaven.modules.case.domain.models.hypothesis import (
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+)
 from tests.case_builders import investigating_case
 
 from .conftest import MockCaseRepository
@@ -46,6 +51,7 @@ from .conftest import MockCaseRepository
 pytestmark = pytest.mark.unit
 
 _NOTE = "It isn't evidence yet"
+_HYPOTHESIS = "hyp_000000002717"
 _OUTPUT = "NAME          READY   STATUS\napi-0         0/1     CrashLoopBackOff"
 
 
@@ -260,8 +266,8 @@ class TestOnlyTypedTextIsSearchedForBlocks:
 
 
 class TestTheStateRequest:
-    """The state request is asked whoever wrote the query: only the block
-    search reads typed text."""
+    """The state request reads the message the turn was given, whoever wrote
+    it: only the block search reads typed text."""
 
     async def test_a_chosen_query_reporting_a_state_is_asked_for_it(self, rig):
         _model_reports_a_state(rig)
@@ -272,6 +278,36 @@ class TestTheStateRequest:
         (offer,) = saved.chat_data_offers
         assert offer.blocks == []
         assert offer.request == "the output of kubectl get pods"
+
+    async def test_a_chip_sent_with_no_query_is_asked_nothing(self, rig):
+        """A turn whose message is empty is asked nothing, as before: the
+        request reads the message the model was given."""
+        _model_reports_a_state(rig)
+        rig.case.hypotheses = {
+            _HYPOTHESIS: Hypothesis(
+                hypothesis_id=_HYPOTHESIS,
+                statement="the api image is missing its config",
+                category=HypothesisCategory.CONFIG,
+                generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+                generated_at_turn=5,
+                rationale="CrashLoopBackOff on start",
+            )
+        }
+
+        _, saved = await _turn(
+            rig,
+            TurnPayload(
+                query="",
+                intent=QueryIntent(
+                    type=IntentType.HYPOTHESIS_ACTION,
+                    hypothesis_id=_HYPOTHESIS,
+                    action="validate",
+                ),
+            ),
+        )
+
+        rig.engine.generator.generate_structured_output.assert_awaited()
+        assert saved.chat_data_offers == []
 
     async def test_a_generated_query_reporting_a_state_is_asked_for_it(self, rig):
         _model_reports_a_state(rig)

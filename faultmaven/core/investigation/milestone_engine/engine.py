@@ -1473,10 +1473,12 @@ class MilestoneEngine:
             # it reasons from the block as the user's claim. Blocks are located
             # only in what the user typed, never in a chosen chip, a client's
             # generated text or the composed query of a turn carrying only data
-            # (#2717); the state request is asked whoever wrote the query.
+            # (#2717); the state request reads the message the turn was given,
+            # whoever wrote it.
             chat_data_offer = mint_chat_data_offer(
                 case_updated,
-                user_message=(user_message if typed_message is None else typed_message),
+                user_message=user_message,
+                typed_message=typed_message,
                 named_blocks=getattr(response_obj, "chat_data_blocks", None),
                 state_report=getattr(response_obj, "system_state_report", None),
                 submitted_data=bool(attachments),

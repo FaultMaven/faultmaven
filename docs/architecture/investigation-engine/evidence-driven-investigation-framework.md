@@ -579,7 +579,8 @@ words; the user declares what is data (#1930).
   ("I've pasted some text … tell me what you find"), not a client's
   generated text, not a chip the user chose: the client says which with
   the turn's `query_source` (`typed`, `chosen`, `generated`; default
-  `typed`). The state request is asked whoever wrote the query (#2717).
+  `typed`). The state request reads the message the turn was given,
+  whoever wrote it, and is not asked on an empty one (#2717).
 - ONE `ChatDataOffer` per message is recorded on
   `Case.chat_data_offers` (persisted in `cases.metadata`). It is minted
   on the live turn only (not in the statement-revision replay) and
