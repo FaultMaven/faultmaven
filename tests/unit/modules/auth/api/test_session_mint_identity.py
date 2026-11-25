@@ -59,7 +59,11 @@ RESUMED = True
 
 
 async def _create_session_fake(
-    user_id, client_id=None, metadata=None, provider_session_id=None
+    user_id,
+    client_id=None,
+    metadata=None,
+    provider_session_id=None,
+    session_type="troubleshooting",
 ):
     """Stands in for ``AuthSessionService.create_session``.
 
@@ -90,6 +94,8 @@ async def _create_session_fake(
         expires_at=now,
         # And its server-owned status, which the route reports (#1854).
         status="active",
+        # And its server-set type, which the route echoes (#2772).
+        session_type=session_type,
     )
     return session, RESUMED
 
@@ -107,7 +113,11 @@ def _build_app(*, current_user):
 
     async def _session_service():
         async def create_session_impl(
-            user_id, client_id=None, metadata=None, provider_session_id=None
+            user_id,
+            client_id=None,
+            metadata=None,
+            provider_session_id=None,
+            session_type="troubleshooting",
         ):
             app.state.minted.append(user_id)
             return await _create_session_fake(
@@ -115,6 +125,7 @@ def _build_app(*, current_user):
                 client_id=client_id,
                 metadata=metadata,
                 provider_session_id=provider_session_id,
+                session_type=session_type,
             )
 
         return SimpleNamespace(

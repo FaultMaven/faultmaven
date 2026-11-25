@@ -104,7 +104,8 @@ async def test_a_heartbeat_re_arms_the_ttl_and_moves_expires_at(monkeypatch, red
     # Most of its life gone, as an idle panel's session is before a heartbeat.
     await redis.pexpire(key, 3000)
 
-    assert await service.update_last_activity(session.session_id) is True
+    written = await service.update_last_activity(session.session_id)
+    assert written is not None and written.session_id == session.session_id
 
     assert _about_the_timeout(await redis.pttl(key))
     stored = await service.get_session(session.session_id)

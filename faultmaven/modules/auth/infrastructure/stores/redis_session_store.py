@@ -315,6 +315,7 @@ class RedisSessionStore(ISessionStore):
             expires_at=expires_at,
             metadata=session_data.get("metadata", {}),
             status=session_data.get("status", "active"),
+            session_type=session_data.get("session_type", "troubleshooting"),
         )
 
     async def get_session(
@@ -392,6 +393,7 @@ class RedisSessionStore(ISessionStore):
             "session_resumed": session.session_resumed,
             "provider_session_id": session.provider_session_id,
             "status": session.status,
+            "session_type": session.session_type,
         }
 
     async def delete_session(self, session_id: str) -> bool:
