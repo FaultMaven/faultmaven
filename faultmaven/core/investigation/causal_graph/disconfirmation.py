@@ -43,7 +43,7 @@ from faultmaven.modules.case.contracts import (
     RootCauseConclusion,
 )
 
-from .projection import _standing_hypotheses
+from .projection import standing_hypotheses
 from .queries import _state, chain_evidence_links, is_chain_root_validated
 from .rcc import (
     _hypothesis_disconfirmed,
@@ -168,7 +168,7 @@ def any_chain_root_inconclusive(case: Case) -> bool:
     return any(
         h.root_node_id
         and _state(h.root_node_id, case.causal_nodes) == NodeState.INCONCLUSIVE
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
     )
 
 

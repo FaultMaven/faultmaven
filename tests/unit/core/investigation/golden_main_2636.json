@@ -356,10 +356,10 @@
     "SYSTEM: Row(s) <ev:0> confirm nothing: it re-checks a row the root's verdict does not cite; name one of <ev:1> (the cited basis)."
   ],
   "cycle:unbound_on_an_uncited_pool_root": [
-    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show why it arose (RE-ROOT if a deeper cause produced it), then re-check one of them."
+    "SYSTEM: Post-fix row(s) <ev:0> confirm nothing: the root cause's terminal verdict cites no row yet; re-send root_is_terminal true citing the causal_evidence rows that show how its state came to be (RE-ROOT if a deeper cause produced it), then re-check one of them."
   ],
   "cycle:unbound_with_no_pool": [
-    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing why it arose, then re-check it."
+    "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none can confirm the cause while what produced <cn:2> is open; re-send root_is_terminal true citing how its state came to be, then re-check it."
   ],
   "cycle:unbound_after_a_mitigation": [
     "SYSTEM: Post-mitigation row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: no root cause is on record that a re-check can confirm."
@@ -419,10 +419,10 @@
     "STATEMENT REVISION NOT ACCEPTED: it cites no symptom evidence showing the problem as revised."
   ],
   "cycle:root_terminal_refused_with_none_cited": [
-    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. None cited. Its why stays open."
   ],
   "cycle:root_terminal_refused_on_a_row_before_the_root": [
-    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). Not qualifying: <ev:1> (recorded at turn 3, before the root was posited). Its why stays open."
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. Not qualifying: <ev:1> (recorded at turn 3, before the root was posited). Its why stays open."
   ],
   "cycle:root_terminal_not_qualifying_beside_its_verdict": [
     "Root <cn:0>: not qualifying: <ev:1> (recorded at turn 3, before the root was posited) (the root's verdict stands on its cited rows)."
@@ -460,7 +460,7 @@
     "FALSE-ALARM FINDING NOT ACCEPTED: it cites no symptom_absence evidence showing the reported symptom was not present where and when it was reported."
   ],
   "cycle:turn_chain_emission_root_terminal_refused": [
-    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing that nothing controllable produces its state (how it was issued or set, its lifetime, that nothing renews it). None cited. Its why stays open."
+    "Root <cn:0> was NOT marked terminal: root_is_terminal true must cite, in terminal_basis_evidence_ids, a causal_evidence row recorded since this root was posited (turn 4) showing how its state came to be (how it was issued or set), with no row on record showing a mechanism that produces it again. None cited. Its why stays open."
   ],
   "cycle:turn_transitions_declined_close_reask": [
     "TRANSITION NOT PROPOSED: the user declined closing this case with the solution documented (the deferred-implementation close), and no new solution or confirmation has been recorded since. Propose that close only if the user directs it; the engine then attaches the Close action to your reply. Do not propose it unprompted."

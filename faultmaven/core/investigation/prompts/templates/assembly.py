@@ -227,6 +227,21 @@ def _verifying_rows_missing_emphasis(missing: bool) -> str:
     )
 
 
+def _hypothesis_cue_emphasis(cue: bool) -> str:
+    """One line while the problem is verified, the cause is not identified
+    (the cause zones only), no hypothesis stands and a causal_evidence row no
+    hypothesis holds is on record (#3048): the evidence is asked to be claimed
+    by a hypothesis and its chain this turn. ``cue`` is the selection's
+    (``prompt_state.focus_selection``)."""
+    if not cue:
+        return ""
+    return (
+        "\nCausal evidence is on record but no hypothesis stands: add the "
+        "hypothesis that evidence points to (hypotheses_to_add, with its root "
+        "node and root_node_ref) this turn, and link the rows to it.\n"
+    )
+
+
 def _get_diagnosis_focus_emphasis(zone: FocusZone) -> str:
     """The focus emphasis of a diagnosing case's zone (Framework §8.5).
 
@@ -355,11 +370,12 @@ _FOCUS = "focus emphasis"
 
 def _focus_lines(selection: FocusSelection) -> str:
     """The focus emphasis's text for ``selection``: the hold, else the zone;
-    the resolve decline; the verifying rows missing."""
+    the resolve decline; the hypothesis cue; the verifying rows missing."""
     focus = _problem_hold_emphasis(selection.hold)
     if selection.zone is not None:
         focus = _get_diagnosis_focus_emphasis(selection.zone)
     focus += _resolve_declined_emphasis(selection.resolve_declined)
+    focus += _hypothesis_cue_emphasis(selection.hypothesis_cue)
     return focus + _verifying_rows_missing_emphasis(selection.verifying_rows_missing)
 
 
@@ -370,8 +386,8 @@ def _focus_emphasis(
     fresh inputs (``prompt_state.focus_selection``, #2811 S2b-1c-i). If the
     record or a fresh input the selection asks for cannot be read, the whole
     emphasis is the one declared line ``PROGRESS_OMITTED``, in place of the
-    hold, the zone, the resolve decline and the verifying-rows lines; the
-    failure is logged and counted once per assembly (``NarrationFold``), and
+    hold, the zone, the resolve decline, the hypothesis cue and the
+    verifying-rows lines; the failure is logged and counted once per assembly (``NarrationFold``), and
     the prompt is built. Only the selection is guarded: a fault in the text
     raises, as on ``main``."""
     try:

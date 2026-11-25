@@ -101,10 +101,10 @@ def test_a_cause_above_is_one_that_recreates_the_state():
     """The floor on the why-question: without it, (b) walks from a one-off
     config change into "what review should have caught it"."""
     text = _flat(_ROOT_CAUSE_TEST_BLOCK)
-    assert "something will produce the state AGAIN after it is reset" in text
+    assert "a row shows such a mechanism" in text
     assert (
-        "A state set once by a person or by a one-off event, that nothing will "
-        "re-create, passes (b): correcting it is the remediation" in text
+        "A state set once by a person or by a one-off event passes (b): "
+        "correcting it is the remediation" in text
     )
     # Listed states MAY have a cause above them; the list is not a verdict.
     assert "drifted configs are states that MAY have a cause above them" in text
@@ -185,8 +185,8 @@ def test_the_worked_example_does_not_stop_at_the_expiry():
     assert "hypotheses_to_update" in example
     assert "Renewing the cert by hand is now the mitigation" in example
     # The new root passes the floor of clause (b) itself.
-    assert "the change log shows a one-off manual edit" in example
-    assert "nothing will disable it again and it passes clause b" in example
+    assert "the change log shows how it came to be, one manual edit" in example
+    assert "no row shows a mechanism that repeats it" in example
 
 
 def test_a_runbook_cause_gets_the_test_too():

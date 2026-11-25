@@ -104,6 +104,16 @@ entry on ``main`` at ``68ec0ac01``; on the #3039 branch each refusal ends with
 the sentence that the user's report is recorded ("The user's report is
 recorded: <act:0> is on record as carried out at turn 5 …"), which is
 stored. No other entry's render differed.
+
+#3048 re-rendered five B1c entries by hand, the same way:
+``turn_chain_emission_root_terminal_refused``,
+``root_terminal_refused_with_none_cited``,
+``root_terminal_refused_on_a_row_before_the_root``, ``unbound_with_no_pool`` and
+``unbound_on_an_uncited_pool_root``, each equal to the stored entry on
+``main``; on the #3048 branch the notice states clause (b) as "how its state
+came to be" (no row on record showing a mechanism that produces it again) in
+place of "nothing renews it" and "why it arose". No other entry's render
+differed.
 """
 
 import asyncio

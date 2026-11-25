@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
 
 
-def _standing_hypotheses(case: Case):
+def standing_hypotheses(case: Case):
     """Yield the case's standing-cause hypotheses (``STANDING_HYP_STATES``)."""
     return (h for h in case.hypotheses.values() if h and h.state in STANDING_HYP_STATES)
 
@@ -20,8 +20,7 @@ def any_chain_root_validated(case: Case) -> bool:
     """§9.2: does some STANDING hypothesis's chain ROOT node read VALIDATED? This
     is the chain-mode ``cause_state=IDENTIFIED`` signal."""
     return any(
-        is_chain_root_validated(h, case.causal_nodes)
-        for h in _standing_hypotheses(case)
+        is_chain_root_validated(h, case.causal_nodes) for h in standing_hypotheses(case)
     )
 
 
@@ -30,7 +29,7 @@ def identified_root_ids(case: Case) -> set[str]:
     cause: validated AND marked terminal (M1, #2036)."""
     return {
         h.root_node_id
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
         if is_chain_root_identified(h, case.causal_nodes)
     }
 
@@ -53,7 +52,7 @@ def held_open_root_ids(case: Case) -> set[str]:
     nodes = case.causal_nodes
     return {
         h.root_node_id
-        for h in _standing_hypotheses(case)
+        for h in standing_hypotheses(case)
         if h.root_node_id in nodes
         and nodes[h.root_node_id].node_state != NodeState.REFUTED
         and not is_chain_root_identified(h, nodes)

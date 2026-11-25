@@ -210,6 +210,7 @@ def test_the_fresh_inputs_are_the_plans():
         "mitigation_verified",
         "symptom_stale",
         "offers",
+        "causal_evidence_unclaimed",
     }
 
 
@@ -220,6 +221,7 @@ def test_the_fresh_inputs_are_the_plans():
         templates._get_diagnosis_focus_emphasis,
         templates._resolve_declined_emphasis,
         templates._verifying_rows_missing_emphasis,
+        templates._hypothesis_cue_emphasis,
     ],
 )
 def test_each_emphasis_function_takes_only_a_selection(function):
@@ -619,6 +621,7 @@ def _fresh(*, stale: bool = False) -> PromptStateFresh:
         mitigation_verified=never,
         symptom_stale=lambda: stale,
         offers=never,
+        causal_evidence_unclaimed=never,
     )
 
 

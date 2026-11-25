@@ -73,6 +73,8 @@ advance this milestone. Be concrete: name specific files, services, time
 ranges, or commands based on what you know about this case.
 ```
 
+While cause identification is held open on a validated root (`cause_identification_held_open`, M1), the pending description names the why-stopping verdict instead of another validation (#3048): a root with no verdict is asked for `root_is_terminal` true citing the row, recorded since the root was posited, that shows how its state came to be; a root marked false is asked to re-root onto the mechanism its verdict names. A held root that is not validated keeps the generic description.
+
 This is **new information** the LLM doesn't have in the base prompt — the turn count, the specific pending milestone, and the instruction to be concrete. It is not a restated behavioral rule.
 
 ---
