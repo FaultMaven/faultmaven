@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Set
 
 from faultmaven.exceptions import (
+    CASE_VERSION_CONFLICT,
     AuthorizationError,
     ConflictError,
     NotFoundError,
@@ -37,10 +38,6 @@ from faultmaven.modules.case.domain.models.driver import (
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
-
-#: The x-error-code a lost version race carries, the turn route's own code for
-#: the same condition.
-CASE_VERSION_CONFLICT = "CASE_VERSION_CONFLICT"
 
 #: The account kind a non-creator candidate must be (ADR-017 D6 kinds:
 #: ``individual | service``). A service account as driver would leave no human

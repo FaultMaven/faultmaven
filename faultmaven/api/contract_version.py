@@ -151,6 +151,37 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="16.1.0",
+        level="MINOR",
+        title=(
+            "A lost version race on `PUT /cases/{case_id}` or `POST "
+            "/cases/{case_id}/close` answers **409** `x-error-code: "
+            "CASE_VERSION_CONFLICT`, nothing written (#2825)."
+        ),
+        body=r"""The case kept changing while it was edited or closed, on every attempt. `PUT`
+answered this 500 `UPDATE_CASE_ERROR`; the close route answered 409 with no
+`x-error-code`. Both now send the label the turn route and `PUT
+/cases/{case_id}/driver` already send for the same condition: reload the case
+and decide again.
+
+The body is the shared conflict shape, `{error, detail, status_code,
+resource_type, resource_id, conflict_reason}`, with `conflict_reason`
+`concurrent_update`; the turn route's `x-expected-version` and
+`x-actual-version` are not sent.
+
+A description edit on `PUT` is also decided on each fresh load of the case,
+not on its first read: a case resolved or closed meanwhile answers 409
+`CASE_TERMINAL` (it answered 200 and wrote the edit), and a case that entered
+its investigation meanwhile gets the problem-statement edit, refused 400 when
+that edit is not allowed. A caller the case was handed away from meanwhile is
+refused 403 `CASE_NOT_DRIVER`, a title-only edit included. A title-only edit
+still carries no version check, so it never conflicts with a turn's save, and
+on a resolved or closed case it is still refused 409 `CASE_TERMINAL` by the
+route's own gate, as before.
+
+MINOR: a declared 409 code added on two routes.""",
+    ),
+    ContractChange(
         version="16.0.0",
         level="MAJOR",
         title=(

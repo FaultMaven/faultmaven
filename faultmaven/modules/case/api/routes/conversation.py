@@ -63,6 +63,7 @@ from faultmaven.core.investigation.turn_budget import (
 )
 from faultmaven.exceptions import (
     CASE_TERMINAL,
+    CASE_VERSION_CONFLICT,
     AuthorizationError,
     CaseNotDriverError,
     CommitOutcomeUnknown,
@@ -520,7 +521,7 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
             "turn); "
             f"`{IDEMPOTENCY_REPLAY_UNAVAILABLE}` (the turn committed but its "
             "response can no longer be replayed: reload the case); "
-            "`CASE_VERSION_CONFLICT` (another writer changed the case while "
+            f"`{CASE_VERSION_CONFLICT}` (another writer changed the case while "
             "this turn ran; nothing committed); "
             f"`{CASE_TERMINAL}` (the case is resolved or closed and refuses "
             "new data, a status change or a file reclassification; a "
@@ -539,7 +540,7 @@ _TURN_RESPONSES: Dict[int | str, Dict[str, Any]] = {
                         TURN_IN_PROGRESS,
                         IDEMPOTENCY_KEY_REUSE,
                         IDEMPOTENCY_REPLAY_UNAVAILABLE,
-                        "CASE_VERSION_CONFLICT",
+                        CASE_VERSION_CONFLICT,
                         CASE_TERMINAL,
                         inflight.CASE_DELETE_IN_PROGRESS,
                     ],
@@ -1234,7 +1235,7 @@ async def submit_turn(
                 "Reload the case and resubmit if still applicable."
             ),
             headers={
-                "x-error-code": "CASE_VERSION_CONFLICT",
+                "x-error-code": CASE_VERSION_CONFLICT,
                 "x-expected-version": str(e.expected_version),
                 "x-actual-version": str(e.actual_version),
             },

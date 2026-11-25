@@ -342,6 +342,14 @@ class ICaseService(ABC):
 
         Returns:
             True if update was successful
+
+        Raises:
+            ValidationException: a key other than ``title`` or ``description``.
+            NotFoundError: the caller cannot read the case, or it was deleted.
+            CaseNotDriverError: the caller reads it but does not drive it, at
+                the gate or on a fresh load of the write.
+            ConflictError: ``CASE_TERMINAL``, a description edit on a resolved
+                or closed case; ``CASE_VERSION_CONFLICT``, a lost version race.
         """
         pass
 
@@ -361,8 +369,10 @@ class ICaseService(ABC):
             The closed Case
 
         Raises:
-            NotFoundError: Unknown case, or caller is not its driver
-            ConflictError: Case is already resolved/closed
+            NotFoundError: The caller cannot read the case (#2806)
+            CaseNotDriverError: The caller reads it but does not drive it
+            ConflictError: ``CASE_TERMINAL``, the case is already resolved or
+                closed; ``CASE_VERSION_CONFLICT``, a lost version race
         """
         pass
 

@@ -394,6 +394,13 @@ LLM_CONFIG_ERROR = "LLM_CONFIG_ERROR"
 # 409 would have turned into a false claim about a live case.
 CASE_TERMINAL = "CASE_TERMINAL"
 
+# Stable ``x-error-code`` of every 409 for a lost version race: another writer
+# changed the case and nothing was written; reload and decide. The turn route
+# answers it on its first conflict (a turn is not re-run); ``PUT
+# /cases/{case_id}``, ``POST /cases/{case_id}/close`` and the driver route after
+# their retries are spent (#2825).
+CASE_VERSION_CONFLICT = "CASE_VERSION_CONFLICT"
+
 # Stable ``x-error-code`` of the 404 for a case the caller cannot read: it does
 # not exist, was deleted, or lies outside the caller's read scope (creator ∪
 # shared-to-my-teams), told apart from none of those so it discloses nothing

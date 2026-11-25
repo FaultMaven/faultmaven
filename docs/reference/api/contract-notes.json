@@ -1,6 +1,12 @@
 {
-  "contractVersion": "16.0.0",
+  "contractVersion": "16.1.0",
   "entries": [
+    {
+      "body": "The case kept changing while it was edited or closed, on every attempt. `PUT`\nanswered this 500 `UPDATE_CASE_ERROR`; the close route answered 409 with no\n`x-error-code`. Both now send the label the turn route and `PUT\n/cases/{case_id}/driver` already send for the same condition: reload the case\nand decide again.\n\nThe body is the shared conflict shape, `{error, detail, status_code,\nresource_type, resource_id, conflict_reason}`, with `conflict_reason`\n`concurrent_update`; the turn route's `x-expected-version` and\n`x-actual-version` are not sent.\n\nA description edit on `PUT` is also decided on each fresh load of the case,\nnot on its first read: a case resolved or closed meanwhile answers 409\n`CASE_TERMINAL` (it answered 200 and wrote the edit), and a case that entered\nits investigation meanwhile gets the problem-statement edit, refused 400 when\nthat edit is not allowed. A caller the case was handed away from meanwhile is\nrefused 403 `CASE_NOT_DRIVER`, a title-only edit included. A title-only edit\nstill carries no version check, so it never conflicts with a turn's save, and\non a resolved or closed case it is still refused 409 `CASE_TERMINAL` by the\nroute's own gate, as before.\n\nMINOR: a declared 409 code added on two routes.",
+      "level": "MINOR",
+      "title": "A lost version race on `PUT /cases/{case_id}` or `POST /cases/{case_id}/close` answers **409** `x-error-code: CASE_VERSION_CONFLICT`, nothing written (#2825).",
+      "version": "16.1.0"
+    },
     {
       "body": "`CaseUpdateRequest` loses `state` and refuses undeclared fields. Before, a\n`state` the case's validators admitted (INVESTIGATING back to INQUIRY, the\nsame state) was written raw, past the investigation's own transitions, and one\nthey refused (a terminal state, INVESTIGATING before Gate 1) answered 500\n`UPDATE_CASE_ERROR`. A title in the same body is refused with it, not\napplied. State moves through the investigation; a case\nis closed with `POST /cases/{case_id}/close`.\n\nThe 422 is the shared validation shape, `{\"detail\": \"Validation error\",\n\"errors\": [...]}`, with `type` `extra_forbidden` at `loc` `[\"body\", \"state\"]`\nand the value withheld from `input`. Body validation runs before the case is\nread, so a body carrying an undeclared field answers 422 where a caller who\ncannot read the case got 404 `CASE_NOT_FOUND`, a reader who does not drive it\n403 `CASE_NOT_DRIVER`, and a resolved or closed case 409 `CASE_TERMINAL`; a\nbody without one gets those answers unchanged.\n\nMAJOR: a request field removed. No first-party client sends it.",
       "level": "MAJOR",

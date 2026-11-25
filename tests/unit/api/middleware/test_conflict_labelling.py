@@ -64,9 +64,10 @@ UNLABELLED_BY_DESIGN = {
     ): (
         "A domain `ConflictError` whose raiser named no `error_code`. The "
         "handler's labelled branch carries the code when one is named (a "
-        "terminal case's close: CASE_TERMINAL); the rest are told apart by "
-        "`conflict_reason` in the body. None is raised on the turn route, "
-        "which answers an exception it does not map with a 500."
+        "terminal case: CASE_TERMINAL; a case's lost version race: "
+        "CASE_VERSION_CONFLICT); the rest are told apart by `conflict_reason` "
+        "in the body. None is raised on the turn route, which answers an "
+        "exception it does not map with a 500."
     ),
     (
         "faultmaven/modules/auth/api/auth.py",
@@ -128,13 +129,9 @@ DYNAMIC_STATUS = {
 }
 
 #: The ``conflict_reason``s a ``ConflictError`` about a case may carry with no
-#: ``error_code``, each with why it is not terminal.
-CASE_CONFLICTS_WITHOUT_CODE = {
-    "concurrent_update": (
-        "`close_case` lost the version race on every retry: the case changed "
-        "while closing, and a reload decides. Not a terminal refusal."
-    ),
-}
+#: ``error_code``, each with why it is not terminal. None today: a lost
+#: version race carries ``CASE_VERSION_CONFLICT`` (#2825).
+CASE_CONFLICTS_WITHOUT_CODE: dict = {}
 
 #: The terminal-case refusals, by ``(path, enclosing function)``, and how many
 #: each raises. Each must be labelled with the ``CASE_TERMINAL`` constant.

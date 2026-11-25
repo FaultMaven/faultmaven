@@ -32,8 +32,10 @@ from faultmaven.config.idempotency_key import (
 )
 from faultmaven.exceptions import (
     CASE_TERMINAL,
+    CASE_VERSION_CONFLICT,
     AuthorizationError,
     CaseNotDriverError,
+    ConflictError,
     FaultMavenException,
     NotFoundError,
     RawModelContentRefused,
@@ -936,12 +938,23 @@ async def get_case_ui(
         409: {
             "description": (
                 f"`x-error-code: {CASE_TERMINAL}`: the case is resolved or "
-                "closed and read-only."
+                f"closed and read-only. `{CASE_VERSION_CONFLICT}`: the case "
+                "kept changing; reload and retry. Nothing was written. A "
+                "description edit that finds the case terminal, or a lost "
+                "race, after the case was read answers the shared conflict "
+                "body (`error`, `detail`, "
+                "`status_code`, `resource_type`, `resource_id`, "
+                "`conflict_reason`: `already_closed` or `concurrent_update`); "
+                "the turn route's `x-expected-version` and `x-actual-version` "
+                "are not sent."
             ),
             "headers": {
                 "x-error-code": {
                     "description": "Which conflict.",
-                    "schema": {"type": "string", "enum": [CASE_TERMINAL]},
+                    "schema": {
+                        "type": "string",
+                        "enum": [CASE_TERMINAL, CASE_VERSION_CONFLICT],
+                    },
                 }
             },
         },
@@ -1007,7 +1020,9 @@ async def update_case(
             "message": "Case updated successfully",
         }
 
-    except HTTPException:
+    except (HTTPException, ConflictError):
+        # A conflict is answered by the shared handler: 409 with its
+        # ``x-error-code`` (#2825).
         raise
     except NotFoundError as e:
         logger.warning(

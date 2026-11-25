@@ -100,10 +100,14 @@ free-text message.
 
 `ConflictError` also takes an `error_code`, sent as the response's
 `x-error-code` header, for a conflict a client dispatches on across routes
-before it reads a body. The one such code is `CASE_TERMINAL`
-(`faultmaven/exceptions.py`): every 409 that refuses a request because the
-case is resolved or closed carries it — the close route's `ConflictError` and
-the turn route's and `PUT /cases/{case_id}`'s `HTTPException`s alike (#1907).
+before it reads a body. Two such codes are defined in
+`faultmaven/exceptions.py`. `CASE_TERMINAL`: every 409 that refuses a request
+because the case is resolved or closed carries it — the case service's
+`ConflictError` and the turn route's and `PUT /cases/{case_id}`'s
+`HTTPException`s alike (#1907). `CASE_VERSION_CONFLICT`: a case write that lost
+its version race — the turn route on its first conflict (a turn is not re-run),
+and `PUT /cases/{case_id}`, `POST /cases/{case_id}/close` and the driver route
+once their retries are spent (#2825).
 A conflict raised without an `error_code` goes out with no header.
 `tests/unit/api/middleware/test_conflict_labelling.py` fails on a 409
 `JSONResponse` / `HTTPException` that is neither labelled nor classified
