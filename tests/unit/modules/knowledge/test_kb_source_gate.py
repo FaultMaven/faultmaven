@@ -57,8 +57,10 @@ class _Teams:
         return ["team-of-viewer"]
 
 
-def _kb(document_id: Optional[str], *, new: Optional[bool] = True) -> Source:
-    metadata: dict = {"title": f"Runbook {document_id}", "trigger": "symptom"}
+def _kb(
+    document_id: Optional[str], *, new: Optional[bool] = True, trigger="symptom"
+) -> Source:
+    metadata: dict = {"title": f"Runbook {document_id}", "trigger": trigger}
     if document_id is not None:
         metadata["document_id"] = document_id
     return Source(
@@ -70,17 +72,22 @@ def _kb(document_id: Optional[str], *, new: Optional[bool] = True) -> Source:
     )
 
 
-REDACTED = {
-    "type": SourceType.KNOWLEDGE_BASE,
-    "content": "",
-    "confidence": None,
-    "metadata": {"access": RESTRICTED_SOURCE_ACCESS},
-}
+def _redacted(runbook: int) -> dict:
+    """A redacted entry's fields: only the access flag and the runbook number
+    (#2824) survive in ``metadata``."""
+    return {
+        "type": SourceType.KNOWLEDGE_BASE,
+        "content": "",
+        "confidence": None,
+        "metadata": {"access": RESTRICTED_SOURCE_ACCESS, "runbook": runbook},
+    }
 
 
-def _assert_redacted(source: Source, *, new: Optional[bool] = True) -> None:
+def _assert_redacted(
+    source: Source, *, runbook: int = 1, new: Optional[bool] = True
+) -> None:
     dumped = source.model_dump()
-    for key, value in REDACTED.items():
+    for key, value in _redacted(runbook).items():
         assert dumped[key] == value, f"{key}: {dumped[key]!r}"
     assert dumped["new_this_turn"] is new
     assert "excerpt" not in str(dumped) and "Runbook" not in str(dumped)
@@ -194,3 +201,87 @@ async def test_the_knowledge_service_fails_closed_on_a_lookup_error():
     assert await service.visible_document_ids([READABLE], user=_Viewer()) == set()
     ((gated,),) = await _gate([[_kb(READABLE)]], service)
     _assert_redacted(gated)
+
+
+# ----------------------------------------------------------------------------
+# The runbook number on a redacted entry (#2824, owner ruling option (a))
+# ----------------------------------------------------------------------------
+
+RB_A = "rb-a"
+RB_B = "rb-b"
+
+
+def _numbers(sources: List[Source]) -> List[Any]:
+    return [(s.metadata or {}).get("runbook") for s in sources]
+
+
+async def test_redacted_sections_of_one_runbook_share_a_number():
+    """Sections of one runbook share it, two runbooks get 1 and 2 by first
+    appearance, an id-less entry gets its own, and a readable entry between
+    them takes none and is unchanged."""
+    lists = [[_kb(RB_A), _kb(READABLE), _kb(RB_B), _kb(None), _kb(RB_A), _kb(RB_B)]]
+
+    (gated,) = await _gate(lists, _Knowledge({READABLE}))
+
+    assert gated[1] == _kb(READABLE)
+    assert _numbers(gated) == [1, None, 2, 3, 1, 2]
+    for source, number in zip(gated[:1] + gated[2:], [1, 2, 3, 1, 2]):
+        _assert_redacted(source, runbook=number)
+
+
+async def test_one_runbook_found_by_two_channels_keeps_one_number():
+    """The standing context and this turn's kb_qa citation of one runbook are
+    one runbook: the number keys on the document alone, not its channel."""
+    (gated,) = await _gate(
+        [[_kb(RB_A, new=False), _kb(RB_B), _kb(RB_A, new=True, trigger="kb_qa")]],
+        _Knowledge(set()),
+    )
+
+    assert _numbers(gated) == [1, 2, 1]
+    _assert_redacted(gated[0], runbook=1, new=False)
+    _assert_redacted(gated[2], runbook=1, new=True)
+
+
+async def test_id_less_entries_each_draw_the_next_number_in_order():
+    (gated,) = await _gate(
+        [[_kb(None), _kb(RB_A), _kb(""), _kb(RB_A), _kb(None)]], _Knowledge(set())
+    )
+
+    assert _numbers(gated) == [1, 2, 3, 2, 4]
+
+
+async def test_numbers_follow_appearance_not_the_ids_sort_order():
+    """The visibility query takes the ids sorted; the numbering must not."""
+    (gated,) = await _gate([[_kb("z-runbook"), _kb("a-runbook")]], _Knowledge(set()))
+
+    assert _numbers(gated) == [1, 2]
+
+
+async def test_each_list_in_one_call_is_numbered_on_its_own():
+    """A transcript page gates every row in one call; each row starts at 1,
+    and a runbook second in one row and first in the next gets 2, then 1."""
+    knowledge = _Knowledge(set())
+
+    first, second = await _gate(
+        [[_kb(RB_A), _kb(RB_B)], [_kb(RB_B), _kb(None), _kb(RB_A)]], knowledge
+    )
+
+    assert len(knowledge.calls) == 1
+    assert _numbers(first) == [1, 2]
+    assert _numbers(second) == [1, 2, 3]
+
+
+async def test_a_redacted_entry_carries_only_the_access_flag_and_the_number():
+    (gated,) = await _gate([[_kb(RB_A, new=False)]], _Knowledge(set()))
+
+    assert gated[0].metadata == {"access": RESTRICTED_SOURCE_ACCESS, "runbook": 1}
+    assert type(gated[0].metadata["runbook"]) is int
+    _assert_redacted(gated[0], new=False)
+
+
+async def test_a_viewer_who_can_read_everything_gets_the_stored_list_unchanged():
+    stored = [_kb(RB_A), _kb(RB_B), _kb(RB_A)]
+
+    (gated,) = await _gate([stored], _Knowledge({RB_A, RB_B}))
+
+    assert gated == stored

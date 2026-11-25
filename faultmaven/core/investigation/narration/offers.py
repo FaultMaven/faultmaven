@@ -22,10 +22,13 @@ decider read (decide-time, A4).
 
 The "Root cause" ask carries why the cause cannot be confirmed yet
 (``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
-the needs-info request (``RESOLUTION_NEEDS_INFO``), exactly when
-``notices.empty_pool_text`` gives a line for the record's cause. The
-decide-time message (``ResolutionReadiness.message``) keeps the ask without
-it until stage S3d (#3053) gives its decider the record.
+the needs-info request (``RESOLUTION_NEEDS_INFO``) and on the reopen chip's
+refusal (``transition_turns._refusal_readiness_ask``: its fresh ask with the
+record's cause, #3053 S3d-1), exactly when ``notices.empty_pool_text`` gives
+a line for the record's cause. The decide-time message
+(``ResolutionReadiness.message``) keeps the ask without it; the reopen chip's
+reply states it only for an ask with no "Root cause" in it, and when the
+fold raised.
 """
 
 from typing import Optional, Sequence
@@ -138,10 +141,11 @@ def readiness_message(
 ) -> str:
     """``ResolutionReadiness.message``, keyed by which branch answered. An
     unknown reason, or one without the param its text names, raises.
-    ``cause``: the record's, passed on the record path only
-    (``record_params``); the "Root cause" ask then carries its
-    ``pool_empty_user_line`` when there is one. The decide-time message
-    passes none, so its ask is the bare one."""
+    ``cause``: the record's, passed only where the record is read
+    (``record_params``, and the reopen chip's refusal beside its fresh
+    params); the "Root cause" ask then carries its ``pool_empty_user_line``
+    when there is one. The decide-time message passes none, so its ask is
+    the bare one."""
     if reason == ResolutionReason.FALSE_ALARM:
         return (
             "The evidence showed the reported problem was never present, so "
