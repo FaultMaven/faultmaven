@@ -1142,8 +1142,9 @@ written*, as amended by #2811, ruled 2026-11-15):
   guard's alone. **The overlay rule:** a final FAILED window is matched to a
   fresh window by its `action_id`, through the action's current
   `accepted_in_turn` (window 0 as `action_id` None). It takes the record's
-  state, `observed`, relief and failure turns, its problem rows (final at
-  its failure, #2586), and its disconfirmation pair, or the fresh pair
+  state, `observed`, relief and failure turns, its problem rows (those up
+  to its failure, as a fresh FAILED read holds, #2586), and its
+  disconfirmation pair, or the fresh pair
   while it has none. The span, the cause and confirmed-cause rows, and the
   turns a pair is read over are the fresh read's, save that an unkinded
   window ends at the first attempt at or after its carried failure and
@@ -1156,20 +1157,25 @@ written*, as amended by #2811, ruled 2026-11-15):
 - **A failed fix disconfirms a cause only through that cause's own pair**
   (#2586, #3046 S3b). A kinded window's pair reads only its targets' rows
   (their deepened-from lineage, its confirmed rows, the rows its targets
-  cite), never an unrelated fallen root's; its state still reads every cause
-  row, so it can FAIL with no pair and no relief, which disproves nothing
-  (refusal `no_own_cause_removal`; the absence notice says the fix's own
-  cause was not shown removed). M6 attributes a carried pair through its own
-  cause row while that row is the window's (`FixWindow.carried_pair_rows`),
-  else through the pair over the rows that address this cause
-  (`FixWindow.pair_through`), in the window or else the fresh one (an
-  interception cuts the carried span). So a re-check of another root never
-  refutes a cause, and an old pair never hides a later failure of it. A
-  demotion on a failed fix (M6's `record` kind, or the model's refutation
-  standing on it) is recorded, final, on `CaseOutcome.demotions`
-  (`record_demotion`: `action_id`, the pair's rows, the turn), once per
-  hypothesis and attempt; never with no record, nor for an `evidence`
-  demotion (which wins when both hold); one before #2586 has none.
+  cite), never an unrelated fallen root's, and names the row it was read
+  through (`FixWindow.pair_cause_row_id`, the record's pair cause row); its
+  state still reads every cause row. A FAILED window with no relief and no
+  pair disproves nothing (refusal `no_own_cause_removal`; the absence
+  notice says the fix's own cause was not shown removed), nor does one
+  whose carried pair's cause row has left the window (`pair_row_left`; the
+  notice says the re-check was of a cause re-rooted since). M6 attributes a
+  carried pair through its own cause row while that row is the window's
+  (`FixWindow.carried_pair_rows`), else through the pair over the rows that
+  address this cause (`FixWindow.pair_through`), in the window or else the
+  fresh one (an interception cuts the carried span). So a re-check of
+  another root never refutes a cause, and an old pair never hides a later
+  failure of it. A demotion on a failed fix (M6's `record` kind, or the
+  model's or the user's refutation standing on it) is recorded, final, on
+  `CaseOutcome.demotions` (`record_demotion`: the attempt that targeted
+  this cause or its deepened-from lineage, else an unkinded one; the
+  pair's rows; the turn), once per hypothesis and attempt; never with no
+  record, nor for an `evidence` demotion (which wins when both hold); one
+  before #2586 has none.
 - **A later disconfirmation reaches the record** (#2728). When the carried
   and fresh windows are both FAILED, the carried pair is None and the fresh
   one is set, a minting fold takes the fresh pair, once and final from then

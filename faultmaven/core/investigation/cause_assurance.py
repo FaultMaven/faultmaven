@@ -1644,8 +1644,8 @@ class FixWindow:
     ``relief_turn`` is the first turn the problem was observed gone in the
     window, before any failure; on a FAILED window 0, the relief its failure
     read (``_window_zero_relapse``). ``problem_rows`` are the problem-bound
-    rows that showed the problem gone in the window; a carried FAILED
-    window's are its record's, final at its failure (#2586).
+    rows that showed the problem gone in the window, up to its failure on a
+    FAILED one; a carried FAILED window's are its record's (#2586).
     ``disconfirmation`` is the earliest ``(cause_turn, persistence_turn)``
     pair that disconfirms the cause the fix addressed (``disconfirms_cause``,
     ``pair_through``), or None: a kinded window's pair reads only rows of its
@@ -1674,9 +1674,9 @@ class FixWindow:
     problem_rows: tuple = ()
     #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
     #: row, which ``disconfirmation`` names only by turn, and the fresh read's
-    #: own pair, which M6 falls back to (#3046 S3a-2). On the window M6
-    #: attributes through (``failed_fix_of``), the pair's cause row is the
-    #: attributed root's own.
+    #: own pair, which M6 falls back to (#3046 S3a-2). On a fresh read, its
+    #: own pair's cause row, one of the rows the pair was read over; on the
+    #: window M6 attributes through (``failed_fix_of``), the root's own.
     pair_carried: bool = False
     pair_cause_row_id: str | None = None
     fresh_disconfirmation: tuple[int, int] | None = None
@@ -1947,6 +1947,9 @@ def fix_windows(
         disconfirmation = replace(shell, **turns).pair_through(
             subjects.observed(row) for row in pair_rows
         )
+        pair_row = disconfirmation and next(
+            e for e in pair_rows if subjects.observed(e) == disconfirmation[0]
+        )
         state, failure_turn, relief_turn = FIX_UNKNOWN, None, None
         for turn in sorted(gone_turns | persist_turns):
             if turn in gone_turns:
@@ -1985,13 +1988,16 @@ def fix_windows(
             targets=targets,
             kind=FIX_REMEDIATION if kinded else None,
             off_cause=kinded and not confirming,
+            # A FAILED window's are those up to its failure (#2586).
             problem_rows=tuple(
                 e
                 for e in subjects.rows.values()
                 if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
                 and subjects.subject(e) == SUBJECT_PROBLEM
-                and shell.holds(subjects.observed(e))
+                and shell.holds(observed := subjects.observed(e))
+                and (state != FIX_FAILED or observed <= failure_turn)
             ),
+            pair_cause_row_id=pair_row.evidence_id if pair_row else None,
             **turns,
         )
 
@@ -2216,7 +2222,9 @@ def carry_verdicts(
                     else window.disconfirmation
                 ),
                 pair_carried=pair is not None,
-                pair_cause_row_id=pair.cause_row_id if pair is not None else None,
+                pair_cause_row_id=(
+                    pair.cause_row_id if pair is not None else window.pair_cause_row_id
+                ),
                 fresh_disconfirmation=window.disconfirmation,
                 fresh=window,
             )

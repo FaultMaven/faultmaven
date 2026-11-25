@@ -18,6 +18,7 @@ import pytest
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
 from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.core.investigation import outcome as outcome_module
+from faultmaven.core.investigation.cause_assurance import fix_windows
 from faultmaven.core.investigation.milestone_engine.turn_commit import (
     TurnCommitPlan,
     commit_turn_plan,
@@ -399,8 +400,9 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
     _recompute_at(case, 9)
     old = _old_shape(compute_case_outcome(None, case, at=WritePoint.CYCLE))
     assert old.shape == 1
-    # A relief recorded after the failure: the fresh read holds it, the
-    # frozen verdict does not.
+    # A relief recorded after the failure: the window's span holds it, and a
+    # FAILED window's problem rows stop at its failure, fresh (#2586) or
+    # upgraded.
     _row(
         case,
         EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
@@ -412,7 +414,8 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
     fresh_rows = _window(
         compute_case_outcome(None, case, at=WritePoint.CYCLE), fix.action_id
     )
-    assert fresh_rows.problem_row_ids == [_eid("relief"), _eid("late")], "premise"
+    assert fresh_rows.problem_row_ids == [_eid("relief")], "premise"
+    assert fix_windows(case)[-1].holds(11), "premise: in the window's span"
 
     record = compute_case_outcome(old, case, at=WritePoint.COMMIT)
 

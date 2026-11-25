@@ -871,6 +871,7 @@ def _flag_absence_inside_a_failed_fix_window(
         prepend=True,
         replace=replace,
         disconfirmed=window.disconfirms_cause,
+        paired=window.disconfirmation is not None,
         relief_turn=window.relief_turn,
         failure_turn=window.failure_turn,
         fix_turn=window.fix_turn,

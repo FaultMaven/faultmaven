@@ -352,7 +352,11 @@ class FixWindowRecord(BaseModel):
     cause_row_ids: List[str] = Field(default_factory=list)
     confirmed_cause_row_ids: List[str] = Field(default_factory=list)
     problem_row_ids: List[str] = Field(
-        default_factory=list, description="The rows that showed the problem gone"
+        default_factory=list,
+        description=(
+            "The rows that showed the problem gone; on a FAILED window, up "
+            "to its failure"
+        ),
     )
     cited_basis: Dict[str, List[str]] = Field(
         default_factory=dict,
@@ -398,10 +402,10 @@ class AttemptOutcome(BaseModel):
 
 class Demotion(BaseModel):
     """A cause demoted on a failed fix of it, with the pair it was read on
-    (final, #2586): M6's own demotion, or the model's refutation standing on
-    the failed fix (``disconfirmation.record_demotion``). One per hypothesis
-    and attempt (``action_id``; None for window 0, and on entries written
-    before it). A demotion on the cause's own evidence records none."""
+    (final, #2586): M6's own demotion, or the model's or the user's
+    refutation standing on the failed fix (``record_demotion``). One per
+    hypothesis and attempt (``action_id``; None for window 0). A demotion on
+    the cause's own evidence records none."""
 
     hypothesis_id: str
     action_id: Optional[str] = None

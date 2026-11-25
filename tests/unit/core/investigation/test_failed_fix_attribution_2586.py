@@ -29,6 +29,7 @@ from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import _M6_REFUSAL_REASONS
 from faultmaven.core.investigation.milestone_engine import stage_gates
 from faultmaven.core.investigation.milestone_engine.hypothesis_updates import (
+    _apply_hypothesis_action_intent,
     _apply_pending_refutations,
     _refutation_grounds,
 )
@@ -456,3 +457,87 @@ def test_failed_fix_of_names_the_attributed_roots_own_row():
     window = failed_fix_of(case, hyp_b)
 
     assert (window.m6_pair, window.pair_cause_row_id) == ((13, 14), rc_b.evidence_id)
+
+
+# ---------------------------------------------------------------------------
+# The review of 061ead669
+# ---------------------------------------------------------------------------
+
+
+def test_the_records_pair_names_the_row_it_was_read_through():
+    """Item 1: A's row and B's row re-checked at 13, the problem present at
+    14. The pair (13, 14) is read through B's row; the record names it, not
+    A's row of the same turn."""
+    case, _b, hyp_b, rows, fix = _b_fixed()
+    cited._recheck(case, _eid("pool_log"), turn=13, label="rc_a3")
+    rc_b = cited._recheck(case, rows[0].evidence_id, turn=13, label="rc_b")
+    _present(case, 14, "back3")
+
+    _cycle(case, 14)
+
+    assert hyp_b.state == HypothesisState.REFUTED
+    window = _record_window(case, fix)
+    assert window.disconfirmation.cause_row_id == rc_b.evidence_id
+    (demotion,) = case.progress.outcome.demotions
+    assert demotion.cause_row_id == rc_b.evidence_id
+
+
+def test_a_failed_windows_minted_problem_rows_stop_at_its_failure():
+    """Item 3: an unkinded relapse (relief 8, failure 9) and a relief row at
+    10, before the first record: the record holds only the turn-8 relief."""
+    from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
+        _fix,
+        _relapse,
+    )
+    from tests.unit.core.investigation.test_m6_cause_gone_problem_persists_1927 import (
+        _identified_case,
+    )
+
+    case, _root, _hyp = _identified_case()
+    fix = _fix(case)
+    _relapse(case, rechecks=_eid("pool_log"))
+    case.evidence.append(cited._row("relief10", cited._GONE, 10, "200s again"))
+    case.current_turn = 10
+    assert case.progress.outcome is None, "premise: the first record"
+
+    record_case_outcome(case, at=WritePoint.CYCLE)
+
+    window = _record_window(case, fix)
+    assert (window.state, window.failure_turn) == ("failed", 9)
+    assert _eid("relief10") not in window.problem_row_ids
+    assert window.problem_row_ids, "premise: the relief the failure read"
+
+
+def test_a_demotion_names_the_attempt_that_targeted_its_cause():
+    """Item 4: two kinded fixes in one turn, A's first: B's demotion is filed
+    under B's fix."""
+    case, b, hyp_b, rows = cited._kinded_a_fell_older_b_stands()
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    cited._fix(case, 10, "remediation", [cited._ROOT_ID], "re-raise max_connections")
+    fix_b = cited._fix(case, 10, "remediation", [b.node_id], cited._FIX)
+    cited._recheck(case, rows[0].evidence_id, turn=11, label="rc_b")
+    _present(case, 12, "back5")
+
+    _cycle(case, 12)
+
+    assert hyp_b.state == HypothesisState.REFUTED
+    (demotion,) = case.progress.outcome.demotions
+    assert demotion.action_id == fix_b.action_id
+
+
+def test_a_users_refutation_on_the_failed_fix_records_the_demotion():
+    """Item 5: the user refutes B in the failing turn, before the cycle."""
+    case, _b, hyp_b, fix, rc_b = _failed_on_a()
+    _cycle(case, 13)
+    _present(case, 14, "back3")
+    case.current_turn = 14
+    intent = {"hypothesis_id": hyp_b.hypothesis_id, "action": "refute"}
+
+    _apply_hypothesis_action_intent(HypothesisManager(), case, intent, "no", {})
+
+    assert hyp_b.state == HypothesisState.REFUTED
+    (demotion,) = case.progress.outcome.demotions
+    assert (demotion.action_id, demotion.cause_row_id) == (
+        fix.action_id,
+        rc_b.evidence_id,
+    )

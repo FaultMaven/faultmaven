@@ -114,11 +114,11 @@ def test_a_mutation_after_a_computation_is_seen_by_the_next(monkeypatch):
     first = _compute(case)
     _row(
         case,
-        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
         turn=10,
         evidence_id=_eid("gone_later"),
-        summary="checkout answers 200",
-        rechecks=VERIFYING_ID,
+        summary="max_connections still reads 100",
+        rechecks=_eid("pool_log"),
     )
     second = _compute(case)
     assert second != first

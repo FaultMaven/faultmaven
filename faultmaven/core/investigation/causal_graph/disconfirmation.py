@@ -14,6 +14,7 @@ from faultmaven.core.investigation.cause_assurance import (
     FixWindow,
     _dated_fixes,
     _is_remediation,
+    _with_deepened_from,
     carried_fix_windows,
     counterfactual_link_decisive,
     fix_application_turn,
@@ -270,8 +271,9 @@ def record_demotion(case: Case, hyp: Hypothesis, window: FixWindow) -> None:
     """Record on the outcome record that ``hyp`` fell to the failed fix
     ``failed_fix_of`` attributed to it (#2586): the attempt, the pair's cause
     row and the problem-bound row seen present at its persistence turn. Once
-    per hypothesis and attempt, and final. With no record, nothing is
-    recorded."""
+    per hypothesis and attempt, and final. From M6, the model's refutation
+    and the user's, each standing on the failed fix. With no record, nothing
+    is recorded."""
     outcome = case.progress.outcome
     if outcome is None:
         logger.info(
@@ -280,13 +282,17 @@ def record_demotion(case: Case, hyp: Hypothesis, window: FixWindow) -> None:
             hyp.hypothesis_id,
         )
         return
+    # The attempt that targeted this cause or one deepened into it; an
+    # unkinded one targets none, so the turn's first stands for it.
+    tried = [
+        a
+        for a in _dated_fixes(case)
+        if _is_remediation(a) and a.accepted_in_turn == window.fix_turn
+    ]
+    lineage = _with_deepened_from(case, {hyp.root_node_id})
     action_id = next(
-        (
-            a.action_id
-            for a in _dated_fixes(case)
-            if _is_remediation(a) and a.accepted_in_turn == window.fix_turn
-        ),
-        None,
+        (a.action_id for a in tried if lineage & set(a.target_ids or ())),
+        next((a.action_id for a in tried if a.fix_kind is None), None),
     )
     if any(
         (d.hypothesis_id, d.action_id) == (hyp.hypothesis_id, action_id)
@@ -421,7 +427,9 @@ def m6_disconfirmation_basis(
     ``relapse`` (the problem seen gone after the fix, then seen again: the
     counterfactual held, and the return disproves nothing about the cause),
     ``no_own_cause_removal`` (FAILED with neither a relief nor a pair: the
-    problem seen again before the fix's own cause was seen removed, #2586).
+    problem seen again before the fix's own cause was seen removed, #2586),
+    ``pair_row_left`` (no relief, and a carried pair whose cause row has left
+    the window).
 
     The window is the ONE answer to "did the latest fix work?" (#1927): the
     readiness gate's legs exclude what a failed window holds, so M6 demotes
@@ -476,8 +484,9 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
     persistence. A newer window still waiting on its first observation does
     not erase it. A relapse — the problem seen gone after the fix, then seen
     again — establishes no disconfirmation (``FixWindow.disconfirms_cause``),
-    nor does a failure read before the fix's own cause was seen removed
-    (``no_own_cause_removal``, #2586).
+    nor does a failure with no pair (``no_own_cause_removal``), or with a
+    carried pair whose cause row has left the window (``pair_row_left``,
+    #2586).
     A relapsed window 0 on a case with an undatable acceptance keeps that
     label, so the transition series stays visible (#2501). A case whose
     every dated fix was an interception is ``interception``: none opens a
@@ -488,7 +497,9 @@ def _fix_failure_refusal(case: Case, decided: FixWindow | None) -> str | None:
             return None
         if decided.fix_turn is None and _has_undatable_solution_acceptance(case):
             return "undatable_acceptance"
-        return "relapse" if decided.relief_turn is not None else "no_own_cause_removal"
+        if decided.relief_turn is not None:
+            return "relapse"
+        return "pair_row_left" if decided.disconfirmation else "no_own_cause_removal"
     latest = carried_fix_windows(case)[-1]
     if (
         latest.fix_turn is None

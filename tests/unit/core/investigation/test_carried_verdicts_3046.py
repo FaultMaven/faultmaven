@@ -15,12 +15,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.core.investigation.causal_graph.disconfirmation import (
+    _fix_failure_refusal,
+)
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_SUCCEEDED,
     _no_confirming_window,
     carried_fix_windows,
     fix_windows,
+    latest_decided_fix_window,
 )
 from faultmaven.core.investigation.milestone_engine import (
     response_application,
@@ -56,6 +60,7 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.unit.core.investigation import test_cause_leg_cited_basis_2557 as cited
 from tests.unit.core.investigation.bound_rows import VERIFYING_ID, _row, upload
+from tests.unit.core.investigation.narrated import narrated
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _cited_but_unlinked,
     _deepen,
@@ -309,6 +314,33 @@ async def test_2582_a_failure_and_a_deepening_in_one_turn_reach_its_record():
     assert carried.disconfirmation == (7, 8)
     assert carried.carried_pair_rows() == () and carried.m6_pair is None
     assert hyp.state != HypothesisState.REFUTED and _engine_rows(case) == []
+
+
+async def test_a_carried_pair_whose_row_left_is_told_as_such():
+    """Review item 2: after the re-root the carried pair (7, 8) has left the
+    window, and an absence row at 9 is told why it confirms nothing. The
+    window has a pair, so it is not the no-pair shape."""
+    case, _root, _hyp, _fix_action = await _failure_and_deepening_in_one_turn()
+    _row(
+        case,
+        _C.SYMPTOM_ABSENCE_EVIDENCE,
+        turn=9,
+        evidence_id=_eid("quiet9"),
+        summary="checkout answers 200",
+        rechecks=VERIFYING_ID,
+    )
+    case.current_turn = 9
+    window = latest_decided_fix_window(case)
+    assert window.disconfirmation == (7, 8) and window.m6_pair is None, "premise"
+    assert window.relief_turn is None, "premise"
+    metadata: dict = {}
+
+    assert stage_gates._flag_absence_inside_a_failed_fix_window(case, metadata)
+
+    assert _fix_failure_refusal(case, window) == "pair_row_left"
+    (notice,) = narrated(case, metadata)
+    assert "seen again at turn 8, after a re-check of a cause re-rooted since" in notice
+    assert "before the cause it addressed was shown removed" not in notice
 
 
 async def test_a_carried_pair_refutes_no_cause_identified_since():

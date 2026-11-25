@@ -532,14 +532,7 @@ def _window_record(window: "FixWindow", fold: _Fold) -> FixWindowRecord:
     if window.disconfirmation is not None:
         removed, present = window.disconfirmation
         pair = DisconfirmationPair(
-            cause_row_id=next(
-                (
-                    e.evidence_id
-                    for e in window.cause_rows
-                    if subjects.observed(e) == removed
-                ),
-                None,
-            ),
+            cause_row_id=window.pair_cause_row_id,
             problem_row_id=next(
                 (
                     e.evidence_id

@@ -432,10 +432,12 @@ def _absence_in_failed(params: dict, outcome, log) -> list:
             "hypothesis if the same cause was addressed again — then"
         )
     elif params["relief_turn"] is None:
-        # Neither a relief nor a pair: read on another root's re-check (#2586).
-        shape = (
-            f"the problem was seen again at turn {params['failure_turn']}, "
-            "before the cause it addressed was shown removed"
+        # No relief, and no pair, or a carried one whose cause row has left
+        # the window (#2586).
+        shape = f"the problem was seen again at turn {params['failure_turn']}, " + (
+            "after a re-check of a cause re-rooted since"
+            if params["paired"]
+            else "before the cause it addressed was shown removed"
         )
         cause = (
             " — that does not disprove the cause the fix addressed: if that "

@@ -118,13 +118,15 @@ def _apply_hypothesis_action_intent(
         )
     elif hypothesis:
         if action == "refute":
-            evidence_ids, _failed_fix = _refutation_grounds(case, hypothesis)
+            evidence_ids, failed_fix = _refutation_grounds(case, hypothesis)
             hypothesis_manager.refute_hypothesis(
                 hypothesis=hypothesis,
                 current_turn=case.current_turn,
                 refuting_evidence_ids=evidence_ids,
                 reason=user_message or "User refuted",
             )
+            if failed_fix is not None:
+                record_demotion(case, hypothesis, failed_fix)
         elif action == "validate":
             # #695 Defect A: a user "validate" intent records a
             # strong PRIOR, not a validation-by-assertion. The
