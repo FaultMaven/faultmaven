@@ -431,6 +431,18 @@ def _absence_in_failed(params: dict, outcome, log) -> list:
             " — re-assert the cause with a root_cause_conclusion on a new "
             "hypothesis if the same cause was addressed again — then"
         )
+    elif params["relief_turn"] is None:
+        # Neither a relief nor a pair: read on another root's re-check (#2586).
+        shape = (
+            f"the problem was seen again at turn {params['failure_turn']}, "
+            "before the cause it addressed was shown removed"
+        )
+        cause = (
+            " — that does not disprove the cause the fix addressed: if that "
+            "cause still stands, no new hypothesis is needed; if it no longer "
+            "stands, re-assert it with a root_cause_conclusion on a new "
+            "hypothesis — then"
+        )
     else:
         shape = (
             f"the problem was seen gone at turn {params['relief_turn']}, then "

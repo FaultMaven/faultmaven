@@ -415,9 +415,9 @@ def _shape_2(prior: CaseOutcome, case: "Case", subjects, windows) -> CaseOutcome
             rows = window.problem_row_ids
             if not rows and same is not None and window.failure_turn is not None:
                 rows = [
-                    i
-                    for i in _problem_rows(same, subjects)
-                    if subjects.observed(subjects.rows[i]) <= window.failure_turn
+                    e.evidence_id
+                    for e in same.problem_rows
+                    if subjects.observed(e) <= window.failure_turn
                 ]
             update["window"] = window.model_copy(
                 update={
@@ -474,17 +474,6 @@ class _Fold:
         self.prior, self.case, self.subjects = prior, case, subjects
         self.windows, self.statement, self.seen = windows, statement, seen
         self.mint: Optional[FinalAt] = mint
-
-
-def _problem_rows(window: "FixWindow", subjects: "SubjectIndex") -> list[str]:
-    """The problem-bound rows that showed the problem gone in ``window``."""
-    return [
-        e.evidence_id
-        for e in subjects.rows.values()
-        if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
-        and subjects.subject(e) == SUBJECT_PROBLEM
-        and window.holds(subjects.observed(e))
-    ]
 
 
 def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome:
@@ -574,7 +563,7 @@ def _window_record(window: "FixWindow", fold: _Fold) -> FixWindowRecord:
         observed=window.observed,
         cause_row_ids=[e.evidence_id for e in window.cause_rows],
         confirmed_cause_row_ids=[e.evidence_id for e in window.confirmed_cause_rows],
-        problem_row_ids=_problem_rows(window, subjects),
+        problem_row_ids=[e.evidence_id for e in window.problem_rows],
         cited_basis={
             node_id: sorted(rows & named)
             for node_id, rows in subjects.citations.items()
@@ -654,9 +643,7 @@ def _attempts(fold: _Fold) -> list[AttemptOutcome]:
                 # once, at a minting point, and counted as an addition.
                 if mint is not None:
                     seen.add(_LATER_PAIR, attempt.action_id, None, new.disconfirmation)
-                    update["window"] = old.window.model_copy(
-                        update={"disconfirmation": new.disconfirmation}
-                    )
+                    update["window"] = _with_later_pair(old.window, new, fold)
             elif f"{_LATER_PAIR}:{attempt.action_id}" in seen.known:
                 seen.add(_LATER_PAIR, attempt.action_id, None, None)
         out.append(attempt.model_copy(update=update) if update else attempt)
@@ -665,6 +652,30 @@ def _attempts(fold: _Fold) -> list[AttemptOutcome]:
             seen.add("attempts.window", old.action_id, FIX_FAILED, None)
             out.append(old)
     return out
+
+
+def _with_later_pair(
+    old: FixWindowRecord, new: FixWindowRecord, fold: _Fold
+) -> FixWindowRecord:
+    """``old`` holding ``new``'s pair, with the pair's cause row and its
+    citation added to its rows, and nothing else (#2586): the record's
+    window holds the row its pair names."""
+    pair = new.disconfirmation
+    row = fold.subjects.rows.get(pair.cause_row_id)
+    if row is None:
+        return old.model_copy(update={"disconfirmation": pair})
+    named = getattr(row, "rechecks_evidence_id", None)
+    cited = {node: list(rows) for node, rows in old.cited_basis.items()}
+    for node, rows in new.cited_basis.items():
+        if named in rows and named not in cited.setdefault(node, []):
+            cited[node] = sorted([*cited[node], named])
+    return old.model_copy(
+        update={
+            "disconfirmation": pair,
+            "cause_row_ids": list(dict.fromkeys([*old.cause_row_ids, row.evidence_id])),
+            "cited_basis": cited,
+        }
+    )
 
 
 def _resolution(fold: _Fold, status: list) -> ResolutionOutcome:

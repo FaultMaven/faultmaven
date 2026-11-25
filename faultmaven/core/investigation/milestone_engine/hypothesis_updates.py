@@ -5,9 +5,11 @@ from typing import Any
 
 from faultmaven.core.investigation.causal_graph.disconfirmation import (
     failed_fix_of,
+    record_demotion,
     refuting_evidence_on_record,
 )
 from faultmaven.core.investigation.cause_assurance import (
+    FixWindow,
     absence_row_link_refused,
     has_hedged_refutes,
 )
@@ -327,15 +329,15 @@ def _apply_hypothesis_updates(
         _add_system_feedback(metadata, line)
 
 
-def _refutation_grounds(case: "Case", hypothesis) -> tuple[list[str], bool]:
+def _refutation_grounds(case: "Case", hypothesis) -> tuple[list[str], FixWindow | None]:
     """What backs a refutation of ``hypothesis`` on record (#1911): the
-    refuting evidence ids (``refuting_evidence_on_record``), and whether a
-    failed fix of it is recorded (``failed_fix_of``). Neither means the
+    refuting evidence ids (``refuting_evidence_on_record``), else the failed
+    fix window of it (``failed_fix_of``), or None. Neither means the
     refutation would be an argument with no data behind it."""
     evidence_ids = refuting_evidence_on_record(case, hypothesis)
     if evidence_ids:
-        return evidence_ids, False
-    return [], failed_fix_of(case, hypothesis) is not None
+        return evidence_ids, None
+    return [], failed_fix_of(case, hypothesis)
 
 
 def _apply_pending_refutations(
@@ -353,7 +355,9 @@ def _apply_pending_refutations(
 
     A refutation stands on an evidence row linked REFUTES to the hypothesis or
     its chain, or on a recorded failed fix of it (the one disproof with no row
-    of its own to link). The backing rows are passed to ``refute_hypothesis``.
+    of its own to link). The backing rows are passed to ``refute_hypothesis``;
+    one standing on the failed fix is recorded as a demotion with its pair
+    (``record_demotion``, #2586), as M6's own is.
     Otherwise it is refused: the hypothesis stays open, the refusal is counted,
     and it is recorded as ``REFUTATION_REFUSED``, whose notice, rendered after
     the cycle's record (#2636), tells the model what would back it. The stated
@@ -375,6 +379,8 @@ def _apply_pending_refutations(
                 refuting_evidence_ids=evidence_ids,
                 reason=reason,
             )
+            if failed_fix is not None:
+                record_demotion(case, hypothesis, failed_fix)
             metadata.setdefault("hypotheses_updated", []).append(h_id)
             continue
         # Refused: the soft transition the link pass held now applies, so the

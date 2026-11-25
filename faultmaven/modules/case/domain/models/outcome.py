@@ -362,9 +362,9 @@ class FixWindowRecord(BaseModel):
         default=None,
         description=(
             "The counterfactual pair. One a FAILED window takes later (#2728) "
-            "may cite rows outside cause_row_ids and problem_row_ids, which "
-            "keep the rows the failure was read on (the row rule is S3b's, "
-            "#2586)"
+            "adds its cause row and that row's citation to the window, and "
+            "nothing else: problem_row_ids keep the rows the failure was read "
+            "on (#2586)"
         ),
     )
     read_under: str = Field(
@@ -397,10 +397,14 @@ class AttemptOutcome(BaseModel):
 
 
 class Demotion(BaseModel):
-    """An M6 demotion with its pair rows (final). No writer yet: stage S3b
-    (#3046)."""
+    """A cause demoted on a failed fix of it, with the pair it was read on
+    (final, #2586): M6's own demotion, or the model's refutation standing on
+    the failed fix (``disconfirmation.record_demotion``). One per hypothesis
+    and attempt (``action_id``; None for window 0, and on entries written
+    before it). A demotion on the cause's own evidence records none."""
 
     hypothesis_id: str
+    action_id: Optional[str] = None
     root_id: str
     fix_turn: Optional[int] = None
     cause_row_id: Optional[str] = None

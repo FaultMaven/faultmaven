@@ -1643,9 +1643,13 @@ class FixWindow:
     after the cause's removal, when ``state`` is ``FIX_FAILED``.
     ``relief_turn`` is the first turn the problem was observed gone in the
     window, before any failure; on a FAILED window 0, the relief its failure
-    read (``_window_zero_relapse``). ``disconfirmation`` is the earliest
-    ``(cause_turn, persistence_turn)`` pair that disconfirms the cause the
-    fix addressed (``disconfirms_cause``), or None. ``observed``: the fix's
+    read (``_window_zero_relapse``). ``problem_rows`` are the problem-bound
+    rows that showed the problem gone in the window; a carried FAILED
+    window's are its record's, final at its failure (#2586).
+    ``disconfirmation`` is the earliest ``(cause_turn, persistence_turn)``
+    pair that disconfirms the cause the fix addressed (``disconfirms_cause``,
+    ``pair_through``), or None: a kinded window's pair reads only rows of its
+    targets, never an unrelated fallen root's (#2586). ``observed``: the fix's
     outcome was looked at — a cause row in the window, or a persistence row
     bound to the problem after the fix.
 
@@ -1667,13 +1671,21 @@ class FixWindow:
     targets: tuple = ()
     kind: str | None = None
     off_cause: bool = False
+    problem_rows: tuple = ()
     #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
     #: row, which ``disconfirmation`` names only by turn, and the fresh read's
-    #: own pair, which M6 falls back to (#3046 S3a-2).
+    #: own pair, which M6 falls back to (#3046 S3a-2). On the window M6
+    #: attributes through (``failed_fix_of``), the pair's cause row is the
+    #: attributed root's own.
     pair_carried: bool = False
     pair_cause_row_id: str | None = None
     fresh_disconfirmation: tuple[int, int] | None = None
     fresh: "FixWindow | None" = field(default=None, compare=False, repr=False)
+    #: The turns a pair is read over (``pair_through``): the problem seen gone
+    #: in the window, and seen present after the fix, up to and including the
+    #: next fix's execution turn.
+    gone_turns: tuple = field(default=(), compare=False, repr=False)
+    persistence_turns: tuple = field(default=(), compare=False, repr=False)
 
     def holds(self, turn: int) -> bool:
         """Whether an observation at ``turn`` belongs to this window."""
@@ -1718,6 +1730,20 @@ class FixWindow:
         has left the window never disconfirms a cause identified since, and
         never hides a later failure the fresh read holds."""
         return self.disconfirmation if self.carried_pair_rows() else self.fresh_pair
+
+    def pair_through(self, cause_turns) -> tuple[int, int] | None:
+        """The earliest counterfactual pair (INV-42) whose cause turn is one of
+        ``cause_turns``: the cause observed removed at r, the problem observed
+        present at p >= r, and no problem-gone row of the window in [r, p]
+        (one in r's or p's turn reads as gone). Read over every cause row,
+        it is ``disconfirmation``; over one root's rows, that root's pair."""
+        cause_turns = sorted(set(cause_turns))
+        for p in self.persistence_turns:
+            last_gone = max((g for g in self.gone_turns if g <= p), default=-1)
+            r = next((c for c in cause_turns if last_gone < c <= p), None)
+            if r is not None:
+                return (r, p)
+        return None
 
     def as_fresh(self) -> "FixWindow":
         """M6's fallback reading: the fresh window the record was laid over,
@@ -1896,20 +1922,31 @@ def fix_windows(
         if cause_rows:
             removal = min(subjects.observed(r) for r in cause_rows)
             persist_turns = {turn for turn in after_fix if turn >= removal}
-        # The counterfactual disconfirmation (INV-42): the cause observed
-        # removed at r, the problem observed present at p >= r, and no
-        # problem-gone row of this window in [r, p] — one in r's or p's turn
-        # reads as gone, as below; one in the next fix's turn belongs to that
-        # window. The earliest such pair; window 0 has none (no ``after_fix``:
-        # its relapse is read apart, ``_window_zero_relapse``).
-        cause_turns = sorted({subjects.observed(row) for row in cause_rows})
-        disconfirmation: tuple[int, int] | None = None
-        for p in sorted(after_fix):
-            last_gone = max((g for g in gone_turns if g <= p), default=-1)
-            r = next((c for c in cause_turns if last_gone < c <= p), None)
-            if r is not None:
-                disconfirmation = (r, p)
-                break
+        # The counterfactual disconfirmation (``FixWindow.pair_through``); one
+        # problem-gone row in the next fix's turn belongs to that window.
+        # Window 0 has none (no ``after_fix``: its relapse is read apart,
+        # ``_window_zero_relapse``). A kinded window's pair reads its targets'
+        # rows (their deepened-from lineage, its confirmed rows, the rows its
+        # targets cite), never an unrelated fallen root's (#2586).
+        pair_rows = cause_rows
+        if kinded:
+            lineage = _with_deepened_from(case, own)
+            keep = {
+                e.evidence_id
+                for e in (
+                    *bound_to(lineage, shell),
+                    *confirmed_cause_rows,
+                    *cited_by(own, shell),
+                )
+            }
+            pair_rows = tuple(e for e in cause_rows if e.evidence_id in keep)
+        turns = {
+            "gone_turns": tuple(sorted(gone_turns)),
+            "persistence_turns": tuple(sorted(after_fix)),
+        }
+        disconfirmation = replace(shell, **turns).pair_through(
+            subjects.observed(row) for row in pair_rows
+        )
         state, failure_turn, relief_turn = FIX_UNKNOWN, None, None
         for turn in sorted(gone_turns | persist_turns):
             if turn in gone_turns:
@@ -1948,6 +1985,14 @@ def fix_windows(
             targets=targets,
             kind=FIX_REMEDIATION if kinded else None,
             off_cause=kinded and not confirming,
+            problem_rows=tuple(
+                e
+                for e in subjects.rows.values()
+                if e.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+                and subjects.subject(e) == SUBJECT_PROBLEM
+                and shell.holds(subjects.observed(e))
+            ),
+            **turns,
         )
 
     turns = sorted(fixes)
@@ -2102,11 +2147,12 @@ def carry_verdicts(
     disconfirmation pair, or the fresh one while it has none. M6 acts on the
     carried pair only through its own cause row, while that row is one of the
     window's; otherwise on the fresh read's pair, as ``main`` did
-    (``FixWindow.m6_pair``). The span and
-    the cause rows are the fresh read's, save that an unkinded window ends
-    at the first attempt at or after its failure, as when it was read, and
-    holds no row past that. A final window whose attempt no longer reads (an
-    orphan) is not inserted, and a withdrawn attempt's drops out."""
+    (``FixWindow.m6_pair``). The problem rows are the record's, final at
+    the failure (#2586). The span, the cause rows and the turns a pair is
+    read over are the fresh read's, save that an unkinded window ends at
+    the first attempt at or after its failure, as when it was read, and
+    holds no row or turn past that. A final window whose attempt no longer
+    reads (an orphan) is not inserted, and a withdrawn attempt's drops out."""
     turn_of: dict = {None: None}
     for action in _dated_fixes(case):
         if _is_remediation(action):
@@ -2128,6 +2174,8 @@ def carry_verdicts(
             out.append(window)
             continue
         end, rows = window.end_turn, (window.cause_rows, window.confirmed_cause_rows)
+        turns = (window.gone_turns, window.persistence_turns)
+        subjects = subject_index(case) if subjects is None else subjects
         if window.kind is None and window.fix_turn is not None and final.failure_turn:
             ends = [
                 t
@@ -2136,10 +2184,13 @@ def carry_verdicts(
             ]
             end = min([*ends, *([end] if end is not None else [])], default=None)
             span = replace(window, end_turn=end)
-            subjects = subject_index(case) if subjects is None else subjects
             rows = tuple(
                 tuple(e for e in held_rows if span.holds(subjects.observed(e)))
                 for held_rows in rows
+            )
+            turns = (
+                tuple(t for t in turns[0] if span.holds(t)),
+                tuple(t for t in turns[1] if end is None or t <= end),
             )
         pair = final.disconfirmation
         out.append(
@@ -2148,6 +2199,13 @@ def carry_verdicts(
                 end_turn=end,
                 cause_rows=rows[0],
                 confirmed_cause_rows=rows[1],
+                problem_rows=tuple(
+                    subjects.rows[i]
+                    for i in final.problem_row_ids
+                    if i in subjects.rows
+                ),
+                gone_turns=turns[0],
+                persistence_turns=turns[1],
                 state=FIX_FAILED,
                 observed=True,
                 relief_turn=final.relief_turn,
