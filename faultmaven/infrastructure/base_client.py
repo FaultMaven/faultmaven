@@ -35,6 +35,9 @@ from faultmaven.utils.exception_name import (
     exception_log_name,
 )
 
+#: How ``call_external`` labels a caller remedy it does not count (#2858).
+_CALLER_REMEDY = "the request must change, not counted against the circuit breaker"
+
 # Type variable for generic return types
 T = TypeVar("T")
 
@@ -628,7 +631,7 @@ class BaseExternalClient(ABC):
                         self.logger.warning(
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
-                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
+                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'caller remedy — ' + _CALLER_REMEDY if declared_llm_category(call_error) in CALLER_REMEDY_CATEGORIES else 'request-scoped — not counted against the circuit breaker'}"
                             f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
@@ -669,10 +672,10 @@ class BaseExternalClient(ABC):
                         ):
                             self.logger.warning(
                                 f"Caller remedy on {self.service_name}.{operation_name}"
-                                f" — the request must change, not counted against"
-                                f" the circuit breaker: {exception_class_chain(call_error)}",
+                                f" ({_CALLER_REMEDY}): {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
+                                **_provider_codes(call_error),
                             )
                         elif is_rate_limit_throttle(call_error):
                             self.logger.warning(
@@ -681,6 +684,7 @@ class BaseExternalClient(ABC):
                                 f" breaker: {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
+                                **_provider_codes(call_error),
                             )
 
                         # Log failed boundary - outbound

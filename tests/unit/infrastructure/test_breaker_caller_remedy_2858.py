@@ -45,13 +45,25 @@ UNCLASSIFIED = lambda: LLMException("returned no choices", retryable=True)
 THROTTLE = lambda: LLMException("rate limited", status_code=429)
 QUOTA = lambda: LLMException("billing", status_code=402, error_code=QUOTA_EXHAUSTED)
 REJECTED = lambda: LLMException("bad request", status_code=400)
-CALLER_REMEDIES = [TRUNCATION, OVERFLOW, _wrapped_truncation]
+# Non-retryable, so it takes call_external's fail-fast branch.
+OVERFLOW_400 = lambda: LLMException(
+    "too long", status_code=400, category=LLMErrorCategory.CONTEXT_OVERFLOW
+)
+# Service scope outranks the category: still counted, and its code latches.
+QUOTA_OVERFLOW = lambda: LLMException(
+    "billing",
+    status_code=402,
+    error_code=QUOTA_EXHAUSTED,
+    category=LLMErrorCategory.CONTEXT_OVERFLOW,
+)
+CALLER_REMEDIES = [TRUNCATION, OVERFLOW, _wrapped_truncation, OVERFLOW_400]
 
 
 @pytest.mark.parametrize(
     ("make", "counted"),
     [(m, False) for m in CALLER_REMEDIES]
-    + [(UNCLASSIFIED, True), (THROTTLE, False), (QUOTA, True), (REJECTED, False)],
+    + [(UNCLASSIFIED, True), (THROTTLE, False), (QUOTA, True), (REJECTED, False)]
+    + [(QUOTA_OVERFLOW, True)],
 )
 def test_counts_against_breaker(make, counted):
     assert counts_against_breaker(make()) is counted
@@ -80,17 +92,31 @@ async def test_a_request_failure_leaves_the_breaker_closed(make):
     provider.assert_awaited_once()
 
 
-async def test_a_truncation_is_not_logged_as_a_rate_limit(caplog):
-    with caplog.at_level(logging.WARNING):
-        await _client_after_three(TRUNCATION)
+def _warnings(caplog, text):
+    return [r for r in caplog.records if text in r.getMessage()]
 
-    messages = [record.getMessage() for record in caplog.records]
-    assert not [m for m in messages if "Rate-limited" in m]
-    assert len([m for m in messages if "Caller remedy on" in m]) == 3
+
+@pytest.mark.parametrize("make", [TRUNCATION, OVERFLOW_400])
+async def test_a_caller_remedy_is_logged_as_one_not_a_rate_limit(caplog, make):
+    with caplog.at_level(logging.WARNING):
+        await _client_after_three(make)
+
+    assert not _warnings(caplog, "Rate-limited")
+    assert len(_warnings(caplog, "the request must change, not counted")) == 3
+    assert not _warnings(caplog, "request-scoped")
+
+
+async def test_a_throttle_logs_one_rate_limited_line(caplog):
+    client = BaseExternalClient("llm_router", LLM_BREAKER_SERVICE)
+    with caplog.at_level(logging.WARNING), pytest.raises(LLMException):
+        await client.call_external("route", AsyncMock(side_effect=THROTTLE()))
+
+    assert len(_warnings(caplog, "Rate-limited on")) == 1
 
 
 @pytest.mark.parametrize(
-    ("make", "latched"), [(UNCLASSIFIED, None), (QUOTA, QUOTA_EXHAUSTED)]
+    ("make", "latched"),
+    [(UNCLASSIFIED, None), (QUOTA, QUOTA_EXHAUSTED), (QUOTA_OVERFLOW, QUOTA_EXHAUSTED)],
 )
 async def test_a_service_failure_still_opens_the_breaker(make, latched):
     client = await _client_after_three(make)

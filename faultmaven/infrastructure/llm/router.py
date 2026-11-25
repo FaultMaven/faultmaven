@@ -293,9 +293,10 @@ def _opik_track_llm(name: str):
 # 504-answering provider gets one retry (``max_deadline_retries``, #1294): two
 # timeouts and one backoff, ``2T + 2``, under the threshold. The configuration
 # report (``config/retry_budget``) is given this number so it models the ladders
-# the breaker cuts. A ladder of throttle 429s is not cut by it (#2793) and can
-# pay the fourth attempt; ``with_retry``'s turn-budget refusal stops that
-# attempt when it would not fit, so the turn is never overrun.
+# the breaker cuts. A ladder with a throttle 429 (#2793) or a caller remedy
+# (#2858) in it is not cut by it at three and can pay the fourth attempt;
+# ``with_retry``'s turn-budget refusal stops that attempt when it would not
+# fit, so the turn is never overrun.
 LLM_CIRCUIT_BREAKER_THRESHOLD = 3
 LLM_CIRCUIT_BREAKER_TIMEOUT = 30
 
