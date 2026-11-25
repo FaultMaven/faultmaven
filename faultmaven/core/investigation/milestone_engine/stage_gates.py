@@ -1329,6 +1329,25 @@ def _downgraded_workaround(case: Case) -> Any:
     )
 
 
+def _downgraded_fix(case: Case) -> Any:
+    """The newest pending fix M5 downgraded to DIAGNOSTIC (a downgrade reason
+    that is not the 3D marker), unless it is already on record as carried
+    out; never an older one behind it. ``mitigation_accepted`` never stamps
+    it: the engine never infers which fix an unnamed report means (INV-49)."""
+    fix = next(
+        (
+            a
+            for a in reversed(case.proposed_actions)
+            if a.state == "pending"
+            and a.action_type == InvestigationActionType.DIAGNOSTIC
+            and a.downgrade_reason
+            and not is_workaround_downgrade(a)
+        ),
+        None,
+    )
+    return fix if fix is not None and fix.reported_done_in_turn is None else None
+
+
 def _refuse_fix_ref(
     case: Case, metadata: dict[str, Any], ref: Any, what: str, recorded: str = ""
 ) -> None:
@@ -2263,13 +2282,40 @@ def _apply_stage_gate_signals(
             "before setting the milestone."
         )
         workaround = _downgraded_workaround(case)
+        stamped_now = False
         if workaround is not None:
             # Local import: statement_revision imports this module.
             from .statement_revision import emission_turn
 
+            stamped_now = workaround.reported_done_in_turn is None
             notice += recorded_change_clause(
                 workaround.action_id,
                 record_reported_change(workaround, emission_turn(case, metadata)),
+            )
+        fix = None if stamped_now else _downgraded_fix(case)
+        if fix is not None:
+            # A fix is reported through the fix channel, by name: stamp
+            # nothing here, and say how (#3039 re-run). Self-contained:
+            # <pending_action> may render another action. The route is the
+            # IF_CARRIED_OUT cue's: the re-proposal that registers it while
+            # the M5 licence holds, else the ref that records it.
+            aid = fix.action_id
+            dated = (
+                " (accepted_fix_reported_in previous_message when they "
+                "reported it in the previous message)"
+            )
+            route = (
+                "re-propose it, with its description unchanged, as a "
+                "SolutionToAdd and set solution_accepted with "
+                f"accepted_action_ref new_index_N naming it{dated}: that "
+                "registers it as the fix"
+                if _license_holds(case, metadata)
+                else f"set solution_accepted with accepted_action_ref {aid}"
+                f"{dated} to put it on record"
+            )
+            notice += (
+                f" DIAGNOSTIC {aid} is a downgraded fix. Only if the user "
+                f"reported carrying out {aid}, {route}."
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (
