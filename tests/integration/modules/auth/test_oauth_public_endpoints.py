@@ -249,7 +249,7 @@ class TestRevokeEndpoint:
 
         # Verify service layer was called
         mock_oauth_service.revoke_token.assert_called_once_with(
-            "access_token_to_revoke"
+            "access_token_to_revoke", client_id="faultmaven-copilot"
         )
 
     @pytest.mark.asyncio
@@ -271,7 +271,7 @@ class TestRevokeEndpoint:
 
         # Verify service layer was called
         mock_oauth_service.revoke_refresh_token.assert_called_once_with(
-            "refresh_token_to_revoke"
+            "refresh_token_to_revoke", client_id="faultmaven-copilot"
         )
 
     @pytest.mark.asyncio

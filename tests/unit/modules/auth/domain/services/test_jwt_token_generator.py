@@ -455,7 +455,7 @@ class TestTokenRevocation:
             mock_user, state_read_at=datetime.now(timezone.utc)
         )
 
-        await token_generator.revoke_access_token(token)
+        await token_generator.revoke_access_token(token, client_id=None)
 
         # Verify add_revoked_token called with JTI and TTL
         mock_revocation_store.add_revoked_token.assert_called_once()
@@ -481,7 +481,7 @@ class TestTokenRevocation:
             mock_user, state_read_at=datetime.now(timezone.utc)
         )
 
-        await token_generator.revoke_refresh_token(token)
+        await token_generator.revoke_refresh_token(token, client_id=None)
 
         # Verify add_revoked_token called with JTI and TTL
         mock_revocation_store.add_revoked_token.assert_called_once()
@@ -518,7 +518,7 @@ class TestTokenRevocation:
         expired_token = jwt.encode(payload, TEST_PRIVATE_KEY, algorithm="RS256")
 
         # Revocation should succeed but not add to store (TTL <= 0)
-        await token_generator.revoke_access_token(expired_token)
+        await token_generator.revoke_access_token(expired_token, client_id=None)
 
         # Verify add_revoked_token NOT called (token already expired)
         mock_revocation_store.add_revoked_token.assert_not_called()
