@@ -184,9 +184,10 @@ class UsageStoreUnavailable(Exception):
 class ExternalCallTimeout(ExternalServiceException, TimeoutError):
     """A call to an external service exceeded its CLIENT-SIDE deadline.
 
-    Raised by ``BaseExternalClient.call_external`` when its ``asyncio.wait_for``
-    expires — the dependency never answered, so there is no provider status
-    code and no provider wording to classify from.
+    Raised by ``BaseExternalClient.call_external`` when its own timeout
+    expires, or the call raised a timeout of its own (then naming no figure) —
+    the dependency never answered, so there is no provider status code and no
+    provider wording to classify from.
 
     ``retryable`` is declared here, by the code that raises, rather than
     inferred downstream from the message text. The site used to raise a bare
@@ -251,6 +252,21 @@ class CircuitBreakerError(Exception):
 #: The ``service_name`` of the LLM router's client, so the ``service`` its open
 #: breaker and its deadline carry.
 LLM_BREAKER_SERVICE = "LLM_Providers"
+
+
+class LLMAttemptTimeout(ExternalCallTimeout):
+    """One attempt of a routed walk ran out its deadline (#2983): ``provider``'s
+    own ``T``, or less when the turn's spendable budget clamped it. Raised
+    inside the walk, and passed through ``call_external`` unwrapped."""
+
+    def __init__(self, provider: str, timeout: float):
+        super().__init__(
+            f"LLM provider '{provider}' timed out after {timeout:g}s",
+            service=LLM_BREAKER_SERVICE,
+            operation="route_llm_request",
+            timeout=timeout,
+        )
+        self.provider = provider
 
 
 def is_llm_breaker(exc: BaseException, *, transient: bool = False) -> bool:
@@ -371,6 +387,22 @@ PROVIDER_CIRCUIT_OPEN = "PROVIDER_CIRCUIT_OPEN"
 # ``LLM_REQUEST_TIMEOUT`` against ``AGENT_REQUEST_TIMEOUT`` — which
 # ``GET /admin/config/status`` reports directly.
 TURN_BUDGET_EXHAUSTED = "TURN_BUDGET_EXHAUSTED"
+
+
+class LLMTurnBudgetSpent(Exception):
+    """A routed call refused before any provider was called: the turn's
+    spendable budget is spent (#2983).
+
+    No provider was contacted, so neither the circuit breaker
+    (``counts_against_breaker``) nor any provider's health records it. Not
+    deadline-shaped, and declares no ``retryable``: its ``error_code`` is the
+    outcome, ``TURN_BUDGET_EXHAUSTED`` (503, ``Retry-After``).
+    """
+
+    error_code = TURN_BUDGET_EXHAUSTED
+
+    def __init__(self) -> None:
+        super().__init__("The turn's budget is spent; no LLM provider was called.")
 
 
 # Stable error_code for "the LLM layer is not configured": no provider in the
@@ -942,12 +974,15 @@ def is_rate_limit_throttle(exc: BaseException) -> bool:
 def counts_against_breaker(exc: BaseException) -> bool:
     """Whether ``call_external`` records ``exc`` on its circuit breaker.
 
-    In order: a service-scoped failure (quota, rejected credentials) counts,
-    whatever its category, so its code latches; a caller remedy
-    (:data:`CALLER_REMEDY_CATEGORIES`) does not, retryable or not (#2858); a
-    non-retryable failure is request-scoped and does not; any other counts,
-    except a throttle (#2793).
+    In order: a call refused for a spent turn reached no provider and does not
+    count (``LLMTurnBudgetSpent``, #2983); a service-scoped failure (quota,
+    rejected credentials) counts, whatever its category, so its code latches;
+    a caller remedy (:data:`CALLER_REMEDY_CATEGORIES`) does not, retryable or
+    not (#2858); a non-retryable failure is request-scoped and does not; any
+    other counts, except a throttle (#2793).
     """
+    if isinstance(exc, LLMTurnBudgetSpent):
+        return False
     if getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
         return True
     if declared_llm_category(exc) in CALLER_REMEDY_CATEGORIES:

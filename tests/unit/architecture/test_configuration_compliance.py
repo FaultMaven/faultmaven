@@ -70,7 +70,10 @@ KNOWN_ENV_ACCESS = {
     # process's own environment, never configuration.
     "faultmaven/infrastructure/encode_worker.py": 1,
     "faultmaven/infrastructure/llm/pricing.py": 1,
-    "faultmaven/infrastructure/llm/router.py": 3,
+    # ``LLM_REQUEST_TIMEOUT`` beats the settings field in the one timeout
+    # resolver, moved here from ``router.py`` (#2983).
+    "faultmaven/infrastructure/llm/provider_timeout.py": 1,
+    "faultmaven/infrastructure/llm/router.py": 2,
     # The Opik SDK reads its configuration from the environment (``OpikConfig``),
     # so the one module that imports it writes there (#2616 part c): the Sentry
     # default before the import, the backend at ``configure``, the kill switch.

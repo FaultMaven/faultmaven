@@ -564,7 +564,11 @@ class LLMSettings(BaseSettings):
     )
 
     # Request configuration
-    request_timeout: int = Field(default=30, validation_alias="LLM_REQUEST_TIMEOUT")
+    # Above 0: it is every provider's ``T`` without an override, and a call
+    # bound reads 0 as unbounded and a negative value as instant (#2983).
+    request_timeout: int = Field(
+        default=30, gt=0, validation_alias="LLM_REQUEST_TIMEOUT"
+    )
     max_retries: int = Field(default=3, validation_alias="LLM_MAX_RETRIES")
     retry_delay: float = Field(default=1.0, validation_alias="LLM_RETRY_DELAY")
 
@@ -575,7 +579,7 @@ class LLMSettings(BaseSettings):
     # provider not listed falls back to ``request_timeout``.
     #
     # Set via env as JSON, e.g.:
-    #   LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180, "ollama": 600}'
+    #   LLM_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 180, "local": 600}'
     #
     # Surfaced as a tunable per a 2026-05-01 system code review (a
     # DeepSeek run on text-paste-stacktrace q6 hit the 90s ceiling).
@@ -584,20 +588,24 @@ class LLMSettings(BaseSettings):
         validation_alias="LLM_PROVIDER_TIMEOUT_OVERRIDES",
         description=(
             "Per-provider timeout overrides in seconds. JSON object keyed "
-            "by provider name (e.g. 'fireworks', 'gemini', 'ollama'). "
+            "by provider name (e.g. 'fireworks', 'gemini', 'local'). "
             "Empty default — providers fall back to request_timeout."
         ),
     )
 
-    def timeout_for_provider(self, provider_name: Optional[str]) -> int:
-        """Return the per-provider timeout if set, else the global default.
-
-        Centralised so callers don't have to dict-lookup + fall back themselves.
-        Empty / unknown provider names return ``request_timeout`` unchanged.
-        """
-        if not provider_name:
-            return self.request_timeout
-        return self.provider_timeout_overrides.get(provider_name, self.request_timeout)
+    @field_validator("provider_timeout_overrides")
+    @classmethod
+    def _overrides_are_positive(cls, v: Dict[str, int]) -> Dict[str, int]:
+        """Refuse an override ``<= 0`` (#2983): an override is that provider's
+        ``T`` outright, and a call bound reads ``0`` as unbounded and a negative
+        value as an instant timeout."""
+        refused = [f"{name}={seconds}" for name, seconds in v.items() if seconds <= 0]
+        if refused:
+            raise ValueError(
+                "LLM_PROVIDER_TIMEOUT_OVERRIDES must give every provider a "
+                f"positive timeout in seconds; refused: {', '.join(refused)}"
+            )
+        return v
 
     # Provider behavior
     strict_provider_mode: bool = Field(
@@ -3499,7 +3507,7 @@ class AgentSettings(BaseSettings):
     # longest turn a client is told to wait for.
     #
     # Set via env as JSON, e.g.:
-    #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "ollama": 600}'
+    #   AGENT_PROVIDER_TIMEOUT_OVERRIDES='{"fireworks": 300, "local": 600}'
     #
     # Surfaced by ISS-058 — DeepSeek run on logs-windows q3 hit the 120s
     # ceiling. Pairs stylistically with ISS-054 (LLM-router timeout).
@@ -3510,7 +3518,7 @@ class AgentSettings(BaseSettings):
             "Per-provider agent-level timeout overrides in seconds, each "
             f"{MIN_AGENT_TIMEOUT_SECONDS}-{MAX_AGENT_TIMEOUT_SECONDS} like "
             "agent_request_timeout. JSON object keyed by provider name (e.g. "
-            "'fireworks', 'gemini', 'ollama'). Empty default — providers fall "
+            "'fireworks', 'gemini', 'local'). Empty default — providers fall "
             "back to agent_request_timeout."
         ),
     )

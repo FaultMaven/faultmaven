@@ -13,9 +13,9 @@ import re
 import time
 from abc import ABC
 from concurrent.futures import Executor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, Iterator, Optional, TypeVar, Union
 
 from faultmaven.exceptions import (
     CALLER_REMEDY_CATEGORIES,
@@ -23,6 +23,7 @@ from faultmaven.exceptions import (
     CircuitBreakerError,
     ExternalCallTimeout,
     FaultMavenException,
+    LLMTurnBudgetSpent,
     counts_against_breaker,
     declared_llm_category,
     is_rate_limit_throttle,
@@ -56,6 +57,18 @@ def remaining_call_time() -> Optional[float]:
     if deadline is None:
         return None
     return deadline - time.monotonic()
+
+
+@contextmanager
+def call_deadline(seconds: float) -> Iterator[None]:
+    """Rebind the enclosing call's deadline to ``seconds`` from now, for the
+    block: one attempt of a routed walk (#2983), so a wait inside it spends
+    the attempt's share, not the walk's."""
+    token = _call_deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _call_deadline.reset(token)
 
 
 def _provider_codes(error: BaseException) -> Dict[str, Any]:
@@ -296,7 +309,7 @@ class BaseExternalClient(ABC):
                 runs through :meth:`run_blocking`: in :attr:`blocking_executor`
                 when the client sets one, inline otherwise
             *args: Arguments to pass to the call function
-            timeout: Optional budget, applied with ``asyncio.wait_for`` to a
+            timeout: Optional budget, applied with ``asyncio.timeout`` to a
                 coroutine ``call_func``, and to a sync one that runs in a
                 :attr:`blocking_executor`. For a sync call it ends the
                 caller's AWAIT, not the call: that runs on in its thread, to
@@ -305,7 +318,7 @@ class BaseExternalClient(ABC):
                 caller could see a timeout for a write still landing and
                 compensate for it while it lands (#2056). A sync call that
                 runs inline, with no executor, is never bounded here:
-                ``wait_for`` cannot preempt the loop thread.
+                a timeout cannot preempt the loop thread.
             retries: Number of retry attempts on failure
             retry_delay: Base delay between retries (with exponential backoff)
             validate_response: Optional function to validate response
@@ -410,19 +423,21 @@ class BaseExternalClient(ABC):
                     # Execute with timeout
                     start_time = time.time()
 
-                    # Bound before the ``wait_for`` starts, so the task it
-                    # creates inherits the deadline (#2793).
+                    # Bound before the call starts, so a wait inside it reads
+                    # the deadline (#2793).
                     deadline_token = (
                         _call_deadline.set(time.monotonic() + timeout)
                         if timeout
                         else None
                     )
+                    # This call's own bound, so a timeout can be told from one
+                    # the call raised itself (#2983).
+                    own_bound = None
                     try:
                         if asyncio.iscoroutinefunction(call_func):
                             if timeout:
-                                result = await asyncio.wait_for(
-                                    call_func(*args, **kwargs), timeout=timeout
-                                )
+                                async with asyncio.timeout(timeout) as own_bound:
+                                    result = await call_func(*args, **kwargs)
                             else:
                                 result = await call_func(*args, **kwargs)
                         elif timeout and self.blocking_executor is not None:
@@ -430,13 +445,13 @@ class BaseExternalClient(ABC):
                             # call itself runs on in its thread to the client's
                             # own bound, which is why a write passes no timeout
                             # (see ``timeout`` above, #2056).
-                            result = await asyncio.wait_for(
-                                self.run_blocking(call_func, *args, **kwargs),
-                                timeout=timeout,
-                            )
+                            async with asyncio.timeout(timeout) as own_bound:
+                                result = await self.run_blocking(
+                                    call_func, *args, **kwargs
+                                )
                         else:
                             # Awaited to its end: with no timeout (a write), or
-                            # inline, where ``wait_for`` could not preempt it.
+                            # inline, where a timeout could not preempt it.
                             result = await self.run_blocking(call_func, *args, **kwargs)
                     finally:
                         if deadline_token is not None:
@@ -568,19 +583,36 @@ class BaseExternalClient(ABC):
                         timeout=timeout,
                     )
 
+                    # A typed timeout of this service, raised inside the call
+                    # (one attempt of a routed walk, #2983), already names
+                    # what ran out and after how long: passed through.
+                    if (
+                        isinstance(timeout_error, ExternalCallTimeout)
+                        and timeout_error.service == self.service_name
+                    ):
+                        raise
+
                     # Typed, and carrying its own ``retryable=True``. A bare
                     # ``TimeoutError`` left retryability to be guessed from this
                     # sentence downstream, and the guess was wrong: the engine's
                     # phrase list has "timeout", the sentence says "timed out",
                     # and a hung provider got zero retries (#1287). The class is
                     # still a ``TimeoutError``, so existing handlers are
-                    # unaffected.
+                    # unaffected. Only this call's own bound has a figure to
+                    # name; a timeout the call raised itself names none.
+                    if own_bound is not None and own_bound.expired():
+                        raise ExternalCallTimeout(
+                            f"External call to {self.service_name}.{operation_name} timed out after {timeout}s",
+                            service=self.service_name,
+                            operation=operation_name,
+                            timeout=timeout,
+                        )
                     raise ExternalCallTimeout(
-                        f"External call to {self.service_name}.{operation_name} timed out after {timeout}s",
+                        f"External call to {self.service_name}.{operation_name}"
+                        " timed out inside the call",
                         service=self.service_name,
                         operation=operation_name,
-                        timeout=timeout,
-                    )
+                    ) from timeout_error
 
                 except Exception as call_error:
                     last_exception = call_error
@@ -663,7 +695,9 @@ class BaseExternalClient(ABC):
                         ).isoformat()
 
                         # Neither a caller remedy (#2858) nor a throttle, a 429 the
-                        # provider's waits did not outlast (#2793), is counted.
+                        # provider's waits did not outlast (#2793), nor a call
+                        # refused for a spent turn, which reached no provider
+                        # (#2983), is counted.
                         if self.circuit_breaker and counts_against_breaker(call_error):
                             self.circuit_breaker.record_failure(call_error)
                         if (
@@ -685,6 +719,14 @@ class BaseExternalClient(ABC):
                                 client=self.client_name,
                                 service=self.service_name,
                                 **_provider_codes(call_error),
+                            )
+                        elif isinstance(call_error, LLMTurnBudgetSpent):
+                            self.logger.warning(
+                                f"Turn budget spent on {self.service_name}.{operation_name}"
+                                f" — no provider called, not counted against the"
+                                f" circuit breaker: {exception_class_chain(call_error)}",
+                                client=self.client_name,
+                                service=self.service_name,
                             )
 
                         # Log failed boundary - outbound

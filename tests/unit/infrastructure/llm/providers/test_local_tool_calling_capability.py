@@ -531,6 +531,8 @@ def test_registry_wires_local_llm_tool_calling_onto_provider_config(declared):
         local_url=OPENAI_COMPATIBLE_URL,
         local_tool_calling=declared,
         max_retries=1,
+        request_timeout=30,
+        provider_timeout_overrides={},
     )
     registry = ProviderRegistry(settings=NS(llm=llm_settings))
     config = registry._create_provider_config("local", PROVIDER_SCHEMA["local"])

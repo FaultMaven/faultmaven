@@ -317,6 +317,7 @@ async def test_low_confidence_reply_is_named_by_provider_and_length(lines):
         "faultmaven.infrastructure.llm.providers.registry"
     )
     registry._providers = {}
+    registry.settings = None  # each attempt's T then reads the live settings
     registry._provider_states = {"fireworks": ProviderState(name="fireworks")}
     registry._provider_classes = {}
     registry._fallback_chain = ["fireworks"]

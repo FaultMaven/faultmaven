@@ -8,7 +8,7 @@ Two independently-configured timeouts decide the answer, and nothing else in the
 codebase relates them (#1292):
 
 * ``LLMSettings.request_timeout`` / ``LLM_PROVIDER_TIMEOUT_OVERRIDES`` — what one
-  attempt against a hung provider costs.
+  attempt against a hung provider costs (a routed attempt walks the chain).
 * ``AgentSettings.agent_request_timeout`` / ``AGENT_PROVIDER_TIMEOUT_OVERRIDES``
   — the turn-wide ``asyncio.wait_for`` ceiling that cancels whatever is running.
 
@@ -109,14 +109,49 @@ def model_retry_ladders(
     )
 
 
+def routed_attempt_seconds(settings) -> float:
+    """What one ladder attempt costs when every provider it reaches hangs (#2983).
+
+    Each attempt of a routed walk runs on its own provider's ``T``. Under
+    ``STRICT_PROVIDER_MODE`` the walk is CHAT's provider alone, so its ``T``;
+    otherwise the walk tries the whole chain (``registry.fallback_chain`` over
+    the providers *settings* configures, read from it alone, so the report
+    builds no registry), so the sum of their ``T``. A
+    ``STRUCTURED_OUTPUT_PROVIDER`` pin routes the ladder's schema-bound calls to
+    that one provider, so the price is the larger of the two. A provider that
+    fails fast costs a fraction of this.
+    """
+    from faultmaven.config.settings import unset_llm_variables
+    from faultmaven.infrastructure.llm.provider_timeout import provider_timeout
+    from faultmaven.infrastructure.llm.providers.registry import (
+        PROVIDER_SCHEMA,
+        fallback_chain,
+        required_env_vars,
+    )
+    from faultmaven.infrastructure.llm.router import resolve_chat_provider_name
+
+    chat = resolve_chat_provider_name(settings)
+    chain = [chat]
+    if not settings.llm.strict_provider_mode:
+        configured = [
+            name
+            for name in PROVIDER_SCHEMA
+            if not unset_llm_variables(settings.llm, required_env_vars(name))
+        ]
+        chain = fallback_chain(chat, configured, strict=False) or chain
+    seconds = sum(provider_timeout(name, settings) for name in chain)
+    pinned = settings.llm.structured_output_provider
+    if pinned is not None:
+        seconds = max(seconds, provider_timeout(pinned.value, settings))
+    return seconds
+
+
 def describe_retry_ladder_budget(settings) -> RetryLadderBudget:
-    """Model both retry ladders for *settings*' resolved chat provider: its
-    turn ceiling, and its per-call ``T`` (``max(LLM_REQUEST_TIMEOUT,
-    LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])``)."""
+    """Model both retry ladders for *settings*: its turn ceiling, and one
+    attempt priced as the routed walk spends it (``routed_attempt_seconds``)."""
     from faultmaven.config.turn_ceiling import resolve_turn_ceiling
-    from faultmaven.infrastructure.llm.router import resolve_request_timeout
 
     return model_retry_ladders(
         agent_timeout=resolve_turn_ceiling(settings).ceiling_seconds,
-        attempt_seconds=resolve_request_timeout(settings),
+        attempt_seconds=routed_attempt_seconds(settings),
     )

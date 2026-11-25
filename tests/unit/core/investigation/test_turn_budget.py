@@ -141,7 +141,7 @@ class TestTheDeadlineShapedLadder:
 # boundary, and the boundary is where the previous analysis went wrong. Spans
 # both sides of 33/34 at the default 120s turn, the shipped default, the two
 # configurations measured on real deployments, and the values the documentation
-# itself invites (`{"fireworks": 180, "ollama": 600}`).
+# itself invites (`{"fireworks": 180, "local": 600}`).
 #
 # The boundary counts the commit reserve (#1882): a ladder fits when it ends
 # with the step reserve AND the turn's commit reserve still unspent, so at a
@@ -381,13 +381,9 @@ class TestBindingTheDeadline:
 
 @pytest.mark.unit
 class TestClampingOneCallsOwnTimeout:
-    """``clamp_to_turn_budget`` is what bounds EVERY router-borne LLM call.
-
-    It is applied at ``LLMRouter._resolve_timeout``, the single place such a
-    call learns its ceiling — so intent classification and KB/document answer
-    synthesis are bounded by it too, not only the calls the investigation
-    engine wraps in a retry ladder (#1278's "each subsequent call in the turn").
-    """
+    """``clamp_to_turn_budget`` bounds a direct provider call by the turn: the
+    tool loop's refusal re-issue on a dedicated DA provider. A routed attempt
+    clamps its own deadline (``ProviderRegistry.route_request``, #2983)."""
 
     def test_unbound_returns_the_configured_ceiling_untouched(self):
         assert clamp_to_turn_budget(600.0) == 600.0

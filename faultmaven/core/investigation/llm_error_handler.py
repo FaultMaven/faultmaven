@@ -50,6 +50,7 @@ from faultmaven.exceptions import (
     TURN_BUDGET_EXHAUSTED,
     CircuitBreakerError,
     LLMErrorCategory,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
     is_billing_error,
@@ -348,7 +349,7 @@ def is_deadline_shaped(error: BaseException) -> bool:
 def spent_a_deadline(failure: BaseException) -> bool:
     """Whether one recorded send failure spent its provider a deadline (#2319).
 
-    A cancellation (the router's ceiling or a ``wait_for`` cut the send), or a
+    A cancellation (the attempt's own deadline or a ``wait_for`` cut the send), or a
     deadline-shaped failure (``is_deadline_shaped``) that is not a verdict on
     the request: an overflow or truncation 504 asks the caller to change the
     request, and says nothing about the provider.
@@ -622,6 +623,16 @@ class LLMErrorHandler:
         # Track error for pattern detection
         error_type = type(error).__name__
         self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
+
+        # The router refused the call for a spent turn, before any provider
+        # (#2983): the budget's own outcome, as the ladder's refusal reports it.
+        if isinstance(error, LLMTurnBudgetSpent):
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                message="The request budget is spent. Please try again in a few minutes.",
+                error_code=TURN_BUDGET_EXHAUSTED,
+                retry_count=retry_count,
+            )
 
         # A refusal (#1770) is the engine's own typed signal too, and final.
         if isinstance(error, ProviderRefusalError):
@@ -1143,13 +1154,14 @@ class LLMErrorHandler:
             # This attempt's deadline-spending failures, by send key.
             attempt_deadlines: Dict[str, int] = {}
             try:
-                # BACKSTOP only. A router-borne call is already bounded by
-                # LLMRouter._resolve_timeout, whose clamp expires ~0.75s
-                # earlier (see TURN_BUDGET_BACKSTOP_RESERVE_SECONDS) and, being
-                # the call's own timeout, leaves the failure on the path that
-                # records a circuit-breaker failure. This wrapper exists for the
-                # paths that reach a provider WITHOUT the router; when it fires
-                # it cancels the coroutine, which no handler below can observe.
+                # BACKSTOP only. Each attempt of a router-borne walk is already
+                # bounded by its own deadline (ProviderRegistry.route_request,
+                # #2983), clamped to the spendable budget, which expires ~0.75s
+                # earlier (see TURN_BUDGET_BACKSTOP_RESERVE_SECONDS) and leaves
+                # the failure on the path that records a circuit-breaker
+                # failure. This wrapper exists for the paths that reach a
+                # provider WITHOUT the router; when it fires it cancels the
+                # coroutine, which no handler below can observe.
                 backstop = backstop_turn_budget()
                 with deadlines_spent_into(attempt_deadlines):
                     if backstop is None:

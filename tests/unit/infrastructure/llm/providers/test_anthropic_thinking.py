@@ -513,7 +513,8 @@ class TestRegistryWiring:
         llm.anthropic_base_url = "https://api.anthropic.com/v1"
         llm.anthropic_thinking_mode = "adaptive"
         llm.anthropic_thinking_budget_tokens = 2048
-        llm.timeout_for_provider.return_value = 30
+        llm.request_timeout = 30
+        llm.provider_timeout_overrides = {}
         llm.max_retries = 3
         settings = MagicMock()
         settings.llm = llm
@@ -539,7 +540,8 @@ class TestRegistryWiring:
         llm.gemini_api_key.get_secret_value.return_value = "k"
         llm.gemini_model = "gemini-3.5-flash"
         llm.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta"
-        llm.timeout_for_provider.return_value = 30
+        llm.request_timeout = 30
+        llm.provider_timeout_overrides = {}
         llm.max_retries = 3
         settings = MagicMock()
         settings.llm = llm

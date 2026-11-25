@@ -10,27 +10,33 @@ Note: This module no longer calls load_dotenv() at import time. Environment vari
 loading is handled by the settings system.
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Mapping, Optional, Type, Union
+from typing import Collection, Dict, List, Mapping, Optional, Type, Union
 
+from faultmaven.core.investigation.turn_budget import spendable_turn_budget
 from faultmaven.exceptions import (
     CALLER_REMEDY_CATEGORIES,
     SERVICE_SCOPED_ERROR_CODES,
     CallShapeUnsupported,
+    LLMAttemptTimeout,
     LLMErrorCategory,
     LLMException,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
     is_rate_limit_throttle,
     walk_cause_chain,
 )
+from faultmaven.infrastructure.base_client import call_deadline
 from faultmaven.infrastructure.llm.dispatch import (
     send_to_model,
 )
 from faultmaven.infrastructure.llm.metering import record_provider_call
+from faultmaven.infrastructure.llm.provider_timeout import provider_timeout
 from faultmaven.infrastructure.security.model_content import non_case_text
 from faultmaven.utils.exception_name import exception_log_name
 
@@ -178,6 +184,23 @@ def records_on_provider_health(exc: BaseException) -> bool:
     return not _is_4xx(failure)
 
 
+def fallback_chain(
+    primary: Optional[str], initialised: Collection[str], strict: bool
+) -> List[str]:
+    """The routing chain over the ``initialised`` provider names: ``primary``
+    if initialised, then, unless ``strict``, every initialised fallback in
+    fixed order. The registry's chain and the ladder report's price of a
+    routed attempt (``config/retry_budget``) both read it (#2983)."""
+    chain = [primary] if primary in initialised else []
+    if not strict:
+        chain += [
+            name
+            for name in ("fireworks", "openai", "local")
+            if name != primary and name in initialised
+        ]
+    return chain
+
+
 # Data-driven provider schema - single source of truth.
 #
 # ``available_models`` is the DASHBOARD PICKER's curated list, not a catalogue of
@@ -254,7 +277,6 @@ PROVIDER_SCHEMA = {
         "available_models": [],  # Dynamic — depends on what the user has pulled
         "provider_class": LocalProvider,
         "max_retries": 1,
-        "timeout": 60,
         "confidence_score": 0.6,
     },
     "gemini": {
@@ -618,14 +640,9 @@ class ProviderRegistry:
                 )
                 return None
 
-        # Get timeout and max_retries from schema or settings.
-        # Prefer the per-provider override so slow models (Fireworks/DeepSeek,
-        # local Ollama) get their own ceiling without widening the global default.
-        # Note: `or` falls through on schema timeout=0, which is fine — 0 is
-        # not a meaningful HTTP timeout and would never be set intentionally.
-        timeout = schema.get("timeout") or llm_settings.timeout_for_provider(
-            provider_name
-        )
+        # The client's timeout is the one resolver's ``T``, the deadline each
+        # routed attempt on this provider runs under too (#2983).
+        timeout = provider_timeout(provider_name, self.settings)
         max_retries = schema.get("max_retries", llm_settings.max_retries)
 
         # The provider must accept every model a role can resolve to, not just
@@ -700,9 +717,6 @@ class ProviderRegistry:
 
         Uses settings.llm.strict_provider_mode to determine if fallbacks are allowed.
         """
-        # Start with primary provider
-        chain = [primary_provider] if primary_provider in self._providers else []
-
         # Check if strict mode is enabled (from settings)
         strict_mode = self.settings.llm.strict_provider_mode
 
@@ -711,12 +725,7 @@ class ProviderRegistry:
             self.logger.info(
                 f"🔒 Strict provider mode enabled - using only '{primary_provider}', no fallbacks"
             )
-        else:
-            # Add other available providers as fallbacks
-            fallback_order = ["fireworks", "openai", "local"]
-            for provider in fallback_order:
-                if provider != primary_provider and provider in self._providers:
-                    chain.append(provider)
+        chain = fallback_chain(primary_provider, self._providers, strict_mode)
 
         self._fallback_chain = chain
 
@@ -1030,6 +1039,26 @@ class ProviderRegistry:
             if not state:
                 continue
 
+            # This attempt's deadline (#2983): the provider's own ``T``, from the
+            # settings its client was built with, clamped to what the turn can
+            # still spend. A spent turn stops the walk here, charging nothing
+            # to the providers it never tried; with none tried, nothing failed,
+            # so the refusal is raised here rather than reported as the
+            # chain's failure.
+            own_timeout = provider_timeout(provider_name, self.settings)
+            spendable = spendable_turn_budget()
+            if spendable is not None and spendable <= 0:
+                self.logger.warning(
+                    f"Turn budget spent; {provider_name} and the rest of the "
+                    "chain not tried"
+                )
+                if last_error is None and best_low_confidence_response is None:
+                    raise LLMTurnBudgetSpent()
+                break
+            attempt_timeout = (
+                own_timeout if spendable is None else min(own_timeout, spendable)
+            )
+
             try:
                 # Log only on provider change (not every request)
                 if provider_name != self._sticky_provider:
@@ -1038,14 +1067,27 @@ class ProviderRegistry:
                 # Track call start time for latency measurement
                 start_time = time.monotonic()
 
-                response = await send_to_model(
-                    provider,
-                    prompt=prompt,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    **kwargs,
-                )
+                # Rebound as the call's deadline, so a 429 wait inside the
+                # attempt spends its share. On expiry the send is cancelled and
+                # the timeout raised here; one the send raised itself is not
+                # this attempt's and propagates as it is.
+                with call_deadline(attempt_timeout):
+                    try:
+                        async with asyncio.timeout(attempt_timeout) as deadline:
+                            response = await send_to_model(
+                                provider,
+                                prompt=prompt,
+                                model=model,
+                                max_tokens=max_tokens,
+                                temperature=temperature,
+                                **kwargs,
+                            )
+                    except TimeoutError:
+                        if not deadline.expired():
+                            raise
+                        raise LLMAttemptTimeout(
+                            provider_name, attempt_timeout
+                        ) from None
 
                 # Calculate latency
                 latency_ms = (time.monotonic() - start_time) * 1000
@@ -1141,8 +1183,13 @@ class ProviderRegistry:
                     )
                     last_error = _higher_ranked(last_error, e)
                     continue
-                # Health records what ``records_on_provider_health`` names.
-                if records_on_provider_health(e):
+                # Health records what ``records_on_provider_health`` names,
+                # but a timeout only at the provider's own ``T``: a cut the
+                # turn's budget clamped is not the provider's failure (#2983).
+                turn_cut = (
+                    isinstance(e, LLMAttemptTimeout) and attempt_timeout < own_timeout
+                )
+                if records_on_provider_health(e) and not turn_cut:
                     state.record_failure()
 
                 status = getattr(e, "status_code", None)

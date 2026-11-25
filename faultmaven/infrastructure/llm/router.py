@@ -17,11 +17,15 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import get_current_enterprise_id
-from faultmaven.core.investigation.turn_budget import clamp_to_turn_budget
+from faultmaven.core.investigation.turn_budget import (
+    backstop_turn_budget,
+    spendable_turn_budget,
+)
 from faultmaven.exceptions import (
     LLM_BREAKER_SERVICE,
     CallShapeUnsupported,
     LLMOutputFloorError,
+    LLMTurnBudgetSpent,
     RawModelContentRefused,
     declared_llm_category,
 )
@@ -48,6 +52,7 @@ from faultmaven.utils.token_estimation import estimate_tokens
 from .cache import LLMResponseCache
 from .dispatch import model_call_violations, refuse
 from .prompt_cache import CACHE_BOUNDARY
+from .provider_timeout import provider_timeout
 from .providers import LLMResponse, ReasoningIntent, StopReason
 from .providers.registry import get_registry
 
@@ -328,18 +333,14 @@ def resolve_chat_provider_name(settings) -> Optional[str]:
 
 
 def resolve_request_timeout(settings) -> float:
-    """The per-request LLM timeout the active provider would be called with.
+    """The CHAT provider's request timeout ``T``: ``provider_timeout`` for it.
 
-    The one statement of the rule: ``LLMRouter._resolve_timeout`` clamps this,
-    read from the live settings, to the turn, and ``LLMRouter.request_timeout``
-    (the routing health report's figure) is it unclamped; the configuration
-    report on ``GET /admin/config/status`` reads it to say whether the retry
-    ladder fits inside the turn deadline. One rule over one settings object, so
-    the three agree after a config reload (#2320).
+    The figure ``LLMRouter.request_timeout`` (the routing health report's)
+    and ``GET /admin/config/status`` report, over one settings object, so they
+    agree after a config reload (#2320). A routed call's attempts each run on
+    their own provider's ``T`` (``ProviderRegistry.route_request``, #2983).
     """
-    base = float(os.getenv("LLM_REQUEST_TIMEOUT", str(settings.llm.request_timeout)))
-    override = settings.llm.timeout_for_provider(resolve_chat_provider_name(settings))
-    return float(max(override, base))
+    return provider_timeout(resolve_chat_provider_name(settings), settings)
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):
@@ -363,9 +364,9 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
 
-        # Settings and the per-call timeout are read live (the ``settings``
-        # and ``request_timeout`` properties, ``_resolve_timeout``), so a config
-        # reload reaches the router (#2320). The one exception is the fallback
+        # Settings and the per-attempt timeouts are read live (the
+        # ``settings`` and ``request_timeout`` properties, ``provider_timeout``
+        # per attempt), so a config reload reaches the router (#2320). The one exception is the fallback
         # sanitizer, built once from the settings at its first read.
 
         # Don't initialize registry immediately - wait for first use
@@ -386,11 +387,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
     @property
     def request_timeout(self) -> float:
-        """The per-call ceiling outside a turn, from the live settings.
+        """The CHAT provider's per-attempt ``T``, from the live settings.
 
-        ``resolve_request_timeout(get_settings())``: what ``_resolve_timeout``
-        clamps, and what ``GET /admin/config/status`` models, so the routing
-        health report that shows it agrees with both (#2320).
+        ``resolve_request_timeout(get_settings())``, the figure
+        ``GET /admin/config/status`` reports, so the routing health report
+        that shows it agrees with it (#2320).
         """
         return resolve_request_timeout(get_settings())
 
@@ -443,45 +444,22 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """Always fetch the current global registry so hot-reloads take effect."""
         return get_registry()
 
-    def _resolve_timeout(self) -> float:
-        """Return the request timeout for the configured primary provider.
+    def _resolve_timeout(self) -> Optional[float]:
+        """The bound ``call_external`` puts around the whole routed walk.
 
-        ``resolve_request_timeout`` over the live settings, clamped to the
-        turn: the configured CHAT_PROVIDER's override from
-        ``LLMSettings.provider_timeout_overrides``, never below
-        ``LLM_REQUEST_TIMEOUT`` (else ``LLMSettings.request_timeout``). Read
-        per call, so a config reload that switches the primary provider moves
-        it, and outside a turn it is the figure ``GET /admin/config/status``
-        reports (#2320).
+        Each attempt in the walk runs on its own deadline: its provider's
+        ``T``, clamped to the turn's spendable budget
+        (``ProviderRegistry.route_request``, #2983). A timeout there is raised
+        inside the walk, recorded against that provider, and the walk moves on;
+        this outer bound must never cut an attempt first. So inside a turn it
+        is ``backstop_turn_budget()``, which ends later than any attempt's
+        spendable bound, and outside a turn it is ``None``: the walk is bounded
+        by its attempts.
 
-        It follows the configured CHAT_PROVIDER, not the provider the registry
-        reaches: a call the registry routes to another provider still runs
-        under this one's ceiling (#2983).
-
-        Provider-aware timeouts let slow models (Fireworks DeepSeek V4 Pro,
-        local Ollama on CPU) exceed the global 30-90s ceiling without
-        widening it for everyone.
-
-        The resolved ceiling is then bounded by whatever is left of the current
-        turn (``clamp_to_turn_budget``). This is the single place a router-borne
-        call learns its timeout, so clamping here bounds EVERY LLM call made
-        while handling a turn — the investigation engine's retry ladder, but
-        equally intent classification and KB/document answer synthesis, which
-        have no ladder around them and could otherwise outlive the turn and
-        return the opaque 504 that #1278 is about.
-
-        Clamping the call's own timeout is also what keeps a cut-short call on
-        the RECORDED failure path: it expires inside ``call_external``, which
-        raises ``ExternalCallTimeout`` and records a circuit-breaker failure.
-        Wrapping the call in an outer ``wait_for`` instead cancels it, and a
-        ``CancelledError`` is a ``BaseException`` that none of that method's
-        handlers catch — so the breaker would never learn the provider is down
-        and the outage would repeat at full cost every turn.
-
-        Outside a turn (background jobs, the CLI, direct-call tests) the clamp
-        is inert and the resolved ceiling is returned unchanged.
+        Always positive when read: ``route`` refuses a call before it once the
+        spendable budget, which ends earlier, is spent.
         """
-        return clamp_to_turn_budget(resolve_request_timeout(get_settings()))
+        return backstop_turn_budget()
 
     @_opik_track_llm("llm_router_route")
     async def route(
@@ -732,6 +710,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 ).inc()
                 return cached_response
 
+        # A spent turn: no provider can be given an attempt, so none is called
+        # and nothing records a failure (#2983).
+        spendable = spendable_turn_budget()
+        if spendable is not None and spendable <= 0:
+            raise LLMTurnBudgetSpent()
+
         # Route through registry with BaseExternalClient wrapping
         request_started = time.monotonic()
         try:
@@ -761,7 +745,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 cache_prompt=cache_prompt,
                 reasoning_intent=reasoning_intent,
                 min_output_tokens=min_output_tokens,
-                timeout=self._resolve_timeout(),  # Provider-aware ceiling
+                timeout=self._resolve_timeout(),  # Later than every attempt's
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
             )
@@ -990,10 +974,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # refused (#1998). No error metric, no SLA failure, no "all
             # providers failed" — a refusal says nothing about any provider.
             raise
-        except CallShapeUnsupported:
+        except (CallShapeUnsupported, LLMTurnBudgetSpent):
             # Not a provider failure: no provider in the chain can carry this
-            # call's shape (#2016). The refusal surfaces itself, with no error
-            # metric or SLA failure.
+            # call's shape (#2016), or the turn was spent before one was tried
+            # (#2983). The refusal surfaces itself, with no error metric or
+            # SLA failure.
             raise
         except LLMOutputFloorError:
             # Not a provider failure — the provider answered; the answer is one

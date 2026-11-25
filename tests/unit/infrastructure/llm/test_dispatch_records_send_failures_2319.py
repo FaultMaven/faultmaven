@@ -50,8 +50,8 @@ class _Fails:
 
 
 async def test_a_send_cut_inside_wait_for_is_visible_to_the_binder():
-    """The router's ceiling is a ``wait_for``: the send runs in its child task,
-    on a copy of the context that holds the binder's one dict."""
+    """The ladder's backstop is a ``wait_for``: the send runs in its child
+    task, on a copy of the context that holds the binder's one dict."""
     failures = {}
     with collect_model_failures(failures):
         with pytest.raises(TimeoutError):

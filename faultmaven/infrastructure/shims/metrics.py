@@ -576,10 +576,11 @@ request_counter = Counter(
 #           its own declared budget, which is a different fault from latency
 #   300.0, 600.0 - up to MAX_AGENT_TIMEOUT_SECONDS, the product's maximum
 #           agent timeout; a local-model call under
-#           LLM_PROVIDER_TIMEOUT_OVERRIDES='{"ollama": 600}' lands here
-# One ladder for both request histograms (#1529). A routed LLM call's ceiling
-# is max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider]) clamped
-# to the turn's remainder (router._resolve_timeout); the request's is
+#           LLM_PROVIDER_TIMEOUT_OVERRIDES='{"local": 600}' lands here
+# One ladder for both request histograms (#1529). A routed LLM attempt's
+# ceiling is its provider's LLM_PROVIDER_TIMEOUT_OVERRIDES entry, else
+# LLM_REQUEST_TIMEOUT, clamped to the turn's remainder (registry.route_request,
+# #2983), and a call is the sum of its walk's attempts; the request's is
 # AGENT_REQUEST_TIMEOUT (default 120, max 600). `llm_request_duration_seconds`
 # records routed calls only (a dedicated DA_PROVIDER sends directly and is not
 # in the series). On prometheus_client's defaults a slow-but-succeeding
