@@ -339,7 +339,6 @@ async def test_a_refusal_is_not_stored_so_its_reissue_reaches_the_provider():
     registry = MagicMock()
     registry.get_available_providers.return_value = ["anthropic"]
     registry.get_fallback_chain.return_value = ["anthropic"]
-    registry.walk_timeout.return_value = 30.0
     registry.route_request = AsyncMock(
         side_effect=[_reply("I can't help.", stop=StopReason.CONTENT_FILTER), _answer()]
     )
@@ -484,7 +483,6 @@ async def test_a_reduced_response_is_not_stored():
     registry = MagicMock()
     registry.get_available_providers.return_value = ["anthropic"]
     registry.get_fallback_chain.return_value = ["anthropic"]
-    registry.walk_timeout.return_value = 30.0
     registry.route_request = AsyncMock(side_effect=[_answer(), _answer()])
     with patch(
         "faultmaven.infrastructure.llm.router.get_registry", return_value=registry

@@ -805,8 +805,8 @@ above is the schema key that IS read.
 
 **Timeout Configuration**: timeouts resolve in three layers, most-specific-wins:
 
-1. **Per-provider override** — `LLM_PROVIDER_TIMEOUT_OVERRIDES` (a JSON-shaped dict) lets slow providers carve out their own ceiling. The registry resolves it with `provider_client_timeout(llm_settings, name)`, so a provider not listed falls through to (2), then (3).
-2. **Provider schema default** — `schema["timeout"]` in `registry.py` (only `local` declares one: 60 s). Used when the provider has no override. `0` is treated as unset.
+1. **Per-provider override** — `LLM_PROVIDER_TIMEOUT_OVERRIDES` (a JSON-shaped dict) lets slow providers carve out their own ceiling. The registry calls `LLMSettings.timeout_for_provider(name)` so a provider not listed falls through to the global default.
+2. **Provider schema default** — `schema["timeout"]` in `registry.py` (set per provider when the schema is declared). Used when neither the env override nor a registry override is present. `0` is treated as unset (the registry uses `schema.get("timeout") or timeout_for_provider(name)`).
 3. **Global default** — `LLM_REQUEST_TIMEOUT` (defaults to 30s). Applied only when neither (1) nor (2) supplies a value.
 
 ```bash

@@ -355,8 +355,7 @@ weaker evidence the provider is down.
 | Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
 | Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder the breaker cuts, a mixed one included (a timeout, then slow 503s). A ladder of throttle 429s is not cut by the breaker (§1.1, #2793) and can pay the fourth attempt; `with_retry`'s turn-budget refusal stops that attempt when it would not fit, so the turn is never overrun |
 
-`T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`
-(local with no entry: its 60 s default).
+`T` is `max(LLM_REQUEST_TIMEOUT, LLM_PROVIDER_TIMEOUT_OVERRIDES[provider])`.
 The class is by kind, not by elapsed time: the handler has no `T` to compare an
 attempt against, so a non-504 5xx that arrives late keeps the full ladder. The
 floor is one retry, never zero (#1287). When the deadline cap stops a ladder the

@@ -712,7 +712,7 @@ async def test_what_a_provider_defines_besides_generate_changes_nothing_checked(
     """The #2015 round-3 replacements, at runtime: a subclass, a mixin, a
     ``partialmethod``, a ``__getattribute__`` redirect, an instance-dict store,
     a duck-typed class. Before its check the dispatch calls nothing on a
-    provider, and after it, on a call with no ``response_format``, nothing but
+    provider, and after it, on a call with no ``json_schema``, nothing but
     ``_generate``, so raw content is refused before every transport, and
     minted content reaches each one plain."""
     import functools

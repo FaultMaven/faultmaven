@@ -231,33 +231,33 @@ def _send_key(provider: Any, model: Any) -> str:
     return f"{label}/{model}" if type(model) is str and model else label
 
 
-#: The capabilities that carry no ``response_format``: the schema travels in
-#: the prompt or as a tool (``structured_output_capability``).
-_NO_RESPONSE_FORMAT = (
+#: The capabilities that take ``json_object`` in place of a strict schema.
+_BELOW_STRICT = (
+    StructuredOutputCapability.BEST_EFFORT,
     StructuredOutputCapability.FUNCTION_CALLING,
-    StructuredOutputCapability.NONE,
 )
 
 
 def _fit_to_provider(provider: Any, kwargs: Dict[str, Any]) -> None:
-    """Fit the call's ``response_format`` to what ``provider`` declares for its
+    """Fit a strict ``json_schema`` to what ``provider`` declares for its
     ``model`` (#2836): the router shapes it for the primary, and a fallback
     may declare less.
 
-    A strict ``json_schema`` becomes ``json_object`` for a BEST_EFFORT
-    provider; a ``response_format`` is dropped for a FUNCTION_CALLING or NONE
-    one. The strategies already put the schema in the prompt. A call shaped
-    for its own provider is unchanged. ``tools`` a provider cannot carry are
-    each transport's to fit or refuse (#2016).
+    Below STRICT it becomes ``json_object`` (BEST_EFFORT and FUNCTION_CALLING
+    alike), and NONE gets no ``response_format``; the STRICT strategy already
+    puts the schema in the prompt. A ``json_object`` is never changed, and a
+    call shaped for its own provider is unchanged. ``tools`` a provider cannot
+    carry are each transport's to fit or refuse (#2016).
     """
     response_format = kwargs.get("response_format")
-    kind = response_format.get("type") if type(response_format) is dict else None
-    if kind not in ("json_schema", "json_object"):
+    if type(response_format) is not dict:
+        return
+    if response_format.get("type") != "json_schema":
         return
     capability = provider.get_structured_output_capability(kwargs.get("model"))
-    if capability in _NO_RESPONSE_FORMAT:
+    if capability is StructuredOutputCapability.NONE:
         del kwargs["response_format"]
-    elif kind == "json_schema" and capability is StructuredOutputCapability.BEST_EFFORT:
+    elif capability in _BELOW_STRICT:
         kwargs["response_format"] = {"type": "json_object"}
 
 

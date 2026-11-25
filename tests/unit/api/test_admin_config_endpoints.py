@@ -190,7 +190,7 @@ def mock_settings():
     # than on what it is about. These are the shipped code
     # defaults, which is a FITTING configuration — 3x30 + 14 = 104s inside 120s.
     settings.llm.request_timeout = 30
-    settings.llm.provider_timeout_overrides = {}
+    settings.llm.timeout_for_provider.return_value = 30
     settings.agent.agent_request_timeout = 120
     settings.agent.timeout_for_provider.return_value = 120
     # The self-service sign-up bounds (#1320, #1324), reported as VALUES
@@ -1550,7 +1550,7 @@ class TestGetEnvConfigStatus:
         """
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
         mock_settings.llm.request_timeout = 30
-        mock_settings.llm.provider_timeout_overrides = {"anthropic": 120}
+        mock_settings.llm.timeout_for_provider.return_value = 120
         mock_settings.agent.timeout_for_provider.return_value = 240
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
@@ -1619,7 +1619,7 @@ class TestGetEnvConfigStatus:
         134s one does not, and the entry says so for each."""
         monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
         mock_settings.llm.request_timeout = 30
-        mock_settings.llm.provider_timeout_overrides = {"anthropic": 40}
+        mock_settings.llm.timeout_for_provider.return_value = 40
         mock_settings.agent.timeout_for_provider.return_value = 120
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
@@ -2920,7 +2920,7 @@ def _scenario_llm_retry_ladder_fits(settings, app, monkeypatch, reality):
     """
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT", raising=False)
     settings.llm.request_timeout = 30
-    settings.llm.provider_timeout_overrides = {"anthropic": 30 if reality else 120}
+    settings.llm.timeout_for_provider.return_value = 30 if reality else 120
     settings.agent.timeout_for_provider.return_value = 120 if reality else 240
 
 

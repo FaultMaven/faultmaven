@@ -1,35 +1,28 @@
-"""A call is fitted to the provider that serves it (#2836, #2983).
+"""A call is fitted to the provider that serves it (#2836).
 
-The router shapes a call and picks its ceiling before the registry picks the
-provider. The dispatch fits a ``response_format`` to the receiving provider's
-declared capability, Fireworks refuses the tools its denylisted models cannot
-carry, and the router's outer ceiling covers every provider the walk may try,
-each attempt bounded by its own client.
+The router shapes a call before the registry picks the provider. The dispatch
+fits a strict ``json_schema`` to the receiving provider's declared capability,
+and Fireworks refuses the tools its denylisted models cannot carry.
 """
 
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from faultmaven.config.settings import get_settings, reset_settings
-from faultmaven.core.investigation.turn_budget import (
-    bind_turn_deadline,
-    clamp_to_turn_budget,
-)
 from faultmaven.exceptions import CallShapeUnsupported, LLMException
 from faultmaven.infrastructure.llm.dispatch import send_to_model
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ProviderConfig
 from faultmaven.infrastructure.llm.providers.fireworks_provider import (
     FireworksProvider,
 )
+from faultmaven.infrastructure.llm.providers.openrouter_provider import (
+    OpenRouterProvider,
+)
 from faultmaven.infrastructure.llm.providers.registry import (
     ProviderRegistry,
     ProviderState,
-    reset_registry,
 )
-from faultmaven.infrastructure.llm.router import LLMRouter, resolve_request_timeout
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability as Cap,
 )
@@ -61,9 +54,9 @@ class _Stub:
 
     LABEL = "stub"
 
-    def __init__(self, capability, timeout=30, failure=None):
+    def __init__(self, capability, failure=None):
         self.capability = capability
-        self.config = SimpleNamespace(timeout=timeout, default_model="m")
+        self.config = SimpleNamespace(default_model="m")
         self.asked = []
         self._generate = AsyncMock(
             side_effect=failure, return_value=_response(type(self).LABEL)
@@ -82,21 +75,21 @@ def _sent_format(stub):
     return stub._generate.await_args.kwargs.get("response_format", "<absent>")
 
 
-# --- the dispatch fits the response_format to the provider -------------------
+# --- the dispatch fits a strict json_schema to the provider -----------------
 
 
 @pytest.mark.parametrize(
     "capability,sent,expected",
     [
         (Cap.BEST_EFFORT, STRICT_SCHEMA, JSON_OBJECT),
-        (Cap.FUNCTION_CALLING, STRICT_SCHEMA, "<absent>"),
+        (Cap.FUNCTION_CALLING, STRICT_SCHEMA, JSON_OBJECT),
         (Cap.NONE, STRICT_SCHEMA, "<absent>"),
-        (Cap.FUNCTION_CALLING, JSON_OBJECT, "<absent>"),
-        (Cap.NONE, JSON_OBJECT, "<absent>"),
-        # Shaped for its own provider: unchanged.
+        # Unchanged: a strict schema to STRICT, and a json_object anywhere.
         (Cap.STRICT, STRICT_SCHEMA, STRICT_SCHEMA),
-        (Cap.BEST_EFFORT, JSON_OBJECT, JSON_OBJECT),
         (Cap.STRICT, JSON_OBJECT, JSON_OBJECT),
+        (Cap.BEST_EFFORT, JSON_OBJECT, JSON_OBJECT),
+        (Cap.FUNCTION_CALLING, JSON_OBJECT, JSON_OBJECT),
+        (Cap.NONE, JSON_OBJECT, JSON_OBJECT),
     ],
     ids=lambda v: getattr(v, "name", None) or (v if isinstance(v, str) else None),
 )
@@ -213,103 +206,38 @@ async def test_a_refused_tool_shape_is_skipped_without_a_health_failure(
     assert registry._provider_states["fireworks"].consecutive_failures == 0
 
 
-# --- the walk's ceiling (#2983) ----------------------------------------------
+# --- OpenRouter: the routed model decides -----------------------------------
 
 
-def _router_over(monkeypatch, registry):
-    monkeypatch.setattr(
-        "faultmaven.infrastructure.llm.router.get_registry", lambda: registry
+_OPENROUTER_REPLY = {
+    "choices": [{"message": {"role": "assistant", "content": "{}"}}],
+    "usage": {"total_tokens": 2},
+}
+
+
+@pytest.mark.parametrize(
+    "model,expected",
+    [
+        # FUNCTION_CALLING: JSON mode, no strict schema.
+        ("anthropic/claude-sonnet-4-6", JSON_OBJECT),
+        # STRICT: the schema passes through.
+        ("openai/gpt-5", STRICT_SCHEMA),
+    ],
+)
+async def test_openrouter_receives_the_shape_its_route_declares(
+    mock_aiohttp_session, model, expected
+):
+    provider = OpenRouterProvider(
+        ProviderConfig(
+            name="openrouter",
+            api_key="test-key-not-real",
+            base_url="https://openrouter.ai/api/v1",
+            models=[model],
+            default_model=model,
+        )
     )
-    router = LLMRouter()
-    seen = []
-    real = router.call_external
+    session = mock_aiohttp_session(_OPENROUTER_REPLY)
+    with patch("aiohttp.ClientSession", return_value=session):
+        await send_to_model(provider, prompt=vetted("q"), response_format=STRICT_SCHEMA)
 
-    async def recording(*args, **kwargs):
-        seen.append(kwargs["timeout"])
-        return await real(*args, **kwargs)
-
-    monkeypatch.setattr(router, "call_external", recording)
-    return router, seen
-
-
-def _failing_primary():
-    return _stub(
-        "primary", Cap.STRICT, timeout=30, failure=LLMException("down", status_code=503)
-    )
-
-
-async def test_the_walk_admits_the_fallbacks_own_ceiling(monkeypatch):
-    fallback = _stub("fallback", Cap.STRICT, timeout=300)
-    router, seen = _router_over(monkeypatch, _registry(_failing_primary(), fallback))
-
-    await router.route(prompt=vetted("q"), bypass_cache=True)
-
-    assert seen == [330.0]
-    fallback._generate.assert_awaited_once()
-
-
-async def test_inside_a_turn_the_budget_still_bounds_the_walk(monkeypatch):
-    fallback = _stub("fallback", Cap.STRICT, timeout=300)
-    router, seen = _router_over(monkeypatch, _registry(_failing_primary(), fallback))
-
-    with bind_turn_deadline(60.0):
-        bound = clamp_to_turn_budget(330.0)
-        await router.route(prompt=vetted("q"), bypass_cache=True)
-
-    assert seen[0] == pytest.approx(bound, abs=0.05)
-    assert seen[0] < 60.0
-
-
-def _configured_ceiling() -> int:
-    """The CHAT provider's ceiling, which its client is built with."""
-    return int(resolve_request_timeout(get_settings()))
-
-
-async def test_a_one_provider_chain_is_unchanged(monkeypatch):
-    only = _stub("only", Cap.STRICT, timeout=_configured_ceiling())
-    router, seen = _router_over(monkeypatch, _registry(only))
-
-    await router.route(prompt=vetted("q"), response_format=STRICT_SCHEMA)
-
-    assert seen == [float(_configured_ceiling())]
-    assert _sent_format(only) == STRICT_SCHEMA
-
-
-async def test_a_provider_override_runs_under_its_ceiling_alone(monkeypatch):
-    fallback = _stub("fallback", Cap.STRICT, timeout=300)
-    primary = _stub("primary", Cap.STRICT, timeout=_configured_ceiling())
-    router, seen = _router_over(monkeypatch, _registry(primary, fallback))
-
-    await router.route(prompt=vetted("q"), provider_override="primary")
-
-    assert seen == [float(_configured_ceiling())]
-    fallback._generate.assert_not_called()
-
-
-# --- the configured figure follows the client (#2983) ------------------------
-
-
-@pytest.fixture
-def local_settings(monkeypatch):
-    monkeypatch.setenv("CHAT_PROVIDER", "local")
-    monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "30")
-    monkeypatch.setenv("LLM_PROVIDER_TIMEOUT_OVERRIDES", json.dumps({}))
-    reset_settings()
-    reset_registry()
-    yield monkeypatch
-    monkeypatch.undo()
-    reset_settings()
-    reset_registry()
-
-
-def test_the_reported_ceiling_is_locals_client_default(local_settings):
-    """``GET /admin/config/status`` models one attempt at this figure: with no
-    override, local's client runs 60 s, so the report says 60, not 30."""
-    assert resolve_request_timeout(get_settings()) == 60.0
-
-
-def test_the_reported_ceiling_is_locals_override(local_settings):
-    local_settings.setenv("LLM_PROVIDER_TIMEOUT_OVERRIDES", json.dumps({"local": 240}))
-    reset_settings()
-
-    assert resolve_request_timeout(get_settings()) == 240.0
+    assert session.post.call_args.kwargs["json"]["response_format"] == expected

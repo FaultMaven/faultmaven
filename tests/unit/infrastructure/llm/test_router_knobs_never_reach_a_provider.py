@@ -629,6 +629,7 @@ async def test_routed_call_sends_no_unset_value(mock_aiohttp_session, label, sha
 _JSON_OBJECT_IS_SENT_AS = {
     "fireworks": lambda b: b["response_format"] == _JSON_OBJECT,
     "openai": lambda b: b["response_format"] == _JSON_OBJECT,
+    "openrouter": lambda b: b["response_format"] == _JSON_OBJECT,
     "azure": lambda b: b["response_format"] == _JSON_OBJECT,
     "groq": lambda b: b["response_format"] == _JSON_OBJECT,
     "cohere": lambda b: b["response_format"] == _JSON_OBJECT,
@@ -641,9 +642,6 @@ _JSON_OBJECT_IS_SENT_AS = {
     ),
     # The Messages API has no such field; nothing to carry.
     "anthropic": None,
-    # Its default route declares FUNCTION_CALLING, so the dispatch drops a
-    # ``json_object`` before the send (#2836).
-    "openrouter": None,
 }
 
 

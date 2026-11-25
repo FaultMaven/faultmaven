@@ -49,7 +49,7 @@ from .cache import LLMResponseCache
 from .dispatch import model_call_violations, refuse
 from .prompt_cache import CACHE_BOUNDARY
 from .providers import LLMResponse, ReasoningIntent, StopReason
-from .providers.registry import get_registry, provider_client_timeout
+from .providers.registry import get_registry
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
 
@@ -327,18 +327,18 @@ def resolve_chat_provider_name(settings) -> Optional[str]:
 
 
 def resolve_request_timeout(settings) -> float:
-    """One attempt's ``T`` on the configured CHAT_PROVIDER: its client timeout
-    (``provider_client_timeout``), never below ``LLM_REQUEST_TIMEOUT``.
+    """The per-request LLM timeout the active provider would be called with.
 
-    ``GET /admin/config/status`` reads it to say whether the retry ladder fits
-    inside the turn deadline, ``LLMRouter.request_timeout`` (the routing health
-    report's figure) reports it, and ``LLMRouter._resolve_timeout`` falls back
-    to it when no provider is routable. One rule over one settings object, so
-    they agree after a config reload (#2320).
+    The one statement of the rule: ``LLMRouter._resolve_timeout`` clamps this,
+    read from the live settings, to the turn, and ``LLMRouter.request_timeout``
+    (the routing health report's figure) is it unclamped; the configuration
+    report on ``GET /admin/config/status`` reads it to say whether the retry
+    ladder fits inside the turn deadline. One rule over one settings object, so
+    the three agree after a config reload (#2320).
     """
     base = float(os.getenv("LLM_REQUEST_TIMEOUT", str(settings.llm.request_timeout)))
-    client = provider_client_timeout(settings.llm, resolve_chat_provider_name(settings))
-    return float(max(client, base))
+    override = settings.llm.timeout_for_provider(resolve_chat_provider_name(settings))
+    return float(max(override, base))
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):
@@ -385,11 +385,11 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
     @property
     def request_timeout(self) -> float:
-        """One attempt's ceiling on the configured CHAT_PROVIDER, live.
+        """The per-call ceiling outside a turn, from the live settings.
 
-        ``resolve_request_timeout(get_settings())``: what
-        ``GET /admin/config/status`` models, so the routing health report that
-        shows it agrees with it (#2320).
+        ``resolve_request_timeout(get_settings())``: what ``_resolve_timeout``
+        clamps, and what ``GET /admin/config/status`` models, so the routing
+        health report that shows it agrees with both (#2320).
         """
         return resolve_request_timeout(get_settings())
 
@@ -442,16 +442,20 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """Always fetch the current global registry so hot-reloads take effect."""
         return get_registry()
 
-    def _resolve_timeout(self, provider_override: Optional[str] = None) -> float:
-        """Return the ceiling of one routed call's walk, clamped to the turn.
+    def _resolve_timeout(self) -> float:
+        """Return the request timeout for the configured primary provider.
 
-        ``registry.walk_timeout``: the sum of the client timeouts of the
-        providers the walk may try (``provider_override``'s alone when it is
-        initialized), each attempt bounded by its own client, so a fallback
-        runs under its own ceiling, never the primary's (#2983). With no
-        routable provider, ``resolve_request_timeout`` over the live settings.
-        Read per call from the live registry, so a config reload moves it
-        (#2320); for a one-provider chain it is that provider's client timeout.
+        ``resolve_request_timeout`` over the live settings, clamped to the
+        turn: the configured CHAT_PROVIDER's override from
+        ``LLMSettings.provider_timeout_overrides``, never below
+        ``LLM_REQUEST_TIMEOUT`` (else ``LLMSettings.request_timeout``). Read
+        per call, so a config reload that switches the primary provider moves
+        it, and outside a turn it is the figure ``GET /admin/config/status``
+        reports (#2320).
+
+        It follows the configured CHAT_PROVIDER, not the provider the registry
+        reaches: a call the registry routes to another provider still runs
+        under this one's ceiling (#2983).
 
         Provider-aware timeouts let slow models (Fireworks DeepSeek V4 Pro,
         local Ollama on CPU) exceed the global 30-90s ceiling without
@@ -476,8 +480,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         Outside a turn (background jobs, the CLI, direct-call tests) the clamp
         is inert and the resolved ceiling is returned unchanged.
         """
-        walk = self.registry.walk_timeout(provider_override)
-        return clamp_to_turn_budget(walk or resolve_request_timeout(get_settings()))
+        return clamp_to_turn_budget(resolve_request_timeout(get_settings()))
 
     @_opik_track_llm("llm_router_route")
     async def route(
@@ -757,7 +760,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 cache_prompt=cache_prompt,
                 reasoning_intent=reasoning_intent,
                 min_output_tokens=min_output_tokens,
-                timeout=self._resolve_timeout(provider_override),
+                timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
             )
