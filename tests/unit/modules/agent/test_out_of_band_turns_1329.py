@@ -135,6 +135,7 @@ def engine():
         intent_data=None,
         user_id=None,
         redaction_ctx=None,
+        typed_message=None,
     ):
         case.updated_at = datetime.now(timezone.utc)
         return {

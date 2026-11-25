@@ -816,6 +816,7 @@ async def _at_the_boundary(service, case, proposal_id):
     return await service._handle_status_transition(
         case=case,
         user_message="Mark this case resolved.",
+        typed_message="",
         from_state=case.state.value,
         to_state="resolved",
         user_confirmed=False,

@@ -151,6 +151,7 @@ class MockMilestoneEngine:
         user_id: Optional[str] = None,
         typed: bool = False,
         redaction_ctx=None,
+        typed_message: Optional[str] = None,
     ) -> dict[str, Any]:
         """Mock turn processing.
 
