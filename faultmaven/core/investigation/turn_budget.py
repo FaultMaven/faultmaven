@@ -411,8 +411,9 @@ def worst_case_ladder_plan(
     before the attempt the breaker refuses. A deadline-shaped failure's ladder
     (``max_deadline_retries=1``, #1294) is 2 paid attempts and one backoff,
     ``2T + 2``. That counts the attempts of a ladder the breaker cuts: a
-    ladder with a throttle 429 in it (#2793), which the breaker does not count,
-    can send one more, refused by the turn budget when it would not fit.
+    ladder with a throttle 429 (#2793) or a caller remedy (#2858) in it, which
+    the breaker does not count, can send one more, refused by the turn budget
+    when it would not fit.
     Callers pass both numbers rather than having them assumed here,
     so the coupling to the breaker threshold is visible at the call site
     instead of hidden in this arithmetic (``config/retry_budget``).

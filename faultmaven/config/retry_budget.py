@@ -48,10 +48,11 @@ class RetryLadderBudget:
     """Both ladders the engine runs, each modelled against one turn (#1294):
     a hung or 504-answering provider's (``2T + 2`` shipped), and a non-504
     5xx's priced at the full ``T`` per attempt (``3T + 14``, which bounds every
-    ladder the breaker cuts, a mixed one included). A ladder of throttle 429s
-    is not cut by the breaker (#2793) and can pay one more attempt;
-    ``with_retry``'s turn-budget refusal stops that attempt when it would not
-    fit, so the turn is never overrun."""
+    ladder the breaker cuts, a mix of counted failures included). A ladder with
+    a throttle 429 (#2793) or a caller remedy (#2858) in it is not cut by the
+    breaker at three and can pay one more attempt; ``with_retry``'s turn-budget
+    refusal stops that attempt when it would not fit, so the turn is never
+    overrun."""
 
     deadline_shaped: "LadderPlan"
     status_shaped: "LadderPlan"
@@ -77,9 +78,10 @@ def model_retry_ladders(
     so the status-shaped ladder pays 3 attempts and all three backoffs
     (``3T + 14``), while the deadline-shaped one stops at its own cap, under the
     breaker (``2T + 2``). That prices the failures the breaker counts. A ladder
-    of throttle 429s is not cut by the breaker (#2793) and can pay one more
-    attempt, which ``with_retry``'s turn-budget refusal stops when it would not
-    fit, so the turn is never overrun.
+    with a throttle 429 (#2793) or a caller remedy (#2858) in it is not cut by
+    the breaker at three and can pay one more attempt, which ``with_retry``'s
+    turn-budget refusal stops when it would not fit, so the turn is never
+    overrun.
     """
     from faultmaven.core.investigation.llm_error_handler import (
         LLMErrorHandler,
