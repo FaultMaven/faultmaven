@@ -721,8 +721,9 @@ class InvestigationService:
         ``receipt_key`` is a keyed turn's request identity (#1888). It becomes
         the turn's ``TurnReceipt`` here, from the response built before the
         commit, and rides the plan into the same transaction as the case: the
-        receipt exists exactly when the turn committed, and holds exactly what
-        the client is sent.
+        receipt exists exactly when the turn committed, and holds the response
+        ungated: the route gates its ``sources`` per requester on every reply
+        (#1919, #2824).
 
         Before the commit starts: if the turn's deadline leaves less than
         ``TURN_COMMIT_RESERVE_SECONDS``, ``TurnDeadlineExceeded`` is raised and

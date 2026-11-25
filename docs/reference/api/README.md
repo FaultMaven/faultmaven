@@ -2529,7 +2529,8 @@ commits a receipt with the turn, in the same transaction. A request with a
 key this caller already used on this case:
 
 - for the same turn (same fields, same file content), once it committed →
-  **200** with that turn's response, unchanged, and
+  **200** with that turn's response, unchanged but for `sources`, gated
+  for this caller as a live answer's are, and
   `X-Idempotency-Replayed: true`. Nothing runs and nothing is charged.
 - for a different turn → **409** `x-error-code: IDEMPOTENCY_KEY_REUSE`.
 - while the first is still running → **409** `x-error-code:

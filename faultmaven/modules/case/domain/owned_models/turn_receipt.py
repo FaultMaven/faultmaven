@@ -56,8 +56,10 @@ class TurnReceipt(BaseModel):
     when a commit's outcome is being probed."""
 
     response: Dict[str, Any]
-    """``TurnResponse.model_dump(mode="json")``: exactly what the client was
-    sent for this turn."""
+    """``TurnResponse.model_dump(mode="json")`` as the turn built it: UNGATED,
+    before the per-viewer source gate. Every reply built from it (a replay, a
+    receipt race) is gated for its requester then, so it is never gated twice
+    (#1919, #2824)."""
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
