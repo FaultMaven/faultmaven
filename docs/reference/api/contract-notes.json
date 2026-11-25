@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.18.0",
+  "contractVersion": "16.0.0",
   "entries": [
+    {
+      "body": "`CaseUpdateRequest` loses `state` and refuses undeclared fields. Before, a\n`state` the case's validators admitted (INVESTIGATING back to INQUIRY, the\nsame state) was written raw, past the investigation's own transitions, and one\nthey refused (a terminal state, INVESTIGATING before Gate 1) answered 500\n`UPDATE_CASE_ERROR`. A title in the same body is refused with it, not\napplied. State moves through the investigation; a case\nis closed with `POST /cases/{case_id}/close`.\n\nThe 422 is the shared validation shape, `{\"detail\": \"Validation error\",\n\"errors\": [...]}`, with `type` `extra_forbidden` at `loc` `[\"body\", \"state\"]`\nand the value withheld from `input`. Body validation runs before the case is\nread, so a body carrying an undeclared field answers 422 where a caller who\ncannot read the case got 404 `CASE_NOT_FOUND`, a reader who does not drive it\n403 `CASE_NOT_DRIVER`, and a resolved or closed case 409 `CASE_TERMINAL`; a\nbody without one gets those answers unchanged.\n\nMAJOR: a request field removed. No first-party client sends it.",
+      "level": "MAJOR",
+      "title": "`PUT /cases/{case_id}` changes the title or description only: a body carrying `state`, or any other field it does not declare, answers **422** and changes nothing (#2823).",
+      "version": "16.0.0"
+    },
     {
       "body": "Says who wrote `query`: the user typed it into the message box\n(`typed`), the user chose it, a chip or a status change (`chosen`), or the\nclient wrote it (`generated`, such as a sentence composed for a paste sent\nwith an empty box). Absent or empty, it is `typed`; any other value is a 422.\n\nOnly a `typed` query is searched for system output to offer back as data (the\n\"Yes, save it as data\" choice). The server's own composed query on a turn\ncarrying only data is no longer searched either, so such a turn offers no\nblock even from a client that does not send the field. The \"Submit the output\"\nrequest for a reported state is unchanged by this version.\n\nUnder an `Idempotency-Key`, a retry whose `query_source` differs is a\ndifferent turn (409 `IDEMPOTENCY_KEY_REUSE`).\n\nMINOR: an optional request field.",
       "level": "MINOR",

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 15.18.0
+**Version:** 16.0.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -1752,10 +1752,12 @@ read-only and read it again until it is gone (404) or `deleting` clears
 
 Update case details
 
-Updates case metadata such as title, description, state, priority, and tags.
-Only the case's DRIVER may update it (ADR-020 D2): a reader who does not
-drive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404
-``CASE_NOT_FOUND`` (#2806).
+Updates the case's title or description. Any other field, ``state``
+included, is refused with 422 before the case is read; a case is closed
+through ``POST /cases/{case_id}/close`` (#2823). Only the case's DRIVER
+may update it (ADR-020 D2): a reader who does not drive it gets 403
+``CASE_NOT_DRIVER``, a caller who cannot read it 404 ``CASE_NOT_FOUND``
+(#2806).
 
 **Tags:** `cases`
 
@@ -5474,12 +5476,14 @@ Different from ``valid_next_states`` — that field is which actions the user ma
 
 ### CaseUpdateRequest
 
-Request to update an existing case.
+Request to update an existing case's title or description.
+
+Any other field, ``state`` included, is refused with 422: state moves
+through the investigation and ``POST /cases/{case_id}/close`` (#2823).
 
 **Properties:**
 
 - `description` (object, optional) — Updated description
-- `state` (object, optional) — Updated state (admin only)
 - `title` (object, optional) — Updated title
 
 ---

@@ -49,7 +49,7 @@ from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
     RedisSessionStore,
 )
 from faultmaven.modules.case.api.routes.cases import delete_case, get_case
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case
 from faultmaven.modules.case.domain.services.case_erasure import (
     SessionPointerEraser,
     UnavailableStoreEraser,
@@ -65,6 +65,7 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 from faultmaven.modules.knowledge.domain.services.conversion_service.case_erasure import (
     RunbookConversionEraser,
 )
+from tests.case_builders import investigating_case
 from tests.chroma_clients import closed_at_teardown
 
 pytestmark = [pytest.mark.unit]
@@ -235,10 +236,13 @@ async def test_a_save_after_the_delete_is_refused_in_memory():
 
 
 async def test_an_update_that_loses_the_race_with_a_delete_is_not_found():
-    """``update_case``'s retry reloads and finds no row (test 11): the answer
-    an absent case gets (the case's ``NotFoundError``, the route's 404
-    ``CASE_NOT_FOUND``, #2806), not a 500."""
+    """``update_case``'s retry (a statement edit) reloads and finds no row
+    (test 11): the answer an absent case gets (the case's ``NotFoundError``,
+    the route's 404 ``CASE_NOT_FOUND``, #2806), not a 500."""
     w = await _world()
+    case = await w.repository.save(
+        investigating_case(user_id=CREATOR, enterprise_id=ENTERPRISE, title="Disk")
+    )
     real_get = w.repository.get
     calls = 0
 
@@ -249,9 +253,7 @@ async def test_an_update_that_loses_the_race_with_a_delete_is_not_found():
 
     w.repository.get = get_then_vanish
     with pytest.raises(NotFoundError) as absent:
-        await w.service.update_case(
-            w.case.case_id, {"state": CaseState.INVESTIGATING.value}, CREATOR
-        )
+        await w.service.update_case(case.case_id, {"description": "disk full"}, CREATOR)
     assert absent.value.resource_type == "Case"
 
 

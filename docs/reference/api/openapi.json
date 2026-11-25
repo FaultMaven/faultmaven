@@ -2679,7 +2679,8 @@
         "type": "object"
       },
       "CaseUpdateRequest": {
-        "description": "Request to update an existing case.",
+        "additionalProperties": false,
+        "description": "Request to update an existing case's title or description.\n\nAny other field, ``state`` included, is refused with 422: state moves\nthrough the investigation and ``POST /cases/{case_id}/close`` (#2823).",
         "properties": {
           "description": {
             "anyOf": [
@@ -2693,17 +2694,6 @@
             ],
             "description": "Updated description",
             "title": "Description"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CaseState"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Updated state (admin only)"
           },
           "title": {
             "anyOf": [
@@ -8089,7 +8079,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "15.18.0"
+    "version": "16.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -11219,7 +11209,7 @@
         ]
       },
       "put": {
-        "description": "Update case details\n\nUpdates case metadata such as title, description, state, priority, and tags.\nOnly the case's DRIVER may update it (ADR-020 D2): a reader who does not\ndrive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404\n``CASE_NOT_FOUND`` (#2806).",
+        "description": "Update case details\n\nUpdates the case's title or description. Any other field, ``state``\nincluded, is refused with 422 before the case is read; a case is closed\nthrough ``POST /cases/{case_id}/close`` (#2823). Only the case's DRIVER\nmay update it (ADR-020 D2): a reader who does not drive it gets 403\n``CASE_NOT_DRIVER``, a caller who cannot read it 404 ``CASE_NOT_FOUND``\n(#2806).",
         "operationId": "update_case_api_v1_cases__case_id__put",
         "parameters": [
           {

@@ -2,7 +2,7 @@
 
 import pathlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -310,31 +310,23 @@ class TestUpdateCase:
         mock_repo.save.assert_not_awaited()
         mock_repo.save_progress.assert_not_awaited()
 
-    @staticmethod
-    def _make_closed_case():
-        """Build a CLOSED case with all closure-required fields set.
-
-        Pydantic cross-field validators require CLOSED status to carry
-        ``closed_at`` and ``closure_reason``. We bypass them via
-        ``object.__setattr__`` for test setup.
-        """
-        case = _make_case()
-        future = datetime.now(timezone.utc) + timedelta(seconds=1)
-        object.__setattr__(case, "state", CaseState.CLOSED)
-        object.__setattr__(case, "closed_at", future)
-        object.__setattr__(case, "closure_reason", "inquiry_only")
-        return case
-
     @pytest.mark.asyncio
-    async def test_state_updates_go_through_versioned_save(self, service, mock_repo):
-        """Status / closure_reason still use the versioned save with OCC retry."""
-        mock_repo.get.return_value = self._make_closed_case()
-        result = await service.update_case(
-            "case_abc123abc123",
+    @pytest.mark.parametrize(
+        "updates",
+        [
             {"closure_reason": "mitigation_sufficient"},
-        )
-        assert result is True
-        mock_repo.save.assert_awaited()
+            {"title": "New", "closure_reason": "mitigation_sufficient"},
+        ],
+    )
+    async def test_a_state_field_is_refused_before_any_read(
+        self, service, mock_repo, updates
+    ):
+        """Only title and description are written (#2823): any other key is
+        refused before the case is read, a title beside it included."""
+        with pytest.raises(ValidationException, match="closure_reason"):
+            await service.update_case("case_abc123abc123", updates)
+        mock_repo.get.assert_not_awaited()
+        mock_repo.save.assert_not_awaited()
         mock_repo.update_metadata_fields.assert_not_awaited()
 
     @staticmethod
@@ -383,18 +375,6 @@ class TestUpdateCase:
         with pytest.raises(ValidationException, match="cannot be empty"):
             await service.update_case("case_abc123abc123", {"description": "  "})
         mock_repo.save.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_mixed_updates_use_versioned_save(self, service, mock_repo):
-        """If any state field is present, the whole update is versioned."""
-        mock_repo.get.return_value = self._make_closed_case()
-        result = await service.update_case(
-            "case_abc123abc123",
-            {"title": "New", "closure_reason": "mitigation_sufficient"},
-        )
-        assert result is True
-        mock_repo.save.assert_awaited()
-        mock_repo.update_metadata_fields.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejects_empty_case_id(self, service):

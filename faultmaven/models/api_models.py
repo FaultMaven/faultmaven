@@ -118,7 +118,13 @@ class CaseCreateRequest(BaseModel):
 
 
 class CaseUpdateRequest(BaseModel):
-    """Request to update an existing case."""
+    """Request to update an existing case's title or description.
+
+    Any other field, ``state`` included, is refused with 422: state moves
+    through the investigation and ``POST /cases/{case_id}/close`` (#2823).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     title: Optional[str] = Field(
         default=None, description="Updated title", max_length=200
@@ -126,10 +132,6 @@ class CaseUpdateRequest(BaseModel):
 
     description: Optional[str] = Field(
         default=None, description="Updated description", max_length=2000
-    )
-
-    state: Optional[CaseState] = Field(
-        default=None, description="Updated state (admin only)"
     )
 
 
