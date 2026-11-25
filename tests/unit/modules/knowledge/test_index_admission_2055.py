@@ -142,9 +142,9 @@ async def world(monkeypatch, clock):
     monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 0)
     yield SimpleNamespace(encodes=encodes, tokens=tokens)
     encodes.release.set()
-    for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
-        # Bounded: a slot left blocked fails the teardown, not the run.
-        await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 30)
+    # Bounded: an order left blocked fails the teardown, not the run.
+    done = index_slot._EXECUTOR.submit(lambda: None)
+    await asyncio.wait_for(asyncio.wrap_future(done), 30)
     assert index_admission.queued() == 0, "a KB ticket leaked"
     assert index_slot.evidence_slot.queued() == 0, "an evidence ticket leaked"
 
@@ -379,7 +379,7 @@ class TestUpload:
 
         assert (await _counts(session_factory))["knowledge_items"] == 1
         assert result["status"] == "completed"
-        assert [thread for _, thread in world.encodes.calls] == ["kb-index_0"]
+        assert [thread for _, thread in world.encodes.calls] == ["index-encode_0"]
         service._vector_store.add_documents.assert_awaited_once()
         assert index_admission.queued() == 0
 
@@ -715,7 +715,7 @@ async def test_the_boot_repair_encodes_on_the_slot_after_an_upload(
     await upload
     assert (await repair)[ITEM] > 0
 
-    assert [thread for _, thread in world.encodes.calls] == ["kb-index_0"] * 2
+    assert [thread for _, thread in world.encodes.calls] == ["index-encode_0"] * 2
     assert world.encodes.most_active == 1
 
 

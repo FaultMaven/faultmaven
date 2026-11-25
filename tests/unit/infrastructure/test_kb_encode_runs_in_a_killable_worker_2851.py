@@ -101,8 +101,8 @@ async def settled():
     """The slots settle before the next test: bounded, so a slot left blocked
     fails the teardown, not the run."""
     yield
-    for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
-        await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 60)
+    done = index_slot._EXECUTOR.submit(lambda: None)
+    await asyncio.wait_for(asyncio.wrap_future(done), 60)
     assert index_slot.index_admission.queued() == 0, "a KB ticket leaked"
 
 

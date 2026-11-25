@@ -5868,7 +5868,7 @@ Response model for knowledge base document operations.
 
 ### KnowledgeIndexingStatus
 
-The KB indexing window and this process's indexing slot (#2055).
+The KB indexing window and this process's encode order (#2055, #2920).
 
 Numbers, so not a ``features`` entry. A KB encode that never returns is
 killed at its time bound, and the slot frees once its worker is reaped
@@ -5878,10 +5878,10 @@ document's estimate is that state.
 
 **Properties:**
 
-- `encoding_for_seconds` (object, required) — How long this process's running KB indexing encode has run; null when none runs.
-- `host_lock_available` (boolean, required) — False while this process's latest attempt to open or lock the host lock file failed: its KB encodes then run without serialising against the other worker processes of the container.
-- `queued` (integer, required) — KB indexing encodes held in this process: the running one and the ones waiting their turn.
-- `waiting_for_host_lock` (boolean, required) — True while this process's indexing slot is blocked on the host lock, behind another worker process's encode.
+- `encoding_for_seconds` (object, required) — How long this process's running encode, KB indexing or case evidence, has run; null when none runs.
+- `host_lock_available` (boolean, required) — False while this process's latest attempt to open or lock the host lock file failed: its encodes, KB and evidence, then run without serialising against the other worker processes of the container.
+- `queued` (integer, required) — Encodes held in this process's one order, KB indexing and case evidence alike: the running one and the ones waiting their turn.
+- `waiting_for_host_lock` (boolean, required) — True while this process's encode order (KB and evidence) is blocked on the host lock, behind another worker process's encode.
 - `window_seconds` (integer, required) — INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document that would not fit is refused before anything is written (413 alone, 503 behind other indexing); 0 refuses nothing up front.
 
 ---

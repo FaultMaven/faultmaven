@@ -88,9 +88,9 @@ async def hang():
         entered=entered,
     )
     release.set()
-    for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
-        # Bounded: a slot left blocked fails the teardown, not the run.
-        await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 30)
+    # Bounded: an order left blocked fails the teardown, not the run.
+    done = index_slot._EXECUTOR.submit(lambda: None)
+    await asyncio.wait_for(asyncio.wrap_future(done), 30)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ async def test_a_healthy_embed_returns_its_vectors_from_the_evidence_slot(monkey
     vectors = await embed_texts_or_raise(["chunk"], subject="Indexing", operation="t")
 
     assert vectors == [[0.1] * 1024]
-    assert threads == ["evidence-index_0"]
+    assert threads == ["index-encode_0"]
 
 
 async def test_a_slow_but_progressing_embed_is_not_cut_off(

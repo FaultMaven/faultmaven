@@ -101,8 +101,9 @@ def database_timeouts_status(
 
 
 def knowledge_indexing_status(window_seconds: int) -> KnowledgeIndexingStatus:
-    """The KB indexing window beside this process's slot (#2055): what it
-    holds, how long the running job has run, and its host lock."""
+    """The KB indexing window beside this process's one encode order (#2055,
+    #2920): what both slots hold, how long the running job has run, and the
+    host lock."""
     slot = index_slot.index_admission
     return KnowledgeIndexingStatus(
         window_seconds=window_seconds,

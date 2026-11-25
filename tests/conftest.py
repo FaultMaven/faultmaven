@@ -828,12 +828,16 @@ def _own_kb_index_host_lock(_kb_index_lock_dir, monkeypatch):
     The slot ``flock``s ``tempfile.gettempdir()``'s lock, which every xdist
     worker, every other pytest run and any local API process on the box share:
     one holding it fails another's encode deterministically. ``index_slot``
-    imports neither torch nor sentence_transformers.
+    imports neither torch nor sentence_transformers. And its own encode order
+    (#2920): the tickets and the host lock's state are the process's, shared by
+    every slot, so a ticket one test leaves never charges the next.
     """
     from faultmaven.infrastructure import index_slot
 
     path = _kb_index_lock_dir / f"{next(_KB_INDEX_LOCK_IDS)}.lock"
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(path))
+    monkeypatch.setattr(index_slot.EncodeSlot, "_tickets", [])
+    monkeypatch.setattr(index_slot.EncodeSlot, "host_lock_available", True)
 
 
 #: The model workers no test spawns for real (#2851): ``REAL_MODEL_WORKERS``.

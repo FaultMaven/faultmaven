@@ -695,7 +695,7 @@ class DatabaseTimeoutsStatus(BaseModel):
 
 
 class KnowledgeIndexingStatus(BaseModel):
-    """The KB indexing window and this process's indexing slot (#2055).
+    """The KB indexing window and this process's encode order (#2055, #2920).
 
     Numbers, so not a ``features`` entry. A KB encode that never returns is
     killed at its time bound, and the slot frees once its worker is reaped
@@ -714,27 +714,28 @@ class KnowledgeIndexingStatus(BaseModel):
     )
     queued: int = Field(
         description=(
-            "KB indexing encodes held in this process: the running one and the "
-            "ones waiting their turn."
+            "Encodes held in this process's one order, KB indexing and case "
+            "evidence alike: the running one and the ones waiting their turn."
         )
     )
     encoding_for_seconds: Optional[float] = Field(
         description=(
-            "How long this process's running KB indexing encode has run; null "
-            "when none runs."
+            "How long this process's running encode, KB indexing or case "
+            "evidence, has run; null when none runs."
         )
     )
     host_lock_available: bool = Field(
         description=(
             "False while this process's latest attempt to open or lock the "
-            "host lock file failed: its KB encodes then run without "
-            "serialising against the other worker processes of the container."
+            "host lock file failed: its encodes, KB and evidence, then run "
+            "without serialising against the other worker processes of the "
+            "container."
         )
     )
     waiting_for_host_lock: bool = Field(
         description=(
-            "True while this process's indexing slot is blocked on the host "
-            "lock, behind another worker process's encode."
+            "True while this process's encode order (KB and evidence) is blocked "
+            "on the host lock, behind another worker process's encode."
         )
     )
 

@@ -34,7 +34,7 @@ routes through it (#2055): ``embed_texts_or_raise`` bounds the KB indexer
 which runs its encode in a worker from the KB indexing slot
 (``infrastructure.index_slot``, #2851), and the case evidence indexer
 (``core/preprocessing/vector_storage.py``, live via the ``vectorize_file``
-agent tool), whose encodes run one at a time on the evidence slot beside it,
+agent tool), whose encodes run on the evidence slot, in the KB slot's order,
 never on the default executor. A KB bound is sized from the batch's BGE-M3
 token count, counted in a worker (an evidence bound from its UTF-8 bytes,
 #2851), not its chunk count: a
@@ -327,8 +327,8 @@ async def embed_texts_or_raise(
         ticket: The KB indexing slot's ``IndexTicket``
             (``infrastructure.index_slot``): the encode runs in a worker from
             that slot, one at a time per host. None (evidence vectorization)
-            takes a ticket on the evidence slot, one encode at a time per
-            process, in this process, its bound sized by bytes. Either way
+            takes a ticket on the evidence slot, in the same order under the
+            host lock, in this process, its bound sized by bytes. Either way
             the bound also covers the guard bounds of the encodes queued ahead.
 
     There is no opt-out. #953 asked whether the boot repair path should stay

@@ -385,10 +385,10 @@ async def store_in_vector_db_background(
     proactively as a background task, or reactively under
     ``vectorization_reactive_timeout_seconds``. Those are the callers' budgets.
     The embed itself runs through ``embedding_guard.embed_texts_or_raise``,
-    which bounds it by its UTF-8 bytes, on the evidence slot: one evidence
-    encode at a time per process, in this process at ``ENCODE_BATCH_SIZE``, so
-    a re-trigger queues behind an encode still running, and never on the KB
-    indexing slot (#2055, #2851).
+    which bounds it by its UTF-8 bytes, on the evidence slot, in this process at
+    ``ENCODE_BATCH_SIZE``. It shares the KB slot's order and host lock: one
+    encode at a time per container, so a re-trigger queues behind an encode
+    still running (#2055, #2851, #2920).
 
     Args:
         case_id: Case identifier
