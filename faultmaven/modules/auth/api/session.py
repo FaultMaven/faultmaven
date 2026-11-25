@@ -201,7 +201,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T10:00:00Z",
                                 "expires_at": "2025-01-15T10:30:00Z",
-                                "status": "inquiry",
+                                "status": "active",
                                 "session_type": "troubleshooting",
                                 "session_resumed": False,
                                 "timeout_minutes": 30,
@@ -216,7 +216,7 @@ def mint_caller(http_request: Request) -> MintCaller:
                                 "client_id": "browser-client-abc123",
                                 "created_at": "2025-01-15T09:30:00Z",
                                 "expires_at": "2025-01-15T10:45:00Z",
-                                "status": "inquiry",
+                                "status": "active",
                                 "session_type": "troubleshooting",
                                 "session_resumed": True,
                                 "timeout_minutes": 30,
@@ -796,12 +796,17 @@ async def session_heartbeat(
         # identical block went with `/stats`; this is its twin, on the
         # highest-frequency route on the router.
 
-        # Get updated session to return current last_activity (best effort)
+        # Get updated session to return current last_activity and its
+        # server-set status (best effort: the fallbacks answer only when this
+        # read fails)
         last_activity = to_json_compatible(datetime.now(timezone.utc))  # fallback
+        status = "active"  # fallback
         try:
             session = await session_service.get_session(session_id, validate=False)
             if session and session.last_activity:
                 last_activity = _safe_datetime_to_utc_string(session.last_activity)
+            if session:
+                status = session.status
         except Exception as e:
             logger.warning(
                 f"Failed to get updated session info for {session_id}: {exception_log_name(e)}"
@@ -809,7 +814,7 @@ async def session_heartbeat(
 
         return {
             "session_id": session_id,
-            "status": "inquiry",
+            "status": status,
             "last_activity": last_activity,
             "message": "Session heartbeat updated",
         }

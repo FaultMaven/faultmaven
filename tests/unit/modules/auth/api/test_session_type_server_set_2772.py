@@ -267,6 +267,23 @@ async def test_a_list_row_reports_the_sessions_status(world):
     }
 
 
+async def test_a_heartbeat_reports_the_sessions_status(world):
+    """At ``6615e3e4a`` the heartbeat answered ``inquiry``, archived or not."""
+    archived = await _create(world)
+    active = await _create(world)
+    response = await world.client.post(
+        f"/api/v1/sessions/{archived['session_id']}/archive"
+    )
+    assert response.status_code == 200, response.text[:300]
+
+    for created, status in ((archived, "archived"), (active, "active")):
+        beat = await world.client.post(
+            f"/api/v1/sessions/{created['session_id']}/heartbeat"
+        )
+        assert beat.status_code == 200, beat.text[:300]
+        assert beat.json()["status"] == status
+
+
 # ---------------------------------------------------------------------------
 # Stores: every implementation writes and reads the field
 # ---------------------------------------------------------------------------
