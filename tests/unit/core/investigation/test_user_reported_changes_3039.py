@@ -569,7 +569,7 @@ class TestReviewCases:
         text = _notices(case, metadata)
         assert "'mitigation_accepted' was not registered" in text
         assert f"DIAGNOSTIC {aid} is a downgraded fix" in text
-        assert f"set solution_accepted with accepted_action_ref {aid}" in text
+        assert f"report it as {aid}'s IF_CARRIED_OUT line in <pending_action>" in text
         assert "on record as carried out" not in text
 
     async def test_the_named_fix_is_recorded_at_the_report_turn(self):
@@ -577,7 +577,14 @@ class TestReviewCases:
         the report in the previous message: stamped at the report's turn."""
         case = _downgraded_case()
         action = _diagnostic(case)
-        await _apply(case, milestones=MilestoneUpdates(mitigation_accepted=True))
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+        assert action.reported_done_in_turn is None
+        assert "is a downgraded fix" in _notices(case, metadata)
+        # The cue the notice points at, rendered while the fix is unreported.
+        cue = build_investigation_context(case, "status pasted")["pending_action"]
+        assert f"accepted_action_ref: {action.action_id}" in cue
         case.current_turn = 6
 
         await _apply(
@@ -614,6 +621,54 @@ class TestReviewCases:
         assert workaround.reported_done_in_turn == 5
         assert fix.reported_done_in_turn is None
         assert "is a downgraded fix" not in _notices(case, metadata)
+
+    async def test_a_reported_workaround_does_not_hide_an_unreported_fix(self):
+        """A workaround stamped earlier is not matched again: the report of
+        the fix proposed since is named, not absorbed by the old stamp."""
+        case = _downgraded_case()
+        fix = _diagnostic(case)
+        workaround = ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.DIAGNOSTIC,
+            description="Restart billing-exporter",
+            proposed_in_turn=2,
+            downgrade_reason=NO_SYMPTOM_EVIDENCE_DOWNGRADE_REASON,
+            reported_done_in_turn=3,
+        )
+        case.proposed_actions.insert(0, workaround)
+
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        assert workaround.reported_done_in_turn == 3
+        assert fix.reported_done_in_turn is None
+        assert f"DIAGNOSTIC {fix.action_id} is a downgraded fix" in _notices(
+            case, metadata
+        )
+
+    async def test_the_notice_names_the_newest_unreported_fix(self):
+        """A fix already on record as carried out is not named again; the
+        older unreported one is."""
+        case = _downgraded_case()
+        older = _diagnostic(case)
+        reported = ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.DIAGNOSTIC,
+            description="Pin billing-exporter to 2.4.1",
+            proposed_in_turn=4,
+            downgrade_reason=WHY_OPEN_DOWNGRADE_REASON,
+            reported_done_in_turn=4,
+        )
+        case.proposed_actions.append(reported)
+
+        metadata = await _apply(
+            case, milestones=MilestoneUpdates(mitigation_accepted=True)
+        )
+
+        text = _notices(case, metadata)
+        assert f"DIAGNOSTIC {older.action_id} is a downgraded fix" in text
+        assert reported.action_id not in text
 
     async def test_a_mitigation_report_with_nothing_downgraded_names_nothing(self):
         """``case_0bab2dc5aa92`` turn 6 shape: the user reports a change no

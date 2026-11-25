@@ -1315,7 +1315,7 @@ def reported_change_turns(case: Case) -> list[int]:
 
 def _downgraded_workaround(case: Case) -> Any:
     """The newest pending WORKAROUND 3D downgraded to DIAGNOSTIC
-    (``is_workaround_downgrade``): what an unregistered
+    (``is_workaround_downgrade``) not yet reported: what an unregistered
     ``mitigation_accepted`` reports carrying out (INV-49)."""
     return next(
         (
@@ -1323,6 +1323,7 @@ def _downgraded_workaround(case: Case) -> Any:
             for a in reversed(case.proposed_actions)
             if a.state == "pending"
             and a.action_type == InvestigationActionType.DIAGNOSTIC
+            and a.reported_done_in_turn is None
             and is_workaround_downgrade(a)
         ),
         None,
@@ -1330,8 +1331,8 @@ def _downgraded_workaround(case: Case) -> Any:
 
 
 def _downgraded_fix(case: Case) -> Any:
-    """The newest pending fix M5 downgraded to DIAGNOSTIC: a downgrade reason
-    that is not the 3D marker. ``mitigation_accepted`` never stamps it, since
+    """The newest pending fix M5 downgraded to DIAGNOSTIC (a downgrade reason
+    that is not the 3D marker) not yet reported. ``mitigation_accepted`` never stamps it, since
     the engine never infers which action an unnamed report means (INV-49)."""
     return next(
         (
@@ -1339,6 +1340,7 @@ def _downgraded_fix(case: Case) -> Any:
             for a in reversed(case.proposed_actions)
             if a.state == "pending"
             and a.action_type == InvestigationActionType.DIAGNOSTIC
+            and a.reported_done_in_turn is None
             and a.downgrade_reason
             and not is_workaround_downgrade(a)
         ),
@@ -2294,10 +2296,8 @@ def _apply_stage_gate_signals(
             aid = fix.action_id
             notice += (
                 f" DIAGNOSTIC {aid} is a downgraded fix. Only if the user "
-                f"reported carrying out {aid}, set solution_accepted with "
-                f"accepted_action_ref {aid} (accepted_fix_reported_in "
-                "previous_message when they reported it in the previous "
-                "message): that records it."
+                f"reported carrying out {aid}, report it as {aid}'s "
+                "IF_CARRIED_OUT line in <pending_action> says."
             )
         stab_accepted_signal = False
         if (stab_verified_signal or disposition) and (
