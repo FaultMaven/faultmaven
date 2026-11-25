@@ -587,7 +587,10 @@ def _shown(sources: List[Source]) -> Dict[Any, str]:
     out: Dict[Any, str] = {}
     for i, source in enumerate(sources):
         metadata = source.metadata or {}
-        if metadata == {"access": RESTRICTED_SOURCE_ACCESS}:
+        if metadata.get("access") == RESTRICTED_SOURCE_ACCESS:
+            assert set(metadata) == {"access", "runbook"}, metadata
+            runbook = metadata["runbook"]
+            assert type(runbook) is int and runbook >= 1, metadata
             assert source.content == "" and source.type == SourceType.KNOWLEDGE_BASE
             out[f"redacted#{i}"] = "REDACTED"
         else:
@@ -767,6 +770,37 @@ async def test_the_turn_response_is_gated_for_its_requester(world, answer):
     assert {k for k in outsider_view if not str(k).startswith("redacted")} == {
         RB_GLOBAL
     }
+
+
+def _runbook_numbers(sources: List[Source]) -> List[Any]:
+    return [(s.metadata or {}).get("runbook") for s in sources]
+
+
+@pytest.mark.asyncio
+async def test_each_transcript_row_numbers_its_redacted_runbooks_from_one(world):
+    """#2824: one page, one gate call, and each row's numbering of its own."""
+    sources = await _messages_as(world, OUTSIDER, _case_with_transcript(turns=2))
+
+    assert _runbook_numbers(sources) == [None, 1, 2, 3, 4] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_live_and_a_replayed_turn_carry_one_numbering(world):
+    """Sections of one hidden runbook share a number in the turn response, and
+    the receipt replays are gated as the live answer is, so they agree."""
+    stored = [
+        Source.model_validate(_stored_source(d))
+        for d in (RB_DRIVER_PERSONAL, RB_GLOBAL, RB_DRIVER_PERSONAL, None)
+    ]
+
+    numbers = {
+        answer: _runbook_numbers(
+            (await _turn_as(world, OUTSIDER, stored, answer=answer)).sources
+        )
+        for answer in TURN_ANSWERS
+    }
+
+    assert numbers == {answer: [1, None, 1, 2] for answer in TURN_ANSWERS}
 
 
 @pytest.mark.asyncio

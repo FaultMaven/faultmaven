@@ -1369,7 +1369,10 @@ class TurnResponse(BaseModel):
         "requester cannot open (no longer shared with them, or never was), or "
         "one with no `metadata.document_id`, is returned redacted: `type` and "
         "`new_this_turn` kept, `content` empty, `confidence` null, "
-        'and `metadata` of only `{"access": "restricted"}`.',
+        'and `metadata` of only `{"access": "restricted", "runbook": n}`. '
+        "`n` is an integer from 1, numbered by first appearance among this "
+        "list's redacted entries and derived from nothing else, never the "
+        "runbook's id: entries sharing `n` are sections of one runbook.",
     )
 
 

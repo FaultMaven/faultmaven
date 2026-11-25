@@ -623,8 +623,12 @@ class Message(BaseModel):
             "for the reader making this request: an excerpt of a runbook the "
             "reader cannot open, or one with no `metadata.document_id`, is "
             "returned with empty `content`, null `confidence` and "
-            '`metadata` of only `{"access": "restricted"}`. Null on a row '
-            "whose prompt carried none (and on every user or system row)."
+            '`metadata` of only `{"access": "restricted", "runbook": n}`. '
+            "`n` is an integer from 1, numbered by first appearance among this "
+            "row's redacted entries and derived from nothing else, never the "
+            "runbook's id: entries sharing `n` are sections of one runbook. "
+            "Null on a row whose prompt carried none (and on every user or "
+            "system row)."
         ),
     )
 

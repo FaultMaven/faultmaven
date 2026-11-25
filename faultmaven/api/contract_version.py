@@ -151,6 +151,25 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="16.2.0",
+        level="MINOR",
+        title=(
+            "A redacted knowledge-base source carries a runbook number: "
+            '`metadata` is `{"access": "restricted", "runbook": n}` on '
+            "`Message.sources` and `TurnResponse.sources` (#2824)."
+        ),
+        body=r"""This widens 13.1.0's "`metadata` exactly `{"access": "restricted"}`". `n`
+is an integer from 1, by first appearance of the runbook among the redacted
+entries of its one list (a transcript row's, or a turn response's), derived
+from nothing else: never the id, another list, or a readable entry. Entries
+sharing `n` are sections of one runbook; one with no `metadata.document_id`
+has its own. `title`, `document_id` and `trigger` stay withheld.
+
+MINOR: a key added to an open `metadata` object. First-party clients match
+`metadata.access` only (copilot-ui, shared by the dashboard; the Slack agent
+regenerates); one that ignores the key counts one runbook per entry.""",
+    ),
+    ContractChange(
         version="16.1.0",
         level="MINOR",
         title=(

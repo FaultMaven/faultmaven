@@ -329,6 +329,10 @@ def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
 #: so a client can say "a runbook you don't have access to" and nothing more.
 RESTRICTED_SOURCE_ACCESS = "restricted"
 
+#: ``Source.metadata["runbook"]`` on a withheld source, beside ``access`` and
+#: nothing else: an ``int`` shared by that list's sections of one runbook (#2824).
+RESTRICTED_SOURCE_RUNBOOK_KEY = "runbook"
+
 
 async def gate_kb_sources(
     source_lists: Sequence[Optional[List["Source"]]],
@@ -349,7 +353,11 @@ async def gate_kb_sources(
     rule (:meth:`IKnowledgeService.visible_document_ids`, the batched form of
     the id-addressed document read): global, the viewer's own, or shared to one
     of the viewer's teams. A readable source is returned unchanged; any other
-    knowledge-base source is redacted (:data:`RESTRICTED_SOURCE_ACCESS`).
+    knowledge-base source is redacted (:data:`RESTRICTED_SOURCE_ACCESS`) to a
+    runbook number (:data:`RESTRICTED_SOURCE_RUNBOOK_KEY`): 1, 2, … by first
+    appearance among that one list's redacted entries, an id-less entry its own,
+    and a function of that order alone: never of the id, another list, or a
+    readable entry.
 
     Fails closed throughout. A knowledge-base source with no ``document_id``
     cannot be checked, so it is redacted. No knowledge service, or a failed
@@ -391,19 +399,30 @@ async def gate_kb_sources(
             )
         )
 
-    def _gate(source: "Source") -> "Source":
+    def _gate(source: "Source", numbers: Dict[object, int]) -> "Source":
         if source.type != SourceType.KNOWLEDGE_BASE:
             return source
-        if _document_id(source) in readable:
+        doc_id = _document_id(source)
+        if doc_id in readable:
             return source
+        # An id-less entry cannot be tied to another, so it keys on itself.
+        number = numbers.setdefault(
+            doc_id if doc_id is not None else object(), len(numbers) + 1
+        )
         return source.__class__(
             type=SourceType.KNOWLEDGE_BASE,
             content="",
-            metadata={"access": RESTRICTED_SOURCE_ACCESS},
+            metadata={
+                "access": RESTRICTED_SOURCE_ACCESS,
+                RESTRICTED_SOURCE_RUNBOOK_KEY: number,
+            },
             new_this_turn=source.new_this_turn,
         )
 
+    def _gate_list(sources: List["Source"]) -> List["Source"]:
+        numbers: Dict[object, int] = {}  # this list's own: never shared
+        return [_gate(source, numbers) for source in sources]
+
     return [
-        None if sources is None else [_gate(source) for source in sources]
-        for sources in source_lists
+        None if sources is None else _gate_list(sources) for sources in source_lists
     ]
