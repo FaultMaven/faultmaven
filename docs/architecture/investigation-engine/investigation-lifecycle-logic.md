@@ -1318,19 +1318,23 @@ the turn and the turn's own prose does not state it
   `RECORD_PROSE` is): read from the branch `_compose_turn_reply` took and the
   params its prose was rendered from. The resolve confirmation states a root
   cause when its root line names one, and the confirming attempt when it
-  names it "(carried out turn t)", and then that attempt's window
-  SUCCEEDED too; the backstop states the cause when one is on record, and
-  the deferred resolve when its record lines hold a cause line naming one;
-  either one, when its record lines hold a cause line and a re-checked
-  problem line, the SUCCEEDED of the window the resolution confirms
-  through, the latest observed one; the false-alarm close, and a readiness
-  message for a false alarm, the problem not present; a readiness message
-  for a fix that did not hold, the latest window's FAILED; the needs-info
-  ask whose "Root cause" line says the cause fell, that it fell. A window's
-  key is its `fix_turn`, so stating it covers every attempt sharing the
-  window; the keys are read against the narration record's attempts, and
-  with no record no window verdict is stated. A model proposal's prose is
-  its offer's summary, not the reply's.
+  names it "(carried out turn t)"; the backstop states the cause when one is
+  on record, and the deferred resolve when its record lines hold a cause
+  line naming one; each of the three, when its record lines hold a cause
+  line and a re-checked problem line, the SUCCEEDED of the window the
+  resolution confirms through, the latest observed one (a shared window and
+  window 0 included, which name no attempt); the false-alarm close, and a
+  readiness message for a false alarm, the problem not present; a readiness
+  message for a fix that did not hold, the latest window's FAILED; the
+  needs-info ask whose "Root cause" line says the cause fell, that it fell.
+  A window's key is its `fix_turn`, so stating it covers every attempt
+  sharing the window. Every prose's keys are read against the one record
+  the statement compares, the turn-final record (`_statement_record`: the
+  cycle's, or the narration's fold when the cycle's write failed): the
+  narration publishes each prose's code and params, and
+  `_compose_turn_reply` reads them against that record's attempts; with no
+  record, no window verdict is stated. A model proposal's prose is its
+  offer's summary, not the reply's.
 - **Placement**: last, below the INV-40 notice; under a #1442 placeholder
   the placeholder and its flag are kept and the statement goes under it and
   its drop note. The summary re-record runs because the text changed. S4

@@ -30,6 +30,7 @@ from faultmaven.core.investigation.narration.statement import (
     outcome_changes,
     outcome_statement,
 )
+from faultmaven.core.investigation.offers import remember_resolve_request
 from faultmaven.core.investigation.outcome import compute_case_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     resolution_record_lines,
@@ -383,9 +384,63 @@ def test_the_confirmation_naming_its_attempt_states_its_window():
     text = {fix.action_id: Content(text="raise max_connections to 100")}.get
     params = confirmation_params(record, _CONTENT, text)
     assert (_S, 6) in offer_stated(OfferCode.REQUEST_READY, params, record.attempts)
-    # The latest solution named instead: the window is not stated.
+    # The latest solution named instead: its record lines still show the
+    # window seen gone (ruling Q5).
     bare = confirmation_params(record, _CONTENT, lambda _id: None)
-    assert (_S, 6) not in offer_stated(OfferCode.REQUEST_READY, bare, record.attempts)
+    assert (_S, 6) in offer_stated(OfferCode.REQUEST_READY, bare, record.attempts)
+    # Lines without a re-checked problem line state no window.
+    cut = {**bare, "record_lines": ""}
+    assert (_S, 6) not in offer_stated(OfferCode.REQUEST_READY, cut, record.attempts)
+
+
+def _shared_window(case) -> list:
+    """Two fixes in turn 6; the rows that show both seen gone in turn 7."""
+    _fix(case, turn=6)
+    _fix(case, turn=6)
+    return [_cause_gone(7), _problem_gone(7)]
+
+
+def _window_zero(case) -> list:
+    """No fix; the rows that show the cause and the problem gone in turn 7."""
+    return [_cause_gone(7), _problem_gone(7)]
+
+
+@pytest.mark.parametrize(
+    "build, window, clause",
+    [
+        (_shared_window, (_S, 6), _GONE_6),
+        (
+            _window_zero,
+            (_S, None),
+            "before any fix was carried out in the case, the cause and the "
+            "problem were both seen gone",
+        ),
+    ],
+    ids=["shared-window", "window-0"],
+)
+async def test_a_confirmation_with_no_attempt_named_states_its_window_once(
+    monkeypatch, build, window, clause
+):
+    """The reviewer's repro: two fixes in turn 6, both seen gone in turn 7,
+    resolve asked; and window 0. The confirmation names no attempt, but its
+    record lines show the window seen gone. Positive control: the window
+    moved into SUCCEEDED this turn."""
+    case, _root, _hyp = _identified_case()
+    rows = build(case)
+    case.current_turn = 7
+    case.offer_record = remember_resolve_request(case, ["solution"])
+    seen = _spy_windows(monkeypatch)
+    reply, _ = await _process(
+        _revision_engine(),
+        case,
+        "resolve it",
+        _response(),
+        during=lambda c: c.evidence.extend(rows),
+    )
+    assert "Here's what I have on record:" in reply, "premise: the confirmation"
+    assert "- **The cause** — " in reply and "- **The problem** — " in reply
+    assert seen == [[window]]
+    assert clause not in reply
 
 
 # ---------------------------------------------------------------------------
@@ -451,33 +506,24 @@ async def test_the_fix_failed_readiness_message_is_not_repeated(monkeypatch):
     assert "after the fix carried out in turn 8" not in reply
 
 
-async def test_a_backstop_offer_states_the_window_once(monkeypatch):
-    """The backstop's record lines say the cause and the problem were seen
-    gone: no Case record line repeats it. Positive control: the window moved
-    into SUCCEEDED this turn."""
-    from tests.unit.core.investigation.test_resolution_backstop_turn import (
-        _confirmed_case,
-    )
-
-    case = _confirmed_case()
-    rows = [
+def _before_the_absence_rows(c):
+    """The snapshot was folded before the rows that confirm window 0."""
+    kept = list(c.evidence)
+    c.evidence = [
         e
-        for e in case.evidence
+        for e in kept
         if e.category
-        in (
+        not in (
             EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
         )
     ]
+    c.progress.outcome = compute_case_outcome(None, c, at=WritePoint.COMMIT)
+    c.evidence = kept
 
-    def _before_the_rows(c):
-        # The snapshot was folded before the rows that confirm the window.
-        kept = list(c.evidence)
-        c.evidence = [e for e in kept if e not in rows]
-        compute = compute_case_outcome(None, c, at=WritePoint.COMMIT)
-        c.progress.outcome = compute
-        c.evidence = kept
 
+def _spy_windows(monkeypatch) -> list:
+    """The window changes the statement site compares, per call."""
     seen = []
     real = turn_completion._outcome_statement_for_turn
 
@@ -486,14 +532,60 @@ async def test_a_backstop_offer_states_the_window_once(monkeypatch):
         return real(baseline, now, stated)
 
     monkeypatch.setattr(turn_completion, "_outcome_statement_for_turn", _spy)
+    return seen
+
+
+async def test_a_backstop_offer_states_the_window_once(monkeypatch):
+    """The backstop's record lines say the cause and the problem were seen
+    gone: no Case record line repeats it. Positive control: the window moved
+    into SUCCEEDED this turn."""
+    from tests.unit.core.investigation.test_resolution_backstop_turn import (
+        _confirmed_case,
+    )
+
+    seen = _spy_windows(monkeypatch)
     reply, _ = await _process(
         _revision_engine(),
-        case,
+        _confirmed_case(),
         "errors gone",
         _response(),
-        after_save=_before_the_rows,
+        after_save=_before_the_absence_rows,
     )
     assert "The record shows:" in reply, "premise: the backstop offer"
     assert seen == [[(_S, None)]]
     assert HEAD not in reply
     assert SEP in reply
+
+
+async def test_a_deferred_resolve_on_a_failed_write_states_the_window_once(
+    monkeypatch,
+):
+    """The cycle's write fails, so the statement compares the narration's
+    fold; the deferred resolve's keys are read against that same record.
+    Positive control: the window moved into SUCCEEDED this turn."""
+    from tests.unit.core.investigation.test_deferred_disposition_turn import (
+        _case as _deferred_case,
+    )
+    from tests.unit.core.investigation.test_deferred_disposition_turn import (
+        _deferred_response,
+    )
+    from tests.unit.core.investigation.test_outcome_statement_2811_s2c3a import (
+        _cycle_write_fails,
+    )
+
+    _cycle_write_fails(monkeypatch)
+    seen = _spy_windows(monkeypatch)
+    case = _deferred_case(confirmed=True)
+    reply, result = await _process(
+        _revision_engine(),
+        case,
+        "the platform team ships it",
+        _deferred_response(),
+        after_save=_before_the_absence_rows,
+    )
+    assert "out-of-band" in reply, "premise: the deferred resolve"
+    assert not [
+        a for a in result["case_updated"].progress.outcome.attempts if a.window
+    ], "premise: the cycle's record is unwritten"
+    assert seen == [[(_S, None)]]
+    assert HEAD not in reply

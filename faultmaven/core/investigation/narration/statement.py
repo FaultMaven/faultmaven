@@ -5,10 +5,11 @@ the turn-final record over the closed field set (rulings of 2026-11-22 Q4 (a)
 and 2026-11-24): the problem's status, the identification leg and its fallen
 pool, the accepted attempts and their fix windows' verdicts (#3046 S3c).
 ``outcome_statement`` renders the changes the turn's own prose does not state
-(``stated``, ``offer_stated``) as one "**Case record:**" line. Both read the two records, the turn-start restore
-target and the actions accepted at turn start alone (pin 2); the restore
-target's owners are the revision offer's and
-the invalidation's ``prior_status`` (``problem_status.restores_to``).
+(``stated``, ``offer_stated``, read against the turn-final record's attempts)
+as one "**Case record:**" line. Both read the two records, the turn-start
+restore target and the actions accepted at turn start alone (pin 2); the
+restore target's owners are the revision offer's and the invalidation's
+``prior_status`` (``problem_status.restores_to``).
 """
 
 from dataclasses import dataclass
@@ -347,10 +348,10 @@ def _backstop(params: dict, attempts) -> set:
 
 
 def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
-    """The resolve confirmation: a cause when its root line names one, and
-    the confirming attempt, and its window's SUCCEEDED, when it is named as
-    carried out."""
-    stated = set()
+    """The resolve confirmation: a cause when its root line names one, the
+    confirming attempt when it is named as carried out, and, as the backstop,
+    the window its record lines show seen gone."""
+    stated = _seen_gone(params["record_lines"], attempts)
     if params["root"] != NO_ROOT_ON_RECORD:
         stated.add((OutcomeChange.CAUSE_IDENTIFIED, None))
     attempt = confirming_attempt(attempts)
@@ -362,7 +363,6 @@ def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
         )
     ):
         stated.add((OutcomeChange.FIX_CARRIED_OUT, attempt.action_id))
-        stated.add((OutcomeChange.FIX_SUCCEEDED, attempt.window.fix_turn))
     return stated
 
 
