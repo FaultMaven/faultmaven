@@ -653,25 +653,21 @@ class TestUpdateCase:
         assert data["case_id"] == "case_123abc"
         assert "updated successfully" in data["message"].lower()
 
-    async def test_update_case_multiple_fields(
+    async def test_a_state_beside_a_title_is_refused(
         self, client, mock_case_service, mock_case, headers
     ):
-        """Test updating multiple fields - v2.0 uses PUT method."""
-        mock_case.title = "Updated"
-        mock_case.state = CaseState.INVESTIGATING
+        """``state`` is not an update field (#2823): the whole body is refused
+        with 422 before the route runs, and the title is not applied."""
         mock_case_service.get_case.return_value = mock_case
-        mock_case_service.update_case.return_value = mock_case
 
         response = await client.put(
             "/api/v1/cases/case_123abc",
-            json={
-                "title": "Updated",
-                "state": "investigating",
-            },
+            json={"title": "Updated", "state": "investigating"},
             headers=headers,
         )
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+        mock_case_service.update_case.assert_not_awaited()
 
     async def test_update_case_not_found(self, client, mock_case_service, headers):
         """Test updating non-existent case - v2.0 uses PUT method."""

@@ -1101,7 +1101,7 @@ holds beyond those of the record the turn loaded, so a disagreement read gone
 and then read again at a later turn counts again, and the narration's
 `narration.<code>` conflicts, counted after the commit
 (`outcome.report_saved_disagreements`). The case service's write helper
-(`update_case_with_retry`: `PATCH /cases/{id}`, the REST close, the metadata
+(`update_case_with_retry`: the statement edit on `PUT /cases/{id}`, the REST close, the metadata
 refold, the backfill) counts the same diff after its save, on the attempt
 that saved; the backfill also prints what it counted. A dry run, a failed or cancelled commit,
 a retried attempt and a commit only the turn receipt vouches for (it may be

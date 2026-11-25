@@ -958,10 +958,12 @@ async def update_case(
     """
     Update case details
 
-    Updates case metadata such as title, description, state, priority, and tags.
-    Only the case's DRIVER may update it (ADR-020 D2): a reader who does not
-    drive it gets 403 ``CASE_NOT_DRIVER``, a caller who cannot read it 404
-    ``CASE_NOT_FOUND`` (#2806).
+    Updates the case's title or description. Any other field, ``state``
+    included, is refused with 422 before the case is read; a case is closed
+    through ``POST /cases/{case_id}/close`` (#2823). Only the case's DRIVER
+    may update it (ADR-020 D2): a reader who does not drive it gets 403
+    ``CASE_NOT_DRIVER``, a caller who cannot read it 404 ``CASE_NOT_FOUND``
+    (#2806).
     """
     case_service = check_case_service_available(case_service)
 
@@ -982,9 +984,6 @@ async def update_case(
             updates["title"] = request.title
         if request.description is not None:
             updates["description"] = request.description
-        if request.state is not None:
-            updates["state"] = request.state.value  # Convert enum to string value
-        # Note: priority and tags removed - not in milestone-based model
 
         if not updates:
             # Restored from old implementation - proper error response format

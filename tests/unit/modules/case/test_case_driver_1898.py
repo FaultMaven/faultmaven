@@ -39,7 +39,7 @@ from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.modules.case.infrastructure.case_repository import (
     InMemoryCaseRepository,
 )
-from tests.case_builders import make_case
+from tests.case_builders import investigating_case, make_case
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -244,12 +244,20 @@ class TestTheWriteSplit:
         assert (await world.repository.get(CASE_ID)).title == "Renamed"
 
     @pytest.mark.parametrize("flip", [False, True], ids=["control", "flipped"])
-    async def test_a_state_edit_rechecks_the_driver_on_the_fresh_load(
+    async def test_a_statement_edit_rechecks_the_driver_on_the_fresh_load(
         self, world, flip
     ):
         """A reassignment landing between the gate and the versioned write must
         not let the former driver write as a driver."""
-        await _case(world.repository, driver_id=DRIVER)
+        await world.repository.save(
+            investigating_case(
+                case_id=CASE_ID,
+                user_id=CREATOR,
+                driver_id=DRIVER,
+                enterprise_id=ENTERPRISE,
+                title="Checkout latency",
+            )
+        )
         gate = world.service.require_case
 
         async def gate_then_hand_back(case_id, user_id=None, **kw):
@@ -262,7 +270,7 @@ class TestTheWriteSplit:
 
         world.service.require_case = gate_then_hand_back
         update = world.service.update_case(
-            CASE_ID, {"title": "Renamed", "state": CaseState.INQUIRY}, DRIVER
+            CASE_ID, {"title": "Renamed", "description": "checkout times out"}, DRIVER
         )
         if flip:
             # Answered as what happened, never as an absence (#2806).

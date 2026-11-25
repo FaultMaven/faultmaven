@@ -332,11 +332,12 @@ class ICaseService(ABC):
     async def update_case(
         self, case_id: str, updates: Dict[str, Any], user_id: Optional[str] = None
     ) -> bool:
-        """Update case with access control.
+        """Update a case's title or description, with access control.
 
         Args:
             case_id: Case identifier
-            updates: Updates to apply
+            updates: ``title`` and/or ``description``; any other key raises
+                ``ValidationException`` before anything is written (#2823)
             user_id: Optional user ID for access control
 
         Returns:

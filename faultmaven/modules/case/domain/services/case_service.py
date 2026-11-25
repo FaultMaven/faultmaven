@@ -557,31 +557,31 @@ class CaseService(CaseDriverMixin, ICaseService):
         """
         Update case with access control.
 
-        Splits writes into two channels based on field semantics:
+        Writes ``title`` and ``description`` only; any other key (``state``
+        included: state moves through the investigation and
+        ``POST /cases/{case_id}/close``) is refused with
+        ``ValidationException`` before anything is read or written (#2823).
 
-        - **Metadata only** (title, description): goes through the scoped
+        - **Metadata** (title, description): goes through the scoped
           ``update_metadata_fields`` repo method. Does NOT bump
           ``cases.version`` and therefore cannot stale-conflict with an
-          in-flight turn save. This is the common path for title
-          generation and dashboard renames. A changed description, the
-          statement in force outside an investigation, carries the case
-          outcome record folded over it in the same scoped write
-          (``_write_metadata``, #2811).
-        - **Investigation state** (status, closure_reason, or mixed with
-          metadata): goes through ``update_case_with_retry``, which uses
-          the versioned ``save`` path with OCC retry on conflict. Status
-          transitions are real investigation events; concurrent writers
-          must coordinate.
+          in-flight turn save. A changed description, the statement in force
+          outside an investigation, carries the case outcome record folded
+          over it in the same scoped write (``_write_metadata``, #2811).
+        - **Statement edit** (description during INVESTIGATING, with any
+          title alongside): goes through ``update_case_with_retry``, the
+          versioned ``save`` path with OCC retry on conflict.
 
         Args:
             case_id: Case identifier
-            updates: Updates to apply (title, description, status, closure_reason)
+            updates: Updates to apply (title, description)
             user_id: Optional user ID for access control
 
         Returns:
             True if update was successful
 
         Raises:
+            ValidationException: a key other than ``title`` or ``description``.
             NotFoundError: the caller cannot read the case, or it was deleted
                 while the update ran.
             CaseNotDriverError: the caller reads it but does not drive it, at
@@ -594,20 +594,20 @@ class CaseService(CaseDriverMixin, ICaseService):
         if not updates:
             raise ValidationException("Updates cannot be empty")
 
-        # Validate and apply updates directly to Case object
-        metadata_fields = {"title", "description"}
-        state_fields = {"state", "closure_reason"}
-        allowed_fields = metadata_fields | state_fields
-        safe_updates = {k: v for k, v in updates.items() if k in allowed_fields}
+        unknown = sorted(set(updates) - {"title", "description"})
+        if unknown:
+            raise ValidationException(
+                f"Cannot update {', '.join(unknown)}: only title and description"
+            )
 
         try:
             # Access check happens by loading via require_case first. Then the
-            # retry helper (state path) reloads on conflict via
+            # retry helper (statement edit) reloads on conflict via
             # repository.get(), which skips the access check. We enforce
             # the check once up front; no privilege escalation window
             # exists because the user_id doesn't change between attempts.
-            # ``driver_only``: editing the case and moving its state are the
-            # driver's investigation writes (ADR-020 D2): a reader who does not
+            # ``driver_only``: editing the case is one of the driver's
+            # investigation writes (ADR-020 D2): a reader who does not
             # drive is refused ``CASE_NOT_DRIVER``, a caller who cannot read
             # the case ``CASE_NOT_FOUND`` (#2806).
             existing = await self.require_case(case_id, user_id, driver_only=True)
@@ -617,32 +617,23 @@ class CaseService(CaseDriverMixin, ICaseService):
             # record, the causal graph's PROBLEM node); an edit takes the
             # versioned path through the one writer that keeps them aligned.
             edits_statement = (
-                "description" in safe_updates
-                and existing.state == CaseState.INVESTIGATING
+                "description" in updates and existing.state == CaseState.INVESTIGATING
             )
             if edits_statement:
                 from faultmaven.core.investigation.problem_status import (
                     edit_statement_refusal,
                 )
 
-                refusal = edit_statement_refusal(
-                    existing, safe_updates["description"] or ""
-                )
+                refusal = edit_statement_refusal(existing, updates["description"] or "")
                 if refusal:
                     raise ValidationException(f"description: {refusal}")
-            touches_state = edits_statement or any(
-                k in state_fields for k in safe_updates
-            )
-            touches_metadata = any(k in metadata_fields for k in safe_updates)
 
-            if not touches_state and touches_metadata:
-                # Metadata-only path: scoped UPDATE, no version bump.
-                await self._write_metadata(case_id, safe_updates)
-            elif touches_state:
-                # Investigation-state path: versioned save with OCC retry.
-                # Any metadata fields in the same call ride along on the
-                # versioned save — the OCC has to fire for the state
-                # change anyway, so there's no value in splitting them.
+            if not edits_statement:
+                # Scoped UPDATE, no version bump.
+                await self._write_metadata(case_id, updates)
+            else:
+                # Statement edit: versioned save with OCC retry; a title in
+                # the same call rides along on it.
                 from faultmaven.modules.case.utils import update_case_with_retry
 
                 async def apply(case: Case) -> None:
@@ -652,7 +643,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                     # caller no longer is (ADR-020 D4).
                     if user_id and case.effective_driver_id != user_id:
                         raise CaseNotDriverError()
-                    for key, value in safe_updates.items():
+                    for key, value in updates.items():
                         if (
                             key == "description"
                             and case.state == CaseState.INVESTIGATING
@@ -662,7 +653,7 @@ class CaseService(CaseDriverMixin, ICaseService):
                             )
 
                             edit_statement(case, value)
-                        elif hasattr(case, key):
+                        else:
                             setattr(case, key, value)
 
                 from faultmaven.modules.case.exceptions import CaseNotFoundError
@@ -673,9 +664,6 @@ class CaseService(CaseDriverMixin, ICaseService):
                     # Deleted between the gate and the retry's fresh load: the
                     # answer an absent case gets, as ``close_case`` gives it.
                     raise NotFoundError("Case", case_id)
-            # else: no recognized fields — treat as no-op success (matches
-            # pre-split behavior for forward compatibility with callers
-            # that pass unrelated keys).
 
             logger.info(f"Updated case {case_id}")
             return True

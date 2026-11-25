@@ -207,11 +207,10 @@ async def test_an_inquiry_description_edit_refolds_the_record(tenant):
     assert _matches(saved)
 
 
-async def test_a_terminal_state_written_raw_by_patch_is_refused(tenant):
-    """PATCH's raw ``state``: a terminal value cannot pass the case's
-    validators (a closed case needs ``closed_at`` and a reason), so the update
-    is refused and nothing is saved; only the transitions close."""
-    from faultmaven.exceptions import ServiceException
+async def test_a_state_written_through_update_case_is_refused(tenant):
+    """``update_case`` writes no ``state`` (#2823): the key is refused before
+    anything is written, and nothing is saved; only the transitions close."""
+    from faultmaven.exceptions import ValidationException
 
     case, _root, _hyp = _identified_case()
     record_case_outcome(case, at=WritePoint.CYCLE)
@@ -219,7 +218,7 @@ async def test_a_terminal_state_written_raw_by_patch_is_refused(tenant):
     repository = await _stored(case)
     before = (await repository.get(case.case_id)).version
 
-    with pytest.raises(ServiceException):
+    with pytest.raises(ValidationException):
         await CaseService(repository).update_case(case.case_id, {"state": "closed"})
 
     saved = await repository.get(case.case_id)

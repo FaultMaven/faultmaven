@@ -22,7 +22,7 @@
 - ✅ `InMemoryVectorStore` removed — ChromaDB `PersistentClient` is always available
 - ✅ **(v2.3, 2026-04-24)** `save(case)` is **purely additive** — the aggregate save no longer performs `DELETE ... NOT IN (in_memory_ids)` on sibling tables. Intentional deletion is explicit via scoped repository methods. See [§4.1.1 Aggregate save semantics](#411-aggregate-save-semantics).
 - ✅ **(v2.4, 2026-04-24)** `save(case)` enforces **optimistic concurrency control** via a `version` column on the `cases` table. Read-modify-write paths use the `update_case_with_retry` helper; turn submission surfaces 409 Conflict on mismatch rather than retrying (LLM calls are non-idempotent). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
-- ✅ **(v2.6, 2026-05-16)** **Cosmetic metadata fields (title, description) no longer participate in OCC.** A new scoped repo method `update_metadata_fields(case_id, *, title, description)` writes title/description without bumping `cases.version`. Routed through this method are: title generation (`POST /cases/{id}/title`) and the title/description branch of `PUT /cases/{id}`. Investigation-state fields (`status`, `closure_reason`) continue to use the versioned `save` path via `update_case_with_retry`. Companion fix: `StaleCaseException` raised inside `MilestoneEngine.process_turn` now passes through `InvestigationService` unwrapped, so the existing 409 handler at `routes.py` actually fires (previously it was double-wrapped as `MilestoneEngineError → ServiceException` and fell through to 500). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
+- ✅ **(v2.6, 2026-05-16)** **Cosmetic metadata fields (title, description) no longer participate in OCC.** A new scoped repo method `update_metadata_fields(case_id, *, title, description)` writes title/description without bumping `cases.version`. Routed through this method are: title generation (`POST /cases/{id}/title`) and `PUT /cases/{id}`, except a description edit during INVESTIGATING (the problem statement), which uses the versioned `save` path via `update_case_with_retry`. `PUT /cases/{id}` writes no state field (#2823). Companion fix: `StaleCaseException` raised inside `MilestoneEngine.process_turn` now passes through `InvestigationService` unwrapped, so the existing 409 handler at `routes.py` actually fires (previously it was double-wrapped as `MilestoneEngineError → ServiceException` and fell through to 500). See [§4.1.2 Optimistic concurrency control](#412-optimistic-concurrency-control).
 - ✅ **(v2.5, 2026-04-25)** Case repository hierarchy **consolidated**. The duplicate hierarchy at `faultmaven/infrastructure/persistence/{case_repository,database_case_repository}.py` was deleted; the canonical types live at `faultmaven/modules/case/infrastructure/case_repository.py`, `sqlite_case_repository/repository.py`, `postgresql_hybrid_case_repository/repository.py` and `sessionless_case_repository.py` (the two hybrid repositories were later split into packages, fm#1707 wave 2). The redundant generic `DatabaseCaseRepository` (incomplete in the new hierarchy, ORM-merge-based in the old) was also removed — production paths use `SessionlessCaseRepository` (auto-session) or `get_repository_for_session(session)` (existing session). The `Evidence.da_invocation_count` Pydantic field was removed at the same time — it had no DB column and never round-tripped.
 
 > **Reality check (2026-10-25, #2269)**: **no setting selects the case or user store.** `DATABASE_URL` alone decides, through `persistent_database_configured` in the container's `create_case_repository`, `create_user_store` and `create_user_service`: a persistent URL gets `SessionlessCaseRepository` (and the database user store), and its dialect (`sqlite+aiosqlite://...` vs `postgresql+asyncpg://...`) routes each operation to `SQLiteCaseRepository` or `PostgreSQLHybridCaseRepository` at runtime. An empty or in-memory URL gets `InMemoryCaseRepository`, a test seam: the API, the jobs runner and the `fm-*` CLIs refuse to start on one. The `CASE_STORAGE_TYPE` / `USER_STORAGE_TYPE` variables earlier revisions of this page showed were read by no storage path, and are gone. For the schema-level policy that goes with this runtime routing, see [Deployment-Aware Schema Strategy](https://github.com/FaultMaven/faultmaven-doc-internal/blob/main/architecture/deployment-schema-strategy.md) (internal) which defines Tier 1 (both dialects) vs Tier 2 (PostgreSQL augmentations).
@@ -571,8 +571,9 @@ causal-graph reconciler.
 
 Mapping at the service layer (`CaseService.update_case`):
 
-- Updates touching only `title`/`description` → `repo.update_metadata_fields(...)`. No OCC.
-- Updates touching `state` or `closure_reason` (with or without metadata fields) → `update_case_with_retry(...)`. Versioned save with retry on conflict. State transitions ARE investigation events; concurrent writers must coordinate.
+- `title`/`description` → `repo.update_metadata_fields(...)`. No OCC.
+- A `description` during INVESTIGATING (the problem statement, a `title` alongside riding with it) → `update_case_with_retry(...)`. Versioned save with retry on conflict: the statement edit keeps the verification record and the causal graph aligned.
+- Any other key, `state` and `closure_reason` included, raises `ValidationException` before any write; state moves through the investigation and `POST /cases/{id}/close` (#2823).
 
 This is the correct fix for the racing-writer pattern observed when a 49 s turn loop is interleaved with a `POST /title` and a `PUT /cases/{id}` (both metadata-only): under the v2.4 design, both bumped the version and the turn failed at save with `StaleCaseException`. Under v2.6, neither bumps the version, and the turn save succeeds.
 
@@ -591,14 +592,15 @@ This is the correct fix for the racing-writer pattern observed when a 49 s turn 
 ```python
 from faultmaven.modules.case.utils import update_case_with_retry
 
-async def update_case(self, case_id: str, updates: dict) -> bool:
-    async def apply(case: Case) -> None:
-        for key, value in updates.items():
-            if key in ALLOWED_FIELDS:
-                setattr(case, key, value)
+# CaseService.update_case's statement edit: updates hold title/description only (#2823)
+async def apply(case: Case) -> None:
+    for key, value in updates.items():
+        if key == "description" and case.state == CaseState.INVESTIGATING:
+            edit_statement(case, value)
+        else:
+            setattr(case, key, value)
 
-    await update_case_with_retry(self.repository, case_id, apply)
-    return True
+await update_case_with_retry(self.repository, case_id, apply)
 ```
 
 **Example — endpoint 409 handling**:

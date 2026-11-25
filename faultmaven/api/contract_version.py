@@ -151,6 +151,30 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="16.0.0",
+        level="MAJOR",
+        title=(
+            "`PUT /cases/{case_id}` changes the title or description only: a "
+            "body carrying `state`, or any other field it does not declare, "
+            "answers **422** and changes nothing (#2823)."
+        ),
+        body=r"""`CaseUpdateRequest` loses `state` and refuses undeclared fields. Before, a
+non-terminal `state` was written raw, past the investigation's own transitions,
+and a terminal one answered 500 `UPDATE_CASE_ERROR`. A title in the same body
+is refused with it, not applied. State moves through the investigation; a case
+is closed with `POST /cases/{case_id}/close`.
+
+The 422 is the shared validation shape, `{"detail": "Validation error",
+"errors": [...]}`, with `type` `extra_forbidden` at `loc` `["body", "state"]`
+and the value withheld from `input`. Body validation runs before the case is
+read, so a body carrying an undeclared field answers 422 where a caller who
+cannot read the case got 404 `CASE_NOT_FOUND`, a reader who does not drive it
+403 `CASE_NOT_DRIVER`, and a resolved or closed case 409 `CASE_TERMINAL`; a
+body without one gets those answers unchanged.
+
+MAJOR: a request field removed. No first-party client sends it.""",
+    ),
+    ContractChange(
         version="15.18.0",
         level="MINOR",
         title=(
