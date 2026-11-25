@@ -615,8 +615,8 @@ class Message(BaseModel):
     sources: Optional[List[Source]] = Field(
         None,
         description=(
-            "On an assistant row: the knowledge-base runbooks that turn's "
-            "prompt carried — pre-fetched, found for the user's question "
+            "On an assistant row: the knowledge-base sections the model was "
+            "given on that turn — pre-fetched, found for the user's question "
             "about the knowledge base, or cited from the assistant's own kb_qa "
             "search (`metadata.trigger`) — exactly as the "
             "live `TurnResponse.sources` "
