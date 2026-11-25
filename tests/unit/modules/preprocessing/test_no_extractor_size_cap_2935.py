@@ -13,10 +13,10 @@ import pytest
 
 from faultmaven.config.settings import reset_settings
 from faultmaven.models.api import DataType
+from faultmaven.modules.preprocessing import preprocessing_service as ps
 from faultmaven.modules.preprocessing.classifier import DataClassifier
-from faultmaven.modules.preprocessing.extractors import LogsAndErrorsExtractor
-from faultmaven.modules.preprocessing.preprocessing_service import (
-    PreprocessingService,
+from faultmaven.modules.preprocessing.extractors.logs_extractor import (
+    LogsAndErrorsExtractor,
 )
 
 pytestmark = pytest.mark.unit
@@ -33,14 +33,16 @@ def fifty_mb_upload_limit(monkeypatch):
     reset_settings()
 
 
-async def test_a_log_past_fifty_million_characters_gets_an_extract_or_the_preview(
-    fifty_mb_upload_limit,
+async def test_a_log_past_fifty_million_characters_gets_the_preview(
+    fifty_mb_upload_limit, monkeypatch
 ):
-    """Through the real Tier 1 worker: the extractor's own extract, or the
-    preview its deadline or a limit ends in (the worker's business). Neither
-    is the placeholder, and both keep the log's head."""
+    """Through the real Tier 1 worker, its deadline cut short so the log ends
+    in the preview, as one past the deadline does: on ``main`` the extractor
+    answered the placeholder well inside it. The preview keeps the log's
+    head."""
+    monkeypatch.setattr(ps, "TIER1_TIMEOUT_SECONDS", 0.01)
     content = (HEAD + LINE * (50_000_001 // len(LINE) + 1))[:50_000_001]
-    service = PreprocessingService(
+    service = ps.PreprocessingService(
         classifier=DataClassifier(), logs_extractor=LogsAndErrorsExtractor()
     )
     assert service._upload_mb == 50, "premise: the upload admits this log"
@@ -49,13 +51,12 @@ async def test_a_log_past_fifty_million_characters_gets_an_extract_or_the_previe
         content=content, filename="app.log", principal="u1"
     )
 
-    # An extract is stored as its ExtractResult's JSON, a preview as text.
-    stored = result.structural_index
-    assert result.detailed_data_type == DataType.LOGS_AND_ERRORS
-    assert "[File exceeds" not in stored, stored
     metadata = result.extraction_metadata or {}
-    if result.extraction_method == "structure_extraction":
-        assert metadata.get("timeout_fallback") or metadata.get("error_fallback")
-    else:
-        assert result.extraction_method == LogsAndErrorsExtractor().strategy_name
-    assert HEAD.strip() in stored
+    assert result.detailed_data_type == DataType.LOGS_AND_ERRORS
+    assert "[File exceeds" not in result.structural_index, result.structural_index
+    assert result.extraction_method == "structure_extraction"
+    assert any(
+        metadata.get(fallback)
+        for fallback in ("timeout_fallback", "error_fallback", "busy_fallback")
+    ), metadata
+    assert result.structural_index.startswith(HEAD)
