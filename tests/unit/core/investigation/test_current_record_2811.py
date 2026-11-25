@@ -434,11 +434,14 @@ def test_an_old_shape_record_reads_shape_one_and_its_failures_carry_upgraded():
     upgraded = compute_case_outcome(minted, case, at=WritePoint.COMMIT)
     assert _window(upgraded, fix.action_id).problem_row_ids == [_eid("gone")]
 
-    # Carried as final once re-rooted, where a fresh read no longer fails.
+    # Carried as final once re-rooted, where a fresh read no longer fails
+    # and holds the later relief: the upgrade's own cut keeps it out.
     _deepen(case, hyp, root)
+    assert _eid("late") in [e.evidence_id for e in fix_windows(case)[-1].problem_rows]
     again = compute_case_outcome(old, case, at=WritePoint.COMMIT)
     assert _window(again, fix.action_id).state == FixWindowState.FAILED
     assert "attempts.window:" + fix.action_id in again.disagreements
+    assert _window(again, fix.action_id).problem_row_ids == [_eid("relief")]
 
 
 # ---------------------------------------------------------------------------

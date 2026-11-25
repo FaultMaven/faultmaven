@@ -1675,8 +1675,9 @@ class FixWindow:
     #: The record's pair laid over a fresh read (``carry_verdicts``): its cause
     #: row, which ``disconfirmation`` names only by turn, and the fresh read's
     #: own pair, which M6 falls back to (#3046 S3a-2). On a fresh read, its
-    #: own pair's cause row, one of the rows the pair was read over; on the
-    #: window M6 attributes through (``failed_fix_of``), the root's own.
+    #: own pair's cause row, one of the cause now when the turn holds one; on
+    #: the window M6 attributes through (``failed_fix_of``), the root's own,
+    #: the fresh read's where it is.
     pair_carried: bool = False
     pair_cause_row_id: str | None = None
     fresh_disconfirmation: tuple[int, int] | None = None
@@ -1947,8 +1948,13 @@ def fix_windows(
         disconfirmation = replace(shell, **turns).pair_through(
             subjects.observed(row) for row in pair_rows
         )
-        pair_row = disconfirmation and next(
-            e for e in pair_rows if subjects.observed(e) == disconfirmation[0]
+        # The row the pair is read through: one of the cause now, when the
+        # turn holds one (as M6 attributes it), else the turn's first.
+        cause_turn = disconfirmation[0] if disconfirmation else None
+        at = [e for e in pair_rows if subjects.observed(e) == cause_turn]
+        pair_row = next(
+            (e for e in at if subjects.addresses(e, subjects.pool_roots, windows=True)),
+            at[0] if at else None,
         )
         state, failure_turn, relief_turn = FIX_UNKNOWN, None, None
         for turn in sorted(gone_turns | persist_turns):

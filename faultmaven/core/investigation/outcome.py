@@ -525,14 +525,28 @@ def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome
     )
 
 
-def _window_record(window: "FixWindow", fold: _Fold) -> FixWindowRecord:
+def _window_record(
+    window: "FixWindow", fold: _Fold, action_id: Optional[str] = None
+) -> FixWindowRecord:
     subjects = fold.subjects
     named = {getattr(e, "rechecks_evidence_id", None) for e in window.cause_rows}
     pair = None
     if window.disconfirmation is not None:
         removed, present = window.disconfirmation
+        # The row a demotion on this attempt named at the pair's cause turn
+        # (#2586): the pool may have lost its root since.
+        at = {
+            e.evidence_id for e in window.cause_rows if subjects.observed(e) == removed
+        }
+        demoted = [
+            d.cause_row_id
+            for d in getattr(fold.prior, "demotions", ())
+            if (d.action_id, d.fix_turn) == (action_id, window.fix_turn)
+        ]
         pair = DisconfirmationPair(
-            cause_row_id=window.pair_cause_row_id,
+            cause_row_id=next(
+                (i for i in demoted if i in at), window.pair_cause_row_id
+            ),
             problem_row_id=next(
                 (
                     e.evidence_id
@@ -597,7 +611,7 @@ def _attempts(fold: _Fold) -> list[AttemptOutcome]:
                 accepted_in_turn=turn,
                 registered_in_turn=action.registered_in_turn,
                 window=(
-                    _window_record(window, fold)
+                    _window_record(window, fold, action.action_id)
                     if window is not None and _is_remediation(action)
                     else None
                 ),

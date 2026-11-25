@@ -257,7 +257,10 @@ def failed_fix_of(case: Case, hyp: Hypothesis) -> FixWindow | None:
         mine = [row for row in read.cause_rows if of_this_cause((row,), read)]
         pair = read.pair_through(subjects.observed(row) for row in mine)
         if pair is not None:
-            row = next(r for r in mine if subjects.observed(r) == pair[0])
+            at = [r for r in mine if subjects.observed(r) == pair[0]]
+            row = next(
+                (r for r in at if r.evidence_id == read.pair_cause_row_id), at[0]
+            )
             return replace(
                 read,
                 disconfirmation=pair,

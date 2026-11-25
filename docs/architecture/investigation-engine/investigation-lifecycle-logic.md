@@ -1157,11 +1157,14 @@ written*, as amended by #2811, ruled 2026-11-15):
 - **A failed fix disconfirms a cause only through that cause's own pair**
   (#2586, #3046 S3b). A kinded window's pair reads only its targets' rows
   (their deepened-from lineage, its confirmed rows, the rows its targets
-  cite), never an unrelated fallen root's, and names the row it was read
-  through (`FixWindow.pair_cause_row_id`, the record's pair cause row); its
-  state still reads every cause row. A FAILED window with no relief and no
-  pair disproves nothing (refusal `no_own_cause_removal`; the absence
-  notice says the fix's own cause was not shown removed), nor does one
+  cite), never an unrelated fallen root's; its state still reads every
+  cause row. A pair names the row it was read through
+  (`FixWindow.pair_cause_row_id`): one of the cause now when its turn holds
+  one, which M6 names too; the record writes it, or the row a demotion on
+  that attempt named, so the record, M6 and the demotion name one row. A
+  FAILED window with no relief and no pair disproves nothing (refusal
+  `no_own_cause_removal`; the absence notice says the fix's own cause was
+  not shown removed), nor does one
   whose carried pair's cause row has left the window (`pair_row_left`; the
   notice says the re-check was of a cause re-rooted since). M6 attributes a
   carried pair through its own cause row while that row is the window's

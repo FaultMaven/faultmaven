@@ -541,3 +541,30 @@ def test_a_users_refutation_on_the_failed_fix_records_the_demotion():
         fix.action_id,
         rc_b.evidence_id,
     )
+
+
+@pytest.mark.parametrize("pre_chain", [False, True], ids=["cycle", "pre-chain"])
+@pytest.mark.parametrize("order", ["a_first", "b_first"])
+def test_an_unkinded_windows_pair_names_the_row_m6_names(order, pre_chain):
+    """Delta F1: an unkinded fix at 10, A's and B's rows re-checked at 13,
+    the problem present at 14. The record's pair, M6's attribution and the
+    demotion name one row, B's, whichever was recorded first, and whether
+    the pair is minted before M6 (the mint before the chain emission) or
+    after it."""
+    case, _b, hyp_b, rows = cited._kinded_a_fell_older_b_stands()
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    fix = cited._fix(case, 10, None, [], cited._FIX)
+    labels = [(_eid("pool_log"), "rc_a3"), (rows[0].evidence_id, "rc_b")]
+    for named, label in labels if order == "a_first" else labels[::-1]:
+        cited._recheck(case, named, turn=13, label=label)
+    _present(case, 14, "back3")
+    case.current_turn = 14
+    if pre_chain:
+        record_case_outcome(case, at=WritePoint.PRE_CHAIN)
+
+    _cycle(case, 14)
+
+    assert hyp_b.state == HypothesisState.REFUTED
+    (demotion,) = case.progress.outcome.demotions
+    pair = _record_window(case, fix).disconfirmation
+    assert pair.cause_row_id == demotion.cause_row_id == _eid("rc_b")
