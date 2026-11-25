@@ -749,9 +749,11 @@ async def _preprocess_turn_uploads(
     # statement is confirmed. (Terminal turns never reach the engine's
     # generation path — they short-circuit to _process_terminal_turn.)
     # (The INQUIRY exception is AGENT_META → TRIAGE, #1328 — see
-    # ``attachment_reroute``.) A turn whose Gate 1 the engine commits before
-    # the call is INVESTIGATING by its prompt: the engine re-derives the mode
-    # with that state (#3048).
+    # ``attachment_reroute``.) A classified turn whose Gate 1 the engine
+    # commits before the call (a typed bare consent) is INVESTIGATING by its
+    # prompt: the engine re-derives the mode with that state (#3048). A DECIDE
+    # click carries no ``query_mode`` (``_handle_confirmation``) and never took
+    # this reroute.
     rerouted = attachment_reroute(case.state, classification.mode)
     if rerouted is not None and _turn_delivers_evidence_bearing_attachment(
         preprocess_results

@@ -208,7 +208,8 @@ def _rerouted_for_state(
     rule again, so a fresh evidence-bearing upload on it drives Directed
     Analysis (#708) as on any INVESTIGATING turn. A copy: the caller's dict
     is not changed. Nothing to re-derive without a ``query_mode`` (a turn the
-    service did not classify) or without an evidence-bearing attachment.
+    service did not classify, a DECIDE click among them) or without an
+    evidence-bearing attachment.
     """
     from faultmaven.modules.agent.domain.services.query_classifier import (
         ProcessingMode,
