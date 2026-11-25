@@ -163,7 +163,9 @@ class TestFormEncodingIsAccepted:
         )
 
         assert response.status_code == 200, response.text
-        oauth_service.revoke_refresh_token.assert_awaited_once_with(JWT)
+        oauth_service.revoke_refresh_token.assert_awaited_once_with(
+            JWT, client_id="faultmaven-copilot"
+        )
 
     @pytest.mark.asyncio
     async def test_a_charset_parameter_does_not_hide_the_media_type(
@@ -242,7 +244,9 @@ class TestJsonRemainsAccepted:
         )
 
         assert response.status_code == 200, response.text
-        oauth_service.revoke_token.assert_awaited_once_with(JWT)
+        oauth_service.revoke_token.assert_awaited_once_with(
+            JWT, client_id="faultmaven-copilot"
+        )
 
     @pytest.mark.asyncio
     async def test_a_body_with_no_content_type_is_read_as_json(

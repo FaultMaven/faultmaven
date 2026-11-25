@@ -1,6 +1,12 @@
 {
-  "contractVersion": "15.15.1",
+  "contractVersion": "15.16.0",
   "entries": [
+    {
+      "body": "A longer `client_id` is refused before any other step: 400\n`invalid_request` at `/token` and `/revoke`, 422 at `/authorize`. Service\naccount provisioning already caps a client id at 255 characters.\n\nRFC 7009 \u00a72.1: `/revoke` now compares the `client_id` in the request with the\nclient a refresh token names. A valid token naming another client is refused\nwith 400 `invalid_grant`, \"The token was not issued to this client.\", under\nany `token_type_hint`, and stays live. The 400 is already documented. A token\nnaming no client (an access token, a refresh token minted before client\nbinding, #2750) is revoked under any `client_id`, and an invalid or expired token\nstill answers 200.\n\nMINOR: every first-party client sends a short `client_id` and revokes only its\nown tokens, so no existing flow changes.",
+      "level": "MINOR",
+      "title": "OAuth `client_id` is at most 255 characters (`maxLength`) on `GET`/`POST /auth/oauth/authorize`, `POST /auth/oauth/token` and `POST /auth/oauth/revoke`, and `/revoke` refuses a token issued to another client with **400** `invalid_grant` (#2765).",
+      "version": "15.16.0"
+    },
     {
       "body": "Corrects 15.15.0, which sent a refused database connection to the turn\nroute's 503 without changing its detail. The detail said \"The database did not\nanswer in time\", even when the database refused the connection. It now reads\n\"The database could not be reached or did not answer in time, so this request\nwas not saved. Please retry shortly.\" No status, code, header or schema\nchanged. Clients branch on `x-error-code`, never on the text.",
       "level": "PATCH",

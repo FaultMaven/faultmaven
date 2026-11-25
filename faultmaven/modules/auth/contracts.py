@@ -346,19 +346,32 @@ class IOAuthService(ABC):
         """
         ...
 
-    async def revoke_token(self, token: str) -> None:
+    async def revoke_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke access token (logout).
 
         Args:
             token: Access token to revoke
+            client_id: The requesting client, when the request names one. A
+                token naming another client is not revoked (#2765).
+
+        Raises:
+            TokenClientMismatchError: The token names another client.
         """
         ...
 
-    async def revoke_refresh_token(self, refresh_token: str) -> None:
+    async def revoke_refresh_token(
+        self, refresh_token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke refresh token (prevents future token refresh).
 
         Args:
             refresh_token: Refresh token to revoke
+            client_id: See ``revoke_token`` (#2765).
+
+        Raises:
+            TokenClientMismatchError: The token names another client.
         """
         ...
 

@@ -36,6 +36,7 @@ from faultmaven.config.deployment_coherence import (
 )
 from faultmaven.exceptions import InactiveAccountError
 from faultmaven.modules.auth.domain.models.user import User
+from faultmaven.modules.auth.exceptions import TokenClientMismatchError
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
@@ -854,7 +855,9 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def revoke_access_token(self, token: str) -> None:
+    async def revoke_access_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke access token (add to revocation list).
 
         Implementations record nothing for a token this deployment did not
@@ -863,18 +866,24 @@ class IJWTTokenGenerator(ABC):
 
         Args:
             token: JWT access token to revoke
+            client_id: The requesting client, when the request names one. A
+                token naming another client raises ``TokenClientMismatchError``
+                and is not revoked (RFC 7009 §2.1, #2765).
         """
         ...
 
     @abstractmethod
-    async def revoke_refresh_token(self, token: str) -> None:
+    async def revoke_refresh_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke refresh token (prevent future use).
 
         Implementations record nothing for a token this deployment did not
-        sign — see ``revoke_access_token``.
+        sign — see ``revoke_access_token``, which also describes ``client_id``.
 
         Args:
             token: JWT refresh token to revoke
+            client_id: See ``revoke_access_token`` (#2765).
         """
         ...
 
@@ -1420,13 +1429,17 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             options={"verify_exp": True, "verify_aud": False},
         )
 
-    async def revoke_access_token(self, token: str) -> None:
+    async def revoke_access_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke access token by adding jti to the revocation store.
 
         Args:
             token: JWT access token to revoke
+            client_id: The requesting client (#2765); see the interface.
 
         Raises:
+            TokenClientMismatchError: The token names another client.
             Exception: Store write failures propagate — a caller must not
                 report revocation success when the token remains usable.
         """
@@ -1435,15 +1448,20 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token,
             token_kind="access",
             decode_verified=self._decode_for_revocation,
+            expected_client=client_id,
         )
 
-    async def revoke_refresh_token(self, token: str) -> None:
+    async def revoke_refresh_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke refresh token by adding jti to the revocation store.
 
         Args:
             token: JWT refresh token to revoke
+            client_id: The requesting client (#2765); see the interface.
 
         Raises:
+            TokenClientMismatchError: The token names another client.
             Exception: Store write failures propagate — a caller must not
                 report revocation success when the token remains usable.
         """
@@ -1452,6 +1470,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             token,
             token_kind="refresh",
             decode_verified=self._decode_for_revocation,
+            expected_client=client_id,
         )
 
     async def claim_refresh_token(self, claims: Dict) -> "RefreshClaim":
@@ -1465,6 +1484,7 @@ async def _revoke_token_by_jti(
     *,
     token_kind: str,
     decode_verified: Callable[[str], Dict],
+    expected_client: Optional[str] = None,
 ) -> None:
     """Record a token's jti in the revocation store (shared by both generators).
 
@@ -1491,6 +1511,12 @@ async def _revoke_token_by_jti(
     treats revocation of an invalid token as success, and such a token has
     nothing to revoke. Only STORE WRITE failures propagate, so revoke endpoints
     cannot report success while a real token remains usable (#767).
+
+    ``expected_client`` is the requesting client, when there is one. A verified
+    token whose ``client_id`` claim is not a string or not equal to it raises
+    ``TokenClientMismatchError`` and nothing is written (RFC 7009 §2.1, #2765).
+    A token naming no client is revoked under any client. The check reads no
+    revocation state, so an already-revoked token is refused the same way.
     """
     try:
         # The exp/TTL math shares this block with the decode: a crafted or
@@ -1521,6 +1547,16 @@ async def _revoke_token_by_jti(
             extra={"token_kind": token_kind, "error": exception_log_name(e)},
         )
         return
+
+    # Outside the try: its blanket arm would turn the refusal into a no-op.
+    if expected_client is not None and "client_id" in payload:
+        bound_client = payload["client_id"]
+        if not isinstance(bound_client, str) or bound_client != expected_client:
+            logger.warning(
+                "JWT revocation refused: token issued to another client",
+                extra={"token_kind": token_kind, "user_id": payload.get("sub")},
+            )
+            raise TokenClientMismatchError()
 
     await revocation_store.add_revoked_token(jti, ttl)
     logger.info(
@@ -2180,13 +2216,17 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             options={"verify_exp": True, "verify_aud": False},
         )
 
-    async def revoke_access_token(self, token: str) -> None:
+    async def revoke_access_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke access token by adding jti to the revocation store.
 
         Args:
             token: JWT access token to revoke
+            client_id: The requesting client (#2765); see the interface.
 
         Raises:
+            TokenClientMismatchError: The token names another client.
             Exception: Store write failures propagate — a caller must not
                 report revocation success when the token remains usable.
         """
@@ -2195,15 +2235,20 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token,
             token_kind="access",
             decode_verified=self._decode_for_revocation,
+            expected_client=client_id,
         )
 
-    async def revoke_refresh_token(self, token: str) -> None:
+    async def revoke_refresh_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke refresh token by adding jti to the revocation store.
 
         Args:
             token: JWT refresh token to revoke
+            client_id: The requesting client (#2765); see the interface.
 
         Raises:
+            TokenClientMismatchError: The token names another client.
             Exception: Store write failures propagate — a caller must not
                 report revocation success when the token remains usable.
         """
@@ -2212,6 +2257,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token,
             token_kind="refresh",
             decode_verified=self._decode_for_revocation,
+            expected_client=client_id,
         )
 
     async def claim_refresh_token(self, claims: Dict) -> "RefreshClaim":

@@ -303,6 +303,10 @@ success, but it does not require storing an entry for one. An **expired** token
 is likewise not recorded: there is nothing left to revoke. Audience, issuer and
 `type` are deliberately not checked on this path — `token_type_hint` is a hint,
 and any token this deployment signed is revocable whatever it was minted for.
+A verified token that names a client (`client_id`, refresh tokens since #2750)
+is revoked only by a request from that client, and refused 400 `invalid_grant`
+otherwise (RFC 7009 §2.1, #2765); while every client is public this is
+conformance, not protection, since a holder can read the claim.
 
 The entry's TTL is one rule for every jti writer (`revocation_entry_ttl`,
 #2764): `min(ceil(exp - now) + REVOCATION_ENTRY_MARGIN_SECONDS, schema ceiling

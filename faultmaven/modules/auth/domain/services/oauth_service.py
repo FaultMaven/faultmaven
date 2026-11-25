@@ -635,6 +635,20 @@ class OAuthServiceImpl(IOAuthService):
         # this grant redeems is already revocable.
         state_read_at = capture_state_read_at()
 
+        # Before the first log line, which carries the client id (#2765).
+        if len(client_id) > MAX_CLIENT_ID_LENGTH:
+            logger.warning(
+                "OAuth token refresh failed: client mismatch",
+                extra={"error": "CLIENT_MISMATCH"},
+            )
+            self._metrics.record_token_refresh(
+                client_id=client_id, success=False, error_code="CLIENT_MISMATCH"
+            )
+            raise InvalidGrantError(
+                "Refresh token is not valid for this client",
+                error_code="CLIENT_MISMATCH",
+            )
+
         logger.info(
             "OAuth token refresh requested",
             extra={
@@ -683,7 +697,7 @@ class OAuthServiceImpl(IOAuthService):
                 client_id not in self.settings.oauth_allowed_clients
                 and client_id != SERVICE_CLIENT_ID
             )
-        if refused or len(client_id) > MAX_CLIENT_ID_LENGTH:
+        if refused:
             logger.warning(
                 "OAuth token refresh failed: client mismatch",
                 extra={"user_id": user_id, "error": "CLIENT_MISMATCH"},
@@ -861,17 +875,24 @@ class OAuthServiceImpl(IOAuthService):
 
         return payload.get("sub")  # 'sub' claim contains user_id
 
-    async def revoke_token(self, token: str) -> None:
+    async def revoke_token(
+        self, token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke access token (logout).
 
         Args:
             token: Access token to revoke
+            client_id: The requesting client; a token naming another client
+                is not revoked (#2765).
+
+        Raises:
+            TokenClientMismatchError: The token names another client.
         """
         logger.info(
             "OAuth access token revocation requested",
             extra={"token_prefix": token[:16] if token else None},
         )
-        await self.token_generator.revoke_access_token(token)
+        await self.token_generator.revoke_access_token(token, client_id=client_id)
         logger.info(
             "OAuth access token revoked",
             extra={"token_prefix": token[:16] if token else None},
@@ -879,17 +900,25 @@ class OAuthServiceImpl(IOAuthService):
         # Record metrics
         self._metrics.record_token_revocation("access_token")
 
-    async def revoke_refresh_token(self, refresh_token: str) -> None:
+    async def revoke_refresh_token(
+        self, refresh_token: str, *, client_id: Optional[str] = None
+    ) -> None:
         """Revoke refresh token (prevents future token refresh).
 
         Args:
             refresh_token: Refresh token to revoke
+            client_id: See ``revoke_token`` (#2765).
+
+        Raises:
+            TokenClientMismatchError: The token names another client.
         """
         logger.info(
             "OAuth refresh token revocation requested",
             extra={"token_prefix": refresh_token[:16] if refresh_token else None},
         )
-        await self.token_generator.revoke_refresh_token(refresh_token)
+        await self.token_generator.revoke_refresh_token(
+            refresh_token, client_id=client_id
+        )
         logger.info(
             "OAuth refresh token revoked",
             extra={"token_prefix": refresh_token[:16] if refresh_token else None},

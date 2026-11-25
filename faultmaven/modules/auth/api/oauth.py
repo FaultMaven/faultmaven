@@ -60,6 +60,10 @@ from faultmaven.modules.auth.contracts import (
     OAuthTokenDTO,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+    MAX_CLIENT_ID_LENGTH,
+)
+from faultmaven.modules.auth.exceptions import TokenClientMismatchError
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
@@ -105,7 +109,9 @@ class AuthorizationApprovalRequest(BaseModel):
     approved: bool = Field(description="True if user approved, False if denied")
     code_challenge: str = Field(description="PKCE code challenge")
     code_challenge_method: Optional[Literal["S256"]] = Field(default="S256")
-    client_id: str = Field(description="OAuth client ID")
+    client_id: str = Field(
+        max_length=MAX_CLIENT_ID_LENGTH, description="OAuth client ID"
+    )
     redirect_uri: str = Field(description="Callback URI")
     scope: str = Field(description="Requested scopes")
     state: str = Field(description="Client state")
@@ -172,8 +178,12 @@ class TokenRequest(BaseModel):
     # `min_length=1` because form encoding makes an empty parameter easy to
     # send by accident (`-d client_id=`) where a JSON client would have had to
     # write `""`; an empty client id identifies nobody and must be refused as a
-    # malformed request rather than carried into the grant.
-    client_id: str = Field(min_length=1, description="OAuth client ID")
+    # malformed request rather than carried into the grant. `max_length` keeps
+    # an unbounded caller-supplied value out of every log line after this
+    # (#2765).
+    client_id: str = Field(
+        min_length=1, max_length=MAX_CLIENT_ID_LENGTH, description="OAuth client ID"
+    )
 
 
 class TokenResponse(BaseModel):
@@ -223,7 +233,9 @@ class RevokeRequest(BaseModel):
     token_type_hint: Optional[TokenTypeHint] = Field(
         default=None, description="Hint about token type (optional)"
     )
-    client_id: str = Field(min_length=1, description="OAuth client ID")
+    client_id: str = Field(
+        min_length=1, max_length=MAX_CLIENT_ID_LENGTH, description="OAuth client ID"
+    )
 
 
 # ============================================================
@@ -487,7 +499,9 @@ def _is_first_party(client_id: str, redirect_uri: str, settings: Any) -> bool:
 )
 async def get_authorization_request(
     response_type: str = Query(..., description="Must be 'code'"),
-    client_id: str = Query(..., description="OAuth client ID"),
+    client_id: str = Query(
+        ..., max_length=MAX_CLIENT_ID_LENGTH, description="OAuth client ID"
+    ),
     redirect_uri: str = Query(..., description="Extension callback URI"),
     state: str = Query(..., description="Client state for CSRF protection"),
     code_challenge: str = Query(..., description="PKCE code challenge"),
@@ -908,7 +922,9 @@ async def revoke(
     Returns:
         Empty object (200 OK per RFC 7009), or an RFC 6749 §5.2 error body.
 
-    Note: Returns 200 even if token doesn't exist (per RFC 7009)
+    Note: Returns 200 even if token doesn't exist (per RFC 7009). A valid
+    token issued to another client than `client_id` is refused with 400
+    `invalid_grant` and stays live (RFC 7009 §2.1).
     """
     try:
         params = await _read_oauth_params(request)
@@ -929,15 +945,26 @@ async def revoke(
         # Determine token type
         token_type = revoke_request.token_type_hint or "access_token"
 
+        # RFC 7009 §2.1: a token issued to another client is refused, under
+        # either hint (#2765).
         if token_type == "refresh_token":
-            await oauth_service.revoke_refresh_token(revoke_request.token)
+            await oauth_service.revoke_refresh_token(
+                revoke_request.token, client_id=revoke_request.client_id
+            )
             logger.info(f"Revoked refresh token for client {revoke_request.client_id}")
         else:
-            await oauth_service.revoke_token(revoke_request.token)
+            await oauth_service.revoke_token(
+                revoke_request.token, client_id=revoke_request.client_id
+            )
             logger.info(f"Revoked access token for client {revoke_request.client_id}")
 
     except OAuthProtocolError:
         raise
+    except TokenClientMismatchError as e:
+        # The refresh grant's code for the same fact (`InvalidGrantError`).
+        raise OAuthProtocolError(
+            "invalid_grant", "The token was not issued to this client."
+        ) from e
     except Exception as e:
         logger.error(f"Token revocation error: {exception_log_name(e)}", exc_info=e)
         # Invalid/unknown tokens are already treated as success inside the
