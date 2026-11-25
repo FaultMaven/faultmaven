@@ -1,6 +1,7 @@
 """A lost version race on ``PUT /cases/{case_id}`` or the close route answers
-409 ``CASE_VERSION_CONFLICT``, nothing written; ``PUT`` writes the case as
-it stands when written (#2825).
+409 ``CASE_VERSION_CONFLICT``, nothing written; ``PUT`` decides each fresh
+load as the case then stands: its driver, and for a description its state
+(#2825).
 
 On ``main`` the PUT's race answered 500 ``UPDATE_CASE_ERROR`` on both write
 paths (the metadata write's ``ConflictError`` and the statement edit's
@@ -18,10 +19,18 @@ version guard refuses the attempt.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
-from faultmaven.exceptions import CASE_TERMINAL, CASE_VERSION_CONFLICT
+from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.config.tenant_context import set_current_enterprise_id
+from faultmaven.exceptions import (
+    CASE_NOT_DRIVER,
+    CASE_TERMINAL,
+    CASE_VERSION_CONFLICT,
+    ConflictError,
+)
 from faultmaven.modules.case.contracts import (
     CaseState,
     CausalNode,
@@ -29,6 +38,11 @@ from faultmaven.modules.case.contracts import (
     ProblemVerification,
     StatementRecordKind,
 )
+from faultmaven.modules.case.domain.services.case_service import CaseService
+from faultmaven.modules.case.infrastructure.case_repository import (
+    InMemoryCaseRepository,
+)
+from tests.case_builders import make_case
 
 pytestmark = pytest.mark.unit
 
@@ -195,14 +209,7 @@ def test_a_case_gate_1_opens_meanwhile_gets_the_statement_edit(api, monkeypatch)
     )
 
     assert response.status_code == 200, response.text
-    after = _load(api, case_id)
-    [problem] = after.causal_nodes.values()
-    assert after.description == EDITED
-    assert after.problem_verification.symptom_statement == EDITED
-    assert problem.statement == EDITED
-    assert after.problem_verification.statement_history[-1].kind == (
-        StatementRecordKind.EDITED
-    )
+    _assert_statement(_load(api, case_id), EDITED)
 
 
 def test_a_case_closed_meanwhile_is_refused_case_terminal(api, monkeypatch):
@@ -247,3 +254,116 @@ def test_unchanged_a_title_edit_and_the_terminal_gate(api):
     assert refused.status_code == 409, refused.text
     assert refused.headers["x-error-code"] == CASE_TERMINAL
     assert _load(api, case_id).title == "renamed"
+
+
+def _assert_statement(case, text: str) -> None:
+    [problem] = case.causal_nodes.values()
+    assert case.description == text
+    assert case.problem_verification.symptom_statement == text
+    assert problem.statement == text
+    assert case.problem_verification.statement_history[-1].kind == (
+        StatementRecordKind.EDITED
+    )
+
+
+def test_gate_1_committing_inside_the_scoped_write_hands_off_on_the_retry(
+    api, monkeypatch
+):
+    """The scoped write loses its ``expected_version`` race to Gate 1, which
+    commits between the load and the UPDATE; the retry's fresh load finds an
+    investigation and the edit becomes the statement edit."""
+    client, auth, service = api
+    case_id = _create(api)
+    repository = service.repository
+    real, save = repository.update_metadata_fields, repository.save
+    raced = []
+
+    async def gate_1_first(case_id, **kwargs):
+        if kwargs.get("expected_version") is not None and not raced:
+            raced.append(case_id)
+            await _open_investigation(repository, save, case_id)
+        return await real(case_id, **kwargs)
+
+    monkeypatch.setattr(repository, "update_metadata_fields", gate_1_first)
+
+    response = client.put(
+        f"/api/v1/cases/{case_id}", json={"description": EDITED}, headers=auth
+    )
+
+    assert response.status_code == 200, response.text
+    assert raced == [case_id]
+    _assert_statement(_load(api, case_id), EDITED)
+
+
+@pytest.mark.parametrize("investigating", [False, True], ids=["metadata", "statement"])
+def test_a_hand_off_after_the_access_read_refuses_the_write(
+    api, monkeypatch, investigating
+):
+    """ADR-020 D4 on both write paths: once the access reads pass, every load
+    shows the case driven by someone else; 403 ``CASE_NOT_DRIVER``, nothing
+    written (on the metadata path it answered 200 and wrote the edit)."""
+    client, auth, service = api
+    case_id = _create(api)
+    repository = service.repository
+    if investigating:
+        client.portal.call(_open_investigation, repository, repository.save, case_id)
+    before = _load(api, case_id)
+    real_get = repository.get
+    handed_off = []
+
+    async def get(case_id):
+        case = await real_get(case_id)
+        if handed_off and case is not None:
+            case.driver_id = "someone-else"
+        return case
+
+    async def hand_off(case_id, _user_id):
+        handed_off.append(case_id)
+
+    monkeypatch.setattr(repository, "get", get)
+    _after_the_access_read(api, monkeypatch, hand_off)
+
+    response = client.put(
+        f"/api/v1/cases/{case_id}",
+        json={"title": "renamed", "description": EDITED},
+        headers=auth,
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.headers["x-error-code"] == CASE_NOT_DRIVER
+    after = client.portal.call(real_get, case_id)
+    assert (after.title, after.description, after.version) == (
+        before.title,
+        before.description,
+        before.version,
+    )
+
+
+async def test_a_title_alone_names_a_resolved_placeholder_case():
+    """The title route names a resolved case still holding its placeholder
+    (``cases.py``: "Naming it is the one write still owed"); the service
+    writes that title, a description it would refuse."""
+    case = make_case(
+        user_id="u",
+        title="Case-260101-7",
+        state=CaseState.RESOLVED,
+        description="Checkout API returned 502 after the v2.1.3 deploy",
+        created_at=datetime(2026, 1, 1, 9, tzinfo=timezone.utc),
+        resolved_at=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 1, 1, 10, tzinfo=timezone.utc),
+    )
+    set_current_enterprise_id(case.enterprise_id)
+    try:
+        repository = InMemoryCaseRepository()
+        await repository.save(case)
+        service = CaseService(repository)
+
+        assert await service.update_case(case.case_id, {"title": "Checkout 502s"}, "u")
+        assert (await repository.get(case.case_id)).title == "Checkout 502s"
+
+        with pytest.raises(ConflictError) as refused:
+            await service.update_case(case.case_id, {"description": EDITED}, "u")
+        assert refused.value.error_code == CASE_TERMINAL
+        assert (await repository.get(case.case_id)).description != EDITED
+    finally:
+        set_current_enterprise_id(STANDALONE_ENTERPRISE_ID)

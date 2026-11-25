@@ -939,9 +939,10 @@ async def get_case_ui(
             "description": (
                 f"`x-error-code: {CASE_TERMINAL}`: the case is resolved or "
                 f"closed and read-only. `{CASE_VERSION_CONFLICT}`: the case "
-                "kept changing; reload and retry. Nothing was written. A case "
-                "found terminal, or the race lost, after the case was read "
-                "answers the shared conflict body (`error`, `detail`, "
+                "kept changing; reload and retry. Nothing was written. A "
+                "description edit that finds the case terminal, or a lost "
+                "race, after the case was read answers the shared conflict "
+                "body (`error`, `detail`, "
                 "`status_code`, `resource_type`, `resource_id`, "
                 "`conflict_reason`: `already_closed` or `concurrent_update`); "
                 "the turn route's `x-expected-version` and `x-actual-version` "

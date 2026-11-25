@@ -1776,7 +1776,7 @@ may update it (ADR-020 D2): a reader who does not drive it gets 403
 - `200` — Successful Response
 - `403` — `x-error-code: CASE_NOT_DRIVER`: the caller reads the case but does not drive it, and this write is the driver's. Nothing was written.
 - `404` — `x-error-code: CASE_NOT_FOUND`: the case does not exist, was deleted, or the caller cannot read it; the three are not told apart. A 404 for something inside the case (a file, evidence, a report) carries no `x-error-code`.
-- `409` — `x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. Nothing was written. A case found terminal, or the race lost, after the case was read answers the shared conflict body (`error`, `detail`, `status_code`, `resource_type`, `resource_id`, `conflict_reason`: `already_closed` or `concurrent_update`); the turn route's `x-expected-version` and `x-actual-version` are not sent.
+- `409` — `x-error-code: CASE_TERMINAL`: the case is resolved or closed and read-only. `CASE_VERSION_CONFLICT`: the case kept changing; reload and retry. Nothing was written. A description edit that finds the case terminal, or a lost race, after the case was read answers the shared conflict body (`error`, `detail`, `status_code`, `resource_type`, `resource_id`, `conflict_reason`: `already_closed` or `concurrent_update`); the turn route's `x-expected-version` and `x-actual-version` are not sent.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---

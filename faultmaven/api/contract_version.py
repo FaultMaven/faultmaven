@@ -169,11 +169,14 @@ resource_type, resource_id, conflict_reason}`, with `conflict_reason`
 `concurrent_update`; the turn route's `x-expected-version` and
 `x-actual-version` are not sent.
 
-`PUT` also decides on the case as it stands when written, not as it was first
-read: a case resolved or closed meanwhile answers 409 `CASE_TERMINAL` (it
-answered 200 and wrote the edit), and a description on a case that entered its
-investigation meanwhile is the problem-statement edit, refused 400 when the
-edit is not allowed.
+A description edit on `PUT` is also decided on each fresh load of the case,
+not on its first read: a case resolved or closed meanwhile answers 409
+`CASE_TERMINAL` (it answered 200 and wrote the edit), and a case that entered
+its investigation meanwhile gets the problem-statement edit, refused 400 when
+that edit is not allowed. A caller the case was handed away from meanwhile is
+refused 403 `CASE_NOT_DRIVER`. A title alone is unchanged: written without a
+version check, so it never conflicts with a turn's save, and the route's own
+gate still refuses it on a resolved or closed case.
 
 MINOR: a declared 409 code added on two routes.""",
     ),

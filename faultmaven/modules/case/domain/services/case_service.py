@@ -586,9 +586,13 @@ class CaseService(CaseDriverMixin, ICaseService):
         ``POST /cases/{case_id}/close``) is refused with
         ``ValidationException`` before anything is read or written (#2823).
 
-        The write path is chosen on each fresh load, not on the access
-        check's read, so a case Gate 1 opened or a close landed on meanwhile
-        is written as it now stands (#2825):
+        Each fresh load, not the access check's read, decides (#2825): the
+        caller must still drive the case; a description on a case Gate 1
+        opened meanwhile is the statement edit, and one on a case resolved or
+        closed meanwhile is refused ``CASE_TERMINAL``. A title alone is
+        written on a terminal case too (the title route names a resolved case
+        still holding its placeholder), and is unconditional: it carries no
+        version predicate, so it never conflicts with a turn's save.
 
         - **Metadata** (title, description): goes through the scoped
           ``update_metadata_fields`` repo method. Does NOT bump
@@ -614,12 +618,12 @@ class CaseService(CaseDriverMixin, ICaseService):
             ValidationException: a key other than ``title`` or ``description``.
             NotFoundError: the caller cannot read the case, or it was deleted
                 while the update ran.
-            CaseNotDriverError: the caller reads it but does not drive it, at
-                the gate or because the driver changed while the update ran
-                (#2806).
-            ConflictError: ``CASE_TERMINAL``, the case was resolved or closed
-                while the update ran; ``CASE_VERSION_CONFLICT``, either write
-                lost its version race on every attempt (#2825).
+            CaseNotDriverError: the caller reads it but does not drive it: at
+                the gate (#2806), or on a fresh load of either write path,
+                every attempt, when the driver changed meanwhile (#2825).
+            ConflictError: ``CASE_TERMINAL``, a description edit found the
+                case resolved or closed; ``CASE_VERSION_CONFLICT``, either
+                write lost its version race on every attempt (#2825).
         """
         if not case_id or not case_id.strip():
             raise ValidationException("Case ID cannot be empty")
@@ -634,15 +638,14 @@ class CaseService(CaseDriverMixin, ICaseService):
             )
 
         try:
-            # Access check happens by loading via require_case first. Then the
-            # retry helper (statement edit) reloads on conflict via
-            # repository.get(), which skips the access check. We enforce
-            # the check once up front; no privilege escalation window
-            # exists because the user_id doesn't change between attempts.
-            # ``driver_only``: editing the case is one of the driver's
-            # investigation writes (ADR-020 D2): a reader who does not
-            # drive is refused ``CASE_NOT_DRIVER``, a caller who cannot read
-            # the case ``CASE_NOT_FOUND`` (#2806).
+            # The access check, once: ``driver_only``, editing the case is one
+            # of the driver's investigation writes (ADR-020 D2): a reader who
+            # does not drive is refused ``CASE_NOT_DRIVER``, a caller who
+            # cannot read the case ``CASE_NOT_FOUND`` (#2806). The writes then
+            # reload through repository.get(), which checks no access, so each
+            # fresh load re-checks the driver itself (``_write_metadata`` and
+            # ``_edit_statement``'s mutator): a hand-off landing after this
+            # read refuses the write (ADR-020 D4).
             await self.require_case(case_id, user_id, driver_only=True)
             await self._write_metadata(case_id, updates, user_id)
 
@@ -668,9 +671,11 @@ class CaseService(CaseDriverMixin, ICaseService):
         again (#2811). An unchanged description is not written: the title is,
         alone. Its disagreements are counted once, after the write.
 
-        Each fresh load decides (#2825): a terminal case is refused
-        ``CASE_TERMINAL``, and a description on an investigation is the
-        problem statement, handed to ``_edit_statement``."""
+        Each fresh load decides (#2825): a caller who no longer drives the
+        case is refused ``CASE_NOT_DRIVER``; a description on a terminal case
+        is refused ``CASE_TERMINAL``, and on an investigation it is the
+        problem statement, handed to ``_edit_statement``. A title alone is
+        written whatever the state, without a version predicate."""
         from faultmaven.core.investigation.outcome import (
             disagreement_keys,
             record_case_outcome,
@@ -682,10 +687,13 @@ class CaseService(CaseDriverMixin, ICaseService):
             case = await self.repository.get(case_id)
             if case is None:
                 raise NotFoundError("Case", case_id)
-            if case.state.is_terminal:
-                raise _terminal_refusal(case_id, case.state)
-            if "description" in updates and case.state == CaseState.INVESTIGATING:
-                return await self._edit_statement(case_id, updates, user_id)
+            if user_id and case.effective_driver_id != user_id:
+                raise CaseNotDriverError()
+            if "description" in updates:
+                if case.state.is_terminal:
+                    raise _terminal_refusal(case_id, case.state)
+                if case.state == CaseState.INVESTIGATING:
+                    return await self._edit_statement(case_id, updates, user_id)
             stored, loaded = case.description, disagreement_keys(case.progress.outcome)
             if description is not None:
                 try:
@@ -1195,11 +1203,11 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Driver-only write (ADR-020 D2): closing is an investigation write, so a
         reader who does not drive — the creator included, while someone else
-        drives — is refused. Denial surfaces as NotFoundError (the absent-case
-        answer every ``driver_only`` gate gives). The retry's mutator re-checks
-        the driver on every fresh load, so a reassignment that lands between
-        the pre-check and the write refuses the close instead of closing a
-        case the caller no longer drives.
+        drives — is refused ``CaseNotDriverError`` (403 ``CASE_NOT_DRIVER``),
+        and a caller who cannot read the case ``NotFoundError`` (#2806). The
+        retry's mutator re-checks the driver on every fresh load, so a
+        reassignment that lands between the pre-check and the write refuses
+        the close instead of closing a case the caller no longer drives.
 
         Wrapped in ``update_case_with_retry`` so a concurrent save reloads
         and re-applies the closure; the mutator re-checks terminal state on
@@ -1208,8 +1216,11 @@ class CaseService(CaseDriverMixin, ICaseService):
 
         Raises:
             NotFoundError: The caller cannot read the case.
-            CaseNotDriverError: The caller reads it but does not drive it.
-            ConflictError: Case is already resolved/closed.
+            CaseNotDriverError: The caller reads it but does not drive it, at
+                the gate or on a fresh load.
+            ConflictError: ``CASE_TERMINAL``, the case is already resolved or
+                closed; ``CASE_VERSION_CONFLICT``, the close lost its version
+                race on every attempt (#2825).
         """
         from faultmaven.core.investigation.terminal_transitions import (
             execute_user_closure,

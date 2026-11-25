@@ -105,8 +105,9 @@ before it reads a body. Two such codes are defined in
 because the case is resolved or closed carries it — the case service's
 `ConflictError` and the turn route's and `PUT /cases/{case_id}`'s
 `HTTPException`s alike (#1907). `CASE_VERSION_CONFLICT`: a case write that lost
-its version race on every attempt — the turn route, `PUT /cases/{case_id}`,
-`POST /cases/{case_id}/close` and the driver route (#2825).
+its version race — the turn route on its first conflict (a turn is not re-run),
+and `PUT /cases/{case_id}`, `POST /cases/{case_id}/close` and the driver route
+once their retries are spent (#2825).
 A conflict raised without an `error_code` goes out with no header.
 `tests/unit/api/middleware/test_conflict_labelling.py` fails on a 409
 `JSONResponse` / `HTTPException` that is neither labelled nor classified
