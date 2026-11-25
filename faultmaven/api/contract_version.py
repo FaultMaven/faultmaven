@@ -166,8 +166,7 @@ Only a `typed` query is searched for system output to offer back as data (the
 "Yes, save it as data" choice). The server's own composed query on a turn
 carrying only data is no longer searched either, so such a turn offers no
 block even from a client that does not send the field. The "Submit the output"
-request for a reported state is unchanged: it is asked unless the turn has
-neither a query nor data, whoever wrote the query.
+request for a reported state is unchanged by this version.
 
 Under an `Idempotency-Key`, a retry whose `query_source` differs is a
 different turn (409 `IDEMPOTENCY_KEY_REUSE`).
