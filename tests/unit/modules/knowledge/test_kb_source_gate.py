@@ -57,8 +57,10 @@ class _Teams:
         return ["team-of-viewer"]
 
 
-def _kb(document_id: Optional[str], *, new: Optional[bool] = True) -> Source:
-    metadata: dict = {"title": f"Runbook {document_id}", "trigger": "symptom"}
+def _kb(
+    document_id: Optional[str], *, new: Optional[bool] = True, trigger="symptom"
+) -> Source:
+    metadata: dict = {"title": f"Runbook {document_id}", "trigger": trigger}
     if document_id is not None:
         metadata["document_id"] = document_id
     return Source(
@@ -225,6 +227,19 @@ async def test_redacted_sections_of_one_runbook_share_a_number():
     assert _numbers(gated) == [1, None, 2, 3, 1, 2]
     for source, number in zip(gated[:1] + gated[2:], [1, 2, 3, 1, 2]):
         _assert_redacted(source, runbook=number)
+
+
+async def test_one_runbook_found_by_two_channels_keeps_one_number():
+    """The standing context and this turn's kb_qa citation of one runbook are
+    one runbook: the number keys on the document alone, not its channel."""
+    (gated,) = await _gate(
+        [[_kb(RB_A, new=False), _kb(RB_B), _kb(RB_A, new=True, trigger="kb_qa")]],
+        _Knowledge(set()),
+    )
+
+    assert _numbers(gated) == [1, 2, 1]
+    _assert_redacted(gated[0], runbook=1, new=False)
+    _assert_redacted(gated[2], runbook=1, new=True)
 
 
 async def test_id_less_entries_each_draw_the_next_number_in_order():

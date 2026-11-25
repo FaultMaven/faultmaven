@@ -326,7 +326,9 @@ def is_global_authoring_allowed(is_platform_admin: bool) -> bool:
 #: ``Source.metadata["access"]`` on a knowledge-base source withheld from this
 #: viewer. The entry keeps its ``type``, and ``new_this_turn`` where the stored
 #: entry had one; its excerpt, title, document id, score and trigger are gone,
-#: so a client can say "a runbook you don't have access to" and nothing more.
+#: so a client can say "a runbook you don't have access to". Its runbook key
+#: (:data:`RESTRICTED_SOURCE_RUNBOOK_KEY`) also reveals how many distinct
+#: runbooks the list withholds and which of its entries share one.
 RESTRICTED_SOURCE_ACCESS = "restricted"
 
 #: ``Source.metadata["runbook"]`` on a withheld source, beside ``access`` and

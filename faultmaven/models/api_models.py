@@ -1344,7 +1344,7 @@ class TurnResponse(BaseModel):
         default_factory=list,
         description="Knowledge the engine put in front of the model for this "
         "turn, as the prompt the model answered from actually carried it, "
-        "after the section budget. Two origins, told apart by "
+        "after the section budget. Three origins, told apart by "
         "`metadata.trigger`. `symptom` / `root_cause`: the runbooks the KB "
         "pre-fetch admitted (the PUSH channel, governed by "
         "KB_PREFETCH_ENABLED). A pre-fetch that fires while the turn's "
@@ -1356,14 +1356,15 @@ class TurnResponse(BaseModel):
         "excerpts the previous pre-fetched context did not carry. `question`: "
         "the runbooks a lookup found for the user's own question about the "
         "knowledge base on this turn — present whatever KB_PREFETCH_ENABLED "
-        "says, and always `new_this_turn`. Each entry carries the matched "
+        "says, and always `new_this_turn`. `kb_qa`: the sections the model's "
+        "own kb_qa tool calls answered from on this turn, cited only when the "
+        "reply came from the tool loop that saw them, and always "
+        "`new_this_turn`. Each entry carries the matched "
         "excerpt as `content`, the retrieval score as `confidence`, and the "
         "runbook's `document_id`/`title` under `metadata` so a client can link "
-        "to it. Empty when the prompt carried neither — the push disabled or "
-        "nothing pre-fetched, and no question about the knowledge base. "
-        "Runbooks the model fetched itself via the kb_qa tool are "
-        "NOT represented: that tool returns a formatted answer string, so "
-        "per-turn identity is not available at the tool boundary. The turn "
+        "to it. Empty when the prompt carried none of the three — the push "
+        "disabled or nothing pre-fetched, no question about the knowledge "
+        "base, and no kb_qa section cited. The turn "
         "retrieves with the case driver's knowledge; each excerpt is checked "
         "against the requester when returned, and one of a runbook the "
         "requester cannot open (no longer shared with them, or never was), or "
@@ -1372,7 +1373,9 @@ class TurnResponse(BaseModel):
         'and `metadata` of only `{"access": "restricted", "runbook": n}`. '
         "`n` is an integer from 1, numbered by first appearance among this "
         "list's redacted entries and derived from nothing else, never the "
-        "runbook's id: entries sharing `n` are sections of one runbook.",
+        "runbook's id: entries sharing `n` are sections of one runbook. "
+        "Numbers are per list, so the same `n` in two responses says nothing "
+        "about whether they are one runbook.",
     )
 
 

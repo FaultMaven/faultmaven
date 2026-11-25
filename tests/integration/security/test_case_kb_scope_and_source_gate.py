@@ -784,22 +784,116 @@ async def test_each_transcript_row_numbers_its_redacted_runbooks_from_one(world)
     assert _runbook_numbers(sources) == [None, 1, 2, 3, 4] * 2
 
 
+async def _keyed_turn_as(
+    world: _World,
+    viewer_id: str,
+    sources: List[Source],
+    receipts: List[Any],
+    *,
+    answer: str,
+) -> TurnResponse:
+    """``POST /cases/{id}/turns`` under an ``Idempotency-Key``, through the
+    route, with a receipt kept as ``InvestigationService.commit_turn`` writes
+    it and replays answered from that receipt by ``_answer_from_receipt``."""
+    from faultmaven.modules.case.api import turn_idempotency
+    from faultmaven.modules.case.api.routes import conversation
+    from faultmaven.modules.case.contracts import (
+        TurnReceipt,
+        TurnReceiptExistsError,
+        TurnReceiptKey,
+    )
+
+    case = _case()
+    receipt_key = TurnReceiptKey(
+        author_id=viewer_id, idempotency_key="retry-key-0001", request_fingerprint="fp"
+    )
+
+    def _replay() -> TurnResponse:
+        return turn_idempotency._answer_from_receipt(receipts[0], "fp", case)
+
+    def _commit(prepared: Any, *, receipt_key: TurnReceiptKey) -> TurnResponse:
+        if answer == "receipt_race":
+            raise TurnReceiptExistsError(case.case_id, receipt_key.idempotency_key)
+        receipts.append(
+            TurnReceipt(
+                case_id=case.case_id,
+                author_id=receipt_key.author_id,
+                idempotency_key=receipt_key.idempotency_key,
+                request_fingerprint=receipt_key.request_fingerprint,
+                turn_number=1,
+                response=prepared.response.model_dump(mode="json"),
+            )
+        )
+        return prepared.response
+
+    case_service = MagicMock()
+    case_service.get_case = AsyncMock(return_value=case)
+    case_service.require_case = AsyncMock(return_value=case)
+    investigation_service = MagicMock()
+    investigation_service.prepare_turn = AsyncMock(
+        return_value=SimpleNamespace(response=_turn(sources))
+    )
+    investigation_service.commit_turn = AsyncMock(side_effect=_commit)
+    keyed = SimpleNamespace(
+        replay=_replay() if answer == "replayed" else None,
+        receipt_key=receipt_key,
+        release=AsyncMock(),
+    )
+    with (
+        patch.object(
+            conversation,
+            "_auto_title_case_if_default",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            conversation, "open_keyed_turn", new=AsyncMock(return_value=keyed)
+        ),
+        patch.object(
+            conversation,
+            "replay_committed_turn",
+            new=AsyncMock(side_effect=lambda **_: _replay()),
+        ),
+    ):
+        return await conversation.submit_turn(
+            case_id=case.case_id,
+            request=_request(world),
+            query="what next?",
+            files=[],
+            pasted_content=None,
+            intent_type=None,
+            intent_data=None,
+            input_type=None,
+            source_url=None,
+            observed_at=None,
+            case_service=case_service,
+            investigation_service=investigation_service,
+            current_user=_viewer(viewer_id),
+            idempotency_key="retry-key-0001",
+        )
+
+
 @pytest.mark.asyncio
 async def test_a_live_and_a_replayed_turn_carry_one_numbering(world):
-    """Sections of one hidden runbook share a number in the turn response, and
-    the receipt replays are gated as the live answer is, so they agree."""
-    stored = [
-        Source.model_validate(_stored_source(d))
-        for d in (RB_DRIVER_PERSONAL, RB_GLOBAL, RB_DRIVER_PERSONAL, None)
-    ]
+    """The receipt keeps the response as the turn produced it, ungated, and a
+    replay is gated as the live answer was. A receipt holding the gated copy
+    would be re-gated with no ids, numbering each entry apart."""
+    order = (RB_DRIVER_PERSONAL, RB_GLOBAL, RB_DRIVER_PERSONAL, None)
+    stored = [Source.model_validate(_stored_source(d)) for d in order]
+    receipts: List[Any] = []
 
     numbers = {
         answer: _runbook_numbers(
-            (await _turn_as(world, OUTSIDER, stored, answer=answer)).sources
+            (
+                await _keyed_turn_as(world, OUTSIDER, stored, receipts, answer=answer)
+            ).sources
         )
-        for answer in TURN_ANSWERS
+        for answer in TURN_ANSWERS  # live first: it writes the receipt
     }
 
+    assert [
+        (s.get("metadata") or {}).get("document_id")
+        for s in receipts[0].response["sources"]
+    ] == list(order), "the receipt stored a gated response"
     assert numbers == {answer: [1, None, 1, 2] for answer in TURN_ANSWERS}
 
 
