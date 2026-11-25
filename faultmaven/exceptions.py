@@ -974,15 +974,21 @@ def is_rate_limit_throttle(exc: BaseException) -> bool:
 def counts_against_breaker(exc: BaseException) -> bool:
     """Whether ``call_external`` records ``exc`` on its circuit breaker.
 
-    A non-retryable failure counts only when it is service-scoped (quota,
-    rejected credentials); a request-scoped one says nothing about the service.
-    Any other failure counts, except a throttle (#2793) and a call refused for
-    a spent turn, which reached no provider (``LLMTurnBudgetSpent``, #2983).
+    In order: a call refused for a spent turn reached no provider and does not
+    count (``LLMTurnBudgetSpent``, #2983); a service-scoped failure (quota,
+    rejected credentials) counts, whatever its category, so its code latches;
+    a caller remedy (:data:`CALLER_REMEDY_CATEGORIES`) does not, retryable or
+    not (#2858); a non-retryable failure is request-scoped and does not; any
+    other counts, except a throttle (#2793).
     """
     if isinstance(exc, LLMTurnBudgetSpent):
         return False
+    if getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES:
+        return True
+    if declared_llm_category(exc) in CALLER_REMEDY_CATEGORIES:
+        return False
     if getattr(exc, "retryable", True) is False:
-        return getattr(exc, "error_code", None) in SERVICE_SCOPED_ERROR_CODES
+        return False
     return not is_rate_limit_throttle(exc)
 
 

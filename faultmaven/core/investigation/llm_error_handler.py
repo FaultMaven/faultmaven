@@ -406,8 +406,9 @@ class RetryConfig:
     # provider got zero before #1287, and that was the bug. Two would cost
     # ``3T + 6`` (three paid attempts under the breaker), barely under the full
     # ladder's ``3T + 14`` (#1294), the bound on every ladder the breaker cuts.
-    # A ladder of throttle 429s is not cut by it (#2793) and can pay one more
-    # attempt, which the turn-budget refusal stops when it would not fit.
+    # A ladder with a throttle 429 (#2793) or a caller remedy (#2858) in it is
+    # not cut by it at three and can pay one more attempt, which the
+    # turn-budget refusal stops when it would not fit.
     max_deadline_retries: int = 1
 
 

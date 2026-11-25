@@ -164,7 +164,7 @@ The `BaseExternalClient.call_external()` method checks `retryable` before retryi
 
 **Which failure a fallback chain raises** (#2832). The provider registry raises a provider's error directly (preserving retryability and `error_code`) rather than wrapping it in a generic exception. When no provider in a chain returned a response, the chain raises the highest-ranked failure, the later one on a tie. The ranks, highest first:
 
-1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation;
+1. a failure that carries a caller remedy: the categories the engine acts on, context overflow and output truncation; never counted by the breaker, retryable or not (#2858);
 2. service-scoped: quota, rejected credentials (the breaker then latches their `error_code`);
 3. a 5xx, a timeout, or an unclassified failure (one with no status, such as "returned no choices"); the breaker counts the retryable ones;
 4. a throttle the provider's waits did not outlast;
@@ -353,7 +353,7 @@ weaker evidence the provider is down.
 | Class | Retries (`RetryConfig`) | Worst case, one ladder |
 |---|---|---|
 | Deadline-shaped (hang, 504, 524) | `max_deadline_retries = 1` | `2T + 2s`, the pure deadline-shaped cost: two paid attempts, one backoff, under the breaker |
-| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder the breaker cuts, a mixed one included (a timeout, then slow 503s). A ladder of throttle 429s is not cut by the breaker (§1.1, #2793) and can pay the fourth attempt; `with_retry`'s turn-budget refusal stops that attempt when it would not fit, so the turn is never overrun |
+| Status-shaped (5xx, 429, transport fault) | `max_retries = 3` | `3T + 14s`: three paid attempts (the breaker refuses the fourth), three backoffs. This bounds every ladder the breaker cuts, a mix of counted failures included (a timeout, then slow 503s). A ladder with a throttle 429 (§1.1, #2793) or a caller remedy (§2.1, #2858) in it is not cut by the breaker at three and can pay the fourth attempt; `with_retry`'s turn-budget refusal stops that attempt when it would not fit, so the turn is never overrun |
 
 `T` is what one routed attempt costs a hung provider: each attempt of the
 router's walk runs on its own provider's `T` (its

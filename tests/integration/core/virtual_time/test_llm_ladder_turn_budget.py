@@ -36,7 +36,12 @@ import inspect
 import pytest
 
 from faultmaven.core.investigation import llm_error_handler, turn_budget
-from faultmaven.core.investigation.llm_error_handler import LLMErrorHandler, RetryConfig
+from faultmaven.core.investigation.llm_error_handler import (
+    LLMErrorHandler,
+    OutputTruncationError,
+    RetryConfig,
+    is_output_truncation_error,
+)
 from faultmaven.core.investigation.turn_budget import (
     bind_turn_deadline,
     clamp_to_turn_budget,
@@ -44,6 +49,7 @@ from faultmaven.core.investigation.turn_budget import (
 from faultmaven.exceptions import (
     TURN_BUDGET_EXHAUSTED,
     ExternalCallTimeout,
+    LLMErrorCategory,
     LLMException,
 )
 from faultmaven.infrastructure.base_client import BaseExternalClient
@@ -633,6 +639,61 @@ class TestALadderOfThrottlesStaysInsideTheTurn:
         assert virtual_now() - started < turn_seconds
         assert provider.circuit_breaker.failure_count == 0
         assert provider.circuit_breaker.state == "closed"
+
+
+class _TruncatedThen503Provider(_HangingProvider):
+    """Cuts the first answer at the output cap, as Gemini raises it, then
+    answers 503."""
+
+    async def _hang(self):
+        self.calls_reaching_the_provider += 1
+        await asyncio.sleep(self.hang_seconds)
+        if self.calls_reaching_the_provider == 1:
+            raise LLMException(
+                "cut", retryable=True, category=LLMErrorCategory.OUTPUT_TRUNCATION
+            )
+        raise LLMException("unavailable", status_code=503)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+class TestACallerRemedyInALadderStaysInsideTheTurn:
+    """A caller remedy is not counted by the breaker (#2858), so [truncation,
+    503, 503, 503] is not cut at three: the fourth attempt is paid when it fits
+    the turn and refused by ``with_retry``'s budget check when it does not.
+    Counted, the truncation opened the breaker before the fourth attempt.
+    """
+
+    @pytest.mark.parametrize(("turn_seconds", "paid"), [(10.0, 4), (2.0, 3)])
+    async def test_the_fourth_attempt_is_paid_only_when_it_fits(
+        self, caplog, turn_seconds, paid
+    ):
+        provider = _TruncatedThen503Provider(0.5)
+        attempts = {"n": 0}
+
+        async def op():
+            attempts["n"] += 1
+            try:
+                return await provider.route(1.0, clamp=True)
+            except LLMException as exc:
+                # As generation.py converts a provider-reported cut.
+                if is_output_truncation_error(exc):
+                    raise OutputTruncationError("cut") from None
+                raise
+
+        handler = LLMErrorHandler(RetryConfig(base_delay_seconds=0.05))
+        turn = turn_seconds + SCALED_RESERVE + SCALED_COMMIT_RESERVE
+        with bind_turn_deadline(turn):
+            _, error = await asyncio.wait_for(
+                handler.with_retry(operation=op), timeout=turn
+            )
+
+        assert attempts["n"] == paid
+        assert provider.calls_reaching_the_provider == paid
+        assert error is not None and error.error_code == "RETRY_EXHAUSTED"
+        assert provider.circuit_breaker.failure_count == paid - 1
+        refused = [r for r in caplog.records if "cannot afford retry" in r.getMessage()]
+        assert len(refused) == (paid == 3)
 
 
 #: The verdict tests' turn: 1.3s of spendable-plus-step-reserve shape, plus the

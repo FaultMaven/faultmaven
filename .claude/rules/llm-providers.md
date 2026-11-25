@@ -289,8 +289,8 @@ failure (`is_deadline_shaped`: a `TimeoutError` anywhere on the `__cause__`
 chain, or a 504 or 524 status on any exception that carries one) spent a whole
 deadline and learned nothing, so it gets `max_deadline_retries=1` retry: `2T +
 2s`, the pure deadline-shaped cost. Every other retryable failure keeps
-`max_retries=3`, and `3T + 14s` bounds every ladder the breaker cuts, a mixed
-one included (a timeout, then slow 503s). `T` is what one routed attempt costs
+`max_retries=3`, and `3T + 14s` bounds every ladder the breaker cuts, a mix of
+counted failures included (a timeout, then slow 503s). `T` is what one routed attempt costs
 a hung provider. Each attempt of the router's walk runs on its own provider's
 ceiling, `provider_timeout(name)` (`infrastructure/llm/provider_timeout.py`, the
 one resolver, which the provider's client is built with too): its
@@ -311,9 +311,11 @@ provider first waits it out at its POST (`post_waiting_out_rate_limits`,
 `rate_limit_wait` in `providers/base.py`: at most 2 re-sends per POST, each
 wait within a 20 s cap and taken only when twice it is less than what is left
 of the enclosing call's timeout and of the turn's spendable budget, so the
-call's deadline bounds all its waits; a quota 429 is not waited on), so a
-ladder of throttles can pay the fourth attempt, which `with_retry`'s
-turn-budget refusal stops when it would not fit, so the turn is never overrun.
+call's deadline bounds all its waits; a quota 429 is not waited on). Nor does
+the breaker count a caller remedy (context overflow, output truncation; #2858);
+provider health still records one that carries no 4xx status. A ladder with
+either in it can pay the fourth attempt, which `with_retry`'s turn-budget
+refusal stops when it would not fit, so the turn is never overrun.
 On a turn with tools
 the tool loop's own send comes first, outside the ladder
 (`ToolCallingUnsupportedError`, chained from the provider's failure), and the

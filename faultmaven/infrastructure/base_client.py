@@ -18,11 +18,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterator, Optional, TypeVar, Union
 
 from faultmaven.exceptions import (
+    CALLER_REMEDY_CATEGORIES,
     SERVICE_SCOPED_ERROR_CODES,
     CircuitBreakerError,
     ExternalCallTimeout,
     FaultMavenException,
+    LLMTurnBudgetSpent,
     counts_against_breaker,
+    declared_llm_category,
+    is_rate_limit_throttle,
 )
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 from faultmaven.utils.exception_name import (
@@ -31,6 +35,9 @@ from faultmaven.utils.exception_name import (
     exception_class_name,
     exception_log_name,
 )
+
+#: How ``call_external`` labels a caller remedy it does not count (#2858).
+_CALLER_REMEDY = "the request must change, not counted against the circuit breaker"
 
 # Type variable for generic return types
 T = TypeVar("T")
@@ -639,8 +646,10 @@ class BaseExternalClient(ABC):
                     #   opening the breaker stops pointless calls, and the latched
                     #   error_code keeps the open-breaker error mapping to 402
                     #   rather than a generic 500 (the case_b639fac38fe0 chain).
+                    # * CALLER-REMEDY (``CALLER_REMEDY_CATEGORIES``) — NOT counted,
+                    #   retryable or not: only changing the request helps (#2858).
                     #
-                    # ``failed_calls`` counts both, so neither becomes invisible.
+                    # ``failed_calls`` counts all three, so none becomes invisible.
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
@@ -654,7 +663,7 @@ class BaseExternalClient(ABC):
                         self.logger.warning(
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
                             f"failing fast ("
-                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
+                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'caller remedy — ' + _CALLER_REMEDY if declared_llm_category(call_error) in CALLER_REMEDY_CATEGORIES else 'request-scoped — not counted against the circuit breaker'}"
                             f"): {exception_class_chain(call_error)}",
                             client=self.client_name,
                             service=self.service_name,
@@ -685,20 +694,37 @@ class BaseExternalClient(ABC):
                             timezone.utc
                         ).isoformat()
 
-                        # A throttle (a 429 the provider's own waits did not
-                        # outlast) says the service is up and busy, and a call
-                        # refused for a spent turn reached no provider, so
-                        # neither is counted against the shared breaker
-                        # (``counts_against_breaker``, #2793, #2983).
-                        uncounted = not counts_against_breaker(call_error)
-                        if self.circuit_breaker and not uncounted:
+                        # Neither a caller remedy (#2858) nor a throttle, a 429 the
+                        # provider's waits did not outlast (#2793), nor a call
+                        # refused for a spent turn, which reached no provider
+                        # (#2983), is counted.
+                        if self.circuit_breaker and counts_against_breaker(call_error):
                             self.circuit_breaker.record_failure(call_error)
-                        if uncounted:
+                        if (
+                            declared_llm_category(call_error)
+                            in CALLER_REMEDY_CATEGORIES
+                        ):
                             self.logger.warning(
-                                f"{self.service_name}.{operation_name} failed"
-                                f" without counting against the circuit breaker"
-                                f" (a throttle, or a spent turn):"
-                                f" {exception_class_chain(call_error)}",
+                                f"Caller remedy on {self.service_name}.{operation_name}"
+                                f" ({_CALLER_REMEDY}): {exception_class_chain(call_error)}",
+                                client=self.client_name,
+                                service=self.service_name,
+                                **_provider_codes(call_error),
+                            )
+                        elif is_rate_limit_throttle(call_error):
+                            self.logger.warning(
+                                f"Rate-limited on {self.service_name}.{operation_name}"
+                                f" — a throttle, not counted against the circuit"
+                                f" breaker: {exception_class_chain(call_error)}",
+                                client=self.client_name,
+                                service=self.service_name,
+                                **_provider_codes(call_error),
+                            )
+                        elif isinstance(call_error, LLMTurnBudgetSpent):
+                            self.logger.warning(
+                                f"Turn budget spent on {self.service_name}.{operation_name}"
+                                f" — no provider called, not counted against the"
+                                f" circuit breaker: {exception_class_chain(call_error)}",
                                 client=self.client_name,
                                 service=self.service_name,
                             )
