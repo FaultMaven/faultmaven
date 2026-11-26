@@ -1,12 +1,14 @@
 """The reopen chip's refusal states the "Root cause" ask as the record path
-does (#3053 S3d-1, stage S3d of #2615).
+does (#3053 S3d-1, stage S3d of #2615), and its verdict and record facts
+come from one fold, the content the ask names (the held check's text, the
+cause re-check's names) read beside it (S3d-2).
 
-The refusal stated the decide-time message, built with no cause, so its ask
-lacked the pool-empty line (approved copy item 5, #2811 S2c-1b) the needs-info
-request shows for the same case. Only a refusal whose fresh readiness asks for
-the root cause reads the fold (``terminal_replies._reply_outcome``), and only
-its cause: the refusal states the fresh ask with the record's cause. Every
-other refusal, and one whose fold raised, keeps today's text.
+S3d-1: the refusal stated the decide-time message, built with no cause, so its
+ask lacked the pool-empty line (approved copy item 5, #2811 S2c-1b) the
+needs-info request shows for the same case. S3d-2: the chip takes its verdict
+and every record fact from one fold (``terminal_replies._reply_outcome``),
+every refusal included, the content the ask names read beside it; a fold that
+raises fails closed with the ruled reply.
 """
 
 from __future__ import annotations
@@ -21,7 +23,10 @@ from faultmaven.core.investigation.milestone_engine.turn_narration import (
     narrate_turn,
 )
 from faultmaven.core.investigation.narration.codes import OfferCode
-from faultmaven.core.investigation.narration.offers import render_offer
+from faultmaven.core.investigation.narration.offers import (
+    readiness_message,
+    render_offer,
+)
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
@@ -127,7 +132,6 @@ def test_a_record_cause_with_no_pool_empty_reason_adds_no_line(monkeypatch, fold
 #: A fold whose readiness disagrees with the fresh one (a carried FAILED
 #: window, a pending need): the record's resolution, by what differs.
 DISAGREEING = {
-    "pending_check": {"reason": ResolutionReason.PENDING_CHECK},
     "fix_failed": {"reason": ResolutionReason.FIX_FAILED},
     "fix_off_cause": {"reason": ResolutionReason.FIX_OFF_CAUSE, "off_cause_turn": 3},
     "no_root_cause": {"missing": ["solution"]},
@@ -135,43 +139,65 @@ DISAGREEING = {
 
 
 @pytest.mark.parametrize("name", list(DISAGREEING))
-def test_a_disagreeing_fold_lends_only_its_cause(monkeypatch, folds, name):
-    """The fresh ask with the record's cause, whatever the record's reason,
-    missing items or gaps: no other text moves, and nothing raises."""
+def test_a_disagreeing_fold_gives_the_whole_refusal(monkeypatch, folds, name):
+    """The record's reason, missing items, gaps and cause, not the fresh
+    readiness's: the refusal states the fold's record facts, from one fold."""
     case = POOL_EMPTY[PoolEmptyReason.NO_CAUSE]()
     outcome = narration_outcome(case)
     resolution = outcome.resolution.model_copy(update=DISAGREEING[name])
     record = outcome.model_copy(update={"resolution": resolution})
     monkeypatch.setattr(terminal_replies, "narration_outcome", lambda _c: record)
-    line = APPROVED[PoolEmptyReason.NO_CAUSE]
+    ask = readiness_message(
+        resolution.reason,
+        missing=resolution.missing,
+        gaps=resolution.confirmation_gaps,
+        off_cause_turn=resolution.off_cause_turn,
+        cause=record.cause,
+    )
 
-    assert _chip(case) == _today(case).replace(_ASK, f"{_ASK} {line}", 1)
+    assert _chip(case) == f"{_LEAD}\n\n{ask}" != _today(case)
+    assert len(folds) == 1
+
+
+def test_a_pending_check_the_fold_holds_no_text_for_fails_closed(monkeypatch, folds):
+    """The record's PENDING_CHECK with no need on the case to read the
+    request text from: the ruled reply, not a raise in the composer."""
+    case = POOL_EMPTY[PoolEmptyReason.NO_CAUSE]()
+    outcome = narration_outcome(case)
+    resolution = outcome.resolution.model_copy(
+        update={"reason": ResolutionReason.PENDING_CHECK}
+    )
+    record = outcome.model_copy(update={"resolution": resolution})
+    monkeypatch.setattr(terminal_replies, "narration_outcome", lambda _c: record)
+
+    assert _chip(case) == tt.RECORD_UNREADABLE_LINE
     assert len(folds) == 1
 
 
 @pytest.mark.parametrize("name", list(NO_ROOT_CAUSE_ASK), ids=str)
-def test_a_refusal_with_no_root_cause_ask_is_todays_and_folds_nothing(folds, name):
+def test_a_refusal_with_no_root_cause_ask_is_todays_from_one_fold(folds, name):
     """FIX_FAILED, FIX_OFF_CAUSE and a documentation-gaps ask carrying the
-    cause re-check's params: byte-equal to today's refusal, no fold."""
+    cause re-check's names: byte-equal to today's refusal, its record facts
+    from one fold."""
     case = NO_ROOT_CAUSE_ASK[name]()
     readiness = assess_resolution_readiness(case)
     assert "root cause" not in readiness.missing, "premise"
     assert name in (readiness.reason, *readiness.confirmation_gaps), "premise"
 
     assert _chip(case) == _today(case)
-    assert folds == []
+    assert len(folds) == 1
 
 
-def test_the_pending_check_reply_is_unchanged(folds):
+def test_the_pending_check_reply_is_unchanged_from_one_fold(folds):
     case = golden._held()
     readiness = assess_resolution_readiness(case)
     assert readiness.pending_check is not None, "premise"
 
     assert _chip(case) == readiness.message
-    assert folds == []
+    assert len(folds) == 1
 
 
-def test_a_fold_that_raises_gives_todays_bare_ask_counted_once(monkeypatch):
+def test_a_fold_that_raises_fails_closed_counted_once(monkeypatch):
     counted: list = []
     metric = SimpleNamespace(
         labels=lambda at: SimpleNamespace(inc=lambda: counted.append(at))
@@ -180,7 +206,7 @@ def test_a_fold_that_raises_gives_todays_bare_ask_counted_once(monkeypatch):
     monkeypatch.setattr(terminal_replies, "narration_outcome", _raise)
     case = POOL_EMPTY[PoolEmptyReason.NO_CAUSE]()
 
-    assert _chip(case) == _today(case)
+    assert _chip(case) == tt.RECORD_UNREADABLE_LINE
     assert counted == [WritePoint.NARRATION]
 
 

@@ -1,0 +1,249 @@
+{
+  "hold:false_alarm": {
+    "agent_response": "This case can't be marked resolved while its problem statement is in question. Answer the revised statement first.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "hold:revision_pending": {
+    "agent_response": "This case can't be marked resolved while its problem statement is in question. Answer the revised statement first.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "ready:confirmed": {
+    "agent_response": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Correct the OIDC provider client ID\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "opened": true,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Confirm resolution and close the investigation.",
+        "intent": {
+          "confirmation_value": true,
+          "proposal_id": "1157aa4b68025029",
+          "type": "confirmation"
+        },
+        "label": "Yes, mark as resolved",
+        "payload": "Yes, the issue is resolved. Please mark this case as resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        "intent": {
+          "confirmation_value": false,
+          "proposal_id": "1157aa4b68025029",
+          "type": "confirmation"
+        },
+        "label": "Not yet, continue investigating",
+        "payload": "Not yet — I'd like to continue investigating before resolving."
+      }
+    ]
+  },
+  "ready:declined": {
+    "agent_response": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "opened": true,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Confirm resolution and close the investigation.",
+        "intent": {
+          "confirmation_value": true,
+          "proposal_id": "bcd88cb263ad1887",
+          "type": "confirmation"
+        },
+        "label": "Yes, mark as resolved",
+        "payload": "Yes, the issue is resolved. Please mark this case as resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        "intent": {
+          "confirmation_value": false,
+          "proposal_id": "bcd88cb263ad1887",
+          "type": "confirmation"
+        },
+        "label": "Not yet, continue investigating",
+        "payload": "Not yet — I'd like to continue investigating before resolving."
+      }
+    ]
+  },
+  "ready:named_with_solutions": {
+    "agent_response": "Here's what I have on record:\n\n- **Root cause**: max_connections is 20\n- **Solution**: set max_connections to 100\n- **The cause** — max_connections is set to 20, below the worker pool size: After the provider client-ID correction the pods obtained credentials and the AssumeRole failures stopped (turn 1)\n- **The problem** — the reported problem, as first shown, re-checked: AssumeRoleWithWebIdentity succeeds for the data-processor pods (turn 1)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "opened": true,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Confirm resolution and close the investigation.",
+        "intent": {
+          "confirmation_value": true,
+          "proposal_id": "6f45a2bad9d417d9",
+          "type": "confirmation"
+        },
+        "label": "Yes, mark as resolved",
+        "payload": "Yes, the issue is resolved. Please mark this case as resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        "intent": {
+          "confirmation_value": false,
+          "proposal_id": "6f45a2bad9d417d9",
+          "type": "confirmation"
+        },
+        "label": "Not yet, continue investigating",
+        "payload": "Not yet — I'd like to continue investigating before resolving."
+      }
+    ]
+  },
+  "ready:no_cause_leg_no_solutions": {
+    "agent_response": "Here's what I have on record:\n\n- **Root cause**: no root cause on record\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — no root cause on record: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "opened": true,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Confirm resolution and close the investigation.",
+        "intent": {
+          "confirmation_value": true,
+          "proposal_id": "ea6bcd1232da4163",
+          "type": "confirmation"
+        },
+        "label": "Yes, mark as resolved",
+        "payload": "Yes, the issue is resolved. Please mark this case as resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        "intent": {
+          "confirmation_value": false,
+          "proposal_id": "ea6bcd1232da4163",
+          "type": "confirmation"
+        },
+        "label": "Not yet, continue investigating",
+        "payload": "Not yet — I'd like to continue investigating before resolving."
+      }
+    ]
+  },
+  "ready:no_check_asked": {
+    "agent_response": "Here's what I have on record:\n\n- **Root cause**: The IAM OIDC provider is registered with client ID sts.amazonaws.com.cn while the projected token audience is sts.amazonaws.com.\n- **Solution**: Point ExecStart at /usr/bin/billing-exporter (carried out turn 6)\n- **The cause** — max_connections is set to 20, below the worker pool size: the re-check after the fix (turn 7)\n- **The problem** — the reported problem, as first shown, re-checked: the re-check after the fix (turn 7)\n\nThis is enough to resolve. If you'd like to improve the documentation (and any runbook generated from it), you can also share:\n- specific commands or steps you used\n\nConfirm to resolve now, or share more details first.",
+    "opened": true,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Confirm resolution and close the investigation.",
+        "intent": {
+          "confirmation_value": true,
+          "proposal_id": "fdf4847af5347ee0",
+          "type": "confirmation"
+        },
+        "label": "Yes, mark as resolved",
+        "payload": "Yes, the issue is resolved. Please mark this case as resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Decline resolution and continue refining the root cause or exploring alternative solutions.",
+        "intent": {
+          "confirmation_value": false,
+          "proposal_id": "fdf4847af5347ee0",
+          "type": "confirmation"
+        },
+        "label": "Not yet, continue investigating",
+        "payload": "Not yet — I'd like to continue investigating before resolving."
+      }
+    ]
+  },
+  "refused:fix_failed": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nThe last fix didn't hold: the cause was shown removed, but the problem was seen again afterwards. To mark this **resolved** I need a **new fix** — tell me what you changed (or what you plan to change), and once it's applied, submit the output of checks showing the cause gone and the original problem gone with it, as data (pasted or attached, not typed into your message).\n\nIf the problem is only quiet for now (a restart, a failover or another workaround), or the real fix is **deferred**, you can **close** the case instead — that keeps the investigation on record without claiming the fix worked.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:fix_off_cause": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nThe last fix (turn 6) did not act on the root cause now identified, so no check after it can show that cause gone. To mark this **resolved** I need a **fix of the root cause** — tell me what you changed (or plan to change) there, and once it's applied, submit the output of checks showing the cause gone and the original problem gone with it, as data (pasted or attached, not typed into your message).\n\nIf the problem is only quiet for now, or the root's fix is **deferred**, you can **close** the case instead — that keeps the investigation on record without claiming the cause was fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_cause_leg": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation the original problem is gone** — the cause is shown removed; what you first reported needs to be seen gone too: the output of the failing check or of the place the error appeared, now clean.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_held_open_pool_empty": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **Root cause** — what caused the problem? A cause is on record, but what produced it is still open.\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_identified": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_no_cause_pool_empty": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **Root cause** — what caused the problem? No root cause is on record that a check can confirm yet.\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_no_symptom_row": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation it's resolved** — the output of a check showing the original problem is now gone (e.g. the latest output, with the error no longer in it).\n- **The check that showed the problem** — the original failing output isn't on record as what showed the problem; submit it as data (pasted or attached) so the fix can be confirmed against it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_pair": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **Confirmation the original problem is gone** — the cause is shown removed; what you first reported needs to be seen gone too: the output of the failing check or of the place the error appeared, now clean.\n- **The check that showed the problem** — the original failing output isn't on record as what showed the problem; submit it as data (pasted or attached) so the fix can be confirmed against it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_relief_named": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"max_connections is set to 20, below the checkout pool size\", needs to be seen removed too: the output of a check showing what \"raise max_connections to 100\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_relief_names_clip_empty": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed, \"\", needs to be seen removed too: the output of a check showing what \"\" changed at it.\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:gaps_relief_unnamed": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nTo mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **What fixed it** — the action that resolved it.\n- **The cause re-checked after the fix** — what you reported is shown gone; the cause the fix addressed needs to be seen removed too: the output of a check showing it (e.g. the setting now reads the new value, or the corrected process is the one running).\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it. If the problem was already fixed outside this session, the same applies, and I'll document it.\n\nIf it was only **stabilized** (a workaround/failover while the root cause is still pending) or the real fix is **deferred** (a change window, hardware RMA, another team), you can **close** the case instead — that keeps the investigation and the documented (or deferred) solution on record without claiming it's permanently fixed.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:nothing_on_record": {
+    "agent_response": "This case can't be marked resolved right now: the confirmation that earned the resolution no longer stands.\n\nThis case has nothing investigated yet, so there's nothing to document as a resolution.\n\nIf it's no longer relevant you can **close** it. If it was actually fixed, tell me what the problem was, what caused it, and how it was fixed, and submit the output of a check that shows it gone as data (pasted or attached, not typed into your message); I'll document the resolution.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:pending_check": {
+    "agent_response": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it.",
+    "opened": false,
+    "suggested_follow_ups": []
+  },
+  "refused:pending_check_declined": {
+    "agent_response": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it.",
+    "opened": false,
+    "suggested_follow_ups": [
+      {
+        "action_type": "DECIDE",
+        "body": "Re-open the resolution the agent proposed. You confirm on the next step.",
+        "intent": {
+          "proposal_id": "reopen:f56b91fb42ec5b8f",
+          "to_state": "resolved",
+          "type": "status_transition"
+        },
+        "label": "Mark it resolved",
+        "payload": "Mark this case resolved."
+      },
+      {
+        "action_type": "DECIDE",
+        "body": "Close the case with the confirmed fix on record, not marked resolved. You confirm on the next step; closing is irreversible.",
+        "intent": {
+          "to_state": "closed",
+          "type": "status_transition"
+        },
+        "label": "Close without resolving",
+        "payload": "Close this case without marking it resolved."
+      }
+    ]
+  },
+  "refused:pending_check_fulfilled": {
+    "agent_response": "To mark this **resolved** and write up the resolution summary, I just need a few essentials:\n\n- **The check I asked for** — Prometheus targets page showing job=billing UP\n\nSubmit check output as data (pasted or attached, not typed into your message): what you write is your account, and the output is what shows it.",
+    "opened": false,
+    "suggested_follow_ups": []
+  }
+}

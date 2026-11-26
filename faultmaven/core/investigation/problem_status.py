@@ -57,6 +57,7 @@ from faultmaven.core.investigation.offers import (
 )
 from faultmaven.modules.case.contracts import (
     DECLARED_STABLE,
+    PROBLEM_ON_HOLD,
     AnswerKind,
     AnswerVia,
     Case,
@@ -138,11 +139,9 @@ def _restore_the_hold(case: Case, revision: PendingRevision) -> None:
 def problem_on_hold(case: Case) -> bool:
     """Whether the case waits on the user or on new evidence rather than
     investigating: a revision awaiting re-confirmation, or a false alarm.
-    Housekeeping, repair patterns and the stall counter pause while it holds."""
-    return case.progress.problem_status in (
-        ProblemStatus.REVISION_PENDING,
-        ProblemStatus.INVALIDATED,
-    )
+    Housekeeping, repair patterns and the stall counter pause while it holds.
+    The set is ``PROBLEM_ON_HOLD``, read at the live status (#3053 Q3)."""
+    return case.progress.problem_status in PROBLEM_ON_HOLD
 
 
 def verify_problem(case: Case, *, via: str) -> bool:

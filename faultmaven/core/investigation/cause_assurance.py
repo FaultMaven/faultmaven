@@ -2501,10 +2501,11 @@ def mitigation_observation(
 
 
 def mitigation_settled(case: "Case") -> bool:
-    """Whether the mitigation is settled: verified, or carrying a disposition
-    (#2100). What leaves MITIGATION, and what 3B fires on, once."""
+    """Whether the case's mitigation is settled (``MitigationRecord.settled``,
+    the one rule, #3053 Q2). What leaves MITIGATION, and what 3B fires on,
+    once."""
     record = case.progress.mitigation
-    return record is not None and (record.verified or record.disposition is not None)
+    return record is not None and record.settled
 
 
 def mitigation_unsettled(case: "Case") -> bool:

@@ -44,7 +44,7 @@ from .case import (
 )
 from .lifecycle import CaseState, ClosureReason
 from .problem import InvestigationStage
-from .progress import investigation_stage
+from .progress import investigation_stage, mitigation_settled_of
 
 logger = logging.getLogger(__name__)
 
@@ -193,8 +193,9 @@ class CaseMetadata(BaseModel):
                 lifecycle_state,
                 investigation_stage(
                     mitigation_accepted=mitigation_accepted,
-                    mitigation_verified=mitigation_verified,
-                    mitigation_disposed=mitigation_disposed,
+                    mitigation_settled=mitigation_settled_of(
+                        verified=mitigation_verified, disposed=mitigation_disposed
+                    ),
                     solution_accepted=solution_accepted,
                     solution_verified=solution_verified,
                 ),

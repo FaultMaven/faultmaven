@@ -1,0 +1,191 @@
+{
+  "accepted:no_solution": {
+    "current_stage": "mitigation",
+    "mitigation_settled": false,
+    "mitigation_unsettled": true,
+    "monitor_fix_failure": true,
+    "operator_stage": "mitigation"
+  },
+  "accepted:solution_accepted": {
+    "current_stage": "mitigation",
+    "mitigation_settled": false,
+    "mitigation_unsettled": true,
+    "monitor_fix_failure": true,
+    "operator_stage": "mitigation"
+  },
+  "accepted:solution_verified": {
+    "current_stage": "mitigation",
+    "mitigation_settled": false,
+    "mitigation_unsettled": true,
+    "monitor_fix_failure": true,
+    "operator_stage": "mitigation"
+  },
+  "declared_stable:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "declared_stable:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "declared_stable:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "none:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "none:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "none:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "proceed_unmitigated:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "proceed_unmitigated:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "proceed_unmitigated:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "proposed:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": true,
+    "operator_stage": "diagnosis"
+  },
+  "proposed:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": true,
+    "operator_stage": "treatment"
+  },
+  "proposed:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": false,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": true,
+    "operator_stage": "diagnosis"
+  },
+  "relapse:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "relapse:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "relapse:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "relapse_declared_stable:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "relapse_declared_stable:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "relapse_declared_stable:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "verified:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "verified:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "verified:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "verified_declared_stable:no_solution": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  },
+  "verified_declared_stable:solution_accepted": {
+    "current_stage": "treatment",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "treatment"
+  },
+  "verified_declared_stable:solution_verified": {
+    "current_stage": "diagnosis",
+    "mitigation_settled": true,
+    "mitigation_unsettled": false,
+    "monitor_fix_failure": false,
+    "operator_stage": "diagnosis"
+  }
+}

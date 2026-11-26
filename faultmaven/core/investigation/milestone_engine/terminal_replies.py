@@ -58,11 +58,17 @@ def _reply_outcome(case) -> Optional[CaseOutcome]:
             "Case %s: the record could not be read for the reply (#2811)",
             getattr(case, "case_id", None),
         )
-        try:
-            case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
-        except Exception:  # noqa: BLE001 — a metrics error never fails a reply
-            logger.exception("case_outcome_write_failures_total not counted")
+        count_unreadable_record()
         return None
+
+
+def count_unreadable_record() -> None:
+    """Count, once, a reply that could not read the record it narrates on
+    ``case_outcome_write_failures_total{at="narration"}``."""
+    try:
+        case_outcome_write_failures_total.labels(at=WritePoint.NARRATION).inc()
+    except Exception:  # noqa: BLE001 — a metrics error never fails a reply
+        logger.exception("case_outcome_write_failures_total not counted")
 
 
 def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
@@ -75,20 +81,22 @@ def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
     return cause_identification_leg(case), resolution_record_lines(case)
 
 
-def resolution_confirmation_params(case) -> dict:
+def resolution_confirmation_params(case, outcome: Optional[CaseOutcome] = None) -> dict:
     """The facts the resolve confirmation states (``narration.offers.
     resolution_confirmation``), read where the confirmation is decided (#2636,
     A4): whether a cause is identified and the rows that confirm the
     resolution from the record folded at that moment (#2811 S2b-2b), and the
     root cause, the solution and which optional details would improve the
     documentation from the case's content (``ResolutionContent``), the
-    confirming attempt's description by its id (``content_by_id``). A fold
-    failure outside ``cause_identification_leg`` and
-    ``resolution_record_lines`` renders from the decider's read
-    (``_confirmation_outcome_fresh``); a failure inside them raises, as on
-    ``main``.
+    confirming attempt's description by its id (``content_by_id``).
+    ``outcome``: the fold a decider already holds, which is then not folded
+    again (the reopen chip, #3053 S3d-2). Without one, a fold failure outside
+    ``cause_identification_leg`` and ``resolution_record_lines`` renders from
+    the decider's read (``_confirmation_outcome_fresh``); a failure inside
+    them raises, as on ``main``.
     """
-    outcome = _reply_outcome(case)
+    if outcome is None:
+        outcome = _reply_outcome(case)
     if outcome is None:
         leg, record_lines = _confirmation_outcome_fresh(case)
         return confirmation_params_of(leg, record_lines, resolution_content(case))
@@ -97,10 +105,11 @@ def resolution_confirmation_params(case) -> dict:
     )
 
 
-def _build_resolution_confirmation(case) -> str:
+def _build_resolution_confirmation(case, outcome: Optional[CaseOutcome] = None) -> str:
     """The resolution confirmation prompt, with its optional enrichment
-    hints, from the case as it stands."""
-    return confirmation_message(resolution_confirmation_params(case))
+    hints, from the case as it stands (``outcome``: the fold the caller
+    holds, as ``resolution_confirmation_params`` takes it)."""
+    return confirmation_message(resolution_confirmation_params(case, outcome))
 
 
 def _record_free_reply(case) -> str:

@@ -17,6 +17,7 @@ from enum import StrEnum
 from typing import Callable, NamedTuple, Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
+    PROBLEM_ON_HOLD,
     AttemptOutcome,
     CaseOutcome,
     CauseOutcome,
@@ -82,7 +83,6 @@ class OutcomeBaseline:
     accepted: frozenset
 
 
-_HOLDS = frozenset({ProblemStatus.REVISION_PENDING, ProblemStatus.INVALIDATED})
 _BACKSTOP_LEGS = frozenset({"rcc", "working_conclusion"})
 _FALLEN_REASONS = frozenset(
     {
@@ -106,7 +106,7 @@ def _problem(base: OutcomeBaseline, prior: ProblemStatus, now: ProblemStatus) ->
     status it restores to (ruling of 2026-11-24, Q3 (a))."""
     if now == prior or not base.problem_comparable:
         return []
-    if prior in _HOLDS and base.restores_to is not None:
+    if prior in PROBLEM_ON_HOLD and base.restores_to is not None:
         if now == base.restores_to:
             return []
         prior = base.restores_to
@@ -114,7 +114,7 @@ def _problem(base: OutcomeBaseline, prior: ProblemStatus, now: ProblemStatus) ->
         return [Change(OutcomeChange.PROBLEM_VERIFIED)]
     if now == ProblemStatus.INVALIDATED and prior != ProblemStatus.INVALIDATED:
         return [Change(OutcomeChange.PROBLEM_INVALIDATED)]
-    if prior == ProblemStatus.VERIFIED and now not in _HOLDS:
+    if prior == ProblemStatus.VERIFIED and now not in PROBLEM_ON_HOLD:
         return [Change(OutcomeChange.PROBLEM_UNCONFIRMED)]
     return []
 
@@ -125,7 +125,7 @@ def _cause(prior: CaseOutcome, now: CaseOutcome) -> list:
     for a ``chain`` leg only (ruling of 2026-11-24 (a))."""
     was, leg = prior.cause.identification_leg, now.cause.identification_leg
     if (
-        {prior.problem.status, now.problem.status} & _HOLDS
+        {prior.problem.status, now.problem.status} & PROBLEM_ON_HOLD
         and (was is None) != (leg is None)
         and (was or leg) in _BACKSTOP_LEGS
     ):

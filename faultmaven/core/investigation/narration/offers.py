@@ -23,12 +23,11 @@ decider read (decide-time, A4).
 The "Root cause" ask carries why the cause cannot be confirmed yet
 (``pool_empty_user_line``, #2811 S2c-1b) only where the record is read: on
 the needs-info request (``RESOLUTION_NEEDS_INFO``) and on the reopen chip's
-refusal (``transition_turns._refusal_readiness_ask``: its fresh ask with the
-record's cause, #3053 S3d-1), exactly when ``notices.empty_pool_text`` gives
-a line for the record's cause. The decide-time message
-(``ResolutionReadiness.message``) keeps the ask without it; the reopen chip's
-reply states it only for an ask with no "Root cause" in it, and when the
-fold raised.
+refusal (``transition_turns._chip_refusal``: the needs-info request's ask
+from the fold the chip decides on, #3053 S3d-2), exactly when
+``notices.empty_pool_text`` gives a line for the record's cause. The
+decide-time message (``ResolutionReadiness.message``) keeps the ask without
+it.
 """
 
 from typing import Optional, Sequence
@@ -142,8 +141,8 @@ def readiness_message(
     """``ResolutionReadiness.message``, keyed by which branch answered. An
     unknown reason, or one without the param its text names, raises.
     ``cause``: the record's, passed only where the record is read
-    (``record_params``, and the reopen chip's refusal beside its fresh
-    params); the "Root cause" ask then carries its ``pool_empty_user_line``
+    (``record_params``, which the reopen chip's refusal renders through
+    too); the "Root cause" ask then carries its ``pool_empty_user_line``
     when there is one. The decide-time message passes none, so its ask is
     the bare one."""
     if reason == ResolutionReason.FALSE_ALARM:
@@ -452,8 +451,9 @@ def record_params(
     rationale, the proposal id, the composer, the texts a readiness ask names)
     stays the decider's. ``DEFERRED_CLOSE`` states no fact the record holds.
     A readiness ask takes the record's cause too, whose pool-empty line the
-    "Root cause" ask carries; only the needs-info request reaches that ask,
-    as the other two compose readiness on SUGGEST_CLOSE alone. Where the
+    "Root cause" ask carries; only the needs-info request (and the reopen
+    chip's refusal, which renders as it, #3053 S3d-2) reaches that ask, as
+    the other two compose readiness on SUGGEST_CLOSE alone. Where the
     record's write failed, ``outcome`` is the narration's unstored one."""
     if (code, params.get("composer")) not in RECORD_PROSE:
         return params

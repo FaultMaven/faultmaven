@@ -770,7 +770,7 @@ class TestTheChip:
         differ on a real case only while a check the agent asked for after the
         fix is pending (#1906 D5.2), which
         ``test_pending_check_holds_the_offer_1906.py`` drives; here the state
-        is constructed."""
+        is constructed, in the record the chip folds (#3053 S3d-2)."""
         engine, case, _ = await _offered_then_declined()
         intent = _chip_intent(case)
         not_ready = ResolutionReadiness(
@@ -779,8 +779,7 @@ class TestTheChip:
             reason=ResolutionReason.DOCUMENTATION_GAPS,
         )
         with patch(
-            "faultmaven.core.investigation.terminal_transitions."
-            "assess_resolution_readiness",
+            "faultmaven.core.investigation.outcome.assess_resolution_readiness",
             return_value=not_ready,
         ):
             result = await _turn(

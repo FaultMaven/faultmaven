@@ -241,29 +241,43 @@ class MitigationRecord(BaseModel):
             raise ValueError("a verified mitigation cannot carry proceed_unmitigated")
         return self
 
+    @property
+    def settled(self) -> bool:
+        """Whether the mitigation is settled (:func:`mitigation_settled_of`)."""
+        return mitigation_settled_of(
+            verified=self.verified, disposed=self.disposition is not None
+        )
+
+
+def mitigation_settled_of(*, verified: bool, disposed: bool) -> bool:
+    """Whether a mitigation is settled: its verify gate registered once, or it
+    carries a disposition (#2100). The one statement of the rule (#3053 Q2):
+    what leaves MITIGATION, and what 3B fires on, once. Forward-only (Q7): a
+    relapse after a registered verify leaves it settled."""
+    return verified or disposed
+
 
 def investigation_stage(
     *,
     mitigation_accepted: bool,
-    mitigation_verified: bool,
-    mitigation_disposed: bool,
+    mitigation_settled: bool,
     solution_accepted: bool,
     solution_verified: bool,
 ) -> InvestigationStage:
-    """The stage label the five gate inputs derive (redesign R4).
+    """The stage label the four gate inputs derive (redesign R4).
 
     The one copy of the rule. :attr:`InvestigationProgress.current_stage` reads
     the gates off a loaded progress blob and asks this; the cross-enterprise
-    operator list, which never loads a case, reads the same five inputs out of
+    operator list, which never loads a case, reads the same gates out of
     the stored blob and asks this too — so the label cannot mean one thing on a
     case page and another in the operator's list.
 
-    A mitigation leaves MITIGATION on its derived verdict or on a disposition
-    (#2100). A mitigation that was never recorded is neither accepted, verified
-    nor disposed of, which is how a caller with no ``MitigationRecord`` states it.
+    A mitigation leaves MITIGATION once settled (:func:`mitigation_settled_of`,
+    #2100). A mitigation that was never recorded is neither accepted nor
+    settled, which is how a caller with no ``MitigationRecord`` states it.
     """
-    # MITIGATION: mitigation accepted, neither verified nor disposed of.
-    if mitigation_accepted and not (mitigation_verified or mitigation_disposed):
+    # MITIGATION: mitigation accepted, not settled.
+    if mitigation_accepted and not mitigation_settled:
         return InvestigationStage.MITIGATION
 
     # TREATMENT: solution_accepted but not yet verified
@@ -578,10 +592,7 @@ class InvestigationProgress(BaseModel):
         mitigation = self.mitigation
         return investigation_stage(
             mitigation_accepted=mitigation is not None and mitigation.accepted,
-            mitigation_verified=mitigation is not None and mitigation.verified,
-            mitigation_disposed=(
-                mitigation is not None and mitigation.disposition is not None
-            ),
+            mitigation_settled=mitigation is not None and mitigation.settled,
             solution_accepted=self.solution_accepted,
             solution_verified=self.solution_verified,
         )
