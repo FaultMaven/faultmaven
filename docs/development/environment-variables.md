@@ -568,8 +568,9 @@ encode behind it waits within its own time bound alone, and one that never
 returns (an evidence encode cannot be killed) holds this process's queue
 until its thread settles or the process restarts, and leaves the other
 processes' queued writes answered `KNOWLEDGE_EMBEDDER_TIMEOUT` and their new
-ones 503 (`waiting_for_host_lock` shows it). A reactive vectorization queued behind a longer KB encode gives up for
-that turn and never runs. The token count runs first, in a worker, and its
+ones 503 once no room is left (`waiting_for_host_lock` shows it). A reactive
+vectorization queued behind a longer KB encode gives up for that turn and
+never runs. The token count runs first, in a worker, and its
 time is spent from the window: on an empty queue a document is admitted or
 answered 413 unless its count waited for a slot or ran past its 2 s
 allowance (then it can be answered 503); a count that finds no slot within its wait is answered

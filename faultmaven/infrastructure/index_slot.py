@@ -135,7 +135,6 @@ HUNG_RETRY_SECONDS = 60
 #: directory, the scope its CPU quota covers.
 HOST_LOCK_PATH = os.path.join(tempfile.gettempdir(), "faultmaven-kb-index.lock")
 
-#: The one encode order's thread, both slots' (#2920).
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="index-encode")
 
 #: The clock every ticket reads. Monotonic; tests substitute it.
@@ -204,7 +203,7 @@ class ModelNotLoaded(RuntimeError):
 def encode_in_worker(
     ticket: "IndexTicket", texts: List[str], guard_seconds: float
 ) -> Optional[List[List[float]]]:
-    """On the KB slot's thread: one ``encode_worker`` over ``texts``, its
+    """On the order's thread: one ``encode_worker`` over ``texts``, its
     vectors, or None when it gave none (logged with how it ended). Raises
     ``TimeoutError`` past its phases, ``ModelNotLoaded`` when the model would
     not load."""
@@ -414,7 +413,7 @@ class IndexTicket:
             return not self._encoding
 
     def _attach(self, task: "asyncio.Task[Any]") -> bool:
-        """On the slot's thread, the worker's task as its first step: False
+        """On the order's thread, the worker's task as its first step: False
         when the caller gave up before it existed, which ``abandon`` could not
         cancel."""
         with self._gate:
@@ -422,7 +421,7 @@ class IndexTicket:
             return not self._abandoned
 
     def _begin(self) -> bool:
-        """On the slot's thread, once it holds the host lock: go on, unless the
+        """On the order's thread, once it holds the host lock: go on, unless the
         caller gave up meanwhile."""
         with self._gate:
             self._encoding = not self._abandoned
@@ -434,8 +433,7 @@ class IndexTicket:
 
 
 class EncodeSlot:
-    """One kind of encode in this process's one order, whose state is the
-    class's, shared by both slots (#2920)."""
+    """One kind of encode; the order's state is the class's, both slots' (#2920)."""
 
     _tickets: List[IndexTicket] = []
     #: False while the latest attempt here to open or lock the host lock failed.
@@ -456,7 +454,7 @@ class EncodeSlot:
     def _encode(
         self, ticket: IndexTicket, texts: List[str], guard_seconds: float
     ) -> Optional[List[List[float]]]:
-        """The encode, on the slot's thread: in this process."""
+        """The encode, on the order's thread: in this process."""
         from faultmaven.infrastructure.model_cache import model_cache
 
         vectors = model_cache.embed_texts_sync(texts)
@@ -540,7 +538,7 @@ class IndexAdmission(EncodeSlot):
     def _encode(
         self, ticket: IndexTicket, texts: List[str], guard_seconds: float
     ) -> Optional[List[List[float]]]:
-        """The encode, on the slot's thread: in a worker."""
+        """The encode, on the order's thread: in a worker."""
         return encode_in_worker(ticket, texts, guard_seconds)
 
     def retry_after_seconds(self, reason: str = "busy") -> int:

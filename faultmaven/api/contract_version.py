@@ -155,10 +155,10 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
         level="MINOR",
         title=(
             "`knowledge_indexing`'s `queued`, `encoding_for_seconds`, "
-            "`host_lock_available` and `waiting_for_host_lock` count case "
+            "`host_lock_available` and `waiting_for_host_lock` cover case "
             "evidence encodes too: one encode order per process (#2920)."
         ),
-        body="MINOR: four reported fields' meaning widens; no shape changes.",
+        body="MINOR: same shape; no first-party client reads `knowledge_indexing`.",
     ),
     ContractChange(
         version="16.2.0",

@@ -704,8 +704,8 @@ class KnowledgeIndexingStatus(BaseModel):
     document's estimate is that state. An evidence encode past its bound is
     not killed: it holds the order until its thread settles or the process
     restarts. A job waiting for the host lock behind another process's stuck
-    encode keeps its estimate queued, so admission answers ``busy``:
-    ``waiting_for_host_lock`` shows it.
+    encode keeps its estimate queued: a later write it leaves no room for
+    answers ``busy``. ``waiting_for_host_lock`` shows it.
     """
 
     window_seconds: int = Field(

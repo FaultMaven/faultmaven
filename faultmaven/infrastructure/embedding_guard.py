@@ -327,8 +327,8 @@ async def embed_texts_or_raise(
         ticket: The KB indexing slot's ``IndexTicket``
             (``infrastructure.index_slot``): the encode runs in a worker from
             that slot, one at a time per host. None (evidence vectorization)
-            takes a ticket on the evidence slot, in the same order under the
-            host lock, in this process, its bound sized by bytes. Either way
+            takes a ticket on the evidence slot, one encode at a time per
+            process, in this process, its bound sized by bytes. Either way
             the bound also covers the guard bounds of the encodes queued ahead.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
@@ -355,9 +355,9 @@ async def embed_texts_or_raise(
     A KB encode runs in a worker whose phases end before this bound
     (``index_slot.REAP_MARGIN_SECONDS``): past them it is killed and this
     raises ``KNOWLEDGE_EMBEDDER_TIMEOUT``, and a caller that goes away kills
-    it too (#2851). An evidence encode runs on its slot's thread, which
+    it too (#2851). An evidence encode runs on the order's thread, which
     nothing can cancel: there the bound is on the CALLER, and the encode keeps
-    its slot until its thread settles. Either way a caller that gives up while
+    the order until its thread settles. Either way a caller that gives up while
     its encode is still queued, or still waiting for the host lock, stops it,
     so it never runs.
     """
