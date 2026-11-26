@@ -535,6 +535,22 @@ class TestOAuthProtocolErrorHandler:
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
 
+    @pytest.mark.asyncio
+    async def test_a_description_utf8_cannot_encode_still_renders(self, mock_request):
+        """#2974: this handler cannot raise on any description, as
+        `http_exception_handler` cannot on any detail."""
+        response = await oauth_protocol_error_handler(
+            mock_request, OAuthProtocolError("invalid_request", "x\ud800")
+        )
+
+        assert response.status_code == 400
+        assert json.loads(response.body) == {
+            "error": "invalid_request",
+            "error_description": "x?",
+        }
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
 
 class TestTeamOperationRefusedHandler:
     """The refusal shape the team consent surface publishes (ADR-017 D4)."""
