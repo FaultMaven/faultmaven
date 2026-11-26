@@ -64,7 +64,7 @@ import math
 from typing import Any, List, Optional, Sequence
 
 from faultmaven.infrastructure import index_slot, token_count_worker, worker_process
-from faultmaven.infrastructure.model_cache import priced_tokens
+from faultmaven.infrastructure.model_cache import BGE_M3_MAX_SEQ_LENGTH, priced_tokens
 from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from faultmaven.utils.exception_name import exception_log_name
 
@@ -218,8 +218,8 @@ async def count_index_tokens(
 async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
     """The priced tokens the guard sizes its bound from: a KB ticket's, else a
     count's under its principal; else each text's UTF-8 bytes plus 2, priced on
-    a KB ticket, plain for evidence (Q2). Each token spans a byte or more (bar the word
-    marker before a text's first word), so that is an upper bound to within a
+    a KB ticket up to the cap, plain for evidence (Q2). Each token spans a byte
+    or more (bar the word marker before a text's first word): an upper bound to within a
     token per text, which the bound's 2x margin covers. A loose bound is safe
     for a hang bound. An evidence encode (no ticket) always takes it, so it
     never waits behind KB counts for a slot (#2851); a KB count that gave no
@@ -241,7 +241,8 @@ async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
                 "UTF-8 bytes instead of tokens, an upper bound"
             )
     tokens = [len(text.encode("utf-8")) + 2 for text in texts]
-    return sum(map(priced_tokens, tokens)) if ticket is not None else sum(tokens)
+    capped = [priced_tokens(min(n, BGE_M3_MAX_SEQ_LENGTH)) for n in tokens]
+    return sum(capped) if ticket is not None else sum(tokens)
 
 
 async def embed_query_or_raise(

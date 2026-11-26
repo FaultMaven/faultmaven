@@ -284,8 +284,9 @@ async def test_with_no_count_a_kb_bound_prices_the_bytes_and_evidence_does_not(
     monkeypatch, two_cores, settled
 ):
     """No window and a count that gave no answer: a KB ticket's guard prices
-    each text's UTF-8 bytes plus 2, so a cap-length chunk is not bounded 1.6x
-    under its cost; an evidence encode's stays at plain bytes plus 2 (Q2)."""
+    each text's UTF-8 bytes plus 2, cut at the cap, so a cap-length chunk is
+    not bounded 1.6x under its cost; an evidence encode's stays at plain bytes
+    plus 2 (Q2)."""
     bounds = {}
 
     def kb(_ticket, texts, guard_seconds):
@@ -308,9 +309,33 @@ async def test_with_no_count_a_kb_bound_prices_the_bytes_and_evidence_does_not(
 
     size = len(CAP.encode("utf-8")) + 2
     assert bounds == {
-        "kb": batch_embed_timeout(priced_tokens(size)),
+        "kb": batch_embed_timeout(CAP_PRICED),  # its bytes, cut at the cap, priced
         "evidence": batch_embed_timeout(size),
     }
+
+
+async def test_with_no_count_a_kb_bound_prices_a_long_chunk_at_the_cap(
+    monkeypatch, two_cores, settled
+):
+    """The count and the encode both truncate at the cap, so a 100,000-byte
+    chunk's byte fallback is priced as 8,192 tokens, never extrapolated past
+    the cap."""
+    bounds = []
+
+    def kb(_ticket, texts, guard_seconds):
+        bounds.append(guard_seconds)
+        return [[0.0] * 1024 for _ in texts]
+
+    async def no_answer(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(index_slot, "encode_in_worker", kb)
+    monkeypatch.setattr(embedding_guard, "count_index_tokens", no_answer)
+    text = "a" * 100_000
+    async with IndexAdmission().admit_forced([text], None, principal=USER) as ticket:
+        await embed_texts_or_raise([text], subject="I", operation="t", ticket=ticket)
+
+    assert bounds == [batch_embed_timeout(priced_tokens(BGE_M3_MAX_SEQ_LENGTH))]
 
 
 def test_an_empty_count_under_a_short_limit_is_refused_413_as_on_main(two_cores):
