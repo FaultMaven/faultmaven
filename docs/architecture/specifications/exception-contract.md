@@ -175,7 +175,10 @@ login, registration and the SSO exchange reach it when minting the session.
 |--------|------|----------------|-------------|
 | `SessionStoreException` — the session store could not answer | 503 | — | 5 |
 
-The detail is "Session store temporarily unavailable". The heartbeat answers it
+The detail is "Session store temporarily unavailable". `Retry-After: 5` is
+sent, but a retry cannot succeed on two routes: the SSO exchange, whose
+single-use code is already spent, so the user signs in again; and registration,
+whose account already exists, so a retry gets 409. The heartbeat answers it
 itself, the same way; the case routes' session-ownership checks answer it 503
 "Session service unavailable" with `Retry-After: 5`.
 

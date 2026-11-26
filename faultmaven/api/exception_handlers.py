@@ -831,8 +831,10 @@ async def session_store_unavailable_handler(
     request: Request, exc: SessionStoreException
 ) -> JSONResponse:
     """Answer a session-store failure no route caught (#2985): **503**,
-    ``Retry-After: 5``. The store could not answer; the request may be retried.
-    Login, registration and the SSO exchange reach it through session minting."""
+    ``Retry-After: 5``. Login, registration and the SSO exchange reach it
+    through session minting. A retry of the SSO exchange cannot succeed (its
+    single-use code is already spent, so the user signs in again), nor can one
+    of registration (the account already exists, so it gets 409)."""
     logger.error(
         "Session store unavailable: %s %s: %s",
         request.method,

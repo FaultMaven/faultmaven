@@ -166,8 +166,12 @@ route recognised, so each answered 500. It now reports its contract's
 `SessionStoreException`, which the heartbeat and the two ownership checks
 answer themselves and the app answers for the login, registration and SSO
 exchange routes: `detail` "Session store temporarily unavailable" (the
-ownership checks keep "Session service unavailable"). The resume route's
-session-pointer write still answers 500 on a store failure, as before.
+ownership checks keep "Session service unavailable"). `Retry-After: 5` is sent
+on each, but a retry cannot succeed on two: `/auth/sso/exchange`, whose
+single-use code is already spent, so the user signs in again; and
+`/auth/register` and `/auth/dev-register`, whose account already exists, so a
+retry gets 409. The resume route's session-pointer write still answers 500 on
+a store failure, as before.
 
 An unconfigured store, on the heartbeat, is now 503 "Session service
 unavailable" with no `Retry-After` (it was 500), as the two ownership checks
