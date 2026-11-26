@@ -479,6 +479,41 @@ async def test_an_interceptions_line_shows_its_relapse_and_no_later_relief():
     assert _attempts(case)[0].fix_kind == FIX_INTERCEPTION
 
 
+async def test_an_interceptions_line_reads_a_same_turn_relief_as_still_present():
+    """#3053 S3d-6: a relief and a persistence in one turn cannot be ordered,
+    so the line says the problem was still present, never seen gone or seen
+    again, and the interception no longer stands: the same fix run again is a
+    new attempt."""
+    eng = _engine()
+    case, _root, _hyp = _identified_case()
+    x = _intermediate(case)
+    await _record(
+        eng, case, 6, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+    )
+    await _record(
+        eng,
+        case,
+        7,
+        _obs(_GONE, "checkout 200", VERIFYING_ID),
+        _obs(_PRESENT, "checkout 503 still", VERIFYING_ID),
+    )
+    assert interception_relief(case, 6) == (7, 7), "premise"
+    (line,) = [
+        ln
+        for ln in build_fix_verification_block(case).splitlines()
+        if "executed turn" in ln
+    ]
+    assert line.endswith(
+        f"an interception at {x} (cannot confirm the cause): problem still "
+        "present at turn 7"
+    )
+    assert standing_fix_action(case, "restart the pods") is None
+    await _record(
+        eng, case, 8, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+    )
+    assert [a.accepted_in_turn for a in _attempts(case)] == [6, 8]
+
+
 # ---------------------------------------------------------------------------
 # Delta 1 on fd0f96a: the licence M5 read, F10's bound
 # ---------------------------------------------------------------------------
