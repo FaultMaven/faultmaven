@@ -1647,7 +1647,7 @@ def test_every_function_recording_a_decided_key_is_a_cycle_source():
             f"{_ME}probe.py::decide:2: a code that is not a literal",
         ),
         (
-            "def decide(m, *a):\n    record_decision(m, *a)",
+            "def decide(m, *a):\n    record_decision(*a, OfferCode.FALSE_ALARM_CLOSE)",
             f"{_ME}probe.py::decide:2: a code that is not a literal",
         ),
         (
