@@ -166,20 +166,27 @@ class RedisSessionStore(ISessionStore):
 
     async def delete(self, key: str) -> bool:
         """Delete session by key."""
-        full_key = f"{self.prefix}{key}"
-        result = await self.redis_client.delete(full_key)
+        try:
+            result = await self.redis_client.delete(f"{self.prefix}{key}")
+        except _DRIVER_FAILURES as e:
+            raise SessionStoreException("Redis operation failed") from e
         return result > 0
 
     async def exists(self, key: str) -> bool:
         """Check if session exists."""
-        full_key = f"{self.prefix}{key}"
-        return await self.redis_client.exists(full_key) > 0
+        try:
+            found = await self.redis_client.exists(f"{self.prefix}{key}")
+        except _DRIVER_FAILURES as e:
+            raise SessionStoreException("Redis operation failed") from e
+        return found > 0
 
     async def extend_ttl(self, key: str, ttl: Optional[int] = None) -> bool:
         """Extend session TTL."""
-        full_key = f"{self.prefix}{key}"
         ttl = ttl if ttl is not None else self.session_ttl_seconds
-        return await self.redis_client.expire(full_key, ttl)
+        try:
+            return await self.redis_client.expire(f"{self.prefix}{key}", ttl)
+        except _DRIVER_FAILURES as e:
+            raise SessionStoreException("Redis operation failed") from e
 
     async def find_by_user_and_client(
         self, user_id: str, client_id: str
@@ -249,12 +256,15 @@ class RedisSessionStore(ISessionStore):
         ``value`` serialised as ``set`` stores it (``json.dumps``)."""
         stored = json.dumps(value)
         deleted = 0
-        async for key in self.redis_client.scan_iter(
-            match=f"{self.prefix}{match}", count=1000
-        ):
-            deleted += int(
-                await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, stored)
-            )
+        try:
+            async for key in self.redis_client.scan_iter(
+                match=f"{self.prefix}{match}", count=1000
+            ):
+                deleted += int(
+                    await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, stored)
+                )
+        except _DRIVER_FAILURES as e:
+            raise SessionStoreException("Redis operation failed") from e
         return deleted
 
     # High-level session management methods. Every session write goes through
@@ -427,7 +437,10 @@ class RedisSessionStore(ISessionStore):
         pipe = self.redis_client.pipeline(transaction=True)
         pipe.delete(f"{self.prefix}{session_id}")
         pipe.srem(self._user_index_key(user_id), session_id)
-        deleted, _ = await pipe.execute()
+        try:
+            deleted, _ = await pipe.execute()
+        except _DRIVER_FAILURES as e:
+            raise SessionStoreException("Redis operation failed") from e
         return deleted > 0
 
     async def list_sessions(self, user_id: str) -> List[SessionContext]:

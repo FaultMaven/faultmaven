@@ -52,9 +52,25 @@ EXPIRED = _record(timedelta(minutes=-5))
 def _client(failure: BaseException, **answers) -> MagicMock:
     """Every Redis call raises ``failure`` but those ``answers`` names."""
     client = MagicMock()
-    for name in ("get", "set", "eval", "srem", "incr", "expire", "smembers"):
+    for name in (
+        "get",
+        "set",
+        "delete",
+        "exists",
+        "eval",
+        "srem",
+        "incr",
+        "expire",
+        "smembers",
+    ):
         setattr(client, name, AsyncMock(side_effect=failure))
     client.pipeline.return_value.execute = AsyncMock(side_effect=failure)
+
+    async def scan_iter(**_):
+        raise failure
+        yield  # an async generator
+
+    client.scan_iter = scan_iter
     for name, value in answers.items():
         setattr(client, name, AsyncMock(return_value=value))
     return client
@@ -98,6 +114,16 @@ CALLS = [
         id="mutate_session-expired-unindex",
     ),
     pytest.param(lambda s: s.list_sessions("u-1"), {}, id="list_sessions"),
+    pytest.param(lambda s: s.delete("s-1"), {}, id="delete"),
+    pytest.param(lambda s: s.exists("s-1"), {}, id="exists"),
+    pytest.param(lambda s: s.extend_ttl("s-1"), {}, id="extend_ttl"),
+    pytest.param(
+        lambda s: s.delete_keys_holding("*", "c-1"), {}, id="delete_keys_holding"
+    ),
+    pytest.param(lambda s: s.delete_session("s-1"), {"get": LIVE}, id="delete_session"),
+    pytest.param(
+        lambda s: s.delete_session("s-1"), {"get": "{}"}, id="delete_session-no-user"
+    ),
 ]
 
 
