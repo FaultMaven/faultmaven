@@ -1,16 +1,12 @@
 """fm#522 — syslog fields and remote hostnames must not be counted as usernames.
 
-The cases that defend a named guard drive the two **real entry points**
+The cases that defend a named guard drive the **real entry point**
 rather than the rule's internals:
 
-* ``LogsAndErrorsExtractor().extract()`` — the always-on entity profile.
-* ``extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, ...)`` — the
-  ``FAULTMAVEN_ENTITY_REGISTRY`` path, whose ``EntityType.USER`` rows reach
-  the investigation prompt through the Phase 4c entity-highlights block.
-
-Both are asserted for every one of those cases: the defect fm#522 reported
-survived because the rule was implemented twice and only one copy carried
-the guards. A test that exercises one path proves nothing about the other.
+``LogsAndErrorsExtractor().extract()`` — the always-on entity profile. The
+defect fm#522 reported survived because the rule was implemented twice and
+only one copy carried the guards; the second copy, the entity registry's,
+was removed with intake entity extraction (#2644).
 
 Each of them names the guard it defends. Removing that guard from
 ``preprocessing/log_usernames.py`` must turn the case red — verified by
@@ -32,11 +28,6 @@ from collections import Counter
 import pytest
 
 import faultmaven
-from faultmaven.models.api import DataType
-from faultmaven.modules.case.contracts import EntityType
-from faultmaven.modules.preprocessing.entities.registry import (
-    extract_entities_for_data_type,
-)
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
@@ -61,9 +52,9 @@ _UNREAD_PREFIX = "/var/log/auth.log:"
 def profile_usernames(content: str) -> list[str]:
     """Usernames as ``LogsAndErrorsExtractor.extract()`` renders them.
 
-    Expanded by the rendered mention count, for the same reason
-    ``registry_usernames`` is: collecting one entry per row silently caps
-    every count at 1 and makes a multiplicity assertion unfailable.
+    Expanded by the rendered mention count: collecting one entry per row
+    silently caps every count at 1 and makes a multiplicity assertion
+    unfailable.
     """
     result = LogsAndErrorsExtractor().extract(content)
     blob = (result.file_extract or "") + "\n" + (result.search_map or "")
@@ -80,23 +71,6 @@ def profile_usernames(content: str) -> list[str]:
                 continue
             found.extend([match.group(1)] * int(match.group(2)))
     return found
-
-
-def registry_usernames(content: str) -> list[str]:
-    """USER rows as ``extract_entities_for_data_type`` emits them.
-
-    Expanded by ``mention_count`` so multiplicity survives into the
-    comparison; a bare list of values hides a counting regression.
-    """
-    found: list[str] = []
-    for obs in extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, content):
-        if obs.entity_type == EntityType.USER:
-            found.extend([obs.entity_value] * obs.mention_count)
-    return found
-
-
-def both_paths(content: str) -> tuple[list[str], list[str]]:
-    return profile_usernames(content), registry_usernames(content)
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +99,8 @@ def test_rhost_value_is_never_a_username(rhost: str) -> None:
         "Sep 21 10:00:01 web01 sshd[1001]: pam_unix(sshd:auth): authentication "
         f"failure; logname= uid=0 euid=0 tty=ssh ruser= rhost={rhost}  user=root\n"
     )
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert profile == ["root"], profile
-    assert registry == ["root"], registry
 
 
 @pytest.mark.unit
@@ -138,9 +111,8 @@ def test_rhost_value_is_never_a_username_without_a_user_field(rhost: str) -> Non
         "Sep 21 10:00:06 web01 sshd[1006]: pam_unix(sshd:auth): authentication "
         f"failure; logname= uid=0 euid=0 tty=ssh ruser= rhost={rhost}\n"
     )
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert profile == [], profile
-    assert registry == [], registry
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +134,10 @@ def test_field_names_are_never_usernames() -> None:
         "logname=user uid=1000 euid=0 tty=/dev/pts/0 ruser=user "
         "rhost=mail.example.com  user=root\n"
     )
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert profile == ["root"], profile
-    assert registry == ["root"], registry
-    assert "rhost" not in profile and "rhost" not in registry
-    assert "uid" not in profile and "uid" not in registry
+    assert "rhost" not in profile
+    assert "uid" not in profile
 
 
 @pytest.mark.unit
@@ -195,9 +166,8 @@ def test_bare_user_token_does_not_capture_the_next_key(line: str) -> None:
     test above passed throughout, because it only ever exercised the
     ``ruser=user`` value-position shape.
     """
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert profile == [], profile
-    assert registry == [], registry
 
 
 @pytest.mark.unit
@@ -211,9 +181,8 @@ def test_empty_user_field_does_not_capture_the_next_key() -> None:
         "Sep 21 11:00:03 web01 sshd[2003]: pam_unix(sshd:auth): authentication "
         "failure; logname= uid=0 euid=0 tty=ssh user= rhost=mail.example.com\n"
     )
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert profile == [], profile
-    assert registry == [], registry
 
 
 @pytest.mark.unit
@@ -241,9 +210,8 @@ def test_every_user_field_spelling_still_yields_the_account(spelling: str) -> No
         "Sep 21 11:00:20 web01 sshd[1]: pam_unix(sshd:auth): authentication "
         f"failure; {spelling}"
     )
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert profile == ["alice"], profile
-    assert registry == ["alice"], registry
 
 
 @pytest.mark.unit
@@ -263,9 +231,8 @@ def test_value_position_user_is_never_the_key() -> None:
         "Sep 21 11:00:09 web01 sudo: pam_unix(sudo:auth): authentication "
         "failure; logname=user tty=pts/0 ruser=user root"
     )
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert profile == [], profile
-    assert registry == [], registry
 
 
 @pytest.mark.unit
@@ -295,9 +262,8 @@ def test_for_branch_does_not_capture_a_field_name(line: str) -> None:
     for the same reason as the test above — without these two inputs the
     ``for``-branch copy killed nothing in the matrix.
     """
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert profile == [], profile
-    assert registry == [], registry
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +293,8 @@ def test_reverse_dns_login_name_is_rejected() -> None:
 
     unread = _UNREAD_PREFIX + _HOST_SHAPED_NAME_LINE
     assert read_sshd_auth_line(unread).read is False
-    profile, registry = both_paths(unread + "\n")
+    profile = profile_usernames(unread + "\n")
     assert profile == [], profile
-    assert registry == [], registry
 
 
 @pytest.mark.unit
@@ -337,9 +302,8 @@ def test_a_host_shaped_login_name_in_the_slot_is_reported_verbatim() -> None:
     """On a read line the name is sshd's user slot, exactly as the client
     offered it (fm#1668): a name no account can have is itself the attack
     signal, so the slot is not filtered."""
-    profile, registry = both_paths(_HOST_SHAPED_NAME_LINE + "\n")
+    profile = profile_usernames(_HOST_SHAPED_NAME_LINE + "\n")
     assert profile == ["host-187-141-143-180-sta.mx"], profile
-    assert registry == ["host-187-141-143-180-sta.mx"], registry
 
 
 @pytest.mark.unit
@@ -363,17 +327,17 @@ def test_a_host_shaped_login_name_in_the_slot_is_reported_verbatim() -> None:
 def test_reverse_mapping_hostname_is_not_a_username(line: str) -> None:
     """Guard: ``AUTH_CONTEXT_RE`` gating the ``for <name>`` branch.
 
-    Verbatim OpenSSH lines. The registry path had no gate and reported both
-    of these hostnames as login accounts — fm#522's class, on real input.
+    Verbatim OpenSSH lines. The registry's copy of the rule had no gate and
+    reported both of these hostnames as login accounts — fm#522's class, on
+    real input.
 
     Only ``ptr-no-octets`` measures the gate on its own: dropping the gate
     still leaves ``REVERSE_DNS_RE`` to catch ``customer-187-141-143-180-sta.``,
     which is the belt-and-braces working, and is why a PTR with no numeric
     octets had to be in this list.
     """
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert profile == [], profile
-    assert registry == [], registry
 
 
 @pytest.mark.unit
@@ -396,9 +360,8 @@ def test_reverse_mapping_hostname_is_not_a_username(line: str) -> None:
 )
 def test_kernel_for_phrases_are_not_usernames(line: str, token: str) -> None:
     """Guard: ``AUTH_CONTEXT_RE``. No auth keyword, so ``for <word>`` is off."""
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert token not in profile, profile
-    assert token not in registry, registry
 
 
 @pytest.mark.unit
@@ -426,9 +389,8 @@ def test_pam_structural_words_are_not_usernames(line: str, token: str) -> None:
     only when both are removed. It is here as a real-world negative, not as a
     single guard's witness.
     """
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert token not in profile, profile
-    assert token not in registry, registry
 
 
 # ---------------------------------------------------------------------------
@@ -473,23 +435,15 @@ def test_pam_structural_words_are_not_usernames(line: str, token: str) -> None:
     ],
 )
 def test_real_usernames_still_captured(line: str, expected: str) -> None:
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert expected in profile, profile
-    assert expected in registry, registry
 
 
 @pytest.mark.unit
-def test_both_paths_agree_on_a_mixed_auth_log() -> None:
-    """The two implementations became one; their answers must not diverge.
+def test_a_mixed_auth_log_counts_each_account_once_per_line() -> None:
+    """Membership *and* multiplicity, on a log that mixes every guard's shape.
 
-    Membership *and* multiplicity now match, because fm#1574 settled both
-    paths to the same semantics at the extraction root: a mention is a LINE.
-    Until then they deliberately differed — the profile counted *matches* and
-    the registry counted lines — and this case is where that showed.
-
-    Each path is pinned to the same explicit expectation, which is what makes
-    the two agree. A between-paths comparison would add nothing: it passes
-    when both drift the same way, which pinning each path catches. A set
+    A mention is a LINE (fm#1574). Pinned to an explicit expectation: a set
     comparison discards multiplicity entirely, which is how a doubling
     regression got through once already.
     """
@@ -510,122 +464,13 @@ def test_both_paths_agree_on_a_mixed_auth_log() -> None:
             "invalid user test from 211.72.151.162 port 55568 ssh2",
         ]
     )
-    profile, registry = both_paths(content + "\n")
+    profile = profile_usernames(content + "\n")
     # "Failed password for invalid user test" matches on BOTH branches —
     # USER_FIELD_RE on "user test", USER_FOR_RE on "for invalid user test".
     # The profile rendered "test: 2 mentions" until fm#1574; one line is now
-    # one mention on both paths, so the two dicts are the same dict.
+    # one mention.
     expected = {"root": 1, "cyrus": 1, "test": 1}
     assert Counter(profile) == expected, profile
-    assert Counter(registry) == expected, registry
-
-
-# ---------------------------------------------------------------------------
-# The registry path's before/after, pinned as data rather than prose.
-# ---------------------------------------------------------------------------
-
-# fm#522 moved ``entities/logs.py`` onto the shared rule, which newly applied
-# the auth-context gate to that path. These are lines the registry path
-# recorded BEFORE that move, taken from ``origin/main``'s local ``_USER_RE``.
-# Each must still be recorded, or the move silently cost the entity registry
-# usernames it used to have. Three of them regressed on the first attempt and
-# were only found because this table was written out.
-REGISTRY_MUST_STILL_RECORD = [
-    pytest.param(
-        "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
-        "exceeded for root from 1.2.3.4 port 22 ssh2 [preauth]",
-        ["root"],
-        id="maximum-authentication-attempts",
-    ),
-    pytest.param(
-        "Dec 10 07:10:01 LabSZ sshd[2]: Postponed publickey for alice from "
-        "1.2.3.4 port 22 ssh2 [preauth]",
-        ["alice"],
-        id="postponed-publickey",
-    ),
-    pytest.param(
-        "Dec 10 07:10:02 LabSZ sshd[3]: Failed publickey for bob from 1.2.3.4 "
-        "port 22 ssh2",
-        ["bob"],
-        id="failed-publickey",
-    ),
-    pytest.param(
-        "Dec 10 07:10:04 LabSZ sshd[4]: Failed none for invalid user carol "
-        "from 1.2.3.4 port 22 ssh2",
-        ["carol"],
-        id="failed-none",
-    ),
-    pytest.param(
-        "Dec 10 07:10:05 LabSZ sshd[5]: Failed keyboard-interactive/pam for "
-        "dave from 1.2.3.4 port 22 ssh2",
-        ["dave"],
-        id="failed-keyboard-interactive",
-    ),
-    pytest.param(
-        "Sep 21 10:00:00 h sshd[6]: pam_unix(sshd:session): session closed for "
-        "user frank",
-        ["frank"],
-        id="session-closed-for-user",
-    ),
-    pytest.param(
-        "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
-        "failure; user=svc_",
-        ["svc_"],
-        id="trailing-underscore-account",
-    ),
-    pytest.param(
-        "Sep 21 10:00:02 h sshd[8]: pam_unix(sshd:auth): authentication "
-        "failure; user=  alice",
-        ["alice"],
-        id="spaces-after-equals",
-    ),
-]
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("line,expected", REGISTRY_MUST_STILL_RECORD)
-def test_registry_path_still_records_what_it_recorded_before(
-    line: str, expected: list[str]
-) -> None:
-    """Applying the auth gate to the registry path must not cost it usernames."""
-    assert registry_usernames(line + "\n") == expected
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "line,was,now",
-    [
-        pytest.param(
-            "Jun 15 04:06:18 combo su(pam_unix)[1]: session opened for user "
-            "cyrus by (uid=0)",
-            "user",
-            "cyrus",
-            id="session-opened",
-        ),
-        pytest.param(
-            "Sep 21 10:00:00 h sshd[2]: pam_unix(sshd:session): session closed "
-            "for user frank",
-            "user",
-            "frank",
-            id="session-closed",
-        ),
-    ],
-)
-def test_registry_now_records_the_account_not_the_word_user(
-    line: str, was: str, now: str
-) -> None:
-    """A deliberate registry-path improvement, pinned so it is not incidental.
-
-    ``origin/main``'s local pattern was a single alternation: on
-    ``session opened for user cyrus`` its ``for`` branch matched first,
-    consumed ``for user``, returned the literal ``user`` — and scanning
-    resumed past ``cyrus``, so the real account was never seen. The shared
-    rule runs the two branches separately, so ``cyrus`` is captured by the
-    field branch and the literal ``user`` is dropped by ``PROTOCOL_TERMS``.
-    """
-    found = registry_usernames(line + "\n")
-    assert found == [now], found
-    assert was not in found
 
 
 @pytest.mark.unit
@@ -687,33 +532,18 @@ def test_registry_now_records_the_account_not_the_word_user(
         ),
     ],
 )
-def test_mention_counts_are_per_line_on_both_paths(
-    line: str, expected: dict[str, int]
-) -> None:
-    """One line, one mention — on the registry path AND the entity profile.
+def test_mention_counts_are_per_line(line: str, expected: dict[str, int]) -> None:
+    """One line, one mention, in the rendered entity profile.
 
     Both branches match the same token on an ``invalid user`` line, so the
-    concatenation used to return it twice. fm#522 had to stop that reaching
-    the registry, where it was a fresh doubling; fm#1574 settled the profile
-    the same way and folded the de-duplication into ``extract_usernames``, so
-    the expectation below is now one expectation for both paths.
+    concatenation used to return it twice. fm#1574 folded the
+    de-duplication into ``extract_usernames``: ``{"test": 1}`` on the line
+    the profile used to render as ``test: 2 mentions``.
 
-    ``expected`` is what each path reports: ``{"test": 1}`` on the line the
-    profile used to render as ``test: 2 mentions``.
-
-    The count is not cosmetic on either path. On the registry it is
-    ``mention_count``: ``list_top_entities`` orders by
-    ``SUM(mention_count) DESC`` and ``fetch_entity_highlights`` prints the
-    top five with their counts into the investigation prompt. On the profile
-    it orders the rendered ``Distinct usernames`` list. Either way a
-    scanner-sprayed ``invalid user`` account outranked a real one 2:1.
+    The count is not cosmetic: it orders the rendered ``Distinct usernames``
+    list, where a scanner-sprayed ``invalid user`` account outranked a real
+    one 2:1.
     """
-    obs = {
-        o.entity_value: o.mention_count
-        for o in extract_entities_for_data_type(DataType.LOGS_AND_ERRORS, line + "\n")
-        if o.entity_type == EntityType.USER
-    }
-    assert obs == expected
     assert Counter(profile_usernames(line + "\n")) == expected
 
 
@@ -740,7 +570,7 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
 
     What this does NOT do: collapse two different accounts on one line, or
     collapse the same account across lines. Both are pinned as parameters of
-    ``test_mention_counts_are_per_line_on_both_paths``.
+    ``test_mention_counts_are_per_line``.
 
     Unlike its neighbours this test asserts on ``USER_FIELD_RE`` and
     ``USER_FOR_RE`` directly. Those pre-assertions prove that the line itself
@@ -762,9 +592,8 @@ def test_one_line_is_one_mention_even_across_different_fields() -> None:
     assert USER_FIELD_RE.findall(line) == ["alice"]
     assert USER_FOR_RE.findall(line) == ["alice"]
 
-    profile, registry = both_paths(line)
+    profile = profile_usernames(line)
     assert Counter(profile) == {"alice": 1}, profile
-    assert Counter(registry) == {"alice": 1}, registry
 
 
 @pytest.mark.unit
@@ -817,9 +646,8 @@ def test_the_dedup_key_is_case_folded_and_the_field_spelling_wins(
     rule that simply prefers lowercase.
     """
     assert extract_usernames(line) == [winner]
-    profile, registry = both_paths(line + "\n")
+    profile = profile_usernames(line + "\n")
     assert Counter(profile) == expected, profile
-    assert Counter(registry) == expected, registry
 
 
 @pytest.mark.unit
@@ -827,10 +655,9 @@ def test_case_folding_does_not_reach_across_lines() -> None:
     """The declared limit of the rule above, pinned so a widening is deliberate.
 
     Within a line the key is case-folded. ACROSS lines the spelling is the
-    entity identity — ``case_entities`` is keyed on ``entity_value`` — and
-    whether ``Alice`` and ``alice`` are one account is a question about
-    POSIX versus Active Directory semantics and about a persisted key, not
-    about this line's arithmetic. Two rows, one each.
+    entity identity, and whether ``Alice`` and ``alice`` are one account is
+    a question about POSIX versus Active Directory semantics, not about this
+    line's arithmetic. Two rows, one each.
     """
     content = (
         "Dec 10 09:34:00 h sshd[1]: Failed password for Alice from 1.2.3.4 "
@@ -838,9 +665,8 @@ def test_case_folding_does_not_reach_across_lines() -> None:
         "Dec 10 09:35:00 h sshd[2]: Failed password for alice from 1.2.3.4 "
         "port 22 ssh2\n"
     )
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert Counter(profile) == {"Alice": 1, "alice": 1}, profile
-    assert Counter(registry) == {"Alice": 1, "alice": 1}, registry
 
 
 @pytest.mark.unit
@@ -873,9 +699,8 @@ def test_a_line_is_a_line_under_every_line_ending(ending: str) -> None:
     )
     content = ending.join(record.format(i=i) for i in range(5)) + ending
 
-    profile, registry = both_paths(content)
+    profile = profile_usernames(content)
     assert Counter(profile) == {"alice": 5}, (ending, profile)
-    assert Counter(registry) == {"alice": 5}, (ending, registry)
 
     rendered = LogsAndErrorsExtractor().extract(content)
     blob = (rendered.file_extract or "") + "\n" + (rendered.search_map or "")
@@ -984,10 +809,7 @@ _PACKAGE_ROOT = pathlib.Path(faultmaven.__file__).resolve().parent
 
 # Where the rule can be violated. A scan that stops looking at these
 # directories passes vacuously, so it must prove it reached them.
-_MUST_SCAN = (
-    pathlib.Path("faultmaven/modules/preprocessing/extractors"),
-    pathlib.Path("faultmaven/modules/preprocessing/entities"),
-)
+_MUST_SCAN = (pathlib.Path("faultmaven/modules/preprocessing/extractors"),)
 
 # The scan must see every shape this codebase actually writes a regex in, not
 # just the one the rule happens to use. Measured on the tree when it was
@@ -1167,8 +989,9 @@ def _parse(path: pathlib.Path) -> ast.AST | None:
 def test_exactly_one_implementation_of_the_username_rule() -> None:
     """N == 1. Two copies is how fm#522 outlived the guards that fixed it.
 
-    ``entities/logs.py`` carried a second username regex written from the
-    first and never given any of the guards it grew. Before this scan
+    The entity registry's ``entities/logs.py`` (removed, #2644) carried a
+    second username regex written from the first and never given any of the
+    guards it grew. Before this scan
     existed, N was 2 and only one copy was correct.
 
     Declared blind spots, measured rather than assumed: a pattern assembled
@@ -1314,9 +1137,8 @@ def test_a_read_line_names_the_slot_not_a_search(message, expected):
     line = _SSHD + message
     assert _is_read(line)
     assert extract_usernames(line) == expected
-    profile, registry = both_paths(line + "\n")
-    assert registry == expected, registry
-    assert "root" not in profile and "root" not in registry
+    profile = profile_usernames(line + "\n")
+    assert "root" not in profile
 
 
 @pytest.mark.unit
@@ -1403,13 +1225,6 @@ def test_a_crafted_name_renders_quoted_in_distinct_usernames():
 
 
 @pytest.mark.unit
-def test_the_registry_records_the_same_slot_names():
-    """The entity registry reads the same slot, unquoted: a value, not text."""
-    content = _brute_force("x for root", 2) + _brute_force("admin", 1)
-    assert Counter(registry_usernames(content)) == {"x for root": 2, "admin": 1}
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize(
     "message, expected",
     [
@@ -1437,8 +1252,7 @@ def test_an_existing_account_is_named_when_the_slot_cannot_decide(message, expec
     line = "Dec 10 10:00:00 h " + message
     assert _is_read(line)
     assert extract_usernames(line) == expected
-    profile, registry = both_paths(line + "\n")
-    assert registry == expected, registry
+    profile = profile_usernames(line + "\n")
 
 
 _NO_EVENT_FOR_LINES = [

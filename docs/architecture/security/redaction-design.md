@@ -101,8 +101,7 @@ gives the first and destroys the second, an unkeyed hash the reverse.
 Truncation is 64 bits, wider than the 48 of the digest it replaced. A collision
 maps two distinct values onto one placeholder and the reverse map then resolves
 one of them to the **wrong** original — a wrong value handed back, not merely a
-lost one. The redaction registry is unbounded (`entity_registry_cap_per_type`
-caps a different subsystem's extractor, not this one), so the size to plan for
+lost one. The redaction registry is unbounded, so the size to plan for
 is however many distinct entities a large log holds: over 10^5 entries the
 birthday bound is ~2e-5 at 48 bits and ~3e-10 at 64.
 

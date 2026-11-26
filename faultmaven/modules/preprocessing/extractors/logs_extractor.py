@@ -606,9 +606,9 @@ class LogsAndErrorsExtractor:
         r")"
         r"(?![0-9A-Fa-f:.])"
     )
-    # Username extraction lives in ``preprocessing/log_usernames.py`` so the
-    # entity-registry extractor applies the same rule rather than a second
-    # copy of it (fm#522). Only the rendering below is this class's business.
+    # Username extraction lives in ``preprocessing/log_usernames.py``, the
+    # one copy of the rule (fm#522). Only the rendering below is this
+    # class's business.
     #
     # The MULTIPLICITY is decided there too, not here: ``extract_usernames``
     # returns each account at most once per line, so the counter below counts
@@ -644,9 +644,8 @@ class LogsAndErrorsExtractor:
     _PID_BRACKET_RE = re.compile(r"\[(\d{1,7})\]")
     # Absolute ceiling matching the current kernel maximum. Anything above
     # this is almost certainly not a PID (timestamp ns, request byte count,
-    # etc.) and is filtered at count time. SHARED with the entity registry
-    # path (``extractors.utils.PID_MAX``, via ``is_pid``) — a ceiling raised
-    # here alone would have ``case_entities`` index a PID this profile drops.
+    # etc.) and is filtered at count time (``extractors.utils.PID_MAX``,
+    # via ``is_pid``).
     _PID_MAX = PID_MAX
     _HTTP_PATH_RE = re.compile(r"\b(?:GET|POST|PUT|DELETE|PATCH)\s+(/[^\s\?]*)\b")
 

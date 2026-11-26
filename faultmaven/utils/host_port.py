@@ -1,6 +1,6 @@
 """The host-and-port pattern the logs evidence paths and ``search_file`` read.
 
-The logs extractor's profile and the entity registry read it in logs evidence
+The logs extractor's profile reads it in logs evidence
 (``modules/preprocessing``), and ``search_file``'s vocabulary scan
 (``modules/agent/tools/search_file_tool.py``) reads it inline over the first
 ``SearchFileTool._VOCAB_SCAN_CHARS`` characters of an evidence file (#2723).
@@ -42,8 +42,6 @@ lookahead scans that run once. The possessive ``++`` adds nothing: a plain
 split of a long run without a colon: 23 s on a 64 KB hex run (fm#2641).
 
 In logs evidence, ``PORT_KEYWORD_RE`` and this pattern are the one port rule
-of the logs extractor's profile and the entity registry. Command output pairs
-``PORT_KEYWORD_RE`` with an IP-and-port pattern of its own, and config evidence
-has its own port pattern. ``PORT_KEYWORD_RE`` is in
+of the logs extractor's profile. ``PORT_KEYWORD_RE`` is in
 ``modules/preprocessing/extractors/utils.py``.
 """

@@ -194,7 +194,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Key and tenant: `modules/evidence/domain/services/file_storage_service.py:540-555`.
 - Sidecars: `modules/evidence/domain/services/file_storage_service.py:28-33`;
   `infrastructure/storage/filesystem.py:167`.
-- Place: `modules/agent/domain/services/investigation_service/attachments.py:666-678`.
+- Place: `modules/agent/domain/services/investigation_service/attachments.py:659-671`.
 - Delete: `modules/evidence/domain/services/file_storage_service.py:558-582`.
 - Retention: no lifecycle or expiry code in `infrastructure/storage/`;
   `modules/agent/jobs/storage_cleanup.py:1-6`; `config/settings.py` (`EvidenceStorageSettings.orphan_cleanup_enabled`,

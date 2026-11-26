@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Date:** 2026-04-24
-**Status:** Implemented (Phase 4a / 4b / 4c complete — ships dark behind `FAULTMAVEN_ENTITY_REGISTRY`)
+**Status:** Producer removed (#2644). Nothing populates `case_entities`: intake runs no entity extraction, and `modules/preprocessing/entities/` is deleted. The read side (the two agent tools and the highlights block) still ships dark behind `FAULTMAVEN_ENTITY_REGISTRY` and reads an empty table, pending the registry's ruled retirement (#1708). The sections on the mention unit, the extractors, the write path, the cap and its overflow metric describe the removed producer.
 **Context:** Design specification for the cross-artifact entity index introduced by the data-processing improvement plan's Phase 4.
 
 ---
@@ -78,7 +78,7 @@ source-versus-destination back needs a **field**, not a count — overloading
 `mention_count` to carry role information would reintroduce exactly the
 divergence above.
 
-#### The one exception: STRUCTURED_CONFIG counts matches
+#### The one exception: STRUCTURED_CONFIG counts matches (removed producer)
 
 `ConfigEntityExtractor` counts **matches over the whole document**, via
 `entities.line_tally.tally_document_matches` rather than `tally_entity_lines`.
@@ -172,12 +172,11 @@ consumer:
   has fifteen other things to do per line and keeps its own loop.
 
 Guard: `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`. It
-feeds every registered extractor a line naming each of its entity types twice
-and checks the count against that type's *declared* scope; it fails if an
-extractor is registered without such a line, if a fixture stops matching, if a
-data type's scope changes, if the registry and the rendered profile disagree on
-any entity type, or if a new loop anywhere in `entities/` iterates a raw
-`findall` result.
+feeds the logs extractor a line naming each entity type the profile renders
+twice and requires each to count once per line, and it fails if a new loop in
+the logs extractor or `log_usernames.py` iterates a raw `findall` result. The
+extractor tables and `entities.line_tally` below were removed with intake
+extraction (#2644).
 
 ## Entity type vocabulary
 
@@ -204,6 +203,8 @@ Initial set — defined in `EntityType` in `faultmaven/modules/case/domain/model
 
 ## Extractor contribution matrix
 
+**Removed (#2644).** The package this section describes is deleted; the table is the record of what the producer emitted.
+
 `EntityExtractor` is a `Protocol` in `faultmaven.modules.preprocessing.entities.protocol`. One implementation per data type; the dispatch table is `registry.extract_entities_for_data_type(data_type, content, error_line_indices)`.
 
 An implementation declares a table of `EntityRule` — which patterns (or non-regex matcher) find a type on a line, an optional validity test, whether it records `in_error_context` — and `entities.line_tally` does the scanning: `tally_entity_lines` for the three per-line extractors, `tally_document_matches` for the config exception above. The extractors own their vocabulary; they do not own the unit (fm#1587), and an extractor that hand-rolls its own `findall` loop fails the census in `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`. A pattern with more than one capture group is refused when the rule is constructed, i.e. at import — the per-scan check would surface as "this evidence produced no entities at all", because `PreprocessingService` degrades any extraction exception to `[]`.
@@ -219,6 +220,8 @@ An implementation declares a table of `EntityRule` — which patterns (or non-re
 Extractor failures are logged and degraded to an empty list — entity extraction is best-effort and must not block evidence persistence.
 
 ## Write path
+
+**Removed (#2644).** No step below runs: intake extracts no entities, and step 4 was already gone since #281 (#1708).
 
 Producer: `PreprocessingService._build_result` (for each extraction) + `attachments._preprocess_attachment` (for persistence).
 
@@ -236,7 +239,7 @@ Two consumers: agent tools and the context-builder auto-injection.
 
 ### Agent tools
 
-Registered in `container/providers/tools.py` gated on `FAULTMAVEN_ENTITY_REGISTRY`. When the flag is off neither tool appears in the LLM's function-calling menu, so the agent can't ask for registry data that isn't there.
+Registered in `container/providers/tools.py` gated on `FAULTMAVEN_ENTITY_REGISTRY`. When the flag is off neither tool appears in the LLM's function-calling menu. When it is on they read `case_entities`, which nothing populates (#2644).
 
 - **`find_entity(entity_value, entity_type?)`** — `faultmaven.modules.agent.tools.find_entity_tool`. Exact-value lookup across the case's evidence; optional type filter; ordered by `mention_count` DESC. Returns one row per `(evidence, type)` the value appears in.
 - **`list_top_entities(entity_type, limit=10)`** — `faultmaven.modules.agent.tools.list_top_entities_tool`. Aggregates `mention_count` across evidence and returns the top distinct values. `limit` clamped to `[1, 50]`.
@@ -255,39 +258,36 @@ Fetch failures are caught and degraded to an empty string — entity injection i
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `FAULTMAVEN_ENTITY_REGISTRY` | `False` | Master switch. Off: no entity extraction, no registry writes, tools not registered, `fetch_entity_highlights` returns `""`. On: producer extracts + persists, tools appear to the LLM, highlights inject. |
-| `FAULTMAVEN_ENTITY_REGISTRY_CAP` | `500` | Per-(evidence, type) hard cap. Clamped to `[1, 10000]`. |
+| `FAULTMAVEN_ENTITY_REGISTRY` | `False` | Gates the read side only. Off: tools not registered, no highlights fetched. On: the tools appear to the LLM and the highlights are fetched, both over an empty `case_entities` (#2644). It goes with the registry's remainder (#1708). |
 
-The flag is designed so that turning it on or off is safe at any time: the `case_entities` table stays in schema, existing rows are preserved, and the feature flag simply gates *new* writes and *new* reads. Rows written during an on-period don't cause problems during an off-period — they're just orphaned until the flag is flipped back on.
+`FAULTMAVEN_ENTITY_REGISTRY_CAP` is removed with the producer it bounded (#2644); a deployment that still sets it is unaffected (the settings ignore unknown keys).
 
 ## Observability
 
-- **`faultmaven_case_entities_overflow_total{entity_type}`** — Counter. Incremented once per `(evidence, type)` overflow event, not per excess row. Exit-criteria dashboard reads the ratio of overflow/writes per type; the Phase 4 plan calls for tuning or splitting any type that overflows on >20% of evidence.
+- `faultmaven_case_entities_overflow_total{entity_type}` is removed with the producer (#2644).
 - Existing metrics that compose: `faultmaven_preprocessing_extraction_yield_ratio`, `faultmaven_evidence_dedup_hits_total`.
 
 No metric is emitted on every successful entity write — row counts are queryable directly from `case_entities`.
 
 ## Rollback
 
-1. Set `FAULTMAVEN_ENTITY_REGISTRY=false`. Producer skips writes, tools disappear, highlights go empty.
+1. Set `FAULTMAVEN_ENTITY_REGISTRY=false`. The tools disappear and the highlights go empty.
 2. Existing rows stay in `case_entities`. They're inert — nothing reads from them.
 3. The table itself is reversible via the alembic downgrade of `d4e5f6a70819` (drops two indexes + the table).
 
 ## Tests
 
 - `tests/unit/modules/case/infrastructure/test_case_entities.py` — repository contract (24 cases across InMemory + SQLite).
-- `tests/unit/modules/preprocessing/test_entity_extractors.py` — per-extractor false-positive/true-positive coverage, preprocessor integration, cap enforcement (27 cases).
-- `tests/unit/modules/agent/test_preprocess_attachment_entities.py` — producer wiring through `_preprocess_attachment` (4 cases).
+- `tests/unit/modules/preprocessing/test_no_entity_extraction_at_intake_2644.py` — intake runs no entity extraction with the flag on.
 - `tests/unit/modules/agent/tools/test_find_entity_tool.py` + `test_list_top_entities_tool.py` — agent tool surface (18 cases).
 - `tests/unit/core/investigation/test_entity_highlights.py` — `fetch_entity_highlights` and context-builder slot (12 cases).
 
-All pass without Prometheus installed (the `_NoOpMetric` fallback in `evidence_metrics.py` handles that).
 
 ## Exit criteria
 
 Per the Phase 4 plan — revisit monthly for the first quarter after default-on:
 
-1. **Overflow hit rate.** If any `entity_type` hits overflow on >20% of evidence, tune the cap or split the type. Read from `faultmaven_case_entities_overflow_total / writes_for_type`.
+1. **Overflow hit rate.** Moot: the cap and its metric are removed with the producer (#2644).
 2. **Agent adoption.** `find_entity` invoked ≥ 1×/investigation on cases with ≥ 2 evidence items. No store records tool calls per case yet (the `agent_tool_calls` table was dropped in #1001), so this per-investigation rate cannot be read today. What does exist is the process-wide counter `faultmaven_tool_call_attempts_total{tool="find_entity"}` (`faultmaven/core/investigation/reliability_metrics.py:124`, incremented at `faultmaven/core/investigation/milestone_engine/generation.py:1273`), which counts invocations without a case or investigation label.
 3. **Context-builder usefulness.** Auto-injection observed in at least one real case with ≥ 5 evidence items. Manually sample prompts captured by Opik to confirm.
 
@@ -297,6 +297,6 @@ Failing any of the three isn't a rollback signal — it's a tuning signal.
 
 - Case-schema table entry: [case-schema.md §4.13](../data-and-storage/schemas/case-schema.md).
 - Migration: `alembic/versions/20260423_1400_d4e5f6a70819_phase_4_case_entities_registry.py`.
-- Producer: `faultmaven/modules/preprocessing/entities/` + `preprocessing_service.py`.
+- Producer: removed (#2644); it was `faultmaven/modules/preprocessing/entities/` + `preprocessing_service.py`.
 - Consumer (tools): `faultmaven/modules/agent/tools/{find_entity_tool,list_top_entities_tool}.py`.
 - Consumer (context): `faultmaven/core/investigation/prompts/context_builder/entity_highlights.py` `fetch_entity_highlights`.

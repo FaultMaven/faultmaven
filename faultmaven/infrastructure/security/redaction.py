@@ -258,8 +258,7 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         maps two distinct values onto one placeholder, and the reverse map then
         resolves one of them to the WRONG original — a wrong value handed back
         to the user, not merely a lost one. The redaction registry is
-        unbounded (``entity_registry_cap_per_type`` caps a different
-        subsystem's extractor, not this), so the size to plan for is however
+        unbounded, so the size to plan for is however
         many distinct entities a large log has: at 48 bits the birthday bound
         over 10^5 entries is ~2e-5, at 64 bits it is ~3e-10.
         """

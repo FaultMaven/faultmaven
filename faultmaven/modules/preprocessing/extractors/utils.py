@@ -9,10 +9,9 @@ Provides:
 - The two halves of the mention unit: what a line is
   (``split_log_lines``) and what counts as one mention on it
   (``distinct_values`` / ``distinct_on_line``)
-- The entity value limits both entity paths share (``is_port``,
-  ``is_pid``, ``PID_MAX``) and the pattern precondition
-  (``check_entity_pattern``)
-- The port keyword pattern both entity paths read in logs evidence
+- The entity value limits (``is_port``, ``is_pid``, ``PID_MAX``) and the
+  pattern precondition (``check_entity_pattern``)
+- The port keyword pattern the entity profile reads in logs evidence
   (``PORT_KEYWORD_RE``; its host-and-port partner, ``HOST_PORT_RE``, is in
   ``faultmaven/utils/host_port.py``)
 """
@@ -83,12 +82,7 @@ def split_log_lines(content: str) -> list[str]:
 
 
 PID_MAX = 4_194_304
-"""Linux's default ``pid_max`` ceiling on 64-bit.
-
-Shared rather than repeated: the logs extractor's rendered profile and the
-entity registry index the same file, so a ceiling raised in one and not the
-other would have ``case_entities`` carry a PID the profile dropped.
-"""
+"""Linux's default ``pid_max`` ceiling on 64-bit."""
 
 
 def is_port(value: str) -> bool:
@@ -108,8 +102,7 @@ def is_pid(value: str) -> bool:
 PORT_KEYWORD_RE = re.compile(r"\bport[= :]+([0-9]{1,5})\b", re.IGNORECASE)
 """A port after the word ``port``, as in ``port 22`` or ``port=8080``.
 
-Read in logs evidence by both entity paths, and by the registry in command
-output, where it is paired with an IP-and-port pattern instead. The port is
+Read in logs evidence by the logs extractor's entity profile. The port is
 ASCII digits (``port ٣٣`` is not one), as in ``HOST_PORT_RE``
 (``faultmaven/utils/host_port.py``, fm#2677).
 """
@@ -119,11 +112,7 @@ def check_entity_pattern(pattern: "re.Pattern[str]") -> None:
     """Raise unless ``pattern`` can yield entity values.
 
     ``findall`` returns tuples past one capture group, and a tuple is not an
-    entity value. Callers validate at DECLARATION time (``EntityRule``
-    construction, i.e. import) rather than relying on the per-line check
-    below: entity extraction is wrapped in a blanket ``except Exception`` by
-    the preprocessing service, so a pattern that raises per line produces no
-    entities at all for that evidence behind one WARNING.
+    entity value. ``distinct_on_line`` checks each pattern it is given.
     """
     if pattern.groups > 1:
         raise ValueError(

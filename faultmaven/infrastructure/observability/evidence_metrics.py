@@ -17,7 +17,7 @@ for the canonical alert definitions.
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter, Histogram
-from faultmaven.modules.case.contracts import EntityType, EvidenceSourceType
+from faultmaven.modules.case.contracts import EvidenceSourceType
 
 # Every collector goes through the metrics shim, so with ENABLE_METRICS off
 # each is a no-op and nothing is registered (#2748).
@@ -199,23 +199,6 @@ AGENT_TRIAGE_ESCALATION_TOTAL = Counter(
     },
 )
 
-# Phase 4 — case-level entity registry overflow. Labeled by
-# ``entity_type`` so the dashboard surfaces which vocabulary
-# members regularly hit the per-(evidence, type) hard cap.
-# Emitted once per (evidence, entity_type) pair that overflows,
-# not per excess row — a single evidence spilling 1000 IPs
-# increments the ``ip`` bucket by 1, not 500.
-# Per Phase 4 plan exit criteria: if any type's overflow rate
-# > 20% of evidence, tune the cap or split the type.
-CASE_ENTITIES_OVERFLOW_TOTAL = Counter(
-    "faultmaven_case_entities_overflow_total",
-    "Number of (evidence, entity_type) pairs that exceeded the "
-    "Phase 4 per-(evidence, type) hard cap and had entity rows "
-    "truncated. Labelled by entity_type.",
-    labelnames=["entity_type"],
-    label_values={"entity_type": [t.value for t in EntityType]},
-)
-
 # 2026-05-01 review fix: page_capture passthrough shape validation.
 # Increments when an attachment classified as source_type=page_capture
 # lacks the structural-shape signals (no [captured_at:] preamble AND
@@ -281,7 +264,6 @@ __all__ = [
     "PREPROCESSING_UNCERTAIN_CLASSIFICATION_TOTAL",
     "PREPROCESSING_UNPARSED_SHAPE_TOTAL",
     "AGENT_TRIAGE_ESCALATION_TOTAL",
-    "CASE_ENTITIES_OVERFLOW_TOTAL",
     "PAGE_CAPTURE_SHAPE_INVALID_TOTAL",
     "EVIDENCE_ROW_REFUSED_TOTAL",
     "CHAT_DATA_OFFER_EVENTS_TOTAL",

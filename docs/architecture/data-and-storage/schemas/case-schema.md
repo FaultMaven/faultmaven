@@ -647,9 +647,9 @@ class ExtractorMetadata(BaseModel):
     attempts: list[ExtractorAttempt] = []
 
 class EntitiesMetadata(BaseModel):
-    """Overflow markers for Phase 4's case_entities writes.
-    Rows live in the separate table; this field only records caps hit on ingest."""
-    overflow_types: list[str] = []  # entity types that exceeded the 500-per-evidence cap
+    """Overflow markers for Phase 4's case_entities writes. Nothing writes it:
+    intake entity extraction and its cap were removed (#2644)."""
+    overflow_types: list[str] = []
 
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns (Phase 3).
@@ -1192,11 +1192,10 @@ CREATE INDEX idx_case_entities_by_evidence
 - `entity_type` is a controlled vocabulary enforced at the Pydantic layer (not via `CHECK` — PostgreSQL-only constraints aren't portable to SQLite). Valid values: `ip`, `hostname`, `user`, `pid`, `port`, `service`, `path`, `device`, `metric_name`. Extending requires a design-doc edit so the retrieval paths stay in sync with what producers emit.
 - `first_seen_ts` is nullable: populated from the evidence's `coverage_start_ts` (Phase 3a, §4.3) when the evidence is time-bound, else NULL for timeless content (configs, source code, short pastes).
 - Both FKs cascade on delete. Case or evidence deletion sweeps registry rows without a separate cleanup job.
-- Row growth is bounded by a preprocessor-side hard cap of **500 entities per (evidence, entity_type)** pair, tunable via `FAULTMAVEN_ENTITY_REGISTRY_CAP`. Worst case per case: `evidence_count × 500 × |entity_type vocabulary|` — 100 evidence × 500 × 9 = 450k rows, well within PostgreSQL comfort.
-- Overflow is recorded on `evidence.metadata.entities.overflow_types` (list of type values) and increments the `faultmaven_case_entities_overflow_total{entity_type}` counter. Exit-criteria dashboard triggers a cap review if any type overflows on >20% of evidence.
-- **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). Flag controls both the producer (preprocessor writes) and the consumer (agent tools + context-builder highlights). The table stays in schema regardless of flag state.
+- **Nothing populates this table.** Intake entity extraction, its per-type cap and its overflow counter were removed (#2644); the table, the read side and the flag go with the registry's ruled retirement (#1708).
+- **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). The flag gates the read side only (agent tools + context-builder highlights), which reads an empty table.
 
-**Write path**: `PreprocessingService._build_result` → `attachments._preprocess_attachment` → `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`. Semantics: delete-then-insert scoped to `(case_id, evidence_id)`. Empty list clears without inserting.
+**Write path**: none. `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)` (delete-then-insert scoped to `(case_id, evidence_id)`) has no caller outside the repositories.
 
 **Read path**: `CaseRepository.find_entity(case_id, entity_value, entity_type?)` and `list_top_entities(case_id, entity_type, limit)`. Exposed to the agent via `find_entity` and `list_top_entities` tools; also pre-fetched by the milestone engine and injected as an `<entity_highlights>` block in the INVESTIGATING template.
 
