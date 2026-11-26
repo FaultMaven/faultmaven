@@ -36,8 +36,8 @@ which runs its encode in a worker from the KB indexing slot
 (``core/preprocessing/vector_storage.py``, live via the ``vectorize_file``
 agent tool), whose encodes run on the evidence slot, in the KB slot's order,
 never on the default executor. A KB bound is sized from the batch's BGE-M3
-token count, counted in a worker (an evidence bound from its UTF-8 bytes,
-#2851), not its chunk count: a
+tokens, counted in a worker and priced by each chunk's length (#2920; an
+evidence bound from its UTF-8 bytes, #2851), not its chunk count: a
 chunk can hold 50 tokens or 3,000, and the per-chunk rule allowed a
 97k-character runbook 302 s of the 373 s it took (#2055).
 
@@ -127,7 +127,7 @@ _count_slots_state: Optional[tuple] = None
 
 
 def batch_embed_timeout(tokens: int) -> float:
-    """The bound for embedding a batch of ``tokens`` BGE-M3 tokens.
+    """The bound for embedding a batch of ``tokens`` priced BGE-M3 tokens.
 
     A cold load plus twice the measured estimate. Deliberately proportional to
     the work and NOT capped at some round number. The bound exists to turn
@@ -148,14 +148,17 @@ def batch_embed_timeout(tokens: int) -> float:
     )
 
 
-async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optional[int]:
-    """BGE-M3 tokens in ``texts``, counted the way the encode sees them, in a
+async def count_index_tokens(
+    texts: Sequence[str], *, principal: str
+) -> Optional[tuple[int, int]]:
+    """BGE-M3 tokens in ``texts``, counted the way the encode sees them, and
+    priced by each text's length (#2920), as ``(tokens, priced)``, in a
     ``token_count_worker`` its phase bounds kill (Principle 14, #2851).
 
     The worker runs under ``TOKEN_COUNT_SLOTS`` slots keyed by ``principal``,
     the user who asked. A count waits for a slot for its hang bound at most.
     None when the worker gave no count: any end but an answer, or an answer
-    that is not a count.
+    that is not two decimal counts.
 
     Raises:
         EmbedderUnavailable: ``queued_too_long``, no slot freed within the
@@ -166,7 +169,7 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
         raise ValueError("a token count runs for the user who asked: none given")
     texts = list(texts)
     if not texts:
-        return 0
+        return 0, 0
     _count_slots_state = worker_process.loop_slots(
         _count_slots_state, TOKEN_COUNT_SLOTS
     )
@@ -204,13 +207,15 @@ async def count_index_tokens(texts: Sequence[str], *, principal: str) -> Optiona
             end.timed_out,
         )
         return None
-    answer = end.result[0] if len(end.result) == 1 else ""
-    return int(answer) if answer.isdigit() else None
+    fields = end.result[0].split(" ") if len(end.result) == 1 else []
+    if len(fields) == 2 and all(field.isdecimal() for field in fields):
+        return int(fields[0]), int(fields[1])
+    return None
 
 
 async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
-    """The token count the guard sizes its bound from: a KB ticket's, else a
-    count under its principal; else UTF-8 bytes plus the two special tokens
+    """The priced tokens the guard sizes its bound from: a KB ticket's, else a
+    count's under its principal; else UTF-8 bytes plus the two special tokens
     per text. A token spans at least a byte of text (bar SentencePiece's word
     marker before a text's first word), so that is an upper bound to within a
     token per text, which the bound's 2x margin covers. A loose bound is safe
@@ -226,7 +231,7 @@ async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
         except EmbedderUnavailable:  # no count slot freed: logged there
             counted = None
         if counted is not None:
-            return counted
+            return counted[1]
         if not _byte_fallback_logged:
             _byte_fallback_logged = True
             logger.warning(

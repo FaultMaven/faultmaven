@@ -1226,7 +1226,9 @@ async def test_a_boots_repair_rows_encode_once_in_the_worker_within_the_budget(
     monkeypatch.setattr(index_slot, "encode_in_worker", _encode)
     monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 600)
     monkeypatch.setattr(
-        embedding_guard, "count_index_tokens", AsyncMock(return_value=10_000_000)
+        embedding_guard,
+        "count_index_tokens",
+        AsyncMock(return_value=(10_000_000, 10_000_000)),
     )
     queued = index_slot.index_admission.admit_forced(["other"], 10**6, principal="u")
     try:

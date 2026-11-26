@@ -211,7 +211,7 @@ async def test_kb_seed_under_the_maintenance_role_repairs_and_never_updates(
                     patch.object(
                         embedding_guard,
                         "count_index_tokens",
-                        AsyncMock(return_value=0),
+                        AsyncMock(return_value=(0, 0)),
                     ),
                     caplog.at_level(logging.WARNING),
                 ):

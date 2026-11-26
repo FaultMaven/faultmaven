@@ -1001,7 +1001,7 @@ class KnowledgeService:
         ``principal``'s slot (#2851), and the count's time, its wait for a slot
         included, is spent from the window: at 0 nothing is refused, and the
         guard counts inside the embed. ``forced`` (the boot repair) is never
-        refused.
+        refused. The ticket holds the priced count, the 413 prints the plain.
 
         Raises:
             IndexAdmissionRefused: 413 or 503, see ``IndexAdmission.admit``.
@@ -1016,13 +1016,14 @@ class KnowledgeService:
         limit = float(get_settings().knowledge.index_request_window_seconds)
         window = limit if window_seconds is None else window_seconds
         started = now()
-        tokens = None
+        counted = None
         if limit > 0:
             try:
-                tokens = await count_index_tokens(chunks, principal=principal)
+                counted = await count_index_tokens(chunks, principal=principal)
             except EmbedderUnavailable:  # no count slot freed within its wait
                 if window > 0 and not forced:
                     raise  # else refused nothing, as a count with no answer
+        plain, tokens = counted or (None, None)
         if forced:
             return index_admission.admit_forced(chunks, tokens, principal=principal)
         if window > 0:  # a window the count spent is busy, never "no window"
@@ -1033,6 +1034,7 @@ class KnowledgeService:
             principal=principal,
             window_seconds=window,
             size_limit_seconds=limit,
+            plain_tokens=plain,
         )
 
     async def _index_document_in_vector_store(

@@ -105,7 +105,9 @@ _ENCODE_WORKER = encode_worker.__name__
 #: One vector's float32 values.
 _DIMENSIONS = 1024
 
-# Core-seconds BGE-M3 spends encoding one token. Measured on the image under
+# Core-seconds BGE-M3 spends encoding one token: round 49's rate, at batch 32
+# with its padding, kept as the prose price (#2920; at ``ENCODE_BATCH_SIZE``
+# prose costs 13-14, ``model_cache.priced_tokens``). Measured in the image under
 # ``--cpus=2 --network none``, model warm, torch pinned to 2 threads (what
 # ``configure_inference_threads`` pins on Cloud), chunked by ``ContentChunker``
 # (round-49 probe, #2055 comment 6542538393):
@@ -155,13 +157,13 @@ def index_cores() -> float:
 
 
 def index_estimate_seconds(tokens: int) -> float:
-    """Seconds a warm model takes to encode ``tokens`` BGE-M3 tokens here."""
+    """Seconds a warm model takes to encode ``tokens`` priced BGE-M3 tokens."""
     return max(tokens, 0) * INDEX_CORE_SECONDS_PER_TOKEN / index_cores()
 
 
 def index_max_tokens(seconds: float) -> int:
     """The most tokens a warm model encodes here in ``seconds``: the one integer
-    every admission decision, and the 413's sentence, compare against."""
+    every admission decision compares priced tokens against."""
     return math.floor(seconds * index_cores() / INDEX_CORE_SECONDS_PER_TOKEN)
 
 
@@ -272,8 +274,8 @@ def refusal(reason: str, *, wait: int = 0, tokens: int = 0, most: int = 0):
     sentences = {
         "too_large": (
             f"This document is {tokens:,} tokens, and this server can index at "
-            f"most {most:,} tokens in one request. Split it into smaller "
-            "documents. Nothing was saved."
+            f"most {most:,} tokens of text like it in one request. Split it "
+            "into smaller documents. Nothing was saved."
         ),
         "busy": (
             "Other indexing on this server leaves no room for this document "
@@ -301,7 +303,7 @@ def _call_on_loop(loop: asyncio.AbstractEventLoop, callback: Callable[[], None])
 
 
 class IndexTicket:
-    """One encode on a slot: its chunks, token count, estimate and principal
+    """One encode on a slot: its chunks, priced tokens, estimate and principal
     (the user who asked, whose slot a token count takes).
 
     An async context manager. Leaving it releases the ticket only if nothing
@@ -557,12 +559,15 @@ class IndexAdmission(EncodeSlot):
         principal: str,
         window_seconds: float,
         size_limit_seconds: Optional[float] = None,
+        plain_tokens: Optional[int] = None,
     ) -> IndexTicket:
         """A ticket for indexing ``chunks``, or a refusal before any write.
 
         Args:
-            tokens: The chunks' BGE-M3 token count; None when it was not
+            tokens: The chunks' priced BGE-M3 tokens; None when they were not
                 counted (no window) or could not be.
+            plain_tokens: Their plain count, which only the 413 prints; None
+                when it equals ``tokens``.
             principal: The user who asked.
             window_seconds: What the request may spend; 0 refuses nothing.
             size_limit_seconds: The window a document alone must fit, when the
@@ -589,7 +594,8 @@ class IndexAdmission(EncodeSlot):
         limit = window_seconds if size_limit_seconds is None else size_limit_seconds
         most = index_max_tokens(limit - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
         if tokens > most:
-            raise refusal("too_large", tokens=tokens, most=most)
+            plain = tokens if plain_tokens is None else plain_tokens
+            raise refusal("too_large", tokens=plain, most=plain * most // tokens)
         at = _clock()
         if any(ticket.hung(at) for ticket in self._tickets):
             raise refusal("hung", wait=self.retry_after_seconds("hung"))

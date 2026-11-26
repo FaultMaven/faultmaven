@@ -30,8 +30,9 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 
 pytestmark = [pytest.mark.unit]
 
-# An indexing encode with no KB ticket runs on the evidence slot's thread
-# (#2055); one with a KB ticket (update, boot repair) in its worker (#2851).
+# An indexing encode with no KB ticket runs in this process, on the one encode
+# order's single thread (#2920); one with a KB ticket (update, boot repair) in
+# its worker (#2851).
 _EMBED_TEXTS = "faultmaven.infrastructure.model_cache.model_cache.embed_texts_sync"
 _KB_ENCODE = "faultmaven.infrastructure.index_slot.encode_in_worker"
 #: The generation the indexer writes under (#2388).
