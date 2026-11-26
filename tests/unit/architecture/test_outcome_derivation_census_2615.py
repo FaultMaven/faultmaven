@@ -856,6 +856,11 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
         },
         "the backstop: BACKSTOP_RESOLVE, or PENDING_CHECK while a check holds it",
     ),
+    (_PROPOSALS, "_maybe_propose_false_alarm_close"): Source(
+        {},
+        "the apply step's false-alarm proposer: FALSE_ALARM_CLOSE on the turn "
+        "the finding is made; it reads no derivation",
+    ),
     (_SG, "_apply_stage_gate_side_effects"): Source(
         {"closure_verdict": 1, "mitigation_closure_line": 1},
         "the apply step's stage-gate side effects: RCA_INFEASIBLE_CLOSE on a "
@@ -930,6 +935,11 @@ CYCLE_NOTICES = {
     "declined_resolution_reask": "a refusal of a resolution while the user's "
     "resolve decline stands, read off the offer record",
 }
+
+#: Functions that record a ``DECIDED_FROM`` key (an offer code or
+#: ``PENDING_CHECK``) but are not cycle sources, each with its reason. None:
+#: every such recorder is an in-cycle decider.
+DECIDER_EXCLUSIONS: dict[tuple[str, str], str] = {}
 
 #: The helpers outside ``CYCLE_SOURCES`` that record a ``CYCLE_NOTICES`` code
 #: for a source.
@@ -1541,9 +1551,84 @@ def test_the_cycle_sources_hold_the_tables_pins():
     codes declared notices, and it reads windows only through the carried
     view (``CARRIED_VIEW_SITES``)."""
     assert _cycle_source_problems() == []
-    recording = [k for k in CYCLE_SOURCES if _recorded(_function(*k), "")[0]]
-    assert len(recording) == 5, "premise: the five code-recording deciders"
     assert {"readiness", "confirmation", "closure"} <= _composers(_function(*_MODEL))
+
+
+def _decided_recorders(tree: ast.AST, path: str) -> tuple[set, list[str]]:
+    """Each function in ``tree`` that records a ``DECIDED_FROM`` key (a
+    ``record_decision`` call naming an offer code or ``PENDING_CHECK``), by
+    ``(path, qualname)``, and one problem per call whose code is not a
+    literal (it could record one unseen)."""
+    decided = {str(code) for code, _composer in DECIDED_FROM}
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    found: set = set()
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", getattr(node.func, "attr", None))
+            == "record_decision"
+        ):
+            continue
+        key = (path, _scope_of(node, parents))
+        codes, bad = _recorded(node, "::".join(key))
+        problems += bad
+        if codes & decided:
+            found.add(key)
+    return found, problems
+
+
+def _undeclared_deciders(found: set, problems: list[str]) -> list[str]:
+    declared = set(CYCLE_SOURCES) | set(DECIDER_EXCLUSIONS)
+    return problems + [
+        f"{'::'.join(key)}: records a DECIDED_FROM key, neither a cycle source "
+        "nor a declared exclusion"
+        for key in sorted(found - declared)
+    ]
+
+
+@lru_cache(maxsize=1)
+def _package_deciders() -> tuple[frozenset, tuple[str, ...]]:
+    found: set = set()
+    problems: list[str] = []
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        keys, bad = _decided_recorders(
+            parse_file(path), path.relative_to(_ROOT).as_posix()
+        )
+        found |= keys
+        problems += bad
+    return frozenset(found), tuple(problems)
+
+
+def test_every_function_recording_a_decided_key_is_a_cycle_source():
+    """Ruling Q4, read off the package rather than the table: a function that
+    records an offer code or ``PENDING_CHECK`` anywhere under ``faultmaven/``
+    is a cycle source or a declared exclusion, so a new decider fails here."""
+    found, problems = _package_deciders()
+    assert _undeclared_deciders(set(found), list(problems)) == []
+    assert len(found) >= 6, "premise: the scan finds the code-recording deciders"
+    assert set(DECIDER_EXCLUSIONS) <= found, "an exclusion that records nothing"
+
+
+@pytest.mark.parametrize(
+    ("source", "problem"),
+    [
+        (
+            "def decide(m):\n    record_decision(m, OfferCode.FALSE_ALARM_CLOSE)",
+            f"{_ME}probe.py::decide: records a DECIDED_FROM key, neither a cycle "
+            "source nor a declared exclusion",
+        ),
+        (
+            "def decide(m, code):\n    record_decision(m, code)",
+            f"{_ME}probe.py::decide:2: a code that is not a literal",
+        ),
+    ],
+)
+def test_a_recorder_outside_the_table_fails_the_scan(source, problem):
+    """A positive control: a synthetic recorder of a decided key, or of a code
+    the scan cannot read, outside ``CYCLE_SOURCES``."""
+    found, problems = _decided_recorders(ast.parse(source), _ME + "probe.py")
+    assert problem in _undeclared_deciders(found, problems)
 
 
 #: A probe source's module: not under ``narration/``, as a source never is.

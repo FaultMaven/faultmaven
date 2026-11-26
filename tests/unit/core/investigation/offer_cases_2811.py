@@ -69,8 +69,8 @@ said; the rest of each entry is unchanged. ``render_all`` on a ``git
 archive`` extract of 519a45875 reproduced the stored oracle (equal as JSON),
 and no other entry differed on the branch. The three are written with sorted
 keys, as the file's other turn entries are; a whole ``sort_keys`` dump would
-reorder the keys of every entry an earlier stage edited by hand (198), so
-the rest of the file is left byte for byte.
+reorder the keys of the 100 ``prompt:`` entries that are out of sorted order,
+so the rest of the file is left byte for byte.
 """
 
 from __future__ import annotations
