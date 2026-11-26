@@ -483,6 +483,19 @@ def test_a_mixed_auth_log_counts_each_account_once_per_line() -> None:
 # and PAM's ``session closed for``. ``AUTH_CONTEXT_RE`` was widened to keep
 # them, and the profile reads through the same gate. Each must still be
 # recorded, or a narrowing silently costs the profile usernames.
+#
+# Only the gate-decided rows pin the gate: the slot-decided rows
+# (``failed-publickey``, ``failed-none``, ``failed-keyboard-interactive``) are
+# answered by sshd's user slot and the field-decided rows
+# (``session-closed-for-user``, ``trailing-underscore-account``,
+# ``spaces-after-equals``) by a ``user`` field, so neither consults it. Every
+# other row is gate-decided. They pin nine of ``AUTH_CONTEXT_RE``'s twelve
+# alternatives (#3113); the other three are pinned elsewhere in this file:
+# ``password`` by ``test_mention_counts_are_per_line`` and
+# ``test_returned_order_is_branch_order_not_text_order``, ``Invalid user`` by
+# ``test_an_unread_line_is_searched_as_before``, and ``authentication
+# failure`` by it, ``test_an_unread_line_keeps_every_for`` and
+# ``test_a_no_event_read_line_takes_only_its_first_for``.
 AUTH_GATE_MUST_STILL_RECORD = [
     pytest.param(
         "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
@@ -519,6 +532,36 @@ AUTH_GATE_MUST_STILL_RECORD = [
         "user frank",
         ["frank"],
         id="session-closed-for-user",
+    ),
+    pytest.param(
+        "Dec 10 07:10:06 LabSZ sshd[9]: Failed none for erin from 1.2.3.4 port 22 ssh2",
+        ["erin"],
+        id="gate-only-none",
+    ),
+    pytest.param(
+        "Dec 10 07:10:07 LabSZ sshd[10]: Postponed keyboard-interactive for gina "
+        "from 1.2.3.4 port 22 ssh2 [preauth]",
+        ["gina"],
+        id="gate-only-keyboard-interactive",
+    ),
+    pytest.param(
+        _UNREAD_PREFIX + "Dec 10 07:10:05 LabSZ sshd[5]: Accepted publickey for "
+        "dave from 1.2.3.4 port 22 ssh2",
+        ["dave"],
+        id="gate-only-accepted",
+    ),
+    # The two session lines are synthetic. pam_unix writes ``session
+    # opened|closed for user <name>``, which the ``user`` field decides; no
+    # known real producer writes either shape without ``user``.
+    pytest.param(
+        "Sep 21 10:00:03 h su[11]: pam_unix(su:session): session closed for frank",
+        ["frank"],
+        id="gate-only-session-closed-for",
+    ),
+    pytest.param(
+        "Sep 21 10:00:04 h su[12]: pam_unix(su:session): session opened for henry",
+        ["henry"],
+        id="gate-only-session-opened-for",
     ),
     pytest.param(
         "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
