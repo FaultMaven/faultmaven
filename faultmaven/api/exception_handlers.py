@@ -1264,10 +1264,13 @@ async def oauth_protocol_error_handler(
 
     RFC 6749 §5.1: a refusal names an expired or revoked credential, so it is
     no more cacheable than the token response it replaces.
+
+    The description goes through `_detail_text` so no text can raise here (#2974).
     """
+    description = _detail_text(exc.error_description)
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": exc.error, "error_description": exc.error_description},
+        content={"error": exc.error, "error_description": description},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
 
