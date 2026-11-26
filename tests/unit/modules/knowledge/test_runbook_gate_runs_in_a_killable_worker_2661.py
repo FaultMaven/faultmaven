@@ -665,7 +665,7 @@ def test_a_memory_error_in_the_frontmatter_parse_is_not_a_verdict(monkeypatch):
     def exhausted(_text):
         raise MemoryError
 
-    monkeypatch.setattr(runbook_validator.yaml, "safe_load", exhausted)
+    monkeypatch.setattr(runbook_validator, "load_frontmatter_yaml", exhausted)
 
     with pytest.raises(MemoryError):
         runbook_validator.validate_and_score(valid_runbook())

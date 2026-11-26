@@ -52,7 +52,7 @@ from faultmaven.modules.knowledge.exceptions import (
 )
 from faultmaven.modules.knowledge.taxonomy import RunbookSeverity, member_value
 from faultmaven.utils.exception_name import exception_log_name
-from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.frontmatter import load_frontmatter_yaml, match_frontmatter
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
     resolve_runbook_path,
@@ -91,8 +91,6 @@ async def _scan_for_runbooks_impl(
     *,
     sanitizer,
 ) -> dict:
-    import yaml
-
     # Whether this caller may mint global-scope drafts. Computed once (the
     # policy is per-caller, not per-file); global-inferred files are skipped
     # below when this is False.
@@ -270,7 +268,7 @@ async def _scan_for_runbooks_impl(
         metadata = {}
         if fm_match:
             try:
-                metadata = yaml.safe_load(fm_match.group(1)) or {}
+                metadata = load_frontmatter_yaml(fm_match.group(1)) or {}
             except Exception:
                 pass
 

@@ -25,8 +25,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-import yaml
-
 from faultmaven.infrastructure.security.secret_patterns import (
     SECRET_PATTERNS,
     RedactionSpan,
@@ -84,6 +82,9 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from faultmaven.utils.frontmatter import (
+    ANCHOR_REFUSAL,
+    FrontmatterAnchorRefused,
+    load_frontmatter_yaml,
     match_frontmatter,
     parse_frontmatter,
     strip_frontmatter,
@@ -1035,11 +1036,15 @@ class RunbookValidator:
         warnings: List[str] = []
 
         # Gate 1: YAML frontmatter metadata
-        metadata = self._extract_metadata(content)
-        if metadata is None:
-            errors.append("No YAML frontmatter found")
+        try:
+            metadata = self._extract_metadata(content)
+        except FrontmatterAnchorRefused:
+            errors.append(ANCHOR_REFUSAL)
         else:
-            self._validate_metadata(metadata, errors, warnings)
+            if metadata is None:
+                errors.append("No YAML frontmatter found")
+            else:
+                self._validate_metadata(metadata, errors, warnings)
 
         # Gate 2: Structural linting
         self._validate_structure(content, errors, warnings)
@@ -1078,10 +1083,11 @@ class RunbookValidator:
         if not match:
             return None
         try:
-            loaded = yaml.safe_load(match.group(1))
-        except MemoryError:
+            loaded = load_frontmatter_yaml(match.group(1))
+        except (MemoryError, FrontmatterAnchorRefused):
             # The memory limit's own end (exit 3, the 422 ruled 2026-11-15),
-            # never a verdict about the frontmatter.
+            # never a verdict about the frontmatter; an anchor or alias has its
+            # own refusal (#2674).
             raise
         except Exception:
             # Unparseable frontmatter, whatever PyYAML raised, as

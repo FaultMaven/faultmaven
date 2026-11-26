@@ -764,7 +764,8 @@ class ContainerMemoryStatus(BaseModel):
     pools_bytes: int = Field(
         description=(
             "serving_processes x each pool's slots x its RLIMIT_AS: document "
-            "preparation, Evidence Tier 1, the runbook gate, the KB token counts."
+            "preparation, Evidence Tier 1, the runbook gate, the KB token counts, "
+            "the regex searches (at a file of U MB)."
         )
     )
     buffers_bytes: int = Field(
@@ -772,9 +773,9 @@ class ContainerMemoryStatus(BaseModel):
             "serving_processes x each pool's slots x its job's buffers, U the "
             "upload limit: preparation, its output limit; Tier 1, 2 x 3U in and "
             "its output limit; the gate, 2 x two texts at the draft bound (4 "
-            "bytes a character) in and its "
-            "output limit (the text verify publishes is outside it, #2674); a "
-            "token count, 2U in and its 1 MiB output limit."
+            "bytes a character) in and its output limit; a token count, 2U in "
+            "and its 1 MiB output limit; a regex search, 2 x 3U in and its output "
+            "limit at a file of U MB."
         )
     )
     encode_bytes: int = Field(

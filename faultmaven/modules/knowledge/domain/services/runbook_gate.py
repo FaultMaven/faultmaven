@@ -8,8 +8,9 @@ answer past the output limit. One that depends on load is a 503 with
 ``Retry-After`` (``GateUnavailable``): no slot within the wait, the wall-clock
 backstop, a kill, or a worker that could not start. A check that raises is a
 defect in it: the generic 500 (``GateFailed``). Every input is bounded at
-100,000 characters first, except the text verify publishes: its frontmatter is
-re-emitted with YAML aliases expanded, so it can grow past the bound (#2674).
+100,000 characters first, but for the text verify publishes, its draft a few
+characters longer; no frontmatter load accepts a YAML anchor or alias (#2674),
+so nothing in it is expanded.
 """
 
 import asyncio

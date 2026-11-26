@@ -23,6 +23,7 @@ from datetime import date
 from typing import Any, Dict, List
 
 import pytest
+import yaml
 
 from faultmaven.modules.knowledge.domain.services import runbook_validator as rv
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
@@ -31,6 +32,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     validate_and_score,
 )
 from faultmaven.modules.knowledge.taxonomy import SymptomClass, render_vocabulary
+from faultmaven.utils.frontmatter import match_frontmatter
 from tests.runbook_samples import valid_runbook
 
 pytestmark = pytest.mark.unit
@@ -254,6 +256,17 @@ def _errors(content: str, needle: str) -> List[str]:
     ]
 
 
+def _shared_errors(content: str, needle: str) -> List[str]:
+    """``_validate_metadata``'s errors over the frontmatter as ``yaml.safe_load``
+    builds it, an alias one shared object. A document carrying an anchor or
+    alias is refused whole since #2674; these pin the renderer's bounds on a
+    value repeated by reference, which ``_validate_metadata`` is still given."""
+    errors: List[str] = []
+    metadata = yaml.safe_load(match_frontmatter(content).group(1))
+    RunbookValidator()._validate_metadata(metadata, errors, [])
+    return [e for e in errors if needle in e]
+
+
 def _flow(values: List[str]) -> str:
     return "[" + ", ".join(values) + "]"
 
@@ -334,13 +347,13 @@ class TestSymptomClassRefusals:
         # Two equal lists written out twice are two objects, so two errors, as
         # on e1451bc85; only one object an alias repeats is one value.
         content = _with({"symptom_class": "[[a], {b: c}, [a]]"}, "x-a: &a [z]")
-        assert _errors(content, "symptom_class") == [
+        assert _shared_errors(content, "symptom_class") == [
             "symptom_class items must be strings: ['a']",
             "symptom_class items must be strings: {'b': 'c'}",
             "symptom_class items must be strings: ['a']",
         ]
         content = _with({"symptom_class": "[*a, *a, *a]"}, "x-a: &a [z]")
-        assert _errors(content, "symptom_class") == [
+        assert _shared_errors(content, "symptom_class") == [
             "symptom_class items must be strings: ['z']"
         ]
 
@@ -349,7 +362,7 @@ class TestSymptomClassRefusals:
         aliases to 20,000 items answered about 30 MB."""
         prefix = "x-big: &big " + _flow(["aa"] * 20_000)
         content = _with({"symptom_class": _flow(["*big"] * 300)}, prefix)
-        (error,) = _errors(content, "symptom_class")
+        (error,) = _shared_errors(content, "symptom_class")
         whole = repr(["aa"] * 20_000)
         assert error == (
             f"symptom_class items must be strings: {whole[:38]}...{whole[-39:]}"
@@ -407,7 +420,7 @@ class TestSymptomClassRefusals:
         members = ", ".join(f"m{n}" for n in range(2_000))
         prefix = "x-big: &big !!set {" + members + "}"
         content = _with({"symptom_class": _flow(["*big"] * 300)}, prefix)
-        (error,) = _errors(content, "symptom_class")
+        (error,) = _shared_errors(content, "symptom_class")
         assert len(shown) == 1 and len(reads) == 2
         assert reads[0] <= 81 + 10 and reads[1] <= 39 + 10
         assert len(error) == len("symptom_class items must be strings: ") + 80
@@ -416,7 +429,9 @@ class TestSymptomClassRefusals:
 class TestSiblingRefusals:
     def test_an_aliased_scalar_vocabulary_value_is_clipped(self):
         prefix = "x-big: &big " + _flow(["aa"] * 20_000)
-        (error,) = _errors(_with({"severity": "*big"}, prefix), "Invalid severity")
+        (error,) = _shared_errors(
+            _with({"severity": "*big"}, prefix), "Invalid severity"
+        )
         whole = repr(["aa"] * 20_000)
         assert error.startswith(f"Invalid severity '{whole[:38]}...{whole[-39:]}'. ")
 
@@ -447,8 +462,12 @@ class TestSiblingRefusals:
         20,000 errors."""
         values = [f"Bad{n}" for n in range(12)]
         prefix = "x-big: &big " + _flow(values * 2_000)
-        errors = RunbookValidator().validate_content(_with({"tags": "*big"}, prefix))
-        refused = [e for e in errors.errors if "tags" in e or e.startswith("Tag ")]
+        content = _with({"tags": "*big"}, prefix)
+        refused = [
+            e
+            for e in _shared_errors(content, "")
+            if "tags" in e or e.startswith("Tag ")
+        ]
         assert refused == [
             f"Tag must be lowercase alphanumeric with hyphens: {v}" for v in values[:10]
         ] + ["And 2 more invalid tags."]
@@ -465,7 +484,7 @@ class TestSiblingRefusals:
         tags = "[&a " + "a" * 10_000 + "A" + ", " + ", ".join(["*a"] * 50) + "]"
         shown = "a" * 38 + "..." + "a" * 38 + "A"
         content = _with({"tags": tags})
-        assert _errors(content, "Tag must") == [
+        assert _shared_errors(content, "Tag must") == [
             f"Tag must be lowercase alphanumeric with hyphens: {shown}"
         ]
         assert len(calls) == 1
@@ -491,7 +510,7 @@ class TestSiblingRefusals:
         prefix = "x-n: &n [[[a, b], [c, [d, e]]], {f: [g]}]"
         tags = _flow(["*n"] * 200 + ["0x" + "f" * 4000, "ok"])
         content = _with({"tags": tags}, prefix)
-        assert _errors(content, "Tag") == []
+        assert _shared_errors(content, "Tag") == []
         assert rendered == []
 
 

@@ -7,13 +7,59 @@ metadata for hybrid search, reranking, and staleness-aware synthesis.
 
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
+from frontmatter import Post, YAMLHandler
+from frontmatter import loads as _post_loads
 
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
+
+#: The gate's refusal of a frontmatter anchor or alias (#2674).
+ANCHOR_REFUSAL = (
+    "YAML anchors and aliases (&name, *name) are not allowed in runbook "
+    "frontmatter; write each value out in full"
+)
+
+
+class FrontmatterAnchorRefused(yaml.YAMLError):
+    """A frontmatter anchor or alias, refused as it is composed, before any
+    value is built: an alias names a shared value whose string form grows
+    with every level of aliases, so a few hundred characters could stall the
+    process that expands it (#2674)."""
+
+
+class _NoAnchorLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` that refuses every anchor and alias."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        event = self.peek_event()
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
+            raise FrontmatterAnchorRefused(ANCHOR_REFUSAL)
+        return super().compose_node(parent, index)
+
+
+def load_frontmatter_yaml(text: str) -> Any:
+    """A frontmatter block's YAML, loaded as ``yaml.safe_load`` loads it but
+    refusing any anchor or alias (``FrontmatterAnchorRefused``): every
+    frontmatter load in the codebase goes through here or :func:`load_post`."""
+    return yaml.load(text, Loader=_NoAnchorLoader)  # noqa: S506 - a safe loader
+
+
+class _NoAnchorHandler(YAMLHandler):
+    """python-frontmatter's YAML handler, loading with :func:`load_frontmatter_yaml`."""
+
+    def load(self, fm: str, **kwargs: object) -> Any:
+        return load_frontmatter_yaml(fm)
+
+
+def load_post(content: str) -> Post:
+    """``frontmatter.loads(content)`` with :func:`load_frontmatter_yaml` as its
+    loader, so a post never holds an aliased value."""
+    return _post_loads(content, handler=_NoAnchorHandler())
+
 
 # Scalar fields: extracted as-is (str conversion)
 _SCALAR_FIELDS = ("domain", "service", "last_updated", "status", "severity")
@@ -89,7 +135,7 @@ def parse_frontmatter(content: str) -> Dict[str, object]:
     if not match:
         return {}
     try:
-        loaded = yaml.safe_load(match.group(1))
+        loaded = load_frontmatter_yaml(match.group(1))
     except Exception as e:  # yaml raises a family, not one class
         logger.warning(f"Failed to parse frontmatter YAML: {exception_log_name(e)}")
         return {}

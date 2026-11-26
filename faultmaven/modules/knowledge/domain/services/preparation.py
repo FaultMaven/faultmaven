@@ -28,7 +28,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     code_spans,
     offset_in_spans,
 )
-from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.frontmatter import load_frontmatter_yaml, match_frontmatter
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 MAX_TOKEN_LIMIT = 30_000
@@ -471,9 +471,7 @@ def _runbook_frontmatter_fields(text: str) -> frozenset:
         return frozenset()
 
     try:
-        import yaml
-
-        metadata = yaml.safe_load(match.group(1))
+        metadata = load_frontmatter_yaml(match.group(1))
         if not isinstance(metadata, dict):
             return frozenset()
         return frozenset(metadata.keys()) & _RUNBOOK_FRONTMATTER_FIELDS

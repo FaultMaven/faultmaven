@@ -122,11 +122,13 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
     Principle 14, *Container memory*: per serving process, every pool's slots
     at their ``RLIMIT_AS`` plus the buffers the process holds per job, Tier 1's
     input at its worst (3 *U*); the KB encode once per container. *U* is in
-    MiB, as the body-size limit counts it. Tier 1's slots are read as in force.
+    MiB, as the body-size limit counts it. Tier 1's slots are read as in force;
+    a regex search's limits scale with its file, at most *U*.
     """
     from faultmaven.config.worker_stores import serving_processes
     from faultmaven.infrastructure import embedding_guard as count
     from faultmaven.infrastructure.model_cache import cgroup_memory
+    from faultmaven.modules.agent.tools import search_file_tool as search
     from faultmaven.modules.knowledge.domain.services import (
         document_preprocessor as prep,
     )
@@ -144,6 +146,7 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + slots * tier1_memory
         + gate.GATE_SLOTS * gate.GATE_MEMORY_BYTES
         + count.TOKEN_COUNT_SLOTS * count.TOKEN_COUNT_MEMORY_BYTES
+        + search.SEARCH_SLOTS * search.search_memory_limit(u)
     )
     gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
     buffers = w * (
@@ -151,6 +154,8 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + slots * (2 * 3 * u + tier1_output)
         + gate.GATE_SLOTS * (gate_texts_in + gate.GATE_OUTPUT_LIMIT_BYTES)
         + count.TOKEN_COUNT_SLOTS * (2 * u + count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
+        # A U MB file's text: at most U Mi characters and U + 1 lines.
+        + search.SEARCH_SLOTS * (2 * 3 * u + search.search_output_limit(u, u + 1))
     )
     encode = index_slot.ENCODE_MEMORY_BYTES
     caps = pools + buffers + encode

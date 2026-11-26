@@ -16,15 +16,21 @@ Cross-Cutting Hardening H2 — see
 Design Reference: docs/architecture/data-processing/README.md
 """
 
+import asyncio
 import logging
+import math
 import re
+import signal
 from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from faultmaven.infrastructure import worker_process
 from faultmaven.models.interfaces import ToolResult
+from faultmaven.modules.agent.tools import search_file_worker
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
+from faultmaven.modules.agent.tools.search_file_worker import merge_overlapping
 from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.host_port import HOST_PORT_RE
 
@@ -44,6 +50,63 @@ DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_RESULTS = 20
 # Ceiling for LLM-requested max_results (prevents unbounded memory use)
 MAX_RESULTS_CEILING = 200
+
+# The regex search runs in a ``search_file_worker`` per search, never here: the
+# model writes the pattern (Principle 14, #2686). Measured 2026-11-26 in the
+# worker over 10 MiB of text with a pattern matching every line (``""``), the
+# costliest legitimate search, for excerpts: 140-character log lines took 0.73 s
+# and 167 MiB of address space, 40-character CSV lines 1.95 s and 255 MiB, 120
+# U+FFFD a line (3.3 Mi characters) 0.54 s and 111 MiB; count format, at most
+# 0.37 s and 135 MiB. At 1 MiB the same searches took 39-47 MiB.
+
+#: Regex searches at once in each serving process, under ``FairSlots`` keyed by
+#: the user who asked (#2645).
+SEARCH_SLOTS = 2
+
+#: How long a search waits for a slot before the model is told to retry.
+SEARCH_SLOT_WAIT_SECONDS = 10.0
+
+#: Each step's bound: spawn to ``ready`` (the worker imports ``re``, ``json``
+#: and ``worker_process``: 0.09 s), each transfer (at most 30 MiB of UTF-8 at
+#: the 10 MB upload limit, 3 bytes a byte of the file), and the work, 5x the
+#: slowest search above. The model is told its pattern did not finish within
+#: the work bound.
+SEARCH_PHASES = worker_process.Phases(start=5.0, request=5.0, work=10.0, result=5.0)
+
+#: ``RLIMIT_CPU`` past the work bound: the imports and 1 s of slack, so the
+#: wall bound ends a search first unless the CPU limit's signal is reached.
+SEARCH_CPU_SLACK_SECONDS = 2
+
+#: ``RLIMIT_AS``: the start, and twice the steepest measured growth (22 MiB a
+#: Mi characters for CSV lines, 24 for U+FFFD lines) a Mi characters of the
+#: file: 544 MiB at 10 Mi. Shorter lines with a pattern matching most of them
+#: are told the search is too large (1 MiB of one-letter lines took 263 MiB).
+SEARCH_MEMORY_BASE_MIB = 64
+SEARCH_MEMORY_MIB_PER_MB = 48
+
+#: What the parent reads past the result's texts: its head (at most
+#: ``MAX_RESULTS_CEILING`` results' numbers) and the forwarded log records.
+SEARCH_OUTPUT_BASE_BYTES = 1024 * 1024
+
+_MIB = 1024 * 1024
+
+#: The worker module. Always this value: tests point it at one of their own.
+_SEARCH_WORKER = search_file_worker.__name__
+
+_search_slots_state: tuple | None = None
+
+
+def search_memory_limit(chars: int) -> int:
+    """``RLIMIT_AS`` of a search over a text of ``chars`` characters."""
+    per_mb = SEARCH_MEMORY_MIB_PER_MB * chars / _MIB
+    return (SEARCH_MEMORY_BASE_MIB + math.ceil(per_mb)) * _MIB
+
+
+def search_output_limit(chars: int, lines: int) -> int:
+    """What a search over a text of ``chars`` characters in ``lines`` lines may
+    answer: merged windows do not overlap, so each line at most once, at 4 bytes
+    of UTF-8 a character, with its number prefix; and the base."""
+    return 4 * chars + lines * (len(str(lines)) + 2) + SEARCH_OUTPUT_BASE_BYTES
 
 
 @dataclass(frozen=True)
@@ -224,6 +287,11 @@ def format_searchable_alternatives(
     return hint
 
 
+def _search_error(error: str) -> ToolResult:
+    """A regex search the worker did not answer: never a timeout (#3116)."""
+    return ToolResult(success=False, data=None, error=error, timed_out=False)
+
+
 class SearchFileTool(AgentTool):
     """Mechanical search over raw evidence file content.
 
@@ -383,6 +451,22 @@ class SearchFileTool(AgentTool):
                 # Telemetry is best-effort — never fail the tool for it.
                 pass
 
+            # The model's pattern runs in its worker (#2686); keyword search, a
+            # substring test the system wrote, stays here. Either gives the
+            # capped results and their total.
+            if search_type == "regex":
+                searched = await self._regex_in_worker(
+                    content, query, output_format, effective_max_results, context
+                )
+                if isinstance(searched, ToolResult):
+                    return searched
+            elif output_format == "count":
+                found = self._count_search(content, query)
+                searched = found[:effective_max_results], len(found)
+            else:
+                found = self._keyword_search(content, query)
+                searched = found[:effective_max_results], len(found)
+
             # Route by output format
             if output_format == "count":
                 return self._execute_count_format(
@@ -393,19 +477,12 @@ class SearchFileTool(AgentTool):
                     query,
                     search_type,
                     effective_max_results,
+                    searched,
                 )
 
             # --- Excerpts format (default) ---
-            # Dispatch by search type — get all merged results, then cap
-            if search_type == "regex":
-                all_results = self._regex_search(content, query)
-            else:
-                all_results = self._keyword_search(content, query)
-
-            # Apply result cap and track truncation
-            total_matches = len(all_results)
+            results, total_matches = searched
             truncated = total_matches > effective_max_results
-            results = all_results[:effective_max_results]
 
             logger.info(
                 "search_file: %s (%s), mode=%s, format=excerpts, query_len=%d, "
@@ -482,6 +559,7 @@ class SearchFileTool(AgentTool):
         query: str,
         search_type: str,
         effective_max_results: int,
+        searched: tuple[list[dict[str, Any]], int],
     ) -> ToolResult:
         """Count format: compact matched lines for counting/aggregation queries.
 
@@ -490,12 +568,11 @@ class SearchFileTool(AgentTool):
         milestone engine's TOOL_RESULT_MAX_CHARS budget.
 
         ``filename`` is the stored name (operator log); ``display_name`` is
-        what the LLM-facing result reports (#666).
+        what the LLM-facing result reports (#666). ``searched`` is the capped
+        matched lines and their total.
         """
-        all_matches = self._count_search(content, query, search_type)
-        match_count = len(all_matches)
+        returned, match_count = searched
         truncated = match_count > effective_max_results
-        returned = all_matches[:effective_max_results]
 
         logger.info(
             "search_file: %s (%s), mode=%s, format=count, query_len=%d, "
@@ -557,28 +634,11 @@ class SearchFileTool(AgentTool):
 
         return ToolResult(success=True, data=data)
 
-    def _count_search(
-        self, content: str, query: str, search_type: str
-    ) -> list[dict[str, Any]]:
-        """Compact search: returns matched lines only, no context windows.
-
-        Returns list of {"line": N, "content": "..."} dicts.
+    def _count_search(self, content: str, query: str) -> list[dict[str, Any]]:
+        """Compact keyword search: returns matched lines only, no context
+        windows, as {"line": N, "content": "..."} dicts.
         """
         lines = content.split("\n")
-
-        if search_type == "regex":
-            try:
-                regex = re.compile(query, re.IGNORECASE | re.MULTILINE)
-            except re.error as e:
-                # The text describes the model's own pattern, not our system.
-                return [{"line": 0, "content": f"Invalid regex: {e}"}]
-            return [
-                {"line": i + 1, "content": line}
-                for i, line in enumerate(lines)
-                if regex.search(line)
-            ]
-
-        # Keyword mode
         keywords = [kw.lower() for kw in query.split() if len(kw) > 2]
         if not keywords:
             return []
@@ -740,7 +800,7 @@ class SearchFileTool(AgentTool):
                     }
                 )
 
-        merged = self._merge_overlapping(matches)
+        merged = merge_overlapping(matches)
         if merged:
             return merged
 
@@ -764,38 +824,86 @@ class SearchFileTool(AgentTool):
                                 "partial_match": True,
                             }
                         )
-            return self._merge_overlapping(partial_matches)
+            return merge_overlapping(partial_matches)
 
         return []
 
-    def _regex_search(self, content: str, pattern: str) -> list[dict[str, Any]]:
-        """Regex search: compile pattern, find all matches, return with context."""
+    async def _regex_in_worker(
+        self,
+        content: str,
+        pattern: str,
+        output_format: str,
+        max_results: int,
+        context: ToolContext,
+    ) -> tuple[list[dict[str, Any]], int] | ToolResult:
+        """The model's ``pattern`` over ``content`` in a ``search_file_worker``
+        (Principle 14, #2686), under a slot keyed by the user who asked: the
+        capped results and their total, or the error the model reads. No error
+        is a timeout for the engine (``timed_out`` stays false): a pattern past
+        its bound is not answered by indexing the file (#3116)."""
+        global _search_slots_state
+        _search_slots_state = worker_process.loop_slots(
+            _search_slots_state, SEARCH_SLOTS
+        )
+        slots = _search_slots_state[1]
+        slot_key = worker_process.admission_principal(context.user_id)
         try:
-            regex = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
-        except re.error as e:
-            # The text describes the model's own pattern, not our system.
-            return [{"error": f"Invalid regex pattern: {e}"}]
-
-        lines = content.split("\n")
-        context_lines = min(self.context_lines, 10)  # Smaller context for regex
-        matches: list[dict] = []
-
-        for i, line in enumerate(lines):
-            if regex.search(line):
-                start = max(0, i - context_lines)
-                end = min(len(lines), i + context_lines + 1)
-                matches.append(
-                    {
-                        "excerpt": "\n".join(
-                            f"{j + 1}: {lines[j]}" for j in range(start, end)
-                        ),
-                        "line_start": start + 1,
-                        "line_end": end,
-                        "match_line": i + 1,
-                    }
-                )
-
-        return self._merge_overlapping(matches)
+            async with asyncio.timeout(SEARCH_SLOT_WAIT_SECONDS):
+                await slots.acquire(*slot_key)
+        except TimeoutError:
+            logger.warning("search_file: no regex search slot freed within the wait")
+            return _search_error(
+                "Every regex search slot is busy; retry the search shortly, or "
+                "use a keyword search."
+            )
+        lines = content.count("\n") + 1
+        try:
+            end = await worker_process.run(
+                _SEARCH_WORKER,
+                {
+                    "pattern": pattern,
+                    "format": output_format,
+                    "context_lines": self.context_lines,
+                    "max_results": max_results,
+                },
+                memory_bytes=search_memory_limit(len(content)),
+                cpu_seconds=math.ceil(SEARCH_PHASES.work) + SEARCH_CPU_SLACK_SECONDS,
+                output_limit_bytes=search_output_limit(len(content), lines),
+                phases=SEARCH_PHASES,
+                parts=(content,),
+            )
+            if end.result is not None:
+                return search_file_worker.read_answer(end.result)
+        except worker_process.WorkerOutputExceeded:
+            end = worker_process.WorkerEnd(code=worker_process.OUT_OF_MEMORY_EXIT)
+        except (worker_process.WorkerFailed, ValueError, KeyError, StopIteration) as e:
+            logger.error("search_file: regex worker failed: %s", exception_log_name(e))
+            end = worker_process.WorkerEnd()
+        finally:
+            slots.release(*slot_key)
+        if end.code == -signal.SIGXCPU or (end.timed_out and end.phase == "work"):
+            logger.warning("search_file: a regex search ran past its bound")
+            return _search_error(
+                f"The pattern did not finish within {SEARCH_PHASES.work:g} seconds "
+                "over this file; use a simpler pattern (no nested quantifiers) or "
+                "a keyword search."
+            )
+        if end.code == worker_process.OUT_OF_MEMORY_EXIT:
+            logger.warning("search_file: a regex search passed its memory or output")
+            return _search_error(
+                "The pattern matched more of this file than one search can hold; "
+                "use a narrower pattern or a keyword search."
+            )
+        logger.error(
+            "search_file: regex worker gave no answer: ended in %s, exit %s, "
+            "timed out %s",
+            end.phase,
+            end.code,
+            end.timed_out,
+        )
+        return _search_error(
+            "Regex search is unavailable right now; use a keyword search."
+        )
 
     # --- Vocabulary extraction (for zero-result recovery) ---
 
@@ -941,27 +1049,3 @@ class SearchFileTool(AgentTool):
         result["frequent_tokens"] = frequent
 
         return result
-
-    @staticmethod
-    def _merge_overlapping(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Merge overlapping excerpt windows."""
-        if not matches:
-            return []
-
-        sorted_matches = sorted(matches, key=lambda m: m.get("line_start", 0))
-        merged: list[dict] = [sorted_matches[0]]
-
-        for current in sorted_matches[1:]:
-            prev = merged[-1]
-            if current.get("line_start", 0) <= prev.get("line_end", 0):
-                # Overlapping — extend
-                if current.get("line_end", 0) > prev.get("line_end", 0):
-                    prev["line_end"] = current["line_end"]
-                    prev["excerpt"] = current["excerpt"]  # Use the wider window
-                    prev["relevance"] = max(
-                        prev.get("relevance", 0), current.get("relevance", 0)
-                    )
-            else:
-                merged.append(current)
-
-        return merged

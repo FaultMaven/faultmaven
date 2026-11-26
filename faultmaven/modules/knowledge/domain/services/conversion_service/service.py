@@ -151,7 +151,11 @@ from faultmaven.providers.tenancy.factory import (
     requested_tenant_provider,
 )
 from faultmaven.utils.exception_name import exception_log_name
-from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.frontmatter import (
+    load_frontmatter_yaml,
+    load_post,
+    match_frontmatter,
+)
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     knowledge_root,
@@ -1087,7 +1091,7 @@ class ConversionService:
             return content
         import frontmatter
 
-        post = frontmatter.loads(content)
+        post = load_post(content)
         post.metadata["title"] = scrubbed
         rewritten = frontmatter.dumps(post)
         return rewritten if draft_title(rewritten) == scrubbed else None
@@ -2216,16 +2220,17 @@ class ConversionService:
         # few characters longer than the draft (``status: verified``, the
         # verifier's name); the edit bound does not apply to it, because the
         # user was allowed to save the text it grows from (see
-        # ``faultmaven.modules.knowledge.draft_content``). Its YAML aliases are
-        # re-emitted expanded, so it can grow far past the bound (#2674).
+        # ``faultmaven.modules.knowledge.draft_content``). Its frontmatter loads
+        # with no anchor or alias (``load_post``, #2674), so nothing in it is
+        # expanded; the gate refused any, so only a draft stored before that
+        # refusal can fail the load here.
         import frontmatter
-        import yaml
 
         from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
         try:
             verifier_name = await self._verifier_display_name(user_id, enterprise_id)
-            post = frontmatter.loads(read_content)
+            post = load_post(read_content)
             post.metadata["status"] = "verified"
             post.metadata["verified_by"] = verifier_name
             # ``scope`` in the frontmatter is the tier the knowledge item is
@@ -2257,7 +2262,7 @@ class ConversionService:
         fm_match = match_frontmatter(content)
         if fm_match:
             try:
-                raw_fm = yaml.safe_load(fm_match.group(1)) or {}
+                raw_fm = load_frontmatter_yaml(fm_match.group(1)) or {}
                 raw_tags = raw_fm.get("tags", [])
                 # ConversionDraftModel.tags is a TagsArray TypeDecorator
                 # expecting list[str]; pass the list shape directly.
