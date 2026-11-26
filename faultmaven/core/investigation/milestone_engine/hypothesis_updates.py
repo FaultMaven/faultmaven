@@ -234,13 +234,15 @@ def _apply_hypothesis_updates(
     # ONE entry per hypothesis. The ``Dict[str, HypothesisUpdate]`` this
     # replaced enforced that for free; a list does not, and everything below
     # assumes it (fm#1057). Two entries naming the same hypothesis would BOTH
-    # be applied: the second likelihood update reads the value the first just
-    # wrote, sees |delta| < 0.05 and charges ``iterations_without_progress``
-    # on a turn that made progress, feeding the stagnation/deadlock repair
-    # path; a repeated REFUTED tells the model its own accepted refutation
-    # was rejected as "terminal". Last entry wins, which is what a duplicated
-    # JSON object key did. Resolve FIRST, so an id and the ``new_index_N``
-    # that points at the same hypothesis collapse together.
+    # be applied, and each move judged: the first's step reads as progress,
+    # and its lowering by a step can retire the hypothesis past a self-hedged
+    # REFUTES hold before the second lands (which is then refused as
+    # terminal); the second's move is judged against the first's value. A
+    # repeated REFUTED tells the model its own accepted refutation was
+    # rejected as "terminal". Last entry wins, which is what a duplicated JSON
+    # object key did, so the stored value is the last entry's. Resolve FIRST,
+    # so an id and the ``new_index_N`` that points at the same hypothesis
+    # collapse together.
     resolved: dict[str, Any] = {}
     for upd in entries:
         resolved[
