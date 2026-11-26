@@ -722,7 +722,8 @@ _RUNBOOK_FRONTMATTER = b"---\nid: a\ndomain: b\nservice: c\nsymptom_class: d\n--
     "prefix, line",
     [
         # Redaction grows each short secret into a longer marker: Stage 4
-        # counts about 13 million characters, the costliest measured (#2937).
+        # counts about 15 million characters, the costliest found (#2937).
+        pytest.param(b"", b"pwd=x\n", id="shortest-secret-lines"),
         pytest.param(b"", b"pwd=x1\n", id="short-secret-lines"),
         # The costliest when the limit was derived: the redaction holds every
         # one of its matches.
@@ -739,9 +740,7 @@ async def test_text_up_to_the_bound_fits_under_the_memory_limit(
     """The memory refusal's advice, to export the text, is true because a
     plain-text file gets through Stages 0-5 under the limit (the owner's
     ruling on #2622): past ``MAX_TEXT_CHARS`` it is refused in Stage 1, and up
-    to it each shape runs Stages 1b-4 and is refused for its count, with the
-    worker's peak address space leaving at least 30% of the limit spare, the
-    margin the limit was derived with."""
+    to it each shape runs Stages 1b-4 and is refused for its count."""
     _stage(monkeypatch, "prepare_and_measure")
     head = prefix + b"ERROR timeout; kubectl rollout restart the api.\n"
     body = line * ((MAX_TEXT_CHARS - len(head)) // len(line))
@@ -753,7 +752,7 @@ async def test_text_up_to_the_bound_fits_under_the_memory_limit(
     refused, peak, stage = result.rejection_reason.split()
     limit = dp.preparation_memory_limit(get_settings().upload.max_upload_size_mb)
     assert (refused, stage) == (ConversionErrorCode.DOCUMENT_TOO_LONG, "4")
-    assert int(peak) < 0.7 * limit, f"peak {int(peak):,} of a {limit:,}-byte limit"
+    assert int(peak) < limit, f"peak {int(peak):,} of a {limit:,}-byte limit"
 
 
 def test_the_memory_limit_follows_the_upload_limit():

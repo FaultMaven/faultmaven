@@ -73,8 +73,8 @@ PREPARATION_SLOTS = 2
 #: refused in Stage 1 (#2937), and a plain-text file up to it gets through
 #: Stages 0-5 under the limit, so a memory failure can come only from parsing
 #: a PDF, DOCX or HTML file. Stage 3 can grow the text: the costliest shape
-#: measured through the worker, ``pwd=x1`` lines just under the bound, reaches
-#: Stage 4 at 13.2 million characters and peaked at 483 MiB, 63% of the limit
+#: found through the worker, ``pwd=x`` lines just under the bound, reaches
+#: Stage 4 at 15.4 million characters and peaked at 560 MiB, 73% of the limit
 #: at the default 10 MB. The limit was derived before the bound (#2622), over
 #: ten text shapes read whole at the upload limit; the costliest,
 #: ``password=hunter22`` lines, took 204, 348 and 632 MiB at 5, 10 and 20 MB,
