@@ -30,8 +30,13 @@ from faultmaven.core.investigation.milestone_engine.regeneration import (
 from faultmaven.core.investigation.milestone_engine.turn_records import (
     _flatten_follow_ups,
 )
-from faultmaven.core.investigation.narration.codes import OfferCode
-from faultmaven.core.investigation.narration.offers import confirmation_message
+from faultmaven.core.investigation.narration.codes import DECISIONS_KEY, OfferCode
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
+from faultmaven.core.investigation.narration.offers import (
+    confirmation_message,
+    narrated_params,
+    record_params,
+)
 from faultmaven.core.investigation.narration.statement import (
     OutcomeBaseline,
     offer_stated,
@@ -76,10 +81,11 @@ from .stage_gates import declined_close_card
 from .statement_revision import revision_presentation
 from .terminal_replies import (
     _select_ack_follow_ups,
-    resolution_confirmation_params,
+    resolution_content,
 )
 from .turn_application import record_turn
 from .turn_narration import (
+    NARRATED_RECORD_KEY,
     NARRATION_CONFLICTS_KEY,
     OUTCOME_STATED_KEY,
     OUTCOME_WRITTEN_KEY,
@@ -180,6 +186,46 @@ def _statement_record(
         except Exception:  # noqa: BLE001 — a metrics error never fails a reply
             logger.exception("case_outcome_write_failures_total not counted")
         return None
+
+
+def _ready_confirmation(
+    case, metadata: dict, record: CaseOutcome | None
+) -> dict | None:
+    """The params of the confirmation a met resolution request presents
+    (``REQUEST_READY``), from ``record``, the one the narration rendered the
+    offer's summary from (``NARRATED_RECORD_KEY``, Q1's narrator order: the
+    cycle's stored record, else the narration's fold, else None), so the
+    reply and the summary state one source (#3053 S3d-3). In a ruled case,
+    or with no record, the decision's own params (``offers.narrated_params``).
+    The content it names is read here, at reply time. With no decision
+    logged, the record's; with neither, None, logged."""
+    params = next(
+        (
+            e["params"]
+            for e in metadata.get(DECISIONS_KEY) or []
+            if e["code"] == OfferCode.REQUEST_READY
+        ),
+        None,
+    )
+    content = resolution_content(case)
+    text = lambda item_id: content_by_id(case, item_id)
+    if params is not None:
+        return narrated_params(
+            OfferCode.REQUEST_READY, params, record, None, content, text
+        )
+    if record is None:
+        logger.error(
+            "Case %s: a met resolution request with no decision and no record; "
+            "no confirmation (#3053)",
+            getattr(case, "case_id", None),
+        )
+        return None
+    logger.error(
+        "Case %s: a met resolution request with no decision; the confirmation "
+        "states the record (#3053)",
+        getattr(case, "case_id", None),
+    )
+    return record_params(OfferCode.REQUEST_READY, {}, record, None, content, text)
 
 
 def _outcome_statement_for_turn(
@@ -294,6 +340,7 @@ async def _compose_turn_reply(
     # statement reads (#2811 S2c-3a), which every prose's ``stated`` is read
     # against (#3046 S3c).
     published = metadata.pop(OUTCOME_STATED_KEY, None) or {}
+    narrated = metadata.pop(NARRATED_RECORD_KEY, None)
     now = _statement_record(case_updated, metadata, baseline)
     attempts = now.attempts if now is not None else ()
 
@@ -344,13 +391,14 @@ async def _compose_turn_reply(
     if metadata.get("resolution_ready_for_confirmation"):
         # No fixed thanks: the user's message may have carried no details at
         # all (#2428).
-        confirmation = resolution_confirmation_params(case_updated)
-        agent_response_text = _prose_with_gate_notice(
-            agent_response_text, confirmation_message(confirmation)
-        )
-        stated = offer_stated(OfferCode.REQUEST_READY, confirmation, attempts)
+        confirmation = _ready_confirmation(case_updated, metadata, narrated)
+        if confirmation is not None:
+            agent_response_text = _prose_with_gate_notice(
+                agent_response_text, confirmation_message(confirmation)
+            )
+            stated = offer_stated(OfferCode.REQUEST_READY, confirmation, attempts)
+            gate_prose_appended = True
         follow_ups = projection.pair
-        gate_prose_appended = True
     elif metadata.get("resolution_suggest_close"):
         # The request was not met: Close is offered instead.
         agent_response_text = _prose_with_gate_notice(

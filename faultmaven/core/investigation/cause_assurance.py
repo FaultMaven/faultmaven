@@ -25,7 +25,7 @@ imports and re-exports it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -959,18 +959,24 @@ def _fallen_leg(case: "Case", fallen: set) -> tuple[frozenset, PoolEmptyReason |
     return named, None if named else PoolEmptyReason.FIX_TARGETS_OTHER_CAUSE
 
 
-def cause_pool_empty_reason(case: "Case") -> PoolEmptyReason | None:
+def cause_pool_empty_reason(
+    case: "Case", *, contested: Collection[str]
+) -> PoolEmptyReason | None:
     """Why the confirmation pool (``_cause_pool``) is empty, or None while it
     is not: the first that holds of identification held open, the MECE
     contest, the fallen leg's refusal (``_fallen_leg``), and only rootless
-    VALIDATED hypotheses; else no cause at all (#2615, ``pool_empty_reason``)."""
+    VALIDATED hypotheses; else no cause at all (#2615, ``pool_empty_reason``).
+    ``contested``: the MECE-contested roots, computed once by the record's
+    fold (``mece_contested_root_ids``, #3053 S3d-3), so the contest verdict
+    and ``contested_root_ids`` are one derivation. Held open is the cause
+    recompute's stored flag."""
     confirmation, _window, hypotheses = _cause_pool(case)
     if confirmation:
         return None
     progress = getattr(case, "progress", None)
     if getattr(progress, "cause_identification_held_open", False):
         return PoolEmptyReason.HELD_OPEN
-    if getattr(progress, "cause_identification_contested", False):
+    if contested:
         return PoolEmptyReason.IDENTIFICATION_CONTESTED
     _identified, _held, fallen = _pool_legs(case)
     _leg, why = _fallen_leg(case, fallen)

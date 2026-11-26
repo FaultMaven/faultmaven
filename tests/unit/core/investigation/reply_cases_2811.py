@@ -14,7 +14,10 @@ own tests close), and a resolve. Every fixture is hand-built from the suite's
 builders: none makes a claim that a turn reaches it.
 
 ``render`` renders each through ``main``'s entry points:
-``resolution_confirmation_params``, ``_build_resolution_confirmation``, and on
+``resolution_confirmation_params``, ``_build_resolution_confirmation`` (each
+handed the fold of the moment, ``narration_outcome``, since #3053 S3d-3
+made it required; run on a ``git archive`` extract of 519a45875 this
+reproduces the stored oracle byte for byte), and on
 a terminal case ``_terminal_confirmation_response`` and
 ``_compose_terminal_reply`` (with a summary and without). Its output on
 ``main`` is ``reply_oracle_2811.json``, captured by running ``render_all``
@@ -264,11 +267,13 @@ def render(case) -> dict:
         _terminal_confirmation_response,
         resolution_confirmation_params,
     )
+    from faultmaven.core.investigation.outcome import narration_outcome
 
     with frozen():
+        outcome = narration_outcome(case)
         out = {
-            "params": resolution_confirmation_params(case),
-            "confirmation": _build_resolution_confirmation(case),
+            "params": resolution_confirmation_params(case, outcome),
+            "confirmation": _build_resolution_confirmation(case, outcome),
         }
         if case.is_terminal:
             out["terminal"] = _terminal_confirmation_response(case)

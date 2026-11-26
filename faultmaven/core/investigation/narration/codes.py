@@ -8,12 +8,12 @@ own emission, what the engine did this turn, and the facts a renderer falls
 back on when no record can be read. B1b's codes read the verdicts their texts
 state from the record at render time; B1c's carry them as their decider read
 them (decide-time facts, A4), so each text is the one the decider composed,
-but ``PENDING_CHECK``'s, which states the record when no switched decision
-of the cycle disagrees with it (#2811 S2b-2c). B1d's ``OfferCode`` names an
-offer (or a request) a decider opened, its params the facts its prose states,
-as the decider read them (A4); for an offer in
-``narration.offers.RECORD_PROSE`` the narration takes them from the record on
-the same condition.
+but ``PENDING_CHECK``'s, which states the record (#2811 S2b-2c). B1d's
+``OfferCode`` names an offer (or a request) a decider opened, its params the
+facts it was decided on, as the decider read them (A4); the narration takes
+the facts its prose states from the record (``narration.offers.RECORD_PROSE``,
+#3053 S3d-3), per decision, but in the four ruled cases
+(``narration.offers.RULED_CASES``).
 
 The log is turn-local metadata and never stored (a turn record holds rendered
 text), so member order has no runtime meaning. ``NoticeCode`` is APPEND-ONLY
@@ -52,10 +52,11 @@ class NoticeCode(StrEnum):
     HYPOTHESIS_RETIRED = "hypothesis_retired"
     MITIGATION_DISPOSED = "mitigation_disposed"
     # B1c: each rendered from its params alone, the facts its decider read
-    # (decide-time, A4), but PENDING_CHECK, rendered from the record when no
-    # switched decision of the cycle disagrees with it (#2811 S2b-2c). The
-    # window deciders read the record's carried verdicts (#3046 S3a-2); stage
-    # S3d (#3053) switches the rest.
+    # (decide-time, A4), but PENDING_CHECK, rendered from the record, per
+    # decision (#2811 S2b-2c, #3053 S3d-3), from its params when the record
+    # holds no check. The window deciders read the record's carried verdicts
+    # (#3046 S3a-2); the in-cycle deciders are the record's declared sources
+    # (#3053 S3d-3).
     ABSENCE_IN_FAILED_WINDOW = "absence_in_failed_window"
     UNBOUND_RECHECKS = "unbound_rechecks"
     FAILED_FIX_NOT_REREGISTERED = "failed_fix_not_reregistered"

@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.narration.codes import NoticeCode, OfferCode
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.offers import (
@@ -20,6 +21,7 @@ from faultmaven.core.investigation.terminal_transitions import (
     disposition_refusal,
     open_disposition_offer,
     pending_check_params,
+    resolution_record_lines,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -35,7 +37,6 @@ from faultmaven.modules.case.contracts import (
 
 from .stage_gates import _add_system_feedback, record_decision
 from .statement_revision import revision_pending
-from .terminal_replies import resolution_confirmation_params
 
 logger = logging.getLogger(__name__)
 
@@ -339,8 +340,11 @@ class TransitionManager:
         metadata["resolution_readiness_missing"] = readiness.missing
         if readiness.verdict == readiness.READY:
             # Its summary is the confirmation, rendered after the cycle's record
-            # from what it states as read here (#2636).
-            confirmation = resolution_confirmation_params(case)
+            # (#2636) from the record and the content read then (#3053 S3d-3).
+            # What it was decided on is read here: the narration renders it
+            # when the record is unreadable or reads a reason not CONFIRMED.
+            leg = cause_identification_leg(case)
+            record_lines = resolution_record_lines(case)
             record = open_disposition_offer(
                 case, kind=OfferKind.RESOLVE, basis=OfferBasis.MODEL
             )
@@ -363,7 +367,8 @@ class TransitionManager:
                 OfferCode.REQUEST_READY,
                 proposal_id=record.open.proposal_id,
                 reason=readiness.reason,
-                **confirmation,
+                identification_leg=leg,
+                record_lines=record_lines,
             )
             metadata["resolution_ready_for_confirmation"] = True
             logger.info(
@@ -579,10 +584,12 @@ class TransitionManager:
                 )
                 return
             else:
+                # Decided on these; the content is read at render (S3d-3).
                 composer = {
                     "composer": "confirmation",
                     "reason": readiness.reason,
-                    **resolution_confirmation_params(case),
+                    "identification_leg": cause_identification_leg(case),
+                    "record_lines": resolution_record_lines(case),
                 }
         else:
             closure = assess_closure_readiness(case)

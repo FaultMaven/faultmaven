@@ -473,8 +473,7 @@ async def _two_actions():
 def _solution(monkeypatch, case, attempts) -> str:
     """The solution the confirmation names for a record holding ``attempts``."""
     record = narration_outcome(case).model_copy(update={"attempts": attempts})
-    monkeypatch.setattr(replies_module, "narration_outcome", lambda _c: record)
-    return resolution_confirmation_params(case)["solution"]
+    return resolution_confirmation_params(case, record)["solution"]
 
 
 async def test_the_confirming_attempt_is_named(monkeypatch):

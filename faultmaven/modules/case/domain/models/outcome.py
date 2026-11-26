@@ -10,7 +10,8 @@ derivation is logged and counted, and the carried verdict stands.
 
 The narration step reads it (#2636 B1b): the withdrawal and mitigation notices
 state its verdicts. The other narrators (S2), the deciders (S3, #3046, and
-S3d, #3053) and the report and API (S4) switch to it stage by stage.
+S3d, #3053, which declares the in-cycle deciders its sources) and the report
+and API (S4) switch to it stage by stage.
 
 Every enum here is APPEND-ONLY. A stored case names its members by value, so a
 member renamed or removed would fail every load of that case. The members are
@@ -252,12 +253,9 @@ class CauseOutcome(BaseModel):
         description=(
             "The validated, mutually-exclusive roots that contest "
             "identification (``mece_contested_root_ids``, #2811 S2b-2a), "
-            "derived fresh at the write like ``held_open_root_ids``. "
-            "``pool_empty_reason``'s IDENTIFICATION_CONTESTED is instead the "
-            "cause recompute's verdict, read from the stored flag "
-            "(``progress.cause_identification_contested``): after a "
-            "pre-prompt hypothesis intent (retire or refute), which runs no "
-            "recompute, the two can disagree"
+            "derived fresh at the write like ``held_open_root_ids``, in the "
+            "one computation ``pool_empty_reason``'s IDENTIFICATION_CONTESTED "
+            "reads (#3053 S3d-3)"
         ),
     )
     confirmation_root_ids: List[str] = Field(
@@ -270,12 +268,12 @@ class CauseOutcome(BaseModel):
     pool_empty_reason: Optional[PoolEmptyReason] = Field(
         default=None,
         description=(
-            "Why the confirmation pool is empty. HELD_OPEN and "
-            "IDENTIFICATION_CONTESTED are the cause recompute's verdicts, "
-            "read from the stored flags; ``held_open_root_ids`` and "
-            "``contested_root_ids`` are derived fresh at the write, so after "
-            "a pre-prompt hypothesis intent (retire or refute) they can "
-            "disagree"
+            "Why the confirmation pool is empty. IDENTIFICATION_CONTESTED "
+            "is read from ``contested_root_ids``' computation (#3053 S3d-3). "
+            "HELD_OPEN is the cause recompute's verdict, read from the "
+            "stored flag; ``held_open_root_ids`` is derived fresh at the "
+            "write, so after a pre-prompt hypothesis intent (retire or "
+            "refute) the two can disagree"
         ),
     )
     identification_leg: Optional[Literal["chain", "rcc", "working_conclusion"]] = Field(

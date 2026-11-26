@@ -2,7 +2,6 @@ import logging
 from typing import Optional
 
 from faultmaven.core.investigation.cause_assurance import runbook_conversion_ready
-from faultmaven.core.investigation.cause_identification import cause_identification_leg
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_write_failures_total,
 )
@@ -12,14 +11,12 @@ from faultmaven.core.investigation.narration.replies import (
     _CLOSED_REPLIES,
     ResolutionContent,
     confirmation_params,
-    confirmation_params_of,
     terminal_status_line,
 )
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.prompts.templates.terminal import (
     TerminalAffordances,
 )
-from faultmaven.core.investigation.terminal_transitions import resolution_record_lines
 from faultmaven.modules.case.contracts import CaseOutcome, CaseState, WritePoint
 
 from .cause_state import (
@@ -32,9 +29,10 @@ logger = logging.getLogger(__name__)
 
 
 def resolution_content(case) -> ResolutionContent:
-    """The case content the resolve confirmation names (ruling of
-    2026-11-21): built here, not in ``narration``, whose import contract
-    ``cause_state`` would break (it imports ``cause_assurance``)."""
+    """The case content the resolve confirmation and the model's closure
+    proposal name (ruling of 2026-11-21), read at render (#3053 S3d-3): built
+    here, not in ``narration``, whose import contract ``cause_state`` would
+    break (it imports ``cause_assurance``)."""
     return ResolutionContent(
         root_cause=_get_root_cause_summary(case),
         solution=_get_solution_summary(case),
@@ -43,6 +41,7 @@ def resolution_content(case) -> ResolutionContent:
             getattr(s, "commands", None) or getattr(s, "implementation_steps", None)
             for s in case.solutions or ()
         ),
+        conclusion=getattr(case.root_cause_conclusion, "root_cause", None),
     )
 
 
@@ -71,44 +70,24 @@ def count_unreadable_record() -> None:
         logger.exception("case_outcome_write_failures_total not counted")
 
 
-def _confirmation_outcome_fresh(case) -> tuple[Optional[str], str]:
-    """The confirmation's two record facts, derived from the case, when the
-    fold raised: the decider's decide-time read (A4), removed at stage S3d
-    (#3053).
-    The fold derives them through these same two functions, so a failure
-    inside one of them raises again here, as the decider's read did on
-    ``main``; only a fold failure outside them renders from this fallback."""
-    return cause_identification_leg(case), resolution_record_lines(case)
-
-
-def resolution_confirmation_params(case, outcome: Optional[CaseOutcome] = None) -> dict:
+def resolution_confirmation_params(case, outcome: CaseOutcome) -> dict:
     """The facts the resolve confirmation states (``narration.offers.
-    resolution_confirmation``), read where the confirmation is decided (#2636,
-    A4): whether a cause is identified and the rows that confirm the
-    resolution from the record folded at that moment (#2811 S2b-2b), and the
-    root cause, the solution and which optional details would improve the
-    documentation from the case's content (``ResolutionContent``), the
-    confirming attempt's description by its id (``content_by_id``).
-    ``outcome``: the fold a decider already holds, which is then not folded
-    again (the reopen chip, #3053 S3d-2). Without one, a fold failure outside
-    ``cause_identification_leg`` and ``resolution_record_lines`` renders from
-    the decider's read (``_confirmation_outcome_fresh``); a failure inside
-    them raises, as on ``main``.
+    resolution_confirmation``) on the reopen chip, from the fold it decides
+    on (``outcome``, #3053 S3d-2): whether a cause is identified and the rows
+    that confirm the resolution (#2811 S2b-2b), and the root cause, the
+    solution and which optional details would improve the documentation from
+    the case's content (``ResolutionContent``), the confirming attempt's
+    description by its id (``content_by_id``). The cycle's confirmations
+    render through the narration (``offers.narrated_params``, #3053 S3d-3).
     """
-    if outcome is None:
-        outcome = _reply_outcome(case)
-    if outcome is None:
-        leg, record_lines = _confirmation_outcome_fresh(case)
-        return confirmation_params_of(leg, record_lines, resolution_content(case))
     return confirmation_params(
         outcome, resolution_content(case), lambda item_id: content_by_id(case, item_id)
     )
 
 
-def _build_resolution_confirmation(case, outcome: Optional[CaseOutcome] = None) -> str:
+def _build_resolution_confirmation(case, outcome: CaseOutcome) -> str:
     """The resolution confirmation prompt, with its optional enrichment
-    hints, from the case as it stands (``outcome``: the fold the caller
-    holds, as ``resolution_confirmation_params`` takes it)."""
+    hints, from ``outcome``, the fold the caller holds."""
     return confirmation_message(resolution_confirmation_params(case, outcome))
 
 

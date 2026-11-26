@@ -713,10 +713,8 @@ def _rootless(case):
             lambda: (c := _bare_case(), _held_open(c), _contested(c))[0],
             PoolEmptyReason.HELD_OPEN,
         ),
-        (
-            lambda: (c := _bare_case(), _contested(c), _rootless(c))[0],
-            PoolEmptyReason.IDENTIFICATION_CONTESTED,
-        ),
+        # IDENTIFICATION_CONTESTED reads the fold's MECE computation, not the
+        # stored flag (#3053 S3d-3): ``test_mece_verdict_one_derivation_3053``.
         (
             lambda: (c := _fallen_case()[0], _other_hypothesis(c), _rootless(c))[0],
             PoolEmptyReason.FALLEN_WITH_OTHER_STANDING,

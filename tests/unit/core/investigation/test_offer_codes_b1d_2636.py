@@ -10,7 +10,9 @@ as the offer's summary. Every text and every stored ``Offer.summary`` is
 ``main``'s, captured by running ``main`` at ``21921b408``
 (``golden_cases_2636.B1D_SCENARIOS``), whole turns through ``process_turn``
 included. A conflict between a decision and the record is counted only on a
-record the cycle stored. No live LLM: the generator is stubbed.
+record the cycle stored. Since #3053 S3d-3 every offer renders the cycle's
+record (Q5), so the three offers on a decayed leg differ from ``main``
+(``RECORD_RENDERED``). No live LLM: the generator is stubbed.
 """
 
 import json
@@ -22,6 +24,9 @@ from faultmaven.core.investigation.milestone_engine import (
     turn_application,
     turn_completion,
     turn_narration,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    resolution_content,
 )
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
     OUTCOME_WRITTEN_KEY,
@@ -36,12 +41,16 @@ from faultmaven.core.investigation.narration.codes import (
     NoticeCode,
     OfferCode,
 )
+from faultmaven.core.investigation.narration.fix_verification import content_by_id
 from faultmaven.core.investigation.narration.notices import (
     has_renderer,
     render_notice,
     unbound_lines,
 )
-from faultmaven.core.investigation.narration.offers import render_offer
+from faultmaven.core.investigation.narration.offers import (
+    narrated_params,
+    render_offer,
+)
 from faultmaven.core.investigation.offers import answer_offer
 from faultmaven.core.investigation.outcome import record_case_outcome
 from faultmaven.core.investigation.terminal_transitions import (
@@ -71,8 +80,40 @@ def oracle(name: str) -> dict:
     return ORACLE[f"cycle:offer:{name}"]
 
 
-#: The ruled differences (B1e, #2615 Q8 (a)), each asserted below.
-DECLARED = {"turn_backstop_on_a_decaying_leg"}
+#: #3053 S3d-3 (Q5): an offer on a working-conclusion leg housekeeping aged
+#: after its decider ran renders the cycle's record, which identifies no cause.
+RECORD_RENDERED = (
+    "turn_request_ready_on_a_decaying_leg",
+    "turn_model_proposal_confirmation_on_a_decaying_leg",
+    "turn_model_proposal_closure_on_a_decaying_leg",
+)
+
+#: The ruled differences (B1e, #2615 Q8 (a); and ``RECORD_RENDERED``), each
+#: asserted below.
+DECLARED = {"turn_backstop_on_a_decaying_leg", *RECORD_RENDERED}
+
+#: ``main``'s summary lines that named the decayed cause, and the record's.
+_NAMED_CAUSE = (
+    (
+        "- **Root cause**: The OIDC provider registers the wrong client ID",
+        "- **Root cause**: no root cause on record",
+    ),
+    (
+        "- **The cause** — max_connections is set to 20, below the worker pool "
+        "size:",
+        "- **The cause** — no root cause on record:",
+    ),
+    ("- **Root cause identified**: the identified root cause\n", ""),
+)
+
+
+def _declared(name: str) -> dict:
+    """``main``'s texts for a ``RECORD_RENDERED`` scenario with its summary's
+    cause lines the record's: no root named."""
+    texts = dict(oracle(name))
+    for old, new in _NAMED_CAUSE:
+        texts["summary"] = texts["summary"].replace(old, new)
+    return texts
 
 
 @pytest.mark.parametrize("name", sorted(set(golden.B1D_SCENARIOS) - DECLARED))
@@ -98,15 +139,20 @@ def test_every_scenario_was_captured_on_main():
     assert {f"cycle:offer:{n}" for n in golden.B1D_SCENARIOS} <= set(ORACLE)
 
 
-def test_the_stored_summary_is_the_one_decided_not_the_reply_composed_later():
-    """Critique 1: housekeeping ages the working-conclusion leg after step 0
-    decided the request READY, so ``main`` stored a summary naming the cause
-    and composed a reply naming none. The branch stores ``main``'s summary,
-    rendered from the facts step 0 read, not from the case at narration."""
-    captured = oracle("turn_request_ready_on_a_decaying_leg")
-    assert "- **Root cause**: The OIDC provider" in captured["summary"]
-    assert "- **Root cause**: no root cause on record" in captured["reply"]
-    assert golden.turn_request_ready_on_a_decaying_leg() == captured
+@pytest.mark.parametrize("name", RECORD_RENDERED)
+def test_an_offer_on_a_decayed_leg_states_the_records_cause(name):
+    """#3053 S3d-3 (Q5): housekeeping ages the working-conclusion leg after
+    the decider read it, so ``main`` stored a summary naming the cause. The
+    branch's summary is the cycle's record's, which names none; the rest is
+    ``main``'s. The met request's stored summary is now the reply's
+    confirmation, which on ``main`` already named no cause (critique 1)."""
+    old = oracle(name)
+    texts = golden.B1D_SCENARIOS[name]()
+    assert texts["summary"] != old["summary"], "premise: main named the cause"
+    assert texts == _declared(name)
+    assert "The OIDC provider" not in texts["summary"]
+    if name == "turn_request_ready_on_a_decaying_leg":
+        assert texts["summary"] in texts["reply"]
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +268,7 @@ def test_pin_4_an_offer_decided_in_step_2_is_rendered_after_the_record(monkeypat
     events = _order(monkeypatch)
     texts = golden.turn_model_proposal_confirmation_on_a_decaying_leg()
     assert events == [("record", ""), ("render", OfferCode.MODEL_PROPOSAL)]
-    assert texts == oracle("turn_model_proposal_confirmation_on_a_decaying_leg")
+    assert texts == _declared("turn_model_proposal_confirmation_on_a_decaying_leg")
 
 
 def test_a_replayed_close_is_rendered_by_the_live_turns_narration(monkeypatch):
@@ -345,8 +391,8 @@ def test_a_cause_identified_when_decided_and_aged_out_by_the_record_is_counted(
 ):
     """Critique 1's drift, counted: the decider read the working-conclusion
     leg; housekeeping aged it under the bar before the cycle's stored record,
-    which identifies no cause. Counted on that stored record, the text still
-    ``main``'s."""
+    which identifies no cause. Counted on that stored record; the text is the
+    record's (#3053 S3d-3)."""
     counts = _counted(monkeypatch)
     stored: list = []
     real = turn_narration._conflicts
@@ -356,7 +402,7 @@ def test_a_cause_identified_when_decided_and_aged_out_by_the_record_is_counted(
         return real(log, outcome)
 
     monkeypatch.setattr(turn_narration, "_conflicts", _on_stored)
-    assert golden.B1D_SCENARIOS[scenario]() == oracle(scenario)
+    assert golden.B1D_SCENARIOS[scenario]() == _declared(scenario)
     assert stored == [None]
     assert (code, "cause.identification_leg") in counts
 
@@ -430,7 +476,16 @@ def _logged_codes(monkeypatch) -> set:
         codes.update(e["code"] for e in metadata.get(DECISIONS_KEY) or [])
         for entry in metadata.get(DECISIONS_KEY) or []:
             if entry["code"] in set(OfferCode):
-                assert render_offer(entry["code"], entry["params"])
+                # The decision's own text, the content read at render.
+                params = narrated_params(
+                    entry["code"],
+                    entry["params"],
+                    None,
+                    None,
+                    resolution_content(case),
+                    lambda item_id: content_by_id(case, item_id),
+                )
+                assert render_offer(entry["code"], params)
             elif entry["code"] == NoticeCode.UNBOUND_RECHECKS:
                 # #2555: told by ``narrate_turn`` alone, from the stored record.
                 assert unbound_lines(entry["params"], case.progress.outcome)
