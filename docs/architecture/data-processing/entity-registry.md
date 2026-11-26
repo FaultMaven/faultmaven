@@ -157,24 +157,22 @@ re-upload, until the affected cases are closed.
 The unit is implemented once, at the point matches are produced, not at each
 consumer:
 
-- `extractors.utils.distinct_values` — the rule. **Every** producer goes
-  through it, regex rules and non-regex matchers alike (`user` comes from
-  `log_usernames.extract_usernames`), so a normalisation added here cannot
-  reach some entity types and not others.
+- `extractors.utils.distinct_values` — the rule, for the regex entity
+  types. `user` is de-duplicated in `log_usernames.extract_usernames`, on a
+  case-folded key.
 - `extractors.utils.distinct_on_line` — `distinct_values` over what a set of
   patterns matched on one line. Beside `split_log_lines`, which decides what a
-  line *is*, and `is_port` / `is_pid` / `PID_MAX`, which both entity paths
-  share so a raised ceiling cannot land on one of them only.
-- `entities.line_tally.tally_entity_lines` — the one scanning loop, for the
-  three per-line `EntityExtractor` implementations;
+  line *is*, and `is_port` / `is_pid` / `PID_MAX`.
+- `entities.line_tally.tally_entity_lines` (removed, #2644) — the one
+  scanning loop, for the three per-line `EntityExtractor` implementations;
   `tally_document_matches` for the config exception.
 - `LogsAndErrorsExtractor._build_entity_profile` takes the rule directly; it
   has fifteen other things to do per line and keeps its own loop.
 
 Guard: `tests/unit/modules/preprocessing/test_mention_unit_is_one_line.py`. It
 feeds the logs extractor a line naming each entity type the profile renders
-twice and requires each to count once per line, and it fails if a new loop in
-the logs extractor or `log_usernames.py` iterates a raw `findall` result. The
+twice and requires each to count once per line, and it fails if a new loop
+anywhere in `modules/preprocessing/` iterates a raw `findall` result. The
 extractor tables and `entities.line_tally` below were removed with intake
 extraction (#2644).
 

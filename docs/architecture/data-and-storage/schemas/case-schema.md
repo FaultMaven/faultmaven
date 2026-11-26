@@ -646,11 +646,6 @@ class ExtractorMetadata(BaseModel):
     chosen_type: str                # data type of the extractor whose output was kept
     attempts: list[ExtractorAttempt] = []
 
-class EntitiesMetadata(BaseModel):
-    """Overflow markers for Phase 4's case_entities writes. Nothing writes it:
-    intake entity extraction and its cap were removed (#2644)."""
-    overflow_types: list[str] = []
-
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns (Phase 3).
     The span is on the coverage_start_ts / coverage_end_ts columns and the pattern
@@ -664,7 +659,6 @@ class CoverageMetadata(BaseModel):
 class EvidenceMetadata(BaseModel):
     classification: Optional[ClassificationMetadata] = None
     extractor:      Optional[ExtractorMetadata] = None
-    entities:       Optional[EntitiesMetadata] = None
     coverage:       Optional[CoverageMetadata] = None
 ```
 
@@ -674,13 +668,12 @@ class EvidenceMetadata(BaseModel):
 | --- | --- | --- | --- |
 | `classification` | `PreprocessingService` | `context_builder` (low-confidence marker) | Phase 1 |
 | `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
-| `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
 | `coverage` | `PreprocessingService` | none: the context builder and `symptom_currency` read the `coverage_*_ts` and `coverage_source` columns, not this key | Phase 3 |
 | `fix_verification` | the turn's evidence apply (`response_application._record_rechecks`; `claimed`: `problem_status.hold_premature_absence`), never preprocessing; a reclassification keeps it | `cause_assurance.SubjectIndex` via `Evidence.rechecks_evidence_id`: `{"rechecks": <evidence id or null>, "named": <the model's ref>}`, what a post-fix row re-observes; `null` when the ref binds to no row (#1906 D1). `"claimed": "causal_absence_evidence"` on a `causal_absence` row held as `symptom_absence` because its problem was not verified: `problem_status.restore_premature_absence` restores the row and removes the key only when its turn ends verified or the revision's hold it arrived in ends on a verified problem; a row held at the end of an ordinary unverified turn stays `symptom_absence`, the claim kept as a record (#2550). Not part of `EvidenceMetadata` | #1906, #2550 |
 
 **Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
 
-**Why JSON and not columns.** Classifier confidence, extractor attempts, and overflow markers are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The coverage span is the exception: it lives in the `coverage_start_ts` / `coverage_end_ts` columns, which Python code reads off the loaded row (for example the context builder's time-window rerank and `observed_through` attribute, and `symptom_currency`); no query filters on them by a time window. Their index, `ix_evidence_coverage`, has no query to serve; dropping it is #2405.
+**Why JSON and not columns.** Classifier confidence and extractor attempts are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The coverage span is the exception: it lives in the `coverage_start_ts` / `coverage_end_ts` columns, which Python code reads off the loaded row (for example the context builder's time-window rerank and `observed_through` attribute, and `symptom_currency`); no query filters on them by a time window. Their index, `ix_evidence_coverage`, has no query to serve; dropping it is #2405.
 
 ### 4.4 hypotheses (High-Cardinality Table)
 
@@ -1162,7 +1155,7 @@ enterprises  (the isolation boundary — may these two accounts ever see each ot
 
 ### 4.13 case_entities (High-Cardinality Table — Phase 4)
 
-Cross-artifact entity index for a case. One row per `(case, entity_type, entity_value, evidence)` tuple, populated by the preprocessing pipeline after each successful extraction. Makes *"which evidence in this case mentions IP 10.0.0.5?"* a single indexed lookup rather than an LLM scan across evidence summaries.
+Cross-artifact entity index for a case. One row per `(case, entity_type, entity_value, evidence)` tuple. Nothing populates it: intake entity extraction was removed (#2644), and the registry is retired by ruling (#1708). Its design made *"which evidence in this case mentions IP 10.0.0.5?"* a single indexed lookup rather than an LLM scan across evidence summaries.
 
 ```sql
 CREATE TABLE case_entities (

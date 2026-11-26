@@ -353,7 +353,7 @@ class TestTheMentionRule:
         with pytest.raises(ValueError, match="0 or 1 capture groups"):
             distinct_on_line("x=1", re.compile(r"(\w)=(\d)"))
 
-    def test_distinct_values_is_what_both_routes_call(self):
+    def test_distinct_values_keeps_the_first_of_each_value(self):
         assert distinct_values(["a", "b", "a"]) == ["a", "b"]
 
 
@@ -362,19 +362,19 @@ class TestTheMentionRule:
 # iterated a ``findall`` result; 22 of them counted entities, and each was
 # its own chance to disagree about the unit. Three remain and none of them
 # produces an entity count.
+#
+# The package is GLOBBED, not listed: a hardcoded list is a guard that stops
+# looking the moment someone adds a module, which is precisely the module
+# most likely to hand-roll a loop.
 # ---------------------------------------------------------------------------
 _PREPROCESSING = pathlib.Path("faultmaven/modules/preprocessing")
-_SCANNED = (
-    _PREPROCESSING / "extractors" / "logs_extractor.py",
-    _PREPROCESSING / "log_usernames.py",
-)
 
-#: ``(module basename, loop target, iterated expression)`` for every
+#: ``(path under the package, loop target, iterated expression)`` for every
 #: raw-match loop that is allowed to remain. All three are occurrence
 #: tallies rendered as prose in the logs extractor's structural index —
 #: they answer "how many times was this code emitted", never "how many
-#: lines mentioned this entity". A line may legitimately carry two KB references or two HRESULTs and both
-#: are events.
+#: lines mentioned this entity". A line may legitimately carry two KB
+#: references or two HRESULTs and both are events.
 #:
 #: The iterated expression is part of the key, and the comparison is a
 #: sorted LIST rather than a set, because neither a duplicate entry nor a
@@ -383,12 +383,20 @@ _SCANNED = (
 _PER_MATCH_ALLOWLIST = sorted(
     [
         # Windows Update KB packages (ISS-020)
-        ("logs_extractor.py", "kb_num", "self._KB_PACKAGE_RE.findall(line)"),
+        (
+            "extractors/logs_extractor.py",
+            "kb_num",
+            "self._KB_PACKAGE_RE.findall(line)",
+        ),
         # Apache mod_jk worker states (ISS-045)
-        ("logs_extractor.py", "state_num", "self._MOD_JK_STATE_RE.findall(line)"),
+        (
+            "extractors/logs_extractor.py",
+            "state_num",
+            "self._MOD_JK_STATE_RE.findall(line)",
+        ),
         # Windows CBS HRESULTs (ISS-037)
         (
-            "logs_extractor.py",
+            "extractors/logs_extractor.py",
             "(hresult_hex, hresult_sym)",
             "self._HRESULT_RE.findall(line)",
         ),
@@ -408,12 +416,9 @@ def _iterates_findall(node: ast.AST) -> bool:
 
 
 def _scanned_paths() -> list[pathlib.Path]:
-    paths = []
-    for relative in _SCANNED:
-        path = _REPO_ROOT / relative
-        assert path.exists(), f"{relative} moved; the census is not looking at it"
-        paths.append(path)
-    return paths
+    package = _REPO_ROOT / _PREPROCESSING
+    assert package.is_dir(), f"{_PREPROCESSING} moved; the census is blind"
+    return sorted(package.rglob("*.py"))
 
 
 @pytest.mark.unit
@@ -427,8 +432,16 @@ def test_no_entity_loop_iterates_raw_matches():
     they are declared, with a reason, in ``_PER_MATCH_ALLOWLIST``.
     """
     paths = _scanned_paths()
-    names = {path.name for path in paths}
-    assert {"logs_extractor.py", "log_usernames.py"} == names, names
+    package = _REPO_ROOT / _PREPROCESSING
+    relative = {path.relative_to(package).as_posix() for path in paths}
+    # Positive control: the glob reaches the modules that count entities, and
+    # descends into the package's subpackages.
+    assert {
+        "extractors/logs_extractor.py",
+        "extractors/utils.py",
+        "log_usernames.py",
+        "preprocessing_service.py",
+    } <= relative, relative
 
     found: list[tuple[str, str, str]] = []
     for path in paths:
@@ -438,7 +451,11 @@ def test_no_entity_loop_iterates_raw_matches():
                 node.iter
             ):
                 found.append(
-                    (path.name, ast.unparse(node.target), ast.unparse(node.iter))
+                    (
+                        path.relative_to(package).as_posix(),
+                        ast.unparse(node.target),
+                        ast.unparse(node.iter),
+                    )
                 )
 
     assert sorted(found) == _PER_MATCH_ALLOWLIST, (

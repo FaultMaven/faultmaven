@@ -473,6 +473,77 @@ def test_a_mixed_auth_log_counts_each_account_once_per_line() -> None:
     assert Counter(profile) == expected, profile
 
 
+# ---------------------------------------------------------------------------
+# The widened auth-context gate, pinned as data rather than prose.
+# ---------------------------------------------------------------------------
+
+# fm#522 applied the auth-context gate to a path that had none, and the
+# narrower set silently dropped usernames that path used to record: sshd's
+# non-password methods, ``Postponed``, ``maximum authentication attempts``
+# and PAM's ``session closed for``. ``AUTH_CONTEXT_RE`` was widened to keep
+# them, and the profile reads through the same gate. Each must still be
+# recorded, or a narrowing silently costs the profile usernames.
+AUTH_GATE_MUST_STILL_RECORD = [
+    pytest.param(
+        "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
+        "exceeded for root from 1.2.3.4 port 22 ssh2 [preauth]",
+        ["root"],
+        id="maximum-authentication-attempts",
+    ),
+    pytest.param(
+        "Dec 10 07:10:01 LabSZ sshd[2]: Postponed publickey for alice from "
+        "1.2.3.4 port 22 ssh2 [preauth]",
+        ["alice"],
+        id="postponed-publickey",
+    ),
+    pytest.param(
+        "Dec 10 07:10:02 LabSZ sshd[3]: Failed publickey for bob from 1.2.3.4 "
+        "port 22 ssh2",
+        ["bob"],
+        id="failed-publickey",
+    ),
+    pytest.param(
+        "Dec 10 07:10:04 LabSZ sshd[4]: Failed none for invalid user carol "
+        "from 1.2.3.4 port 22 ssh2",
+        ["carol"],
+        id="failed-none",
+    ),
+    pytest.param(
+        "Dec 10 07:10:05 LabSZ sshd[5]: Failed keyboard-interactive/pam for "
+        "dave from 1.2.3.4 port 22 ssh2",
+        ["dave"],
+        id="failed-keyboard-interactive",
+    ),
+    pytest.param(
+        "Sep 21 10:00:00 h sshd[6]: pam_unix(sshd:session): session closed for "
+        "user frank",
+        ["frank"],
+        id="session-closed-for-user",
+    ),
+    pytest.param(
+        "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
+        "failure; user=svc_",
+        ["svc_"],
+        id="trailing-underscore-account",
+    ),
+    pytest.param(
+        "Sep 21 10:00:02 h sshd[8]: pam_unix(sshd:auth): authentication "
+        "failure; user=  alice",
+        ["alice"],
+        id="spaces-after-equals",
+    ),
+]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line,expected", AUTH_GATE_MUST_STILL_RECORD)
+def test_the_widened_auth_gate_still_records_these_usernames(
+    line: str, expected: list[str]
+) -> None:
+    """Narrowing ``AUTH_CONTEXT_RE`` must not cost the profile usernames."""
+    assert profile_usernames(line + "\n") == expected
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "line,expected",
@@ -1253,6 +1324,7 @@ def test_an_existing_account_is_named_when_the_slot_cannot_decide(message, expec
     assert _is_read(line)
     assert extract_usernames(line) == expected
     profile = profile_usernames(line + "\n")
+    assert Counter(profile) == Counter(expected), profile
 
 
 _NO_EVENT_FOR_LINES = [

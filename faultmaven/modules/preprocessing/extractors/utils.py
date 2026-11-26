@@ -88,8 +88,8 @@ PID_MAX = 4_194_304
 def is_port(value: str) -> bool:
     """True when ``value`` is a legal TCP/UDP port number in ASCII digits.
 
-    The command-output, config and PID patterns use ``\\d``, which takes any
-    Unicode digit (``٥٤٣٢``); this test and ``is_pid`` refuse them (fm#2677).
+    The logs extractor's PID patterns use ``\\d``, which takes any Unicode
+    digit (``٥٤٣٢``); this test and ``is_pid`` refuse them (fm#2677).
     """
     return value.isascii() and value.isdigit() and 0 < int(value) <= 65535
 
@@ -130,11 +130,12 @@ def distinct_values(values: "Iterable[str]") -> list[str]:
     again as ``backend:8080`` — is one mention, so an entity count means
     "how many lines did this appear on".
 
-    This is the core every producer goes through, regexes and non-regex
-    matchers alike, so that a normalisation added here (case folding, a
-    length cap) cannot reach some entity types and not others. That
-    asymmetry is fm#1587 itself: fm#1574 moved the username rule per line
-    and left IP, PORT, PID and HTTP_PATH counting matches.
+    The logs extractor's regex entity counts go through it, by way of
+    :func:`distinct_on_line`. Usernames do not: ``log_usernames``
+    de-duplicates them itself, on a case-folded key, so a normalisation
+    added here does not reach them. That kind of asymmetry is fm#1587:
+    fm#1574 moved the username rule per line and left IP, PORT, PID and
+    HTTP_PATH counting matches.
 
     It lives next to :func:`split_log_lines` because a per-line count is
     only as right as what the callers agree a line *is*.
