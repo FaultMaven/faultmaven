@@ -559,7 +559,14 @@ class TestAJsonBodyThatIsNotTextIsRefused:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "scope, status", [(b'"\\ud800"', 400), (b'["ok",{"k":"\xc3\xa9"}]', 200)]
+        "scope, status",
+        [
+            (b'"\\ud800"', 400),
+            (b'{"\\ud800":1}', 400),
+            (b'["\\ud800"]', 400),
+            (b'["ok",{"k":"\xc3\xa9"}]', 200),
+        ],
+        ids=["value", "key", "list", "clean"],
     )
     async def test_the_walk_decides_when_dumps_runs_out_of_stack(
         self, client, oauth_service, monkeypatch, scope, status
@@ -587,7 +594,10 @@ class TestAJsonBodyThatIsNotTextIsRefused:
     async def test_a_valid_deep_value_under_an_ignored_key_is_served(
         self, client, oauth_service
     ):
-        """Depth `json.loads` accepts is not refused: only past it (below)."""
+        """Depth `json.loads` accepts is not refused, with one residual (#2974):
+        object nesting within 1-2 levels of its own limit is refused as "not
+        valid JSON" on 3.11 and 3.14, the hook's frame pushing it over. Lists:
+        unchanged."""
         deep = b"[" * 500 + b"]" * 500
         response = await client.post(
             TOKEN_URL,
