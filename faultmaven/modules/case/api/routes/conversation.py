@@ -808,9 +808,10 @@ async def submit_turn(
         # `max_part_size` (overridden to MAX_UPLOAD_SIZE_MB in main.py) bounds
         # non-file fields in bytes received; file parts reach the route
         # unbounded and are checked per file below. This guard bounds the
-        # decoded text's UTF-8 size, which a part decoded as latin-1 can double,
-        # so it can fire on a body the parser admitted. Where an extractor runs
-        # on a paste, the Tier 1 worker bounds it.
+        # decoded text's UTF-8 size, which a non-UTF-8 decoding (the latin-1
+        # fallback, or a charset the request declares) can grow up to
+        # fourfold, so it can fire on a body the parser admitted. Where an
+        # extractor runs on a paste, the Tier 1 worker bounds it.
         from faultmaven.config.settings import get_settings as _get_settings
 
         _max_text_bytes = _get_settings().upload.max_upload_size_mb * 1024 * 1024
