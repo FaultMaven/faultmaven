@@ -63,6 +63,7 @@ async def test_save_and_reload_bumps_shared_version(fake_redis, monkeypatch):
     import faultmaven.infrastructure.persistence.llm_config_repository as repo
 
     monkeypatch.setattr(repo, "set_overrides", _fake_set_overrides)
+    cfg._last_applied_version = 0  # the watcher's seed from the absent key
 
     await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
 

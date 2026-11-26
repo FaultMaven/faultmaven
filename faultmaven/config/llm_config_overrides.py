@@ -251,31 +251,37 @@ async def save_and_reload(
 
     Once the write lands, the shared Redis config version is bumped so every
     OTHER cloud replica's watcher (``watch_config_version``) observes the change
-    and reloads too, even when the local reload raises: the stored value is the
-    configuration, and the reload's error is re-raised after the bump (#2987).
-    The bump is best-effort: if Redis is unreachable the other replicas lag
-    until their next restart, which is logged as a warning.
+    and reloads too, even when the local reload raises or the save is
+    cancelled: the stored value is the configuration, the bump is shielded, and
+    the reload's error is re-raised after it (#2987). The bump is best-effort:
+    if Redis is unreachable the other replicas lag until their next restart,
+    and, when the local reload failed too, so does this one; both are logged
+    as a warning.
     """
     from faultmaven.infrastructure.persistence.llm_config_repository import (
         set_overrides,
     )
 
+    mark = _last_applied_version
     await set_overrides(overrides, user_id=user_id)
     reloaded = False
     try:
         await reload_llm_config()
         reloaded = True
     finally:
-        await _bump_config_version(reloaded)
+        await asyncio.shield(_bump_config_version(reloaded, mark))
 
 
-async def _bump_config_version(reloaded: bool) -> None:
+async def _bump_config_version(reloaded: bool, mark: Optional[int]) -> None:
     """Bump the shared config version so the other replicas reload.
 
-    Records the new value locally only when this replica's reload succeeded, so
-    THIS replica's watcher does not redundantly reload, and retries a failed
-    one. The client is transient (config writes are rare) and closed after use
-    so it does not leak a connection pool — unlike the watcher's long-lived
+    Records the new value locally only when this replica's reload succeeded
+    and the new value is exactly one above ``mark``, the version this replica
+    held before the save, so THIS replica's watcher does not redundantly
+    reload. Otherwise the mark stays, and the watcher reloads: a failed reload
+    is retried, and another replica's write that bumped in between is applied.
+    The client is transient (config writes are rare) and closed after use so
+    it does not leak a connection pool — unlike the watcher's long-lived
     client.
     """
     global _last_applied_version
@@ -285,12 +291,18 @@ async def _bump_config_version(reloaded: bool) -> None:
             version = int(await redis.incr(CONFIG_VERSION_KEY))
         finally:
             await _aclose(redis)
-        if reloaded:
+        if reloaded and mark is not None and version == mark + 1:
             _last_applied_version = version
     except Exception as e:
         logger.warning(
             "Saved config but could not bump the shared config version; other "
-            "replicas may serve stale config until restart: %s",
+            "replicas may serve stale config until restart%s: %s",
+            (
+                ""
+                if reloaded
+                else ", and this replica kept its previous settings too, until "
+                "the next config write or restart"
+            ),
             exception_log_name(e),
         )
 

@@ -104,7 +104,7 @@ settings.is_standalone  # not is_cloud
 
 **Hot-reload flow (dashboard save):**
 1. Dashboard writes to DB via PUT endpoint
-2. `save_and_reload()`: reset settings → re-read `.env` → apply DB overrides → reset registry
+2. `save_and_reload()`: write the overrides → build settings from the environment → apply DB overrides → install them and reset the registry, unless a reload that started later has already installed. An override read that raises installs nothing: the previous settings stay. Then, even when the reload raised or the save was cancelled, the shared config version is bumped (shielded), so the other replicas reload the stored value; the reload's error is re-raised, so the PUT answers 500 although the write is durable. This replica records the bump only after its own reload succeeded and when the bump is the next version after the one it held, so its watcher retries a failed reload
 3. New registry initializes with updated config
 
 **Key change from current behavior**: In cloud mode, if an admin wants to change a value, they use the dashboard. Editing `.env` on the server and restarting will NOT take effect for any key that exists in the DB. The dashboard should show the config source (`env-default` vs `admin-override`) for transparency.

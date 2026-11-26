@@ -8,9 +8,11 @@ from the environment alone, a cloud startup served them, and
 raises to its caller: a reload keeps the settings it would replace, a cloud
 startup refuses, the provenance route answers its 500.
 
-Two consequences are pinned with it. A save whose reload fails still bumps the
-shared version, so the other replicas apply the stored value, and leaves this
-replica's mark unassigned, so its own watcher retries. A reload that fails
+Two consequences are pinned with it. A save whose reload fails, or that is
+cancelled, still bumps the shared version, so the other replicas apply the
+stored value; this replica records the bump only after its own reload, and
+only when the bump is the next version after its mark, so its watcher retries
+a failed reload and applies a write another replica bumped in between. A reload that fails
 blocks no other: a reload installs only when it is newer than the installed
 one, so an earlier in-flight read still installs (the two- and three-way
 interleavings below), and an older read returning after a newer install is
@@ -21,6 +23,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import fakeredis.aioredis as fakeredis_aio
 import pytest
 from fastapi import FastAPI
@@ -152,9 +155,14 @@ async def test_an_older_read_returning_first_installs_then_the_newer_replaces_it
 async def test_an_empty_store_installs_the_environments_settings(
     live_settings, monkeypatch
 ):
+    _store(monkeypatch, AsyncMock(return_value={"primary_provider": "fireworks"}))
+    await cfg.reload_llm_config()
+    overridden = get_settings()
+
     _store(monkeypatch, AsyncMock(return_value={}))
     await cfg.reload_llm_config()
 
+    assert get_settings() is not overridden
     assert _provider() == "openai"
 
 
@@ -163,9 +171,10 @@ async def test_an_empty_store_installs_the_environments_settings(
 
 @pytest.fixture
 def shared_redis(monkeypatch):
+    """The shared version unwritten, and this replica's watcher seeded from it."""
     redis = fakeredis_aio.FakeRedis(decode_responses=True)
     monkeypatch.setattr(cfg, "_get_redis", AsyncMock(return_value=redis))
-    monkeypatch.setattr(cfg, "_last_applied_version", None)
+    monkeypatch.setattr(cfg, "_last_applied_version", 0)
     monkeypatch.setattr(llm_config_repository, "set_overrides", AsyncMock())
     return redis
 
@@ -174,7 +183,7 @@ async def test_a_save_whose_reload_fails_still_bumps_the_shared_version(
     shared_redis, monkeypatch
 ):
     """The write landed: the other replicas apply it, and this replica's mark
-    stays unassigned so its own watcher retries the reload."""
+    stays where it was so its own watcher retries the reload."""
     monkeypatch.setattr(
         cfg, "reload_llm_config", AsyncMock(side_effect=StoreDown("db down"))
     )
@@ -183,7 +192,7 @@ async def test_a_save_whose_reload_fails_still_bumps_the_shared_version(
         await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
 
     assert await cfg._read_config_version(shared_redis) == 1
-    assert cfg._last_applied_version is None
+    assert cfg._last_applied_version == 0
 
 
 async def test_a_save_whose_reload_succeeds_records_its_own_bump(
@@ -195,6 +204,88 @@ async def test_a_save_whose_reload_succeeds_records_its_own_bump(
 
     assert await cfg._read_config_version(shared_redis) == 1
     assert cfg._last_applied_version == 1
+
+
+async def test_a_bump_that_includes_another_replicas_write_leaves_the_mark(
+    shared_redis, monkeypatch
+):
+    """Another replica saves and bumps while this one reloads: this replica's
+    bump lands two above its mark, so the mark stays and its watcher reloads
+    the other write."""
+
+    async def reload_while_another_replica_bumps():
+        await shared_redis.incr(cfg.CONFIG_VERSION_KEY)
+
+    monkeypatch.setattr(cfg, "reload_llm_config", reload_while_another_replica_bumps)
+
+    await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
+
+    assert await cfg._read_config_version(shared_redis) == 2
+    assert cfg._last_applied_version == 0
+
+
+async def test_a_save_cancelled_mid_read_still_bumps(
+    live_settings, shared_redis, monkeypatch
+):
+    """A cancel scope re-delivers its cancel at every await, the bump's
+    included: the bump is shielded, so the stored write is still announced."""
+    read, reading, _release = _blocked_read({"primary_provider": "fireworks"})
+    _store(monkeypatch, read)
+    redis_reached, outcome, done = asyncio.Event(), [], asyncio.Event()
+
+    async def get_redis():
+        await redis_reached.wait()
+        return shared_redis
+
+    monkeypatch.setattr(cfg, "_get_redis", get_redis)
+    bump = cfg._bump_config_version
+
+    async def observed_bump(*args):
+        try:
+            await bump(*args)
+            outcome.append("bumped")
+        finally:
+            done.set()
+
+    monkeypatch.setattr(cfg, "_bump_config_version", observed_bump)
+
+    async def cancel_once_reading(scope):
+        await reading.wait()
+        scope.cancel()
+
+    with anyio.CancelScope() as scope:
+        canceller = asyncio.create_task(cancel_once_reading(scope))
+        await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
+    await canceller
+    assert scope.cancelled_caught
+    redis_reached.set()
+    await done.wait()
+
+    assert outcome == ["bumped"]
+    assert await cfg._read_config_version(shared_redis) == 1
+
+
+async def test_a_failed_reload_and_bump_warn_this_replica_kept_its_settings(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(
+        cfg, "_get_redis", AsyncMock(side_effect=ConnectionError("redis down"))
+    )
+    monkeypatch.setattr(llm_config_repository, "set_overrides", AsyncMock())
+    monkeypatch.setattr(
+        cfg, "reload_llm_config", AsyncMock(side_effect=StoreDown("db down"))
+    )
+    caplog.set_level(logging.WARNING, logger=cfg.__name__)
+
+    with pytest.raises(StoreDown):
+        await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
+
+    assert [r.getMessage() for r in caplog.records] == [
+        "Saved config but could not bump the shared config version; other "
+        "replicas may serve stale config until restart, and this replica kept "
+        "its previous settings too, until the next config write or restart: "
+        "ConnectionError"
+    ]
 
 
 # ── provenance ────────────────────────────────────────────────────────────
