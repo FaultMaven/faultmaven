@@ -28,6 +28,7 @@ from faultmaven.modules.knowledge.domain.services.preparation import (
     _RUNBOOK_BODY_SECTIONS,
     _RUNBOOK_FRONTMATTER_FIELDS,
     _RUNBOOK_FRONTMATTER_MIN_FIELDS,
+    MAX_TEXT_CHARS,
     _has_runbook_body,
     cleanup_text,
     detect_existing_runbook,
@@ -111,7 +112,11 @@ def test_every_shipped_runbook_is_detected(path: Path):
     # detection ever runs, so a pack runbook that later ships a ``<!-- … -->``
     # directive across a section heading would break the real path while a
     # read_text-based test kept passing.
-    parsed = DocumentParser().extract_document_text(path, "text/markdown").text
+    parsed = (
+        DocumentParser()
+        .extract_document_text(path, "text/markdown", max_chars=MAX_TEXT_CHARS)
+        .text
+    )
     assert detect_existing_runbook(parsed) is True
     assert detect_existing_runbook(cleanup_text(parsed)) is True
 
@@ -500,7 +505,9 @@ def test_a_runbook_quoting_an_unclosed_comment_in_a_fence_is_still_detected():
     path.write_text(content)
     assert (
         detect_existing_runbook(
-            DocumentParser().extract_document_text(path, "text/markdown").text
+            DocumentParser()
+            .extract_document_text(path, "text/markdown", max_chars=MAX_TEXT_CHARS)
+            .text
         )
         is True
     )

@@ -69,11 +69,13 @@ CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 PREPARATION_SLOTS = 2
 
 #: The worker's address-space limit (``RLIMIT_AS``), from the upload limit:
-#: ``preparation_memory_limit``. A plain-text file at the upload limit always
-#: gets through Stages 0-5 under it, so a memory failure can come only from
-#: parsing a PDF, DOCX or HTML file (#2622). Measured through the worker on ten
-#: text shapes, the costliest is secret-dense lines (``password=hunter22``):
-#: 204, 348 and 632 MiB at 5, 10 and 20 MB, which is 64 MiB plus 28.4 MiB a MB.
+#: ``preparation_memory_limit``. Extraction stops past ``MAX_TEXT_CHARS``
+#: (#2937), so Stages 2-5 get at most that much text and a memory failure can
+#: come only from parsing (Stage 1). There, the costliest text shape,
+#: secret-dense lines (``password=hunter22``), peaked at 163 MiB in 5.6 s
+#: through the worker at the default 10 MB. The limit was derived before the
+#: bound (#2622), over ten text shapes read whole at the upload limit; that one
+#: took 204, 348 and 632 MiB at 5, 10 and 20 MB, 64 MiB plus 28.4 MiB a MB.
 #: The limit is 128 MiB plus 64 MiB a MB, twice the base and 2.25 times the
 #: slope: 768 MiB at the default 10 MB, 2.2 times the costliest there. The
 #: worker raises its ``oom_score_adj``, which picks it first only where the

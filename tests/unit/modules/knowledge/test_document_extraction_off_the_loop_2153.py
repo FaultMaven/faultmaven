@@ -766,8 +766,8 @@ async def test_text_extracted_far_past_the_upload_is_refused_for_its_length(
     tmp_path,
 ):
     """A 10 MB HTML upload whose ``<pre><code>`` holds high-byte Latin-1 text
-    extracts twice over, 20 MB and 29 million tokens: counted a chunk at a
-    time, it is refused for its length, with its count, not a dead worker."""
+    extracts twice over, 20 MB: past ``MAX_TEXT_CHARS``, extraction stops and
+    the worker returns the length refusal, not a dead worker (#2937)."""
     head = b"<html><body><p>ERROR timeout; kubectl rollout restart.</p><pre><code>"
     tail = b"</code></pre></body></html>"
     high = bytes(range(0x80, 0x100)) * 2
@@ -780,7 +780,11 @@ async def test_text_extracted_far_past_the_upload_is_refused_for_its_length(
     assert (
         result.error_code == ConversionErrorCode.DOCUMENT_TOO_LONG
     ), result.rejection_reason
-    assert "Document contains 2" in result.rejection_reason
+    assert result.rejection_reason == (
+        "Document contains more than 30,000 tokens (limit: 30,000). Please split "
+        "the document into smaller, focused chapters and convert each one "
+        "separately."
+    )
 
 
 def _docx_with_document_xml(path: Path, paragraphs: int) -> Path:

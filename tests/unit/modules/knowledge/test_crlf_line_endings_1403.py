@@ -55,6 +55,7 @@ from faultmaven.modules.knowledge.domain.services.document_parser import Documen
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.domain.services.preparation import MAX_TEXT_CHARS
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     QualityScorer,
     RunbookValidator,
@@ -293,7 +294,11 @@ def test_the_parser_strips_a_cr_smuggled_through_an_html_entity(tmp_path):
     page = tmp_path / "doc.html"
     page.write_text("<h1>Title</h1><p>alpha&#13;bravo</p>\n", encoding="utf-8")
 
-    extracted = DocumentParser().extract_document_text(page, "text/html").text
+    extracted = (
+        DocumentParser()
+        .extract_document_text(page, "text/html", max_chars=MAX_TEXT_CHARS)
+        .text
+    )
 
     assert CR not in extracted, repr(extracted)
     assert "alpha\nbravo" in extracted

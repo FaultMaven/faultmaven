@@ -158,7 +158,7 @@ def test_a_refused_pdf_page_is_named_by_class(lines, tmp_path, monkeypatch):
     pypdf's budget refuses is named by its class, never its text."""
     reader = MagicMock(pages=[_Page("some text"), _Page()])
     monkeypatch.setattr(pypdf, "PdfReader", MagicMock(return_value=reader))
-    parsed = DocumentParser()._extract_pdf(tmp_path / "x.pdf")
+    parsed = DocumentParser()._extract_pdf(tmp_path / "x.pdf", 1000)
     assert parsed.skipped_pages == (2,)
     _named(lines(), "pypdf refused 1 of 2 pages", "LimitReachedError")
 
