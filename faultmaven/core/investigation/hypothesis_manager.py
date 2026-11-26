@@ -553,8 +553,9 @@ class HypothesisManager:
                 f"{old_likelihood:.2f} → {capped:.2f} ({reason})"
             )
         else:
-            # A restatement: the model re-sent (or nudged by < 0.05) a number
-            # it was shown. Stagnation is judged forwards — an event counts only
+            # A restatement: the model re-sent (or nudged by less than a step,
+            # `LIKELIHOOD_PROGRESS_STEP`; see `_moves_a_step`) a number it was
+            # shown. Stagnation is judged forwards — an event counts only
             # if it makes it more evident the line is not advancing — and a
             # restatement adds nothing: an echo says nothing about the line, a
             # small self-correction fixes an estimate, and a test that left

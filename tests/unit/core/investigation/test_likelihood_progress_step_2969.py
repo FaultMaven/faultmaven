@@ -4,7 +4,8 @@ Float subtraction puts an exact two-decimal 0.05 move just under 0.05
 (``abs(0.25 - 0.30) == 0.04999999999999999``), so a raw ``>= 0.05`` read it as
 a restatement on the model path, the evidence path and the ``lowered`` test.
 The tolerance is pinned from both sides: a move of 0.05 - 1e-6 is a
-restatement, one of 0.05 - 1e-10 (float error, not a move) is a step.
+restatement, and a move within the 1e-9 product tolerance (0.05 - 1e-10) is a
+step.
 """
 
 from uuid import uuid4
