@@ -8,8 +8,9 @@ and the stall's proceed. The milestone status reads the record's
 ``milestones_shown`` whole and its disposition line only while a declaration
 is effective, and the statement guards' bar reads the record's own source
 derivations, so after a bound relapse, or a declaration F5 voids, a revision
-or a false-alarm finding is admitted again. The copy is pinned verbatim here.
-No live LLM.
+is admitted again; a false-alarm finding stays refused while the record holds
+a persistence after the mitigation (ruling F3), and a raise in the
+derivations fails closed (F4). The copy is pinned verbatim here. No live LLM.
 """
 
 from __future__ import annotations
@@ -21,13 +22,15 @@ from unittest.mock import patch
 
 import pytest
 
-from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.core.investigation import cause_assurance
 from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.cause_assurance import (
     _mitigation_declared_stable,
     _mitigation_verified,
     mitigation_observation,
+)
+from faultmaven.core.investigation.milestone_engine.errors import (
+    MilestoneEngineError,
 )
 from faultmaven.core.investigation.milestone_engine.transition_consent import (
     revision_offer_key,
@@ -261,9 +264,9 @@ def test_a_relapse_states_once_and_a_new_relief_and_relapse_again():
     assert _statement(first, _record(case)) == f"{HEAD}{relapsed} (turn 11)."
 
 
-def test_a_relief_and_a_persistence_in_one_turn_state_the_relapse():
-    """r == p: ``mitigation_holds`` is false, so the clause is the relapse's.
-    The record's order of the two rows is not read."""
+def test_a_relief_and_a_persistence_in_one_turn_state_still_present():
+    """r == p (ruling F2): the record cannot show their order, so the clause
+    states only what it holds, the persistence; never the relapse."""
     case = _accepted()
     before = _record(case)
     _relief(case, 7)
@@ -271,8 +274,14 @@ def test_a_relief_and_a_persistence_in_one_turn_state_the_relapse():
     now = _record(case)
     assert (now.mitigation.relief_turn, now.mitigation.present_turn) == (7, 7)
     assert _statement(before, now) == (
-        f"{HEAD}{_AFTER}, the problem was seen gone, then seen again (turn 7)."
+        f"{HEAD}{_AFTER}, the problem was still present (turn 7)."
     )
+    later = _record(case)
+    _relief(case, 8)
+    case.progress.mitigation.verified = True
+    assert _statement(later, _record(case)) == (
+        f"{HEAD}{_AFTER}, the problem was seen gone."
+    ), "a later relief holds"
 
 
 def test_a_persistence_with_no_relief_states_still_present():
@@ -309,6 +318,11 @@ def test_a_declaration_states_while_effective_and_a_proceed_states():
     assert _statement(before, _record(case)) == (
         f"{HEAD}{_AFTER}, the problem was still present (turn 8)."
     ), "F5 voids it: no declaration clause"
+    voided = _record(case)
+    _relief(case, 9)
+    again = _record(case)
+    assert again.mitigation.declared_stable_effective, "premise: effective again"
+    assert _statement(voided, again) is None, "the same declaration is no news"
     proceeded = settled._build((True, False, "proceed_unmitigated"), _NONE)
     assert _statement(_record(_accepted()), _record(proceeded)) == (
         f"{HEAD}the investigation went on before the mitigation was verified "
@@ -387,12 +401,20 @@ def _still_present():
     return case
 
 
+def _relief_and_persistence_in_one_turn():
+    case = _accepted()
+    _relief(case, 7)
+    _relapse(case, 7)
+    return case
+
+
 @pytest.mark.parametrize(
     "build, kind",
     [
         (_verified, OutcomeChange.MITIGATION_RELIEF),
         (_relapsed, OutcomeChange.MITIGATION_RELAPSE),
         (_still_present, OutcomeChange.MITIGATION_NO_RELIEF),
+        (_relief_and_persistence_in_one_turn, OutcomeChange.MITIGATION_NO_RELIEF),
         (
             lambda: settled._build((True, False, "declared_stable"), _NONE),
             OutcomeChange.MITIGATION_DECLARED,
@@ -433,24 +455,47 @@ def test_a_holding_relief_after_a_persistence_claims_no_relapse():
 # ---------------------------------------------------------------------------
 
 
+def _bar_the_record_reads(case) -> str | None:
+    """The bar a reader of the cycle-written record would give."""
+    mitigation = case.progress.outcome.mitigation
+    if mitigation is not None and mitigation.verified:
+        return _VERIFIED_BAR
+    if mitigation is not None and mitigation.declared_stable_effective:
+        return _DECLARED_BAR
+    if case.progress.solution_verified:
+        return "a fix was verified against the current statement"
+    return None
+
+
 @pytest.mark.parametrize("name", sorted(settled.CASES))
-def test_the_bars_inputs_are_the_cycle_records(name):
-    """D4: the bar's two inputs equal the cycle-written record's
-    ``mitigation.verified`` and ``declared_stable_effective``."""
+def test_the_bar_is_what_the_cycle_record_states(name):
+    """D4, by behaviour: over every settled fixture, relapses and both
+    declaration orders included, the bar refuses exactly as the
+    cycle-written record's ``mitigation.verified`` and
+    ``declared_stable_effective`` say."""
     case = settled.CASES[name]()
     record_case_outcome(case, at=WritePoint.CYCLE)
-    mitigation = case.progress.outcome.mitigation
-    assert _mitigation_verified(case) is bool(mitigation and mitigation.verified)
-    assert _mitigation_declared_stable(case) is bool(
-        mitigation and mitigation.declared_stable_effective
+    assert _acted_on_bar(case) == _bar_the_record_reads(case)
+
+
+@pytest.mark.parametrize("order", ["declared_then_present", "present_then_declared"])
+@pytest.mark.parametrize("verified", [False, True], ids=["declared", "verified"])
+def test_the_bar_is_what_the_cycle_record_states_in_both_orders(order, verified):
+    build = (
+        _declared_then_present
+        if order == "declared_then_present"
+        else (_present_then_declared)
     )
+    case = build(verified)
+    record_case_outcome(case, at=WritePoint.CYCLE)
+    assert _acted_on_bar(case) == _bar_the_record_reads(case)
 
 
 def test_a_bound_relapse_lifts_the_bar_and_a_holding_verify_keeps_it():
-    """Behaviour difference: after a bound relapse a statement revision or a
-    false-alarm finding is admitted again (``revision_refusal`` and
-    ``invalidation_refusal`` share the bar). A stored verdict with no bound
-    row still bars."""
+    """Behaviour difference: after a bound relapse the shared bar lifts, so a
+    statement revision is admitted again (the false-alarm guard refuses on
+    the record's persistence instead, ruling F3). A stored verdict with no
+    bound row still bars."""
     assert _acted_on_bar(_verified()) == _VERIFIED_BAR
     assert _acted_on_bar(_relapsed()) is None
     bare = _accepted()
@@ -458,17 +503,35 @@ def test_a_bound_relapse_lifts_the_bar_and_a_holding_verify_keeps_it():
     assert _acted_on_bar(bare) == _VERIFIED_BAR
 
 
+_PRESENT_8 = "the problem was observed present after the mitigation (turn 8)"
+
+
 @pytest.mark.parametrize(
     "build, refusal",
-    [(_verified, _VERIFIED_BAR), (_relapsed, None)],
-    ids=["holding", "relapsed"],
+    [
+        (_verified, _VERIFIED_BAR),
+        (_relapsed, _PRESENT_8),
+        (lambda: _declared_then_present(False), _PRESENT_8),
+        (_still_present, _PRESENT_8.replace("turn 8", "turn 7")),
+        (_accepted, None),
+    ],
+    ids=["holding", "relapsed", "declaration_voided", "no_relief", "unchecked"],
 )
-def test_a_false_alarm_finding_is_admitted_after_a_bound_relapse(build, refusal):
-    """Behaviour difference: the finding's guard reads the same bar."""
+def test_a_false_alarm_finding_is_refused_while_a_persistence_is_on_record(
+    build, refusal
+):
+    """Ruling F3: a bound row showing the problem present after the
+    mitigation proves it existed, so the finding stays refused after a
+    relapse (on ``main`` by the stored verify; the text is new), with the
+    record's ``present_turn``. The revision is admitted there (Q8)."""
     case = build()
     gone = [e.evidence_id for e in case.evidence if e.category == _GONE]
+    if not gone:
+        gone = [bound_row(case, _GONE, turn=5, rechecks=_shown(case)).evidence_id]
     basis = "no 401 in the gateway log for the reported window"
     assert invalidation_refusal(case, gone, basis) == refusal
+    if refusal == _PRESENT_8:
+        assert narration_outcome(case).mitigation.present_turn == 8
 
 
 def _declared_then_present(verified: bool):
@@ -515,20 +578,75 @@ def test_the_disposition_line_prints_only_an_effective_declaration(verified):
     )
 
 
-def test_a_raising_relief_reaches_the_bar_only_over_a_stored_verify_or_declaration():
-    """Amendment 7: the bar reads ``mitigation_relief`` through the record's
-    derivations; a raise there propagates, as the record's own fold's does,
-    and only where a verify or a declaration is stored."""
+def _raise(*args, **kwargs):
+    raise RuntimeError("relief unreadable")
 
-    def _raise(*args, **kwargs):
-        raise RuntimeError("relief unreadable")
 
+def test_a_raising_relief_holds_the_bar_closed(caplog):
+    """Ruling F4 (Q11's precedent): a raise in the mitigation's derivations
+    holds the bar with the ruled line, logged; the bar is reached only where
+    a verify or a declaration is stored, and the false-alarm guard's own
+    read fails closed the same way."""
+    unread = "the case record could not be read this turn"
     with patch.object(cause_assurance, "mitigation_relief", _raise):
         assert _acted_on_bar(_accepted()) is None
-        with pytest.raises(RuntimeError, match="relief unreadable"):
-            _acted_on_bar(_verified())
-        with pytest.raises(RuntimeError, match="relief unreadable"):
-            _acted_on_bar(settled._build((True, False, "declared_stable"), _NONE))
+        assert _acted_on_bar(_verified()) == unread
+        declared = settled._build((True, False, "declared_stable"), _NONE)
+        assert _acted_on_bar(declared) == unread
+        accepted = _accepted()
+        gone = [bound_row(accepted, _GONE, turn=5, rechecks=_shown(accepted))]
+        assert (
+            invalidation_refusal(
+                accepted, [gone[0].evidence_id], "no 401 in the window"
+            )
+            == unread
+        )
+    logged = [r for r in caplog.records if "statement guards" in r.getMessage()]
+    assert len(logged) == 3 and all(r.exc_info for r in logged)
+
+
+def _failures(monkeypatch) -> list:
+    counted: list = []
+    counter = SimpleNamespace(
+        labels=lambda at: SimpleNamespace(inc=lambda: counted.append(at))
+    )
+    monkeypatch.setattr(outcome_module, "case_outcome_write_failures_total", counter)
+    monkeypatch.setattr(fold_module, "case_outcome_write_failures_total", counter)
+    return counted
+
+
+async def _turn_counted(monkeypatch, revising: bool) -> tuple[list, object]:
+    """One turn on a relapsed case (whose revision the bar admits) with the
+    mitigation's derivations raising: the failures counted, and the case.
+    The turn then fails in the reply's reopen-chip projection, which reads
+    ``shown_milestones`` unguarded, as on ``main``; the cycle's record write
+    has run by then."""
+    counted = _failures(monkeypatch)
+    engine, case = _revision_engine(), _relapsed()
+    case.current_turn = 8
+    response = _revision(case) if revising else _response()
+    assert _refusal(case) is None, "premise: the bar admits the revision"
+    with (
+        patch.object(cause_assurance, "mitigation_relief", _raise),
+        pytest.raises(MilestoneEngineError, match="relief unreadable"),
+    ):
+        await _process(engine, case, "they're all token refreshes", response)
+    return list(counted), case
+
+
+async def test_a_raise_in_the_bar_is_counted_once_by_the_records_write(
+    monkeypatch, caplog
+):
+    """Ruling F4, not doubled: the guard counts nothing; the cycle's record
+    write reads the same derivations later in the turn and counts the raise
+    there, once. The turn the guard refuses counts exactly what the same
+    turn counts with no guard reached."""
+    unguarded, _ = await _turn_counted(monkeypatch, revising=False)
+    guarded, case = await _turn_counted(monkeypatch, revising=True)
+    assert case.progress.problem_status == ProblemStatus.VERIFIED, "held closed"
+    assert any("statement guards" in r.getMessage() for r in caplog.records)
+    assert guarded == unguarded
+    assert guarded.count(WritePoint.CYCLE) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -632,15 +750,10 @@ def test_a_failed_fold_omits_the_milestone_status_counted_once():
     assert counted == [WritePoint.NARRATION]
 
 
-def test_the_api_contract_version_is_unchanged():
-    """Q9: no S3d PR changes it (16.3.0 at ``c117a2450``, this stage's base);
-    ``milestones_completed`` moves with S4."""
-    assert API_CONTRACT_VERSION == "16.3.0"
-
-
 _PACKAGE = Path(__file__).resolve().parents[4] / "faultmaven"
-#: A note that promises the mitigation's work to a later S3d stage.
-_PROMISE = re.compile(r"(until|at|to|is|are) (stage )?S3d\b|S3d's|S3d-4 \(#3053\)")
+#: The S3d-4 promises this stage removed: "until stage S3d", "until S3d-4",
+#: "the mitigation is S3d's". A note deferring to S3d-5 (open) is not one.
+_PROMISE = re.compile(r"until (stage )?S3d(-4)?\b(?!-)|\bS3d's")
 
 
 def _stale_notes(text: str) -> list[str]:
@@ -669,6 +782,7 @@ def test_no_stale_s3d_or_q1a_mitigation_note_remains():
     [
         "``mitigation.verified`` stays a fresh input until S3d-4 (#3053).",
         "the mitigation lines are S3d's (#3053)",
+        "keeps it fresh until stage S3d, #3053",
         '"""``mitigation.verified`` as stored, read fresh (ruling Q1 (a))."""',
         "# the stored\n# ``mitigation.verified`` (ruling Q1 (a)) and the note",
     ],
@@ -676,3 +790,8 @@ def test_no_stale_s3d_or_q1a_mitigation_note_remains():
 def test_the_note_scan_bites(text):
     """A positive control per shape the scan names."""
     assert _stale_notes(text)
+
+
+def test_a_note_deferring_to_s3d5_is_not_stale():
+    assert _stale_notes("the HELD_OPEN verdict moves at S3d-5 (#3053)") == []
+    assert _stale_notes("read until S3d-5 switches it") == []

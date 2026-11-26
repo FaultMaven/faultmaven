@@ -1321,7 +1321,8 @@ the turn and the turn's own prose does not state it
   nor does a FAILED one turning final, nor an attempt absent from the
   turn-final record. Then the mitigation's facts (#3053 S3d-4, ruling Q8),
   each stated when it enters its state from any other since the turn-start
-  record, absence included, in S3c's observation wording, `a` the record's
+  record, absence included (the declaration: when its turn is new), in S3c's
+  observation wording, `a` the record's
   `mitigation.attempt_turn`: what the problem did after it, one of "after
   the mitigation carried out in turn a, the problem was seen gone" (the
   record's `verified`, holding, with a bound relief: a stored verdict with
@@ -1329,9 +1330,12 @@ the turn and the turn's own prose does not state it
   seen gone, then seen again (turn p)" (a relief that does not hold, keyed
   on its relief turn, so a new relief and relapse states again, and a
   relapse may be stated with no earlier relief line), or "…, the problem
-  was still present (turn p)" (a persistence with no relief), none of them
-  with no dated attempt; "you reported the mitigation stable (turn d)"
-  (`declared_stable_effective`); and "the investigation went on before the
+  was still present (turn p)" (a persistence with no relief, or one in the
+  relief's own turn, whose order the record cannot show: ruling F2), none
+  of them with no dated attempt; "you reported the mitigation stable (turn
+  d)" (`declared_stable_effective`, each declaration once, by its turn, so
+  one F5 voided and effective again after a later relief is not restated);
+  and "the investigation went on before the
   mitigation was verified (turn d)" (`proceed_unmitigated`). The last two
   are the closure line's own clauses (`narration.offers`), with no turn
   printed when none is on record. Bookkeeping is not read. The readers the
@@ -1339,7 +1343,8 @@ the turn and the turn's own prose does not state it
   the milestone status (`milestones_shown`, and its disposition line only
   while a declaration is effective) and the statement guards' bar
   (`problem_status._acted_on_bar`, through the record's own source
-  derivations). The stored `MitigationRecord.verified` means "the verify
+  derivations; the false-alarm guard also refuses while the record holds a
+  persistence, §1.4.1 (c)). The stored `MitigationRecord.verified` means "the verify
   gate registered", forward-only; it is read only by the declared inputs
   (the census's `MITIGATION_FLAG_INPUTS`, ruling Q10). Residuals: the API's
   `milestones_completed` still lists `mitigation_verified` after a relapse
@@ -1480,8 +1485,12 @@ shows the problem as revised. The guard (`revision_refusal`) requires that
 evidence and a basis, refuses a revision that restates the current statement or
 a cause (the statement describes what is OBSERVED, never why), refuses wording
 the user already declined, and refuses once the statement has been acted on — a
-cause identified and uncontested, or a mitigation or fix *verified* (an accepted
-fix that failed does not bar it: that is when a mis-statement surfaces). The
+cause identified and uncontested, a fix *verified*, or a mitigation verified and
+still holding or declared stable and still effective, as the case record reads
+them (#3053 S3d-4: after a bound relapse, or a declaration F5 voids, the bar
+lifts; an accepted fix that failed does not bar it: that is when a mis-statement
+surfaces). When the mitigation cannot be read, the guard refuses with "the case
+record could not be read this turn". The
 case moves to `revision_pending`, and the engine presents the revision on every
 pending turn with a confirm/clarify pair keyed on its wording (INV-45). Cause
 work arriving while it waits is staged on the revision with the evidence ids its
@@ -1499,9 +1508,11 @@ work it discarded.
 **(c) False alarm.** The LLM sends `verification_updates.problem_invalidated`
 with `symptom_absence_evidence` from where and when the symptom was reported.
 "Not happening right now" is not a false alarm, and neither is missing data. The
-guard refuses it once the problem was acted on, or when a cause was confirmed
-eliminated (a `causal_absence` row bound to the case's cause, #1906 D1), which
-proves the problem existed. The case moves
+guard refuses it once the problem was acted on (the same bar as (b)), while the
+case record holds a bound row showing the problem present after the mitigation
+("the problem was observed present after the mitigation (turn p)", #3053), or
+when a cause was confirmed eliminated (a `causal_absence` row bound to the
+case's cause, #1906 D1): each proves the problem existed. The case moves
 to `invalidated`, the engine offers the close once (INV-46), and resolution is
 not eligible. Declined, the case holds: no hypotheses, updates, chains,
 solutions or mitigations, and no mitigation or solution signal is accepted;

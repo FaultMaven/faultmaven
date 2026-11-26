@@ -66,8 +66,11 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     resolution_cause_leg_total,
 )
 from faultmaven.core.investigation.narration.offers import (
+    MITIGATION_BEFORE_RELIEF,
     MITIGATION_DECLARED,
     MITIGATION_PROCEEDED,
+    MITIGATION_RELIEVED,
+    MITIGATION_SEEN_AGAIN,
     at_turn,
     closure_message,
     readiness_message,
@@ -462,19 +465,15 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
     if seen.disposition == DECLARED_STABLE:
         clauses.append(MITIGATION_DECLARED + at_turn(seen.disposition_turn))
     if seen.relief_turn is not None:
-        after = "the mitigation" + (
-            " and a later fix" if seen.fix_before_relief else ""
-        )
-        clause = (
-            f"the problem was observed relieved after {after} (turn {seen.relief_turn})"
-        )
+        later = " and a later fix" if seen.fix_before_relief else ""
+        clause = f"{MITIGATION_RELIEVED}{later} (turn {seen.relief_turn})"
         if seen.span is not None:
             clause += f", and the data it cites covers {_span_words(seen.span)}"
         clauses.append(clause)
     if seen.present_turn is not None:
         clauses.append(
-            f"the problem was seen again at turn {seen.present_turn}"
-            + (", before that relief" if seen.holding else "")
+            f"{MITIGATION_SEEN_AGAIN} {seen.present_turn}"
+            + (MITIGATION_BEFORE_RELIEF if seen.holding else "")
         )
     if seen.disposition == PROCEED_UNMITIGATED:
         clauses.append(MITIGATION_PROCEEDED + at_turn(seen.disposition_turn))

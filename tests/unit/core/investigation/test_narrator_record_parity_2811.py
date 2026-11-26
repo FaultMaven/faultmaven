@@ -24,7 +24,6 @@ from faultmaven.core.investigation.cause_assurance import (
     FIX_SUCCEEDED,
     SUBJECT_PROBLEM,
     _cause_posited_turn,
-    _mitigation_verified,
     carried_fix_windows,
     cause_recheck_status,
     interception_relief,
@@ -48,6 +47,12 @@ from faultmaven.core.investigation.outcome import (
     compute_case_outcome,
     narration_outcome,
     record_case_outcome,
+)
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
+    _milestone_status_section,
+)
+from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
+    NarrationFold,
 )
 from faultmaven.core.investigation.terminal_transitions import (
     closure_verdict,
@@ -76,8 +81,8 @@ pytestmark = pytest.mark.unit
 
 #: Each declared difference, by fact: the record holds the corrected value.
 #: None since #3053 S3d-4: the milestone status prints the record's
-#: ``milestones_shown`` (``shown_milestones``), relapse-adjusted, where it
-#: printed the stored ``mitigation.verified`` (#2609).
+#: ``milestones_shown``, relapse-adjusted, where it printed the stored
+#: ``mitigation.verified`` (#2609).
 DECLARED: dict[str, str] = {}
 
 
@@ -191,9 +196,10 @@ def derived(case) -> dict:
             if seen is None
             else (seen.attempt_turn, seen.relief_turn, seen.present_turn, seen.holding)
         ),
-        # The milestone status reads ``milestones_shown``, which drops a
-        # verify a bound relapse followed (#3053 S3d-4).
-        "mitigation.verified": _mitigation_verified(case),
+        # What the milestone status prints, through its production path
+        # (#3053 S3d-4): the gate line, never the stored flag.
+        "mitigation.verified": "- mitigation_verified\n"
+        in _milestone_status_section(NarrationFold(case)),
         # No ``summary_due``: the closed reply's summary gate,
         # ``should_generate_terminal_summary``, is a decider shared with its
         # enforcement (#698), and the record has no field for it.
@@ -471,7 +477,7 @@ async def _relapsed_mitigation():
     bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=9, rechecks=shown)
     case.current_turn = 9
     record_case_outcome(case, at=WritePoint.CYCLE)
-    assert _mitigation_verified(case) is False, "premise: relapsed"
+    assert narration_outcome(case).mitigation.verified is False, "premise: relapsed"
     return case
 
 

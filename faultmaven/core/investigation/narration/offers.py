@@ -55,11 +55,13 @@ def mitigation_sentence(line: str) -> str:
     return f"{line[:1].upper()}{line[1:]}."
 
 
-#: The closure line's clauses for the user's declaration and the stall's
-#: proceed (#2100), which the outcome statement states too, each followed by
-#: ``at_turn`` of its disposition turn (#3053 S3d-4, ruling Q8).
+#: The phrases ``mitigation_closure_line`` is built from (#2100), which the
+#: outcome statement states or reads too (#3053 S3d-4).
 MITIGATION_DECLARED = "you reported the mitigation stable"
 MITIGATION_PROCEEDED = "the investigation went on before the mitigation was verified"
+MITIGATION_RELIEVED = "the problem was observed relieved after the mitigation"
+MITIGATION_SEEN_AGAIN = "the problem was seen again at turn"
+MITIGATION_BEFORE_RELIEF = ", before that relief"
 
 
 def at_turn(turn: Optional[int]) -> str:

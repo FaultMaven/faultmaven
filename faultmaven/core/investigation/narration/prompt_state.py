@@ -31,7 +31,6 @@ from faultmaven.modules.case.contracts import (
     PROBLEM_ON_HOLD,
     CaseOutcome,
     ClosureReason,
-    MitigationOutcome,
     ProblemStatus,
 )
 
@@ -96,26 +95,15 @@ def progress_indicators(outcome: CaseOutcome) -> tuple[str, ...]:
     return tuple(i for i in INDICATORS if i in shown)
 
 
-def _disposition(mitigation: Optional[MitigationOutcome]) -> Optional[str]:
-    """The disposition the record holds; a declaration only while it is
-    effective (``declared_stable_effective``: no later bound persistence,
-    F5), so the line never says what the statement says no longer holds
-    (#3053 S3d-4)."""
-    if mitigation is None or mitigation.disposition is None:
-        return None
-    if mitigation.disposition == DECLARED_STABLE:
-        return DECLARED_STABLE if mitigation.declared_stable_effective else None
-    return mitigation.disposition
-
-
 def milestone_status(outcome: CaseOutcome) -> MilestoneStatus:
-    """The gates and indicators the record shows (``milestones_shown``,
-    which leaves out a ``mitigation_verified`` a bound relapse followed),
-    and its effective disposition (#3053 S3d-4, ruling Q8)."""
-    shown = set(outcome.milestones_shown)
+    """The gates and indicators the record shows (``milestones_shown``) and
+    its disposition, a declaration only while effective (#3053 S3d-4)."""
+    shown, m = set(outcome.milestones_shown), outcome.mitigation
+    voided = m is not None and m.disposition == DECLARED_STABLE
+    voided = voided and not m.declared_stable_effective
     return MilestoneStatus(
         gates=tuple(gate for gate in GATES if gate in shown),
-        mitigation_disposition=_disposition(outcome.mitigation),
+        mitigation_disposition=None if m is None or voided else m.disposition,
         indicators=progress_indicators(outcome),
     )
 

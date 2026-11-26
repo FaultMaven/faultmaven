@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Callable, NamedTuple, Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
     PROBLEM_ON_HOLD,
     PROCEED_UNMITIGATED,
     AttemptOutcome,
@@ -33,8 +34,11 @@ from faultmaven.modules.case.contracts import (
 
 from .codes import OfferCode
 from .offers import (
+    MITIGATION_BEFORE_RELIEF,
     MITIGATION_DECLARED,
     MITIGATION_PROCEEDED,
+    MITIGATION_RELIEVED,
+    MITIGATION_SEEN_AGAIN,
     at_turn,
     pool_empty_user_line,
 )
@@ -206,42 +210,45 @@ def _windows(prior: CaseOutcome, now: CaseOutcome) -> list:
 
 
 def _seen(mitigation: Optional[MitigationOutcome]) -> Optional[tuple]:
-    """What the problem did after the mitigation, as the record holds it:
-    seen gone, then seen again (a relief that does not hold, keyed on its
-    relief turn, so a new relief and relapse is a new state); seen gone (the
-    record's holding ``verified`` with a bound relief: a stored verdict with
-    no bound row observed nothing, D2); still present with no relief; or
-    none. None with no dated attempt (D3)."""
+    """What the problem did after the mitigation: still present (no relief,
+    or one in the persistence's turn, F2), seen again after a relief (keyed
+    on it), seen gone (holding ``verified`` with a relief, D2); None with no
+    dated attempt (D3)."""
     if mitigation is None or mitigation.attempt_turn is None:
         return None
-    if mitigation.relief_turn is not None and not mitigation.holding:
-        return (OutcomeChange.MITIGATION_RELAPSE, mitigation.relief_turn)
-    if mitigation.verified and mitigation.relief_turn is not None:
-        return (OutcomeChange.MITIGATION_RELIEF,)
-    if mitigation.present_turn is not None and mitigation.relief_turn is None:
+    relief, present = mitigation.relief_turn, mitigation.present_turn
+    if present is not None and relief in (None, present):
         return (OutcomeChange.MITIGATION_NO_RELIEF,)
+    if relief is not None and not mitigation.holding:
+        return (OutcomeChange.MITIGATION_RELAPSE, mitigation.relief_turn)
+    if mitigation.verified and relief is not None:
+        return (OutcomeChange.MITIGATION_RELIEF,)
     return None
 
 
-def _proceeded(mitigation: Optional[MitigationOutcome]) -> bool:
-    return mitigation is not None and mitigation.disposition == PROCEED_UNMITIGATED
+def _declared(mitigation: Optional[MitigationOutcome]) -> Optional[tuple]:
+    """The declaration's key, effective or not: its turn; None with none."""
+    if mitigation is None or mitigation.disposition != DECLARED_STABLE:
+        return None
+    return (DECLARED_STABLE, mitigation.disposition_turn)
 
 
 def _mitigation(prior: CaseOutcome, now: CaseOutcome) -> list:
-    """The mitigation's facts (#3053 S3d-4, ruling Q8), each stated when it
-    enters its state from any other since the turn-start record, absence
-    included: what the problem did after it (``_seen``), the user's
-    effective declaration (``declared_stable_effective``) and the stall's
-    proceed."""
+    """The mitigation's facts (#3053 S3d-4, Q8), each stated on entering its
+    state, absence included; a declaration once, by its turn, while
+    effective (effective again after F5 voided it is no news)."""
     m, was = now.mitigation, prior.mitigation
     changes = []
     seen = _seen(m)
     if seen is not None and seen != _seen(was):
         changes.append(Change(seen[0], mitigation=m))
-    declared = m is not None and m.declared_stable_effective
-    if declared and not (was is not None and was.declared_stable_effective):
+    effective = m is not None and m.declared_stable_effective
+    if effective and _declared(m) != _declared(was):
         changes.append(Change(OutcomeChange.MITIGATION_DECLARED, mitigation=m))
-    if _proceeded(m) and not _proceeded(was):
+    proceeded = [
+        getattr(r, "disposition", None) == PROCEED_UNMITIGATED for r in (m, was)
+    ]
+    if proceeded == [True, False]:
         changes.append(Change(OutcomeChange.MITIGATION_PROCEEDED, mitigation=m))
     return changes
 
@@ -295,10 +302,8 @@ def _window_clause(change: Change) -> str:
 
 
 def _mitigation_clause(change: Change) -> str:
-    """The ruled copy (ruling Q8 of 2026-11-25): what was observed after the
-    mitigation of turn ``attempt_turn``, in S3c's observation wording; the
-    declaration and the proceed in the closure line's words
-    (``mitigation_closure_line``)."""
+    """The ruled copy (Q8): S3c's observation wording, and the closure
+    line's own words for the declaration and the proceed."""
     m = change.mitigation
     after = f"after the mitigation carried out in turn {m.attempt_turn}"
     if change.kind == OutcomeChange.MITIGATION_RELIEF:
@@ -381,34 +386,21 @@ def _readiness(params: dict, attempts) -> set:
     return stated
 
 
-#: The closure line's clauses for a bound relief and a persistence
-#: (``mitigation_closure_line``), read as ``_seen_gone`` reads record lines.
-_OBSERVED_RELIEVED = "the problem was observed relieved after the mitigation"
-_SEEN_AGAIN = "the problem was seen again at turn "
-_BEFORE_THAT_RELIEF = ", before that relief"
-
-
 def _rca_close(params: dict, attempts) -> set:
-    """The rca-infeasible close leads with the mitigation's closure line:
-    each mitigation fact that line states, so a close the turn replays does
-    not state it twice (#3053 S3d-4). A relief followed by a persistence the
-    line does not mark as before it is a relapse; a persistence with no
-    relief is no relief."""
+    """Each mitigation fact the close's closure line states, so a replayed
+    close does not state it twice (#3053 S3d-4); a persistence not marked
+    before the relief is the problem seen present, after a relief a relapse."""
     line = params.get("closure_line") or ""
-    relieved = _OBSERVED_RELIEVED in line
-    again = _SEEN_AGAIN in line and _BEFORE_THAT_RELIEF not in line
-    stated = set()
-    if relieved:
-        stated.add((OutcomeChange.MITIGATION_RELIEF, None))
-    if relieved and again:
-        stated.add((OutcomeChange.MITIGATION_RELAPSE, None))
-    if _SEEN_AGAIN in line and not relieved:
-        stated.add((OutcomeChange.MITIGATION_NO_RELIEF, None))
-    if MITIGATION_DECLARED in line:
-        stated.add((OutcomeChange.MITIGATION_DECLARED, None))
-    if MITIGATION_PROCEEDED in line:
-        stated.add((OutcomeChange.MITIGATION_PROCEEDED, None))
-    return stated
+    relieved = MITIGATION_RELIEVED in line
+    again = MITIGATION_SEEN_AGAIN in line and MITIGATION_BEFORE_RELIEF not in line
+    said = {
+        OutcomeChange.MITIGATION_RELIEF: relieved,
+        OutcomeChange.MITIGATION_RELAPSE: relieved and again,
+        OutcomeChange.MITIGATION_NO_RELIEF: again,
+        OutcomeChange.MITIGATION_DECLARED: MITIGATION_DECLARED in line,
+        OutcomeChange.MITIGATION_PROCEEDED: MITIGATION_PROCEEDED in line,
+    }
+    return {(kind, None) for kind, stated in said.items() if stated}
 
 
 def _unmet_close(params: dict, attempts) -> set:

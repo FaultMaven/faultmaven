@@ -952,6 +952,12 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
         "verify and the effective declaration",
         serves=(_VERIFY,),
     ),
+    (_PROBLEM, "invalidation_refusal"): Source(
+        {"mitigation_observation": 1},
+        "the false-alarm guard: refused while the record holds a bound "
+        "persistence after the mitigation (#3053, ruling F3)",
+        serves=(_VERIFY,),
+    ),
     (_TT, "pending_check_params"): Source(
         {"declined_resolve_entry": 1, "held_check_reason": 1},
         "the params of PENDING_CHECK; why the check holds through the "
@@ -1529,6 +1535,55 @@ _FLAG_PROBE = (_INV + "narration/probe.py", "decide")
 def test_a_misclassified_verified_reader_is_named(tables, problem):
     """A positive control per way, for each table."""
     assert problem in _verified_problems(**tables)
+
+
+def _receiver_problems(record=RECORD_FIELD_READS, resolve=None) -> list[str]:
+    """Each ``.verified`` load in a ``RECORD_FIELD_READS`` row whose receiver
+    is not a parameter annotated ``MitigationOutcome`` (``Optional`` too):
+    the table admits the record's own field, never the stored flag."""
+    resolve = resolve or (lambda key: _function(*key))
+    problems = []
+    for key in record:
+        function = resolve(key)
+        typed = {
+            arg.arg
+            for arg in function.args.args + function.args.kwonlyargs
+            if arg.annotation is not None
+            and "MitigationOutcome" in ast.unparse(arg.annotation)
+        }
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Attribute) and node.attr == "verified"):
+                continue
+            receiver = node.value
+            if not (isinstance(receiver, ast.Name) and receiver.id in typed):
+                problems.append(
+                    f"{'::'.join(key)}:{node.lineno}: reads "
+                    f"{ast.unparse(node)}, not a MitigationOutcome"
+                )
+    return problems
+
+
+def test_each_record_read_reads_the_records_field():
+    assert _receiver_problems() == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def decide(case):\n    return case.progress.mitigation.verified",
+        "def decide(m: MitigationRecord):\n    return m.verified",
+        "def decide(m):\n    return m.verified",
+    ],
+)
+def test_a_stored_flag_read_declared_as_a_record_read_is_named(source):
+    """A positive control per receiver shape the check refuses."""
+    function = ast.parse(source).body[0]
+    problems = _receiver_problems({_FLAG_PROBE: "a probe"}, lambda key: function)
+    assert problems and "not a MitigationOutcome" in problems[0]
+    typed = ast.parse(
+        "def decide(m: Optional[MitigationOutcome]):\n    return m.verified"
+    ).body[0]
+    assert _receiver_problems({_FLAG_PROBE: "a probe"}, lambda key: typed) == []
 
 
 def test_every_raw_progress_read_in_the_prompt_is_declared():
