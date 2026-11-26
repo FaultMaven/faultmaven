@@ -31,7 +31,6 @@ from faultmaven.config.investigation_capability import (
     resolve_schema_capacity,
     validate_structured_output_capacity,
 )
-from faultmaven.config.llm_config_overrides import apply_overrides_to_settings
 from faultmaven.config.settings import Environment, get_settings
 from faultmaven.container.providers import infrastructure as infra_providers
 from faultmaven.container.providers.services import create_share_repository
@@ -39,6 +38,9 @@ from faultmaven.jobs import case_cleanup
 from faultmaven.jobs import run as jobs_run
 from faultmaven.providers.tenancy.factory import BUILTIN_SINGLE
 from tests.unit.bootstrap.test_kb_init import _make_session_factory, _write_pack
+from tests.unit.config.test_override_read_failure_2987 import (
+    compose_cloud_with_a_failing_read,
+)
 from tests.unit.container.conftest import make_chroma_settings, make_private_container
 from tests.unit.infrastructure.llm.test_log_lines_name_exceptions_2889 import (
     MARKER,
@@ -198,18 +200,13 @@ async def test_a_failed_service_record_is_named_by_class(lines, monkeypatch):
 # ── config/ ───────────────────────────────────────────────────────────────
 
 
-async def test_a_raising_override_read_is_named_by_class(lines):
-    """``apply_overrides_to_settings`` with the override read stubbed to raise:
-    nothing is applied."""
-    llm = SimpleNamespace()
-    with patch(
-        "faultmaven.infrastructure.persistence.llm_config_repository."
-        "get_all_overrides",
-        new=AsyncMock(side_effect=RuntimeError(f"db down {MARKER}")),
-    ):
-        await apply_overrides_to_settings(SimpleNamespace(llm=llm))
-    assert vars(llm) == {}
-    _named(lines(), "Could not read LLM config overrides", ": RuntimeError")
+async def test_a_raising_override_read_is_named_by_class(lines, monkeypatch):
+    """The cloud composition with the override read stubbed to raise: the
+    start is refused after the override arm's warning (#2987)."""
+    await compose_cloud_with_a_failing_read(
+        monkeypatch, RuntimeError(f"db down {MARKER}")
+    )
+    _named(lines(), "Could not apply LLM config overrides", ": RuntimeError")
 
 
 def _capacity_settings():

@@ -19,8 +19,8 @@ by switching the provider whose per-provider override applies; the base
 Read live, the router also sees whatever the reload installs while it runs, so
 the reload builds the next settings off the singleton and installs them in one
 step: a call during its override read keeps the previous ceiling, a build that
-raises keeps the previous settings, and of overlapping reloads the one that
-started last installs.
+raises keeps the previous settings, and of overlapping reloads an older read
+that returns last never overwrites a newer one.
 """
 
 import asyncio
