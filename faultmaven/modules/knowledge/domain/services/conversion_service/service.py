@@ -151,7 +151,12 @@ from faultmaven.providers.tenancy.factory import (
     requested_tenant_provider,
 )
 from faultmaven.utils.exception_name import exception_log_name
-from faultmaven.utils.frontmatter import match_frontmatter
+from faultmaven.utils.frontmatter import (
+    FrontmatterRefused,
+    load_frontmatter_yaml,
+    load_post,
+    match_frontmatter,
+)
 from faultmaven.utils.line_endings import normalize_line_endings
 from faultmaven.utils.runbook_id import (
     knowledge_root,
@@ -1067,6 +1072,25 @@ class ConversionService:
                 self._sanitizer, failure_mode.title
             )
 
+    async def _refuse_stale_draft(
+        self, draft_id: str, content: str, refusal: str
+    ) -> None:
+        """A draft that passed the gate before ``refusal`` existed fails it
+        now: its row says so, so it is not offered for verify again (#2674).
+        Only while it still holds the text refused: an edit committed meanwhile
+        keeps its own verdict."""
+        async with self._db_session_factory() as session:
+            await session.execute(
+                update(ConversionDraftModel)
+                .where(
+                    ConversionDraftModel.id == draft_id,
+                    ConversionDraftModel.status == DraftStatus.DRAFT.value,
+                    ConversionDraftModel.content == content,
+                )
+                .values(validation_passed=False, validation_errors=[refusal])
+            )
+            await session.commit()
+
     async def _scrub_content_title(self, content: str) -> Optional[str]:
         """``content`` with its frontmatter ``title`` redacted, or ``None``.
 
@@ -1087,7 +1111,7 @@ class ConversionService:
             return content
         import frontmatter
 
-        post = frontmatter.loads(content)
+        post = load_post(content)
         post.metadata["title"] = scrubbed
         rewritten = frontmatter.dumps(post)
         return rewritten if draft_title(rewritten) == scrubbed else None
@@ -2212,20 +2236,23 @@ class ConversionService:
             scope = job.scope
 
         # The verified frontmatter, written into the draft's text (#1950). The
-        # validation gate passed, so the frontmatter parses. This text can be a
-        # few characters longer than the draft (``status: verified``, the
-        # verifier's name); the edit bound does not apply to it, because the
-        # user was allowed to save the text it grows from (see
-        # ``faultmaven.modules.knowledge.draft_content``). Its YAML aliases are
-        # re-emitted expanded, so it can grow far past the bound (#2674).
+        # validation gate passed, so the frontmatter parses. This text can be
+        # longer than the draft (``status: verified``, the verifier's name, and
+        # ``frontmatter.dumps`` re-emits flow values in block style: up to about
+        # 4.5x, a ``~`` in a list's list re-emitted as ``  - null``); the edit
+        # bound does not apply to it, because the user was allowed to save the
+        # text it grows from (see ``faultmaven.modules.knowledge.draft_content``).
+        # No load accepts an anchor, alias or nesting past three levels
+        # (``load_post``, #2674), which would grow it without bound; the gate
+        # refused them, so only a draft stored before that refusal can fail the
+        # load here, and is refused as the gate would refuse it.
         import frontmatter
-        import yaml
 
         from faultmaven.utils.frontmatter import extract_frontmatter_metadata
 
         try:
             verifier_name = await self._verifier_display_name(user_id, enterprise_id)
-            post = frontmatter.loads(read_content)
+            post = load_post(read_content)
             post.metadata["status"] = "verified"
             post.metadata["verified_by"] = verifier_name
             # ``scope`` in the frontmatter is the tier the knowledge item is
@@ -2237,10 +2264,13 @@ class ConversionService:
             # unchanged.
             post.metadata["scope"] = scope
             content = frontmatter.dumps(post)
-        except Exception:
+        except Exception as e:
             # The draft's own check answers first, as it did before this text
             # was made; then this failure.
             await aenforce_runbook_security(read_content, principal=user_id)
+            if isinstance(e, FrontmatterRefused):
+                await self._refuse_stale_draft(draft_id, read_content, str(e))
+                raise ValidationException(str(e)) from None
             raise
 
         # A body holding a credential is not published (#2012), checked on the
@@ -2257,7 +2287,7 @@ class ConversionService:
         fm_match = match_frontmatter(content)
         if fm_match:
             try:
-                raw_fm = yaml.safe_load(fm_match.group(1)) or {}
+                raw_fm = load_frontmatter_yaml(fm_match.group(1)) or {}
                 raw_tags = raw_fm.get("tags", [])
                 # ConversionDraftModel.tags is a TagsArray TypeDecorator
                 # expecting list[str]; pass the list shape directly.

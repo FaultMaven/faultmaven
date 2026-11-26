@@ -25,8 +25,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
-import yaml
-
 from faultmaven.infrastructure.security.secret_patterns import (
     SECRET_PATTERNS,
     RedactionSpan,
@@ -84,6 +82,8 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from faultmaven.utils.frontmatter import (
+    FrontmatterRefused,
+    load_frontmatter_yaml,
     match_frontmatter,
     parse_frontmatter,
     strip_frontmatter,
@@ -1035,11 +1035,15 @@ class RunbookValidator:
         warnings: List[str] = []
 
         # Gate 1: YAML frontmatter metadata
-        metadata = self._extract_metadata(content)
-        if metadata is None:
-            errors.append("No YAML frontmatter found")
+        try:
+            metadata = self._extract_metadata(content)
+        except FrontmatterRefused as refused:
+            errors.append(str(refused))
         else:
-            self._validate_metadata(metadata, errors, warnings)
+            if metadata is None:
+                errors.append("No YAML frontmatter found")
+            else:
+                self._validate_metadata(metadata, errors, warnings)
 
         # Gate 2: Structural linting
         self._validate_structure(content, errors, warnings)
@@ -1078,15 +1082,17 @@ class RunbookValidator:
         if not match:
             return None
         try:
-            loaded = yaml.safe_load(match.group(1))
-        except MemoryError:
+            loaded = load_frontmatter_yaml(match.group(1))
+        except (MemoryError, FrontmatterRefused):
             # The memory limit's own end (exit 3, the 422 ruled 2026-11-15),
-            # never a verdict about the frontmatter.
+            # never a verdict about the frontmatter; an anchor, alias or nesting
+            # past the bound has its own refusal (#2674).
             raise
         except Exception:
             # Unparseable frontmatter, whatever PyYAML raised, as
-            # ``parse_frontmatter`` treats it: a syntax error, nesting deep
-            # enough to exhaust its recursion (#2838), or a constructor's own
+            # ``parse_frontmatter`` treats it: a syntax error (nesting deep
+            # enough to exhaust PyYAML's recursion, #2838, is refused by depth
+            # first since #2674), or a constructor's own
             # error on a scalar it resolved (``last_updated: 2026-11-31`` is a
             # timestamp with no such day, ``x: !!bool abc`` a bool with no
             # such value).

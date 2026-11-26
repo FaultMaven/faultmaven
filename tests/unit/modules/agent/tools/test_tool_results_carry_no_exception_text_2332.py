@@ -39,7 +39,7 @@ _MODEL_ARGUMENT = (
 )
 
 _RECLASSIFY = "faultmaven/modules/agent/tools/reclassify_evidence_tool.py"
-_SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_tool.py"
+_SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_worker.py"
 
 #: Reported sites that are not leaks, keyed on (path, function, the handler's
 #: exception type, what the site shows the model), each also justified by a
@@ -48,15 +48,9 @@ _SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_tool.py"
 _ALLOWED: dict[tuple[str, str, str, str], str] = {
     (
         _SEARCH_FILE,
-        "_count_search",
-        "re.error",
-        "[{'line': 0, 'content': f'Invalid regex: {e}'}]",
-    ): _MODEL_ARGUMENT,
-    (
-        _SEARCH_FILE,
-        "_regex_search",
-        "re.error",
-        "[{'error': f'Invalid regex pattern: {e}'}]",
+        "_compile",
+        "PATTERN_ERRORS",
+        "str(e)",
     ): _MODEL_ARGUMENT,
     **{
         (_RECLASSIFY, "execute_with_context", arm, shown): _TYPED_ARM

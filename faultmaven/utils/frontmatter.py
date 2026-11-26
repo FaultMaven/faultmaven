@@ -7,13 +7,97 @@ metadata for hybrid search, reranking, and staleness-aware synthesis.
 
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
+from frontmatter import Post, YAMLHandler
+from frontmatter import loads as _post_loads
 
 from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
+
+#: The deepest nesting a frontmatter block may have: the top-level mapping is 1
+#: and a field's list 2, which is the deepest every shipped runbook's
+#: frontmatter reaches (91 in ``resources/knowledge/pack``, 99 in the kb
+#: toolkit, measured 2026-11-26); one more level lets a list item that is
+#: itself a list get its field's own refusal. ``frontmatter.dumps`` re-emits a
+#: nested flow sequence one indent per level, so verify's re-emission grows
+#: with the nesting (an 81,504-character draft published 12 MB, #2674).
+MAX_FRONTMATTER_DEPTH = 3
+
+#: The gate's refusals of what no frontmatter load accepts (#2674).
+ANCHOR_REFUSAL = (
+    "YAML anchors and aliases (&name, *name) are not allowed in runbook "
+    "frontmatter; write each value out in full"
+)
+DEPTH_REFUSAL = (
+    f"Runbook frontmatter may nest at most {MAX_FRONTMATTER_DEPTH} levels "
+    "(a field, its list, a list inside it); write deeper values out flat"
+)
+
+#: libyaml's loader where the C extension is built, as python-frontmatter
+#: used; the pure loader only where it is absent.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+class FrontmatterRefused(yaml.YAMLError):
+    """Frontmatter no load accepts, refused from its parse events before any
+    value is built: a value whose re-emission or string form the author's
+    few characters could make enormous (#2674)."""
+
+
+class FrontmatterAnchorRefused(FrontmatterRefused):
+    """An anchor or alias: an alias names a shared value whose string form
+    grows with every level of aliases."""
+
+
+class FrontmatterTooDeep(FrontmatterRefused):
+    """Nesting past ``MAX_FRONTMATTER_DEPTH``."""
+
+
+def _refuse_unbounded(text: str) -> None:
+    """Raise ``FrontmatterRefused`` at the first anchor, alias or level past
+    ``MAX_FRONTMATTER_DEPTH`` among ``text``'s parse events."""
+    depth = 0
+    for event in yaml.parse(text, Loader=_LOADER):
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
+            raise FrontmatterAnchorRefused(ANCHOR_REFUSAL)
+        if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+            depth += 1
+            if depth > MAX_FRONTMATTER_DEPTH:
+                raise FrontmatterTooDeep(DEPTH_REFUSAL)
+        elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
+            depth -= 1
+
+
+def load_frontmatter_yaml(text: str) -> Any:
+    """A frontmatter block's YAML, loaded as ``yaml.safe_load`` loads it but
+    refusing any anchor, alias or nesting past ``MAX_FRONTMATTER_DEPTH``
+    (``FrontmatterRefused``): every frontmatter load in the codebase goes
+    through here or :func:`load_post`."""
+    _refuse_unbounded(text)
+    return yaml.load(text, Loader=_LOADER)  # noqa: S506 - a safe loader
+
+
+class _BoundedHandler(YAMLHandler):
+    """python-frontmatter's YAML handler, loading with :func:`load_frontmatter_yaml`."""
+
+    def load(self, fm: str, **kwargs: object) -> Any:
+        return load_frontmatter_yaml(fm)
+
+
+def load_post(content: str) -> Post:
+    """``frontmatter.loads(content)`` with :func:`load_frontmatter_yaml` as its
+    YAML loader. The handler is passed only when it detects its format, as
+    ``frontmatter.loads`` chooses one: forced on a text that does not open with
+    ``---`` (a leading BOM), it would split a body rule as frontmatter. It
+    detects on the stripped text, as ``frontmatter.loads`` parses it, so a
+    leading newline cannot hand the block to the stock handler."""
+    handler = _BoundedHandler()
+    detected = handler.detect(content.strip())
+    return _post_loads(content, handler=handler if detected else None)
+
 
 # Scalar fields: extracted as-is (str conversion)
 _SCALAR_FIELDS = ("domain", "service", "last_updated", "status", "severity")
@@ -89,7 +173,7 @@ def parse_frontmatter(content: str) -> Dict[str, object]:
     if not match:
         return {}
     try:
-        loaded = yaml.safe_load(match.group(1))
+        loaded = load_frontmatter_yaml(match.group(1))
     except Exception as e:  # yaml raises a family, not one class
         logger.warning(f"Failed to parse frontmatter YAML: {exception_log_name(e)}")
         return {}

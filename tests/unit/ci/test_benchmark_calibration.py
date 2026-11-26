@@ -2426,6 +2426,17 @@ TREE_THRESHOLD_ALLOWLIST = {
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
         "started < t < finished",
     ): "window membership: which heartbeat ticks fell between two readings",
+    (
+        "tests/unit/modules/agent/tools/test_search_file_regex_worker_2686.py",
+        "worker_ticks >= _UNBROKEN_TICKS",
+    ): "a COUNT of event-loop turns, as the gate's: zero when the model's "
+    "regex runs inline however fast the machine; in its worker, a tenth of "
+    "the turns an unbroken loop takes across a search that runs to its CPU "
+    "deadline, which load can only lengthen",
+    (
+        "tests/unit/modules/agent/tools/test_search_file_regex_worker_2686.py",
+        "started < t < finished",
+    ): "window membership: which heartbeat ticks fell between two readings",
 }
 
 #: Timed tests that reach no judge, each with the reason. Checked for being
@@ -2460,6 +2471,10 @@ TREE_UNJUDGED_TIMED_TESTS = {
     (
         "tests/unit/modules/knowledge/test_gate_stays_off_the_event_loop.py",
         "test_the_gate_does_not_stall_the_event_loop",
+    ): "judges a count of event-loop turns (allowlisted)",
+    (
+        "tests/unit/modules/agent/tools/test_search_file_regex_worker_2686.py",
+        "test_a_catastrophic_pattern_stops_at_its_bound_off_the_loop",
     ): "judges a count of event-loop turns (allowlisted)",
     (_SELF, "test_a_faster_machine_is_never_held_to_a_tighter_budget"): (
         _CALIBRATION_SELF_TEST
@@ -2812,19 +2827,20 @@ class TestTheRestOfTheTree:
         assert not dead, dead
 
     def test_the_tree_allowlist_cost_is_what_was_measured(self):
-        """Counted, not tuned: nine comparisons, fifteen tests.
+        """Counted, not tuned: eleven comparisons, sixteen tests.
 
-        The nine are orderings of timestamps, two counts of log records, a
-        floor under a sleep, a bracket, a tick count, a window membership
-        and a test double's TTL check. Ten of the fifteen tests are the
+        The eleven are orderings of timestamps, two counts of log records, a
+        floor under a sleep, a bracket, two tick counts with their window
+        memberships (the runbook gate's and ``search_file``'s regex worker's,
+        #2686) and a test double's TTL check. Ten of the sixteen tests are the
         calibration instrument's own tests, which reach the real measurement
         through the call graph and pin or stub it at run time. One (#1882)
         prints the PostgreSQL measurement a constant is sized from and
-        judges nothing on the clock. (#2622 retired the second tick count:
-        document preparation's responsiveness is an ordering now.)
+        judges nothing on the clock. (#2622 retired document preparation's
+        tick count: its responsiveness is an ordering now.)
         """
-        assert len(TREE_THRESHOLD_ALLOWLIST) == 9
-        assert len(TREE_UNJUDGED_TIMED_TESTS) == 15
+        assert len(TREE_THRESHOLD_ALLOWLIST) == 11
+        assert len(TREE_UNJUDGED_TIMED_TESTS) == 16
 
     def test_the_three_scopes_partition_tests(self):
         """Every module under tests/ is watched by exactly one rule."""

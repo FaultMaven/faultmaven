@@ -9,7 +9,8 @@ answer past the output limit. One that depends on load is a 503 with
 backstop, a kill, or a worker that could not start. A check that raises is a
 defect in it: the generic 500 (``GateFailed``). Every input is bounded at
 100,000 characters first, except the text verify publishes: its frontmatter is
-re-emitted with YAML aliases expanded, so it can grow past the bound (#2674).
+re-emitted in block style, up to about 4.5x its length, since no frontmatter
+load accepts a YAML anchor, an alias or nesting past three levels (#2674).
 """
 
 import asyncio
@@ -57,7 +58,9 @@ logger = logging.getLogger(__name__)
 #: 0.46-0.51 s alone, 0.47-0.51 s loaded) and 900 nested flow sequences
 #: (``"a: " + "[" * 900 + "]" * 900``, a document of 1,816 characters;
 #: 1.15-1.23 s, 1.22-1.28 s) are refused within it, each as the whole
-#: frontmatter of a document whose body is ``# T``.
+#: frontmatter of a document whose body is ``# T``. Since #2674 the alias list
+#: and the nested sequences are refused at the frontmatter's parse events
+#: instead, before either cost.
 GATE_WORK_CPU_SECONDS = 3.0
 
 #: ``RLIMIT_CPU`` for a call of one check, the backstop if the timer fails: the
