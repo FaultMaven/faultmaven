@@ -521,7 +521,8 @@ def test_a_relief_and_a_persistence_in_one_turn_close_as_still_present(
     stated = _rca_stated(case)
     assert stated == {(OutcomeChange.MITIGATION_NO_RELIEF, None)}
     changes = outcome_changes(_base(_record(_accepted())), _record(case))
-    changes = [c for c in changes if c.mitigation is not None]
+    if fix_between:
+        changes = [c for c in changes if c.mitigation is not None]
     assert [c.kind for c in changes] == [OutcomeChange.MITIGATION_NO_RELIEF]
     assert outcome_statement(changes, stated) is None
 
@@ -659,9 +660,10 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
     ],
 )
 def test_each_other_closure_line_shape_is_unchanged(build, line, kinds):
-    """S3d-6 changes only the r == p clause: every other shape reads as
-    before, and the declaration and the proceed beside an r == p keep their
-    copy and place."""
+    """S3d-6 changes only the r == p clause: every other shape's line reads
+    as before (a relapse's claims drop the no-relief fact, review item 1),
+    and the declaration and the proceed beside an r == p keep their copy and
+    place."""
     case = build()
     assert mitigation_closure_line(case) == line
     assert _rca_stated(case) == {

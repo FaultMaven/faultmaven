@@ -482,7 +482,8 @@ async def test_an_interceptions_line_shows_its_relapse_and_no_later_relief():
 async def test_an_interceptions_line_reads_a_same_turn_relief_as_still_present():
     """#3053 S3d-6: a relief and a persistence in one turn cannot be ordered,
     so the line says the problem was still present, never seen gone or seen
-    again."""
+    again, and the interception no longer stands: the same fix run again is a
+    new attempt."""
     eng = _engine()
     case, _root, _hyp = _identified_case()
     x = _intermediate(case)
@@ -506,6 +507,11 @@ async def test_an_interceptions_line_reads_a_same_turn_relief_as_still_present()
         f"an interception at {x} (cannot confirm the cause): problem still "
         "present at turn 7"
     )
+    assert standing_fix_action(case, "restart the pods") is None
+    await _record(
+        eng, case, 8, solutions_to_add=[_fix("restart the pods", x)], milestones=_ran()
+    )
+    assert [a.accepted_in_turn for a in _attempts(case)] == [6, 8]
 
 
 # ---------------------------------------------------------------------------

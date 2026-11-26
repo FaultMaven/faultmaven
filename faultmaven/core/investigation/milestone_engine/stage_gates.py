@@ -593,7 +593,8 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     its own window FAILED or a later remediation opened one (#2105); an
     interception never ends its standing. An interception opens no window: it
     stands while it is the latest attempt, until the problem is seen present
-    after its latest relief, or after it with no relief (#2036 D2.3). After a
+    after its latest relief or in that relief's turn, or after it with no
+    relief (#2036 D2.3; one turn cannot order the two, #3053 S3d-6). After a
     failure the same fix applied again is a new attempt."""
     from faultmaven.core.investigation.cause_assurance import (
         FIX_FAILED,
@@ -627,11 +628,11 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
                 return action
             continue
         # An interception opens no window: the latest attempt, it stands until
-        # the problem is seen present after its latest relief, or after it
-        # with none.
+        # the problem is seen present after its latest relief or in its turn,
+        # or after it with none.
         if action.accepted_in_turn == latest:
             relief, present = interception_relief(case, action.accepted_in_turn)
-            if present is None or (relief is not None and present <= relief):
+            if present is None or (relief is not None and present < relief):
                 return action
     return None
 
