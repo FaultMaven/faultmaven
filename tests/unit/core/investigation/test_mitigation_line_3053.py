@@ -76,6 +76,9 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.core.investigation.prompts.context_builder.assembly import (
     _milestone_status_section,
 )
+from faultmaven.core.investigation.prompts.context_builder.fix_verification_block import (
+    build_fix_verification_block,
+)
 from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
     NarrationFold,
 )
@@ -85,9 +88,11 @@ from faultmaven.core.investigation.terminal_transitions import (
 )
 from faultmaven.modules.case.contracts import (
     EvidenceCategory,
+    InvestigationActionType,
     InvestigationStage,
     MitigationOutcome,
     ProblemStatus,
+    ProposedAction,
     WritePoint,
 )
 from tests.unit.core.investigation import settled_cases_3053 as settled
@@ -479,23 +484,69 @@ def _relief_covering(case, turn: int) -> None:
     )
 
 
-def test_a_relief_and_a_persistence_in_one_turn_close_as_still_present():
-    """r == p (#3053 S3d-6, ruling F2): the closure line states no relief and
-    no data window, only the problem still present, as the statement does;
-    the rca-infeasible close claims the no-relief fact alone, and the turn's
-    statement then says nothing twice."""
-    case = _one_turn_with_a_span()
+def _fix_at(case, turn: int) -> None:
+    """A dated SOLUTION run at ``turn``."""
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="raise the pool to 50",
+            proposed_in_turn=5,
+            state="accepted",
+            accepted_in_turn=turn,
+        )
+    )
+
+
+@pytest.mark.parametrize("fix_between", [False, True], ids=["no-fix", "later-fix"])
+def test_a_relief_and_a_persistence_in_one_turn_close_as_still_present(
+    fix_between,
+):
+    """r == p (#3053 S3d-6, ruling F2): the closure line states no relief, no
+    data window and no later fix, only the problem still present, as the
+    statement does; the rca-infeasible close claims the no-relief fact alone,
+    and the turn's statement then says nothing twice."""
+    case = _accepted()
+    if fix_between:
+        _fix_at(case, 7)
+    _one_turn_with_a_span(case)
     seen = mitigation_observation(case)
     assert (seen.relief_turn, seen.present_turn) == (7, 7), "premise"
     assert seen.span == timedelta(minutes=30), "premise: a span to leave out"
+    assert seen.fix_before_relief is fix_between, "premise"
     line = mitigation_closure_line(case)
     assert line == _STILL_7
     assert MITIGATION_RELIEVED not in line and "covers" not in line
+    assert "a later fix" not in line
     stated = _rca_stated(case)
     assert stated == {(OutcomeChange.MITIGATION_NO_RELIEF, None)}
     changes = outcome_changes(_base(_record(_accepted())), _record(case))
+    changes = [c for c in changes if c.mitigation is not None]
     assert [c.kind for c in changes] == [OutcomeChange.MITIGATION_NO_RELIEF]
     assert outcome_statement(changes, stated) is None
+
+
+def _mitigation_block_line(case) -> str:
+    (line,) = [
+        ln
+        for ln in build_fix_verification_block(case).splitlines()
+        if ln.startswith("Mitigation: executed turn")
+    ]
+    return line
+
+
+@pytest.mark.parametrize(
+    "build, state",
+    [
+        (_one_turn_with_a_span, "problem still present at turn 7"),
+        (_still_present, "problem seen again at turn 7"),
+    ],
+    ids=["one-turn", "persistence-alone"],
+)
+def test_the_fix_verification_block_reads_one_turn_as_still_present(build, state):
+    """The ``<fix_verification>`` block's mitigation line reads r == p as the
+    closure line and the statement do (#3053 S3d-6), never "seen again"."""
+    assert _mitigation_block_line(build()) == (f"Mitigation: executed turn 6: {state}")
 
 
 def _declared_one_turn():
@@ -523,6 +574,20 @@ def _present_then_relieved():
     return case
 
 
+def _relieved_with_a_span():
+    case = _accepted()
+    _relief_covering(case, 7)
+    return case
+
+
+def _undated_attempt():
+    case = _accepted()
+    _relief(case, 7)
+    _relapse(case, 8)
+    case.proposed_actions[-1].accepted_in_turn = None
+    return case
+
+
 _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
 
 
@@ -532,7 +597,7 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
         (
             _relieved_then_present,
             f"{_RELIEVED} 7); the problem was seen again at turn 8",
-            {"RELIEF", "RELAPSE", "NO_RELIEF"},
+            {"RELIEF", "RELAPSE"},
         ),
         (
             _present_then_relieved,
@@ -540,6 +605,11 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
             {"RELIEF"},
         ),
         (_verified, f"{_RELIEVED} 7)", {"RELIEF"}),
+        (
+            _relieved_with_a_span,
+            f"{_RELIEVED} 7), and the data it cites covers about 30 minutes",
+            {"RELIEF"},
+        ),
         (_still_present, "the problem was seen again at turn 7", {"NO_RELIEF"}),
         (
             _declared_one_turn,
@@ -551,14 +621,41 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
             f"{_STILL_7}; {MITIGATION_PROCEEDED} (turn 7)",
             {"NO_RELIEF", "PROCEEDED"},
         ),
+        (
+            lambda: settled._build((True, False, "declared_stable"), _NONE),
+            f"{MITIGATION_DECLARED} (turn 7)",
+            {"DECLARED"},
+        ),
+        (
+            lambda: settled._build((True, False, "proceed_unmitigated"), _NONE),
+            f"{MITIGATION_PROCEEDED} (turn 7)",
+            {"PROCEEDED"},
+        ),
+        (
+            _accepted,
+            "a mitigation was applied (turn 6); no re-check bound to the problem "
+            "is on record",
+            set(),
+        ),
+        (
+            _undated_attempt,
+            "a mitigation was applied; its attempt is undated, so no re-check can "
+            "be tied to it",
+            set(),
+        ),
     ],
     ids=[
         "relapse",
         "before-that-relief",
         "relief-alone",
+        "relief-with-a-span",
         "persistence-alone",
         "one-turn-declared",
         "one-turn-proceeded",
+        "declared-alone",
+        "proceeded-alone",
+        "no-re-check",
+        "undated-attempt",
     ],
 )
 def test_each_other_closure_line_shape_is_unchanged(build, line, kinds):
