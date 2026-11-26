@@ -137,7 +137,7 @@ async def world(monkeypatch, clock):
     )
     encodes = Encodes(clock)
     monkeypatch.setattr(index_slot, "encode_in_worker", encodes)
-    tokens = AsyncMock(return_value=RUNBOOK_TOKENS)
+    tokens = AsyncMock(return_value=(RUNBOOK_TOKENS, RUNBOOK_TOKENS))
     monkeypatch.setattr(embedding_guard, "count_index_tokens", tokens)
     monkeypatch.setattr(get_settings().knowledge, "index_request_window_seconds", 0)
     yield SimpleNamespace(encodes=encodes, tokens=tokens)
@@ -303,7 +303,7 @@ class TestUpload:
     async def test_a_too_large_refusal_writes_nothing(
         self, session_factory, world, window
     ):
-        world.tokens.return_value = TOO_LARGE
+        world.tokens.return_value = (TOO_LARGE, TOO_LARGE)
 
         with pytest.raises(IndexAdmissionRefused) as refused:
             await _upload(_knowledge(session_factory))
@@ -338,7 +338,7 @@ class TestUpload:
 
         async def counts(_chunks, **_kwargs):
             clock.now += 1.9
-            return line + over
+            return line + over, line + over
 
         world.tokens.side_effect = counts
 
@@ -360,7 +360,7 @@ class TestUpload:
 
         async def waits_then_counts(_chunks, **_kwargs):
             clock.now += 200.0
-            return RUNBOOK_TOKENS
+            return RUNBOOK_TOKENS, RUNBOOK_TOKENS
 
         world.tokens.side_effect = waits_then_counts
 
@@ -390,7 +390,7 @@ class TestUpload:
         if refusal == "busy":
             request.getfixturevalue("busy")
         else:
-            world.tokens.return_value = TOO_LARGE
+            world.tokens.return_value = (TOO_LARGE, TOO_LARGE)
 
         response = _client(knowledge=_knowledge(_no_database())).post(
             "/api/v1/knowledge/documents",
@@ -465,7 +465,7 @@ class TestUpdate:
         if refusal == "busy":
             request.getfixturevalue("busy")
         else:
-            world.tokens.return_value = TOO_LARGE
+            world.tokens.return_value = (TOO_LARGE, TOO_LARGE)
 
         with pytest.raises(IndexAdmissionRefused) as refused:
             await service.update_document_metadata(
@@ -564,7 +564,7 @@ class TestVerify:
         if refusal == "busy":
             request.getfixturevalue("busy")
         else:
-            world.tokens.return_value = TOO_LARGE
+            world.tokens.return_value = (TOO_LARGE, TOO_LARGE)
 
         transport = httpx.ASGITransport(app=_app(conversion=conversion))
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
@@ -620,7 +620,7 @@ class TestVerify:
     async def test_a_document_too_large_for_any_window_fails_and_the_batch_goes_on(
         self, session_factory, world, window
     ):
-        world.tokens.side_effect = [TOO_LARGE, RUNBOOK_TOKENS]
+        world.tokens.side_effect = [(TOO_LARGE,) * 2, (RUNBOOK_TOKENS,) * 2]
         conversion = _conversion(session_factory, _knowledge(session_factory))
         refs = await _drafts(session_factory, 2)
 
@@ -629,6 +629,27 @@ class TestVerify:
         assert [r["status"] for r in result["results"]] == ["failed", "verified"]
         assert "Split it" in result["results"][0]["error"]
         assert (result["failed"], result["verified"], result["deferred"]) == (1, 1, 0)
+
+    async def test_a_cap_length_draft_over_the_priced_line_fails_with_the_sentence(
+        self, session_factory, world, window
+    ):
+        """#2920: five cap-length chunks, 40,960 tokens, are under the 600 s
+        line (45,440), but priced 65,540 they are over it, so the draft fails;
+        the sentence names the most of text like it. A prose draft after it is
+        verified as before."""
+        world.tokens.side_effect = [(40_960, 65_540), (RUNBOOK_TOKENS,) * 2]
+        conversion = _conversion(session_factory, _knowledge(session_factory))
+        refs = await _drafts(session_factory, 2)
+
+        result = await conversion.verify_batch(refs, user_id="u1")
+
+        assert [r["status"] for r in result["results"]] == ["failed", "verified"]
+        most = 40_960 * 45_440 // 65_540
+        assert result["results"][0]["error"] == (
+            f"This document is 40,960 tokens, and this server can index at most "
+            f"{most:,} tokens of text like it in one request. Split it into "
+            "smaller documents. Nothing was saved."
+        )
 
     async def test_a_window_of_zero_defers_nothing(self, session_factory, world, clock):
         world.encodes._seconds = 10_000.0
@@ -764,7 +785,7 @@ async def embed_fails(monkeypatch, world, request):
                 (asyncio.get_running_loop(), held_slots),
             )
     elif cause == "queued_too_long":
-        world.tokens.return_value = 0
+        world.tokens.return_value = (0, 0)
         world.encodes.held = 1
         held = index_admission.admit_forced(["other"], 0, principal="u9")
         future, _ = held.run(["other"], guard_seconds=0.0)

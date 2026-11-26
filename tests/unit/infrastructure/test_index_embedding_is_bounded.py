@@ -61,11 +61,13 @@ def two_cores():
 
 @pytest.fixture
 def tokens_counted_as():
-    """The guard's token count, without the tokenizer."""
+    """The guard's token count, without the tokenizer: ``value`` plain and
+    priced, or None."""
 
     def _as(value):
+        counted = None if value is None else (value, value)
         return patch.object(
-            embedding_guard, "count_index_tokens", AsyncMock(return_value=value)
+            embedding_guard, "count_index_tokens", AsyncMock(return_value=counted)
         )
 
     return _as

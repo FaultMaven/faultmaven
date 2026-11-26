@@ -95,8 +95,49 @@ BGE_M3_MAX_SEQ_LENGTH = 8192
 #: in a batch, so the batch bounds an encode's memory: measured in the image at
 #: 2 threads, four texts at the 8,192-token cap peaked at 2,119 MiB anonymous
 #: in the KB worker and 2,750 MiB in the API process. Vectors differ from the
-#: default batch by at most 2.2e-7.
+#: default batch by at most 2.2e-7. A text over the breakpoint (below) runs alone.
 ENCODE_BATCH_SIZE = 4
+
+#: A KB chunk's length price (#2920), in tokens at the base rate
+#: (``index_slot.INDEX_CORE_SECONDS_PER_TOKEN``, 25 core-ms): its count up to the
+#: breakpoint, then a rate rising linearly to 8/5 of it, 40 core-ms, at the cap.
+#: Core-ms a token, worst of 3 runs at ``--cpus=2 --network none``, torch at 2
+#: threads, image sha256:4c49643c4ae4518ce217bb235c4e3df092bf77975ac361f82b3aa30916824642:
+#:
+#:   4 x 512: 13.2 | 4 x 1,024: 13.8 | 4 x 1,061 (largest pack chunk): 14.1
+#:   1 x 2,048: 16.4 | 1 x 4,096: 21.1 | 1 x 6,000: 26.3 (priced 32.0)
+#:   1 x 8,192: 36.1 (priced 40.0) | #2055's document: 13.9 (batch 32: 22.1)
+#: Convex, so the line from the breakpoint to the cap lies above every row.
+INDEX_RATE_BREAKPOINT_TOKENS = 4096
+INDEX_CAP_RATE_FRACTION = (8, 5)
+
+
+def priced_tokens(tokens: int) -> int:
+    """A chunk of ``tokens`` BGE-M3 tokens in tokens at the base rate, rounded up."""
+    rise, base = INDEX_CAP_RATE_FRACTION
+    over = max(tokens - INDEX_RATE_BREAKPOINT_TOKENS, 0)
+    span = base * (BGE_M3_MAX_SEQ_LENGTH - INDEX_RATE_BREAKPOINT_TOKENS)
+    return tokens - (-tokens * over * (rise - base) // span)
+
+
+def encode_texts(model: Any, texts: List[str]) -> Any:
+    """Every indexing encode (#2920): a text over the breakpoint alone, so it pads
+    no short text, the rest at ``ENCODE_BATCH_SIZE``; lengths by the model's
+    tokenizer, truncated at the cap; vectors in input order."""
+    cut = {"truncation": True, "max_length": BGE_M3_MAX_SEQ_LENGTH}
+    ids = model.tokenizer(texts, **cut)["input_ids"] if texts else []
+    alone = [i for i, one in enumerate(ids) if len(one) > INDEX_RATE_BREAKPOINT_TOKENS]
+    if not alone:
+        return model.encode(texts, batch_size=ENCODE_BATCH_SIZE)
+    rest = [i for i in range(len(texts)) if i not in alone]
+    parts = [model.encode([texts[i]], batch_size=1) for i in alone]
+    batched = [texts[i] for i in rest]
+    parts += [model.encode(batched, batch_size=ENCODE_BATCH_SIZE)] if rest else []
+    import numpy as np
+
+    encoded = np.concatenate(parts)
+    encoded[alone + rest] = encoded.copy()
+    return encoded
 
 
 _THREADS_CONFIGURED = False
@@ -436,8 +477,7 @@ class ModelCache:
 
     def embed_texts_sync(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text, on
-        the CALLING thread: the (lazy, cached) load, then one ``encode`` at
-        ``ENCODE_BATCH_SIZE``, far cheaper than N per-text passes.
+        the CALLING thread: the (lazy, cached) load, then ``encode_texts``.
 
         The evidence encode's, called only on the one encode order's thread,
         under the host lock (``infrastructure.index_slot``, #2055, #2920), through
@@ -450,7 +490,7 @@ class ModelCache:
         model = self.get_bge_m3_model()
         if model is None:
             return None
-        return model.encode(texts, batch_size=ENCODE_BATCH_SIZE).tolist()
+        return encode_texts(model, texts).tolist()
 
     async def aembed_query(self, text: str) -> Optional[List[float]]:
         """Embed a SINGLE text (e.g. a search query) → one 1024-dim vector.

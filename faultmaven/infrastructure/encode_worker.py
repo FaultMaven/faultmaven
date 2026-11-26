@@ -2,7 +2,7 @@
 by the KB indexing slot (``index_slot``, Principle 14, #2851).
 
 BGE-M3 loads inside the work's bound, through ``ModelCache``, and encodes the
-texts at ``ENCODE_BATCH_SIZE``; the answer is the vectors as little-endian
+texts through ``model_cache.encode_texts``; the answer is the vectors as little-endian
 float32, base64, one raw part. The parent's thread count ``threads`` is pinned
 before the load: the BLAS/OpenMP knobs and the Rust tokenizer's pool before
 the imports read them, and ``model_cache.THREAD_COUNT``, which the load's
@@ -50,7 +50,7 @@ def _encode(request: Dict[str, Any], send) -> Callable[[], str]:
             raise RuntimeError(MODEL_NOT_LOADED) from e
         if model is None:
             raise RuntimeError(MODEL_NOT_LOADED)
-        vectors = model.encode(texts, batch_size=model_cache.ENCODE_BATCH_SIZE)
+        vectors = model_cache.encode_texts(model, texts)
         raw = np.ascontiguousarray(vectors, dtype="<f4").tobytes()
         return base64.b64encode(raw).decode("ascii")
 

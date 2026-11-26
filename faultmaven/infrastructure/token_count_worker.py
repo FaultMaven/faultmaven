@@ -8,7 +8,8 @@ by at most 2 a text on edge whitespace (a BOM, a zero-width character), so the
 sum is an upper bound. The snapshot is read with ``local_files_only``: never
 the network. The thread pool is pinned before ``tokenizers`` is imported: it
 reads ``RAYON_NUM_THREADS`` once, and unpinned it starts a thread per visible
-core, which the address-space cap cannot hold on a large node.
+core, which the address-space cap cannot hold on a large node. It answers
+``"<tokens> <priced>"``: the sum, and each text's ``priced_tokens`` summed.
 """
 
 import os
@@ -32,19 +33,21 @@ def _count(request: Dict[str, Any], send) -> Callable[[], str]:
         from faultmaven.infrastructure.model_cache import (
             BGE_M3_MAX_SEQ_LENGTH,
             BGE_M3_MODEL_ID,
+            priced_tokens,
         )
 
         tokenizer = Tokenizer.from_file(
             hf_hub_download(BGE_M3_MODEL_ID, "tokenizer.json", local_files_only=True)
         )
         tokenizer.enable_truncation(max_length=BGE_M3_MAX_SEQ_LENGTH)
-        total = 0
+        total = priced = 0
         for at in range(0, len(texts), COUNT_BATCH):
             batch = tokenizer.encode_batch(
                 texts[at : at + COUNT_BATCH], add_special_tokens=True
             )
             total += sum(len(encoded.ids) for encoded in batch)
-        return str(total)
+            priced += sum(priced_tokens(len(encoded.ids)) for encoded in batch)
+        return f"{total} {priced}"
 
     return work
 

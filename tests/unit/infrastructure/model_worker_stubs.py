@@ -84,6 +84,9 @@ def _pins(request, send):
             torch.ones(512, 512) @ torch.ones(512, 512)
             seen["threads_after_load"] = _tasks()
 
+        def tokenizer(self, texts, **_kwargs):
+            return {"input_ids": [text.split() for text in texts]}
+
         def encode(self, texts, batch_size):
             import numpy as np
             import torch
@@ -177,10 +180,13 @@ def _count(request, send):
     texts = request["parts"]
     if stub == "pins":
         return _count_pins(request, send)
-    if stub == "words":
-        return lambda: str(sum(len(text.split()) for text in texts))
-    if stub == "not_a_count":
-        return lambda: "many"
+    if stub == "words":  # the plain count and a priced one, 10 more a text
+        words = sum(len(text.split()) for text in texts)
+        return lambda: f"{words} {words + 10 * len(texts)}"
+    answers = {"not_a_count": "many", "one_part": "3", "three_parts": "3 3 3"}
+    answers.update({"not_decimal": "3 -3", "two_spaces": "3  3", "priced_below": "5 3"})
+    if stub in answers:
+        return lambda: answers[stub]
 
     def work() -> str:
         logger.warning("%s %d", ENTERED, os.getpid())

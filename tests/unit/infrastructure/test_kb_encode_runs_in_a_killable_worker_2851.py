@@ -389,7 +389,7 @@ async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_queued_too_lo
     async def held_run(module, request, **kwargs):
         running.append(module)
         await release.wait()
-        return worker_process.WorkerEnd(result=["3"], phase="result")
+        return worker_process.WorkerEnd(result=["3 4"], phase="result")
 
     monkeypatch.setattr(worker_process, "run", held_run)
     monkeypatch.setattr(embedding_guard, "_count_slots_state", None)
@@ -404,12 +404,26 @@ async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_queued_too_lo
 
     assert third.value.reason == "queued_too_long"
     assert len(running) == TOKEN_COUNT_SLOTS
-    assert (await first, await second) == (3, 3)
-    assert await count_index_tokens(["d"], principal="u3") == 3
+    assert (await first, await second) == ((3, 4), (3, 4))
+    assert await count_index_tokens(["d"], principal="u3") == (3, 4)
 
 
-@pytest.mark.parametrize("stub,expected", [("words", 3), ("not_a_count", None)])
+@pytest.mark.parametrize(
+    "stub,expected",
+    [
+        ("words", (3, 23)),
+        ("not_a_count", None),
+        ("one_part", None),
+        ("three_parts", None),
+        ("not_decimal", None),
+        ("two_spaces", None),
+        ("priced_below", None),
+    ],
+)
 async def test_a_count_answers_its_count_or_nothing(count_stub, stub, expected):
+    """The answer is ``"<tokens> <priced>"`` (#2920): two decimal fields, one
+    space, the priced one at least the count; a missing, extra or non-decimal
+    field, or a priced figure under the count, is no count."""
     count_stub(stub)
 
     assert await count_index_tokens(["a b", "c"], principal=USER) == expected
@@ -509,6 +523,9 @@ def test_the_evidence_encode_runs_in_this_process_at_batch_four(monkeypatch):
     calls = []
 
     class Model:
+        def tokenizer(self, texts, **_kwargs):
+            return {"input_ids": [[0] for _ in texts]}
+
         def encode(self, texts, **kwargs):
             calls.append(kwargs)
             import numpy as np
@@ -568,8 +585,9 @@ async def test_model_workers_on_the_real_model(monkeypatch):
         )
         < 1e-5
     )
-    assert reference["tokens"] <= counted <= reference["tokens"] + 2 * len(texts)
-    assert stripped == reference["stripped_tokens"]
+    assert counted[0] == counted[1]  # every text under the breakpoint
+    assert reference["tokens"] <= counted[0] <= reference["tokens"] + 2 * len(texts)
+    assert stripped[0] == reference["stripped_tokens"]
 
 
 _REFERENCE = """

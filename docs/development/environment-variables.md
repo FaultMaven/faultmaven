@@ -549,19 +549,24 @@ anything is written: **413** `KNOWLEDGE_DOCUMENT_TOO_LARGE` when it alone
 cannot fit, **503** `KNOWLEDGE_INDEXING_BUSY` + `Retry-After` when the indexing
 already queued on the server leaves no room for it, and `verify-batch` returns
 the drafts the rest of its window cannot fit as `deferred`. The estimate is the
-document's BGE-M3 token count at a measured 25 core-ms a token, divided by the
-CPU quota (at most 4 cores), plus 30 s for the encode worker's model load.
-Each KB indexing encode runs in a worker process of its own, which loads
-BGE-M3 first (#2851): every KB write takes at least about 20 s, so the most
-tokens one request can index is `(window − 32) × cores / 0.025`, 2 s allowed
-for the token count (at 2 cores, 2,240 at the 60 s floor and 45,440 at 600 s),
-and `verify-batch` fits about
+document's BGE-M3 tokens at 25 core-ms a token, divided by the CPU quota (at
+most 4 cores), plus 30 s for the encode worker's model load. Each chunk is
+priced by its length (#2920): a chunk of up to 4,096 tokens counts its tokens;
+above that the rate rises linearly to 40 core-ms at the 8,192-token cap, where
+BGE-M3's attention costs more a token (measured 36 core-ms), and such a chunk
+is encoded alone. Each KB indexing encode runs in a worker process of its own,
+which loads BGE-M3 first (#2851): every KB write takes at least about 20 s.
+For a document of chunks of up to 4,096 tokens the most tokens one request
+can index is `M = (window − 32) × cores / 0.025`, 2 s allowed for the token
+count (at 2 cores, 2,240 at the 60 s floor and 45,440 at 600 s); a document
+is refused when its priced tokens pass `M`, and the 413 then names
+`tokens × M / priced`, the most of text like it. `verify-batch` fits about
 `window / (30 + estimate)` drafts in one request. Encodes run one at a time
 per container, KB indexing and case evidence alike: in each serving process
 they share one queue, run in the order they were submitted, and each takes the
 container's host lock (#2920). A pending evidence encode counts as queue ahead of
-a KB write, charged at its UTF-8 bytes plus 2 a text at the same 25 core-ms, an
-upper bound of about 2-3x its tokens, so a `Retry-After` given beside one is
+a KB write, charged at its UTF-8 bytes plus 2 a text at the same 25 core-ms
+(never priced by length), an upper bound of about 2-3x its tokens, so a `Retry-After` given beside one is
 an upper estimate. The queue counts this process's encodes only: an encode
 in another serving process is waited for on the host lock, so an evidence
 encode behind it waits within its own time bound alone, and one that never

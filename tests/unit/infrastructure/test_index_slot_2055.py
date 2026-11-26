@@ -136,8 +136,11 @@ def test_the_413_line_takes_the_load_and_an_empty_queue_never_answers_busy(
 
     assert (refused.status_code, refused.reason) == (413, "too_large")
     assert refused.retry_after_seconds is None
-    assert f"{most + 1:,} tokens" in refused.message
-    assert f"at most {most:,} tokens" in refused.message
+    assert refused.message == (  # prose: priced is plain, so ``most`` is M
+        f"This document is {most + 1:,} tokens, and this server can index at "
+        f"most {most:,} tokens of text like it in one request. Split it into "
+        "smaller documents. Nothing was saved."
+    )
 
 
 def test_every_kb_ticket_is_charged_the_worker_load_and_none_says_loading(cloud):
@@ -271,7 +274,7 @@ async def encodes(monkeypatch):
         index_slot, "encode_in_worker", lambda _t, texts, _g: fake(texts)
     )
     monkeypatch.setattr(
-        embedding_guard, "count_index_tokens", AsyncMock(return_value=0)
+        embedding_guard, "count_index_tokens", AsyncMock(return_value=(0, 0))
     )
     yield fake
     fake.release.set()
