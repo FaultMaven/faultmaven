@@ -13,8 +13,13 @@ Design Reference:
 Hypothesis Lifecycle (matches HypothesisState enum):
 - ACTIVE: Currently being tested. Formed only on a verified problem
   (``problem_status.cause_work_accepted``)
-- VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
-- REFUTED: Disproved by evidence (likelihood ≤0.20 + ≥2 refuting evidence)
+- VALIDATED: Projected from the causal graph when the chain root node is
+  validated (``project_hypothesis_states_from_roots``, #695); never set from
+  likelihood
+- REFUTED: Set only by ``refute_hypothesis``: for a user refute intent or a
+  model REFUTED entry, each only with refuting evidence or a failed fix on
+  record (#1911), and for the M6 disconfirmed-cause demotion
+  (``demote_disconfirmed_cause_via_evidence``); never set from likelihood
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
   checked when a likelihood update lands (decay alone never transitions)
 - RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
@@ -115,6 +120,15 @@ LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
 SUPPORT_LIKELIHOOD_STEP = 0.15
 REFUTE_LIKELIHOOD_STEP = 0.20
 
+# A likelihood move of this much or more is progress, and a model lowering this
+# much or more retires past a self-hedged REFUTES hold.
+LIKELIHOOD_PROGRESS_STEP = 0.05
+
+
+def _moves_a_step(delta: float) -> bool:
+    # Float subtraction puts an exact 0.05 move (0.30 - 0.25) just under 0.05.
+    return delta >= LIKELIHOOD_PROGRESS_STEP - 1e-9
+
 
 #: Recorded when an anti-anchoring retirement removes a hypothesis that was
 #: linked to evidence on some axis. Byte-identical to the string this mechanism
@@ -169,7 +183,8 @@ def _evidence_likelihood(hypothesis, *, confident_refutes_only: bool = False) ->
         for link in links
     )
     raw = hypothesis.initial_likelihood + SUPPORT_LIKELIHOOD_STEP * supports
-    return max(0.0, min(1.0, raw - REFUTE_LIKELIHOOD_STEP * refutes))
+    # Quantised: the raw float sum lands a grid value under its bar (0.7 - 2 * 0.20).
+    return round(max(0.0, min(1.0, raw - REFUTE_LIKELIHOOD_STEP * refutes)), 9)
 
 
 def _confident_causal_support(links, categories: dict) -> bool:
@@ -464,7 +479,7 @@ class HypothesisManager:
         hypothesis.last_updated_turn = turn
 
         # Check if this represents progress
-        if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
+        if _moves_a_step(abs(new_likelihood - old_likelihood)):
             hypothesis.last_progress_at_turn = turn
             hypothesis.iterations_without_progress = 0
         else:
@@ -530,12 +545,12 @@ class HypothesisManager:
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
         hypothesis.likelihood = capped
-        lowered = capped <= old_likelihood - 0.05
+        lowered = _moves_a_step(old_likelihood - capped)
         # Progress is judged on the APPLIED value (consistent with
         # update_likelihood_from_evidence): a capped re-request of the same
         # over-cap number is a no-op, not progress — it must not reset the
         # stagnation/decay counters.
-        if abs(capped - old_likelihood) >= 0.05:  # 5% threshold
+        if _moves_a_step(abs(capped - old_likelihood)):
             hypothesis.last_updated_turn = current_turn
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
@@ -544,8 +559,9 @@ class HypothesisManager:
                 f"{old_likelihood:.2f} → {capped:.2f} ({reason})"
             )
         else:
-            # A restatement: the model re-sent (or nudged by < 0.05) a number
-            # it was shown. Stagnation is judged forwards — an event counts only
+            # A restatement: the model re-sent (or nudged by less than a step,
+            # `LIKELIHOOD_PROGRESS_STEP`; see `_moves_a_step`) a number it was
+            # shown. Stagnation is judged forwards — an event counts only
             # if it makes it more evident the line is not advancing — and a
             # restatement adds nothing: an echo says nothing about the line, a
             # small self-correction fixes an estimate, and a test that left
@@ -744,17 +760,17 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Age an ignored hypothesis that causal evidence does not support.
 
-        ``iterations_without_progress`` otherwise advances ONLY when a hypothesis
-        is engaged (evidence linked / a likelihood update that fails to move
-        belief >= 5%). A prior that is simply IGNORED — never touched by
-        evidence — keeps ``iterations_without_progress == 0`` forever, so
-        ``apply_likelihood_decay`` no-ops and stagnation-based anchoring never
-        fires on it: it lingers at its prior as a permanent unrefuted sibling
-        (#713). This sweep closes that gap with an age signal: once a hypothesis
-        has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns since its last
-        progress, its stagnation counter advances by one per turn that COUNTS,
-        feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
-        already drives.
+        ``iterations_without_progress`` otherwise advances ONLY when an evidence
+        update fails to move belief by a step (``_moves_a_step``); a model
+        restatement advances nothing (#1690). A prior that is simply IGNORED —
+        never touched by evidence — keeps ``iterations_without_progress == 0``
+        forever, so ``apply_likelihood_decay`` no-ops and stagnation-based
+        anchoring never fires on it: it lingers at its prior as a permanent
+        unrefuted sibling (#713). This sweep closes that gap with an age signal:
+        once a hypothesis has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns
+        since its last progress, its stagnation counter advances by one per turn
+        that COUNTS, feeding the SAME decay/anchoring machinery a
+        repeatedly-tested hypothesis already drives.
 
         A turn counts (``turn_counts``, decided by the caller for the whole turn)
         when it makes the prior's stagnation more evident: the investigation
