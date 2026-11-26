@@ -204,8 +204,10 @@ class MitigationRecord(BaseModel):
     verified: bool = Field(
         default=False,
         description=(
-            "A problem-bound re-check showed the problem relieved after the "
-            "mitigation"
+            "The verify gate registered: a problem-bound re-check showed the "
+            "problem relieved after the mitigation. Forward-only, so a later "
+            "bound persistence leaves it set; whether the mitigation still "
+            "holds is the case record's mitigation.verified (#3053 Q10)"
         ),
     )
     completed_at_turn: Optional[int] = Field(

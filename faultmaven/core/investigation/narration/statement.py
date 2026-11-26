@@ -3,7 +3,8 @@
 ``outcome_changes`` compares the record at turn start (``OutcomeBaseline``) with
 the turn-final record over the closed field set (rulings of 2026-11-22 Q4 (a)
 and 2026-11-24): the problem's status, the identification leg and its fallen
-pool, the accepted attempts and their fix windows' verdicts (#3046 S3c).
+pool, the accepted attempts, their fix windows' verdicts (#3046 S3c) and the
+mitigation (#3053 S3d-4).
 ``outcome_statement`` renders the changes the turn's own prose does not state
 (``stated``, ``offer_stated``, read against the turn-final record's attempts)
 as one "**Case record:**" line. Both read the two records, the turn-start
@@ -17,19 +18,30 @@ from enum import StrEnum
 from typing import Callable, NamedTuple, Optional, Sequence
 
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
     PROBLEM_ON_HOLD,
+    PROCEED_UNMITIGATED,
     AttemptOutcome,
     CaseOutcome,
     CauseOutcome,
     FixWindowRecord,
     FixWindowState,
+    MitigationOutcome,
     PoolEmptyReason,
     ProblemStatus,
     ResolutionReason,
 )
 
 from .codes import OfferCode
-from .offers import pool_empty_user_line
+from .offers import (
+    MITIGATION_BEFORE_RELIEF,
+    MITIGATION_DECLARED,
+    MITIGATION_PROCEEDED,
+    MITIGATION_RELIEVED,
+    MITIGATION_SEEN_AGAIN,
+    at_turn,
+    pool_empty_user_line,
+)
 from .replies import NO_ROOT_ON_RECORD, confirming_attempt
 
 
@@ -47,6 +59,11 @@ class OutcomeChange(StrEnum):
     FIX_CARRIED_OUT = "fix_carried_out"
     FIX_SUCCEEDED = "fix_succeeded"
     FIX_FAILED = "fix_failed"
+    MITIGATION_RELIEF = "mitigation_relief"
+    MITIGATION_RELAPSE = "mitigation_relapse"
+    MITIGATION_NO_RELIEF = "mitigation_no_relief"
+    MITIGATION_DECLARED = "mitigation_declared"
+    MITIGATION_PROCEEDED = "mitigation_proceeded"
 
 
 _WINDOW_KINDS = frozenset({OutcomeChange.FIX_SUCCEEDED, OutcomeChange.FIX_FAILED})
@@ -54,10 +71,12 @@ _WINDOW_KINDS = frozenset({OutcomeChange.FIX_SUCCEEDED, OutcomeChange.FIX_FAILED
 
 class Change(NamedTuple):
     """One change; a fix's carries its attempt, a window's the first attempt
-    of the record holding that window."""
+    of the record holding that window, a mitigation's the turn-final
+    record's mitigation."""
 
     kind: OutcomeChange
     attempt: Optional[AttemptOutcome] = None
+    mitigation: Optional[MitigationOutcome] = None
 
     @property
     def key(self) -> tuple:
@@ -190,11 +209,54 @@ def _windows(prior: CaseOutcome, now: CaseOutcome) -> list:
     return changes
 
 
+def _seen(mitigation: Optional[MitigationOutcome]) -> Optional[tuple]:
+    """What the problem did after the mitigation: still present (no relief,
+    or one in the persistence's turn, F2), seen again after a relief (keyed
+    on it), seen gone (holding ``verified`` with a relief, D2); None with no
+    dated attempt (D3)."""
+    if mitigation is None or mitigation.attempt_turn is None:
+        return None
+    relief, present = mitigation.relief_turn, mitigation.present_turn
+    if present is not None and relief in (None, present):
+        return (OutcomeChange.MITIGATION_NO_RELIEF,)
+    if relief is not None and not mitigation.holding:
+        return (OutcomeChange.MITIGATION_RELAPSE, mitigation.relief_turn)
+    if mitigation.verified and relief is not None:
+        return (OutcomeChange.MITIGATION_RELIEF,)
+    return None
+
+
+def _declared(mitigation: Optional[MitigationOutcome]) -> Optional[tuple]:
+    """The declaration's key, effective or not: its turn; None with none."""
+    if mitigation is None or mitigation.disposition != DECLARED_STABLE:
+        return None
+    return (DECLARED_STABLE, mitigation.disposition_turn)
+
+
+def _mitigation(prior: CaseOutcome, now: CaseOutcome) -> list:
+    """The mitigation's facts (#3053 S3d-4, Q8), each stated on entering its
+    state, absence included; a declaration once, by its turn, while
+    effective (effective again after F5 voided it is no news)."""
+    m, was = now.mitigation, prior.mitigation
+    changes = []
+    seen = _seen(m)
+    if seen is not None and seen != _seen(was):
+        changes.append(Change(seen[0], mitigation=m))
+    effective = m is not None and m.declared_stable_effective
+    if effective and _declared(m) != _declared(was):
+        changes.append(Change(OutcomeChange.MITIGATION_DECLARED, mitigation=m))
+    proceeded = [
+        getattr(r, "disposition", None) == PROCEED_UNMITIGATED for r in (m, was)
+    ]
+    if proceeded == [True, False]:
+        changes.append(Change(OutcomeChange.MITIGATION_PROCEEDED, mitigation=m))
+    return changes
+
+
 def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
     """The closed-set facts this turn changed, in the statement's order;
     none on a record minted this turn (no baseline record) or with none now.
-    Mitigation and bookkeeping are never read (the mitigation is S3d's,
-    #3053)."""
+    Bookkeeping is never read."""
     prior = base.record
     if prior is None or now is None:
         return []
@@ -203,6 +265,7 @@ def outcome_changes(base: OutcomeBaseline, now: Optional[CaseOutcome]) -> list:
         *_cause(prior, now),
         *_fixes(prior, now, base.accepted),
         *_windows(prior, now),
+        *_mitigation(prior, now),
     ]
 
 
@@ -238,9 +301,30 @@ def _window_clause(change: Change) -> str:
     return f"{after}, the problem was still present (turn {window.failure_turn})"
 
 
+def _mitigation_clause(change: Change) -> str:
+    """The ruled copy (Q8): S3c's observation wording, and the closure
+    line's own words for the declaration and the proceed."""
+    m = change.mitigation
+    after = f"after the mitigation carried out in turn {m.attempt_turn}"
+    if change.kind == OutcomeChange.MITIGATION_RELIEF:
+        return f"{after}, the problem was seen gone"
+    if change.kind == OutcomeChange.MITIGATION_RELAPSE:
+        return (
+            f"{after}, the problem was seen gone, then seen again "
+            f"(turn {m.present_turn})"
+        )
+    if change.kind == OutcomeChange.MITIGATION_NO_RELIEF:
+        return f"{after}, the problem was still present (turn {m.present_turn})"
+    if change.kind == OutcomeChange.MITIGATION_DECLARED:
+        return MITIGATION_DECLARED + at_turn(m.disposition_turn)
+    return MITIGATION_PROCEEDED + at_turn(m.disposition_turn)
+
+
 def _clause(change: Change) -> str:
     if change.kind in _WINDOW_KINDS:
         return _window_clause(change)
+    if change.mitigation is not None:
+        return _mitigation_clause(change)
     if change.kind != OutcomeChange.FIX_CARRIED_OUT:
         return _CLAUSES[change.kind]
     # An unkinded attempt reads as a fix, as ``replies.closed_line`` reads it.
@@ -300,6 +384,23 @@ def _readiness(params: dict, attempts) -> set:
     ):
         stated.add((OutcomeChange.CAUSE_FALLEN, None))
     return stated
+
+
+def _rca_close(params: dict, attempts) -> set:
+    """Each mitigation fact the close's closure line states, so a replayed
+    close does not state it twice (#3053 S3d-4); a persistence not marked
+    before the relief is the problem seen present, after a relief a relapse."""
+    line = params.get("closure_line") or ""
+    relieved = MITIGATION_RELIEVED in line
+    again = MITIGATION_SEEN_AGAIN in line and MITIGATION_BEFORE_RELIEF not in line
+    said = {
+        OutcomeChange.MITIGATION_RELIEF: relieved,
+        OutcomeChange.MITIGATION_RELAPSE: relieved and again,
+        OutcomeChange.MITIGATION_NO_RELIEF: again,
+        OutcomeChange.MITIGATION_DECLARED: MITIGATION_DECLARED in line,
+        OutcomeChange.MITIGATION_PROCEEDED: MITIGATION_PROCEEDED in line,
+    }
+    return {(kind, None) for kind, stated in said.items() if stated}
 
 
 def _unmet_close(params: dict, attempts) -> set:
@@ -369,7 +470,7 @@ def _confirmation(params: dict, attempts: Sequence[AttemptOutcome]) -> set:
 #: Every offer and request key. A model proposal's prose is its offer's
 #: summary, never the reply's, so it states nothing there.
 STATED_BY: dict[tuple, _Stated] = {
-    (OfferCode.RCA_INFEASIBLE_CLOSE, None): _nothing,
+    (OfferCode.RCA_INFEASIBLE_CLOSE, None): _rca_close,
     (OfferCode.DEFERRED_RESOLVE, None): _deferred_resolve,
     (OfferCode.DEFERRED_CLOSE, None): _nothing,
     (OfferCode.BACKSTOP_RESOLVE, None): _backstop,

@@ -40,6 +40,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.modules.case.contracts import (
     CONFIRMED_ESTABLISHED_BY,
+    DECLARED_STABLE,
     CauseAssuranceGrade,
     ConfidenceLevel,
     EvidenceCategory,
@@ -2406,6 +2407,40 @@ def mitigation_holds(relief: int | None, present: int | None) -> bool:
     predicate the verdict's derivation, the closure reason and the
     ``<fix_verification>`` block read (#2100)."""
     return present is None or (relief is not None and present < relief)
+
+
+def _mitigation_verified(case: "Case") -> bool:
+    """Whether a mitigation is on record as verified and still holding: no
+    bound persistence after its latest relief (``mitigation_holds``, #2100).
+    A stored verdict with no bound rows reads ``(None, None)`` and holds."""
+    mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
+    if mitigation is None or not getattr(mitigation, "verified", False):
+        return False
+    return mitigation_holds(*mitigation_relief(case))
+
+
+def _mitigation_declared_stable(case: "Case") -> bool:
+    """Whether the user declared the mitigation stable (#2100, D3.3) and no
+    re-check bound to the problem saw it present after the declaration as its
+    latest observation (F5, ruled 2026-11-07): a persistence later than the
+    declaration turn, with no relief after it. A persistence in the
+    declaration's own turn or before it is what the user declared over, so
+    it stays their call. ``disposition_at_turn`` is ``emission_turn``-dated,
+    so a replayed declaration compares at its hold turn. An undated attempt
+    has no bound reads (``mitigation_relief`` dates them from the attempt),
+    so F5 cannot apply to it and its declaration stands."""
+    mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
+    if getattr(mitigation, "disposition", None) != DECLARED_STABLE:
+        return False
+    declared = getattr(mitigation, "disposition_at_turn", None)
+    relief, present = mitigation_relief(case)
+    relapsed = (
+        declared is not None
+        and present is not None
+        and present > declared
+        and not mitigation_holds(relief, present)
+    )
+    return not relapsed
 
 
 #: The shortest data window a relief row's span is stated for: 27 of 30

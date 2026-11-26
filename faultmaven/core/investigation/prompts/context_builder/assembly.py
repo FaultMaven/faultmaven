@@ -800,7 +800,8 @@ def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
     """
     gates = list(status.gates)
     if status.mitigation_disposition:
-        # What the mitigation carries that is not an observation (#2100).
+        # What the mitigation carries that is not an observation (#2100): a
+        # declaration only while it is effective (#3053 S3d-4).
         gates.append(f"mitigation_disposition: {status.mitigation_disposition}")
     lines = ""
     if gates:
@@ -819,16 +820,15 @@ def _milestone_lines(status: MilestoneStatus, symptom_note: str) -> str:
 
 def _milestone_status_section(fold: NarrationFold) -> str:
     """The milestone status of an INVESTIGATING case, from the record's
-    ``milestones_shown`` and disposition and, read fresh, the stored
-    ``mitigation.verified`` (ruling Q1 (a)) and the symptom's currency note
-    (``NarrationFold.currency_note``). If the record or the fresh verdict
+    ``milestones_shown`` and effective disposition (#3053 S3d-4), and the
+    symptom's currency note (``NarrationFold.currency_note``). If the record
     cannot be read, both tags are the one declared line
     ``MILESTONES_OMITTED``; the failure is logged and counted once per
     assembly (``NarrationFold``). The currency note is read outside that
     guard, as on ``main``: a raise there fails the build."""
     try:
         outcome = fold.outcome(_MILESTONE_STATUS)
-        status = None if outcome is None else milestone_status(outcome, fold.fresh())
+        status = None if outcome is None else milestone_status(outcome)
     except Exception:  # noqa: BLE001 — only these lines are lost (#2811)
         fold.fail(_MILESTONE_STATUS)
         status = None

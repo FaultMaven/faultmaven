@@ -12,9 +12,8 @@ what moves here is the choice of which text applies, which is the
 outcome-bearing decision. The one exception is the closure reason's model
 rendering (pin 6's model half, ruling Q2 (a)), which is the value itself.
 
-The fresh inputs are what the record does not hold: ``mitigation.verified``
-(ruling Q1 (a) keeps it fresh until stage S3d, #3053; the record drops it after a
-bound relapse), the symptom's currency (the wall clock), and the offer facts,
+The fresh inputs are what the record does not hold: the symptom's currency
+(the wall clock), and the offer facts,
 which the offer record owns (``OfferView``, #2811 S2b-2d, ruling (a) of
 2026-11-20: whether an offer is open, and each standing decline's turn, a
 reader of its own), and whether a causal_evidence row no hypothesis holds is
@@ -28,6 +27,7 @@ from enum import StrEnum
 from typing import Callable, NamedTuple, Optional
 
 from faultmaven.modules.case.contracts import (
+    DECLARED_STABLE,
     PROBLEM_ON_HOLD,
     CaseOutcome,
     ClosureReason,
@@ -67,8 +67,6 @@ class PromptStateFresh:
     reader the selector asks only where its line prints; it holds no text:
     flags and turns only."""
 
-    mitigation_verified: Callable[[], bool]
-    """``progress.mitigation.verified`` as stored (ruling Q1 (a))."""
     symptom_stale: Callable[[], bool]
     """The symptom's last observation is STALE (``assess_symptom_currency``)."""
     offers: Callable[[], OfferView]
@@ -85,7 +83,8 @@ class MilestoneStatus(NamedTuple):
 
     gates: tuple[str, ...]
     mitigation_disposition: Optional[str]
-    """The accepted mitigation's disposition, listed after the gates."""
+    """The accepted mitigation's disposition, listed after the gates: a
+    declaration only while it is effective."""
     indicators: tuple[str, ...]
 
 
@@ -96,19 +95,15 @@ def progress_indicators(outcome: CaseOutcome) -> tuple[str, ...]:
     return tuple(i for i in INDICATORS if i in shown)
 
 
-def milestone_status(outcome: CaseOutcome, fresh: PromptStateFresh) -> MilestoneStatus:
-    """The gates and indicators the record shows (``milestones_shown``), but
-    ``mitigation_verified``, which is read fresh (Q1 (a))."""
-    shown = set(outcome.milestones_shown) - {"mitigation_verified"}
-    if fresh.mitigation_verified():
-        shown.add("mitigation_verified")
-    gates = tuple(gate for gate in GATES if gate in shown)
-    mitigation = outcome.mitigation
+def milestone_status(outcome: CaseOutcome) -> MilestoneStatus:
+    """The gates and indicators the record shows (``milestones_shown``) and
+    its disposition, a declaration only while effective (#3053 S3d-4)."""
+    shown, m = set(outcome.milestones_shown), outcome.mitigation
+    voided = m is not None and m.disposition == DECLARED_STABLE
+    voided = voided and not m.declared_stable_effective
     return MilestoneStatus(
-        gates=gates,
-        mitigation_disposition=(
-            mitigation.disposition if mitigation is not None else None
-        ),
+        gates=tuple(gate for gate in GATES if gate in shown),
+        mitigation_disposition=None if m is None or voided else m.disposition,
         indicators=progress_indicators(outcome),
     )
 

@@ -56,7 +56,6 @@ from faultmaven.core.investigation.offers import (
     standing_false_alarm_decline,
 )
 from faultmaven.modules.case.contracts import (
-    DECLARED_STABLE,
     PROBLEM_ON_HOLD,
     AnswerKind,
     AnswerVia,
@@ -205,17 +204,46 @@ def _acted_on_bar(case: Case) -> str | None:
     (a mitigation by a bound re-check, or declared stable by the user, #2100),
     the statement is history rather than a working frame. An action merely
     accepted does not bar — a fix that failed is exactly when a mis-statement
-    surfaces — nor does a mitigation proceeded without."""
+    surfaces — nor does a mitigation proceeded without.
+
+    The mitigation as the record reads it, by its source derivations (#3053
+    S3d-4, Q8): verified and holding, or declared and effective (F5); a
+    cycle source, folding nothing, failing closed on a raise (F4)."""
+    # Function-local, as ``invalidation_refusal``'s ``cause_assurance`` import is.
+    from faultmaven.core.investigation.cause_assurance import (
+        _mitigation_declared_stable,
+        _mitigation_verified,
+    )
+
     p = case.progress
     if p.cause_state.value == "identified" and not p.cause_identification_contested:
         return "the root cause is already identified against the current statement"
-    if p.mitigation is not None and p.mitigation.verified:
+    try:
+        verified = _mitigation_verified(case)
+        declared = _mitigation_declared_stable(case)
+    except Exception:  # noqa: BLE001 — fails closed (ruling F4)
+        return _mitigation_unread(case)
+    if verified:
         return "a mitigation was verified against the current statement"
-    if p.mitigation is not None and p.mitigation.disposition == DECLARED_STABLE:
+    if declared:
         return "a mitigation was declared stable against the current statement"
     if p.solution_verified:
         return "a fix was verified against the current statement"
     return None
+
+
+#: The guards' refusal when the mitigation cannot be read (#3053 F4, as Q11).
+MITIGATION_UNREAD = "the case record could not be read this turn"
+
+
+def _mitigation_unread(case: Case) -> str:
+    """Fail closed, logged. Counted once, by the cycle's record write, which
+    reads every derivation the guards read (``outcome._mitigation``)."""
+    logger.exception(
+        "Case %s: the mitigation could not be read for the statement guards",
+        getattr(case, "case_id", None),
+    )
+    return MITIGATION_UNREAD
 
 
 def _cited(case: Case, evidence_ids: list[str], category: EvidenceCategory) -> bool:
@@ -275,10 +303,12 @@ def revision_refusal(
 
 
 def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str | None:
-    """Why the problem cannot be found a false alarm now, or None."""
+    """Why the problem cannot be found a false alarm now, or None; also while
+    the record holds the problem present after the mitigation (#3053 F3)."""
     from faultmaven.core.investigation.cause_assurance import (
         SUBJECT_CAUSE,
         carried_fix_windows,
+        mitigation_observation,
         subject_index,
     )
 
@@ -295,6 +325,15 @@ def invalidation_refusal(case: Case, evidence_ids: list[str], basis: str) -> str
     bar = _acted_on_bar(case)
     if bar:
         return bar
+    try:
+        seen = mitigation_observation(case)
+    except Exception:  # noqa: BLE001 — fails closed (ruling F4)
+        return _mitigation_unread(case)
+    if seen is not None and seen.present_turn is not None:
+        return (
+            "the problem was observed present after the mitigation "
+            f"(turn {seen.present_turn})"
+        )
     # Any cause observed removed, from any fix window: a failed fix's rows
     # prove the problem existed at least as strongly as a successful one's, so
     # this reads the raw rows, not the resolution leg (which excludes what a

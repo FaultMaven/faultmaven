@@ -31,9 +31,14 @@ Module level is ``<module>``. Three tables:
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
   ``completed_milestones``, ``solution_verified``, its alias property
   ``resolution_complete`` (no reader today), a mitigation's ``verified`` and
-  ``closure_reason``. ``verified`` has no receiver heuristic: all 12 reads
-  today are ``MitigationRecord.verified``, and a future reader of another
-  ``verified`` gets a row with its reason.
+  ``closure_reason``. ``verified`` has no receiver heuristic: of the 11
+  reads today, 10 are the stored ``MitigationRecord.verified`` and one the
+  record's ``MitigationOutcome.verified``, and a future reader of another
+  ``verified`` gets a row with its reason. Two declared tables classify
+  every row that reads it (#3053 S3d-4, ruling Q10):
+  ``MITIGATION_FLAG_INPUTS``, the stored flag's inputs (it means "the verify
+  gate registered", forward-only), and ``RECORD_FIELD_READS``, the record's
+  own relapse-adjusted field.
 * ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
   offer record's three writers (``open_offer``, ``answer_offer``,
   ``lapse_offers``), the transitions' two executors, and the entries that
@@ -43,8 +48,9 @@ Module level is ``<module>``. Three tables:
   caller opens, answers, closes or reads. An entry referenced other than by a
   call fails, so every way in stays visible here.
 
-Beside them (#3053 S3d-3): ``CYCLE_SOURCES``, the in-cycle deciders declared
-the cycle record's sources, permanently (ruling Q4), whose derivation
+Beside them (#3053 S3d-3): ``CYCLE_SOURCES``, the in-cycle deciders on the
+record's facts, declared the cycle record's sources, permanently (ruling Q4;
+the statement guards' bar, S3d-4 D4), whose derivation
 references are counted as ``DERIVATION_SITES``' are, with the typed-code
 pins; and ``CONTENT_ACCESSOR_CALLERS``, every caller of a content predicate
 (``CONTENT_ACCESSORS``, the summary gate, ruling Q6), outside
@@ -144,6 +150,10 @@ DERIVATIONS: dict[str, str] = {
             "confirmation_stamp_rows",
             "confirming_polarity_rows",
             "mitigation_observation",
+            # #3053 S3d-4: moved here from terminal_transitions with the
+            # statement guards' bar, which reads them in the cycle.
+            "_mitigation_verified",
+            "_mitigation_declared_stable",
             "_pool_legs",
             "_cause_pool",
             "cause_recheck_status",
@@ -164,8 +174,6 @@ DERIVATIONS: dict[str, str] = {
             "derive_closure_reason",
             "derive_disposition_eligibility",
             "mitigation_closure_line",
-            "_mitigation_verified",
-            "_mitigation_declared_stable",
             "assess_close_summary",
             "_resolution_confirmed",
         ),
@@ -573,17 +581,17 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_OFFERS, "_scope"): {"closure_reason": 1},
     (_OFFERS, "answer_offer"): {"closure_reason": 2},
     (_OFFERS, "lapse_offers"): {"closure_reason": 3},
-    (_PROBLEM, "_acted_on_bar"): {"solution_verified": 1, "verified": 1},
+    (_PROBLEM, "_acted_on_bar"): {"solution_verified": 1},
     (_PROBLEM, "is_false_alarm_close"): {"closure_reason": 1},
+    # #3053 S3d-4: the record's own ``MitigationOutcome.verified``
+    # (``RECORD_FIELD_READS``), not the stored flag.
+    (_INV + "narration/statement.py", "_seen"): {"verified": 1},
     # The record (#2636): a CLOSED case's stored reason, and the stored verdict
     # the refusal reason is read beside.
     (_OUTCOME, "_closure"): {"closure_reason": 1},
     (_OUTCOME, "_mitigation"): {"verified": 1},
     (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
-    # #2811 S2b-1c-i: the milestone status reads the record; the stored
-    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3d-4 (#3053).
-    (_CB + "narration_fold.py", "_stored_mitigation_verified"): {"verified": 1},
     (_VALIDATOR, "StateValidator._validate_milestone_ordering"): {
         "solution_verified": 2,
         "verified": 1,
@@ -592,7 +600,7 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
         "solution_verified": 1
     },
     # By ``getattr(mitigation, "verified", False)``.
-    (_TT, "_mitigation_verified"): {"verified": 1},
+    (_CA, "_mitigation_verified"): {"verified": 1},
     (_TT, "confirm_open_offer"): {"closure_reason": 1},
     (_TT, "derive_solution_surface"): {"solution_verified": 1},
     (_TT, "should_generate_terminal_summary"): {"completed_milestones": 1},
@@ -635,6 +643,42 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_REPORT, "ReportGenerationService._generate_closure_summary"): {
         "closure_reason": 1
     },
+}
+
+#: The rows of ``FIELD_READS`` whose ``verified`` is the record's own
+#: ``MitigationOutcome.verified`` (relapse-adjusted: verified and still
+#: holding), not the stored flag (#3053 S3d-4), each with its reason.
+RECORD_FIELD_READS: dict[tuple[str, str], str] = {
+    (_INV + "narration/statement.py", "_seen"): "the outcome statement's "
+    "relief clause: the record's holding verify with a bound relief (D2)",
+}
+
+#: The rows of ``FIELD_READS`` that read the stored ``MitigationRecord.verified``
+#: (#3053 S3d-4, ruling Q10), each with why the stored flag is its input: the
+#: flag means "the verify gate registered", forward-only. Every reader that
+#: states or decides whether the mitigation still holds reads the record's
+#: ``mitigation.verified`` (in the cycle, its source derivations) instead.
+MITIGATION_FLAG_INPUTS: dict[tuple[str, str], str] = {
+    (_SG, "_apply_stage_gate_signals"): "the flag's writer: it registers the "
+    "verify once, so a relapse never re-registers it",
+    (_SG, "_register_disposition"): "the disposition writer's guard: a "
+    "registered verify refuses proceed_unmitigated",
+    (_ME + "milestone_inference.py", "_milestone_already_recorded"): "a gate "
+    "already registered is not re-registered; a re-sent mitigation_verified "
+    "after a relapse is absorbed (the residual S4 states)",
+    (_OUTCOME, "_mitigation"): "the record's own input read, beside the "
+    "refusal reason it reads",
+    (_CA, "_mitigation_verified"): "the record's source derivation: the "
+    "registered verify, relapse-adjusted",
+    (_VALIDATOR, "StateValidator._validate_milestone_ordering"): "the "
+    "validator: a registered verify needs an accepted mitigation",
+    (_PROGRESS, "InvestigationProgress.completed_milestones"): "the API's "
+    "milestones_completed, moved with S4 (#2609, ruling Q9)",
+    (_PROGRESS, "MitigationRecord._verified_requires_accepted"): "the model's "
+    "own validator",
+    (_PROGRESS, "MitigationRecord.settled"): "the one settled rule, "
+    "forward-only (ruling Q7): the stage, the monitor and mitigation_settled "
+    "read it",
 }
 
 #: (path, qualname) -> ({entry: calls}, what the caller answers or closes).
@@ -798,10 +842,10 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
 
 
 class Source(NamedTuple):
-    """An in-cycle decider, declared a source of the cycle's record (#3053
-    S3d-3, ruling Q4 of 2026-11-25): it decides before the record and folds
-    none. ``serves``: for a helper that records no code, the code-recording
-    rows it serves."""
+    """An in-cycle decider on the record's facts, declared a source of the
+    cycle's record (#3053 S3d-3, ruling Q4 of 2026-11-25; S3d-4, D4): it
+    decides before the record and folds none. ``serves``: for a helper that
+    records no code, the code-recording rows it serves."""
 
     counts: dict[str, int]
     note: str
@@ -812,12 +856,17 @@ _RECHECK = (_TRANSITIONS, "TransitionManager._recheck_resolve_request")
 _MODEL = (_TRANSITIONS, "TransitionManager._apply_model_proposal")
 _BACKSTOP = (_PROPOSALS, "_maybe_propose_confirmed_resolution")
 _DEFERRED = (_PROPOSALS, "_maybe_propose_deferred_close")
+_VERIFY = (
+    _ME + "response_application.py",
+    "ResponseApplier._apply_verification_updates",
+)
 _RCC = _INV + "causal_graph/rcc.py"
 
 #: (path, qualname) -> the in-cycle decider's derivations, what it decides,
-#: and the rows it serves. Permanent: the cycle decides everything, then
-#: records once after the last decider (#2615), and the record derives
-#: ``resolution`` from these same functions.
+#: and the rows it serves: the in-cycle deciders on the record's facts.
+#: Permanent: the cycle decides everything, then records once after the last
+#: decider (#2615), and the record derives ``resolution`` and ``mitigation``
+#: from these same functions.
 CYCLE_SOURCES: dict[tuple[str, str], Source] = {
     _RECHECK: Source(
         {
@@ -891,6 +940,24 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
         "decline stands",
         serves=(_MODEL,),
     ),
+    _VERIFY: Source(
+        {},
+        "the apply step's statement guards: REVISION_REFUSED and "
+        "FALSE_ALARM_REFUSED, on the bar below",
+    ),
+    (_PROBLEM, "_acted_on_bar"): Source(
+        {"_mitigation_declared_stable": 1, "_mitigation_verified": 1},
+        "the bar on revising or invalidating the statement, through the "
+        "record's own mitigation derivations (#3053 S3d-4, D4): the holding "
+        "verify and the effective declaration",
+        serves=(_VERIFY,),
+    ),
+    (_PROBLEM, "invalidation_refusal"): Source(
+        {"mitigation_observation": 1},
+        "the false-alarm guard: refused while the record holds a bound "
+        "persistence after the mitigation (#3053, ruling F3)",
+        serves=(_VERIFY,),
+    ),
     (_TT, "pending_check_params"): Source(
         {"declined_resolve_entry": 1, "held_check_reason": 1},
         "the params of PENDING_CHECK; why the check holds through the "
@@ -934,6 +1001,10 @@ CYCLE_NOTICES = {
     "user's close decline stands, read off the offer record",
     "declined_resolution_reask": "a refusal of a resolution while the user's "
     "resolve decline stands, read off the offer record",
+    "revision_refused": "a refusal of the model's revised statement; it decides "
+    "no outcome, the problem status stays (#3053 S3d-4)",
+    "false_alarm_refused": "a refusal of the model's false-alarm finding; it "
+    "decides no outcome, the problem status stays (#3053 S3d-4)",
 }
 
 #: Functions that record a ``DECIDED_FROM`` key (an offer code or
@@ -1401,6 +1472,118 @@ def test_every_raw_field_read_is_declared():
         + "\n"
         + _HELP.format(table="FIELD_READS")
     )
+
+
+def _verified_problems(
+    field_reads=FIELD_READS,
+    inputs=MITIGATION_FLAG_INPUTS,
+    record=RECORD_FIELD_READS,
+) -> list[str]:
+    """Each way the ``verified`` readers break their classification (#3053
+    S3d-4, amendments 3 and 13): a row in both tables, a row counting
+    ``verified`` in neither, and a classified row that counts none."""
+    reading = {key for key, counts in field_reads.items() if "verified" in counts}
+    both = set(inputs) & set(record)
+    return (
+        [f"{'::'.join(key)}: both a flag input and a record read" for key in both]
+        + [
+            f"{'::'.join(key)}: reads verified, unclassified"
+            for key in sorted(reading - set(inputs) - set(record))
+        ]
+        + [
+            f"{'::'.join(key)}: classified, reads no verified"
+            for key in sorted((set(inputs) | set(record)) - reading)
+        ]
+    )
+
+
+def test_the_stored_flag_is_read_only_by_its_declared_inputs():
+    """Ruling Q10: the stored ``MitigationRecord.verified`` is read only by
+    ``MITIGATION_FLAG_INPUTS``, which equals the ``FIELD_READS`` rows counting
+    ``verified`` less the record's own reads (``RECORD_FIELD_READS``)."""
+    assert _verified_problems() == []
+    reading = {key for key, counts in FIELD_READS.items() if "verified" in counts}
+    assert set(MITIGATION_FLAG_INPUTS) == reading - set(RECORD_FIELD_READS)
+    assert RECORD_FIELD_READS, "premise: the statement reads the record's verified"
+
+
+_FLAG_PROBE = (_INV + "narration/probe.py", "decide")
+
+
+@pytest.mark.parametrize(
+    ("tables", "problem"),
+    [
+        (
+            dict(field_reads={**FIELD_READS, _FLAG_PROBE: {"verified": 1}}),
+            f"{_INV}narration/probe.py::decide: reads verified, unclassified",
+        ),
+        (
+            dict(inputs={**MITIGATION_FLAG_INPUTS, _FLAG_PROBE: "a probe"}),
+            f"{_INV}narration/probe.py::decide: classified, reads no verified",
+        ),
+        (
+            dict(record={**RECORD_FIELD_READS, _FLAG_PROBE: "a probe"}),
+            f"{_INV}narration/probe.py::decide: classified, reads no verified",
+        ),
+        (
+            dict(record={**RECORD_FIELD_READS, **MITIGATION_FLAG_INPUTS}),
+            f"{_CA}::_mitigation_verified: both a flag input and a record read",
+        ),
+    ],
+    ids=["unclassified", "input_reads_none", "record_reads_none", "in_both"],
+)
+def test_a_misclassified_verified_reader_is_named(tables, problem):
+    """A positive control per way, for each table."""
+    assert problem in _verified_problems(**tables)
+
+
+def _receiver_problems(record=RECORD_FIELD_READS, resolve=None) -> list[str]:
+    """Each ``.verified`` load in a ``RECORD_FIELD_READS`` row whose receiver
+    is not a parameter annotated ``MitigationOutcome`` (``Optional`` too):
+    the table admits the record's own field, never the stored flag."""
+    resolve = resolve or (lambda key: _function(*key))
+    problems = []
+    for key in record:
+        function = resolve(key)
+        typed = {
+            arg.arg
+            for arg in function.args.args + function.args.kwonlyargs
+            if arg.annotation is not None
+            and "MitigationOutcome" in ast.unparse(arg.annotation)
+        }
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Attribute) and node.attr == "verified"):
+                continue
+            receiver = node.value
+            if not (isinstance(receiver, ast.Name) and receiver.id in typed):
+                problems.append(
+                    f"{'::'.join(key)}:{node.lineno}: reads "
+                    f"{ast.unparse(node)}, not a MitigationOutcome"
+                )
+    return problems
+
+
+def test_each_record_read_reads_the_records_field():
+    assert _receiver_problems() == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def decide(case):\n    return case.progress.mitigation.verified",
+        "def decide(m: MitigationRecord):\n    return m.verified",
+        "def decide(m):\n    return m.verified",
+    ],
+)
+def test_a_stored_flag_read_declared_as_a_record_read_is_named(source):
+    """A positive control per receiver shape the check refuses."""
+    function = ast.parse(source).body[0]
+    problems = _receiver_problems({_FLAG_PROBE: "a probe"}, lambda key: function)
+    assert problems and "not a MitigationOutcome" in problems[0]
+    typed = ast.parse(
+        "def decide(m: Optional[MitigationOutcome]):\n    return m.verified"
+    ).body[0]
+    assert _receiver_problems({_FLAG_PROBE: "a probe"}, lambda key: typed) == []
 
 
 def test_every_raw_progress_read_in_the_prompt_is_declared():

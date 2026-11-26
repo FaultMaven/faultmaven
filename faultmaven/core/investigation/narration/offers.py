@@ -55,6 +55,20 @@ def mitigation_sentence(line: str) -> str:
     return f"{line[:1].upper()}{line[1:]}."
 
 
+#: The phrases ``mitigation_closure_line`` is built from (#2100), which the
+#: outcome statement states or reads too (#3053 S3d-4).
+MITIGATION_DECLARED = "you reported the mitigation stable"
+MITIGATION_PROCEEDED = "the investigation went on before the mitigation was verified"
+MITIGATION_RELIEVED = "the problem was observed relieved after the mitigation"
+MITIGATION_SEEN_AGAIN = "the problem was seen again at turn"
+MITIGATION_BEFORE_RELIEF = ", before that relief"
+
+
+def at_turn(turn: Optional[int]) -> str:
+    """`` (turn t)``, or nothing for no turn: never "(turn None)"."""
+    return f" (turn {turn})" if turn is not None else ""
+
+
 #: The NEEDS_INFO frame's opening line and its data sentence, shared by the
 #: documentation-gap ask and the held check (#1906 D5.2).
 _NEEDS_INFO_INTRO = (

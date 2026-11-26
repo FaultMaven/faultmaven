@@ -9,7 +9,7 @@ without a cycle's record: step 0b's answer to an offer, Gate 1, the
 ``hypothesis_action`` intent, a deterministic step-0 exit (the menu close),
 a terminal Q&A turn, and ``mark_told`` followed by the commit. One fixture
 each shows a declared difference; a declared difference no fixture shows
-fails. No narrator reads the record yet (S2b).
+fails. None is declared since #3053 S3d-4.
 """
 
 from __future__ import annotations
@@ -48,8 +48,13 @@ from faultmaven.core.investigation.outcome import (
     narration_outcome,
     record_case_outcome,
 )
+from faultmaven.core.investigation.prompts.context_builder.assembly import (
+    _milestone_status_section,
+)
+from faultmaven.core.investigation.prompts.context_builder.narration_fold import (
+    NarrationFold,
+)
 from faultmaven.core.investigation.terminal_transitions import (
-    _mitigation_verified,
     closure_verdict,
     declined_resolve_entry,
     execute_user_closure,
@@ -75,11 +80,10 @@ from faultmaven.modules.case.infrastructure.case_repository import (
 pytestmark = pytest.mark.unit
 
 #: Each declared difference, by fact: the record holds the corrected value.
-DECLARED = {
-    # ``assembly.py`` prints the stored ``mitigation.verified``; the record
-    # holds it relapse-adjusted.
-    "mitigation.verified": "#2609",
-}
+#: None since #3053 S3d-4: the milestone status prints the record's
+#: ``milestones_shown``, relapse-adjusted, where it printed the stored
+#: ``mitigation.verified`` (#2609).
+DECLARED: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +116,6 @@ def derived(case) -> dict:
     held = pending_symptom_check(case, subjects=subjects, windows=windows)
     problem, cause = subjects.bindable_rows()
     window = latest_decided_fix_window(case)
-    stored = case.progress.mitigation
     attempts = _dated(case)
     problem_rows = (
         symptom_elimination_rows(case, cause_rows, subjects=subjects, windows=windows)
@@ -193,7 +196,10 @@ def derived(case) -> dict:
             if seen is None
             else (seen.attempt_turn, seen.relief_turn, seen.present_turn, seen.holding)
         ),
-        "mitigation.verified": bool(stored is not None and stored.verified),
+        # What the milestone status prints, through its production path
+        # (#3053 S3d-4): the gate line, never the stored flag.
+        "mitigation.verified": "- mitigation_verified\n"
+        in _milestone_status_section(NarrationFold(case)),
         # No ``summary_due``: the closed reply's summary gate,
         # ``should_generate_terminal_summary``, is a decider shared with its
         # enforcement (#698), and the record has no field for it.
@@ -471,7 +477,7 @@ async def _relapsed_mitigation():
     bound_row(case, EvidenceCategory.SYMPTOM_EVIDENCE, turn=9, rechecks=shown)
     case.current_turn = 9
     record_case_outcome(case, at=WritePoint.CYCLE)
-    assert _mitigation_verified(case) is False, "premise: relapsed"
+    assert narration_outcome(case).mitigation.verified is False, "premise: relapsed"
     return case
 
 
@@ -550,7 +556,7 @@ FIXTURES = {
     "held_check": (_held_check, set()),
     "held_check_on_a_false_alarm": (_held_check_on_a_false_alarm, set()),
     "held_check_then_interception": (_held_check_then_interception, set()),
-    "2609_relapsed_mitigation": (_relapsed_mitigation, {"mitigation.verified"}),
+    "2609_relapsed_mitigation": (_relapsed_mitigation, set()),
     "2582_cited_failure_re_rooted": (_2582, set()),
     "2595_unkinded_failure_rebound": (_2595, set()),
 }
