@@ -11,6 +11,7 @@ model or depends on how fast a thread starts.
 
 import asyncio
 import fcntl
+import math
 import os
 import subprocess
 import sys
@@ -84,21 +85,27 @@ def test_an_idle_runbook_is_admitted_at_its_estimate_and_the_load(cloud):
         ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
     )
 
+    ticket.close()
+
     assert ticket.estimate_seconds == pytest.approx(371.825 + 30)
     assert ticket.principal == USER
 
 
 def test_a_second_concurrent_one_is_refused_503_with_the_pending_wait(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
+    first = admission.admit(
+        ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
+    )
 
     refused = _refused(admission, RUNBOOK_TOKENS)
+    queued = admission.queued()
+    first.close()
 
     assert (refused.status_code, refused.reason) == (503, "busy")
     assert refused.error_code == "KNOWLEDGE_INDEXING_BUSY"
     assert refused.retry_after_seconds == 402  # ceil(371.825 + 30)
     assert refused.message == index_slot.refusal("busy", wait=402).message
-    assert admission.queued() == 1
+    assert queued == 1
 
 
 @pytest.mark.parametrize(
@@ -125,6 +132,7 @@ def test_the_413_line_takes_the_load_and_an_empty_queue_never_answers_busy(
         admission = IndexAdmission()
         ticket = admission.admit(["c"], tokens, principal=USER, window_seconds=window)
         assert ticket in admission._tickets, tokens
+        ticket.close()  # the slots share one queue (#2920)
 
     assert (refused.status_code, refused.reason) == (413, "too_large")
     assert refused.retry_after_seconds is None
@@ -140,7 +148,8 @@ def test_every_kb_ticket_is_charged_the_worker_load_and_none_says_loading(cloud)
     first = admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=0)
     forced = admission.admit_forced(["c"], RUNBOOK_TOKENS, principal=USER)
     evidence = index_slot.evidence_slot.admit_forced(["c"], 8_000, principal=USER)
-    evidence.close()
+    for ticket in (first, forced, evidence):
+        ticket.close()
 
     assert first.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
     assert forced.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
@@ -162,6 +171,7 @@ def test_an_overrun_counts_its_guard_bound_then_the_floor(cloud):
     cloud.now = 375.0
     assert admission.pending_seconds() == 10.0
     assert admission.encoding_for_seconds() == pytest.approx(375.0)
+    ticket.close()
 
 
 def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
@@ -177,15 +187,20 @@ def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
     assert (refused.status_code, refused.reason) == (503, "hung")
     assert refused.retry_after_seconds == 60
     assert "stuck" in refused.message
-    assert admission.admit(["c"], 1, principal=USER, window_seconds=WINDOW)
+    admission.admit(["c"], 1, principal=USER, window_seconds=WINDOW).close()
 
 
 def test_a_window_of_zero_refuses_nothing(cloud):
     admission = IndexAdmission()
-    for tokens in (10_000_000, RUNBOOK_TOKENS, None):
+    tickets = [
         admission.admit(["c"], tokens, principal=USER, window_seconds=0)
+        for tokens in (10_000_000, RUNBOOK_TOKENS, None)
+    ]
+    queued = admission.queued()
+    for ticket in tickets:
+        ticket.close()
 
-    assert admission.queued() == 3
+    assert queued == 3
 
 
 def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
@@ -199,10 +214,15 @@ def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
 
 def test_a_forced_ticket_is_never_refused(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
+    first = admission.admit(
+        ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
+    )
+    forced = admission.admit_forced(["c"], 10_000_000, principal=USER)
+    queued = admission.queued()
+    first.close()
+    forced.close()
 
-    assert admission.admit_forced(["c"], 10_000_000, principal=USER)
-    assert admission.queued() == 2
+    assert queued == 2
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +275,9 @@ async def encodes(monkeypatch):
     )
     yield fake
     fake.release.set()
-    for executor in (index_slot._KB_EXECUTOR, index_slot._EVIDENCE_EXECUTOR):
-        # Bounded: a slot left blocked fails the teardown, not the run.
-        await asyncio.wait_for(asyncio.wrap_future(executor.submit(lambda: None)), 30)
+    # Bounded: an order left blocked fails the teardown, not the run.
+    done = index_slot._EXECUTOR.submit(lambda: None)
+    await asyncio.wait_for(asyncio.wrap_future(done), 30)
     assert index_slot.evidence_slot.queued() == 0, "an evidence ticket leaked"
 
 
@@ -291,7 +311,7 @@ async def test_an_evidence_caller_that_gave_up_mid_encode_keeps_the_slot(
     """An evidence encode runs in this process: once started, nothing stops
     it. (A KB encode's worker is killed: #2851's tests.)"""
     encodes.held = {"a"}
-    admission = index_slot.EncodeSlot(index_slot._EVIDENCE_EXECUTOR, host_lock=False)
+    admission = index_slot.EncodeSlot()
     first = admission.admit_forced(["a"], 0, principal=USER)
     future, _ = first.run(["a"], guard_seconds=60.0)
     await _entered(encodes, "a")
@@ -354,7 +374,7 @@ async def test_two_concurrent_indexing_calls_never_encode_at_once(
     await _settled(admission)
 
     assert not second_started
-    assert encodes.most_active["kb-index"] == 1
+    assert encodes.most_active["index-encode"] == 1
     assert admission.host_lock_available is False
 
 
@@ -428,14 +448,14 @@ def test_a_later_successful_lock_reports_the_host_lock_available_again(
 ):
     admission = IndexAdmission()
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
-    admission._job(
-        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
-    )
+    failed = admission.admit_forced([], 0, principal=USER)
+    admission._job(failed, lambda: None, lambda: None)
     after_failure = admission.host_lock_available
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "kb.lock"))
-    admission._job(
-        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
-    )
+    locked = admission.admit_forced([], 0, principal=USER)
+    admission._job(locked, lambda: None, lambda: None)
+    failed.close()
+    locked.close()
 
     assert (after_failure, admission.host_lock_available) == (False, True)
 
@@ -532,10 +552,10 @@ def _evidence(text):
     return embed_texts_or_raise([text], subject="Evidence", operation="t")
 
 
-async def test_evidence_encodes_queue_one_at_a_time_beside_the_kb_slot(encodes):
-    """The probed design: a re-trigger while an abandoned encode still runs
-    queues behind it and, given up, never starts; the KB slot still encodes
-    meanwhile; a later re-trigger runs once the first settles."""
+async def test_an_abandoned_evidence_encode_holds_the_one_order(encodes):
+    """A re-trigger while an abandoned encode still runs queues behind it and,
+    given up, never starts; a KB encode waits for it too (#2920); a later
+    re-trigger runs once the first settles."""
     encodes.held = {"first"}
     slot = index_slot.evidence_slot
     first = asyncio.create_task(_evidence("first"))
@@ -546,15 +566,174 @@ async def test_evidence_encodes_queue_one_at_a_time_beside_the_kb_slot(encodes):
 
     retrigger = asyncio.create_task(_evidence("retrigger"))
     await _until(lambda: slot.queued() == 2)
-    kb = IndexAdmission().admit_forced(["kb"], 0, principal=USER)
-    assert await _embed(kb, "kb") == [[0.1]], "the KB slot waited for evidence"
+    kb_ticket = IndexAdmission().admit_forced(["kb"], 0, principal=USER)
+    kb = asyncio.create_task(_embed(kb_ticket, "kb"))
+    await _until(lambda: kb_ticket._future is not None)
     retrigger.cancel()
     with pytest.raises(asyncio.CancelledError):
         await retrigger
+    assert not kb_ticket._future.done(), "the KB encode ran beside evidence"
     encodes.release.set()
+    assert await kb == [[0.1]]
     await _settled(slot)
     later = await _evidence("later")
 
     assert later == [[0.1]]
     assert encodes.started == ["first", "kb", "later"]
-    assert encodes.most_active["evidence-index"] == 1
+    assert encodes.most_active == {"index-encode": 1}
+
+
+# ---------------------------------------------------------------------------
+# One order: both slots, in submit order (#2920)
+# ---------------------------------------------------------------------------
+
+
+def _submit(slot, text, **forced):
+    ticket = slot.admit_forced([text], 0, **forced)
+    future, ahead = ticket.run([text], guard_seconds=60.0)
+    return ticket, future, ahead
+
+
+async def test_a_kb_encode_runs_after_the_evidence_encodes_submitted_before_it(
+    encodes, clock
+):
+    """E1 runs, E2 queues, then K1: E1, E2, K1, one at a time, and each
+    one's wait covers the guard bounds ahead of it, of either slot."""
+    encodes.held = {"E1"}
+    e1, f1, ahead_e1 = _submit(index_slot.evidence_slot, "E1")
+    await _entered(encodes, "E1")
+    e2, f2, ahead_e2 = _submit(index_slot.evidence_slot, "E2")
+    k1, fk, ahead_k1 = _submit(IndexAdmission(), "K1", principal=USER)
+
+    assert (ahead_e1, ahead_e2, ahead_k1) == (0.0, 60.0, 120.0)
+    assert not f2.done() and not fk.done()
+    encodes.release.set()
+    await asyncio.wait_for(asyncio.wrap_future(fk), 30)
+
+    assert encodes.started == ["E1", "E2", "K1"]
+    assert encodes.most_active == {"index-encode": 1}
+
+
+async def test_a_forced_evidence_encode_runs_after_the_kb_encode_queued_before_it(
+    encodes, clock
+):
+    encodes.held = {"K0"}
+    admission = IndexAdmission()
+    _, _, _ = _submit(admission, "K0", principal=USER)
+    await _entered(encodes, "K0")
+    _, fk1, _ = _submit(admission, "K1", principal=USER)
+    _, fe, ahead_e = _submit(index_slot.evidence_slot, "E")
+
+    assert ahead_e == 120.0
+    encodes.release.set()
+    await asyncio.wait_for(asyncio.wrap_future(fe), 30)
+
+    assert encodes.started == ["K0", "K1", "E"]
+    assert encodes.most_active == {"index-encode": 1}
+
+
+async def test_with_the_host_lock_unwritable_no_two_encodes_overlap(
+    encodes, monkeypatch, tmp_path
+):
+    """The order's one thread alone serialises both slots in-process."""
+    monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
+    encodes.held = {"K"}
+    _, fk, _ = _submit(IndexAdmission(), "K", principal=USER)
+    await _entered(encodes, "K")
+    _, fe, _ = _submit(index_slot.evidence_slot, "E")
+
+    assert not fe.done(), "the evidence encode ran beside the KB one"
+    encodes.release.set()
+    await asyncio.wait_for(asyncio.wrap_future(fe), 30)
+
+    assert encodes.started == ["K", "E"]
+    assert encodes.most_active == {"index-encode": 1}
+    assert index_slot.index_admission.host_lock_available is False
+
+
+def test_a_stuck_evidence_encode_answers_a_kb_write_hung(cloud):
+    stuck = index_slot.evidence_slot.admit_forced(["e"], 8_000)
+    stuck.guard_seconds = 380.0
+    stuck._started()
+    cloud.now = 381.0
+
+    refused = _refused(IndexAdmission(), 1)
+    stuck.close()
+
+    assert (refused.reason, refused.retry_after_seconds) == ("hung", 60)
+    IndexAdmission().admit(["c"], 1, principal=USER, window_seconds=WINDOW).close()
+
+
+async def test_a_pending_evidence_encode_counts_as_queue_ahead_of_a_kb_write(
+    encodes, cloud
+):
+    """Charged at its UTF-8 bytes plus 2 a text (Q2): a document that fits an
+    empty queue is refused ``busy`` beside it, with that wait, and admitted
+    once it settles."""
+    text = "x" * 2_000
+    most = index_max_tokens(WINDOW - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
+    IndexAdmission().admit(["c"], most, principal=USER, window_seconds=WINDOW).close()
+    encodes.held = {text}
+    evidence = asyncio.create_task(_evidence(text))
+    await _entered(encodes, text)
+
+    refused = _refused(IndexAdmission(), most)
+    encodes.release.set()
+    await evidence
+    await _settled(index_slot.evidence_slot)
+
+    wait = math.ceil(index_slot.index_estimate_seconds(len(text) + 2))
+    assert (refused.reason, refused.retry_after_seconds) == ("busy", wait)
+    assert wait == 26  # 2,002 x 25 core-ms on 2 cores
+    admitted = IndexAdmission().admit(
+        ["c"], most, principal=USER, window_seconds=WINDOW
+    )
+    admitted.close()
+
+
+async def test_a_reactive_vectorization_that_times_out_behind_a_kb_encode_never_runs(
+    encodes, monkeypatch
+):
+    """Q3: queued behind a longer KB encode, it gives up for the turn, and its
+    evidence ticket is released unstarted."""
+    from faultmaven.config.settings import get_settings
+    from faultmaven.core.investigation.milestone_engine.engine import MilestoneEngine
+
+    encodes.held = {"kb"}
+    kb, fk, _ = _submit(IndexAdmission(), "kb", principal=USER)
+    await _entered(encodes, "kb")
+    issued = []
+    real_admit = index_slot.evidence_slot.admit_forced
+
+    def _admit(*args, **kwargs):
+        issued.append(real_admit(*args, **kwargs))
+        return issued[-1]
+
+    monkeypatch.setattr(index_slot.evidence_slot, "admit_forced", _admit)
+    monkeypatch.setattr(
+        get_settings().agent, "vectorization_reactive_timeout_seconds", 1
+    )
+    engine = MilestoneEngine(
+        llm_provider=AsyncMock(),
+        repository=MagicMock(save=AsyncMock()),
+        investigation_tools=MagicMock(),
+    )
+    engine.vectorizer._vectorize_evidence = lambda _ev, _ctx: _vectorize()
+    upload = MagicMock(size_bytes=1_000_000)
+    case = MagicMock(
+        evidence=[MagicMock(evidence_id="ev-1", source_file_id="f-1")],
+        find_uploaded_file=MagicMock(return_value=upload),
+    )
+    context = MagicMock(in_memory_case=case, case_id="case-1", case_repository=None)
+
+    text = await engine.vectorizer._reactive_vectorize(
+        "ev-1", context, "before", "low_confidence"
+    )
+
+    assert text == "before"
+    assert [t._future.cancelled() for t in issued] == [True]
+    assert index_slot.evidence_slot.queued() == 1, "the evidence ticket held on"
+    encodes.release.set()
+    await asyncio.wait_for(asyncio.wrap_future(fk), 30)
+    await _settled(index_slot.evidence_slot)
+    assert encodes.started == ["kb"]

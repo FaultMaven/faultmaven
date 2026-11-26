@@ -695,13 +695,17 @@ class DatabaseTimeoutsStatus(BaseModel):
 
 
 class KnowledgeIndexingStatus(BaseModel):
-    """The KB indexing window and this process's indexing slot (#2055).
+    """The KB indexing window and this process's encode order (#2055, #2920).
 
     Numbers, so not a ``features`` entry. A KB encode that never returns is
     killed at its time bound, and the slot frees once its worker is reaped
     (#2851). While one is held past that bound, and with a window set, every
     later KB write is refused 503: ``encoding_for_seconds`` far past any
-    document's estimate is that state.
+    document's estimate is that state. An evidence encode past its bound is
+    not killed: it holds the order until its thread settles or the process
+    restarts. A job waiting for the host lock behind another process's stuck
+    encode keeps its estimate queued: a later write it leaves no room for
+    answers ``busy``. ``waiting_for_host_lock`` shows it.
     """
 
     window_seconds: int = Field(
@@ -714,26 +718,26 @@ class KnowledgeIndexingStatus(BaseModel):
     )
     queued: int = Field(
         description=(
-            "KB indexing encodes held in this process: the running one and the "
+            "This process's encodes, KB and evidence: the running one and the "
             "ones waiting their turn."
         )
     )
     encoding_for_seconds: Optional[float] = Field(
         description=(
-            "How long this process's running KB indexing encode has run; null "
+            "How long this process's running encode, KB or evidence, has run; null "
             "when none runs."
         )
     )
     host_lock_available: bool = Field(
         description=(
             "False while this process's latest attempt to open or lock the "
-            "host lock file failed: its KB encodes then run without "
+            "host lock file failed: its encodes, KB or evidence, then run without "
             "serialising against the other worker processes of the container."
         )
     )
     waiting_for_host_lock: bool = Field(
         description=(
-            "True while this process's indexing slot is blocked on the host "
+            "True while this process's encode order is blocked on the host "
             "lock, behind another worker process's encode."
         )
     )

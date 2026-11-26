@@ -387,8 +387,8 @@ async def store_in_vector_db_background(
     The embed itself runs through ``embedding_guard.embed_texts_or_raise``,
     which bounds it by its UTF-8 bytes, on the evidence slot: one evidence
     encode at a time per process, in this process at ``ENCODE_BATCH_SIZE``, so
-    a re-trigger queues behind an encode still running, and never on the KB
-    indexing slot (#2055, #2851).
+    a re-trigger queues behind an encode still running, in the KB indexing
+    slot's one order, under its host lock (#2055, #2851, #2920).
 
     Args:
         case_id: Case identifier

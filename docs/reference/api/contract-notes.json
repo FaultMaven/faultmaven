@@ -1,6 +1,12 @@
 {
-  "contractVersion": "16.2.0",
+  "contractVersion": "16.3.0",
   "entries": [
+    {
+      "body": "MINOR: same shape; no first-party client reads `knowledge_indexing`.",
+      "level": "MINOR",
+      "title": "`knowledge_indexing`'s `queued`, `encoding_for_seconds`, `host_lock_available` and `waiting_for_host_lock` cover case evidence encodes too: one encode order per process (#2920).",
+      "version": "16.3.0"
+    },
     {
       "body": "This widens 13.1.0's \"`metadata` exactly `{\"access\": \"restricted\"}`\". `n`\nis an integer from 1, by first appearance of the runbook among the redacted\nentries of its one list (a transcript row's, or a turn response's), derived\nfrom nothing else: never the id, another list, or a readable entry. Entries\nsharing `n` are sections of one runbook; one with no `metadata.document_id`\nhas its own. `title`, `document_id` and `trigger` stay withheld.\n\nMINOR: a key added to an open `metadata` object. First-party clients match\n`metadata.access` only (copilot-ui, shared by the dashboard; the Slack agent\nregenerates); one that ignores the key counts one runbook per entry.",
       "level": "MINOR",

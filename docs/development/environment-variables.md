@@ -556,8 +556,21 @@ BGE-M3 first (#2851): every KB write takes at least about 20 s, so the most
 tokens one request can index is `(window − 32) × cores / 0.025`, 2 s allowed
 for the token count (at 2 cores, 2,240 at the 60 s floor and 45,440 at 600 s),
 and `verify-batch` fits about
-`window / (30 + estimate)` drafts in one request. KB indexing encodes run one
-at a time per container. The token count runs first, in a worker, and its
+`window / (30 + estimate)` drafts in one request. Encodes run one at a time
+per container, KB indexing and case evidence alike: in each serving process
+they share one queue, run in the order they were submitted, and each takes the
+container's host lock (#2920). A pending evidence encode counts as queue ahead of
+a KB write, charged at its UTF-8 bytes plus 2 a text at the same 25 core-ms, an
+upper bound of about 2-3x its tokens, so a `Retry-After` given beside one is
+an upper estimate. The queue counts this process's encodes only: an encode
+in another serving process is waited for on the host lock, so an evidence
+encode behind it waits within its own time bound alone, and one that never
+returns (an evidence encode cannot be killed) holds this process's queue
+until its thread settles or the process restarts, and leaves the other
+processes' queued writes answered `KNOWLEDGE_EMBEDDER_TIMEOUT` and their new
+ones 503 once no room is left (`waiting_for_host_lock` shows it). A reactive
+vectorization queued behind a longer KB encode gives up for that turn and
+never runs. The token count runs first, in a worker, and its
 time is spent from the window: on an empty queue a document is admitted or
 answered 413 unless its count waited for a slot or ran past its 2 s
 allowance (then it can be answered 503); a count that finds no slot within its wait is answered

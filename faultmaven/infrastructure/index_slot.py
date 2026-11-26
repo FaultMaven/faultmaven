@@ -6,18 +6,24 @@ read timeout a document that takes longer is cut off after all the work. And
 nothing serialised the encodes: two uploads on one pod shared its CPUs, and
 both overran. This module is both halves, and what an encode costs here.
 
-**Two slots, one encode each.** Every KB indexing encode is driven from one
-single-thread executor per process (:data:`index_admission`), which takes an
-exclusive ``flock`` on a file in the container's temp directory first, and
+**One order, one encode at a time (#2920).** Both slots' encodes, KB and
+evidence, are driven from one single-thread executor per process in submit
+order. It takes an exclusive ``flock`` on a file in the container's temp
+directory first (the host lock), and a KB encode then
 runs in an ``encode_worker`` process its phase bounds kill (Principle 14,
 #2851): the thread waits on a file lock and a worker, which is I/O. The file is
 per container, which is the scope of the CPU quota, so the worker processes of
-one pod take turns too. Evidence encodes run in this process on a second
-single-thread executor (:data:`evidence_slot`), with no host lock: a re-trigger
-queues behind an encode still running rather than starting beside it, and a KB
-encode does not wait for one. Query embeds use neither.
+one pod take turns too. An evidence encode runs in this process. Query embeds
+use neither.
 
-**The tickets.** A slot holds its tickets and is touched only on the event
+**Scope: this process's tickets.** ``flock`` only excludes the other
+processes, whose tickets nothing here counts. An evidence encode submitted between a KB
+ticket's ``admit`` and its ``run`` is counted by its wait bound, not its
+window. A stuck evidence encode cannot be killed and holds the host lock: the
+other processes' writes wait in ``flock`` (``queued_too_long``) or are ``busy``.
+
+**The tickets.** Both slots hold one list, which ``ahead``, admission's room,
+``Retry-After``, ``hung`` and the status count, touched only on the event
 loop's thread. A ticket is released when its encode's thread settles, or when
 its encode never started. A caller that gives up while its job waits for the
 host lock stops it before it encodes; one that gives up mid-encode kills a KB
@@ -57,7 +63,7 @@ logger = logging.getLogger(__name__)
 # The embedding guard's constant term: a worker's BGE-M3 load, 180 s. Measured
 # in the image at 2 CPUs a cold worker loaded in 14.1-15.5 s (#2851), so this
 # is about 12x, the headroom of a hang bound: a slower core, a sub-1 CPU quota
-# or a load beside an evidence encode stays inside it. The guard covers it,
+# or a load beside other work stays inside it. The guard covers it,
 # because a write is not cheap to repeat (see ``embedding_guard``).
 EMBED_BATCH_LOAD_SECONDS = 180.0
 
@@ -66,16 +72,14 @@ EMBED_BATCH_LOAD_SECONDS = 180.0
 #: four encoded (19.3-20.7 s cold, the weights evicted; 17.4-19.1 s warm). The
 #: load is mostly one core, so this is wall seconds, not core-seconds, and the
 #: disk read is under 1 s of it. A slower core, a CPU quota under 1 or a load
-#: beside an evidence encode can take longer, and the encode overruns the
-#: window; four 8,192-token texts beside an evidence encode of the same
-#: passed the guard too, and were killed (#2920).
+#: beside other work can take longer, and the encode overruns the window.
 WORKER_LOAD_SECONDS = 30.0
 
 #: What the 413 line allows for an uncontended token count, which the KB
 #: routes spend from the window before admission (#2851): spawn to answer,
 #: tokenizer load included, measured 1.4-1.8 s (the largest admitted runbook,
 #: in the image at 2 CPUs). So on an empty queue only a count that waited for
-#: a slot, or ran past its 2 s allowance (beside an evidence encode, or under
+#: a slot, or ran past its 2 s allowance (beside another process's encode, or under
 #: a quota below 2 cores), leaves a document under the line too little room.
 COUNT_ALLOWANCE_SECONDS = 2.0
 
@@ -131,10 +135,7 @@ HUNG_RETRY_SECONDS = 60
 #: directory, the scope its CPU quota covers.
 HOST_LOCK_PATH = os.path.join(tempfile.gettempdir(), "faultmaven-kb-index.lock")
 
-_KB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kb-index")
-_EVIDENCE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="evidence-index"
-)
+_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="index-encode")
 
 #: The clock every ticket reads. Monotonic; tests substitute it.
 _clock: Callable[[], float] = time.monotonic
@@ -202,7 +203,7 @@ class ModelNotLoaded(RuntimeError):
 def encode_in_worker(
     ticket: "IndexTicket", texts: List[str], guard_seconds: float
 ) -> Optional[List[List[float]]]:
-    """On the KB slot's thread: one ``encode_worker`` over ``texts``, its
+    """On the order's thread: one ``encode_worker`` over ``texts``, its
     vectors, or None when it gave none (logged with how it ended). Raises
     ``TimeoutError`` past its phases, ``ModelNotLoaded`` when the model would
     not load."""
@@ -386,7 +387,7 @@ class IndexTicket:
             if other is not self
         )
         self.guard_seconds = guard_seconds
-        self._future = self._slot._executor.submit(
+        self._future = _EXECUTOR.submit(
             contextvars.copy_context().run,
             self._slot._job,
             self,
@@ -412,7 +413,7 @@ class IndexTicket:
             return not self._encoding
 
     def _attach(self, task: "asyncio.Task[Any]") -> bool:
-        """On the slot's thread, the worker's task as its first step: False
+        """On the order's thread, the worker's task as its first step: False
         when the caller gave up before it existed, which ``abandon`` could not
         cancel."""
         with self._gate:
@@ -420,7 +421,7 @@ class IndexTicket:
             return not self._abandoned
 
     def _begin(self) -> bool:
-        """On the slot's thread, once it holds the host lock: go on, unless the
+        """On the order's thread, once it holds the host lock: go on, unless the
         caller gave up meanwhile."""
         with self._gate:
             self._encoding = not self._abandoned
@@ -432,18 +433,13 @@ class IndexTicket:
 
 
 class EncodeSlot:
-    """One encode at a time: a single-thread executor and its tickets, held on
-    the event loop's thread; with ``host_lock``, under the host lock too."""
+    """One kind of encode; the order's state is the class's, both slots' (#2920)."""
 
-    def __init__(self, executor: ThreadPoolExecutor, *, host_lock: bool) -> None:
-        self._executor = executor
-        self._host_lock = host_lock
-        self._tickets: List[IndexTicket] = []
-        #: False while this process's latest attempt to open or lock the host
-        #: lock file failed.
-        self.host_lock_available = True
-        #: True while the slot's thread is blocked in ``flock``.
-        self.waiting_for_host_lock = False
+    _tickets: List[IndexTicket] = []
+    #: False while the latest attempt here to open or lock the host lock failed.
+    host_lock_available = True
+    #: True while the order's thread is blocked in ``flock``.
+    waiting_for_host_lock = False
 
     #: What each ticket is charged beyond its estimate.
     load_seconds = 0.0
@@ -458,7 +454,7 @@ class EncodeSlot:
     def _encode(
         self, ticket: IndexTicket, texts: List[str], guard_seconds: float
     ) -> Optional[List[List[float]]]:
-        """The encode, on the slot's thread: in this process."""
+        """The encode, on the order's thread: in this process."""
         from faultmaven.infrastructure.model_cache import model_cache
 
         vectors = model_cache.embed_texts_sync(texts)
@@ -496,10 +492,10 @@ class EncodeSlot:
             self._tickets.remove(ticket)
 
     def _job(self, ticket: IndexTicket, work: Callable[[], Any], started) -> Any:
-        """On the slot's thread: the host lock if this slot takes one, then the
+        """On the order's thread: the host lock, then the
         work, unless the caller gave up while it waited. Closing the descriptor
         releases the lock, when the work returns or raises."""
-        fd = self._lock_host() if self._host_lock else None
+        fd = self._lock_host()
         try:
             if not ticket._begin():
                 return None
@@ -513,12 +509,12 @@ class EncodeSlot:
         fd: Optional[int] = None
         try:
             fd = os.open(HOST_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
-            self.waiting_for_host_lock = True
+            EncodeSlot.waiting_for_host_lock = True
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             finally:
-                self.waiting_for_host_lock = False
-            self.host_lock_available = True
+                EncodeSlot.waiting_for_host_lock = False
+            EncodeSlot.host_lock_available = True
             return fd
         except OSError as exc:
             if fd is not None:
@@ -530,7 +526,7 @@ class EncodeSlot:
                     HOST_LOCK_PATH,
                     type(exc).__name__,
                 )
-            self.host_lock_available = False
+            EncodeSlot.host_lock_available = False
             return None
 
 
@@ -539,13 +535,10 @@ class IndexAdmission(EncodeSlot):
 
     load_seconds = WORKER_LOAD_SECONDS
 
-    def __init__(self) -> None:
-        super().__init__(_KB_EXECUTOR, host_lock=True)
-
     def _encode(
         self, ticket: IndexTicket, texts: List[str], guard_seconds: float
     ) -> Optional[List[List[float]]]:
-        """The encode, on the slot's thread: in a worker."""
+        """The encode, on the order's thread: in a worker."""
         return encode_in_worker(ticket, texts, guard_seconds)
 
     def retry_after_seconds(self, reason: str = "busy") -> int:
@@ -609,5 +602,5 @@ class IndexAdmission(EncodeSlot):
 #: The process's KB indexing slot and admission.
 index_admission = IndexAdmission()
 
-#: The process's evidence slot: no window and no host lock.
-evidence_slot = EncodeSlot(_EVIDENCE_EXECUTOR, host_lock=False)
+#: The process's evidence slot: no window, in the same order.
+evidence_slot = EncodeSlot()

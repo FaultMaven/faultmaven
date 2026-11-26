@@ -3586,7 +3586,8 @@ class AgentSettings(BaseSettings):
             "orchestration layer — it's a fire-and-forget background "
             "task and time-bounding it only guarantees wasted work when "
             "encode outlasts the bound. The embedding guard still bounds "
-            "every encode (#2055)."
+            "every encode (#2055). A reactive vectorization queued behind a "
+            "longer KB encode gives up for that turn and never runs (#2920)."
         ),
     )
 

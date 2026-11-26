@@ -828,12 +828,23 @@ def _own_kb_index_host_lock(_kb_index_lock_dir, monkeypatch):
     The slot ``flock``s ``tempfile.gettempdir()``'s lock, which every xdist
     worker, every other pytest run and any local API process on the box share:
     one holding it fails another's encode deterministically. ``index_slot``
-    imports neither torch nor sentence_transformers.
+    imports neither torch nor sentence_transformers. And its own encode order
+    (#2920): the tickets and the host lock's state are the process's, shared by
+    every slot. The test leaves the order idle and its tickets released: a
+    leak fails here, the test that leaked it, never charging the next.
     """
     from faultmaven.infrastructure import index_slot
 
     path = _kb_index_lock_dir / f"{next(_KB_INDEX_LOCK_IDS)}.lock"
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(path))
+    tickets: list = []
+    monkeypatch.setattr(index_slot.EncodeSlot, "_tickets", tickets)
+    monkeypatch.setattr(index_slot.EncodeSlot, "host_lock_available", True)
+    monkeypatch.setattr(index_slot.EncodeSlot, "waiting_for_host_lock", False)
+    yield
+    # Bounded: an order left blocked fails the teardown, not the run.
+    index_slot._EXECUTOR.submit(lambda: None).result(timeout=30)
+    assert tickets == [], f"the test left {len(tickets)} encode ticket(s) held"
 
 
 #: The model workers no test spawns for real (#2851): ``REAL_MODEL_WORKERS``.
