@@ -178,7 +178,8 @@ def _evidence_likelihood(hypothesis, *, confident_refutes_only: bool = False) ->
         for link in links
     )
     raw = hypothesis.initial_likelihood + SUPPORT_LIKELIHOOD_STEP * supports
-    return max(0.0, min(1.0, raw - REFUTE_LIKELIHOOD_STEP * refutes))
+    # Quantised: the raw float sum lands a grid value under its bar (0.7 - 2 * 0.20).
+    return round(max(0.0, min(1.0, raw - REFUTE_LIKELIHOOD_STEP * refutes)), 9)
 
 
 def _confident_causal_support(links, categories: dict) -> bool:
@@ -754,17 +755,17 @@ class HypothesisManager:
     ) -> Hypothesis:
         """Age an ignored hypothesis that causal evidence does not support.
 
-        ``iterations_without_progress`` otherwise advances ONLY when a hypothesis
-        is engaged (evidence linked / a likelihood update that fails to move
-        belief >= 5%). A prior that is simply IGNORED — never touched by
-        evidence — keeps ``iterations_without_progress == 0`` forever, so
-        ``apply_likelihood_decay`` no-ops and stagnation-based anchoring never
-        fires on it: it lingers at its prior as a permanent unrefuted sibling
-        (#713). This sweep closes that gap with an age signal: once a hypothesis
-        has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns since its last
-        progress, its stagnation counter advances by one per turn that COUNTS,
-        feeding the SAME decay/anchoring machinery a repeatedly-tested hypothesis
-        already drives.
+        ``iterations_without_progress`` otherwise advances ONLY when an evidence
+        update fails to move belief by a step (``_moves_a_step``); a model
+        restatement advances nothing (#1690). A prior that is simply IGNORED —
+        never touched by evidence — keeps ``iterations_without_progress == 0``
+        forever, so ``apply_likelihood_decay`` no-ops and stagnation-based
+        anchoring never fires on it: it lingers at its prior as a permanent
+        unrefuted sibling (#713). This sweep closes that gap with an age signal:
+        once a hypothesis has gone ``IGNORED_STAGNATION_TURN_THRESHOLD`` turns
+        since its last progress, its stagnation counter advances by one per turn
+        that COUNTS, feeding the SAME decay/anchoring machinery a
+        repeatedly-tested hypothesis already drives.
 
         A turn counts (``turn_counts``, decided by the caller for the whole turn)
         when it makes the prior's stagnation more evident: the investigation

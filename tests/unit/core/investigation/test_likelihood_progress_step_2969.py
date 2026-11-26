@@ -12,7 +12,10 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.hypothesis_manager import (
+    STAGNATION_HORIZON_ITERATIONS,
+    HypothesisManager,
+)
 from faultmaven.modules.case.contracts import (
     EvidenceStance,
     Hypothesis,
@@ -154,3 +157,30 @@ def test_a_model_lowering_of_one_step_retires_past_a_hedged_refutes(old, delta, 
     HypothesisManager().update_hypothesis_likelihood(h, new, _TURN, "test result")
 
     assert h.state == state
+
+
+def _refuted_twice(likelihood: float) -> Hypothesis:
+    refutes = [_link(EvidenceStance.REFUTES, 0.9) for _ in range(2)]
+    return _hypothesis(likelihood, 0.7, *refutes)
+
+
+def test_the_evidence_formula_lands_on_the_grid_value_3103():
+    """0.7 - 2 x 0.20 is 0.29999999999999993 in floats, under the 0.30 bar."""
+    h = _hypothesis(0.7, 0.7)
+    manager = HypothesisManager()
+
+    manager.link_evidence(h, "ev_1", EvidenceStance.REFUTES, 1)
+    manager.link_evidence(h, "ev_2", EvidenceStance.REFUTES, 2)
+
+    assert h.likelihood == 0.3
+    assert h.state == HypothesisState.ACTIVE
+
+
+def test_a_stagnant_hypothesis_at_the_band_edge_is_inconclusive_3103():
+    h = _refuted_twice(0.3)
+    h.iterations_without_progress = STAGNATION_HORIZON_ITERATIONS
+
+    HypothesisManager().update_likelihood_from_evidence(h, _TURN)
+
+    assert h.likelihood == 0.3
+    assert h.state == HypothesisState.INCONCLUSIVE
