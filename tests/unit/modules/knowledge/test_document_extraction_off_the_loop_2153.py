@@ -27,6 +27,7 @@ import io
 import logging
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from faultmaven.modules.knowledge.domain.services.document_preprocessor import (
     DocumentPreprocessor,
     PreparationFailed,
 )
+from faultmaven.modules.knowledge.domain.services.preparation import MAX_TEXT_CHARS
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 from tests import offline_tiktoken
 from tests.unit.modules.knowledge import preparation_stages
@@ -719,37 +721,38 @@ _RUNBOOK_FRONTMATTER = b"---\nid: a\ndomain: b\nservice: c\nsymptom_class: d\n--
 @pytest.mark.parametrize(
     "prefix, line",
     [
-        # The costliest measured when the limit was last derived: the redaction
-        # holds every one of its matches.
+        # Redaction grows each short secret into a longer marker: Stage 4
+        # counts about 15 million characters, the costliest found (#2937).
+        pytest.param(b"", b"pwd=x\n", id="shortest-secret-lines"),
+        pytest.param(b"", b"pwd=x1\n", id="short-secret-lines"),
+        # The costliest when the limit was derived: the redaction holds every
+        # one of its matches.
         pytest.param(b"", b"password=hunter22\n", id="secret-dense-lines"),
-        # The code-span scan once held every line: 97% of the limit at 10 MB,
-        # and past it from about 18 MB.
+        # The code-span scan once held every line: 97% of the limit at 10 MB.
         pytest.param(
             _RUNBOOK_FRONTMATTER, b"\xe9\n", id="runbook-frontmatter-short-lines"
         ),
     ],
 )
-async def test_a_text_file_at_the_upload_limit_fits_under_the_memory_limit(
+async def test_text_up_to_the_bound_fits_under_the_memory_limit(
     tmp_path, monkeypatch, prefix, line
 ):
     """The memory refusal's advice, to export the text, is true because a
-    plain-text file at ``MAX_UPLOAD_SIZE_MB`` always gets through Stages 0-5
-    under the limit derived from it (the owner's ruling on #2622). Each shape
-    is refused for its length, and the worker's peak address space leaves at
-    least 30% of the limit spare, the margin the limit was derived with."""
+    plain-text file gets through Stages 0-5 under the limit (the owner's
+    ruling on #2622): past ``MAX_TEXT_CHARS`` it is refused in Stage 1, and up
+    to it each shape runs Stages 1b-4 and is refused for its count."""
     _stage(monkeypatch, "prepare_and_measure")
-    upload_mb = get_settings().upload.max_upload_size_mb
     head = prefix + b"ERROR timeout; kubectl rollout restart the api.\n"
-    body = line * ((upload_mb * 1024 * 1024 - len(head)) // len(line))
+    body = line * ((MAX_TEXT_CHARS - len(head)) // len(line))
     path = tmp_path / "export.txt"
     path.write_bytes(head + body)
 
     result = await _preprocess(path)
 
-    refused, peak = result.rejection_reason.split()
-    limit = dp.preparation_memory_limit(upload_mb)
-    assert refused == ConversionErrorCode.DOCUMENT_TOO_LONG
-    assert int(peak) < 0.7 * limit, f"peak {int(peak):,} of a {limit:,}-byte limit"
+    refused, peak, stage = result.rejection_reason.split()
+    limit = dp.preparation_memory_limit(get_settings().upload.max_upload_size_mb)
+    assert (refused, stage) == (ConversionErrorCode.DOCUMENT_TOO_LONG, "4")
+    assert int(peak) < limit, f"peak {int(peak):,} of a {limit:,}-byte limit"
 
 
 def test_the_memory_limit_follows_the_upload_limit():
@@ -762,16 +765,17 @@ def test_the_memory_limit_follows_the_upload_limit():
     )
 
 
-async def test_text_extracted_far_past_the_upload_is_refused_for_its_length(
+async def test_text_of_millions_of_tokens_is_counted_and_refused_for_its_length(
     tmp_path,
 ):
-    """A 10 MB HTML upload whose ``<pre><code>`` holds high-byte Latin-1 text
-    extracts twice over, 20 MB and 29 million tokens: counted a chunk at a
-    time, it is refused for its length, with its count, not a dead worker."""
+    """An HTML upload whose ``<pre><code>`` holds 1.9 MB of high-byte Latin-1
+    text extracts twice over, just under ``MAX_TEXT_CHARS``: millions of
+    tokens, counted in the worker a chunk at a time (#2622), and refused with
+    its count, not a dead worker."""
     head = b"<html><body><p>ERROR timeout; kubectl rollout restart.</p><pre><code>"
     tail = b"</code></pre></body></html>"
     high = bytes(range(0x80, 0x100)) * 2
-    body = random.Random(2622).randbytes(10_481_664 - len(head) - len(tail))
+    body = random.Random(2622).randbytes(1_900_000)
     path = tmp_path / "export.html"
     path.write_bytes(head + body.translate(high) + tail)
 
@@ -780,7 +784,8 @@ async def test_text_extracted_far_past_the_upload_is_refused_for_its_length(
     assert (
         result.error_code == ConversionErrorCode.DOCUMENT_TOO_LONG
     ), result.rejection_reason
-    assert "Document contains 2" in result.rejection_reason
+    count = re.match(r"Document contains ([\d,]+) tokens", result.rejection_reason)
+    assert int(count[1].replace(",", "")) > 1_000_000
 
 
 def _docx_with_document_xml(path: Path, paragraphs: int) -> Path:

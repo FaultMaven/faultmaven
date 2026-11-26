@@ -20,6 +20,7 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.styles import CT_Styles
 
 from faultmaven.modules.knowledge.domain.services.document_parser import DocumentParser
+from faultmaven.modules.knowledge.domain.services.preparation import MAX_TEXT_CHARS
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
 
@@ -103,14 +104,16 @@ def test_500_paragraphs_scan_the_styles_once_per_distinct_style(
             lambda self, key, _scan=scan: scans.append(key) or _scan(self, key),
         )
 
-    text = DocumentParser().extract_document_text(path).text
+    text = DocumentParser().extract_document_text(path, max_chars=MAX_TEXT_CHARS).text
 
     assert text.count("Restart api pod") == 500
     assert len(scans) <= len(styles), f"{len(scans)} style scans for 500 paragraphs"
 
 
 def test_headings_and_tables_extract_as_before(tmp_path):
-    parsed = DocumentParser().extract_document_text(_styled(tmp_path))
+    parsed = DocumentParser().extract_document_text(
+        _styled(tmp_path), max_chars=MAX_TEXT_CHARS
+    )
 
     assert parsed.text == _STYLED_TEXT
 
@@ -123,6 +126,6 @@ def test_a_heading_named_default_style_heads_every_unstyled_paragraph(tmp_path):
     doc.add_paragraph("Symptoms", style="Heading 2")
     path = _save(doc, tmp_path / "heading-default.docx")
 
-    assert DocumentParser().extract_document_text(path).text == (
-        "# Failover\n\n## Symptoms"
-    )
+    assert DocumentParser().extract_document_text(
+        path, max_chars=MAX_TEXT_CHARS
+    ).text == ("# Failover\n\n## Symptoms")

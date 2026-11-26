@@ -21,6 +21,7 @@ from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentRefusal,
     DocumentTooComplex,
 )
+from faultmaven.modules.knowledge.domain.services.preparation import MAX_TEXT_CHARS
 
 
 @pytest.fixture
@@ -139,7 +140,7 @@ class TestTxtExtraction:
         txt_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(txt_file).text
+        result = parser.extract_document_text(txt_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert result == content
@@ -153,7 +154,7 @@ class TestTxtExtraction:
         txt_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(txt_file).text
+        result = parser.extract_document_text(txt_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert result == content
@@ -167,7 +168,7 @@ class TestTxtExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.extract_document_text(txt_file)
+            parser.extract_document_text(txt_file, max_chars=MAX_TEXT_CHARS)
 
     @pytest.mark.unit
     def test_extract_txt_whitespace_only_raises(self, parser, tmp_path):
@@ -178,7 +179,7 @@ class TestTxtExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.extract_document_text(txt_file)
+            parser.extract_document_text(txt_file, max_chars=MAX_TEXT_CHARS)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +199,7 @@ class TestMarkdownExtraction:
         md_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(md_file).text
+        result = parser.extract_document_text(md_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert result == content
@@ -211,7 +212,7 @@ class TestMarkdownExtraction:
         md_file.write_text("Before <!-- hidden --> After", encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(md_file).text
+        result = parser.extract_document_text(md_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "hidden" not in result
@@ -235,7 +236,7 @@ class TestMarkdownExtraction:
         md_file.write_text(content, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(md_file).text
+        result = parser.extract_document_text(md_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "TODO" not in result
@@ -251,7 +252,7 @@ class TestMarkdownExtraction:
         md_file.write_text("A <!-- c1 --> B <!-- c2 --> C", encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(md_file).text
+        result = parser.extract_document_text(md_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "c1" not in result
@@ -280,7 +281,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "# Title" in result
@@ -305,7 +306,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "Main content" in result
@@ -325,7 +326,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "```" in result
@@ -347,7 +348,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "| Name | Value |" in result
@@ -366,7 +367,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "First paragraph." in result
@@ -381,7 +382,7 @@ class TestHtmlExtraction:
         html_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(html_file).text
+        result = parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "- Alpha" in result
@@ -397,7 +398,7 @@ class TestHtmlExtraction:
 
         # Act / Assert
         with pytest.raises(ValueError, match="No extractable text"):
-            parser.extract_document_text(html_file)
+            parser.extract_document_text(html_file, max_chars=MAX_TEXT_CHARS)
 
     @pytest.mark.unit
     def test_extract_html_htm_extension(self, parser, tmp_path):
@@ -408,7 +409,7 @@ class TestHtmlExtraction:
         htm_file.write_text(html, encoding="utf-8")
 
         # Act
-        result = parser.extract_document_text(htm_file).text
+        result = parser.extract_document_text(htm_file, max_chars=MAX_TEXT_CHARS).text
 
         # Assert
         assert "Content" in result
@@ -444,7 +445,7 @@ class TestPdfExtraction:
                 {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
             ):
                 result = parser.extract_document_text(
-                    pdf_file, content_type="application/pdf"
+                    pdf_file, content_type="application/pdf", max_chars=MAX_TEXT_CHARS
                 ).text
 
         # Assert
@@ -472,7 +473,7 @@ class TestPdfExtraction:
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
             result = parser.extract_document_text(
-                pdf_file, content_type="application/pdf"
+                pdf_file, content_type="application/pdf", max_chars=MAX_TEXT_CHARS
             ).text
 
         # Assert
@@ -500,7 +501,7 @@ class TestPdfExtraction:
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
             result = parser.extract_document_text(
-                pdf_file, content_type="application/pdf"
+                pdf_file, content_type="application/pdf", max_chars=MAX_TEXT_CHARS
             ).text
 
         # Assert
@@ -526,7 +527,9 @@ class TestPdfExtraction:
             {"pypdf": MagicMock(PdfReader=MagicMock(return_value=mock_reader))},
         ):
             with pytest.raises(ValueError, match="No extractable text"):
-                parser.extract_document_text(pdf_file, content_type="application/pdf")
+                parser.extract_document_text(
+                    pdf_file, content_type="application/pdf", max_chars=MAX_TEXT_CHARS
+                )
 
     @pytest.mark.unit
     def test_extract_pdf_import_error_raises(self, parser, tmp_path):
@@ -537,7 +540,9 @@ class TestPdfExtraction:
 
         with patch.dict("sys.modules", {"pypdf": None}):
             with pytest.raises(ValueError, match="pypdf is required"):
-                parser.extract_document_text(pdf_file, content_type="application/pdf")
+                parser.extract_document_text(
+                    pdf_file, content_type="application/pdf", max_chars=MAX_TEXT_CHARS
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +579,7 @@ class TestDocxExtraction:
         )
 
         result = parser.extract_document_text(
-            docx_file, content_type="application/msword"
+            docx_file, content_type="application/msword", max_chars=MAX_TEXT_CHARS
         ).text
 
         # Assert
@@ -597,7 +602,7 @@ class TestDocxExtraction:
         )
 
         result = parser.extract_document_text(
-            docx_file, content_type="application/msword"
+            docx_file, content_type="application/msword", max_chars=MAX_TEXT_CHARS
         ).text
 
         # Assert
@@ -622,7 +627,7 @@ class TestDocxExtraction:
         )
 
         result = parser.extract_document_text(
-            docx_file, content_type="application/msword"
+            docx_file, content_type="application/msword", max_chars=MAX_TEXT_CHARS
         ).text
 
         # Assert
@@ -644,7 +649,7 @@ class TestDocxExtraction:
         )
 
         result = parser.extract_document_text(
-            docx_file, content_type="application/msword"
+            docx_file, content_type="application/msword", max_chars=MAX_TEXT_CHARS
         ).text
 
         # Assert
@@ -663,7 +668,9 @@ class TestDocxExtraction:
         with patch.dict("sys.modules", {"docx": None}):
             with pytest.raises(ValueError, match="python-docx is required"):
                 parser.extract_document_text(
-                    docx_file, content_type="application/msword"
+                    docx_file,
+                    content_type="application/msword",
+                    max_chars=MAX_TEXT_CHARS,
                 )
 
 
@@ -684,7 +691,7 @@ class TestUnsupportedFormat:
 
         # Act / Assert
         with pytest.raises(ValueError, match="Unsupported file type"):
-            parser.extract_document_text(csv_file)
+            parser.extract_document_text(csv_file, max_chars=MAX_TEXT_CHARS)
 
     @pytest.mark.unit
     def test_unsupported_mime_and_extension_raises(self, parser, tmp_path):
@@ -696,7 +703,9 @@ class TestUnsupportedFormat:
         # Act / Assert
         with pytest.raises(ValueError, match="Unsupported file type"):
             parser.extract_document_text(
-                bin_file, content_type="application/octet-stream"
+                bin_file,
+                content_type="application/octet-stream",
+                max_chars=MAX_TEXT_CHARS,
             )
 
 
@@ -715,7 +724,9 @@ class TestParseIntegration:
         log_file = tmp_path / "app.log"
         log_file.write_text("2026-03-22 ERROR: disk full", encoding="utf-8")
 
-        result = parser.extract_document_text(log_file, content_type="text/plain").text
+        result = parser.extract_document_text(
+            log_file, content_type="text/plain", max_chars=MAX_TEXT_CHARS
+        ).text
         assert "disk full" in result
 
     @pytest.mark.unit
@@ -724,7 +735,7 @@ class TestParseIntegration:
         txt_file = tmp_path / "notes.txt"
         txt_file.write_text("Some notes", encoding="utf-8")
 
-        result = parser.extract_document_text(txt_file).text
+        result = parser.extract_document_text(txt_file, max_chars=MAX_TEXT_CHARS).text
         assert result == "Some notes"
 
     @pytest.mark.unit
@@ -735,7 +746,7 @@ class TestParseIntegration:
         broken.mkdir()
 
         with pytest.raises(ValueError, match="Failed to parse broken.md"):
-            parser.extract_document_text(broken)
+            parser.extract_document_text(broken, max_chars=MAX_TEXT_CHARS)
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +815,7 @@ class TestParseFailureClassification:
         decides: a library's ``UnicodeDecodeError`` is ENCODING_ERROR."""
         from faultmaven.modules.knowledge.domain.services.preparation import prepare
 
-        def fail(self, file_path):
+        def fail(self, file_path, max_chars):
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "at /srv/tmp/notes")
 
         monkeypatch.setattr(DocumentParser, "_extract_html", fail)
@@ -866,7 +877,9 @@ def _undecodable_txt(tmp_path: Path, monkeypatch) -> tuple[Path, str]:
     monkeypatch.setattr(
         DocumentParser,
         "_extract_txt",
-        lambda self, file_path: self._read_text_with_fallback(_Undecodable()),
+        lambda self, file_path, max_chars: self._read_text_with_fallback(
+            _Undecodable()
+        ),
     )
     path = tmp_path / "notes.txt"
     path.write_text("some text that will not be read", encoding="utf-8")

@@ -21,6 +21,7 @@ from faultmaven.infrastructure.security.secret_patterns import (
 from faultmaven.modules.knowledge.domain.services.document_parser import (
     DocumentParser,
     DocumentRefusal,
+    DocumentTooLong,
     ParsedDocument,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
@@ -31,6 +32,13 @@ from faultmaven.utils.frontmatter import match_frontmatter
 from faultmaven.utils.token_estimation import _get_tiktoken_encoder
 
 MAX_TOKEN_LIMIT = 30_000
+#: The longest cl100k token is 128 bytes (128 spaces), so at most 128 characters.
+MAX_CHARS_PER_TOKEN = 128
+#: Extracted text longer than this is over ``MAX_TOKEN_LIMIT`` tokens as
+#: extracted, and is refused ``DOCUMENT_TOO_LONG`` in Stage 1, ahead of every
+#: later stage, whatever cleanup and redaction would have made of it (#2937).
+#: It bounds the extracted text only: Stage 3's markers can grow it.
+MAX_TEXT_CHARS = MAX_TOKEN_LIMIT * MAX_CHARS_PER_TOKEN
 MIN_TEXT_LENGTH = 200
 TRIAGE_SAMPLE_TOKENS = 2000
 
@@ -48,6 +56,16 @@ def _page_list(pages: tuple[int, ...]) -> str:
 def _refusal(code: str, reason: str) -> Dict[str, Any]:
     """A refusal: a ``ConversionErrorCode`` value and its sentence."""
     return {"refused": code, "reason": reason}
+
+
+def _too_long(tokens: str) -> Dict[str, Any]:
+    """``DOCUMENT_TOO_LONG``, for a document of ``tokens`` tokens."""
+    return _refusal(
+        "DOCUMENT_TOO_LONG",
+        f"Document contains {tokens} tokens (limit: {MAX_TOKEN_LIMIT:,}). "
+        "Please split the document into smaller, focused chapters "
+        "and convert each one separately.",
+    )
 
 
 def _refused_pages_left_too_little(parsed: ParsedDocument) -> Dict[str, Any]:
@@ -532,7 +550,11 @@ def prepare(
     # Stage 1: Format extraction
     enter(1)
     try:
-        parsed = DocumentParser().extract_document_text(file_path, content_type)
+        parsed = DocumentParser().extract_document_text(
+            file_path, content_type, max_chars=MAX_TEXT_CHARS
+        )
+    except DocumentTooLong:
+        return _too_long(f"more than {MAX_TOKEN_LIMIT:,}")
     except DocumentRefusal as e:
         return _refusal(e.code, str(e))
     except ValueError as e:
@@ -646,12 +668,7 @@ def prepare(
     enter(4)
     token_count, triage_sample = _measure(extracted_text)
     if token_count > MAX_TOKEN_LIMIT:
-        return _refusal(
-            "DOCUMENT_TOO_LONG",
-            f"Document contains {token_count:,} tokens (limit: {MAX_TOKEN_LIMIT:,}). "
-            "Please split the document into smaller, focused chapters "
-            "and convert each one separately.",
-        )
+        return _too_long(f"{token_count:,}")
 
     # Stage 5: Source metadata extraction
     enter(5)

@@ -55,6 +55,35 @@ class DocumentTooComplex(DocumentRefusal):
         super().__init__(message, code="DOCUMENT_TOO_COMPLEX")
 
 
+class DocumentTooLong(DocumentRefusal):
+    """The text passed the caller's ``max_chars``: ``DOCUMENT_TOO_LONG``, worded
+    by the caller, which owns the bound (#2937)."""
+
+    def __init__(self, max_chars: int) -> None:
+        super().__init__(
+            f"The extracted text passed {max_chars:,} characters",
+            code="DOCUMENT_TOO_LONG",
+        )
+
+
+class _TextBound:
+    """A running lower bound on the length of the text extraction returns,
+    to stop reading once it passes ``max_chars``: each part's length less its
+    carriage returns, separators not counted, since line endings are
+    normalised on the joined text. Every part that adds length is non-blank,
+    so a file with no text is never stopped: it answers ``NO_TEXT_LAYER``."""
+
+    def __init__(self, max_chars: int) -> None:
+        self.max_chars = max_chars
+        self.length = 0
+
+    def add(self, part: str) -> str:
+        self.length += len(part) - part.count("\r")
+        if self.length > self.max_chars:
+            raise DocumentTooLong(self.max_chars)
+        return part
+
+
 def _rebuilt_refusal(cls: type, args: tuple) -> DocumentRefusal:
     """A ``DocumentRefusal`` of ``cls`` with ``args``; ``__reduce__``'s state
     restores ``code``."""
@@ -152,19 +181,22 @@ class DocumentParser:
     }
 
     def extract_document_text(
-        self, file_path: Path, content_type: Optional[str] = None
+        self, file_path: Path, content_type: Optional[str] = None, *, max_chars: int
     ) -> ParsedDocument:
         """Extract plain text from a document file.
 
         Args:
             file_path: Path to the document file.
             content_type: MIME type hint (used if extension is ambiguous).
+            max_chars: The longest text returned. A PDF, DOCX or HTML file
+                stops reading parts once its text is sure to pass it.
 
         Returns:
             The extracted text, with a PDF's page count and refused pages.
 
         Raises:
             DocumentTooComplex: pypdf refused the whole document for its limits.
+            DocumentTooLong: the text, if any, is longer than ``max_chars``.
             MemoryError: past the preparation worker's memory limit (#2622).
             DocumentRefusal: the parser's own refusal, with its code.
             ValueError: a parser library's exception, named by its class.
@@ -186,8 +218,8 @@ class DocumentParser:
             )
 
         try:
-            extracted = extractor(file_path)
-        except (DocumentTooComplex, MemoryError):
+            extracted = extractor(file_path, max_chars)
+        except (DocumentTooComplex, DocumentTooLong, MemoryError):
             raise
         except DocumentRefusal as e:
             raise DocumentRefusal(
@@ -234,7 +266,10 @@ class DocumentParser:
         # ``(?m)^(?:Page \d+...)$``, and page-footer stripping is precisely what
         # the PDF path needs. Under CR the ``$`` never anchors, so page numbers
         # and uncollapsed blank-line runs ride into the conversion prompt.
-        return replace(extracted, text=normalize_line_endings(extracted.text))
+        text = normalize_line_endings(extracted.text)
+        if len(text) > max_chars:
+            raise DocumentTooLong(max_chars)
+        return replace(extracted, text=text)
 
     def _detect_format(self, file_path: Path, content_type: Optional[str]) -> str:
         """Determine format from MIME type or file extension."""
@@ -251,7 +286,7 @@ class DocumentParser:
             code="UNSUPPORTED_FORMAT",
         )
 
-    def _extract_pdf(self, file_path: Path) -> ParsedDocument:
+    def _extract_pdf(self, file_path: Path, max_chars: int) -> ParsedDocument:
         """Extract text from PDF using pypdf, page by page.
 
         A page pypdf's budgets refuse costs that page, and its number is kept. A
@@ -279,7 +314,7 @@ class DocumentParser:
                 exception_log_name(e),
             )
             raise DocumentTooComplex(_TOO_COMPLEX) from e
-        pages, skipped, bounds = [], [], set()
+        pages, skipped, bounds, bound = [], [], set(), _TextBound(max_chars)
         for index in range(page_count):
             try:
                 text = reader.pages[index].extract_text()
@@ -290,7 +325,7 @@ class DocumentParser:
                 bounds.add(exception_log_name(e))
                 continue
             if text and text.strip():
-                pages.append(text)
+                pages.append(bound.add(text))
 
         if skipped:
             logger.warning(
@@ -311,7 +346,7 @@ class DocumentParser:
 
         return ParsedDocument("\n\n".join(pages), page_count, tuple(skipped))
 
-    def _extract_docx(self, file_path: Path) -> str:
+    def _extract_docx(self, file_path: Path, max_chars: int) -> str:
         """Extract text from DOCX preserving structure.
 
         A paragraph's style is python-docx's own lookup of its ``w:pStyle`` id,
@@ -336,7 +371,7 @@ class DocumentParser:
             style = doc.part.get_style(style_id, WD_STYLE_TYPE.PARAGRAPH)
             return style.name if style is not None else None
 
-        parts = []
+        parts, bound = [], _TextBound(max_chars)
 
         for para in doc.paragraphs:
             text = para.text.strip()
@@ -354,13 +389,13 @@ class DocumentParser:
                     except ValueError:
                         pass
 
-            parts.append(text)
+            parts.append(bound.add(text))
 
         # Extract tables as markdown tables
         for table in doc.tables:
             table_text = self._docx_table_to_markdown(table)
             if table_text:
-                parts.append(table_text)
+                parts.append(bound.add(table_text))
 
         return "\n\n".join(parts)
 
@@ -394,12 +429,14 @@ class DocumentParser:
                 code="ENCODING_ERROR",
             )
 
-    def _extract_txt(self, file_path: Path) -> str:
-        """Read plain text file."""
+    def _extract_txt(self, file_path: Path, max_chars: int) -> str:
+        """Read plain text file. ``extract_document_text`` bounds its length:
+        the read is its whole cost."""
         return self._read_text_with_fallback(file_path)
 
-    def _extract_markdown(self, file_path: Path) -> str:
-        """Read markdown file, blanking embedded HTML comments.
+    def _extract_markdown(self, file_path: Path, max_chars: int) -> str:
+        """Read markdown file, blanking embedded HTML comments. Bounded as TXT
+        is, after the blanking, so a file of comments has no text.
 
         Routed through ``runbook_grammar.mask_html_comments`` — "THE single
         decision about what a comment is; every consumer routes here" — rather
@@ -417,7 +454,7 @@ class DocumentParser:
         """
         return mask_html_comments(self._read_text_with_fallback(file_path))
 
-    def _extract_html(self, file_path: Path) -> str:
+    def _extract_html(self, file_path: Path, max_chars: int) -> str:
         """Extract text from HTML, preserving structural elements."""
         try:
             from bs4 import BeautifulSoup
@@ -435,7 +472,7 @@ class DocumentParser:
         ):
             tag.decompose()
 
-        parts = []
+        parts, bound = [], _TextBound(max_chars)
         for element in soup.find_all(
             [
                 "h1",
@@ -455,19 +492,21 @@ class DocumentParser:
         ):
             if element.name and element.name.startswith("h"):
                 level = int(element.name[1])
-                parts.append("#" * level + " " + element.get_text(strip=True))
+                parts.append(
+                    bound.add("#" * level + " " + element.get_text(strip=True))
+                )
             elif element.name in ("pre", "code"):
                 code_text = element.get_text()
                 if code_text.strip():
-                    parts.append(f"```\n{code_text}\n```")
+                    parts.append(bound.add(f"```\n{code_text}\n```"))
             elif element.name == "li":
-                parts.append(f"- {element.get_text(strip=True)}")
+                parts.append(bound.add(f"- {element.get_text(strip=True)}"))
             elif element.name == "table":
-                parts.append(self._html_table_to_markdown(element))
+                parts.append(bound.add(self._html_table_to_markdown(element)))
             elif element.name == "p":
                 text = element.get_text(strip=True)
                 if text:
-                    parts.append(text)
+                    parts.append(bound.add(text))
 
         return "\n\n".join(parts)
 
