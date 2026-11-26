@@ -91,9 +91,12 @@ def load_post(content: str) -> Post:
     """``frontmatter.loads(content)`` with :func:`load_frontmatter_yaml` as its
     YAML loader. The handler is passed only when it detects its format, as
     ``frontmatter.loads`` chooses one: forced on a text that does not open with
-    ``---`` (a leading BOM), it would split a body rule as frontmatter."""
+    ``---`` (a leading BOM), it would split a body rule as frontmatter. It
+    detects on the stripped text, as ``frontmatter.loads`` parses it, so a
+    leading newline cannot hand the block to the stock handler."""
     handler = _BoundedHandler()
-    return _post_loads(content, handler=handler if handler.detect(content) else None)
+    detected = handler.detect(content.strip())
+    return _post_loads(content, handler=handler if detected else None)
 
 
 # Scalar fields: extracted as-is (str conversion)

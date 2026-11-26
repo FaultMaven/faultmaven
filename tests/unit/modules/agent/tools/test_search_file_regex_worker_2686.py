@@ -488,3 +488,37 @@ async def test_a_search_is_admitted_as_the_user_who_asked(monkeypatch):
 
     assert same.success is False and "busy" in same.error
     assert other.success is True and other.data["total_matches"] == 1
+
+
+@pytest.mark.parametrize("output_format", ["excerpts", "count"])
+async def test_a_file_at_the_upload_limit_with_one_astral_character_is_searched(
+    output_format,
+):
+    """One emoji makes the whole text 4 bytes a character in the worker: the
+    memory limit holds that at the upload limit, with every line matched (the
+    whole file one merged window), in both formats (#3116 delta item 1)."""
+    from faultmaven.config.settings import get_settings
+
+    size = get_settings().upload.max_upload_size_mb * 1024 * 1024
+    line = "2026-11-20T10:00:01Z INFO handled GET /api/v1/cases/42 in 7ms"
+    count = (size - 5) // (len(line) + 1)
+    content = "\U0001f600\n" + (line + "\n") * count
+    assert len(content.encode()) <= size
+
+    result = await _tool(content).execute_with_context(
+        params={
+            "evidence_id": "ev_abc",
+            "query": "^",
+            "search_type": "regex",
+            "output_format": output_format,
+        },
+        context=_context(),
+    )
+
+    assert result.success is True, result.error
+    if output_format == "excerpts":
+        assert result.data["total_matches"] == 1
+        (window,) = result.data["results"]
+        assert (window["line_start"], window["line_end"]) == (1, count + 2)
+    else:
+        assert result.data["match_count"] == count + 2

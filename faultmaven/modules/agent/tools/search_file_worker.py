@@ -118,15 +118,17 @@ def regex_excerpts(
 
 def _fill_excerpts(content: str, windows: List[Dict[str, Any]]) -> None:
     """Each window's excerpt, written in one more pass over the lines into a
-    buffer that holds only its text."""
+    buffer that holds only its text, and read out of it once."""
     at, text = 0, io.StringIO()
     for i, line in enumerate(_lines(content), start=1):
         if at == len(windows):
             return
+        if i > windows[at]["line_start"]:
+            text.write("\n")
         if i >= windows[at]["line_start"]:
-            text.write(f"{i}: {line}\n")
+            text.write(f"{i}: {line}")
         if i == windows[at]["line_end"]:
-            windows[at]["excerpt"] = text.getvalue()[:-1]
+            windows[at]["excerpt"] = text.getvalue()
             at, text = at + 1, io.StringIO()
 
 

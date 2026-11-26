@@ -1072,15 +1072,20 @@ class ConversionService:
                 self._sanitizer, failure_mode.title
             )
 
-    async def _refuse_stale_draft(self, draft_id: str, refusal: str) -> None:
+    async def _refuse_stale_draft(
+        self, draft_id: str, content: str, refusal: str
+    ) -> None:
         """A draft that passed the gate before ``refusal`` existed fails it
-        now: its row says so, so it is not offered for verify again (#2674)."""
+        now: its row says so, so it is not offered for verify again (#2674).
+        Only while it still holds the text refused: an edit committed meanwhile
+        keeps its own verdict."""
         async with self._db_session_factory() as session:
             await session.execute(
                 update(ConversionDraftModel)
                 .where(
                     ConversionDraftModel.id == draft_id,
                     ConversionDraftModel.status == DraftStatus.DRAFT.value,
+                    ConversionDraftModel.content == content,
                 )
                 .values(validation_passed=False, validation_errors=[refusal])
             )
@@ -2264,7 +2269,7 @@ class ConversionService:
             # was made; then this failure.
             await aenforce_runbook_security(read_content, principal=user_id)
             if isinstance(e, FrontmatterRefused):
-                await self._refuse_stale_draft(draft_id, str(e))
+                await self._refuse_stale_draft(draft_id, read_content, str(e))
                 raise ValidationException(str(e)) from None
             raise
 

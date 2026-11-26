@@ -146,8 +146,9 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + slots * tier1_memory
         + gate.GATE_SLOTS * gate.GATE_MEMORY_BYTES
         + count.TOKEN_COUNT_SLOTS * count.TOKEN_COUNT_MEMORY_BYTES
-        # A U MB file's text: at most 3U bytes of UTF-8 and U + 1 lines.
-        + search.SEARCH_SLOTS * search.search_memory_limit(3 * u, u + 1)
+        # A U MB file's text: at most U characters, 3U bytes of UTF-8 and U + 1
+        # lines.
+        + search.SEARCH_SLOTS * search.search_memory_limit(3 * u, u, u + 1)
     )
     gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
     buffers = w * (

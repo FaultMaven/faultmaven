@@ -55,12 +55,12 @@ MAX_RESULTS_CEILING = 200
 # model writes the pattern (Principle 14, #2686). Measured 2026-11-26 in the
 # worker over a 10 MiB file with a pattern matching every line (``""``), the
 # costliest legitimate search, whose one merged window is the whole file: for
-# excerpts, 140-character ASCII log lines took 0.40 s and 79 MiB of address
-# space (an answer of 10.5 MiB), lines of 40 astral characters (2.55 Mi
-# characters) 0.59 s and 79 MiB (10.4 MiB), 8-character lines 2.76 s and
-# 103 MiB (18.9 MiB), one-letter lines 14.1 s and 207 MiB (53.9 MiB); count
-# format, at most 4.1 s and 19 MiB. A search's memory is its file's text and
-# its answer, held as text and again as bytes.
+# excerpts, 140-character ASCII log lines took 0.37-0.40 s and 79 MiB of
+# address space (an answer of 10.5 MiB); the same with one emoji, which makes
+# every ``str`` of the text 4 bytes a character, 0.76 s and 159 MiB; lines of
+# 40 astral characters (2.55 Mi characters) 0.41-0.59 s and 79 MiB (10.4 MiB);
+# 8-character lines 2.76-2.79 s and 103 MiB (18.9 MiB); one-letter lines
+# 9.8-14.1 s and 207 MiB (53.9 MiB). Count format, at most 6.1 s and 19 MiB.
 
 #: Regex searches at once in each serving process, under ``FairSlots`` keyed by
 #: the user who asked (#2645).
@@ -88,12 +88,12 @@ SEARCH_PHASES = worker_process.Phases(
 #: deadline's timer ends a search first unless it failed.
 SEARCH_CPU_SLACK_SECONDS = 2
 
-#: ``RLIMIT_AS``: a start (64 MiB; the worker's own is under 20), the text once
-#: and four times the output limit, as text, its writer and the two byte copies
-#: the answer is sent as. 1.2-1.5x each measurement above: 120, 158, 120 and
-#: 298 MiB.
+#: ``RLIMIT_AS``'s start (the worker's own is under 20 MiB), beside its copies
+#: of the text and the answer (``search_memory_limit``), each ``str`` at 4 bytes
+#: a character: 188 MiB for the log lines with or without the emoji, 109 MiB
+#: for the astral lines, 264 MiB for the 8-character lines and 544 MiB for the
+#: one-letter lines, 1.2-2.6x each measurement above.
 SEARCH_MEMORY_BASE_MIB = 64
-SEARCH_MEMORY_OUTPUT_COPIES = 4
 
 #: What the parent reads past the result's texts: its head (at most
 #: ``MAX_RESULTS_CEILING`` results' numbers) and the forwarded log records.
@@ -107,21 +107,31 @@ _SEARCH_WORKER = search_file_worker.__name__
 _search_slots_state: tuple | None = None
 
 
+def _prefixes(lines: int) -> int:
+    """Every line's number prefix (``"N: "``) and separator, at most."""
+    return lines * (len(str(lines)) + 2)
+
+
 def search_output_limit(text_bytes: int, lines: int) -> int:
     """What a search over ``text_bytes`` of UTF-8 in ``lines`` lines may
     answer: merged windows do not overlap, so each line at most once, with its
     number prefix; and the base."""
-    return text_bytes + lines * (len(str(lines)) + 2) + SEARCH_OUTPUT_BASE_BYTES
+    return text_bytes + _prefixes(lines) + SEARCH_OUTPUT_BASE_BYTES
 
 
-def search_memory_limit(text_bytes: int, lines: int) -> int:
-    """``RLIMIT_AS`` of a search over ``text_bytes`` of UTF-8 in ``lines``
-    lines."""
-    output = search_output_limit(text_bytes, lines)
+def search_memory_limit(text_bytes: int, chars: int, lines: int) -> int:
+    """``RLIMIT_AS`` of a search over ``chars`` characters, ``text_bytes`` of
+    UTF-8, in ``lines`` lines. Every ``str`` is sized at 4 bytes a character,
+    as one astral character makes it (#3116): the text, held throughout; then
+    the most of its UTF-8 as read, the answer's text twice as it is written
+    (its writer and the value read out), or once beside the answer's two byte
+    copies as it is sent."""
+    answer_chars = chars + _prefixes(lines)
+    answer_bytes = search_output_limit(text_bytes, lines)
     return (
         SEARCH_MEMORY_BASE_MIB * _MIB
-        + text_bytes
-        + SEARCH_MEMORY_OUTPUT_COPIES * output
+        + 4 * chars
+        + max(text_bytes, 2 * 4 * answer_chars, 4 * answer_chars + 2 * answer_bytes)
     )
 
 
@@ -885,7 +895,7 @@ class SearchFileTool(AgentTool):
                     "max_results": max_results,
                     "work_cpu_seconds": SEARCH_WORK_CPU_SECONDS,
                 },
-                memory_bytes=search_memory_limit(text_bytes, lines),
+                memory_bytes=search_memory_limit(text_bytes, len(content), lines),
                 cpu_seconds=math.ceil(SEARCH_WORK_CPU_SECONDS)
                 + SEARCH_CPU_SLACK_SECONDS,
                 output_limit_bytes=search_output_limit(text_bytes, lines),

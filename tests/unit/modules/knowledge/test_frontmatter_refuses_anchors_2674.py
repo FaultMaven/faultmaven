@@ -5,7 +5,7 @@ levels (#2674, #3116 A).
 characters describe a value whose string form is enormous: the reviewer's
 runbook, six levels of ten-fold aliases under ``service``, passed the gate and
 then built a 5.2M-character string on the event loop. Every frontmatter load
-now refuses an anchor or alias as it is composed, before any value is built:
+now refuses an anchor or alias from the parse events, before any value is built:
 the gate with its own message, every other load as unparseable frontmatter.
 Nesting is bounded too: ``frontmatter.dumps`` re-emits a nested flow sequence
 one indent per level, so an 81,504-character draft of sequences 200 deep, each
@@ -30,6 +30,9 @@ from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
     EnterpriseModel,
+)
+from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    service as service_module,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service.service import (
     ConversionService,
@@ -175,6 +178,19 @@ def test_a_text_that_does_not_open_with_the_delimiter_loads_as_before():
     assert load_post(bom).content == frontmatter.loads(bom).content
 
 
+@pytest.mark.parametrize("lead", ["\n", "\n\n", "  \n"])
+def test_a_leading_blank_line_still_loads_through_the_bounded_handler(lead):
+    """``frontmatter.loads`` parses the stripped text, so detection on the
+    unstripped one handed this block to the stock handler, aliases and all."""
+    aliased = lead + "---\na: &x [1, 2]\nb: *x\n---\nbody\n"
+    deep = lead + "---\na: [[[[[x]]]]]\n---\nbody\n"
+
+    with pytest.raises(FrontmatterAnchorRefused):
+        load_post(aliased)
+    with pytest.raises(FrontmatterTooDeep):
+        load_post(deep)
+
+
 def test_every_shipped_frontmatter_loads_as_before():
     blocks = [
         match.group(1)
@@ -247,6 +263,45 @@ def test_the_gate_refuses_the_nested_draft_it_passed():
     errors = RunbookValidator().validate_content(draft).errors
 
     assert DEPTH_REFUSAL in errors and "No YAML frontmatter found" not in errors
+
+
+async def test_an_edit_committed_during_the_refusal_keeps_its_verdict(
+    session_factory, tmp_path, monkeypatch
+):
+    """The stale draft's verdict is cleared only while the row still holds the
+    text refused, as verify's own compare-and-swap writes."""
+    pod = _Replica(tmp_path, session_factory, _ingesting(session_factory))
+    monkeypatch.chdir(pod.root)
+    created = await pod.service.create_runbook_from_template(**TEMPLATE)
+    cid, did = created["conversion_id"], created["draft"].draft_id
+    edited = valid_runbook("Edited While Verify Refused The Draft")
+    async with session_factory() as session:
+        await session.execute(
+            update(ConversionDraftModel)
+            .where(ConversionDraftModel.id == did)
+            .values(content=_bomb(), validation_passed=True)
+        )
+        await session.commit()
+
+    async def edit_meanwhile(content, *, principal, then=None):
+        async with session_factory() as session:
+            await session.execute(
+                update(ConversionDraftModel)
+                .where(ConversionDraftModel.id == did)
+                .values(content=edited, validation_passed=True, validation_errors=[])
+            )
+            await session.commit()
+
+    monkeypatch.setattr(service_module, "aenforce_runbook_security", edit_meanwhile)
+    with pytest.raises(ValidationException):
+        await pod.service.verify_draft(cid, did, "u1")
+
+    row = await _row(session_factory, did)
+    assert (row.content, row.validation_passed, row.validation_errors) == (
+        edited,
+        True,
+        [],
+    )
 
 
 @pytest.mark.parametrize("draft", ["bomb", "nested"])
