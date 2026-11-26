@@ -28,6 +28,7 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
+from faultmaven.exceptions import SessionStoreException
 from faultmaven.infrastructure.auth.database_user_store import DatabaseUserStore
 from faultmaven.infrastructure.auth.user_store import RedisUserStore
 from faultmaven.modules.auth.api.oauth import get_oauth_service
@@ -192,35 +193,17 @@ class _Unanswerable:
     ("update", "event", "cls", "status", "detail"),
     [
         pytest.param(
-            AsyncMock(side_effect=RuntimeError(f"Session store unavailable {MARKER}")),
-            "Session store connection issue during heartbeat for s-1",
-            "RuntimeError",
+            AsyncMock(side_effect=SessionStoreException(f"store {MARKER}")),
+            "Session store unavailable during heartbeat for s-1",
+            "SessionStoreException",
             503,
             "Session store temporarily unavailable",
-            id="store-unavailable",
-        ),
-        pytest.param(
-            AsyncMock(
-                side_effect=RuntimeError(f"Activity update operation failed {MARKER}")
-            ),
-            "Session activity update failed for s-1",
-            "RuntimeError",
-            500,
-            "Failed to update session activity",
-            id="activity-update-failed",
+            id="session-store-exception",
         ),
         pytest.param(
             AsyncMock(side_effect=RuntimeError(f"pool {MARKER}")),
-            "Unexpected runtime error during heartbeat for s-1",
-            "RuntimeError",
-            500,
-            "Internal server error",
-            id="unexpected-runtime-error",
-        ),
-        pytest.param(
-            AsyncMock(side_effect=ConnectionError(f"redis {MARKER}")),
             "Unexpected error during heartbeat for s-1",
-            "ConnectionError",
+            "RuntimeError",
             500,
             "Internal server error",
             id="inner-catch-all",

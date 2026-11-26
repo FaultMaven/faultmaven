@@ -22,7 +22,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from faultmaven.exceptions import SessionWriteConflict
+from redis.exceptions import RedisError
+
+from faultmaven.exceptions import SessionStoreException, SessionWriteConflict
 from faultmaven.models.common import SessionContext
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.datetime import parse_utc_timestamp
@@ -77,6 +79,12 @@ for i, member in ipairs(ARGV) do
 end
 return live
 """
+
+#: What the client raises when Redis cannot answer: the driver's own family,
+#: and the socket's (``OSError`` holds the builtin ``ConnectionError`` and
+#: ``TimeoutError``). The store reports these as ``SessionStoreException``, its
+#: contract's failure; anything else is a bug and propagates as itself (#2985).
+_DRIVER_FAILURES: tuple[type[BaseException], ...] = (RedisError, OSError)
 
 #: How many read-and-write attempts ``mutate_session`` makes in all.
 _MUTATE_ATTEMPTS = 5
@@ -134,11 +142,11 @@ class RedisSessionStore(ISessionStore):
                 except json.JSONDecodeError:
                     return None
             return None
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis get operation failed for key {key}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
     async def set(
         self, key: str, value: Union[Dict, Any], ttl: Optional[int] = None
@@ -150,11 +158,11 @@ class RedisSessionStore(ISessionStore):
             ttl = ttl if ttl is not None else self.session_ttl_seconds
 
             await self.redis_client.set(full_key, serialized, ex=ttl)
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis set operation failed for key {key}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
     async def delete(self, key: str) -> bool:
         """Delete session by key."""
@@ -186,12 +194,12 @@ class RedisSessionStore(ISessionStore):
                     session_id = session_id.decode("utf-8")
                 return session_id
             return None
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis find_by_user_and_client failed for user {user_id}, "
                 f"client {client_id}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
     async def index_session_by_client(
         self, user_id: str, client_id: str, session_id: str, ttl: int
@@ -202,12 +210,12 @@ class RedisSessionStore(ISessionStore):
             pipe = self.redis_client.pipeline()
             pipe.set(client_index_key, session_id, ex=ttl)
             await pipe.execute()
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis index_session_by_client failed for user {user_id}, "
                 f"client {client_id}, session {session_id}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
     async def remove_client_index(self, user_id: str, client_id: str) -> None:
         """Remove client index entry."""
@@ -230,11 +238,11 @@ class RedisSessionStore(ISessionStore):
                 await self.redis_client.expire(full_key, ttl)
 
             return value
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis increment operation failed for key {key}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
     async def delete_keys_holding(self, match: str, value: Any) -> int:
         """SCAN the prefixed ``match`` and compare-and-delete each key against
@@ -287,11 +295,11 @@ class RedisSessionStore(ISessionStore):
                 session_id,
                 *(() if expected is None else (expected,)),
             )
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis session write failed for session {session_id}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
         return expires_at if int(written) else None
 
     @staticmethod
@@ -354,11 +362,11 @@ class RedisSessionStore(ISessionStore):
         for _ in range(_MUTATE_ATTEMPTS):
             try:
                 raw = await self.redis_client.get(key)
-            except Exception as e:
+            except _DRIVER_FAILURES as e:
                 logger.error(
                     f"Redis get operation failed for key {session_id}: {exception_log_name(e)}"
                 )
-                raise ConnectionError(f"Redis operation failed: {e}")
+                raise SessionStoreException("Redis operation failed") from e
             if raw is None:
                 return None
             try:
@@ -367,11 +375,17 @@ class RedisSessionStore(ISessionStore):
                 return None
             session = self._to_session_context(stored)
             if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
-                if not await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, raw):
-                    continue  # rewritten since the read: apply to that
-                await self.redis_client.srem(
-                    self._user_index_key(session.user_id), session_id
-                )
+                try:
+                    if not await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, raw):
+                        continue  # rewritten since the read: apply to that
+                    await self.redis_client.srem(
+                        self._user_index_key(session.user_id), session_id
+                    )
+                except _DRIVER_FAILURES as e:
+                    logger.error(
+                        f"Redis expired-session delete failed for {session_id}: {exception_log_name(e)}"
+                    )
+                    raise SessionStoreException("Redis operation failed") from e
                 return None
             session = mutate(session)
             if session is None:
@@ -438,11 +452,11 @@ class RedisSessionStore(ISessionStore):
                 *(f"{self.prefix}{member}" for member in members),
                 *members,
             )
-        except Exception as e:
+        except _DRIVER_FAILURES as e:
             logger.error(
                 f"Redis list_sessions failed for user {user_id}: {exception_log_name(e)}"
             )
-            raise ConnectionError(f"Redis operation failed: {e}")
+            raise SessionStoreException("Redis operation failed") from e
 
         sessions = []
         for value in values:

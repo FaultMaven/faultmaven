@@ -15,6 +15,8 @@ fakes are kept signature-faithful on purpose.
 
 from types import SimpleNamespace
 
+import fakeredis
+import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -25,6 +27,12 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.exceptions import AuthorizationError, CaseNotDriverError, NotFoundError
+from faultmaven.modules.auth.domain.services.auth_session_service import (
+    AuthSessionService,
+)
+from faultmaven.modules.auth.infrastructure.stores.redis_session_store import (
+    RedisSessionStore,
+)
 from faultmaven.modules.case.api.routes.dependencies import (
     _di_get_case_service_dependency,
     _di_get_session_service_dependency,
@@ -115,11 +123,11 @@ def build_app():
     ``session`` is what the session service resolves any id to (``None`` models
     an invalid/expired session); ``case`` is what the case service resolves any
     id to (``None`` models an unknown or inaccessible case). ``case_service``
-    replaces the default fake outright, for a module asserting on a failure
-    inside the service.
+    and ``session_service`` replace the default fakes outright, for a module
+    asserting on a failure inside the service.
     """
 
-    def _build(*, session=None, case=None, case_service=None):
+    def _build(*, session=None, case=None, case_service=None, session_service=None):
         app = FastAPI()
         # The app's own handlers, so a DOMAIN exception reaching a route here
         # is mapped the way production maps it. Without them a `NotFoundError`
@@ -131,6 +139,9 @@ def build_app():
         app.include_router(case_router, prefix="/api/v1")
 
         async def _session_service():
+            if session_service is not None:
+                return session_service
+
             async def get_session(session_id, validate=True):
                 # The real service RAISES when it cannot answer (e.g.
                 # `ServiceException("Session store not configured")`) rather
@@ -182,6 +193,20 @@ def build_app():
         return app
 
     return _build
+
+
+@pytest.fixture
+async def unreachable_session_service():
+    """The real session service over a real ``RedisSessionStore`` whose FakeRedis
+    server emulates a lost connection: what a configured, unreachable store
+    raises, end to end (#2985)."""
+    server = fakeredis.FakeServer()
+    server.connected = False
+    redis = fakeredis_aio.FakeRedis(server=server, decode_responses=True)
+    yield AuthSessionService(
+        session_store=RedisSessionStore(redis, session_ttl_seconds=60)
+    )
+    await redis.aclose()
 
 
 @pytest.fixture

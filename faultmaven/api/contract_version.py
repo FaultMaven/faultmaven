@@ -151,6 +151,25 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="16.4.0",
+        level="MINOR",
+        title=(
+            "A configured session store that cannot answer is **503**, not 500, "
+            "on `POST /sessions/{session_id}/heartbeat` (with `Retry-After: 5`), "
+            "`POST /cases` naming a `session_id`, and `POST "
+            "/cases/sessions/{session_id}/resume/{case_id}` (#2985)."
+        ),
+        body=r"""The store reported a Redis failure as a builtin `ConnectionError`, which no
+route recognised, so each answered 500. It now reports its contract's
+`SessionStoreException`, and the routes' existing store-outage answers apply.
+The heartbeat also answers an unconfigured store 503 `Session service
+unavailable` with no `Retry-After`, as `POST /cases` does.
+
+MINOR: each route already answered 503 when it could not use the session
+service (the heartbeat declares it). The first-party heartbeat caller (copilot-ui, shared by
+the dashboard) swallows any non-OK answer.""",
+    ),
+    ContractChange(
         version="16.3.0",
         level="MINOR",
         title=(

@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.exceptions import ServiceException, SessionStoreException
+from faultmaven.exceptions import ServiceException
 from faultmaven.modules.case.domain.models.case import Case
 
 # Both marks at module level. The vacuity controls are not optional coverage —
@@ -142,18 +142,19 @@ async def test_an_unevaluable_session_gate_is_a_503(build_app, call_api):
     service.created.assert_not_awaited()
 
 
-async def test_an_unreachable_session_store_is_also_a_503(build_app, call_api):
+async def test_an_unreachable_session_store_is_also_a_503(
+    build_app, call_api, unreachable_session_service
+):
     """The second spelling of "the gate could not be evaluated".
 
     A store that IS configured and unreachable raises `SessionStoreException`,
     which descends from `SessionException` and NOT from `ServiceException` —
-    so catching one family answers 503 and 500 for the same condition.
+    so catching one family answers 503 and 500 for the same condition. Driven
+    through the real store, which raised a builtin `ConnectionError` (500)
+    until #2985.
     """
     service = _case_service()
-    app = build_app(
-        session=SessionStoreException("redis: connection refused"),
-        case_service=service,
-    )
+    app = build_app(session_service=unreachable_session_service, case_service=service)
 
     response = await call_api(app, "POST", PATH, json=_body())
 

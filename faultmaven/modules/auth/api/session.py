@@ -39,7 +39,12 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import get_session_service
-from faultmaven.exceptions import SessionWriteConflict, ValidationException
+from faultmaven.exceptions import (
+    ServiceException,
+    SessionStoreException,
+    SessionWriteConflict,
+    ValidationException,
+)
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.api import (
     AuthSessionStatus,
@@ -744,42 +749,24 @@ async def session_heartbeat(
         # as written, or None when there is none to update
         try:
             result = await session_service.update_last_activity(session_id)
-        except FileNotFoundError:
-            _log_session_not_found_rate_limited(session_id)
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorDetail(
-                    code=SessionErrorCode.SESSION_NOT_FOUND.value,
-                    message=f"Session not found or expired: {session_id}",
-                    session_id=session_id,
-                ).model_dump(),
-            )
-        except RuntimeError as e:
-            # Handle specific runtime errors from session service
-            if "Session store unavailable" in str(e):
-                logger.error(
-                    f"Session store connection issue during heartbeat for {session_id}: {exception_log_name(e)}",
-                    exc_info=e,
-                )
-                raise HTTPException(
-                    status_code=503, detail="Session store temporarily unavailable"
-                )
-            elif "Activity update operation failed" in str(e):
-                logger.error(
-                    f"Session activity update failed for {session_id}: {exception_log_name(e)}",
-                    exc_info=e,
-                )
-                raise HTTPException(
-                    status_code=500, detail="Failed to update session activity"
-                )
-            else:
-                logger.error(
-                    f"Unexpected runtime error during heartbeat for {session_id}: {exception_log_name(e)}",
-                    exc_info=e,
-                )
-                raise HTTPException(status_code=500, detail="Internal server error")
         except SessionWriteConflict:
             raise HTTPException(503, _CONFLICT, {"Retry-After": "1"}) from None
+        except SessionStoreException as e:
+            # The store could not answer (#2985); a heartbeat is idempotent.
+            logger.error(
+                f"Session store unavailable during heartbeat for {session_id}: {exception_log_name(e)}",
+                exc_info=e,
+            )
+            raise HTTPException(
+                503, "Session store temporarily unavailable", {"Retry-After": "5"}
+            ) from None
+        except ServiceException as e:
+            # "Session store not configured": no retry will change it.
+            logger.error(
+                f"Session service unavailable during heartbeat for {session_id}: {exception_log_name(e)}",
+                exc_info=e,
+            )
+            raise HTTPException(503, "Session service unavailable") from None
         except Exception as e:
             logger.error(
                 f"Unexpected error during heartbeat for {session_id}: {exception_log_name(e)}",
