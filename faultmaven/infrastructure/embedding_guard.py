@@ -64,6 +64,7 @@ import math
 from typing import Any, List, Optional, Sequence
 
 from faultmaven.infrastructure import index_slot, token_count_worker, worker_process
+from faultmaven.infrastructure.model_cache import priced_tokens
 from faultmaven.models.exceptions import EmbedderUnavailable, KnowledgeBaseError
 from faultmaven.utils.exception_name import exception_log_name
 
@@ -158,7 +159,7 @@ async def count_index_tokens(
     The worker runs under ``TOKEN_COUNT_SLOTS`` slots keyed by ``principal``,
     the user who asked. A count waits for a slot for its hang bound at most.
     None when the worker gave no count: any end but an answer, or an answer
-    that is not two decimal counts.
+    that is not two decimal counts, the priced one at least the count.
 
     Raises:
         EmbedderUnavailable: ``queued_too_long``, no slot freed within the
@@ -209,14 +210,15 @@ async def count_index_tokens(
         return None
     fields = end.result[0].split(" ") if len(end.result) == 1 else []
     if len(fields) == 2 and all(field.isdecimal() for field in fields):
-        return int(fields[0]), int(fields[1])
+        tokens, priced = int(fields[0]), int(fields[1])
+        return (tokens, priced) if priced >= tokens else None
     return None
 
 
 async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
     """The priced tokens the guard sizes its bound from: a KB ticket's, else a
-    count's under its principal; else UTF-8 bytes plus the two special tokens
-    per text. A token spans at least a byte of text (bar SentencePiece's word
+    count's under its principal; else each text's UTF-8 bytes plus 2, priced on
+    a KB ticket, plain for evidence (Q2). Each token spans a byte or more (bar the word
     marker before a text's first word), so that is an upper bound to within a
     token per text, which the bound's 2x margin covers. A loose bound is safe
     for a hang bound. An evidence encode (no ticket) always takes it, so it
@@ -238,7 +240,8 @@ async def _guard_tokens(texts: List[str], ticket: Optional[Any]) -> int:
                 "A KB token count gave no answer: the indexing time bound counts "
                 "UTF-8 bytes instead of tokens, an upper bound"
             )
-    return sum(len(text.encode("utf-8")) + 2 for text in texts)
+    tokens = [len(text.encode("utf-8")) + 2 for text in texts]
+    return sum(map(priced_tokens, tokens)) if ticket is not None else sum(tokens)
 
 
 async def embed_query_or_raise(

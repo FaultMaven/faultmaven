@@ -95,7 +95,7 @@ BGE_M3_MAX_SEQ_LENGTH = 8192
 #: in a batch, so the batch bounds an encode's memory: measured in the image at
 #: 2 threads, four texts at the 8,192-token cap peaked at 2,119 MiB anonymous
 #: in the KB worker and 2,750 MiB in the API process. Vectors differ from the
-#: default batch by at most 2.2e-7.
+#: default batch by at most 2.2e-7. A text over the breakpoint (below) runs alone.
 ENCODE_BATCH_SIZE = 4
 
 #: A KB chunk's length price (#2920), in tokens at the base rate
@@ -113,8 +113,7 @@ INDEX_CAP_RATE_FRACTION = (8, 5)
 
 
 def priced_tokens(tokens: int) -> int:
-    """A chunk of ``tokens`` BGE-M3 tokens, in tokens at the base rate: rounded
-    up, in integers."""
+    """A chunk of ``tokens`` BGE-M3 tokens in tokens at the base rate, rounded up."""
     rise, base = INDEX_CAP_RATE_FRACTION
     over = max(tokens - INDEX_RATE_BREAKPOINT_TOKENS, 0)
     span = base * (BGE_M3_MAX_SEQ_LENGTH - INDEX_RATE_BREAKPOINT_TOKENS)
@@ -122,10 +121,9 @@ def priced_tokens(tokens: int) -> int:
 
 
 def encode_texts(model: Any, texts: List[str]) -> Any:
-    """Every indexing encode (#2920): a text over the breakpoint alone, so it
-    pads no short text to its length, the rest at ``ENCODE_BATCH_SIZE``. Its
-    lengths are the model's tokenizer's, truncated at the cap; vectors in
-    input order."""
+    """Every indexing encode (#2920): a text over the breakpoint alone, so it pads
+    no short text, the rest at ``ENCODE_BATCH_SIZE``; lengths by the model's
+    tokenizer, truncated at the cap; vectors in input order."""
     cut = {"truncation": True, "max_length": BGE_M3_MAX_SEQ_LENGTH}
     ids = model.tokenizer(texts, **cut)["input_ids"] if texts else []
     alone = [i for i, one in enumerate(ids) if len(one) > INDEX_RATE_BREAKPOINT_TOKENS]

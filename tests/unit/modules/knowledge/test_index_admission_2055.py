@@ -633,19 +633,20 @@ class TestVerify:
     async def test_a_cap_length_draft_over_the_priced_line_fails_with_the_sentence(
         self, session_factory, world, window
     ):
-        """#2920: 40,000 tokens is under the 600 s line (45,440), but priced
-        70,000 it is over it, so the draft fails; the sentence names the most
-        of text like it. A prose draft after it is verified as before."""
-        world.tokens.side_effect = [(40_000, 70_000), (RUNBOOK_TOKENS,) * 2]
+        """#2920: five cap-length chunks, 40,960 tokens, are under the 600 s
+        line (45,440), but priced 65,540 they are over it, so the draft fails;
+        the sentence names the most of text like it. A prose draft after it is
+        verified as before."""
+        world.tokens.side_effect = [(40_960, 65_540), (RUNBOOK_TOKENS,) * 2]
         conversion = _conversion(session_factory, _knowledge(session_factory))
         refs = await _drafts(session_factory, 2)
 
         result = await conversion.verify_batch(refs, user_id="u1")
 
         assert [r["status"] for r in result["results"]] == ["failed", "verified"]
-        most = 40_000 * 45_440 // 70_000
+        most = 40_960 * 45_440 // 65_540
         assert result["results"][0]["error"] == (
-            f"This document is 40,000 tokens, and this server can index at most "
+            f"This document is 40,960 tokens, and this server can index at most "
             f"{most:,} tokens of text like it in one request. Split it into "
             "smaller documents. Nothing was saved."
         )

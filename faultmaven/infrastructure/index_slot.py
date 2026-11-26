@@ -595,7 +595,8 @@ class IndexAdmission(EncodeSlot):
         most = index_max_tokens(limit - WORKER_LOAD_SECONDS - COUNT_ALLOWANCE_SECONDS)
         if tokens > most:
             plain = tokens if plain_tokens is None else plain_tokens
-            raise refusal("too_large", tokens=plain, most=plain * most // tokens)
+            scaled = plain * most // tokens if tokens else most
+            raise refusal("too_large", tokens=plain, most=scaled)
         at = _clock()
         if any(ticket.hung(at) for ticket in self._tickets):
             raise refusal("hung", wait=self.retry_after_seconds("hung"))

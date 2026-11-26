@@ -278,3 +278,52 @@ async def test_the_ticket_holds_the_priced_count_and_the_guard_bounds_by_it(
 
     assert bounds == [batch_embed_timeout(priced)] * 2
     assert batch_embed_timeout(priced) > batch_embed_timeout(8192 + 2)
+
+
+async def test_with_no_count_a_kb_bound_prices_the_bytes_and_evidence_does_not(
+    monkeypatch, two_cores, settled
+):
+    """No window and a count that gave no answer: a KB ticket's guard prices
+    each text's UTF-8 bytes plus 2, so a cap-length chunk is not bounded 1.6x
+    under its cost; an evidence encode's stays at plain bytes plus 2 (Q2)."""
+    bounds = {}
+
+    def kb(_ticket, texts, guard_seconds):
+        bounds["kb"] = guard_seconds
+        return [[0.0] * 1024 for _ in texts]
+
+    def evidence(_slot, _ticket, texts, guard_seconds):
+        bounds["evidence"] = guard_seconds
+        return [[0.0] * 1024 for _ in texts]
+
+    async def no_answer(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(index_slot, "encode_in_worker", kb)
+    monkeypatch.setattr(index_slot.EncodeSlot, "_encode", evidence)
+    monkeypatch.setattr(embedding_guard, "count_index_tokens", no_answer)
+    async with IndexAdmission().admit_forced([CAP], None, principal=USER) as ticket:
+        await embed_texts_or_raise([CAP], subject="I", operation="t", ticket=ticket)
+    await embed_texts_or_raise([CAP], subject="I", operation="t")
+
+    size = len(CAP.encode("utf-8")) + 2
+    assert bounds == {
+        "kb": batch_embed_timeout(priced_tokens(size)),
+        "evidence": batch_embed_timeout(size),
+    }
+
+
+def test_an_empty_count_under_a_short_limit_is_refused_413_as_on_main(two_cores):
+    """A limit under the load and count allowances leaves a negative line, so
+    even 0 tokens is over it: refused 413 naming that line, as on ``main``,
+    never a division by zero."""
+    line = index_max_tokens(20 - 30 - 2)
+
+    with pytest.raises(IndexAdmissionRefused) as refused:
+        IndexAdmission().admit(["c"], 0, principal=USER, window_seconds=20)
+
+    assert line < 0 and refused.value.status_code == 413
+    assert (
+        refused.value.message
+        == index_slot.refusal("too_large", tokens=0, most=line).message
+    )

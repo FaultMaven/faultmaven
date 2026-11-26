@@ -386,7 +386,8 @@ async def store_in_vector_db_background(
     ``vectorization_reactive_timeout_seconds``. Those are the callers' budgets.
     The embed itself runs through ``embedding_guard.embed_texts_or_raise``,
     which bounds it by its UTF-8 bytes, on the evidence slot: one evidence
-    encode at a time per process, in this process at ``ENCODE_BATCH_SIZE``, so
+    encode at a time per process, in this process at ``ENCODE_BATCH_SIZE`` (a
+    text over ``INDEX_RATE_BREAKPOINT_TOKENS`` alone), so
     a re-trigger queues behind an encode still running, in the KB indexing
     slot's one order, under its host lock (#2055, #2851, #2920).
 

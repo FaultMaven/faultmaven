@@ -184,7 +184,7 @@ def _count(request, send):
         words = sum(len(text.split()) for text in texts)
         return lambda: f"{words} {words + 10 * len(texts)}"
     answers = {"not_a_count": "many", "one_part": "3", "three_parts": "3 3 3"}
-    answers.update({"not_decimal": "3 -3", "two_spaces": "3  3"})
+    answers.update({"not_decimal": "3 -3", "two_spaces": "3  3", "priced_below": "5 3"})
     if stub in answers:
         return lambda: answers[stub]
 

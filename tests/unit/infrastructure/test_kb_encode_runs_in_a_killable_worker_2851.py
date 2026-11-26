@@ -417,11 +417,13 @@ async def test_a_count_waits_for_a_slot_and_past_its_hang_bound_is_queued_too_lo
         ("three_parts", None),
         ("not_decimal", None),
         ("two_spaces", None),
+        ("priced_below", None),
     ],
 )
 async def test_a_count_answers_its_count_or_nothing(count_stub, stub, expected):
     """The answer is ``"<tokens> <priced>"`` (#2920): two decimal fields, one
-    space; a missing, extra or non-decimal field is no count."""
+    space, the priced one at least the count; a missing, extra or non-decimal
+    field, or a priced figure under the count, is no count."""
     count_stub(stub)
 
     assert await count_index_tokens(["a b", "c"], principal=USER) == expected
