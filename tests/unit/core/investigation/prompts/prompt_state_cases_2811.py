@@ -38,6 +38,12 @@ of each entry is unchanged. No other entry's render differed.
 regenerated, with this generator on its branch, the entries of the fixtures
 it changes on purpose: ``2595_unkinded_failure_rebound`` and
 ``D:carried_turn``.
+
+#3053 S3d-4 (the milestone status reads the record's ``milestones_shown``
+whole) regenerated, with this generator on its branch, the ``milestones`` of
+``2609_relapsed_mitigation``: the relapsed verify is no longer listed. Run on
+a ``git archive`` extract of ``c117a2450``, the generator reproduced the
+stored entry, and on the branch no other entry's render differed from it.
 """
 
 from __future__ import annotations

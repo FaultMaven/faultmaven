@@ -35,12 +35,6 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-def _stored_mitigation_verified(case: Case) -> bool:
-    """``mitigation.verified`` as stored, read fresh (ruling Q1 (a))."""
-    mitigation = case.progress.mitigation
-    return bool(mitigation is not None and mitigation.verified)
-
-
 def _symptom_stale(case: Case) -> bool:
     """The symptom's observation window sits away from the present. False
     for UNDATED: an unknown observation time gives nothing to anchor to."""
@@ -144,7 +138,6 @@ class NarrationFold:
         omission (``fail``)."""
         if self._fresh is None:
             self._fresh = PromptStateFresh(
-                mitigation_verified=self._once(_stored_mitigation_verified),
                 symptom_stale=self._once(_symptom_stale),
                 offers=self._once(offer_view),
                 causal_evidence_unclaimed=self._once(_causal_evidence_unclaimed),

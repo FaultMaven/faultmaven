@@ -75,6 +75,8 @@ from faultmaven.core.investigation.cause_assurance import (
     SUBJECT_PROBLEM,
     _cause_posited_turn,
     _is_remediation,
+    _mitigation_declared_stable,
+    _mitigation_verified,
     _outcome_computation,
     _pool_legs,
     carry_verdicts,
@@ -104,8 +106,6 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.offers import lapse_offers
 from faultmaven.core.investigation.problem_status import current_statement
 from faultmaven.core.investigation.terminal_transitions import (
-    _mitigation_declared_stable,
-    _mitigation_verified,
     assess_resolution_readiness,
     closure_verdict,
     declined_resolve_entry,

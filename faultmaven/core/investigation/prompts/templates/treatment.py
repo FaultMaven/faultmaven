@@ -105,8 +105,8 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
 
 4. **Transition Back to Diagnosis:**
    After the mitigation is verified or the user declares it stable:
-   - "The temporary fix is in place and things are stabilizing. Now let's find the
-     root cause to prevent this from happening again."
+   - Say what comes next, the root-cause work, without saying the mitigation
+     worked; the engine states what the case record holds under your reply.
    - The investigation returns to DIAGNOSIS stage for root-cause analysis
 
 **WHEN MITIGATION STALLS:**

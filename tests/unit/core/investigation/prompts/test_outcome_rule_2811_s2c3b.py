@@ -16,19 +16,23 @@ import pytest
 from faultmaven.core.investigation.prompts.templates.assembly import (
     get_prompt_for_case,
 )
+from faultmaven.core.investigation.prompts.templates.blocks import (
+    _OUTCOME_FIELDS_RULE,
+)
 from faultmaven.infrastructure.llm.prompt_cache import CACHE_BOUNDARY
 from faultmaven.modules.case.contracts import Case, CaseState, InquiryData
 from faultmaven.modules.case.domain.models.progress import MitigationRecord
+from faultmaven.utils.token_estimation import estimate_tokens
 from tests.unit.core.investigation.given_tools import DEFAULT_GIVEN
 
 pytestmark = pytest.mark.unit
 
 #: The ruled wording (#2811 comment 7118574166, Q1 (a); widened by #3046
-#: comment 7161149979, Q3 (a)), verbatim.
+#: comment 7161149979, Q3 (a), and by #3053 comment 7175936827, Q8), verbatim.
 RULE = (
     "State that the problem is confirmed, that a root cause is identified, or "
-    "that a fix worked only through the structured fields; the engine states "
-    "what the case record holds under your reply."
+    "that a fix or a mitigation worked only through the structured fields; the "
+    "engine states what the case record holds under your reply."
 )
 _MSG = "what next?"
 
@@ -165,6 +169,14 @@ _REWORDED = {
         "without verification evidence",
         "root-caused",
     ),
+    # #3053 S3d-4 (D1): the MITIGATION prompt no longer hands the model a
+    # sentence saying the mitigation worked.
+    "mitigation_transition_back": (
+        "mitigation",
+        "   - Say what comes next, the root-cause work, without saying the mitigation\n"
+        "     worked; the engine states what the case record holds under your reply.",
+        "things are stabilizing",
+    ),
     "grounding_never_state": (
         "treatment",
         "- NEVER state that a problem is resolved or fixed without\n"
@@ -172,6 +184,14 @@ _REWORDED = {
         "root-caused",
     ),
 }
+
+
+def test_the_rule_is_the_blocks_text_at_its_measured_cost():
+    """The rule as the template carries it, and its cost in the cached prefix
+    (``estimate_tokens``): 37 before #3053 S3d-4 added "or a mitigation", 40
+    after. ``lifecycle-metrics.md`` states the prompt figure, "about 46"."""
+    assert _OUTCOME_FIELDS_RULE == RULE
+    assert estimate_tokens(RULE) == 40
 
 
 @pytest.mark.parametrize("name", sorted(_REWORDED))

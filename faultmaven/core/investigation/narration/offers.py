@@ -55,6 +55,18 @@ def mitigation_sentence(line: str) -> str:
     return f"{line[:1].upper()}{line[1:]}."
 
 
+#: The closure line's clauses for the user's declaration and the stall's
+#: proceed (#2100), which the outcome statement states too, each followed by
+#: ``at_turn`` of its disposition turn (#3053 S3d-4, ruling Q8).
+MITIGATION_DECLARED = "you reported the mitigation stable"
+MITIGATION_PROCEEDED = "the investigation went on before the mitigation was verified"
+
+
+def at_turn(turn: Optional[int]) -> str:
+    """`` (turn t)``, or nothing for no turn: never "(turn None)"."""
+    return f" (turn {turn})" if turn is not None else ""
+
+
 #: The NEEDS_INFO frame's opening line and its data sentence, shared by the
 #: documentation-gap ask and the held check (#1906 D5.2).
 _NEEDS_INFO_INTRO = (

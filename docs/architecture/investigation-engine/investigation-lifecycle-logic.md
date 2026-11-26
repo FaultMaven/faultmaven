@@ -1319,11 +1319,33 @@ the turn and the turn's own prose does not state it
   leaving SUCCEEDED states nothing ("were seen gone" stays true of its turn,
   and the cause clause carries the usual trigger; ruling of 2026-11-25, Q2),
   nor does a FAILED one turning final, nor an attempt absent from the
-  turn-final record. The mitigation and bookkeeping are not read: the
-  mitigation's line moved to S3d (#3053), since the record's
-  `mitigation.verified` is relapse-adjusted while the unswitched readers
-  (the stage derivation, `milestone_inference`, `problem_status`, the
-  prompt) take the stored flag raw, so a line could contradict them.
+  turn-final record. Then the mitigation's facts (#3053 S3d-4, ruling Q8),
+  each stated when it enters its state from any other since the turn-start
+  record, absence included, in S3c's observation wording, `a` the record's
+  `mitigation.attempt_turn`: what the problem did after it, one of "after
+  the mitigation carried out in turn a, the problem was seen gone" (the
+  record's `verified`, holding, with a bound relief: a stored verdict with
+  no bound row observed nothing and states nothing), "…, the problem was
+  seen gone, then seen again (turn p)" (a relief that does not hold, keyed
+  on its relief turn, so a new relief and relapse states again, and a
+  relapse may be stated with no earlier relief line), or "…, the problem
+  was still present (turn p)" (a persistence with no relief), none of them
+  with no dated attempt; "you reported the mitigation stable (turn d)"
+  (`declared_stable_effective`); and "the investigation went on before the
+  mitigation was verified (turn d)" (`proceed_unmitigated`). The last two
+  are the closure line's own clauses (`narration.offers`), with no turn
+  printed when none is on record. Bookkeeping is not read. The readers the
+  statement would otherwise contradict read the record in the same change:
+  the milestone status (`milestones_shown`, and its disposition line only
+  while a declaration is effective) and the statement guards' bar
+  (`problem_status._acted_on_bar`, through the record's own source
+  derivations). The stored `MitigationRecord.verified` means "the verify
+  gate registered", forward-only; it is read only by the declared inputs
+  (the census's `MITIGATION_FLAG_INPUTS`, ruling Q10). Residuals: the API's
+  `milestones_completed` still lists `mitigation_verified` after a relapse
+  (#2609, S4), and a re-sent `mitigation_verified` after a relapse is
+  absorbed, since the gate is registered once (`milestone_inference`,
+  `stage_gates`).
 - **Compared** between the turn-start snapshot (`OutcomeBaseline`: a deep
   copy of the record before any write of the turn, and the actions accepted
   then) and the turn-final record: the cycle's, or the narration's fold
@@ -1354,7 +1376,8 @@ the turn and the turn's own prose does not state it
   window 0 included, which name no attempt); the false-alarm close, and a
   readiness message for a false alarm, the problem not present; a readiness
   message for a fix that did not hold, the latest window's FAILED; the
-  needs-info ask whose "Root cause" line says the cause fell, that it fell.
+  needs-info ask whose "Root cause" line says the cause fell, that it fell;
+  the rca-infeasible close, each mitigation fact its closure line states.
   A window's key is its `fix_turn`, so stating it covers every attempt
   sharing the window. Every prose's keys are read against the one record
   the statement compares, the turn-final record (`_statement_record`: the
@@ -1368,10 +1391,11 @@ the turn and the turn's own prose does not state it
   its drop note. The summary re-record runs because the text changed. S4
   publishes the composed statement as a field and never recomputes it from
   stored records.
-- **The rule line** (#2811 S2c-3b, ruled wording, widened by #3046 S3c):
-  "State that the problem is confirmed, that a root cause is identified, or
-  that a fix worked only through the structured fields; the engine states
-  what the case record holds under your reply." A fix that did not hold is
+- **The rule line** (#2811 S2c-3b, ruled wording, widened by #3046 S3c and
+  #3053 S3d-4): "State that the problem is confirmed, that a root cause is
+  identified, or that a fix or a mitigation worked only through the
+  structured fields; the engine states what the case record holds under
+  your reply." A fix that did not hold is
   left out: TREATMENT asks for the failure's analysis in prose. It sits in `INVESTIGATION_BASE`'s cached prefix (#613), above
   the evidence-grounding block, so every stage and the knowledge-query and
   meta turns carry it. INQUIRY does not: there, confirming the problem means
@@ -1386,8 +1410,12 @@ the turn and the turn's own prose does not state it
   ("state the root cause in one sentence before proposing the fix") is not
   a record claim and stays, as does TREATMENT's "verification evidence shows
   the fix has held", a condition for proposing, not prose to emit (S3c,
-  #3046). The mitigation lines of the MITIGATION prompt are S3d's (#3053),
-  with the mitigation's statement line. The line costs about 43 tokens
+  #3046). In the MITIGATION prompt, the line it quoted for the return to
+  DIAGNOSIS ("The temporary fix is in place and things are stabilizing")
+  is replaced by "Say what comes next, the root-cause work, without saying
+  the mitigation worked; the engine states what the case record holds
+  under your reply." (#3053 S3d-4, D1); its conditions and failure analysis
+  stay. The line costs about 46 tokens
   of the prefix, so the budget backstop's starvation boundary moved up by
   that much, and a turn that falls back is given no rule.
   `narration_outcome_prose_total{provider,set}` counts the INVESTIGATING

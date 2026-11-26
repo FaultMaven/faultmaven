@@ -56,7 +56,6 @@ from faultmaven.core.investigation.offers import (
     standing_false_alarm_decline,
 )
 from faultmaven.modules.case.contracts import (
-    DECLARED_STABLE,
     PROBLEM_ON_HOLD,
     AnswerKind,
     AnswerVia,
@@ -205,13 +204,25 @@ def _acted_on_bar(case: Case) -> str | None:
     (a mitigation by a bound re-check, or declared stable by the user, #2100),
     the statement is history rather than a working frame. An action merely
     accepted does not bar — a fix that failed is exactly when a mis-statement
-    surfaces — nor does a mitigation proceeded without."""
+    surfaces — nor does a mitigation proceeded without.
+
+    The mitigation is read as the record reads it, through its own source
+    derivations (#3053 S3d-4, ruling Q8): verified and still holding, and
+    declared stable with no later bound persistence (F5). After a bound
+    relapse, or a declaration F5 voids, the bar lifts. An apply-step decider
+    of the cycle, it folds nothing (a ``CYCLE_SOURCES`` row)."""
+    # Function-local, as ``invalidation_refusal``'s ``cause_assurance`` import is.
+    from faultmaven.core.investigation.cause_assurance import (
+        _mitigation_declared_stable,
+        _mitigation_verified,
+    )
+
     p = case.progress
     if p.cause_state.value == "identified" and not p.cause_identification_contested:
         return "the root cause is already identified against the current statement"
-    if p.mitigation is not None and p.mitigation.verified:
+    if _mitigation_verified(case):
         return "a mitigation was verified against the current statement"
-    if p.mitigation is not None and p.mitigation.disposition == DECLARED_STABLE:
+    if _mitigation_declared_stable(case):
         return "a mitigation was declared stable against the current statement"
     if p.solution_verified:
         return "a fix was verified against the current statement"

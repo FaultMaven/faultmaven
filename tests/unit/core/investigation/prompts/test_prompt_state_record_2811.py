@@ -206,8 +206,9 @@ async def test_each_declared_difference_is_shown_as_declared(difference, name):
 
 
 def test_the_fresh_inputs_are_the_plans():
+    """#3053 S3d-4: the stored ``mitigation.verified`` is no longer read;
+    the milestone status reads the record's ``milestones_shown`` whole."""
     assert {f.name for f in dataclasses.fields(PromptStateFresh)} == {
-        "mitigation_verified",
         "symptom_stale",
         "offers",
         "causal_evidence_unclaimed",
@@ -418,7 +419,6 @@ async def test_each_input_is_read_once_per_assembly(monkeypatch):
 
     readers = (
         "narration_outcome",
-        "_stored_mitigation_verified",
         "_symptom_stale",
         "offer_view",
         "_currency_note",
@@ -496,13 +496,11 @@ async def test_a_fold_failure_prints_the_declared_lines_once_counted(
 #: Each fresh input a fold failure policy covers, a fixture whose prompt
 #: reads it, the places its failure omits, and how many of the fixture's
 #: three assemblies (no processing mode, a knowledge_query turn, the
-#: fallback) read it: the milestone status reads the stored verdict on both
-#: prompts; a knowledge_query turn's emphasis carries only the
+#: fallback) read it: a knowledge_query turn's emphasis carries only the
 #: resolve-decline lines. The symptom's currency is not among them: the
 #: milestone status's currency note reads it first, unguarded, so its failure
 #: fails the build, as on ``main``.
 _FRESH_FAILURES = [
-    ("_stored_mitigation_verified", "2609_relapsed_mitigation", {"milestones"}, 2),
     ("offer_view", "P:false_alarm_declined", {"focus"}, 1),
     ("offer_view", "P:declined_earlier", {"focus", "focus_knowledge_query"}, 2),
     ("offer_view", "offer_answered_at_0b", {"focus", "focus_knowledge_query"}, 2),
@@ -618,7 +616,6 @@ def _fresh(*, stale: bool = False) -> PromptStateFresh:
         raise AssertionError("not asked")
 
     return PromptStateFresh(
-        mitigation_verified=never,
         symptom_stale=lambda: stale,
         offers=never,
         causal_evidence_unclaimed=never,

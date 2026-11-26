@@ -859,10 +859,10 @@ narration_overclaim_total = Counter(
 
 # The prose half of the outcome rule (#2811 S2c-3b). Every investigating prompt
 # asks the model to state the problem confirmed, a root cause identified or a
-# fix that worked only through the structured fields, and the engine states the
-# record under the reply. This counts, per ``set``, the INVESTIGATING model turns whose
-# prompt carried the rule (not the minimal fallback) and whose own
-# ``agent_response`` still states an outcome in prose
+# fix or a mitigation that worked only through the structured fields, and the
+# engine states the record under the reply. This counts, per ``set``, the
+# INVESTIGATING model turns whose prompt carried the rule (not the minimal
+# fallback) and whose own ``agent_response`` still states an outcome in prose
 # (``response_synthesis.OUTCOME_PROSE_SETS``): once per matching set per turn,
 # a synthesized placeholder never. It never changes a reply. The sets count
 # conditionals and copied engine clauses, so it is an upper bound; it is the
