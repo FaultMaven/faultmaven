@@ -50,7 +50,7 @@ SHAPE_SHARE = 2 / 3
 #: below auto-accept (0.85) — a shape match, not a signature.
 SHAPE_CONFIDENCE = 0.80
 
-#: The most of a paste any rule reads, the YAML parser included.
+#: The most of a paste the rules and the YAML loader read; JSON: ``JSON_PARSE_CHARS``.
 SAMPLE_CHARS = 20_000
 
 #: The most of a paste the JSON rule parses. The C JSON parser is cheap
