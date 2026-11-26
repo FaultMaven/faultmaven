@@ -35,9 +35,9 @@ MAX_TOKEN_LIMIT = 30_000
 #: The longest cl100k token is 128 bytes (128 spaces), so at most 128 characters.
 MAX_CHARS_PER_TOKEN = 128
 #: Extracted text longer than this is over ``MAX_TOKEN_LIMIT`` tokens as
-#: extracted. Extraction stops past it and the document is refused
-#: ``DOCUMENT_TOO_LONG`` ahead of every later stage, whatever cleanup and
-#: redaction would have removed (#2937).
+#: extracted, and is refused ``DOCUMENT_TOO_LONG`` in Stage 1, ahead of every
+#: later stage, whatever cleanup and redaction would have made of it (#2937).
+#: It bounds the extracted text only: Stage 3's markers can grow it.
 MAX_TEXT_CHARS = MAX_TOKEN_LIMIT * MAX_CHARS_PER_TOKEN
 MIN_TEXT_LENGTH = 200
 TRIAGE_SAMPLE_TOKENS = 2000

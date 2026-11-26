@@ -224,15 +224,18 @@ Upload (file + scope + metadata)
   │     the request id. Corruption pypdf reports as a limit stays FILE_CORRUPT.
   │     No text to read, in any format: REJECT with HTTP 422 /
   │     NO_TEXT_LAYER. That is a scanned PDF, a PDF with no pages or with a
-  │     page tree pypdf reads as empty, or a file of whitespace. Extraction
-  │     stops once its text passes 3,840,000 characters (`MAX_TOKEN_LIMIT`
-  │     × 128, the longest cl100k token, so such text is over 30,000 tokens
-  │     before cleanup or redaction): REJECT with HTTP 413 /
-  │     DOCUMENT_TOO_LONG, ahead of 1b and whatever a later stage would
-  │     have answered; what cleanup and redaction would have removed is not
-  │     measured, and a file with no text still answers NO_TEXT_LAYER. Each
-  │     parser refusal carries its code by type, never by its wording
-  │     (#2593)
+  │     page tree pypdf reads as empty, or a file of whitespace. The text
+  │     is refused once it passes 3,840,000 characters (`MAX_TOKEN_LIMIT` ×
+  │     128, the longest cl100k token, so such text is over 30,000 tokens
+  │     as extracted): REJECT with HTTP 413 / DOCUMENT_TOO_LONG (step 4
+  │     shows the sentence), ahead of 1b and whatever a later stage would
+  │     have answered; PDF, DOCX and HTML stop reading parts there (the
+  │     parse itself is not shortened), so a parse failure in a later part
+  │     is never reached. What cleanup and redaction would have made of the
+  │     text is not measured: the bound is on the extracted text, which
+  │     redaction (step 3) can grow. A file with no text still answers
+  │     NO_TEXT_LAYER. Each parser refusal carries its code by type, never
+  │     by its wording (#2593)
   │
   ├── 1b. Already-a-Runbook Gate (deterministic, no LLM)
   │     Detect: runbook frontmatter (≥4 of id/domain/service/symptom_class/
@@ -270,6 +273,10 @@ Upload (file + scope + metadata)
   │     If under limit: pass through
   │     If over limit: REJECT with HTTP 413 Payload Too Large
   │       → "Document contains {actual} tokens (limit: 30,000).
+  │          Please split the document into smaller, focused chapters
+  │          and convert each one separately."
+  │     Past the character bound, refused in step 1 with:
+  │       → "Document contains more than 30,000 tokens (limit: 30,000).
   │          Please split the document into smaller, focused chapters
   │          and convert each one separately."
   │     No silent truncation — truncation causes silent data loss

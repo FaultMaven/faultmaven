@@ -74,16 +74,18 @@ def _prose(length: int) -> str:
 
 
 class _Page:
-    """A pypdf page: its text, or a budget refusal when it has none."""
+    """A pypdf page: its text, or a limit error when it has none: a budget's,
+    or ``error``, pypdf's wording for corruption."""
 
-    def __init__(self, text: str | None = None) -> None:
+    def __init__(self, text: str | None = None, error: str = "budget") -> None:
         self.text = text
+        self.error = error
         self.reads = 0
 
     def extract_text(self) -> str:
         self.reads += 1
         if self.text is None:
-            raise LimitReachedError("budget reached")
+            raise LimitReachedError(self.error)
         return self.text
 
 
@@ -153,6 +155,30 @@ def test_over_bound_pdf_with_refused_pages_is_refused_too_long(tmp_path, monkeyp
 
     assert result == _TOO_LONG
     assert entered == [0, 1]
+
+
+@pytest.mark.parametrize("corrupt_first", [False, True])
+def test_a_corrupt_page_answers_by_its_order_against_the_bound(
+    tmp_path, monkeypatch, corrupt_first
+):
+    """A corrupt page after the page whose text passes the bound is never
+    read: 413, where ``main`` answered FILE_CORRUPT. One before it is read
+    first and is still FILE_CORRUPT."""
+    corrupt = _Page(error="Detected cycle in the page tree")
+    crossing = _Page(_prose(MAX_TEXT_CHARS + 1))
+    pages = (corrupt, crossing) if corrupt_first else (crossing, corrupt)
+    path = _pdf(tmp_path, monkeypatch, *pages)
+
+    result, _ = _run(path, "application/pdf")
+
+    if corrupt_first:
+        assert result == {
+            "refused": "FILE_CORRUPT",
+            "reason": "Failed to parse source.pdf (LimitReachedError)",
+        }
+    else:
+        assert result == _TOO_LONG
+        assert corrupt.reads == 0
 
 
 def test_a_pdf_of_refused_pages_and_no_text_is_still_too_complex(tmp_path, monkeypatch):

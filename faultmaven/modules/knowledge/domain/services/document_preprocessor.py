@@ -69,15 +69,17 @@ CONVERSION_BUSY_RETRY_AFTER_SECONDS = EXTRACTION_TIMEOUT_SECONDS
 PREPARATION_SLOTS = 2
 
 #: The worker's address-space limit (``RLIMIT_AS``), from the upload limit:
-#: ``preparation_memory_limit``. Extraction stops past ``MAX_TEXT_CHARS``
-#: (#2937), so Stages 2-5 get at most that much text and a memory failure can
-#: come only from parsing (Stage 1). There, the costliest text shape,
-#: secret-dense lines (``password=hunter22``), peaked at 163 MiB in 5.6 s
-#: through the worker at the default 10 MB. The limit was derived before the
-#: bound (#2622), over ten text shapes read whole at the upload limit; that one
-#: took 204, 348 and 632 MiB at 5, 10 and 20 MB, 64 MiB plus 28.4 MiB a MB.
-#: The limit is 128 MiB plus 64 MiB a MB, twice the base and 2.25 times the
-#: slope: 768 MiB at the default 10 MB, 2.2 times the costliest there. The
+#: ``preparation_memory_limit``. Extracted text past ``MAX_TEXT_CHARS`` is
+#: refused in Stage 1 (#2937), and a plain-text file up to it gets through
+#: Stages 0-5 under the limit, so a memory failure can come only from parsing
+#: a PDF, DOCX or HTML file. Stage 3 can grow the text: the costliest shape
+#: measured through the worker, ``pwd=x1`` lines just under the bound, reaches
+#: Stage 4 at 13.2 million characters and peaked at 483 MiB, 63% of the limit
+#: at the default 10 MB. The limit was derived before the bound (#2622), over
+#: ten text shapes read whole at the upload limit; the costliest,
+#: ``password=hunter22`` lines, took 204, 348 and 632 MiB at 5, 10 and 20 MB,
+#: 64 MiB plus 28.4 MiB a MB. The limit is 128 MiB plus 64 MiB a MB, twice the
+#: base and 2.25 times the slope: 768 MiB at the default 10 MB. The
 #: worker raises its ``oom_score_adj``, which picks it first only where the
 #: container's OOM is not grouped (Principle 14, "Container memory").
 PREPARATION_MEMORY_BASE_MIB = 128

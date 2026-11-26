@@ -26,17 +26,27 @@ def _entered(enter) -> None:
 
 
 def prepare_and_measure(file_path, content_type, enter):
-    """``prepare``, answering with its refusal code and the worker's peak
-    address space in bytes (``VmPeak``), as the refusal's reason."""
+    """``prepare``, answering with its refusal code, the worker's peak address
+    space in bytes (``VmPeak``) and the last stage it entered, as the
+    refusal's reason."""
     from faultmaven.modules.knowledge.domain.services.preparation import prepare
 
-    refused = prepare(file_path, content_type, enter).get("refused")
+    entered = []
+
+    def enter_and_note(stage):
+        entered.append(stage)
+        enter(stage)
+
+    refused = prepare(file_path, content_type, enter_and_note).get("refused")
     status = dict(
         line.split(":", 1)
         for line in Path("/proc/self/status").read_text().splitlines()
     )
     peak = int(status["VmPeak"].split()[0]) * 1024
-    return {"refused": "DOCUMENT_TOO_SHORT", "reason": f"{refused} {peak}"}
+    return {
+        "refused": "DOCUMENT_TOO_SHORT",
+        "reason": f"{refused} {peak} {entered[-1]}",
+    }
 
 
 def hold_the_lock_forever(file_path, content_type, enter):

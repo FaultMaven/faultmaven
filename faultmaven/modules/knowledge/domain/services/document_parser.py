@@ -189,7 +189,7 @@ class DocumentParser:
             file_path: Path to the document file.
             content_type: MIME type hint (used if extension is ambiguous).
             max_chars: The longest text returned. A PDF, DOCX or HTML file
-                stops being read once its text is sure to pass it.
+                stops reading parts once its text is sure to pass it.
 
         Returns:
             The extracted text, with a PDF's page count and refused pages.
