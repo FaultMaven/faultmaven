@@ -456,6 +456,87 @@ class TestErrorsUseTheRfcShape:
         assert response.json()["error"] == "temporarily_unavailable"
 
 
+#: The JSON arm's refusal of a body that is not UTF-8 text (#2974).
+NOT_TEXT = "JSON body must be UTF-8 text (RFC 8259 §8.1)."
+_REFRESH = b'"grant_type":"refresh_token","refresh_token":"x","client_id":"c"'
+
+
+class TestAJsonBodyThatIsNotTextIsRefused:
+    """#2974: the JSON arm refuses what the form arm's strict decode cannot
+    produce, before any parameter is read. These answered 500, 503 or 200.
+
+    Raw bytes, not `json=`: httpx cannot encode a lone surrogate.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url, body",
+        [
+            (TOKEN_URL, b'{"grant_type":"a\\ud800.b.c","client_id":"c"}'),
+            (REVOKE_URL, b'{"token":"t","client_id":"c","token_type_hint":"a\\ud800"}'),
+            (
+                TOKEN_URL,
+                b'{"grant_type":"authorization_code","code":"\\ud800",'
+                b'"redirect_uri":"http://x","code_verifier":"v","client_id":"c"}',
+            ),
+            (
+                TOKEN_URL,
+                b'{"grant_type":"authorization_code","code":"c",'
+                b'"redirect_uri":"http://x","code_verifier":"\\ud800","client_id":"c"}',
+            ),
+            (
+                TOKEN_URL,
+                b'{"grant_type":"refresh_token","refresh_token":"a\\ud800","client_id":"c"}',
+            ),
+            (TOKEN_URL, b'{"\\ud800":1,' + _REFRESH + b"}"),
+            (TOKEN_URL, b'{"scope":["ok",["\\udfff"]],' + _REFRESH + b"}"),
+            # The same code point as raw bytes: `json.loads` decodes them with
+            # `surrogatepass`, so no escape is needed to deliver one.
+            (TOKEN_URL, b'{"scope":"\xed\xa0\x80",' + _REFRESH + b"}"),
+        ],
+        ids=[
+            "grant_type",
+            "token_type_hint",
+            "code",
+            "code_verifier",
+            "refresh_token",
+            "key",
+            "nested",
+            "raw-bytes",
+        ],
+    )
+    async def test_a_lone_surrogate_anywhere_is_invalid_request(
+        self, client, oauth_service, url, body
+    ):
+        response = await client.post(
+            url, content=body, headers={"Content-Type": "application/json"}
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json() == {
+            "error": "invalid_request",
+            "error_description": NOT_TEXT,
+        }
+        assert oauth_service.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("url", [TOKEN_URL, REVOKE_URL])
+    async def test_nesting_past_the_recursion_limit_is_invalid_request(
+        self, client, oauth_service, url
+    ):
+        """`json.loads` raises RecursionError, not ValueError, on this."""
+        response = await client.post(
+            url, content=b"[" * 100_000, headers={"Content-Type": "application/json"}
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json() == {
+            "error": "invalid_request",
+            "error_description": "Request body is not valid JSON.",
+        }
+        assert oauth_service.mock_calls == []
+
+
 class TestTokenResponsesAreNotCacheable:
     """RFC 6749 §5.1: the body carries fresh credentials."""
 

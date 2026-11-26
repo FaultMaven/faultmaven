@@ -349,11 +349,20 @@ async def _read_oauth_params(request: Request) -> dict[str, Any]:
     if media_type in ("", "application/json") or (
         media_type.startswith("application/") and media_type.endswith("+json")
     ):
+        # Serialised in the `try`: nesting past the recursion limit is refused (#2974).
         try:
             payload = json.loads(raw)
-        except ValueError as exc:
+            text = json.dumps(payload, ensure_ascii=False)
+        except (ValueError, RecursionError) as exc:
             raise OAuthProtocolError(
                 "invalid_request", "Request body is not valid JSON."
+            ) from exc
+        # A lone surrogate, which the form arm's strict decode never yields.
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise OAuthProtocolError(
+                "invalid_request", "JSON body must be UTF-8 text (RFC 8259 §8.1)."
             ) from exc
         if not isinstance(payload, dict):
             raise OAuthProtocolError("invalid_request", "JSON body must be an object.")
