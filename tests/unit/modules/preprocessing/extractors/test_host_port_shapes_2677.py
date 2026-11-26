@@ -1,8 +1,7 @@
 """The shapes the host-and-port rule no longer reads as a port (fm#2677).
 
 Negatives first: an ISO-8601 date-time's hour, a dotted version tag and
-non-ASCII digits, through the pattern, the entity registry and the logs
-profile. Then what must not change (the earlier reading), the readings a
+non-ASCII digits, through the pattern and the logs profile. Then what must not change (the earlier reading), the readings a
 resumed scan now finds, and the false ports that remain for the owner's
 ruling: every rule found for them also reads a real host or drops a real port.
 """
@@ -13,12 +12,6 @@ import re
 
 import pytest
 
-from faultmaven.modules.case.contracts import EntityType
-from faultmaven.modules.preprocessing.entities.command_output import (
-    CommandOutputEntityExtractor,
-)
-from faultmaven.modules.preprocessing.entities.config import ConfigEntityExtractor
-from faultmaven.modules.preprocessing.entities.logs import LogsEntityExtractor
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
@@ -68,14 +61,6 @@ REMAINING |= {"2024/01/15T06:55:45": ["55"], "2024_01_15T06:55": ["55"]}
 REMAINING |= {"ts=2024-01-15T06:55:45.123-03:30": ["30"]}
 
 
-def _registry(line: str, entity_type: EntityType) -> list[str]:
-    return [
-        o.entity_value
-        for o in LogsEntityExtractor().extract(line)
-        if o.entity_type == entity_type
-    ]
-
-
 def _profile(line: str, heading: str) -> list[str]:
     _, profile = LogsAndErrorsExtractor()._build_entity_profile(line, top_n=20)
     rows = re.search(rf"^  {heading}: \d+\n((?:    \S+: \d+ lines\n?)*)", profile, re.M)
@@ -83,9 +68,8 @@ def _profile(line: str, heading: str) -> list[str]:
 
 
 def _readings(line: str) -> list[list[str]]:
-    """The pattern's, the registry's and the profile's ports, in that order."""
-    ports = (_registry(line, EntityType.PORT), _profile(line, "Distinct Ports"))
-    return [HOST_PORT_RE.findall(line), *(sorted(p) for p in ports)]
+    """The pattern's and the profile's ports, in that order."""
+    return [HOST_PORT_RE.findall(line), sorted(_profile(line, "Distinct Ports"))]
 
 
 @pytest.mark.unit
@@ -95,34 +79,17 @@ class TestNotAPort:
         assert PRE_2677_HOST_PORT_RE.findall(
             line
         ), "the pattern before fm#2677 read a port here"
-        assert _readings(line) == [[], [], []]
+        assert _readings(line) == [[], []]
 
     @pytest.mark.parametrize("line", NON_ASCII)
     def test_non_ascii_digits_are_no_port_or_pid(self, line):
         assert HOST_PORT_RE.findall(line) == []
-        for entity_type in (EntityType.PORT, EntityType.PID):
-            assert _registry(line, entity_type) == []
         assert _profile(line, "Distinct Ports") == []
         assert _profile(line, "Distinct PIDs") == []
 
     def test_the_ascii_controls_still_read(self):
-        assert _registry("port 33 pid=3", EntityType.PORT) == ["33"]
-        assert _registry("port 33 pid=3", EntityType.PID) == ["3"]
+        assert _profile("port 33 pid=3", "Distinct Ports") == ["33"]
         assert _profile("port 33 pid=3", "Distinct PIDs") == ["3"]
-
-    def test_command_output_and_config_refuse_non_ascii(self):
-        def ports(extractor, content):
-            return [
-                o.entity_value
-                for o in extractor.extract(content)
-                if o.entity_type == EntityType.PORT
-            ]
-
-        command = CommandOutputEntityExtractor()
-        assert ports(command, "tcp 10.0.0.5:٥٤٣٢ LISTEN\nport ٣٣") == []
-        assert ports(command, "tcp 10.0.0.5:5432 LISTEN") == ["5432"]
-        assert ports(ConfigEntityExtractor(), "port: ٥٤٣٢") == []
-        assert ports(ConfigEntityExtractor(), "port: 5432") == ["5432"]
 
 
 @pytest.mark.unit
@@ -131,13 +98,13 @@ class TestWhatStillReads:
     def test_the_earlier_reading_is_kept(self, line):
         before = PRE_2677_HOST_PORT_RE.findall(line)
         assert before
-        assert _readings(line) == [before, sorted(set(before)), sorted(set(before))]
+        assert _readings(line) == [before, sorted(set(before))]
 
     @pytest.mark.parametrize("line, ports", NEW_READINGS.items())
     def test_a_resumed_scan_finds_the_real_port(self, line, ports):
         assert PRE_2677_HOST_PORT_RE.findall(line) != ports
-        assert _readings(line) == [ports, ports, ports]
+        assert _readings(line) == [ports, ports]
 
     @pytest.mark.parametrize("line, ports", REMAINING.items())
     def test_the_remaining_false_ports(self, line, ports):
-        assert _readings(line) == [ports, sorted(ports), sorted(ports)]
+        assert _readings(line) == [ports, sorted(ports)]

@@ -50,7 +50,6 @@ class TestEvidenceMetadataContract:
         stored = meta.to_storage_dict()
         assert set(stored.keys()) == {"classification"}
         assert "extractor" not in stored
-        assert "entities" not in stored
         assert "coverage" not in stored
 
     def test_from_storage_tolerates_none(self):
@@ -196,10 +195,9 @@ class TestPreprocessingServiceWritesMetadata:
 
     @pytest.mark.asyncio
     async def test_absent_extractor_metadata_keys_stay_absent(self):
-        """Phase 1 writes `classification` and `extractor`. Phase 4's
-        `entities` and Phase 3's `coverage` keys must NOT appear — the
-        ownership contract depends on writers touching only their own
-        namespace."""
+        """Phase 1 writes `classification` and `extractor`. Phase 3's
+        `coverage` key must NOT appear — the ownership contract depends on
+        writers touching only their own namespace."""
         classifier = _make_classifier(confidence=0.9)
         service = PreprocessingService(
             classifier=classifier, logs_extractor=_make_extractor()
@@ -207,7 +205,6 @@ class TestPreprocessingServiceWritesMetadata:
         result = await service.classify_and_extract(content="data", principal="u1")
 
         ev_meta = result.extraction_metadata["evidence_metadata"]
-        assert "entities" not in ev_meta
         assert "coverage" not in ev_meta
 
 

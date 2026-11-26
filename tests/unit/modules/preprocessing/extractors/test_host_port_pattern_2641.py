@@ -15,8 +15,6 @@ from collections import Counter
 
 import pytest
 
-from faultmaven.modules.case.contracts import EntityType
-from faultmaven.modules.preprocessing.entities.logs import LogsEntityExtractor
 from faultmaven.modules.preprocessing.extractors.logs_extractor import (
     LogsAndErrorsExtractor,
 )
@@ -190,15 +188,6 @@ class TestSameMatchesAsTheOracles:
         assert sum(bool(PORT_KEYWORD_RE.search(text)) for text in corpus) > 100
         assert fired["non-ascii"] > 1_000 and fired["dot-digit"] > 300
         assert all(fired[form] > 15 for form in DATE_HOUR_SHAPES), fired
-
-    def test_the_entity_registry_counts_the_same_ports(self):
-        lines = _corpus(5_000)
-        observed = {
-            o.entity_value: o.mention_count
-            for o in LogsEntityExtractor().extract("\n".join(lines))
-            if o.entity_type == EntityType.PORT
-        }
-        assert observed == _expected_ports(lines)
 
     def test_the_log_profile_counts_the_same_ports(self):
         lines = _corpus(5_000)

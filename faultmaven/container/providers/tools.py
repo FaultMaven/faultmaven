@@ -339,11 +339,9 @@ def register_tools(container: BaseDIContainer) -> None:
         unbuilt_where_must_not_degrade("The reclassify evidence tool", e, settings)
 
     # Phase 4c — entity registry tools. ``find_entity`` and
-    # ``list_top_entities`` expose the ``case_entities`` table built by
-    # Phase 4b. Gated on the same feature flag that controls the
-    # producer side — the tools would always return empty results with
-    # the flag off, so offering them to the LLM would just invite
-    # misleading queries.
+    # ``list_top_entities`` read the ``case_entities`` table, which
+    # nothing populates (#2644); they stay behind the flag until the
+    # registry's retirement removes them (#1708).
     try:
         from faultmaven.config.settings import get_settings
 

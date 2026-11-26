@@ -189,9 +189,10 @@ class TestLowConfidenceMarker:
         assert f'id="{ev.evidence_id}"' in out
 
     def test_metadata_without_classification_key_no_marker(self):
-        """Forward-compat: evidence that carries only Phase 4 entity
-        overflow markers (no Phase 1 classification block) must not
-        accidentally get a low-confidence marker."""
+        """Evidence whose metadata carries only a key ``EvidenceMetadata``
+        does not declare (the removed Phase 4 ``entities`` block, #2644)
+        and no classification block parses under ``extra="ignore"`` and
+        gets no low-confidence marker."""
         ev = _make_evidence(metadata={"entities": {"overflow_types": ["ip"]}})
         case = _make_case([ev])
 

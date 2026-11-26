@@ -1,23 +1,18 @@
 """The one implementation of "which token in a log line is a username".
 
-Two consumers extract usernames from log content and they used to carry a
-regex each:
+Its consumer is ``extractors/logs_extractor.py``, the always-on entity
+profile rendered into ``file_extract`` / ``search_map``. A second consumer,
+the entity registry's ``entities/logs.py`` (removed with intake entity
+extraction, #2644), used to carry a regex of its own.
 
-* ``extractors/logs_extractor.py`` — the always-on entity profile rendered
-  into ``file_extract`` / ``search_map``.
-* ``entities/logs.py`` — the ``FAULTMAVEN_ENTITY_REGISTRY`` extractor whose
-  ``EntityType.USER`` rows reach the investigation prompt through the
-  Phase 4c entity-highlights block.
-
-The second copy was written from the first and then never received any of
+That second copy was written from the first and then never received any of
 the guards the first grew, so on verbatim OpenSSH input it emitted
 ``ns.marryaldkfaczcz.com`` (a reverse-mapping PTR record), ``unknown`` and
 ``user`` (PAM structural words) and ``PnP`` / ``high-res`` (kernel
 ``for <thing>`` phrases) as login accounts (fm#522). A shared rule is the
 only shape in which a guard added once holds in both places.
 
-What stays with each consumer is *formatting* — how the counts are rendered
-— which is what the duplication was originally there to keep independent.
+What stays with the consumer is *formatting* — how the counts are rendered.
 The rule itself is here.
 
 Where a line's username comes from depends on how ``extractors/sshd_auth``
@@ -70,8 +65,7 @@ phantom ``root`` — one per line a brute-force source wrote. Three cases:
 
    Case 2 applies (a), without its ``for`` branch, and (b)–(d).
 
-Multiplicity is decided here too, and the same way for both consumers: a
-mention is a LINE. The two branches overlap on ``for invalid user <name>``,
+Multiplicity is decided here too: a mention is a LINE. The two branches overlap on ``for invalid user <name>``,
 and counting each match ranked a scanner-sprayed account above a real one
 (fm#1574). Both patterns are ``re.IGNORECASE``, so the de-duplication key is
 case-folded as well — ``for Alice … user=alice`` is one account, once.
@@ -121,9 +115,8 @@ from faultmaven.modules.preprocessing.extractors.sshd_auth import (
 # identical: one account, two matches. ``extract_usernames`` runs neither
 # pattern on a line ``sshd_auth`` reads with sshd's user slot (fm#1668); it
 # runs both only on a line the module docstring's case 3 covers, and
-# de-duplicates the names per line. Its consumers count distinct names per
-# line — the registry path de-duplicates again, by exact value, in
-# ``entities/line_tally.py``. A consumer that wants offsets (``finditer``,
+# de-duplicates the names per line. Its consumer counts distinct names per
+# line. A consumer that wants offsets (``finditer``,
 # for masking, highlighting or citation) must apply the same fm#1668 rule
 # and de-duplicate on the group-1 span, or merge overlapping match spans.
 USER_FIELD_RE = re.compile(
@@ -249,10 +242,7 @@ def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
     ``USER_FOR_RE`` (``for invalid user test``) — so counting matches ranked
     an account that only ever appears as ``invalid user`` at twice the weight
     of one appearing as ``Accepted password for <name>``. That ranking is not
-    cosmetic in either consumer: it orders the entity profile's ``Distinct
-    usernames`` list, and on the registry path it is ``mention_count``, which
-    ``list_top_entities`` sums (``SUM(mention_count) DESC``) and the Phase 4c
-    highlights block prints into the investigation prompt.
+    cosmetic: it orders the entity profile's ``Distinct usernames`` list.
 
     The same name reached twice on one line through genuinely different
     fields (``Failed password for alice … user=alice``) therefore counts
@@ -260,7 +250,7 @@ def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
     event, and one event is one mention of each account it names. Multiple
     lines still accumulate.
 
-    De-duplication lives here rather than in either caller because this is
+    De-duplication lives here rather than in the caller because this is
     where the two branches are concatenated — the only point at which "per
     line" is expressible once. There is deliberately no second,
     non-de-duplicating entry point: ``distinct_usernames`` was that, for the
@@ -281,13 +271,13 @@ def extract_usernames(line: str, sshd: SshdAuthLine | None = None) -> list[str]:
 
     * Order is **branch order, not the line's left-to-right offsets**:
       ``for bob … user=alice`` returns ``['alice', 'bob']``. No caller
-      depends on order today — both accumulate into a ``Counter`` — and the
-      rendered profile sorts by count.
+      depends on order today — the caller accumulates into a ``Counter`` —
+      and the rendered profile sorts by count.
     * Case folding is **within one line only**. Across lines the spelling is
       the entity identity, so ``Alice`` on one line and ``alice`` on another
-      remain two rows in ``case_entities``. Unifying them is a question about
-      account identity (POSIX says they differ, Active Directory says they do
-      not) and about a persisted key, not about this line's arithmetic.
+      remain two entries. Unifying them is a question about account identity
+      (POSIX says they differ, Active Directory says they do not), not about
+      this line's arithmetic.
     """
     if sshd is None:
         sshd = read_sshd_auth_line(line)

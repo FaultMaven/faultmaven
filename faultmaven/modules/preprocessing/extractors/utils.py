@@ -9,10 +9,9 @@ Provides:
 - The two halves of the mention unit: what a line is
   (``split_log_lines``) and what counts as one mention on it
   (``distinct_values`` / ``distinct_on_line``)
-- The entity value limits both entity paths share (``is_port``,
-  ``is_pid``, ``PID_MAX``) and the pattern precondition
-  (``check_entity_pattern``)
-- The port keyword pattern both entity paths read in logs evidence
+- The entity value limits (``is_port``, ``is_pid``, ``PID_MAX``) and the
+  pattern precondition (``check_entity_pattern``)
+- The port keyword pattern the entity profile reads in logs evidence
   (``PORT_KEYWORD_RE``; its host-and-port partner, ``HOST_PORT_RE``, is in
   ``faultmaven/utils/host_port.py``)
 """
@@ -83,19 +82,14 @@ def split_log_lines(content: str) -> list[str]:
 
 
 PID_MAX = 4_194_304
-"""Linux's default ``pid_max`` ceiling on 64-bit.
-
-Shared rather than repeated: the logs extractor's rendered profile and the
-entity registry index the same file, so a ceiling raised in one and not the
-other would have ``case_entities`` carry a PID the profile dropped.
-"""
+"""Linux's default ``pid_max`` ceiling on 64-bit."""
 
 
 def is_port(value: str) -> bool:
     """True when ``value`` is a legal TCP/UDP port number in ASCII digits.
 
-    The command-output, config and PID patterns use ``\\d``, which takes any
-    Unicode digit (``٥٤٣٢``); this test and ``is_pid`` refuse them (fm#2677).
+    The logs extractor's PID patterns use ``\\d``, which takes any Unicode
+    digit (``٥٤٣٢``); this test and ``is_pid`` refuse them (fm#2677).
     """
     return value.isascii() and value.isdigit() and 0 < int(value) <= 65535
 
@@ -108,8 +102,7 @@ def is_pid(value: str) -> bool:
 PORT_KEYWORD_RE = re.compile(r"\bport[= :]+([0-9]{1,5})\b", re.IGNORECASE)
 """A port after the word ``port``, as in ``port 22`` or ``port=8080``.
 
-Read in logs evidence by both entity paths, and by the registry in command
-output, where it is paired with an IP-and-port pattern instead. The port is
+Read in logs evidence by the logs extractor's entity profile. The port is
 ASCII digits (``port ٣٣`` is not one), as in ``HOST_PORT_RE``
 (``faultmaven/utils/host_port.py``, fm#2677).
 """
@@ -119,11 +112,7 @@ def check_entity_pattern(pattern: "re.Pattern[str]") -> None:
     """Raise unless ``pattern`` can yield entity values.
 
     ``findall`` returns tuples past one capture group, and a tuple is not an
-    entity value. Callers validate at DECLARATION time (``EntityRule``
-    construction, i.e. import) rather than relying on the per-line check
-    below: entity extraction is wrapped in a blanket ``except Exception`` by
-    the preprocessing service, so a pattern that raises per line produces no
-    entities at all for that evidence behind one WARNING.
+    entity value. ``distinct_on_line`` checks each pattern it is given.
     """
     if pattern.groups > 1:
         raise ValueError(
@@ -141,11 +130,12 @@ def distinct_values(values: "Iterable[str]") -> list[str]:
     again as ``backend:8080`` — is one mention, so an entity count means
     "how many lines did this appear on".
 
-    This is the core every producer goes through, regexes and non-regex
-    matchers alike, so that a normalisation added here (case folding, a
-    length cap) cannot reach some entity types and not others. That
-    asymmetry is fm#1587 itself: fm#1574 moved the username rule per line
-    and left IP, PORT, PID and HTTP_PATH counting matches.
+    The logs extractor's regex entity counts go through it, by way of
+    :func:`distinct_on_line`. Usernames do not: ``log_usernames``
+    de-duplicates them itself, on a case-folded key, so a normalisation
+    added here does not reach them. That kind of asymmetry is fm#1587:
+    fm#1574 moved the username rule per line and left IP, PORT, PID and
+    HTTP_PATH counting matches.
 
     It lives next to :func:`split_log_lines` because a per-line count is
     only as right as what the callers agree a line *is*.

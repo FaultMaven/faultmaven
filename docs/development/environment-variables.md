@@ -588,6 +588,17 @@ reported under `knowledge_indexing` on `GET /api/v1/admin/config/status`.
 |----------|------|---------|-------------|
 | `INDEX_REQUEST_WINDOW_SECONDS` | int (0, or 60–3600) | 0 | Seconds a KB write may spend indexing its document. `0` refuses nothing up front; the embedding guard (180 s for a model load plus twice the estimate) still bounds the embed. Set it below the fronting proxy's read timeout, less the rest of the request: for example 600 under an ingress `proxy-read-timeout` of 660 s |
 
+## Entity Registry
+
+`PreprocessingSettings.entity_registry_enabled` (`settings.preprocessing`).
+Intake runs no entity extraction (#2644), so nothing populates `case_entities`;
+the registry is retired by ruling, and this flag goes with it (#1708).
+`FAULTMAVEN_ENTITY_REGISTRY_CAP` is removed; a value still set is ignored.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `FAULTMAVEN_ENTITY_REGISTRY` | bool | false | Registers the `find_entity` / `list_top_entities` tools and fetches the entity highlights block. Both read an empty table |
+
 ## Metrics
 
 `METRICS_EXPORTER` is a `settings.py` field. `ENABLE_METRICS` is not: the

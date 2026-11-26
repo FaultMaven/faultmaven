@@ -491,10 +491,10 @@ class CaseRepository(ABC):
     ) -> None:
         """Replace this evidence's entity rows with *entities*.
 
-        Phase 4 — invoked by the preprocessing pipeline after each
-        extraction. Semantics: delete all existing
-        ``case_entities`` rows for ``(case_id, evidence_id)``, then
-        insert the new list. This "replace per evidence" contract keeps
+        Phase 4 — no production caller: intake entity extraction was
+        removed (#2644), and the registry is retired by ruling (#1708).
+        Semantics: delete all existing ``case_entities`` rows for
+        ``(case_id, evidence_id)``, then insert the new list. This "replace per evidence" contract keeps
         re-extraction (Phase 1.5) and alt-extractor retries (Phase 2)
         idempotent — stale entity observations from a previous
         extraction don't linger.

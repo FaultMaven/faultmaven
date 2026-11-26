@@ -646,11 +646,6 @@ class ExtractorMetadata(BaseModel):
     chosen_type: str                # data type of the extractor whose output was kept
     attempts: list[ExtractorAttempt] = []
 
-class EntitiesMetadata(BaseModel):
-    """Overflow markers for Phase 4's case_entities writes.
-    Rows live in the separate table; this field only records caps hit on ingest."""
-    overflow_types: list[str] = []  # entity types that exceeded the 500-per-evidence cap
-
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns (Phase 3).
     The span is on the coverage_start_ts / coverage_end_ts columns and the pattern
@@ -664,7 +659,6 @@ class CoverageMetadata(BaseModel):
 class EvidenceMetadata(BaseModel):
     classification: Optional[ClassificationMetadata] = None
     extractor:      Optional[ExtractorMetadata] = None
-    entities:       Optional[EntitiesMetadata] = None
     coverage:       Optional[CoverageMetadata] = None
 ```
 
@@ -674,13 +668,12 @@ class EvidenceMetadata(BaseModel):
 | --- | --- | --- | --- |
 | `classification` | `PreprocessingService` | `context_builder` (low-confidence marker) | Phase 1 |
 | `extractor` | `PreprocessingService` | observability only (no agent-visible effect) | Phase 1 (minimal) / Phase 2 (full `attempts`) |
-| `entities` | `PreprocessingService` (on cap overflow) | agent tool `find_entity` reads the row-level table; overflow marker tells the agent "not all entities are indexed" | Phase 4 |
 | `coverage` | `PreprocessingService` | none: the context builder and `symptom_currency` read the `coverage_*_ts` and `coverage_source` columns, not this key | Phase 3 |
 | `fix_verification` | the turn's evidence apply (`response_application._record_rechecks`; `claimed`: `problem_status.hold_premature_absence`), never preprocessing; a reclassification keeps it | `cause_assurance.SubjectIndex` via `Evidence.rechecks_evidence_id`: `{"rechecks": <evidence id or null>, "named": <the model's ref>}`, what a post-fix row re-observes; `null` when the ref binds to no row (#1906 D1). `"claimed": "causal_absence_evidence"` on a `causal_absence` row held as `symptom_absence` because its problem was not verified: `problem_status.restore_premature_absence` restores the row and removes the key only when its turn ends verified or the revision's hold it arrived in ends on a verified problem; a row held at the end of an ordinary unverified turn stays `symptom_absence`, the claim kept as a record (#2550). Not part of `EvidenceMetadata` | #1906, #2550 |
 
 **Backward compatibility.** Every key is optional; every existing row has `metadata = NULL` or a shape without these keys. Readers must tolerate missing keys and missing fields within each key without raising.
 
-**Why JSON and not columns.** Classifier confidence, extractor attempts, and overflow markers are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The coverage span is the exception: it lives in the `coverage_start_ts` / `coverage_end_ts` columns, which Python code reads off the loaded row (for example the context builder's time-window rerank and `observed_through` attribute, and `symptom_currency`); no query filters on them by a time window. Their index, `ix_evidence_coverage`, has no query to serve; dropping it is #2405.
+**Why JSON and not columns.** Classifier confidence and extractor attempts are **diagnostic signals** attached to an evidence row — they are not queried on their own, they are read alongside the evidence. Promoting any of these to a column would buy indexing we don't need. The coverage span is the exception: it lives in the `coverage_start_ts` / `coverage_end_ts` columns, which Python code reads off the loaded row (for example the context builder's time-window rerank and `observed_through` attribute, and `symptom_currency`); no query filters on them by a time window. Their index, `ix_evidence_coverage`, has no query to serve; dropping it is #2405.
 
 ### 4.4 hypotheses (High-Cardinality Table)
 
@@ -1162,7 +1155,7 @@ enterprises  (the isolation boundary — may these two accounts ever see each ot
 
 ### 4.13 case_entities (High-Cardinality Table — Phase 4)
 
-Cross-artifact entity index for a case. One row per `(case, entity_type, entity_value, evidence)` tuple, populated by the preprocessing pipeline after each successful extraction. Makes *"which evidence in this case mentions IP 10.0.0.5?"* a single indexed lookup rather than an LLM scan across evidence summaries.
+Cross-artifact entity index for a case. One row per `(case, entity_type, entity_value, evidence)` tuple. Nothing populates it: intake entity extraction was removed (#2644), and the registry is retired by ruling (#1708). Its design made *"which evidence in this case mentions IP 10.0.0.5?"* a single indexed lookup rather than an LLM scan across evidence summaries.
 
 ```sql
 CREATE TABLE case_entities (
@@ -1192,11 +1185,10 @@ CREATE INDEX idx_case_entities_by_evidence
 - `entity_type` is a controlled vocabulary enforced at the Pydantic layer (not via `CHECK` — PostgreSQL-only constraints aren't portable to SQLite). Valid values: `ip`, `hostname`, `user`, `pid`, `port`, `service`, `path`, `device`, `metric_name`. Extending requires a design-doc edit so the retrieval paths stay in sync with what producers emit.
 - `first_seen_ts` is nullable: populated from the evidence's `coverage_start_ts` (Phase 3a, §4.3) when the evidence is time-bound, else NULL for timeless content (configs, source code, short pastes).
 - Both FKs cascade on delete. Case or evidence deletion sweeps registry rows without a separate cleanup job.
-- Row growth is bounded by a preprocessor-side hard cap of **500 entities per (evidence, entity_type)** pair, tunable via `FAULTMAVEN_ENTITY_REGISTRY_CAP`. Worst case per case: `evidence_count × 500 × |entity_type vocabulary|` — 100 evidence × 500 × 9 = 450k rows, well within PostgreSQL comfort.
-- Overflow is recorded on `evidence.metadata.entities.overflow_types` (list of type values) and increments the `faultmaven_case_entities_overflow_total{entity_type}` counter. Exit-criteria dashboard triggers a cap review if any type overflows on >20% of evidence.
-- **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). Flag controls both the producer (preprocessor writes) and the consumer (agent tools + context-builder highlights). The table stays in schema regardless of flag state.
+- **Nothing populates this table.** Intake entity extraction, its per-type cap and its overflow counter were removed (#2644); the table, the read side and the flag go with the registry's ruled retirement (#1708).
+- **Shipped dark** behind `FAULTMAVEN_ENTITY_REGISTRY` (default False). The flag gates the read side only (agent tools + context-builder highlights), which reads an empty table.
 
-**Write path**: `PreprocessingService._build_result` → `attachments._preprocess_attachment` → `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)`. Semantics: delete-then-insert scoped to `(case_id, evidence_id)`. Empty list clears without inserting.
+**Write path**: none. `CaseRepository.upsert_case_entities(case_id, evidence_id, entities)` (delete-then-insert scoped to `(case_id, evidence_id)`) has no caller outside the repositories.
 
 **Read path**: `CaseRepository.find_entity(case_id, entity_value, entity_type?)` and `list_top_entities(case_id, entity_type, limit)`. Exposed to the agent via `find_entity` and `list_top_entities` tools; also pre-fetched by the milestone engine and injected as an `<entity_highlights>` block in the INVESTIGATING template.
 

@@ -535,16 +535,14 @@ investigation_service.process_turn(payload: TurnPayload)
   │                 → optional Phase 2 sanity-retry with alternative DataType
   │                   (gated on `extractor_retry_enabled`; ≤ 2 retries) — §2.6
   │                 → extract_time_range_ts(content)      [Phase 3 timestamps]
-  │                 → extract_entities_for_data_type(...) [Phase 4, flag-gated]
   │                 → PreprocessingResult (carries coverage_start/end_ts,
-  │                   entities, entity_overflow_types, evidence_metadata)
+  │                   evidence_metadata)
   │           → UploadedFile(summary, structural_index=ExtractResult.to_json(),
   │                          data_type, coverage_start_ts/end_ts,
   │                          metadata=EvidenceMetadata)
   │             [Post-010: only UploadedFile is created at intake; Evidence
   │              rows are born later during INVESTIGATING via the LLM's
   │              evidence_to_add. See evidence-driven-investigation-framework.md §5.]
-  │           → CaseRepository.upsert_case_entities(case_id, file_id, entities)
   │
   │   PII redaction is NOT applied at extraction time.
   │   It runs at the LLM boundary (MilestoneEngine), so structural indexes
@@ -607,9 +605,10 @@ Content kept this way is stored as uploaded. For a config, that means the extrac
 **Output**: `PreprocessingResult` — Pydantic model defined canonically in [`faultmaven/core/preprocessing/models.py`](../../../faultmaven/core/preprocessing/models.py). The model carries (in addition to the obvious `data_type`, `summary`, `structural_index`, `content_ref`, `content_hash`, `extraction_method`, `extraction_metadata`):
 
 - `coverage_start_ts` / `coverage_end_ts` (Phase 3) — earliest/latest timestamp parsed from the content; `None` for files without parseable timestamps. Lifted onto `Evidence.coverage_start_ts/end_ts` at row creation. See §2.7.
-- `entities` / `entity_overflow_types` (Phase 4) — entity observations + overflow markers feeding the case-level entity registry. Always empty when the `FAULTMAVEN_ENTITY_REGISTRY` flag is off. See [entity-registry.md](./entity-registry.md).
 
-The `extraction_metadata["evidence_metadata"]` slot carries a structured `EvidenceMetadata` payload (classifier signals, extractor attempt history, entity overflow, coverage source pattern) — canonical schema in [`case-schema.md §evidence.metadata JSON contract`](../data-and-storage/schemas/case-schema.md#evidencemetadata-json-contract); reader-friendly copy of the dataclass shape lives in [`faultmaven/core/preprocessing/evidence_metadata.py`](../../../faultmaven/core/preprocessing/evidence_metadata.py).
+Phase 4 entity extraction is removed from intake (#2644): the result carries no entity fields, and nothing populates the case-level entity registry, whose tools read an empty table pending its retirement (#1708). See [entity-registry.md](./entity-registry.md).
+
+The `extraction_metadata["evidence_metadata"]` slot carries a structured `EvidenceMetadata` payload (classifier signals, extractor attempt history, coverage source pattern) — canonical schema in [`case-schema.md §evidence.metadata JSON contract`](../data-and-storage/schemas/case-schema.md#evidencemetadata-json-contract); reader-friendly copy of the dataclass shape lives in [`faultmaven/core/preprocessing/evidence_metadata.py`](../../../faultmaven/core/preprocessing/evidence_metadata.py).
 
 **Deduplication is live.** Per-case content-hash deduplication short-circuits duplicate uploads: before storing an attachment, `_preprocess_attachment` matches its `content_hash` against the loaded case's `uploaded_files` (#1878). A match returns the existing `UploadedFile` and skips storage (no re-write of the raw file). The per-attachment turn response carries `duplicate_of` and `duplicate_turn` so the frontend can render a non-blocking toast. Scope is per-case only — the same content can be uploaded to different cases without interference. There is no repository lookup: the case is loaded with every committed row, so a row it does not hold could only be a concurrent commit, which fails this turn's OCC-versioned save anyway.
 
@@ -657,7 +656,6 @@ Every `PreprocessingResult` carries `coverage_start_ts` / `coverage_end_ts` — 
 - Pattern vocabulary (priority order): `iso8601_t`, `iso8601`, `healthapp` (`YYYYMMDD-H:M:S:ms`, ISS-017), `syslog_bsd`, `yymmdd` (Hadoop/HDFS compact), `yy_slash_mmdd` (Spark/log4j, ISS-027), `epoch_ms`, `epoch_s`.
 - Persistence: `attachments._preprocess_attachment` lifts both timestamps onto the `UploadedFile` row (`uploaded_files.coverage_start_ts` / `coverage_end_ts`) at intake. The matched pattern name is persisted as `uploaded_files.coverage_source`; the context builder reads it there and on the evidence rows' `coverage_source`, as `symptom_currency` does. It is also recorded in `PreprocessingResult.extraction_metadata["evidence_metadata"].coverage.source`, which nothing reads back; persistence of the preprocessor's JSON diagnostics block onto `uploaded_files.metadata` is a tracked follow-up. The head pattern wins because a single file emits a single timestamp format in practice; when the head window is empty, the tail's pattern is used as fallback.
 - Use sites:
-  - The entity registry uses the file's coverage timestamps to populate `case_entities.first_seen_ts` (entity-registry.md) — lets the registry answer "did this IP appear before or after the outage?" without re-opening the evidence.
   - Orchestration's coverage-gap detection (R3, §6.1) uses the time range to flag user queries that target timestamps outside what any data in the case actually covers.
 
 Best-effort throughout: extraction errors degrade to `None`; the field is Optional everywhere downstream and consumers tolerate absence.

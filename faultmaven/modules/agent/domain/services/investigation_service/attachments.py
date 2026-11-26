@@ -564,16 +564,9 @@ async def _preprocess_attachment(
         )
 
     # Preprocessor diagnostics (classifier confidence, extractor
-    # attempts, entity overflow markers) have no claim-anchored
-    # Evidence to land on at intake; their natural home is
-    # ``uploaded_files.metadata`` (JSON blob). Tracked as a follow-up
-    # — no currently-shipping feature regresses.
-
-    # ``case_entities`` population is deferred. Entities should either
-    # anchor to the UploadedFile (schema change) or be populated lazily
-    # when the LLM creates ``evidence_to_add`` rows referencing this
-    # file. The data is still in ``preprocessing_result.entities`` for
-    # any reader that wants it.
+    # attempts) have no claim-anchored Evidence to land on at intake;
+    # their natural home is ``uploaded_files.metadata`` (JSON blob).
+    # Tracked as a follow-up — no currently-shipping feature regresses.
 
     # Surface classification clarification hints when the heuristic
     # classifier produced a low-confidence result. Suggested types are

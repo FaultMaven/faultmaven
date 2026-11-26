@@ -1,8 +1,7 @@
 """Structured contract for the ``evidence.metadata`` JSON column.
 
 The column is shared by several preprocessing-pipeline phases (classifier
-confidence, extractor attempts, entity-cap overflow markers, coverage
-details). This module pins the shape so writers don't collide and readers
+confidence, extractor attempts, coverage details). This module pins the shape so writers don't collide and readers
 can tolerate absence.
 
 Ownership (see docs/architecture/data-and-storage/schemas/case-schema.md §4.3
@@ -10,7 +9,6 @@ Ownership (see docs/architecture/data-and-storage/schemas/case-schema.md §4.3
 
     classification  — PreprocessingService writes; context_builder reads.
     extractor       — PreprocessingService writes; observability only.
-    entities        — PreprocessingService writes on cap overflow.
     coverage        — PreprocessingService writes; nothing reads it back.
                       The prompt reads the ``coverage_*_ts`` and
                       ``coverage_source`` columns instead.
@@ -91,20 +89,6 @@ class ExtractorMetadata(BaseModel):
     attempts: List[ExtractorAttempt] = Field(default_factory=list)
 
 
-class EntitiesMetadata(BaseModel):
-    """Overflow markers for the Phase 4 ``case_entities`` writes.
-
-    Entity rows themselves live in the separate table; this structure
-    only records when an entity type's per-evidence cap (500) was hit,
-    so the agent knows "not all entities are indexed — use raw-file
-    drill-down for enumeration."
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    overflow_types: List[str] = Field(default_factory=list)
-
-
 class CoverageMetadata(BaseModel):
     """Extractor time-range details beyond the promoted columns.
 
@@ -139,7 +123,6 @@ class EvidenceMetadata(BaseModel):
 
     classification: Optional[ClassificationMetadata] = None
     extractor: Optional[ExtractorMetadata] = None
-    entities: Optional[EntitiesMetadata] = None
     coverage: Optional[CoverageMetadata] = None
 
     def to_storage_dict(self) -> dict:
