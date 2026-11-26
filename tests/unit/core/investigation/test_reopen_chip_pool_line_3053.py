@@ -1,6 +1,7 @@
 """The reopen chip's refusal states the "Root cause" ask as the record path
-does (#3053 S3d-1, stage S3d of #2615), and the whole refusal is the fold's
-(S3d-2).
+does (#3053 S3d-1, stage S3d of #2615), and its verdict and record facts
+come from one fold, the content the ask names (the held check's text, the
+cause re-check's names) read beside it (S3d-2).
 
 S3d-1: the refusal stated the decide-time message, built with no cause, so its
 ask lacked the pool-empty line (approved copy item 5, #2811 S2c-1b) the
