@@ -544,7 +544,12 @@ class TestOAuthProtocolErrorHandler:
         )
 
         assert response.status_code == 400
-        assert json.loads(response.body)["error"] == "invalid_request"
+        assert json.loads(response.body) == {
+            "error": "invalid_request",
+            "error_description": "x?",
+        }
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
 
 
 class TestTeamOperationRefusedHandler:

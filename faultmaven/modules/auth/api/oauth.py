@@ -287,10 +287,14 @@ _MAX_ECHOED_BYTES = 120
 
 
 def _echo(value: Any) -> str:
-    """Render a client-supplied value for an error message, bounded."""
-    encoded = str(value).encode("utf-8")
+    """Render a client-supplied value for an error message, bounded; never raises."""
+    try:
+        text = str(value)
+        encoded = text.encode("utf-8")
+    except Exception:  # a lone surrogate, or a container too deep for str() (#2974)
+        return "<unrenderable value>"
     if len(encoded) <= _MAX_ECHOED_BYTES:
-        return str(value)
+        return text
     # Truncation can land inside a multi-byte character; drop the partial one.
     return encoded[:_MAX_ECHOED_BYTES].decode("utf-8", "ignore") + "…"
 
@@ -304,6 +308,47 @@ def _echo(value: Any) -> str:
 # that shape structurally rather than site by site.
 
 
+def _unique_params(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Pairs into a mapping, refusing a repeated name (both arms, every object)."""
+    params: dict[str, Any] = {}
+    for name, value in pairs:
+        if name in params:
+            # RFC 6749 §3.1: a request parameter MUST NOT be sent more than
+            # once. Silently taking the first or the last would let whoever
+            # controls the duplicate choose which value the server reads.
+            raise OAuthProtocolError(
+                "invalid_request",
+                f"Parameter '{_echo(name)}' is included more than once.",
+            )
+        params[name] = value
+    return params
+
+
+def _holds_lone_surrogate(payload: Any) -> bool:
+    """Whether a decoded JSON key or string holds one, at any depth."""
+    try:
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")  # C speed
+        return False
+    except UnicodeEncodeError:
+        return True
+    except RecursionError:  # `dumps` nests shallower than `loads` (3.14)
+        pass
+    stack = [payload]  # the fallback: an explicit stack, no recursion
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value)
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str) and not value.isascii():
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return True
+    return False
+
+
 async def _read_oauth_params(request: Request) -> dict[str, Any]:
     """Decode a token/revocation body into a parameter mapping.
 
@@ -313,8 +358,9 @@ async def _read_oauth_params(request: Request) -> dict[str, Any]:
     working.
 
     Raises:
-        OAuthProtocolError: the body is empty, undecodable, or sent under a
-            content type that is neither of the two.
+        OAuthProtocolError: the body is empty, undecodable, repeats a name,
+            holds an unpaired surrogate, or is sent under a content type that is
+            neither of the two.
     """
     raw = await request.body()
     media_type = (
@@ -333,37 +379,23 @@ async def _read_oauth_params(request: Request) -> dict[str, Any]:
                 "Form-encoded body must be UTF-8 (RFC 6749 §3.2).",
             ) from exc
 
-        params: dict[str, Any] = {}
-        for name, value in parse_qsl(decoded, keep_blank_values=True):
-            if name in params:
-                # RFC 6749 §3.1: a request parameter MUST NOT be sent more than
-                # once. Silently taking the first or the last would let whoever
-                # controls the duplicate choose which value the server reads.
-                raise OAuthProtocolError(
-                    "invalid_request",
-                    f"Parameter '{_echo(name)}' is included more than once.",
-                )
-            params[name] = value
-        return params
+        return _unique_params(parse_qsl(decoded, keep_blank_values=True))
 
     if media_type in ("", "application/json") or (
         media_type.startswith("application/") and media_type.endswith("+json")
     ):
-        # Serialised in the `try`: nesting past the recursion limit is refused (#2974).
         try:
-            payload = json.loads(raw)
-            text = json.dumps(payload, ensure_ascii=False)
-        except (ValueError, RecursionError) as exc:
+            payload = json.loads(raw, object_pairs_hook=_unique_params)
+        except (ValueError, RecursionError) as exc:  # RecursionError: nesting
             raise OAuthProtocolError(
                 "invalid_request", "Request body is not valid JSON."
             ) from exc
-        # A lone surrogate, which the form arm's strict decode never yields.
-        try:
-            text.encode("utf-8")
-        except UnicodeEncodeError as exc:
+        # A `\ud800` escape decodes to what the form arm's strict decode refuses.
+        if _holds_lone_surrogate(payload):
             raise OAuthProtocolError(
-                "invalid_request", "JSON body must be UTF-8 text (RFC 8259 §8.1)."
-            ) from exc
+                "invalid_request",
+                "JSON body must not contain an unpaired surrogate (RFC 8259 §8.2).",
+            )
         if not isinstance(payload, dict):
             raise OAuthProtocolError("invalid_request", "JSON body must be an object.")
         return payload

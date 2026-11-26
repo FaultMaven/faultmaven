@@ -24,6 +24,8 @@ The service layer is mocked: the subject here is the HTTP wire, and the grant
 logic is covered by the unit tests for `OAuthService`.
 """
 
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -456,14 +458,15 @@ class TestErrorsUseTheRfcShape:
         assert response.json()["error"] == "temporarily_unavailable"
 
 
-#: The JSON arm's refusal of a body that is not UTF-8 text (#2974).
-NOT_TEXT = "JSON body must be UTF-8 text (RFC 8259 §8.1)."
+#: The JSON arm's refusal of an unpaired surrogate (#2974).
+SURROGATE = "JSON body must not contain an unpaired surrogate (RFC 8259 §8.2)."
 _REFRESH = b'"grant_type":"refresh_token","refresh_token":"x","client_id":"c"'
+JSON = {"Content-Type": "application/json"}
 
 
 class TestAJsonBodyThatIsNotTextIsRefused:
     """#2974: the JSON arm refuses what the form arm's strict decode cannot
-    produce, before any parameter is read. These answered 500, 503 or 200.
+    produce, before any route parameter is read. These answered 500, 503 or 200.
 
     Raw bytes, not `json=`: httpx cannot encode a lone surrogate.
     """
@@ -508,25 +511,101 @@ class TestAJsonBodyThatIsNotTextIsRefused:
     async def test_a_lone_surrogate_anywhere_is_invalid_request(
         self, client, oauth_service, url, body
     ):
-        response = await client.post(
-            url, content=body, headers={"Content-Type": "application/json"}
-        )
+        response = await client.post(url, content=body, headers=JSON)
 
         assert response.status_code == 400, response.text
         assert response.json() == {
             "error": "invalid_request",
-            "error_description": NOT_TEXT,
+            "error_description": SURROGATE,
         }
         assert oauth_service.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("media_type", ["", "application/merge-patch+json"])
+    async def test_every_media_type_read_as_json_is_checked(
+        self, client, oauth_service, media_type
+    ):
+        response = await client.post(
+            TOKEN_URL,
+            content=b'{"scope":"\\ud800",' + _REFRESH + b"}",
+            headers={"Content-Type": media_type},
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["error_description"] == SURROGATE
+        assert oauth_service.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"refresh_token":"y",' + _REFRESH + b"}",
+            # The JSON arm kept the last value, so this surrogate went unchecked.
+            b'{"refresh_token":"\\ud800",' + _REFRESH + b"}",
+        ],
+        ids=["repeated", "surrogate-in-dropped-duplicate"],
+    )
+    async def test_a_repeated_key_is_refused_as_the_form_arm_refuses_it(
+        self, client, oauth_service, body
+    ):
+        response = await client.post(TOKEN_URL, content=body, headers=JSON)
+
+        assert response.status_code == 400, response.text
+        assert response.json() == {
+            "error": "invalid_request",
+            "error_description": "Parameter 'refresh_token' is included more than once.",
+        }
+        assert oauth_service.mock_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "scope, status", [(b'"\\ud800"', 400), (b'["ok",{"k":"\xc3\xa9"}]', 200)]
+    )
+    async def test_the_walk_decides_when_dumps_runs_out_of_stack(
+        self, client, oauth_service, monkeypatch, scope, status
+    ):
+        """CPython 3.14's `dumps` nests shallower than its `loads`."""
+        from faultmaven.modules.auth.api import oauth
+
+        def out_of_stack(*_args, **_kwargs):
+            raise RecursionError
+
+        monkeypatch.setattr(
+            oauth, "json", SimpleNamespace(loads=json.loads, dumps=out_of_stack)
+        )
+        response = await client.post(
+            TOKEN_URL,
+            content=b'{"scope":' + scope + b"," + _REFRESH + b"}",
+            headers=JSON,
+        )
+
+        assert response.status_code == status, response.text
+        if status == 400:
+            assert response.json()["error_description"] == SURROGATE
+
+    @pytest.mark.asyncio
+    async def test_a_valid_deep_value_under_an_ignored_key_is_served(
+        self, client, oauth_service
+    ):
+        """Depth `json.loads` accepts is not refused: only past it (below)."""
+        deep = b"[" * 500 + b"]" * 500
+        response = await client.post(
+            TOKEN_URL,
+            content=b'{"scope":' + deep + b"," + _REFRESH + b"}",
+            headers=JSON,
+        )
+
+        assert response.status_code == 200, response.text
+        oauth_service.refresh_access_token.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("url", [TOKEN_URL, REVOKE_URL])
     async def test_nesting_past_the_recursion_limit_is_invalid_request(
         self, client, oauth_service, url
     ):
-        """`json.loads` raises RecursionError, not ValueError, on this."""
+        """Well-formed, but `json.loads` raises RecursionError, not ValueError."""
         response = await client.post(
-            url, content=b"[" * 100_000, headers={"Content-Type": "application/json"}
+            url, content=b"[" * 100_000 + b"]" * 100_000, headers=JSON
         )
 
         assert response.status_code == 400, response.text
