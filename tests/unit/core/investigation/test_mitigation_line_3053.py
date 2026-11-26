@@ -16,6 +16,7 @@ derivations fails closed (F4). The copy is pinned verbatim here. No live LLM.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -44,6 +45,8 @@ from faultmaven.core.investigation.narration.fix_verification import (
 from faultmaven.core.investigation.narration.offers import (
     MITIGATION_DECLARED,
     MITIGATION_PROCEEDED,
+    MITIGATION_RELIEVED,
+    MITIGATION_STILL_PRESENT,
 )
 from faultmaven.core.investigation.narration.prompt_state import (
     MILESTONES_OMITTED,
@@ -448,6 +451,125 @@ def test_a_holding_relief_after_a_persistence_claims_no_relapse():
     assert offer_stated(OfferCode.RCA_INFEASIBLE_CLOSE, {"closure_line": None}) == (
         frozenset()
     )
+
+
+_T0 = datetime(2026, 11, 26, 8, 0, tzinfo=timezone.utc)
+_STILL_7 = f"{MITIGATION_STILL_PRESENT} (turn 7)"
+
+
+def _one_turn_with_a_span(case=None):
+    """A relief at 7 whose row dates 30 minutes of data, and a persistence at
+    7."""
+    case = _accepted() if case is None else case
+    _relief_covering(case, 7)
+    _relapse(case, 7)
+    return case
+
+
+def _relief_covering(case, turn: int) -> None:
+    bound_row(
+        case,
+        _GONE,
+        turn=turn,
+        rechecks=_shown(case),
+        coverage_start_ts=_T0 - timedelta(minutes=30),
+        coverage_end_ts=_T0,
+        coverage_source="iso8601",
+        collected_at=_T0,
+    )
+
+
+def test_a_relief_and_a_persistence_in_one_turn_close_as_still_present():
+    """r == p (#3053 S3d-6, ruling F2): the closure line states no relief and
+    no data window, only the problem still present, as the statement does;
+    the rca-infeasible close claims the no-relief fact alone, and the turn's
+    statement then says nothing twice."""
+    case = _one_turn_with_a_span()
+    seen = mitigation_observation(case)
+    assert (seen.relief_turn, seen.present_turn) == (7, 7), "premise"
+    assert seen.span == timedelta(minutes=30), "premise: a span to leave out"
+    line = mitigation_closure_line(case)
+    assert line == _STILL_7
+    assert MITIGATION_RELIEVED not in line and "covers" not in line
+    stated = _rca_stated(case)
+    assert stated == {(OutcomeChange.MITIGATION_NO_RELIEF, None)}
+    changes = outcome_changes(_base(_record(_accepted())), _record(case))
+    assert [c.kind for c in changes] == [OutcomeChange.MITIGATION_NO_RELIEF]
+    assert outcome_statement(changes, stated) is None
+
+
+def _declared_one_turn():
+    case = _one_turn_with_a_span()
+    _declared(case, 8)
+    return case
+
+
+def _proceeded_one_turn():
+    case = settled._build((True, False, "proceed_unmitigated"), _NONE)
+    return _one_turn_with_a_span(case)
+
+
+def _relieved_then_present():
+    case = _accepted()
+    _relief(case, 7)
+    _relapse(case, 8)
+    return case
+
+
+def _present_then_relieved():
+    case = _accepted()
+    _relapse(case, 7)
+    _relief(case, 8)
+    return case
+
+
+_RELIEVED = f"{MITIGATION_RELIEVED} (turn"
+
+
+@pytest.mark.parametrize(
+    "build, line, kinds",
+    [
+        (
+            _relieved_then_present,
+            f"{_RELIEVED} 7); the problem was seen again at turn 8",
+            {"RELIEF", "RELAPSE", "NO_RELIEF"},
+        ),
+        (
+            _present_then_relieved,
+            f"{_RELIEVED} 8); the problem was seen again at turn 7, before that relief",
+            {"RELIEF"},
+        ),
+        (_verified, f"{_RELIEVED} 7)", {"RELIEF"}),
+        (_still_present, "the problem was seen again at turn 7", {"NO_RELIEF"}),
+        (
+            _declared_one_turn,
+            f"{MITIGATION_DECLARED} (turn 8); {_STILL_7}",
+            {"DECLARED", "NO_RELIEF"},
+        ),
+        (
+            _proceeded_one_turn,
+            f"{_STILL_7}; {MITIGATION_PROCEEDED} (turn 7)",
+            {"NO_RELIEF", "PROCEEDED"},
+        ),
+    ],
+    ids=[
+        "relapse",
+        "before-that-relief",
+        "relief-alone",
+        "persistence-alone",
+        "one-turn-declared",
+        "one-turn-proceeded",
+    ],
+)
+def test_each_other_closure_line_shape_is_unchanged(build, line, kinds):
+    """S3d-6 changes only the r == p clause: every other shape reads as
+    before, and the declaration and the proceed beside an r == p keep their
+    copy and place."""
+    case = build()
+    assert mitigation_closure_line(case) == line
+    assert _rca_stated(case) == {
+        (OutcomeChange[f"MITIGATION_{kind}"], None) for kind in kinds
+    }
 
 
 # ---------------------------------------------------------------------------

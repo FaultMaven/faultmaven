@@ -62,6 +62,7 @@ MITIGATION_PROCEEDED = "the investigation went on before the mitigation was veri
 MITIGATION_RELIEVED = "the problem was observed relieved after the mitigation"
 MITIGATION_SEEN_AGAIN = "the problem was seen again at turn"
 MITIGATION_BEFORE_RELIEF = ", before that relief"
+MITIGATION_STILL_PRESENT = "the problem was still present after the mitigation"
 
 
 def at_turn(turn: Optional[int]) -> str:
