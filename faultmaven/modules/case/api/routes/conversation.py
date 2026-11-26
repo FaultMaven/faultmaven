@@ -804,12 +804,13 @@ async def submit_turn(
                 detail="Valid case_id is required",
             )
 
-        # Size cap on text-shaped form fields. On a multipart body, Starlette's
-        # `max_part_size` (overridden to MAX_UPLOAD_SIZE_MB in main.py) already
-        # bounds these non-file fields; file parts reach the route unbounded
-        # and are checked per file below. This guard holds `query` and
-        # `pasted_content` to MAX_UPLOAD_SIZE_MB whatever the parser bounds,
-        # and the Tier 1 worker bounds a paste's extraction.
+        # Size cap on `query` and `pasted_content`. On every form body Starlette's
+        # `max_part_size` (overridden to MAX_UPLOAD_SIZE_MB in main.py) bounds
+        # non-file fields in bytes received; file parts reach the route
+        # unbounded and are checked per file below. This guard bounds the
+        # decoded text's UTF-8 size, which a part decoded as latin-1 can double,
+        # so it can fire on a body the parser admitted. Where an extractor runs
+        # on a paste, the Tier 1 worker bounds it.
         from faultmaven.config.settings import get_settings as _get_settings
 
         _max_text_bytes = _get_settings().upload.max_upload_size_mb * 1024 * 1024
