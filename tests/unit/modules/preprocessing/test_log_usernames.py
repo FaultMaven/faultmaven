@@ -520,6 +520,24 @@ AUTH_GATE_MUST_STILL_RECORD = [
         ["frank"],
         id="session-closed-for-user",
     ),
+    # The lines above name the user in sshd's slot or a ``user`` field; on
+    # these three only the gate admits the ``for`` clause (#3113).
+    pytest.param(
+        "Dec 10 07:10:06 LabSZ sshd[9]: Failed none for erin from 1.2.3.4 port 22 ssh2",
+        ["erin"],
+        id="gate-only-none",
+    ),
+    pytest.param(
+        "Dec 10 07:10:07 LabSZ sshd[10]: Postponed keyboard-interactive for gina "
+        "from 1.2.3.4 port 22 ssh2 [preauth]",
+        ["gina"],
+        id="gate-only-keyboard-interactive",
+    ),
+    pytest.param(
+        "Sep 21 10:00:03 h su[11]: pam_unix(su:session): session closed for frank",
+        ["frank"],
+        id="gate-only-session-closed-for",
+    ),
     pytest.param(
         "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
         "failure; user=svc_",
@@ -542,6 +560,7 @@ def test_the_widened_auth_gate_still_records_these_usernames(
 ) -> None:
     """Narrowing ``AUTH_CONTEXT_RE`` must not cost the profile usernames."""
     assert profile_usernames(line + "\n") == expected
+    assert extract_usernames(line) == expected
 
 
 @pytest.mark.unit
