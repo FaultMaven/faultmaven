@@ -701,7 +701,11 @@ class KnowledgeIndexingStatus(BaseModel):
     killed at its time bound, and the slot frees once its worker is reaped
     (#2851). While one is held past that bound, and with a window set, every
     later KB write is refused 503: ``encoding_for_seconds`` far past any
-    document's estimate is that state.
+    document's estimate is that state. An evidence encode past its bound is
+    not killed: it holds the order until its thread settles or the process
+    restarts. A job waiting for the host lock behind another process's stuck
+    encode keeps its estimate queued, so admission answers ``busy``:
+    ``waiting_for_host_lock`` shows it.
     """
 
     window_seconds: int = Field(
@@ -714,28 +718,27 @@ class KnowledgeIndexingStatus(BaseModel):
     )
     queued: int = Field(
         description=(
-            "Encodes held in this process's one order, KB indexing and case "
-            "evidence alike: the running one and the ones waiting their turn."
+            "This process's encodes, KB and evidence: the running one and the "
+            "ones waiting their turn."
         )
     )
     encoding_for_seconds: Optional[float] = Field(
         description=(
-            "How long this process's running encode, KB indexing or case "
-            "evidence, has run; null when none runs."
+            "How long this process's running encode, KB or evidence, has run; null "
+            "when none runs."
         )
     )
     host_lock_available: bool = Field(
         description=(
             "False while this process's latest attempt to open or lock the "
-            "host lock file failed: its encodes, KB and evidence, then run "
-            "without serialising against the other worker processes of the "
-            "container."
+            "host lock file failed: its encodes, KB or evidence, then run without "
+            "serialising against the other worker processes of the container."
         )
     )
     waiting_for_host_lock: bool = Field(
         description=(
-            "True while this process's encode order (KB and evidence) is blocked "
-            "on the host lock, behind another worker process's encode."
+            "True while this process's encode order is blocked on the host "
+            "lock, behind another worker process's encode."
         )
     )
 

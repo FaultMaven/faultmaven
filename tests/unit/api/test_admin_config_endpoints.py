@@ -3381,12 +3381,14 @@ class TestKnowledgeIndexingIsReported:
         # Both slots' tickets are the one order's (#2920): an evidence encode
         # running, a KB one queued.
         running = index_slot.evidence_slot.admit_forced(["a"], 1000)
-        admission.admit_forced(["b"], 1000, principal="u1")
+        queued = admission.admit_forced(["b"], 1000, principal="u1")
         running._started()
         clock.return_value = 142.5
         monkeypatch.setattr(index_slot.EncodeSlot, "host_lock_available", False)
         monkeypatch.setattr(index_slot.EncodeSlot, "waiting_for_host_lock", True)
         busy = await _status()
+        running.close()
+        queued.close()
 
         assert idle.model_dump() == {
             "window_seconds": 600,

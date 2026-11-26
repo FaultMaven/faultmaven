@@ -20,7 +20,7 @@ use neither.
 processes, whose tickets nothing here counts. An evidence encode submitted between a KB
 ticket's ``admit`` and its ``run`` is counted by its wait bound, not its
 window. A stuck evidence encode cannot be killed and holds the host lock: the
-other processes' encodes wait in ``flock`` and end ``queued_too_long``.
+other processes' writes wait in ``flock`` (``queued_too_long``) or are ``busy``.
 
 **The tickets.** Both slots hold one list, which ``ahead``, admission's room,
 ``Retry-After``, ``hung`` and the status count, touched only on the event

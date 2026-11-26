@@ -85,21 +85,27 @@ def test_an_idle_runbook_is_admitted_at_its_estimate_and_the_load(cloud):
         ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
     )
 
+    ticket.close()
+
     assert ticket.estimate_seconds == pytest.approx(371.825 + 30)
     assert ticket.principal == USER
 
 
 def test_a_second_concurrent_one_is_refused_503_with_the_pending_wait(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
+    first = admission.admit(
+        ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
+    )
 
     refused = _refused(admission, RUNBOOK_TOKENS)
+    queued = admission.queued()
+    first.close()
 
     assert (refused.status_code, refused.reason) == (503, "busy")
     assert refused.error_code == "KNOWLEDGE_INDEXING_BUSY"
     assert refused.retry_after_seconds == 402  # ceil(371.825 + 30)
     assert refused.message == index_slot.refusal("busy", wait=402).message
-    assert admission.queued() == 1
+    assert queued == 1
 
 
 @pytest.mark.parametrize(
@@ -142,7 +148,8 @@ def test_every_kb_ticket_is_charged_the_worker_load_and_none_says_loading(cloud)
     first = admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=0)
     forced = admission.admit_forced(["c"], RUNBOOK_TOKENS, principal=USER)
     evidence = index_slot.evidence_slot.admit_forced(["c"], 8_000, principal=USER)
-    evidence.close()
+    for ticket in (first, forced, evidence):
+        ticket.close()
 
     assert first.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
     assert forced.estimate_seconds == pytest.approx(371.825 + WORKER_LOAD_SECONDS)
@@ -164,6 +171,7 @@ def test_an_overrun_counts_its_guard_bound_then_the_floor(cloud):
     cloud.now = 375.0
     assert admission.pending_seconds() == 10.0
     assert admission.encoding_for_seconds() == pytest.approx(375.0)
+    ticket.close()
 
 
 def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
@@ -179,15 +187,20 @@ def test_a_hung_encode_refuses_every_document_until_it_settles(cloud):
     assert (refused.status_code, refused.reason) == (503, "hung")
     assert refused.retry_after_seconds == 60
     assert "stuck" in refused.message
-    assert admission.admit(["c"], 1, principal=USER, window_seconds=WINDOW)
+    admission.admit(["c"], 1, principal=USER, window_seconds=WINDOW).close()
 
 
 def test_a_window_of_zero_refuses_nothing(cloud):
     admission = IndexAdmission()
-    for tokens in (10_000_000, RUNBOOK_TOKENS, None):
+    tickets = [
         admission.admit(["c"], tokens, principal=USER, window_seconds=0)
+        for tokens in (10_000_000, RUNBOOK_TOKENS, None)
+    ]
+    queued = admission.queued()
+    for ticket in tickets:
+        ticket.close()
 
-    assert admission.queued() == 3
+    assert queued == 3
 
 
 def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
@@ -201,10 +214,15 @@ def test_with_a_window_an_uncountable_document_is_refused_unavailable(cloud):
 
 def test_a_forced_ticket_is_never_refused(cloud):
     admission = IndexAdmission()
-    admission.admit(["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW)
+    first = admission.admit(
+        ["c"], RUNBOOK_TOKENS, principal=USER, window_seconds=WINDOW
+    )
+    forced = admission.admit_forced(["c"], 10_000_000, principal=USER)
+    queued = admission.queued()
+    first.close()
+    forced.close()
 
-    assert admission.admit_forced(["c"], 10_000_000, principal=USER)
-    assert admission.queued() == 2
+    assert queued == 2
 
 
 # ---------------------------------------------------------------------------
@@ -430,14 +448,14 @@ def test_a_later_successful_lock_reports_the_host_lock_available_again(
 ):
     admission = IndexAdmission()
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "no" / "kb.lock"))
-    admission._job(
-        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
-    )
+    failed = admission.admit_forced([], 0, principal=USER)
+    admission._job(failed, lambda: None, lambda: None)
     after_failure = admission.host_lock_available
     monkeypatch.setattr(index_slot, "HOST_LOCK_PATH", str(tmp_path / "kb.lock"))
-    admission._job(
-        admission.admit_forced([], 0, principal=USER), lambda: None, lambda: None
-    )
+    locked = admission.admit_forced([], 0, principal=USER)
+    admission._job(locked, lambda: None, lambda: None)
+    failed.close()
+    locked.close()
 
     assert (after_failure, admission.host_lock_available) == (False, True)
 
@@ -554,7 +572,7 @@ async def test_an_abandoned_evidence_encode_holds_the_one_order(encodes):
     retrigger.cancel()
     with pytest.raises(asyncio.CancelledError):
         await retrigger
-    assert not kb_ticket._future.running(), "the KB encode ran beside evidence"
+    assert not kb_ticket._future.done(), "the KB encode ran beside evidence"
     encodes.release.set()
     assert await kb == [[0.1]]
     await _settled(slot)
@@ -588,7 +606,7 @@ async def test_a_kb_encode_runs_after_the_evidence_encodes_submitted_before_it(
     k1, fk, ahead_k1 = _submit(IndexAdmission(), "K1", principal=USER)
 
     assert (ahead_e1, ahead_e2, ahead_k1) == (0.0, 60.0, 120.0)
-    assert not f2.running() and not fk.running()
+    assert not f2.done() and not fk.done()
     encodes.release.set()
     await asyncio.wait_for(asyncio.wrap_future(fk), 30)
 
@@ -624,7 +642,7 @@ async def test_with_the_host_lock_unwritable_no_two_encodes_overlap(
     await _entered(encodes, "K")
     _, fe, _ = _submit(index_slot.evidence_slot, "E")
 
-    assert not fe.running(), "the evidence encode ran beside the KB one"
+    assert not fe.done(), "the evidence encode ran beside the KB one"
     encodes.release.set()
     await asyncio.wait_for(asyncio.wrap_future(fe), 30)
 
@@ -643,10 +661,12 @@ def test_a_stuck_evidence_encode_answers_a_kb_write_hung(cloud):
     stuck.close()
 
     assert (refused.reason, refused.retry_after_seconds) == ("hung", 60)
-    assert IndexAdmission().admit(["c"], 1, principal=USER, window_seconds=WINDOW)
+    IndexAdmission().admit(["c"], 1, principal=USER, window_seconds=WINDOW).close()
 
 
-async def test_a_pending_evidence_encode_is_queue_ahead_of_a_kb_write(encodes, cloud):
+async def test_a_pending_evidence_encode_counts_as_queue_ahead_of_a_kb_write(
+    encodes, cloud
+):
     """Charged at its UTF-8 bytes plus 2 a text (Q2): a document that fits an
     empty queue is refused ``busy`` beside it, with that wait, and admitted
     once it settles."""

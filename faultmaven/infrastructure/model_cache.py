@@ -439,8 +439,8 @@ class ModelCache:
         the CALLING thread: the (lazy, cached) load, then one ``encode`` at
         ``ENCODE_BATCH_SIZE``, far cheaper than N per-text passes.
 
-        The evidence encode's, called only on the evidence slot's thread
-        (``infrastructure.index_slot``, #2055), through
+        The evidence encode's, called only on the one encode order's thread,
+        under the host lock (``infrastructure.index_slot``, #2055, #2920), through
         ``embedding_guard.embed_texts_or_raise``; a KB encode runs in its own
         worker (``encode_worker``, #2851). A bare synchronous ``encode`` on an
         async path blocks the loop and, on k8s, trips the liveness probe.

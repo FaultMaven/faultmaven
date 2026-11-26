@@ -151,6 +151,16 @@ def validate_contract_changes(changes: tuple[ContractChange, ...]) -> None:
 
 CONTRACT_CHANGES: tuple[ContractChange, ...] = (
     ContractChange(
+        version="16.3.0",
+        level="MINOR",
+        title=(
+            "`knowledge_indexing`'s `queued`, `encoding_for_seconds`, "
+            "`host_lock_available` and `waiting_for_host_lock` count case "
+            "evidence encodes too: one encode order per process (#2920)."
+        ),
+        body="MINOR: four reported fields' meaning widens; no shape changes.",
+    ),
+    ContractChange(
         version="16.2.0",
         level="MINOR",
         title=(

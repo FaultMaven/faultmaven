@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 16.2.0
+**Version:** 16.3.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5874,14 +5874,18 @@ Numbers, so not a ``features`` entry. A KB encode that never returns is
 killed at its time bound, and the slot frees once its worker is reaped
 (#2851). While one is held past that bound, and with a window set, every
 later KB write is refused 503: ``encoding_for_seconds`` far past any
-document's estimate is that state.
+document's estimate is that state. An evidence encode past its bound is
+not killed: it holds the order until its thread settles or the process
+restarts. A job waiting for the host lock behind another process's stuck
+encode keeps its estimate queued, so admission answers ``busy``:
+``waiting_for_host_lock`` shows it.
 
 **Properties:**
 
-- `encoding_for_seconds` (object, required) — How long this process's running encode, KB indexing or case evidence, has run; null when none runs.
-- `host_lock_available` (boolean, required) — False while this process's latest attempt to open or lock the host lock file failed: its encodes, KB and evidence, then run without serialising against the other worker processes of the container.
-- `queued` (integer, required) — Encodes held in this process's one order, KB indexing and case evidence alike: the running one and the ones waiting their turn.
-- `waiting_for_host_lock` (boolean, required) — True while this process's encode order (KB and evidence) is blocked on the host lock, behind another worker process's encode.
+- `encoding_for_seconds` (object, required) — How long this process's running encode, KB or evidence, has run; null when none runs.
+- `host_lock_available` (boolean, required) — False while this process's latest attempt to open or lock the host lock file failed: its encodes, KB or evidence, then run without serialising against the other worker processes of the container.
+- `queued` (integer, required) — This process's encodes, KB and evidence: the running one and the ones waiting their turn.
+- `waiting_for_host_lock` (boolean, required) — True while this process's encode order is blocked on the host lock, behind another worker process's encode.
 - `window_seconds` (integer, required) — INDEX_REQUEST_WINDOW_SECONDS: the seconds a KB upload, update or verify may spend indexing its document. A document that would not fit is refused before anything is written (413 alone, 503 behind other indexing); 0 refuses nothing up front.
 
 ---
