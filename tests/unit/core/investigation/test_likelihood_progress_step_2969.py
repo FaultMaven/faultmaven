@@ -3,6 +3,8 @@
 Float subtraction puts an exact two-decimal 0.05 move just under 0.05
 (``abs(0.25 - 0.30) == 0.04999999999999999``), so a raw ``>= 0.05`` read it as
 a restatement on the model path, the evidence path and the ``lowered`` test.
+The tolerance is pinned from both sides: a move of 0.05 - 1e-6 is a
+restatement, one of 0.05 - 1e-10 (float error, not a move) is a step.
 """
 
 from uuid import uuid4
@@ -28,13 +30,22 @@ _STEPS = [
     for new in (round(old - 0.05, 2), round(old + 0.05, 2))
     if 0.0 <= new <= 1.0
 ]
-_RESTATEMENTS = [
-    (old, new)
-    for old in _GRID
-    for delta in (0.01, 0.04, 0.049)
-    for new in (round(old - delta, 3), round(old + delta, 3))
-    if 0.0 <= new <= 1.0
-]
+
+
+def _moves(*deltas: float) -> list[tuple[float, float]]:
+    """Every (old, new) with old on the grid and new = old ± delta in [0, 1]."""
+    return [
+        (old, old + sign * delta)
+        for old in _GRID
+        for delta in deltas
+        for sign in (-1, 1)
+        if 0.0 <= old + sign * delta <= 1.0
+    ]
+
+
+_RESTATEMENTS = _moves(0.01, 0.04, 0.049, 0.0499, 0.04999, 0.05 - 1e-6)
+_IN_BAND = _moves(0.05 - 1e-10)
+_HEDGED_OLDS = [old for old in _GRID if 0.05 <= old <= 0.3]
 _TURN = 7
 
 
@@ -71,7 +82,7 @@ def _supported(likelihood: float) -> Hypothesis:
     return _hypothesis(likelihood, 0.5, _link(EvidenceStance.SUPPORTS, 0.9))
 
 
-@pytest.mark.parametrize(("old", "new"), _STEPS)
+@pytest.mark.parametrize(("old", "new"), _STEPS + _IN_BAND)
 def test_a_model_move_of_exactly_one_step_is_progress(old, new):
     h = _supported(old)
 
@@ -116,14 +127,28 @@ def test_an_evidence_move_of_exactly_one_step_is_progress(
     assert h.state == HypothesisState.ACTIVE
 
 
+@pytest.mark.parametrize(("stored", "initial"), _STEPS)
+def test_an_evidence_update_of_exactly_one_step_is_progress(stored, initial):
+    """No links, so the evidence formula returns ``initial_likelihood``."""
+    h = _hypothesis(stored, initial)
+
+    HypothesisManager().update_likelihood_from_evidence(h, _TURN)
+
+    assert h.likelihood == initial
+    assert h.iterations_without_progress == 0
+    assert h.last_progress_at_turn == _TURN
+
+
 @pytest.mark.parametrize(
-    ("new", "state"),
-    [(0.1, HypothesisState.RETIRED), (0.11, HypothesisState.ACTIVE)],
+    ("delta", "state"),
+    [(0.05, HypothesisState.RETIRED), (0.04, HypothesisState.ACTIVE)],
 )
-def test_a_model_lowering_of_one_step_retires_past_a_hedged_refutes(new, state):
+@pytest.mark.parametrize("old", _HEDGED_OLDS)
+def test_a_model_lowering_of_one_step_retires_past_a_hedged_refutes(old, delta, state):
     """The hedged REFUTES stands and the confident-only formula gives 0.50, so
     only the model's own lowering of 0.05 or more retires."""
-    h = _hypothesis(0.15, 0.5, _link(EvidenceStance.REFUTES, 0.3))
+    h = _hypothesis(old, 0.5, _link(EvidenceStance.REFUTES, 0.3))
+    new = round(old - delta, 2)
 
     HypothesisManager().update_hypothesis_likelihood(h, new, _TURN, "test result")
 
