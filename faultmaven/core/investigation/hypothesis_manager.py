@@ -13,8 +13,13 @@ Design Reference:
 Hypothesis Lifecycle (matches HypothesisState enum):
 - ACTIVE: Currently being tested. Formed only on a verified problem
   (``problem_status.cause_work_accepted``)
-- VALIDATED: Confirmed by evidence (likelihood ≥0.70 + ≥2 supporting evidence)
-- REFUTED: Disproved by evidence (likelihood ≤0.20 + ≥2 refuting evidence)
+- VALIDATED: Projected from the causal graph when the chain root node is
+  validated (``project_hypothesis_states_from_roots``, #695); never set from
+  likelihood
+- REFUTED: Set only by ``refute_hypothesis``: for a user refute intent or a
+  model REFUTED entry, each only with refuting evidence or a failed fix on
+  record (#1911), and for the M6 disconfirmed-cause demotion
+  (``demote_disconfirmed_cause_via_evidence``); never set from likelihood
 - INCONCLUSIVE: System-automated — likelihood 0.3–0.5 stagnant for 3+ turns,
   checked when a likelihood update lands (decay alone never transitions)
 - RETIRED: System-automated (likelihood <0.30, checked when a likelihood update
