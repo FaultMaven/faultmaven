@@ -301,7 +301,8 @@ _RULES: List[Tuple[str, DataType, Optional[Callable[[str, List[str]], bool]]]] =
 
 def paste_shape(content: str) -> Optional[Tuple[DataType, str]]:
     """The type and rule name of the shape that claims this paste, if any.
-    Reads at most ``SAMPLE_CHARS`` of it."""
+    Its rules read at most ``SAMPLE_CHARS`` of it; the JSON rule parses up to
+    ``JSON_PARSE_CHARS``."""
     sample = content[:SAMPLE_CHARS]
     lines = _lines(sample)
     if not lines:

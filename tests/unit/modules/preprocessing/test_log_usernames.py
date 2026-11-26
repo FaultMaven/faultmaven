@@ -489,8 +489,13 @@ def test_a_mixed_auth_log_counts_each_account_once_per_line() -> None:
 # answered by sshd's user slot and the field-decided rows
 # (``session-closed-for-user``, ``trailing-underscore-account``,
 # ``spaces-after-equals``) by a ``user`` field, so neither consults it. Every
-# other row is gate-decided, and each alternative of ``AUTH_CONTEXT_RE`` is
-# pinned by one of them (#3113).
+# other row is gate-decided. They pin nine of ``AUTH_CONTEXT_RE``'s twelve
+# alternatives (#3113); the other three are pinned elsewhere in this file:
+# ``password`` by ``test_mention_counts_are_per_line`` and
+# ``test_returned_order_is_branch_order_not_text_order``, ``Invalid user`` by
+# ``test_an_unread_line_is_searched_as_before``, and ``authentication
+# failure`` by it, ``test_an_unread_line_keeps_every_for`` and
+# ``test_a_no_event_read_line_takes_only_its_first_for``.
 AUTH_GATE_MUST_STILL_RECORD = [
     pytest.param(
         "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
