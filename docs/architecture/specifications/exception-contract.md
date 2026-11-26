@@ -161,6 +161,27 @@ builtins in the tuple instead would have labelled it at the price of labelling
 every arithmetic bug in the package the same way, so the precision comes from
 where the catch is rather than from a type the classifier has to trust.
 
+## Unavailable session store (a failure that reaches the request boundary)
+
+A session store that could not answer is a dependency failure, not a verdict
+on the request (#2985). `RedisSessionStore` raises `SessionStoreException` for
+an outage only (redis `ConnectionError`, `TimeoutError`, `BusyLoadingError`,
+`ReadOnlyError`, `OutOfMemoryError`, or `OSError`); anything else propagates as
+itself. Where it reaches the request boundary with no route's own answer,
+`get_exception_handlers()` registers `session_store_unavailable_handler` for it:
+login, registration and the SSO exchange reach it when minting the session.
+
+| Signal | HTTP | `x-error-code` | Retry-After |
+|--------|------|----------------|-------------|
+| `SessionStoreException` — the session store could not answer | 503 | — | 5 |
+
+The detail is "Session store temporarily unavailable". `Retry-After: 5` is
+sent, but a retry cannot succeed on two routes: the SSO exchange, whose
+single-use code is already spent, so the user signs in again; and registration,
+whose account already exists, so a retry gets 409. The heartbeat answers it
+itself, the same way; the case routes' session-ownership checks answer it 503
+"Session service unavailable" with `Retry-After: 5`.
+
 ## Unavailable database (a failure that reaches the request boundary)
 
 A database that did not answer, or could not be reached, is a dependency

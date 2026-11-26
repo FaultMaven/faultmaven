@@ -525,10 +525,11 @@ async def local_login(
         raise
     except FaultMavenException:
         # Typed service exceptions (ValidationException, ConflictError,
-        # NotFoundError, etc.) propagate to FastAPI's global handlers which
-        # map them to 422/409/404. See api/exception_handlers.py. Without
-        # this pass-through, the blanket `except Exception` below would
-        # swallow them and re-wrap as 500.
+        # NotFoundError, SessionStoreException, etc.) propagate to FastAPI's
+        # global handlers which map them to 422/409/404, and a session-store
+        # outage to 503 with Retry-After. See api/exception_handlers.py.
+        # Without this pass-through, the blanket `except Exception` below
+        # would swallow them and re-wrap as 500.
         raise
     except Exception as e:
         logger.error(
@@ -678,8 +679,9 @@ async def local_register(
         raise
     except FaultMavenException:
         # Typed service exceptions (ValidationException, ConflictError,
-        # NotFoundError) propagate to FastAPI's global handlers — see
-        # dev_login above and api/exception_handlers.py for the dispatch.
+        # NotFoundError, and SessionStoreException → 503) propagate to
+        # FastAPI's global handlers — see dev_login above and
+        # api/exception_handlers.py for the dispatch.
         raise
     except Exception as e:
         logger.error(

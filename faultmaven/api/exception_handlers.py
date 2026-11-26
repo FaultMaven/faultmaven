@@ -18,6 +18,8 @@ This module provides exception handlers for:
   the cause chain of a ``ServiceException``: a refused model call is a
   FaultMaven programming error, never the AI provider's failure
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
+- SessionStoreException → 503 "Session store temporarily unavailable",
+  ``Retry-After: 5`` (#2985)
 - A database timeout or an unreachable database (``is_database_unavailable``),
   raised or on the cause chain of a ``ServiceError``, a ``ServiceException`` or
   an exception nothing maps → 503 ``DATABASE_UNAVAILABLE``: for GET/HEAD a
@@ -81,6 +83,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
     ServiceError,
     ServiceException,
+    SessionStoreException,
     ValidationException,
     is_billing_error,
     is_database_unavailable,
@@ -824,6 +827,31 @@ async def item_title_scrub_unavailable_handler(
     )
 
 
+async def session_store_unavailable_handler(
+    request: Request, exc: SessionStoreException
+) -> JSONResponse:
+    """Answer a session-store failure no route caught (#2985): **503**,
+    ``Retry-After: 5``. Login, registration and the SSO exchange reach it
+    through session minting. A retry of the SSO exchange cannot succeed (its
+    single-use code is already spent, so the user signs in again), nor can one
+    of registration (the account already exists, so it gets 409)."""
+    logger.error(
+        "Session store unavailable: %s %s: %s",
+        request.method,
+        request.url.path,
+        exception_log_name(exc),
+        exc_info=exc,
+    )
+    return await http_exception_handler(
+        request,
+        HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Session store temporarily unavailable",
+            headers={"Retry-After": "5"},
+        ),
+    )
+
+
 async def ingest_outcome_unknown_handler(
     request: Request,
     exc: IngestOutcomeUnknown,
@@ -1514,6 +1542,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ServiceError: service_error_handler,
         ServiceException: service_exception_handler,
         LLMException: service_exception_handler,
+        SessionStoreException: session_store_unavailable_handler,
         RawModelContentRefused: model_content_refused_handler,
         OAuthProtocolError: oauth_protocol_error_handler,
     }

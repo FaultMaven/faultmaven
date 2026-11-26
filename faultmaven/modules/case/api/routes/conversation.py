@@ -72,6 +72,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
     ServiceException,
     SessionException,
+    SessionStoreException,
     ValidationException,
     is_database_unavailable,
 )
@@ -400,9 +401,16 @@ async def resume_case_in_session(
                 f"Cannot evaluate session ownership for {session_id}: {exception_log_name(exc)}",
                 exc_info=exc,
             )
+            # A store that could not answer may answer a retry; an
+            # unconfigured one will not (#2985).
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Session service unavailable",
+                headers=(
+                    {"Retry-After": "5"}
+                    if isinstance(exc, SessionStoreException)
+                    else None
+                ),
             )
 
         if session is None or session.user_id != current_user.user_id:

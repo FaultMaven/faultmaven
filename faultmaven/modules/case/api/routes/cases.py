@@ -41,6 +41,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
     ServiceException,
     SessionException,
+    SessionStoreException,
     ValidationException,
 )
 from faultmaven.infrastructure.concurrency.inflight import (
@@ -422,16 +423,23 @@ async def create_case(
                 # which descends from `SessionException` and NOT from
                 # `ServiceException`. Catching one made two spellings of "the
                 # gate could not be evaluated" answer 503 and 500 respectively
-                # — and here the second spelling escaped the handler entirely,
-                # because `SessionException` has no exception handler
-                # registered and nothing below catches it.
+                # — and here the second spelling escaped the handler entirely:
+                # nothing below catches it, and no exception handler answered
+                # `SessionException` then.
                 logger.warning(
                     f"Cannot evaluate session ownership for {request.session_id}: {exception_log_name(exc)}",
                     exc_info=exc,
                 )
+                # A store that could not answer may answer a retry; an
+                # unconfigured one will not (#2985).
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="Session service unavailable",
+                    headers=(
+                        {"Retry-After": "5"}
+                        if isinstance(exc, SessionStoreException)
+                        else None
+                    ),
                 )
 
             if session is None or session.user_id != current_user.user_id:

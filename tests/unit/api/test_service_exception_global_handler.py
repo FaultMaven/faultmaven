@@ -345,6 +345,14 @@ _ALLOWED_ARMS: dict[tuple[str, str, str], str] = {
         "(ServiceException, SessionException)",
     ): "Wraps only `session_service.get_session` — the ownership gate. 503.",
     (
+        "faultmaven/modules/auth/api/session.py",
+        "session_heartbeat",
+        "ServiceException",
+    ): (
+        "Wraps only `update_last_activity`, a session-store write that makes no "
+        "LLM call: its one ServiceException is the unconfigured store. 503."
+    ),
+    (
         "faultmaven/modules/case/api/routes/cases.py",
         "create_case",
         "ServiceException",

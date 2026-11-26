@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 16.3.0
+**Version:** 16.4.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -4207,7 +4207,7 @@ Returns:
 
 - `200` — Successful Response
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-- `503` — The session kept changing under this write; nothing was written. Or the session service or store is unavailable.
+- `503` — One of three causes, told apart by `detail`: the session kept changing under this write, nothing written (`Retry-After: 1`); the session store could not answer (`Session store temporarily unavailable`, `Retry-After: 5`); or no session service or store is configured (`Session service unavailable`, no `Retry-After`).
 
 ---
 

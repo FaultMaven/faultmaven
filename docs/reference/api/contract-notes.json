@@ -1,6 +1,12 @@
 {
-  "contractVersion": "16.3.0",
+  "contractVersion": "16.4.0",
   "entries": [
+    {
+      "body": "The store reported a Redis outage as a builtin `ConnectionError`, which no\nroute recognised, so each answered 500. It now reports its contract's\n`SessionStoreException`, which the heartbeat and the two ownership checks\nanswer themselves and the app answers for the login, registration and SSO\nexchange routes: `detail` \"Session store temporarily unavailable\" (the\nownership checks keep \"Session service unavailable\"). `Retry-After: 5` is sent\non each, but a retry cannot succeed on two: `/auth/sso/exchange`, whose\nsingle-use code is already spent, so the user signs in again; and\n`/auth/register` and `/auth/dev-register`, whose account already exists, so a\nretry gets 409. The resume route's session-pointer write still answers 500 on\na store failure, as before.\n\nAn unconfigured store, on the heartbeat, is now 503 \"Session service\nunavailable\" with no `Retry-After` (it was 500), as the two ownership checks\nalready answered it; a retry cannot change it.\n\nMINOR: only a failure's status moves, from 500 to 503; no request that\nsucceeded answers differently. The first-party heartbeat caller (copilot-ui,\nshared by the dashboard) swallows any non-OK answer.",
+      "level": "MINOR",
+      "title": "A configured session store that cannot answer is **503** with `Retry-After: 5`, not 500: on `POST /sessions/{session_id}/heartbeat`, the session-ownership check of `POST /cases` and `POST /cases/sessions/{session_id}/resume/{case_id}`, and session minting on `POST /auth/login`, `/auth/dev-login`, `/auth/register`, `/auth/dev-register` and `/auth/sso/exchange` (#2985).",
+      "version": "16.4.0"
+    },
     {
       "body": "MINOR: same shape; no first-party client reads `knowledge_indexing`.",
       "level": "MINOR",

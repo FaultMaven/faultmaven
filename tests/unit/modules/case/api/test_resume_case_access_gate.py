@@ -26,7 +26,6 @@ from faultmaven.exceptions import (
     CASE_NOT_FOUND,
     NotFoundError,
     ServiceException,
-    SessionStoreException,
 )
 
 # Both marks at module level. The vacuity control is not optional coverage —
@@ -233,27 +232,28 @@ async def test_an_unevaluable_session_gate_is_a_503(
     response = await call_api(app, "POST", PATH)
 
     assert response.status_code == 503, response.text
+    assert "retry-after" not in response.headers  # a retry cannot help
     service.resume_case_in_session.assert_not_awaited()
 
 
 async def test_an_unreachable_session_store_is_also_a_503(
-    build_app, call_api, owner_or_shared_case_service
+    build_app, call_api, owner_or_shared_case_service, unreachable_session_service
 ):
     """The second spelling of "the gate could not be evaluated".
 
     A store that is CONFIGURED but unreachable raises `SessionStoreException`,
     which descends from `SessionException` and NOT from `ServiceException`.
-    Catching only the latter made the two spellings answer 503 and 500.
+    Catching only the latter made the two spellings answer 503 and 500. Driven
+    through the real store, which raised a builtin `ConnectionError` (500)
+    until #2985.
     """
     service = _make_case_service(owner_or_shared_case_service)
-    app = build_app(
-        session=SessionStoreException("redis: connection refused"),
-        case_service=service,
-    )
+    app = build_app(session_service=unreachable_session_service, case_service=service)
 
     response = await call_api(app, "POST", PATH)
 
     assert response.status_code == 503, response.text
+    assert response.headers["retry-after"] == "5"
     service.resume_case_in_session.assert_not_awaited()
 
 
