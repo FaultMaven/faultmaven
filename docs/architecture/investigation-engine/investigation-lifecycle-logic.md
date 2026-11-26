@@ -1203,10 +1203,12 @@ written*, as amended by #2811, ruled 2026-11-15):
   The causal graph block (built when the case has a non-retired hypothesis
   or a causal node) and the working conclusion's contest NOTE (built when
   it has a working conclusion) fold on every assembly that builds them,
-  whether or not the template shows them. The resolve confirmation folds it
-  once per call, where it is decided (S2b-2b, `narration.replies`); the
-  closed reply reads the closure the terminal transition wrote and folds only
-  when that write failed. The reopen chip folds it once per reply (#3053
+  whether or not the template shows them. The cycle's resolve confirmations
+  (the met request's and the model's) fold nothing of their own (#3053
+  S3d-3): the narration renders them from the cycle's record, and the reply
+  renders the met request's from the cycle's stored record, else the outcome
+  statement's fold, else its decision; the closed reply reads the closure the
+  terminal transition wrote and folds only when that write failed. The reopen chip folds it once per reply (#3053
   S3d-2): its verdict and every record fact its confirmation and its
   refusal's ask state (the needs-info request's ask, its "Root cause" line
   with the record's pool-empty line) come from that fold; the content the
@@ -1220,12 +1222,26 @@ written*, as amended by #2811, ruled 2026-11-15):
   texts the confirmation names besides (the root cause, the latest
   solution, whether evidence or commands exist) are
   the case's content, read through one typed accessor, `ResolutionContent`
-  (ruled 2026-11-21). A fold that raises is logged and counted once per call
-  on `case_outcome_write_failures_total{at="narration"}`, and the closed reply
-  states the reason's line alone. The confirmation then derives its two facts
-  as its deciders do (`cause_identification_leg`, `resolution_record_lines`):
-  a fold failure outside those two renders from them, and a failure inside
-  them, which the fold derives through too, raises as it did before.
+  (ruled 2026-11-21), at render (#3053 S3d-3). A fold that raises is logged
+  and counted once per call on
+  `case_outcome_write_failures_total{at="narration"}`, and the closed reply
+  states the reason's line alone. With no record to read, a cycle's
+  confirmation states what its decider decided on (the leg and the record
+  lines, read where it was decided) beside that content.
+- **Rendered from the record, per decision** (#3053 S3d-3, ruling Q5 of
+  2026-11-25): every offer's prose states the cycle's record. A decision that
+  disagrees with the record on a field it was decided from is counted
+  (`narration.<code>`) and still renders the record, but in four cases ruled
+  on 2026-11-26, where the template cannot render the disagreeing record and
+  the decision's text stands: a readiness ask over a record reading
+  CONFIRMED; a readiness ask over a pending check with no request text in the
+  record or the decision; the backstop, the met request and the confirmation
+  over a record whose reason is not CONFIRMED, and the deferred resolve over
+  one whose closure eligibility differs from its decision; and a closure
+  offer whose eligibility differs from its decision. Each is a disagreement,
+  so each is counted. With no readable record, the decision's text stands.
+  The in-cycle deciders read no record: they are its declared sources
+  (ruling Q4).
 - **A shape version** (`CaseOutcome.shape`, `CURRENT_OUTCOME_SHAPE`), raised by
   every change that adds or changes a field. A record of an older shape reads
   as that shape; a fold moves it one step per shape (`outcome.SHAPE_STEPS`;

@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation import problem_status as ps
 from faultmaven.core.investigation.milestone_engine import (
     response_application,
@@ -102,7 +103,6 @@ from faultmaven.modules.case.contracts import (
 )
 from tests.unit.core.investigation.test_case_outcome_fold_2636 import (
     _cited_but_unlinked,
-    _contested,
     _failed_fix,
     _fallen_case,
     _fix,
@@ -439,17 +439,24 @@ def test_a_leg_first_set_onto_a_fallen_pool_states_it_fell():
     ]
 
 
-@pytest.mark.parametrize("mask", [_held_open, _contested], ids=["held", "contested"])
-def test_a_fallen_pool_masked_by_its_reason_still_reads_fallen(mask):
+@pytest.mark.parametrize("mask", ["held", "contested"])
+def test_a_fallen_pool_masked_by_its_reason_still_reads_fallen(monkeypatch, mask):
     fallen = _record(_fallen())
+    identified = _record(_identified_case()[0])
     masked_case = _fallen()
-    mask(masked_case)
+    if mask == "held":
+        _held_open(masked_case)
+    else:
+        # The contest verdict reads the fold's one MECE computation (#3053
+        # S3d-3), not the stored flag.
+        monkeypatch.setattr(
+            outcome_module, "mece_contested_root_ids", lambda _c: {"cn_00000000beef"}
+        )
     masked = _record(masked_case, fallen)
     assert masked.cause.pool_empty_reason != PoolEmptyReason.FALLEN_WITH_OTHER_STANDING
     # Neither a second "no longer stands" nor a false "stands again".
     assert outcome_changes(_base(fallen), masked) == []
     # Control: from a standing cause, the masked pool reads as fallen.
-    identified = _record(_identified_case()[0])
     assert _kinds(outcome_changes(_base(identified), masked)) == [
         OutcomeChange.CAUSE_FALLEN
     ]

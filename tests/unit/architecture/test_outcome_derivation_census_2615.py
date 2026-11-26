@@ -43,6 +43,13 @@ Module level is ``<module>``. Three tables:
   caller opens, answers, closes or reads. An entry referenced other than by a
   call fails, so every way in stays visible here.
 
+Beside them (#3053 S3d-3): ``CYCLE_SOURCES``, the in-cycle deciders declared
+the cycle record's sources, permanently (ruling Q4), whose derivation
+references are counted as ``DERIVATION_SITES``' are, with the typed-code
+pins; and ``CONTENT_ACCESSOR_CALLERS``, every caller of a content predicate
+(``CONTENT_ACCESSORS``, the summary gate, ruling Q6), outside
+``DERIVATIONS``.
+
 Also counted: a call of the builtin ``getattr(x, "name")`` whose name is a
 constant string, as a reference to that name (for an entry, one that is not a
 call). An import of a watched function under another name fails, since every
@@ -91,6 +98,11 @@ from typing import NamedTuple
 
 import pytest
 
+from faultmaven.core.investigation.narration.codes import (
+    DECIDED_FROM,
+    NoticeCode,
+    OfferCode,
+)
 from tests.source_tree import parse_file, parse_source
 
 pytestmark = [pytest.mark.unit, pytest.mark.architecture]
@@ -155,8 +167,6 @@ DERIVATIONS: dict[str, str] = {
             "_mitigation_verified",
             "_mitigation_declared_stable",
             "assess_close_summary",
-            "should_generate_terminal_summary",
-            "terminal_summary_skip_reason",
             "_resolution_confirmed",
         ),
         _TT,
@@ -334,14 +344,11 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "_mitigation_verified": 1,
         "declined_resolve_entry": 1,
     },
-    # #2811 S2b-1b-i: the resolve decline's readers among the deciders, which
-    # stage S3d (#3053) switches. S2b-1c-ii: ``pending_check_params`` reads the held
-    # reason through the record's one derivation (``held_check_reason``).
+    # #2811 S2b-1b-i: the resolve decline read at its owner, the offer record
+    # (ruling Q1 of 2026-11-25: an input is read at its owner), by the
+    # closure entries' pivot and the reopen admission, outside the decision
+    # cycle. ``pending_check_params`` is a cycle source (``CYCLE_SOURCES``).
     (_TT, "close_pivots_to_resolve"): {"declined_resolve_entry": 1},
-    (_TT, "pending_check_params"): {
-        "declined_resolve_entry": 1,
-        "held_check_reason": 1,
-    },
     (_TT, "resolve_reopen_admitted"): {"declined_resolve_entry": 1},
     (_TT, "derive_disposition_eligibility"): {
         "assess_resolution_readiness": 1,
@@ -362,9 +369,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "resolution_confirmation_rows": 1,
     },
     # #2811 S2b-2b: whether a cause is identified, and its two wrappers, where
-    # the deciders derive it (stage S3d, #3053): the resolution and closure gates,
-    # the documented-but-unapplied fix, the resolve's truth surface, M5's
-    # licence and the offer record's lapse rule.
+    # it is derived outside the cycle's record: the readiness gates' own
+    # building blocks (``_cause_identified``, the documented-but-unapplied
+    # fix that ``derive_closure_reason`` reads), the resolve's truth surface
+    # (written at the resolve transition, which folds its own record), M5's
+    # licence (the apply step, before the cycle's record; the deciders' leg
+    # keeps the recompute's flag, ruling of 2026-11-26 (3)) and the offer
+    # record's lapse rule (read at each lapse point, before the fold).
     (_TT, "_cause_identified"): {"cause_identification_leg": 1},
     (_TT, "_fix_documented_not_applied"): {"_cause_identified": 1},
     (_TT, "finalize_resolution_truth_surface"): {"cause_identification_leg": 1},
@@ -372,7 +383,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "_solution_cause_validated"): {"solution_licence_leg": 1},
     (_OFFERS, "_premise_gone"): {"cause_identification_leg": 1},
     (_TT, "shown_milestones"): {"_mitigation_verified": 1},
-    (_TT, "terminal_summary_skip_reason"): {"should_generate_terminal_summary": 1},
     # The engine. ``assess_closure_readiness`` is passed, not called, to
     # ``_close_on_explicit_intent``: the one bare reference.
     (_ME + "engine.py", "MilestoneEngine._process_turn_impl"): {
@@ -408,41 +418,9 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "fix_application_turn": 1,
         "interception_relief": 1,
     },
-    (_PROPOSALS, "_maybe_propose_confirmed_resolution"): {
-        "assess_resolution_readiness": 1,
-        "cause_identification_leg": 1,
-        "resolution_record_lines": 1,
-    },
-    # #2811 S2b-1b-i: ``pending_symptom_check`` holds the offer (stage S3d, #3053).
-    (_PROPOSALS, "_maybe_propose_deferred_close"): {
-        "assess_closure_readiness": 1,
-        "cause_identification_leg": 1,
-        "pending_symptom_check": 1,
-        "resolution_record_lines": 1,
-    },
-    # #2811 S2b-2b: the resolve confirmation and the closed reply read the
-    # record. The fold of the moment, for both; and the confirmation's
-    # fallback when the fold raised, the decider's decide-time read (A4),
-    # removed at stage S3d (#3053).
+    # #2811 S2b-2b: the reopen chip's confirmation (#3053 S3d-2) and the
+    # closed reply read the record: the fold of the moment.
     (_ME + "terminal_replies.py", "_reply_outcome"): {"narration_outcome": 1},
-    (_ME + "terminal_replies.py", "_confirmation_outcome_fresh"): {
-        "cause_identification_leg": 1,
-        "resolution_record_lines": 1,
-    },
-    # Not a narrated fact: the offer half of the summary gate, whose
-    # enforcement half is ``TerminalTurnHandler``'s (#698, one predicate);
-    # the record has no field for it. Stage S3d (#3053).
-    (_ME + "terminal_replies.py", "_closed_suggestions"): {
-        "should_generate_terminal_summary": 1
-    },
-    (_TERMINAL_TURNS, "TerminalTurnHandler._handle_report_regeneration"): {
-        "should_generate_terminal_summary": 1,
-        "terminal_summary_skip_reason": 1,
-    },
-    (_TERMINAL_TURNS, "TerminalTurnHandler.auto_generate_report"): {
-        "should_generate_terminal_summary": 1,
-        "terminal_summary_skip_reason": 1,
-    },
     (_TRANSITION_TURNS, "_close_on_explicit_intent"): {
         "assess_close_summary": 1,
         "assess_closure_readiness": 1,
@@ -476,22 +454,13 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "EvidenceReclassifier.reclassify_out_of_band",
     ): {"record_before_save": 1},
     (_ME + "statement_revision.py", "confirm_revision"): {"record_case_outcome": 1},
-    (_TRANSITIONS, "TransitionManager._apply_model_proposal"): {
-        "assess_closure_readiness": 1,
-        "assess_resolution_readiness": 1,
-    },
-    (_TRANSITIONS, "TransitionManager._recheck_resolve_request"): {
-        "assess_resolution_readiness": 1
-    },
-    # #2811 S2b-1b-i: the declined re-ask's refusal code and the reopen chip,
-    # deciders that stage S3d (#3053) switches.
-    (_TRANSITIONS, "declined_resolution_reask"): {
-        "declined_resolve_entry": 1,
-        "pending_symptom_check": 1,
-    },
+    # #2811 S2b-1b-i: the reopen chip, the offer projection's: the resolve
+    # decline read at its owner, the offer record (ruling Q1).
     (_INV + "offer_projection.py", "_reopen_chip"): {"declined_resolve_entry": 1},
-    # #2811 S2b-1c-i: the cause-work gates and the false-alarm decline's
-    # refusal and reply, deciders that stage S3d (#3053) switches.
+    # #2811 S2b-1c-i: the cause-work gates, which read the live problem
+    # status, an input, at its owner (ruling Q1's premise correction), and
+    # M5's licence beside them; and the false-alarm decline's bare reply,
+    # which reads the offer record (``false_alarm_close_declined_at``).
     (_ME + "chain_emission.py", "_apply_chain_emission"): {
         "cause_work_accepted": 1,
         "cause_work_staged": 1,
@@ -517,7 +486,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "cause_work_staged": 1,
     },
     (_TRANSITION_TURNS, "_decline_bare_reply"): {"false_alarm_close_declined_at": 1},
-    (_TRANSITIONS, "declined_close_reask"): {"false_alarm_close_declined_at": 1},
     (_INV + "offer_projection.py", "OfferProjection.disposition_eligibility"): {
         "derive_disposition_eligibility": 1
     },
@@ -567,19 +535,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     ("faultmaven/cli/backfill_case_outcome.py", "backfill_case_outcome._apply"): {
         "compute_case_outcome": 1
     },
-    # #2811 S2b-2a: the deciders of the cause's identification, which write
-    # ``cause_identification_contested`` and ``_held_open`` (the recompute)
-    # and keep or refuse the engine's conclusion mirror (stage S3d, #3053).
-    (_ME + "cause_state.py", "_recompute_cause_state_from_chain"): {
-        "held_open_root_ids": 1,
-        "mece_contested_root_ids": 1,
-    },
-    (_INV + "causal_graph/rcc.py", "retract_stale_engine_rcc"): {
-        "mece_contested_root_ids": 1
-    },
-    (_INV + "causal_graph/rcc.py", "synthesize_rcc_from_validated_root"): {
-        "mece_contested_root_ids": 1
-    },
     # The prompt. The fix-verification block renders from the record
     # (#2811 S2b-1a and S2b-1b-i, ``narration.fix_verification``): the
     # assembly's one fold; its window verdicts and ``fix_confirmed`` read the
@@ -593,7 +548,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "held_open_root_ids": 1
     },
     # The API, the knowledge harvest and the report.
-    (_UI, "_transform_resolved"): {"terminal_summary_skip_reason": 1},
     (
         "faultmaven/modules/knowledge/domain/models/conversion.py",
         "CaseConversionRequest.from_case",
@@ -635,7 +589,7 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "record_case_outcome"): {"closure_reason": 1},
     (_MONITOR, "ProgressMonitor._find_pending_milestone"): {"completed_milestones": 1},
     # #2811 S2b-1c-i: the milestone status reads the record; the stored
-    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3d (#3053).
+    # ``mitigation.verified`` stays a fresh input (ruling Q1 (a)) until S3d-4 (#3053).
     (_CB + "narration_fold.py", "_stored_mitigation_verified"): {"verified": 1},
     (_VALIDATOR, "StateValidator._validate_milestone_ordering"): {
         "solution_verified": 2,
@@ -709,10 +663,22 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
     ),
     (_ME + "terminal_replies.py", "resolution_confirmation_params"): (
         {"content_by_id": 1},
-        "binds the narration's text accessor to the case for the resolve "
-        "confirmation, which reads the confirming attempt's description by "
-        "its action id (the attempt picked from the record's attempts) "
-        "(#2811 S2c-1)",
+        "binds the narration's text accessor to the case for the reopen "
+        "chip's resolve confirmation, which reads the confirming attempt's "
+        "description by its action id (the attempt picked from the record's "
+        "attempts) (#2811 S2c-1)",
+    ),
+    (_ME + "turn_narration.py", "_narrate_offer"): (
+        {"content_by_id": 1},
+        "binds the narration's text accessor to the case for the cycle's "
+        "resolve confirmations, as resolution_confirmation_params does (#3053 "
+        "S3d-3)",
+    ),
+    (_ME + "turn_completion.py", "_ready_confirmation"): (
+        {"content_by_id": 1},
+        "binds the narration's text accessor to the case for the met "
+        "request's confirmation in the reply, as resolution_confirmation_params "
+        "does (#3053 S3d-3)",
     ),
     (_ME + "turn_narration.py", "narrate_turn"): (
         {"content_by_id": 1},
@@ -834,6 +800,158 @@ ENTRY_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
         {"lapse_offers": 1},
         "lapses, at every save, what lapse_offers lapses, so a write outside "
         "the engine lapses what it moved",
+    ),
+}
+
+
+class Source(NamedTuple):
+    """An in-cycle decider, declared a source of the cycle's record (#3053
+    S3d-3, ruling Q4 of 2026-11-25): it decides before the record and folds
+    none. ``serves``: for a helper that records no code, the code-recording
+    rows it serves."""
+
+    counts: dict[str, int]
+    note: str
+    serves: tuple[tuple[str, str], ...] = ()
+
+
+_RECHECK = (_TRANSITIONS, "TransitionManager._recheck_resolve_request")
+_MODEL = (_TRANSITIONS, "TransitionManager._apply_model_proposal")
+_BACKSTOP = (_PROPOSALS, "_maybe_propose_confirmed_resolution")
+_RCC = _INV + "causal_graph/rcc.py"
+
+#: (path, qualname) -> the in-cycle decider's derivations, what it decides,
+#: and the rows it serves. Permanent: the cycle decides everything, then
+#: records once after the last decider (#2615), and the record derives
+#: ``resolution`` from these same functions.
+CYCLE_SOURCES: dict[tuple[str, str], Source] = {
+    _RECHECK: Source(
+        {
+            "assess_resolution_readiness": 1,
+            "cause_identification_leg": 1,
+            "resolution_record_lines": 1,
+        },
+        "step 0, the remembered request: READY records REQUEST_READY with the "
+        "leg and record lines it was decided on, else NEEDS_INFO_UNMET_CLOSE",
+    ),
+    _MODEL: Source(
+        {
+            "assess_closure_readiness": 1,
+            "assess_resolution_readiness": 1,
+            "cause_identification_leg": 1,
+            "resolution_record_lines": 1,
+        },
+        "step 2, the model's proposal through readiness: MODEL_PROPOSAL by "
+        "composer, or RESOLUTION_NEEDS_INFO and PENDING_CHECK",
+    ),
+    (_PROPOSALS, "_maybe_propose_deferred_close"): Source(
+        {
+            "assess_closure_readiness": 1,
+            "cause_identification_leg": 1,
+            "pending_symptom_check": 1,
+            "resolution_record_lines": 1,
+        },
+        "the deferred proposer: DEFERRED_RESOLVE, held by a pending check, "
+        "or DEFERRED_CLOSE",
+    ),
+    _BACKSTOP: Source(
+        {
+            "assess_resolution_readiness": 1,
+            "cause_identification_leg": 1,
+            "resolution_record_lines": 1,
+        },
+        "the backstop: BACKSTOP_RESOLVE, or PENDING_CHECK while a check holds it",
+    ),
+    (_TRANSITIONS, "declined_resolution_reask"): Source(
+        {"declined_resolve_entry": 1, "pending_symptom_check": 1},
+        "the params of DECLINED_RESOLUTION_REASK, the refusal while a resolve "
+        "decline stands, and whether its chips are attached",
+        serves=(_RECHECK, _MODEL),
+    ),
+    (_TRANSITIONS, "declined_close_reask"): Source(
+        {"false_alarm_close_declined_at": 1},
+        "the params of DECLINED_CLOSE_REASK, the refusal while a close "
+        "decline stands",
+        serves=(_MODEL,),
+    ),
+    (_TT, "pending_check_params"): Source(
+        {"declined_resolve_entry": 1, "held_check_reason": 1},
+        "the params of PENDING_CHECK; why the check holds through the "
+        "record's one derivation (held_check_reason)",
+        serves=(_MODEL, _BACKSTOP),
+    ),
+    # The recompute writers log no code, so the typed-code pin cannot apply.
+    (_ME + "cause_state.py", "_recompute_cause_state_from_chain"): Source(
+        {"held_open_root_ids": 1, "mece_contested_root_ids": 1},
+        "the cause recompute, the cycle's last after every decider: writes "
+        "cause_identification_contested and _held_open, which the deciders' "
+        "identification leg reads (ruling of 2026-11-26 (3))",
+    ),
+    (_RCC, "retract_stale_engine_rcc"): Source(
+        {"mece_contested_root_ids": 1},
+        "retracts the engine's conclusion mirror under a contest, in the " "recompute",
+    ),
+    (_RCC, "synthesize_rcc_from_validated_root"): Source(
+        {"mece_contested_root_ids": 1},
+        "mints the engine's conclusion mirror, refused under a contest, in the "
+        "recompute",
+    ),
+}
+
+#: The cycle sources that record no code and serve no row: they write the
+#: inputs the deciders read.
+RECOMPUTE_WRITERS = frozenset(
+    {
+        (_ME + "cause_state.py", "_recompute_cause_state_from_chain"),
+        (_RCC, "retract_stale_engine_rcc"),
+        (_RCC, "synthesize_rcc_from_validated_root"),
+    }
+)
+
+#: The notices the cycle sources record outside ``DECIDED_FROM`` (ruling of
+#: 2026-11-26 (2): the typed-code pin covers offers only), with the reason.
+CYCLE_NOTICES = {
+    "engine_offer_stands": "the model's proposal dropped for the engine's offer "
+    "this turn: it decides no outcome, the offer it names does",
+    "declined_close_reask": "a refusal of the model's re-proposal while the "
+    "user's close decline stands, read off the offer record",
+    "declined_resolution_reask": "a refusal of a resolution while the user's "
+    "resolve decline stands, read off the offer record",
+}
+
+#: The helpers outside ``CYCLE_SOURCES`` that record a ``CYCLE_NOTICES`` code
+#: for a source.
+CYCLE_NOTICE_HELPERS = {(_TRANSITIONS, "_refuse_declined_reask"): _MODEL}
+
+#: Content predicates (ruling Q6 of 2026-11-25), outside ``DERIVATIONS``: the
+#: summary gate is a predicate over the case's content, for which the record
+#: has no field; every caller is enumerated, as the narrators' text accessor's.
+CONTENT_ACCESSORS: dict[str, str] = {
+    "should_generate_terminal_summary": _TT,
+    "terminal_summary_skip_reason": _TT,
+}
+
+#: (path, qualname) -> ({accessor: references}, what the caller reads).
+CONTENT_ACCESSOR_CALLERS: dict[tuple[str, str], tuple[dict[str, int], str]] = {
+    (_TT, "terminal_summary_skip_reason"): (
+        {"should_generate_terminal_summary": 1},
+        "the skip note, on the same predicate",
+    ),
+    (_ME + "terminal_replies.py", "_closed_suggestions"): (
+        {"should_generate_terminal_summary": 1},
+        "the offer half of the summary gate (#698, one predicate)",
+    ),
+    (_TERMINAL_TURNS, "TerminalTurnHandler._handle_report_regeneration"): (
+        {"should_generate_terminal_summary": 1, "terminal_summary_skip_reason": 1},
+        "the enforcement half, on a regeneration",
+    ),
+    (_TERMINAL_TURNS, "TerminalTurnHandler.auto_generate_report"): (
+        {"should_generate_terminal_summary": 1, "terminal_summary_skip_reason": 1},
+        "the enforcement half, at the terminal transition",
+    ),
+    (_UI, "_transform_resolved"): (
+        {"terminal_summary_skip_reason": 1},
+        "the Report tab's note when no summary exists",
     ),
 }
 
@@ -1162,6 +1280,12 @@ def _with(source: str, path: str) -> Sites:
 
 _ENTRY_COUNTS = {key: counts for key, (counts, _) in ENTRY_CALLERS.items()}
 
+#: Every declared derivation site: the census's and the cycle's sources.
+_DECLARED = {
+    **DERIVATION_SITES,
+    **{key: source.counts for key, source in CYCLE_SOURCES.items()},
+}
+
 _HELP = (
     "#2615 moves every reader of a case's outcome onto one record "
     "(CaseOutcome). A new reader reads the outcome from it. Until the stage "
@@ -1201,7 +1325,7 @@ def test_the_scan_covers_the_package():
     }
     declared = {
         name
-        for table in (DERIVATION_SITES, FIELD_READS, _ENTRY_COUNTS)
+        for table in (_DECLARED, FIELD_READS, _ENTRY_COUNTS)
         for counts in table.values()
         for name in counts
     }
@@ -1222,7 +1346,7 @@ def test_the_collector_matches_each_watched_name(name):
 
 
 def test_every_derivation_site_is_declared():
-    problems = _differences(_scan()[0].derivations, DERIVATION_SITES)
+    problems = _differences(_scan()[0].derivations, _DECLARED)
     assert not problems, (
         "a case's outcome is derived where the census does not say:\n  "
         + "\n  ".join(problems)
@@ -1285,6 +1409,273 @@ def test_the_prompt_watch_matches_each_input(name, source):
     """A positive control per name and shape."""
     tree = ast.parse(source.format(name=name))
     assert collect_progress_reads(tree, "m.py") == {("m.py", "f"): Counter({name: 1})}
+
+
+# ---------------------------------------------------------------------------
+# The cycle's sources (#3053 S3d-3, ruling Q4) and the content accessors (Q6)
+# ---------------------------------------------------------------------------
+
+
+def _function(path: str, qualname: str) -> ast.AST:
+    """The ``def`` of ``qualname`` in the module at ``path``."""
+    node: ast.AST = parse_file(_ROOT / path)
+    for part in qualname.split("."):
+        node = next(
+            child
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and child.name == part
+        )
+    return node
+
+
+_CODE_ENUMS = {"NoticeCode": NoticeCode, "OfferCode": OfferCode}
+
+
+def _recorded(function: ast.AST, where: str) -> tuple[set[str], list[str]]:
+    """The codes ``function`` records (``record_decision(m, <Enum>.<X>,
+    ...)``), by value, and one problem per call whose code is not such a
+    literal."""
+    codes: set[str] = set()
+    problems = []
+    for node in ast.walk(function):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", getattr(node.func, "attr", None))
+            == "record_decision"
+        ):
+            continue
+        code = node.args[1] if len(node.args) > 1 else None
+        enum = getattr(getattr(code, "value", None), "id", None)
+        if not isinstance(code, ast.Attribute) or enum not in _CODE_ENUMS:
+            problems.append(f"{where}:{node.lineno}: a code that is not a literal")
+            continue
+        codes.add(str(getattr(_CODE_ENUMS[enum], code.attr)))
+    return codes, problems
+
+
+def _composers(function: ast.AST) -> set[str]:
+    """The ``"composer": <const>`` literals ``function`` writes."""
+    return {
+        value.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "composer"
+        and isinstance(value, ast.Constant)
+    }
+
+
+def _cycle_source_problems(
+    sources=CYCLE_SOURCES,
+    notices=CYCLE_NOTICES,
+    helpers=CYCLE_NOTICE_HELPERS,
+    resolve=lambda key: _function(*key),
+) -> list[str]:
+    """Each way the cycle's sources break the table's pins: a source under
+    ``narration/`` or ``prompts/``, in ``DERIVATION_SITES`` too, counting
+    ``fix_windows``, recording an offer code or ``PENDING_CHECK`` that is not
+    a ``DECIDED_FROM`` key, another code that is not a declared cycle notice,
+    a code that is not a literal, or a composer ``DECIDED_FROM`` lacks; a row
+    recording no code that serves no code-recording row (but a recompute
+    writer); and a declared notice no source or helper records."""
+    decided = {str(code) for code, _composer in DECIDED_FROM}
+    problems: list[str] = []
+    recording: set = set()
+    found: set[str] = set()
+    for key, source in sources.items():
+        where = "::".join(key)
+        if key[0].startswith((_INV + "narration/", _PROMPTS)):
+            problems.append(f"{where}: a narrator or a prompt builder")
+        if key in DERIVATION_SITES:
+            problems.append(f"{where}: in DERIVATION_SITES too")
+        if "fix_windows" in source.counts:
+            problems.append(f"{where}: counts fix_windows, not the carried view")
+        function = resolve(key)
+        codes, bad = _recorded(function, where)
+        problems += bad
+        for code in codes:
+            if code in notices:
+                found.add(code)
+            elif code not in decided:
+                problems.append(f"{where}: records {code}, undeclared")
+        for composer in _composers(function):
+            if (OfferCode.MODEL_PROPOSAL, composer) not in DECIDED_FROM:
+                problems.append(f"{where}: composer {composer!r} is not decided from")
+        if codes:
+            recording.add(key)
+    for key, source in sources.items():
+        if key in recording:
+            continue
+        if not source.serves and key not in RECOMPUTE_WRITERS:
+            problems.append(f"{'::'.join(key)}: records no code and serves no row")
+        for served in source.serves:
+            if served not in recording:
+                problems.append(f"{'::'.join(key)}: serves {served}, no source")
+    for key, served in helpers.items():
+        codes, bad = _recorded(resolve(key), "::".join(key))
+        problems += bad
+        found |= codes & set(notices)
+        if served not in recording:
+            problems.append(f"{'::'.join(key)}: serves {served}, no source")
+    missing = [code for code in notices if code not in found]
+    return problems + [f"{code}: declared, recorded by no source" for code in missing]
+
+
+def test_the_cycle_sources_hold_the_tables_pins():
+    """Ruling Q4: each in-cycle decider is a declared source of the record;
+    its offer codes and ``PENDING_CHECK`` are ``DECIDED_FROM`` keys, its other
+    codes declared notices, and it reads windows only through the carried
+    view (``CARRIED_VIEW_SITES``)."""
+    assert _cycle_source_problems() == []
+    recording = [k for k in CYCLE_SOURCES if _recorded(_function(*k), "")[0]]
+    assert len(recording) == 4, "premise: the four code-recording deciders"
+    assert {"readiness", "confirmation", "closure"} <= _composers(_function(*_MODEL))
+
+
+#: A probe source's module: not under ``narration/``, as a source never is.
+_CYCLE_PROBE = _ME + "probe.py"
+_PROBE_KEY = (_CYCLE_PROBE, "decide")
+
+
+def _probe_problems(source: str, **tables) -> list[str]:
+    """``_cycle_source_problems`` with the probe ``decide`` (``source``) as a
+    source serving nothing, beside the real ones."""
+    probe = Source({}, "a probe")
+    function = ast.parse(source).body[0]
+    sources = {**CYCLE_SOURCES, _PROBE_KEY: probe, **tables.pop("sources", {})}
+    return _cycle_source_problems(
+        sources,
+        resolve=lambda key: function if key == _PROBE_KEY else _function(*key),
+        **tables,
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "problem"),
+    [
+        (
+            "def decide(m):\n    record_decision(m, NoticeCode.FIX_UNTARGETED)",
+            f"{_CYCLE_PROBE}::decide: records fix_untargeted, undeclared",
+        ),
+        (
+            "def decide(m, code):\n    record_decision(m, code)",
+            f"{_CYCLE_PROBE}::decide:2: a code that is not a literal",
+        ),
+        (
+            "def decide(m):\n    c = {'composer': 'summary'}\n"
+            "    record_decision(m, OfferCode.MODEL_PROPOSAL, **c)",
+            f"{_CYCLE_PROBE}::decide: composer 'summary' is not decided from",
+        ),
+        (
+            "def decide(m):\n    return None",
+            f"{_CYCLE_PROBE}::decide: records no code and serves no row",
+        ),
+    ],
+)
+def test_a_source_breaking_a_pin_is_named(source, problem):
+    assert problem in _probe_problems(source)
+
+
+def test_a_declared_notice_no_source_records_is_named():
+    notices = {**CYCLE_NOTICES, "fix_report_ignored": "a probe"}
+    problems = _probe_problems(
+        "def decide(m):\n    record_decision(m, OfferCode.MODEL_PROPOSAL)",
+        notices=notices,
+    )
+    assert problems == ["fix_report_ignored: declared, recorded by no source"]
+
+
+@pytest.mark.parametrize(
+    ("key", "counts", "problem"),
+    [
+        (
+            (_TT, "assess_closure_readiness"),
+            {},
+            f"{_TT}::assess_closure_readiness: in DERIVATION_SITES too",
+        ),
+        (
+            (_INV + "narration/offers.py", "render_offer"),
+            {},
+            f"{_INV}narration/offers.py::render_offer: a narrator or a prompt "
+            "builder",
+        ),
+        (
+            (_CA, "carried_fix_windows"),
+            {"fix_windows": 1},
+            f"{_CA}::carried_fix_windows: counts fix_windows, not the carried view",
+        ),
+    ],
+)
+def test_a_misplaced_source_is_named(key, counts, problem):
+    sources = {key: Source(counts, "a probe", serves=(_MODEL,))}
+    assert problem in _probe_problems(
+        "def decide(m):\n    record_decision(m, OfferCode.MODEL_PROPOSAL)",
+        sources=sources,
+    )
+
+
+def test_no_fresh_fallback_row_remains():
+    """Ruling Q1: no ``*_fresh`` row after S3d-3, and the confirmation folds
+    nothing in the cycle (``resolution_confirmation_params`` takes the fold
+    its caller holds)."""
+    tables = (_DECLARED, FIELD_READS, _ENTRY_COUNTS, CONTENT_ACCESSOR_CALLERS)
+    fresh = [key for table in tables for key in table if key[1].endswith("_fresh")]
+    assert fresh == []
+    confirmation = _function(
+        _ME + "terminal_replies.py", "resolution_confirmation_params"
+    )
+    named = {getattr(n, "id", None) for n in ast.walk(confirmation)}
+    assert not named & {"_reply_outcome", "narration_outcome"}
+
+
+def _content_reads() -> dict[tuple[str, str], Counter]:
+    found: dict[tuple[str, str], Counter] = {}
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        tree = parse_file(path)
+        rel = path.relative_to(_ROOT).as_posix()
+        for key, counts in _content_reads_of(tree, rel).items():
+            found[key] = counts
+    return found
+
+
+def _content_reads_of(tree: ast.AST, path: str) -> dict[tuple[str, str], Counter]:
+    """Each Load of a ``CONTENT_ACCESSORS`` name in ``tree``, as a name or an
+    attribute, and a builtin ``getattr`` of one by a constant name."""
+    parents = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    found: dict[tuple[str, str], Counter] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(
+            node.ctx, ast.Load
+        ):
+            name = getattr(node, "id", None) or node.attr
+        else:
+            name = _constant_getattr(node)
+        if name in CONTENT_ACCESSORS:
+            key = (path, _scope_of(node, parents))
+            found.setdefault(key, Counter())[name] += 1
+    return found
+
+
+def test_every_content_accessor_caller_is_declared():
+    """Ruling Q6: the summary gate is a content predicate, not an outcome
+    derivation; each caller is declared with what it reads."""
+    declared = {key: counts for key, (counts, _) in CONTENT_ACCESSOR_CALLERS.items()}
+    problems = _differences(_content_reads(), declared)
+    assert not problems, "\n  ".join(problems)
+    assert not set(CONTENT_ACCESSORS) & set(DERIVATIONS)
+
+
+@pytest.mark.parametrize("name", sorted(CONTENT_ACCESSORS))
+@pytest.mark.parametrize(
+    "source",
+    ["def f(x):\n    return {name}(x)", "def f(m):\n    return getattr(m, '{name}')"],
+)
+def test_the_content_watch_matches_each_accessor(name, source):
+    """A positive control per accessor and shape."""
+    tree = ast.parse(source.format(name=name))
+    assert _content_reads_of(tree, "m.py") == {("m.py", "f"): Counter({name: 1})}
 
 
 def test_every_closure_entry_caller_is_declared():
@@ -1373,10 +1764,12 @@ def _module_functions(path: str) -> set[str]:
     }
 
 
-@pytest.mark.parametrize("name", sorted({**DERIVATIONS, **ENTRIES}))
+@pytest.mark.parametrize(
+    "name", sorted({**DERIVATIONS, **ENTRIES, **CONTENT_ACCESSORS})
+)
 def test_each_watched_function_is_defined_where_the_census_says(name):
     """A rename would otherwise leave the census watching a name nothing has."""
-    path = {**DERIVATIONS, **ENTRIES}[name]
+    path = {**DERIVATIONS, **ENTRIES, **CONTENT_ACCESSORS}[name]
     qualname = f"{_METHODS[name]}.{name}" if name in _METHODS else name
     assert qualname in _module_functions(path), f"{qualname} is not defined in {path}"
 
@@ -1647,7 +2040,7 @@ def test_a_new_derivation_reference_fails_the_census():
         "def wire(run):\n    return run(callback=fix_windows)\n",
         _PROBE,
     ).derivations
-    assert _differences(found, DERIVATION_SITES) == [
+    assert _differences(found, _DECLARED) == [
         f"{_PROBE}::summarise: declared nothing, found {{'fix_windows': 1}}",
         f"{_PROBE}::wire: declared nothing, found {{'fix_windows': 1}}",
     ]
@@ -1663,7 +2056,7 @@ def test_a_changed_count_fails_the_census():
         " or _mitigation_declared_stable(case) or declined_resolve_entry(case)\n",
         _TT,
     ).derivations
-    assert _differences(found, DERIVATION_SITES) == [
+    assert _differences(found, _DECLARED) == [
         f"{_TT}::derive_closure_reason: declared "
         "{'_mitigation_declared_stable': 1, '_mitigation_verified': 1, "
         "'declined_resolve_entry': 1}, found "

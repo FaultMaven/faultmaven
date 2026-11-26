@@ -1,18 +1,15 @@
 """The held check's notice and the offer prose state the cycle's record
-when no switched decision of the cycle disagrees with it (#2811 S2b-2c, #2615
-stage S2; ruling (a) of 2026-11-22).
+(#2811 S2b-2c, #2615 stage S2, ruling (a) of 2026-11-22; #3053 S3d-3, ruling
+Q5 of 2026-11-25).
 
-Switched: ``PENDING_CHECK``, ``RCA_INFEASIBLE_CLOSE``, ``BACKSTOP_RESOLVE``,
-``FALSE_ALARM_CLOSE``, ``DEFERRED_CLOSE``, ``NEEDS_INFO_UNMET_CLOSE``,
-``RESOLUTION_NEEDS_INFO`` and the model proposal's readiness ask. When the
-record agrees with every switched decision of the cycle on every field it was
-decided from (``DECIDED_FROM``, compared as the conflict counter compares
-them), each takes the facts its text states from ``case.progress.outcome``,
-the need's request text through the narrators' text accessor
-(``content_by_id``). When one disagrees, every switched text is its
-decider's, as on ``main``, and the conflict is counted.
-Kept until stage S3: ``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the model
-proposal's confirmation and closure, which render their decider's params.
+Switched: ``PENDING_CHECK`` and every offer code (since S3d-3 also
+``REQUEST_READY``, ``DEFERRED_RESOLVE`` and the model proposal's confirmation
+and closure). Each takes the facts its text states from
+``case.progress.outcome``, the need's request text through the narrators'
+text accessor (``content_by_id``), per decision: a decision that disagrees
+with the record on a field it was decided from (``DECIDED_FROM``) is counted
+and still renders the record, but in the four cases ruled on 2026-11-26
+(``offers.RULED_CASES``), which render the decision's params.
 """
 
 from __future__ import annotations
@@ -24,6 +21,9 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import turn_narration
 from faultmaven.core.investigation.milestone_engine.stage_gates import (
     record_decision,
+)
+from faultmaven.core.investigation.milestone_engine.terminal_replies import (
+    resolution_content,
 )
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
     NARRATION_CONFLICTS_KEY,
@@ -42,7 +42,9 @@ from faultmaven.core.investigation.narration.notices import (
 )
 from faultmaven.core.investigation.narration.offer_view import OfferView
 from faultmaven.core.investigation.narration.offers import (
+    narrated_params,
     readiness_message,
+    record_params,
     render_offer,
 )
 from faultmaven.core.investigation.offers import offer_view
@@ -81,10 +83,7 @@ SWITCHED = {
     # The held check: step 2's refusal logs PENDING_CHECK and its
     # RESOLUTION_NEEDS_INFO, which names the need's request text.
     "pending_check": lambda: golden._models_proposal(golden._held(), "resolved"),
-}
-
-#: Each kept code's scenario.
-KEPT = {
+    # #3053 S3d-3: the four offers kept on their deciders' params until then.
     "request_ready": lambda: golden._requested(golden._confirmed_case()),
     "deferred_resolve": lambda: golden._deferred(confirmed=True),
     "model_proposal_confirmation": lambda: golden._models_proposal(
@@ -95,15 +94,40 @@ KEPT = {
     ),
 }
 
+#: The four offers S3d-3 switched (``KEPT`` before it).
+S3D3 = (
+    "request_ready",
+    "deferred_resolve",
+    "model_proposal_confirmation",
+    "model_proposal_closure",
+)
+
 
 def _entries(metadata: dict) -> list:
     return metadata[DECISIONS_KEY]
+
+
+def _of(entry: dict) -> dict:
+    return {"code": entry["code"], "params": entry["params"]}
 
 
 def _offer(metadata: dict) -> dict:
     """The cycle's one offer decision."""
     (entry,) = [e for e in _entries(metadata) if e["code"] in set(OfferCode)]
     return entry
+
+
+def _decided(case, code, params: dict) -> dict:
+    """The decision's own params as the narration renders them: the
+    confirmation's with the content read at render (``narrated_params``)."""
+    return narrated_params(
+        code,
+        params,
+        None,
+        None,
+        resolution_content(case),
+        lambda item_id: content_by_id(case, item_id),
+    )
 
 
 def _spy(monkeypatch) -> list:
@@ -204,12 +228,20 @@ _STALE_READINESS = {
     "request_text": "a stale ask",
     "off_cause_turn": 99,
 }
+_STALE_LINES = {"record_lines": "- a stale record line"}
 _STALE = {
     OfferCode.RCA_INFEASIBLE_CLOSE: {"closure_line": "a stale closure line"},
-    OfferCode.BACKSTOP_RESOLVE: {"record_lines": "- a stale record line"},
+    OfferCode.BACKSTOP_RESOLVE: _STALE_LINES,
+    OfferCode.DEFERRED_RESOLVE: _STALE_LINES,
+    OfferCode.REQUEST_READY: _STALE_LINES,
     OfferCode.NEEDS_INFO_UNMET_CLOSE: _STALE_READINESS,
     OfferCode.RESOLUTION_NEEDS_INFO: _STALE_READINESS,
-    OfferCode.MODEL_PROPOSAL: _STALE_READINESS,
+    OfferCode.MODEL_PROPOSAL: {
+        **_STALE_READINESS,
+        **_STALE_LINES,
+        "root_cause": "a stale root",
+        "milestones_completed": 99,
+    },
     NoticeCode.PENDING_CHECK: {
         "need_id": "eneed_stale",
         "request_text": "a stale ask",
@@ -243,16 +275,21 @@ def test_the_switched_prose_renders_from_the_record_alone(monkeypatch, name):
     ``content_by_id``, a need's text, renders the text the agreeing decider
     would have: the record's. The offer record is read through its own
     exempt accessor (``OfferView``, S2b-2d) and written through
-    ``summarize_offer``, both stubbed here."""
+    ``summarize_offer``, both stubbed here; the case content the
+    confirmation and the closure name through ``ResolutionContent``, exempt
+    permanently (#3053 S3d-3)."""
     case, metadata = SWITCHED[name]()
     _stored(case, metadata)
-    view = offer_view(case)
+    view, content = offer_view(case), resolution_content(case)
     monkeypatch.setattr(turn_narration, "offer_view", lambda _case: view)
     monkeypatch.setattr(turn_narration, "summarize_offer", lambda *_a: True)
     monkeypatch.setattr(turn_narration, "content_by_id", _unwrapped)
+    monkeypatch.setattr(turn_narration, "resolution_content", lambda _c: content)
     rendered = _spy(monkeypatch)
     offer = _offer(metadata)
-    want_prose = [(offer["code"], render_offer(offer["code"], offer["params"]))]
+    want_prose = [
+        (offer["code"], render_offer(offer["code"], _decided(case, **_of(offer))))
+    ]
     held = [e for e in _entries(metadata) if e["code"] == _CODE]
     want_notices = [_feedback(e["params"]) for e in held]
     for entry in _entries(metadata):
@@ -338,15 +375,12 @@ def test_the_readiness_ask_names_the_records_held_need(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# A field the decision was decided from: on a disagreement, the decision's
+# A field the decision was decided from: on a disagreement, the record's,
+# counted (Q5); in a ruled case, the decision's, counted (2026-11-26)
 # ---------------------------------------------------------------------------
 
 
-_DECISION_WINS = {
-    "rca_infeasible_close": lambda r: (
-        _edited(r, "closure", eligibility=ClosureEligibility.TRIVIAL),
-        _edited(r, "closure", statement="the record's closure line"),
-    ),
+_RECORD_ON_DISAGREEMENT = {
     "backstop_resolve": lambda r: (
         _edited(r, "cause", identification_leg=None),
         _edited(r, "resolution", statement="- the record's line"),
@@ -357,32 +391,128 @@ _DECISION_WINS = {
     "model_proposal_readiness": lambda r: _edited(
         r, "resolution", reason=ResolutionReason.FALSE_ALARM
     ),
+    "request_ready": lambda r: (
+        _edited(r, "cause", identification_leg=None),
+        _edited(r, "resolution", statement="- the record's line"),
+    ),
+    "model_proposal_confirmation": lambda r: (
+        _edited(r, "cause", identification_leg=None),
+        _edited(r, "resolution", statement="- the record's line"),
+    ),
+    "model_proposal_closure": lambda r: _edited(r, "cause", identification_leg=None),
+    "deferred_resolve": lambda r: (
+        _edited(r, "cause", identification_leg=None),
+        _edited(r, "resolution", statement="- the record's line"),
+    ),
 }
 
 
-@pytest.mark.parametrize("name", sorted(_DECISION_WINS))
-def test_a_decided_field_the_record_does_not_state_renders_the_decision(
+@pytest.mark.parametrize("name", sorted(_RECORD_ON_DISAGREEMENT))
+def test_a_decided_field_the_record_does_not_state_renders_the_record(
     monkeypatch, name
 ):
     """The record disagrees with the decision on a field it was decided
-    from: the text is the decider's, as on ``main``, and the conflict is
-    counted."""
+    from, in no ruled case: the text is the record's (Q5, #3053 S3d-3), and
+    the conflict is counted. On ``main`` it was the decider's."""
     case, metadata = SWITCHED[name]()
     entry = _offer(metadata)
     _stored(case, metadata)
-    _DECISION_WINS[name](case.progress.outcome)
+    _RECORD_ON_DISAGREEMENT[name](case.progress.outcome)
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
-    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    want = record_params(
+        entry["code"],
+        entry["params"],
+        case.progress.outcome,
+        None,
+        resolution_content(case),
+        lambda item_id: content_by_id(case, item_id),
+    )
+    assert rendered == [(entry["code"], render_offer(entry["code"], want))]
+    decided = render_offer(entry["code"], _decided(case, **_of(entry)))
+    assert rendered[0][1] != decided, "premise: the decision reads otherwise"
+    assert _conflicts(metadata) == [f"narration.{entry['code']}"]
+
+
+def _flip(record) -> None:
+    _edited(
+        record,
+        "closure",
+        eligibility=(
+            ClosureEligibility.TRIVIAL
+            if record.closure.eligibility != ClosureEligibility.TRIVIAL
+            else ClosureEligibility.HAS_SUBSTANCE
+        ),
+    )
+
+
+#: Each ruled case's scenario and the record edit that reaches it.
+_RULED = {
+    # Case 3, by each offer's own field.
+    "request_ready": lambda r: _edited(
+        r, "resolution", reason=ResolutionReason.DOCUMENTATION_GAPS, statement=""
+    ),
+    "model_proposal_confirmation": lambda r: _edited(
+        r, "resolution", reason=ResolutionReason.FIX_FAILED, statement=""
+    ),
+    "backstop_resolve": lambda r: _edited(
+        r, "resolution", reason=ResolutionReason.PENDING_CHECK
+    ),
+    "deferred_resolve": _flip,
+    # Case 4: an offer decided on the closure eligibility.
+    "model_proposal_closure": _flip,
+    "rca_infeasible_close": lambda r: (
+        _edited(r, "closure", eligibility=ClosureEligibility.TRIVIAL),
+        _edited(r, "closure", statement="the record's closure line"),
+    ),
+    "deferred_close": _flip,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_RULED))
+def test_a_ruled_case_renders_the_decision_and_is_counted(monkeypatch, name):
+    """Ruled 2026-11-26: a resolve offer over a record whose reason is not
+    CONFIRMED (the deferred resolve: whose eligibility differs), and a
+    closure offer whose eligibility flipped, keep their decider's text; the
+    conflict is counted."""
+    case, metadata = SWITCHED[name]()
+    entry = _offer(metadata)
+    _stored(case, metadata)
+    _RULED[name](case.progress.outcome)
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    want = render_offer(entry["code"], _decided(case, **_of(entry)))
+    assert rendered == [(entry["code"], want)]
     assert "the record's" not in rendered[0][1]
     assert _conflicts(metadata) == [f"narration.{entry['code']}"]
 
 
+def test_a_held_ask_with_no_request_text_renders_the_decision(monkeypatch):
+    """Ruled case 2: the record holds a pending check whose request text
+    neither it nor the decision has; the ask is the decision's, counted."""
+    case, metadata = SWITCHED["resolution_needs_info"]()
+    entry = _offer(metadata)
+    assert entry["params"]["request_text"] is None, "premise"
+    _stored(case, metadata)
+    _edited(
+        case.progress.outcome,
+        "resolution",
+        reason=ResolutionReason.PENDING_CHECK,
+        pending_check_need_id="eneed_0000000000ff",
+        pending_check_reason=PendingCheckReason.UNANSWERED,
+    )
+    rendered = _spy(monkeypatch)
+    narrate_turn(case, metadata)
+    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    assert _conflicts(metadata) == [f"narration.{entry['code']}"]
+
+
 def test_a_held_ask_the_record_reads_confirmed_renders_the_decision(monkeypatch):
-    """Review item 1: step 2 refused a held ``resolved`` and the record reads
-    CONFIRMED. The needs-info request is the decision's ask, never the empty
-    CONFIRMED message, and the held check's notice is the decision's; the one
-    decision logged under two codes counts one conflict."""
+    """Review item 1, ruled case 1 (2026-11-26): step 2 refused a held
+    ``resolved`` and the record reads CONFIRMED. The needs-info request is the
+    decision's ask, never the empty CONFIRMED message, and the held check's
+    notice is the decision's, the record holding no check; the one decision
+    logged under two codes counts one conflict."""
     case, metadata = SWITCHED["pending_check"]()
     entry = _offer(metadata)
     (decided,) = [e["params"] for e in _entries(metadata) if e["code"] == _CODE]
@@ -408,8 +538,9 @@ def test_one_decision_under_two_codes_names_one_need(monkeypatch):
     on the reason and why the check holds) and its needs-info request
     (decided on the reason). A record agreeing on the reason but holding need
     B, held for another reason, disagrees with the held check: both the
-    model's notice and the user's request name the decider's need, never one
-    each, and the conflict is counted."""
+    model's notice and the user's request name the record's need, never one
+    each (#3053 S3d-3: per decision, the record; on ``main`` both named the
+    decider's), and the conflict is counted."""
     case, metadata = SWITCHED["pending_check"]()
     entry = _offer(metadata)
     (decided,) = [e["params"] for e in _entries(metadata) if e["code"] == _CODE]
@@ -425,18 +556,33 @@ def test_one_decision_under_two_codes_names_one_need(monkeypatch):
     assert case.progress.outcome.resolution.reason == decided["reason"], "premise"
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
-    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
-    assert decided["request_text"] in rendered[0][1]
-    assert need.request_text not in rendered[0][1]
-    assert _held_notice(metadata) == [_feedback(decided)]
+    assert rendered == [
+        (
+            entry["code"],
+            readiness_message(
+                ResolutionReason.PENDING_CHECK, request_text=need.request_text
+            ),
+        )
+    ]
+    assert decided["request_text"] not in rendered[0][1]
+    assert _held_notice(metadata) == [
+        pending_check_feedback(
+            need.need_id,
+            need.request_text,
+            pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
+            proposed=True,
+            declined_stands=decided["declined_stands"],
+        )
+    ]
     assert _conflicts(metadata) == [f"narration.{_CODE}"]
 
 
 def test_a_non_switched_code_reads_the_record_beside_a_disagreement():
-    """A switched decision that disagrees with the stored record leaves every
-    switched text its decider's, and only those: a B1b code logged in the
-    same cycle (``SOLUTION_OFFER_WITHDRAWN``) still renders the record's fact,
-    as on ``main``."""
+    """A switched decision that disagrees with the stored record in a ruled
+    case renders its decider's text (#3053 S3d-3: that decision alone; on
+    ``main`` every switched one did): a B1b code logged in the same cycle
+    (``SOLUTION_OFFER_WITHDRAWN``) still renders the record's fact, as on
+    ``main``."""
     case, metadata = SWITCHED["pending_check"]()
     record_decision(
         metadata, NoticeCode.SOLUTION_OFFER_WITHDRAWN, prepend=True, held_open=False
@@ -525,12 +671,13 @@ def test_the_record_params_of_each_switched_code():
 
 
 # ---------------------------------------------------------------------------
-# Kept until S3: the decider's params, whatever the record says
+# The four offers S3d-3 switched, over a record that disagrees on every fact
+# they decide or state: each is a ruled case, so the decision's
 # ---------------------------------------------------------------------------
 
 
 def _disagree(record) -> None:
-    """A record that disagrees with every kept decider on each fact it
+    """A record that disagrees with each of the four on each fact it
     decides or states."""
     _edited(record, "resolution", statement="- the record's line")
     _edited(record, "resolution", reason=ResolutionReason.DOCUMENTATION_GAPS)
@@ -539,27 +686,28 @@ def _disagree(record) -> None:
         "cause",
         identification_leg=None if record.cause.identification_leg else "chain",
     )
-    _edited(
-        record,
-        "closure",
-        eligibility=(
-            ClosureEligibility.TRIVIAL
-            if record.closure.eligibility != ClosureEligibility.TRIVIAL
-            else ClosureEligibility.HAS_SUBSTANCE
-        ),
-    )
+    _flip(record)
 
 
-@pytest.mark.parametrize("name", sorted(KEPT))
-def test_the_kept_prose_renders_the_deciders_params(monkeypatch, name):
-    case, metadata = KEPT[name]()
+@pytest.mark.parametrize("name", S3D3)
+def test_the_four_render_the_decision_over_a_record_that_disagrees_throughout(
+    monkeypatch, name
+):
+    """``main`` (as ``KEPT``) rendered their deciders' params whatever the
+    record said. Here each meets a ruled case (case 3 by its reason or its
+    eligibility, case 4 by its eligibility) and renders the decision, now
+    counted."""
+    case, metadata = SWITCHED[name]()
     entry = _offer(metadata)
     _stored(case, metadata)
     _disagree(case.progress.outcome)
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
-    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
+    want = render_offer(entry["code"], _decided(case, **_of(entry)))
+    assert rendered == [(entry["code"], want)]
     assert "the record's line" not in rendered[0][1]
+    # One label per field that disagrees.
+    assert set(_conflicts(metadata)) == {f"narration.{entry['code']}"}
 
 
 # ---------------------------------------------------------------------------
@@ -613,9 +761,11 @@ def test_the_notice_names_the_need_the_record_holds(held):
     assert _conflicts(metadata) == []
 
 
-def test_a_held_reason_the_record_does_not_state_renders_the_decisions_notice(
+def test_a_held_reason_the_record_does_not_state_renders_the_records_notice(
     held,
 ):
+    """#3053 S3d-3 (Q5): per decision, the record's need and reason, the
+    conflict counted (on ``main``, the decision's notice)."""
     case, metadata = held
     (decided,) = [e["params"] for e in _entries(metadata)]
     need = _second_need(case)
@@ -627,7 +777,15 @@ def test_a_held_reason_the_record_does_not_state_renders_the_decisions_notice(
         pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
     )
     narrate_turn(case, metadata)
-    assert _held_notice(metadata) == [_feedback(decided)]
+    assert _held_notice(metadata) == [
+        pending_check_feedback(
+            need.need_id,
+            need.request_text,
+            pending_check_reason=PendingCheckReason.FULFILLED_BEFORE_ASK,
+            proposed=False,
+            declined_stands=decided["declined_stands"],
+        )
+    ]
     assert _conflicts(metadata) == [f"narration.{_CODE}"]
 
 
@@ -700,19 +858,19 @@ def test_a_failed_write_renders_a_lone_offer_from_the_in_memory_record(
 
 
 @pytest.mark.parametrize(
-    ("name", "computed"),
+    "name",
     [
-        ("model_proposal_readiness", [1]),
-        ("model_proposal_closure", []),
-        ("model_proposal_confirmation", []),
+        "model_proposal_readiness",
+        "model_proposal_closure",
+        "model_proposal_confirmation",
     ],
 )
-def test_a_failed_write_folds_only_for_the_model_proposal_that_reads_it(
-    monkeypatch, name, computed
-):
-    """Review item 3: a model proposal reads the record by its composer, so a
-    failed write folds an in-memory record for the readiness ask alone."""
-    case, metadata = {**SWITCHED, **KEPT}[name]()
+def test_a_failed_write_folds_once_for_a_model_proposal(monkeypatch, name):
+    """Review item 3: a model proposal reads the record by its composer; since
+    #3053 S3d-3 every composer does, so a failed write folds one in-memory
+    record for each (on ``main``, for the readiness ask alone)."""
+    computed = [1]
+    case, metadata = SWITCHED[name]()
     assert [e["code"] for e in _entries(metadata)] == [OfferCode.MODEL_PROPOSAL]
     metadata[OUTCOME_WRITTEN_KEY] = False
     calls = _in_memory(monkeypatch)

@@ -30,8 +30,9 @@ The window deciders read the carried verdicts (#3046 S3a-2): every one reads
 over it (``carry_verdicts``), and inside a computation the list its fold
 carries, so the record's sections read the windows it holds. An
 ``attempts.window`` disagreement is then the fresh read the record
-overrides. The other deciders still derive fresh until S3d (#3053), so
-their disagreement is a place where a decider and the record disagree. A
+overrides. The other in-cycle deciders derive fresh, declared the record's
+sources (#3053 S3d-3, ruling Q4), so their disagreement is a place where a
+decider and the record disagree, counted where a decision is narrated. A
 FAILED window with no disconfirmation pair takes a later one, once, at a
 minting point, counted as ``attempts.window.disconfirmation`` (#2728).
 
@@ -483,35 +484,36 @@ class _Fold:
 def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome:
     whys = [why for _row, why in status if why is not None]
     identified, held, fallen = _pool_legs(case)
+    # One derivation of the MECE contest (#3053 S3d-3): the roots and
+    # ``pool_empty_reason``'s IDENTIFICATION_CONTESTED verdict.
+    contested = mece_contested_root_ids(case)
     return CauseOutcome(
         identified_root_ids=sorted(identified),
         held_root_ids=sorted(held),
         fallen_root_ids=sorted(fallen),
-        # Both derived fresh at the write, unlike ``pool_empty_reason``'s
-        # HELD_OPEN and IDENTIFICATION_CONTESTED verdicts and
-        # ``identification_held_open`` below. The prompt's recovery notes
-        # and working-conclusion NOTE read them (#2811 S2b-2a).
+        # Derived fresh at the write, unlike ``pool_empty_reason``'s HELD_OPEN
+        # verdict and ``identification_held_open`` below. The prompt's
+        # recovery notes and working-conclusion NOTE read them (#2811 S2b-2a).
         held_open_root_ids=sorted(held_open_root_ids(case)),
-        contested_root_ids=sorted(mece_contested_root_ids(case)),
+        contested_root_ids=sorted(contested),
         confirmation_root_ids=sorted(subjects.pool_roots),
         cited_basis={
             node_id: sorted(rows)
             for node_id, rows in subjects.citations.items()
             if rows
         },
-        # ``cause_pool_empty_reason`` is computed at the write; only its
-        # HELD_OPEN and IDENTIFICATION_CONTESTED verdicts read flags the cause
-        # recompute wrote (``cause_identification_held_open``,
-        # ``cause_identification_contested``). ``identification_held_open``
-        # carries ``progress.cause_identification_held_open``, the withdrawal
-        # notice's variant (#2636), which the next prompt's readers also read.
-        # The turn's final recompute (#2636) re-derives these flags after
-        # every decider, so the cycle's record reads them agreeing with
-        # ``held_open_root_ids`` and ``contested_root_ids``; a replayed
-        # bundle's record reads them as that bundle left them, and a prompt
-        # folded after a pre-prompt hypothesis intent (retire or refute),
-        # which runs no recompute, can read them disagreeing.
-        pool_empty_reason=cause_pool_empty_reason(case),
+        # ``cause_pool_empty_reason`` is computed at the write, its
+        # IDENTIFICATION_CONTESTED verdict from ``contested`` above; only its
+        # HELD_OPEN verdict reads a flag the cause recompute wrote
+        # (``cause_identification_held_open``). ``identification_held_open``
+        # carries that flag, the withdrawal notice's variant (#2636), which
+        # the next prompt's readers also read. The turn's final recompute
+        # (#2636) re-derives it after every decider, so the cycle's record
+        # reads it agreeing with ``held_open_root_ids``; a replayed bundle's
+        # record reads it as that bundle left it, and a prompt folded after a
+        # pre-prompt hypothesis intent (retire or refute), which runs no
+        # recompute, can read it disagreeing.
+        pool_empty_reason=cause_pool_empty_reason(case, contested=contested),
         identification_leg=cause_identification_leg(case),
         identification_held_open=bool(case.progress.cause_identification_held_open),
         recheck={

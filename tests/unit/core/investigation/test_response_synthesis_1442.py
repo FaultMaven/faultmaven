@@ -608,7 +608,29 @@ def _force_branch(site, case, md, engine):
     """Stand in for what ``_process_response_structured`` records on a turn
     that selects *site*. Returns a replacement case where the branch needs one."""
     if site == "resolution_ready_for_confirmation":
+        # Step 0's READY records its decision beside the flag (#3053 S3d-3:
+        # the reply renders the confirmation from it and the record).
+        from faultmaven.core.investigation.cause_identification import (
+            cause_identification_leg,
+        )
+        from faultmaven.core.investigation.milestone_engine.stage_gates import (
+            record_decision,
+        )
+        from faultmaven.core.investigation.narration.codes import OfferCode
+        from faultmaven.core.investigation.terminal_transitions import (
+            resolution_record_lines,
+        )
+        from faultmaven.modules.case.contracts import ResolutionReason
+
         md[site] = True
+        record_decision(
+            md,
+            OfferCode.REQUEST_READY,
+            proposal_id=None,
+            reason=ResolutionReason.CONFIRMED,
+            identification_leg=cause_identification_leg(case),
+            record_lines=resolution_record_lines(case),
+        )
     elif site == "resolution_suggest_close":
         md[site] = True
         md["resolution_readiness_message"] = GATE_NOTICE
@@ -723,7 +745,9 @@ async def test_engine_prose_on_a_placeholder_turn_is_the_whole_reply(site):
         expected = _gate1_statement_presentation(case_updated)
     elif site == "resolution_ready_for_confirmation":
         # No fixed thanks (#2428).
-        expected = _build_resolution_confirmation(case_updated)
+        expected = _build_resolution_confirmation(
+            case_updated, case_updated.progress.outcome
+        )
     else:
         expected = GATE_NOTICE
     assert reply == expected, "the notice must be the whole reply"

@@ -43,12 +43,15 @@ class ResolutionContent:
     (``_get_solution_summary``, ``solutions[-1]``; the confirmation names
     the confirming attempt instead when the record holds one), and whether
     the case holds evidence, and commands or implementation steps on a
-    solution."""
+    solution; and the root-cause conclusion's own text, unclipped, which the
+    model's closure proposal names (``offers.record_params``, #3053 S3d-3).
+    """
 
     root_cause: str
     solution: str
     has_evidence: bool
     has_commands: bool
+    conclusion: Optional[str] = None
 
 
 def confirmation_params(

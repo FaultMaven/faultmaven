@@ -2,7 +2,9 @@
 (#2811 S2b-2b, #2615 stage S2).
 
 Whether a cause is identified and the resolution's record lines come from the
-record folded where the confirmation is decided; the closed reply's reason
+record the caller holds (#3053 S3d-3 made it required: the reopen chip's
+fold; the cycle's confirmations render through the narration); the closed
+reply's reason
 and mitigation line from the record the terminal transition wrote, folded
 again only when that write failed. The texts the confirmation names besides
 are ``ResolutionContent`` (ruling of 2026-11-21). On every fixture of the
@@ -18,10 +20,10 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import pytest
 
-from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.milestone_engine import (
     terminal_replies as replies_module,
 )
@@ -133,7 +135,7 @@ async def test_the_adapters_read_no_case_field(monkeypatch, name):
     monkeypatch.setattr(replies_module, "resolution_content", lambda _c: content)
     poisoned = _Poisoned(case)
     want = ORACLE[name]
-    assert resolution_confirmation_params(poisoned) == want["params"]
+    assert resolution_confirmation_params(poisoned, outcome) == want["params"]
     if case.is_terminal:
         assert _terminal_confirmation_response(poisoned) == want["terminal"]
         assert _compose_terminal_reply(poisoned, SUMMARY) == want["composed"]
@@ -141,12 +143,15 @@ async def test_the_adapters_read_no_case_field(monkeypatch, name):
 
 def test_resolution_content_holds_the_rulings_reading():
     """Ruling of 2026-11-21 (S2b-2b (a)): the root-cause text, the latest
-    solution's text and two presence flags; no outcome fact."""
+    solution's text and two presence flags; and the conclusion's own text,
+    which the model's closure proposal names, read at render (#3053 S3d-3);
+    no outcome fact."""
     assert {f.name: f.type for f in dataclasses.fields(ResolutionContent)} == {
         "root_cause": str,
         "solution": str,
         "has_evidence": bool,
         "has_commands": bool,
+        "conclusion": Optional[str],
     }
     with pytest.raises(dataclasses.FrozenInstanceError):
         ResolutionContent("r", "s", True, True).root_cause = "x"
@@ -190,12 +195,9 @@ async def test_the_confirmation_states_the_records_leg_and_lines(
     assert ORACLE[name]["params"]["identification_leg"] != leg, "premise"
     record = _record(case, leg=leg)
     monkeypatch.setattr(
-        replies_module, "narration_outcome", lambda _c: record, raising=False
-    )
-    monkeypatch.setattr(
         replies_module, "resolution_content", lambda _c: _CONTENT, raising=False
     )
-    params = resolution_confirmation_params(case)
+    params = resolution_confirmation_params(case, record)
     assert params == {
         "root": root,
         "solution": "the fix",
@@ -266,8 +268,10 @@ def test_a_resolve_renders_whatever_the_closure():
 
 
 # ---------------------------------------------------------------------------
-# Fold failure: counted once and logged once; the confirmation's fallback
-# re-raises a failure inside its own two derivations, as main did
+# Fold failure: counted once and logged once. The confirmation has no fresh
+# fallback any more (#3053 S3d-3): the chip fails closed on its own fold
+# (``test_one_settled_one_fold_3053``) and the cycle's confirmations render
+# through the narration (``test_cycle_record_prose_3053``)
 # ---------------------------------------------------------------------------
 
 
@@ -294,49 +298,6 @@ def _logged(caplog) -> list:
         for r in caplog.records
         if "the record could not be read for the reply" in r.getMessage()
     ]
-
-
-@pytest.mark.parametrize(
-    "name", ["held_check", "C:leg_rcc", "2595_unkinded_failure_rebound"]
-)
-async def test_a_failed_fold_confirms_from_the_deciders_read(
-    monkeypatch, failures, caplog, name
-):
-    """A fold failure outside the confirmation's two derivations renders
-    from the decider's read. With no record, no confirming attempt is named:
-    the solution is the latest one's text (#2811 S2c-1), and the rest is the
-    oracle's."""
-    case = await build(name)
-    latest = resolution_content(case).solution
-    monkeypatch.setattr(replies_module, "narration_outcome", _raise)
-    with caplog.at_level(logging.ERROR, logger=replies_module.__name__):
-        params = resolution_confirmation_params(case)
-    want = ORACLE[name]["params"]
-    assert params == {**want, "solution": latest}
-    assert confirmation_message(params) == ORACLE[name]["confirmation"].replace(
-        f"- **Solution**: {want['solution']}\n", f"- **Solution**: {latest}\n"
-    )
-    assert failures == [WritePoint.NARRATION]
-    (record,) = _logged(caplog)
-    assert record.exc_info is not None
-
-
-async def test_a_failure_inside_a_derivation_the_fallback_reads_raises_as_on_main(
-    monkeypatch, failures
-):
-    """``resolution_record_lines`` raising fails the fold, which is counted,
-    and raises again from the fallback, which reads it too: the exception
-    propagates, as the decider's read did on ``main``."""
-    case = await build("held_check")
-
-    def _broken(_case):
-        raise LookupError("record lines")
-
-    monkeypatch.setattr(outcome_module, "resolution_record_lines", _broken)
-    monkeypatch.setattr(replies_module, "resolution_record_lines", _broken)
-    with pytest.raises(LookupError, match="record lines"):
-        resolution_confirmation_params(case)
-    assert failures == [WritePoint.NARRATION]
 
 
 async def test_a_failed_terminal_write_and_fold_states_the_reason_alone(

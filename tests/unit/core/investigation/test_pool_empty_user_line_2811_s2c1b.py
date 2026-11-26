@@ -241,8 +241,10 @@ def test_the_line_reads_only_the_record(monkeypatch):
 
 
 def test_a_record_that_disagrees_with_the_decision_shows_no_line(monkeypatch):
-    """The record's reason disagrees with the decision (``DECIDED_FROM``): the
-    text is the decider's, today's bare ask, and the conflict is counted."""
+    """The record's reason disagrees with the decision (``DECIDED_FROM``):
+    the text is the record's (#3053 S3d-3, Q5; on ``main`` the decider's bare
+    ask), its FIX_FAILED message, which has no "Root cause" ask and so no
+    line, and the conflict is counted."""
     case, metadata = _no_cause()
     entry = _offer(metadata)
     _stored(case, metadata)
@@ -250,7 +252,7 @@ def test_a_record_that_disagrees_with_the_decision_shows_no_line(monkeypatch):
     _edited(case.progress.outcome, "resolution", reason=ResolutionReason.FIX_FAILED)
     rendered = _spy(monkeypatch)
     narrate_turn(case, metadata)
-    assert rendered == [(entry["code"], render_offer(entry["code"], entry["params"]))]
-    assert f"{_ASK}\n" in rendered[0][1]
+    assert rendered == [(entry["code"], readiness_message(ResolutionReason.FIX_FAILED))]
+    assert _ASK not in rendered[0][1]
     assert APPROVED[PoolEmptyReason.NO_CAUSE] not in rendered[0][1]
     assert _conflicts(metadata) == [f"narration.{entry['code']}"]

@@ -57,6 +57,17 @@ focus text gains the hypothesis cue line (verified, no hypothesis stands, a
 causal_evidence row no hypothesis holds). Every entry's ``steered`` and
 ``unsteered`` selection gains ``hypothesis_cue`` (false but in those two
 steered selections). No other entry's render differed.
+
+#3053 S3d-3 (every offer renders the cycle's record, Q5) regenerated, with
+``render_all`` on its branch, the three entries whose record disagrees with
+the decision on whether a cause is identified, the working-conclusion leg
+decaying after the deciders ran: ``turn:offer:turn_request_ready_on_a_decaying_leg``,
+``turn:offer:turn_model_proposal_confirmation_on_a_decaying_leg`` and
+``turn:offer:turn_model_proposal_closure_on_a_decaying_leg``. Each offer's
+summary now names no root, as the record holds none and as the reply already
+said; the rest of each entry is unchanged. ``render_all`` on a ``git
+archive`` extract of 519a45875 reproduced the stored oracle, and no other
+entry differed on the branch.
 """
 
 from __future__ import annotations
