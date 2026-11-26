@@ -329,10 +329,10 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   prefixes — `session:` (the per-user case sequence included), `client_index:`,
   `sessions:user:`, `idempotency:`, `idem-inflight:`, `turn-inflight:`,
   `kb-inflight:`, `sso:state:`, `sso:login:`, `oauth:code:`, `oauth:claim:`,
-  `auth:user:`, `auth:username:`, `auth:email:`, `auth:user_list`,
-  `password_reset:`, `case-inflight:`, `case-deleting:`,
-  `faultmaven:llm_config:version`, `redaction:registry`,
-  `redaction:pseudonym_key_fingerprint`, the configured token-revocation prefix
+  `password_reset:`, `case-inflight:`, `case-deleting:`, `redaction:registry:`,
+  the exact keys `faultmaven:llm_config:version` and
+  `redaction:pseudonym_key_fingerprint` (matched by equality, so a key that only
+  starts with one is left), the configured token-revocation prefix
   (skipped when blank, since an empty prefix would match every key), and **every**
   protection preset's `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev`,
   `faultmaven_prod` *and* `faultmaven_staging`) —
@@ -357,20 +357,31 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   Each fixed prefix is imported from the module its writer builds its keys
   from, so the list cannot drift from the writers; a new writer that exports no
   constant is still not caught. The protection `:rl`/`:dedup` suffixes stay
-  spelled both in the wipe and in the protection middleware.
+  spelled both in the wipe and in the rate limiter and dedup middleware.
 
-  Two consequences of sweeping the short-lived families:
+  Sweeping the short-lived families while a straggler still runs:
 
-  - a straggler still renewing a lease (`case-inflight:`, `turn-inflight:`,
-    `kb-inflight:`, `idem-inflight:`) or a delete's tombstone (`case-deleting:`)
-    rewrites its key, and `--verify` then fails: scale the API to 0 first;
+  - `case-inflight:` comes back: a holder renewing its lease rewrites a lease it
+    finds gone (`infrastructure/concurrency/inflight.py`, `_CaseLease._renew`),
+    and `--verify` then fails. Scale the API to 0 first;
+  - `case-deleting:`, `kb-inflight:` and `idem-inflight:` stay gone: their
+    renewal re-arms the TTL only while the holder's key is still there
+    (`infrastructure/concurrency/owned_claim.py`, `RENEW_IF_HELD`);
+  - `turn-inflight:` stays gone: a turn's claim is never renewed
+    (`modules/case/api/turn_idempotency.py`, `_claim`);
   - deleting `faultmaven:llm_config:version` under a live replica stops its
     config reloads: it reloads only when the shared counter exceeds the version
     it applied, so it waits until the restarted counter passes that or the
     replica restarts.
 
-  `job:` and `lock:report_generation:case:` have no writer today and are not
-  listed.
+  Families no running FaultMaven process writes are not listed, so on a shared
+  Redis another application's keys under them are never deleted. Each is left
+  and reported under no known prefix, and never fails `--verify`:
+
+  - `auth:user:`, `auth:username:`, `auth:email:`, `auth:user_list` (the Redis
+    user store): it is built only without a persistent database, which every
+    process refuses at boot (fm#1647);
+  - `job:` and `lock:report_generation:case:`: no writer today.
 
   The [store registry](../architecture/data-and-storage/store-registry.md)
   holds each family's row.

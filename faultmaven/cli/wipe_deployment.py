@@ -225,12 +225,13 @@ MUST_BE_SEEDED = frozenset(
 INFORMATIONAL = frozenset({"knowledge_items"})
 
 
-def redis_prefixes(settings) -> tuple[str, ...]:
-    """Every Redis namespace this deployment writes, including configurable ones.
+def redis_namespaces(settings) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Every Redis namespace this deployment writes, as ``(prefixes, exact keys)``.
 
     ``--verify`` treats any surviving key as residue, so a namespace missing here
     is one the scoped wipe leaves behind. Every fixed spelling is imported from
-    the one module its writer builds its keys from (#2958). Two are configured:
+    the one module its writer builds its keys from (#2958); an exact key is
+    matched and deleted by equality, never as a glob. Two are configured:
 
     * the token-revocation prefix is ``settings.security.token_revocation_prefix``
       (the container passes it to the store), so a deployment that overrides it
@@ -240,41 +241,33 @@ def redis_prefixes(settings) -> tuple[str, ...]:
       ``redis_key_prefix``. **Every** preset's namespaces are included, not the
       one the current ``ENVIRONMENT`` selects — see below.
     """
-    from faultmaven.config import idempotency_key, llm_config_overrides
-    from faultmaven.infrastructure.auth import user_store
-    from faultmaven.infrastructure.concurrency import inflight
-    from faultmaven.infrastructure.security import case_redaction, pseudonym_key
-    from faultmaven.modules.auth.domain.services import user_service
-    from faultmaven.modules.auth.infrastructure.repositories import (
-        oauth_code_repository,
-    )
-    from faultmaven.modules.auth.infrastructure.stores import (
-        redis_session_store,
-        sso_ephemeral_store,
-    )
+    import faultmaven.config.idempotency_key as idempotency
+    import faultmaven.config.llm_config_overrides as llm_config
+    import faultmaven.infrastructure.concurrency.inflight as inflight
+    import faultmaven.infrastructure.security.case_redaction as redaction
+    import faultmaven.infrastructure.security.pseudonym_key as pseudonym_key
+    import faultmaven.modules.auth.domain.services.user_service as user_service
+    import faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository as oauth
+    import faultmaven.modules.auth.infrastructure.stores.redis_session_store as sessions
+    import faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store as sso
 
+    exact = (llm_config.CONFIG_VERSION_KEY, pseudonym_key.AGREEMENT_REDIS_KEY)
     prefixes = [
-        redis_session_store.SESSION_PREFIX,
-        redis_session_store.CLIENT_INDEX_PREFIX,
-        redis_session_store.USER_INDEX_PREFIX,
-        idempotency_key.IDEMPOTENCY_ENTRY_PREFIX,
-        idempotency_key.IDEMPOTENCY_CLAIM_PREFIX,
-        idempotency_key.TURN_CLAIM_PREFIX,
-        idempotency_key.KB_CLAIM_PREFIX,
-        sso_ephemeral_store.STATE_PREFIX,
-        sso_ephemeral_store.LOGIN_PREFIX,
-        oauth_code_repository.CODE_PREFIX,
-        oauth_code_repository.CLAIM_PREFIX,
-        user_store.USER_PREFIX,
-        user_store.USERNAME_PREFIX,
-        user_store.EMAIL_PREFIX,
-        user_store.USER_LIST_KEY,
+        sessions.SESSION_PREFIX,
+        sessions.CLIENT_INDEX_PREFIX,
+        sessions.USER_INDEX_PREFIX,
+        idempotency.IDEMPOTENCY_ENTRY_PREFIX,
+        idempotency.IDEMPOTENCY_CLAIM_PREFIX,
+        idempotency.TURN_CLAIM_PREFIX,
+        idempotency.KB_CLAIM_PREFIX,
+        sso.STATE_PREFIX,
+        sso.LOGIN_PREFIX,
+        oauth.CODE_PREFIX,
+        oauth.CLAIM_PREFIX,
         user_service.RESET_TOKEN_PREFIX,
         inflight.LEASE_PREFIX,
         inflight.TOMBSTONE_PREFIX,
-        llm_config_overrides.CONFIG_VERSION_KEY,
-        case_redaction.CaseRedactionContext.REDIS_KEY_PREFIX,
-        pseudonym_key.AGREEMENT_REDIS_KEY,
+        redaction.CaseRedactionContext.REDIS_KEY_PREFIX + ":",
     ]
 
     revocation = getattr(
@@ -308,7 +301,7 @@ def redis_prefixes(settings) -> tuple[str, ...]:
         prefixes.extend([f"{key_prefix}:rl", f"{key_prefix}:dedup"])
 
     # Deduplicate while keeping a stable order for the inventory breakdown.
-    return tuple(dict.fromkeys(prefixes))
+    return tuple(dict.fromkeys(prefixes)), exact
 
 
 def unclassified_tables() -> frozenset[str]:
@@ -882,21 +875,24 @@ async def _scan_keys(client, pattern: str = "*") -> list[str]:
 
 
 def classify_redis_keys(
-    keys: list[str], prefixes: tuple[str, ...]
+    keys: list[str], namespaces: tuple[tuple[str, ...], tuple[str, ...]]
 ) -> tuple[dict[str, int], list[str]]:
-    """Split keys into per-prefix counts and the ones matching no known prefix.
+    """Split keys into per-namespace counts and the ones matching no namespace.
+
+    ``namespaces`` is :func:`redis_namespaces`' pair: a key counts under an
+    exact key it equals, else under the first prefix it starts with.
 
     The unmatched list is the point: a namespace this command has never heard of
     is *reported*, so an incomplete scoped wipe is visible to the operator
     instead of being mistaken for a clean sweep.
     """
-    counts = {prefix: 0 for prefix in prefixes}
+    prefixes, exact = namespaces
+    counts = {name: 0 for name in (*prefixes, *exact)}
     unmatched = []
     for key in keys:
-        for prefix in prefixes:
-            if key.startswith(prefix):
-                counts[prefix] += 1
-                break
+        names = [key] if key in exact else [p for p in prefixes if key.startswith(p)]
+        if names:
+            counts[names[0]] += 1
         else:
             unmatched.append(key)
     return counts, unmatched
@@ -967,6 +963,7 @@ async def survey_redis(settings, *, verify: bool) -> Surface:
             is_fakeredis,
         )
 
+        namespaces = redis_namespaces(settings)
         client = await get_async_redis_client()
     except Exception as exc:
         surface.unreachable = f"{type(exc).__name__}: {exc}"
@@ -1000,7 +997,6 @@ async def survey_redis(settings, *, verify: bool) -> Surface:
         )
         return surface
 
-    prefixes = redis_prefixes(settings)
     try:
         surface.target = f"real Redis: {_redis_target(client)}"
         keys = await _scan_keys(client)
@@ -1010,12 +1006,13 @@ async def survey_redis(settings, *, verify: bool) -> Surface:
     finally:
         await _close_quietly(client)
 
-    counts, unmatched = classify_redis_keys(keys, prefixes)
+    counts, unmatched = classify_redis_keys(keys, namespaces)
     known = len(keys) - len(unmatched)
     surface.detail.append(f"{len(keys)} key(s) total")
-    for prefix, count in counts.items():
+    for name, count in counts.items():
         if count:
-            surface.detail.append(f"{prefix}* : {count}")
+            glob = "" if name in namespaces[1] else "*"
+            surface.detail.append(f"{name}{glob} : {count}")
     if unmatched:
         surface.detail.append(
             f"{len(unmatched)} key(s) under no known FaultMaven prefix "
@@ -1045,7 +1042,7 @@ async def _close_quietly(client) -> None:
 async def wipe_redis(settings, *, all_keys: bool) -> tuple[int, str | None]:
     """Delete FaultMaven's Redis keys. Returns (deleted, error).
 
-    Scoped to :func:`redis_prefixes` by default, because this command cannot
+    Scoped to :func:`redis_namespaces` by default, because this command cannot
     prove the logical database is FaultMaven's alone and a blind FLUSHDB would
     take another tenant of that database with it. ``all_keys=True`` is the
     operator's explicit statement that it is exclusive.
@@ -1056,6 +1053,7 @@ async def wipe_redis(settings, *, all_keys: bool) -> tuple[int, str | None]:
             is_fakeredis,
         )
 
+        prefixes, exact = redis_namespaces(settings)
         client = await get_async_redis_client()
     except Exception as exc:
         return 0, f"{type(exc).__name__}: {exc}"
@@ -1081,9 +1079,9 @@ async def wipe_redis(settings, *, all_keys: bool) -> tuple[int, str | None]:
         else:
             targets = [
                 key
-                for prefix in redis_prefixes(settings)
+                for prefix in prefixes
                 for key in await _scan_keys(client, f"{prefix}*")
-            ]
+            ] + list(exact)
         for batch_start in range(0, len(targets), 500):
             batch = targets[batch_start : batch_start + 500]
             if batch:

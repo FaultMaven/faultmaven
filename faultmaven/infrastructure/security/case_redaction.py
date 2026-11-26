@@ -101,8 +101,8 @@ class CaseRedactionContext:
     """
 
     #: One Redis HASH per case: field ``json.dumps([entity_type, value])``,
-    #: value the placeholder. The ``redaction:`` namespace is the one the
-    #: deployment wipe clears.
+    #: value the placeholder. The deployment wipe clears ``redaction:registry:*``
+    #: and the key-fingerprint key by name, not the whole ``redaction:`` space.
     REDIS_KEY_PREFIX = "redaction:registry"
     DEFAULT_TTL_HOURS = 168  # 7 days
 
