@@ -42,6 +42,7 @@ from faultmaven.exceptions import (
     RawModelContentRefused,
     ServiceError,
     ServiceException,
+    SessionStoreException,
     ValidationException,
 )
 from faultmaven.models.exceptions import (
@@ -440,6 +441,7 @@ class TestGetExceptionHandlers:
             ServiceError,
             ServiceException,
             LLMException,
+            SessionStoreException,
             RawModelContentRefused,
             OAuthProtocolError,
         }

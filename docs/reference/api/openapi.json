@@ -16298,7 +16298,7 @@
             "description": "Validation Error"
           },
           "503": {
-            "description": "The session kept changing under this write; nothing was written. Or the session service or store is unavailable."
+            "description": "One of three causes, told apart by `detail`: the session kept changing under this write, nothing written (`Retry-After: 1`); the session store could not answer (`Session store temporarily unavailable`, `Retry-After: 5`); or no session service or store is configured (`Session service unavailable`, no `Retry-After`)."
           }
         },
         "summary": "Session Heartbeat",

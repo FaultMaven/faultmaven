@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.exceptions import SessionStoreException
 from faultmaven.infrastructure.health import (
     component_monitor as component_monitor_module,
 )
@@ -84,7 +85,9 @@ def _session_store(*, exists_raises: bool = False) -> Any:
     store = MagicMock()
     store.redis_client = _redis()
     if exists_raises:
-        store.exists = AsyncMock(side_effect=ConnectionError("Redis operation failed"))
+        store.exists = AsyncMock(
+            side_effect=SessionStoreException("Redis operation failed")
+        )
     else:
         store.exists = AsyncMock(return_value=False)
     return store

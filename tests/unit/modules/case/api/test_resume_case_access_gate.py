@@ -232,6 +232,7 @@ async def test_an_unevaluable_session_gate_is_a_503(
     response = await call_api(app, "POST", PATH)
 
     assert response.status_code == 503, response.text
+    assert "retry-after" not in response.headers  # a retry cannot help
     service.resume_case_in_session.assert_not_awaited()
 
 
@@ -252,6 +253,7 @@ async def test_an_unreachable_session_store_is_also_a_503(
     response = await call_api(app, "POST", PATH)
 
     assert response.status_code == 503, response.text
+    assert response.headers["retry-after"] == "5"
     service.resume_case_in_session.assert_not_awaited()
 
 

@@ -2,9 +2,9 @@
   "contractVersion": "16.4.0",
   "entries": [
     {
-      "body": "The store reported a Redis failure as a builtin `ConnectionError`, which no\nroute recognised, so each answered 500. It now reports its contract's\n`SessionStoreException`, and the routes' existing store-outage answers apply.\nThe heartbeat also answers an unconfigured store 503 `Session service\nunavailable` with no `Retry-After`, as `POST /cases` does.\n\nMINOR: each route already answered 503 when it could not use the session\nservice (the heartbeat declares it). The first-party heartbeat caller (copilot-ui, shared by\nthe dashboard) swallows any non-OK answer.",
+      "body": "The store reported a Redis outage as a builtin `ConnectionError`, which no\nroute recognised, so each answered 500. It now reports its contract's\n`SessionStoreException`, which the heartbeat and the two ownership checks\nanswer themselves and the app answers for the login, registration and SSO\nexchange routes: `detail` \"Session store temporarily unavailable\" (the\nownership checks keep \"Session service unavailable\"). The resume route's\nsession-pointer write still answers 500 on a store failure, as before.\n\nAn unconfigured store, on the heartbeat, is now 503 \"Session service\nunavailable\" with no `Retry-After` (it was 500), as the two ownership checks\nalready answered it; a retry cannot change it.\n\nMINOR: only a failure's status moves, from 500 to 503; no request that\nsucceeded answers differently. The first-party heartbeat caller (copilot-ui,\nshared by the dashboard) swallows any non-OK answer.",
       "level": "MINOR",
-      "title": "A configured session store that cannot answer is **503**, not 500, on `POST /sessions/{session_id}/heartbeat` (with `Retry-After: 5`), `POST /cases` naming a `session_id`, and `POST /cases/sessions/{session_id}/resume/{case_id}` (#2985).",
+      "title": "A configured session store that cannot answer is **503** with `Retry-After: 5`, not 500: on `POST /sessions/{session_id}/heartbeat`, the session-ownership check of `POST /cases` and `POST /cases/sessions/{session_id}/resume/{case_id}`, and session minting on `POST /auth/login`, `/auth/dev-login`, `/auth/register`, `/auth/dev-register` and `/auth/sso/exchange` (#2985).",
       "version": "16.4.0"
     },
     {

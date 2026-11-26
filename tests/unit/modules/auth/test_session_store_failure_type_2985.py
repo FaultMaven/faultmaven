@@ -5,8 +5,8 @@
 The store turned every ``Exception`` into the builtin ``ConnectionError``, which
 no caller of ``ISessionStore`` catches as a store failure, and reported a bug
 the same way. Each wrapped call is driven over a client whose Redis call fails
-with the driver's ``ConnectionError`` or ``TimeoutError``, or the socket's
-``OSError``.
+with each outage the store classifies, and with a ``ResponseError`` or
+``DataError``, which are bugs and propagate.
 """
 
 import json
@@ -14,6 +14,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from redis.exceptions import (
+    BusyLoadingError,
+    DataError,
+    OutOfMemoryError,
+    ReadOnlyError,
+    ResponseError,
+)
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -28,7 +35,16 @@ pytestmark = [pytest.mark.unit]
 FAILURES = [
     pytest.param(RedisConnectionError("refused"), id="redis-connection"),
     pytest.param(RedisTimeoutError("timed out"), id="redis-timeout"),
+    pytest.param(BusyLoadingError("loading"), id="busy-loading"),
+    pytest.param(ReadOnlyError("replica"), id="read-only"),
+    pytest.param(OutOfMemoryError("maxmemory"), id="out-of-memory"),
     pytest.param(OSError("reset by peer"), id="os-error"),
+]
+
+#: Redis answered, and refused the command: a bug, never an outage.
+NOT_OUTAGES = [
+    pytest.param(ResponseError("WRONGTYPE Operation"), id="wrongtype"),
+    pytest.param(DataError("Invalid input"), id="data-error"),
 ]
 
 
@@ -45,7 +61,7 @@ def _record(expires_in: timedelta) -> str:
     )
 
 
-LIVE = _record(timedelta(minutes=5))
+LIVE = _record(timedelta(days=3650))  # live whenever the test runs
 EXPIRED = _record(timedelta(minutes=-5))
 
 
@@ -136,6 +152,17 @@ async def test_a_driver_failure_is_a_session_store_exception(failure, call, answ
         await call(store)
 
     assert raised.value.__cause__ is failure
+
+
+@pytest.mark.parametrize("failure", NOT_OUTAGES)
+@pytest.mark.parametrize(("call", "answers"), CALLS)
+async def test_a_refused_command_propagates_as_itself(failure, call, answers):
+    store = RedisSessionStore(_client(failure, **answers), session_ttl_seconds=60)
+
+    with pytest.raises(type(failure)) as raised:
+        await call(store)
+
+    assert raised.value is failure
 
 
 @pytest.mark.parametrize(

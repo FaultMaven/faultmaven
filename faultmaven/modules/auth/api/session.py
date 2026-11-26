@@ -68,8 +68,17 @@ logger = logging.getLogger(__name__)
 
 _CONFLICT = "The session kept changing under this write; nothing was written."
 _WRITE_CONFLICT = {503: {"description": _CONFLICT + " Retry after `Retry-After`."}}
-_UNAVAILABLE = " Or the session service or store is unavailable."
-_HEARTBEAT_503 = {503: {"description": _CONFLICT + _UNAVAILABLE}}
+_HEARTBEAT_503 = {
+    503: {
+        "description": (
+            "One of three causes, told apart by `detail`: the session kept "
+            "changing under this write, nothing written (`Retry-After: 1`); "
+            "the session store could not answer (`Session store temporarily "
+            "unavailable`, `Retry-After: 5`); or no session service or store is "
+            "configured (`Session service unavailable`, no `Retry-After`)."
+        )
+    }
+}
 
 # Rate-limited logging for repeated session not found errors
 _session_not_found_log_tracker = {}

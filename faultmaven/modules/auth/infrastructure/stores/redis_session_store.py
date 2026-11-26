@@ -22,7 +22,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from redis.exceptions import RedisError
+from redis.exceptions import BusyLoadingError, OutOfMemoryError, ReadOnlyError
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from faultmaven.exceptions import SessionStoreException, SessionWriteConflict
 from faultmaven.models.common import SessionContext
@@ -80,11 +82,20 @@ end
 return live
 """
 
-#: What the client raises when Redis cannot answer: the driver's own family,
-#: and the socket's (``OSError`` holds the builtin ``ConnectionError`` and
-#: ``TimeoutError``). The store reports these as ``SessionStoreException``, its
-#: contract's failure; anything else is a bug and propagates as itself (#2985).
-_DRIVER_FAILURES: tuple[type[BaseException], ...] = (RedisError, OSError)
+#: What the client raises when Redis cannot answer now: unreachable, timed out,
+#: loading, a read-only replica, out of memory, or the socket (``OSError`` holds
+#: the builtin ``ConnectionError`` and ``TimeoutError``). The store reports
+#: these as ``SessionStoreException``, its contract's failure (#2985). Anything
+#: else, a ``ResponseError`` such as WRONGTYPE or a ``DataError`` included, is a
+#: bug and propagates as itself.
+_DRIVER_FAILURES: tuple[type[BaseException], ...] = (
+    RedisConnectionError,
+    RedisTimeoutError,
+    BusyLoadingError,
+    ReadOnlyError,
+    OutOfMemoryError,
+    OSError,
+)
 
 #: How many read-and-write attempts ``mutate_session`` makes in all.
 _MUTATE_ATTEMPTS = 5
@@ -169,6 +180,9 @@ class RedisSessionStore(ISessionStore):
         try:
             result = await self.redis_client.delete(f"{self.prefix}{key}")
         except _DRIVER_FAILURES as e:
+            logger.error(
+                f"Redis delete operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise SessionStoreException("Redis operation failed") from e
         return result > 0
 
@@ -177,6 +191,9 @@ class RedisSessionStore(ISessionStore):
         try:
             found = await self.redis_client.exists(f"{self.prefix}{key}")
         except _DRIVER_FAILURES as e:
+            logger.error(
+                f"Redis exists operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise SessionStoreException("Redis operation failed") from e
         return found > 0
 
@@ -186,6 +203,9 @@ class RedisSessionStore(ISessionStore):
         try:
             return await self.redis_client.expire(f"{self.prefix}{key}", ttl)
         except _DRIVER_FAILURES as e:
+            logger.error(
+                f"Redis expire operation failed for key {key}: {exception_log_name(e)}"
+            )
             raise SessionStoreException("Redis operation failed") from e
 
     async def find_by_user_and_client(
@@ -264,6 +284,9 @@ class RedisSessionStore(ISessionStore):
                     await self.redis_client.eval(_DELETE_IF_HOLDS, 1, key, stored)
                 )
         except _DRIVER_FAILURES as e:
+            logger.error(
+                f"Redis delete_keys_holding failed for {match}: {exception_log_name(e)}"
+            )
             raise SessionStoreException("Redis operation failed") from e
         return deleted
 
@@ -440,6 +463,9 @@ class RedisSessionStore(ISessionStore):
         try:
             deleted, _ = await pipe.execute()
         except _DRIVER_FAILURES as e:
+            logger.error(
+                f"Redis session delete failed for session {session_id}: {exception_log_name(e)}"
+            )
             raise SessionStoreException("Redis operation failed") from e
         return deleted > 0
 
