@@ -773,9 +773,10 @@ class ContainerMemoryStatus(BaseModel):
             "serving_processes x each pool's slots x its job's buffers, U the "
             "upload limit: preparation, its output limit; Tier 1, 2 x 3U in and "
             "its output limit; the gate, 2 x two texts at the draft bound (4 "
-            "bytes a character) in and its output limit; a token count, 2U in "
-            "and its 1 MiB output limit; a regex search, 2 x 3U in and its output "
-            "limit at a file of U MB."
+            "bytes a character) in and its output limit (the text verify publishes, "
+            "re-emitted up to about 4.5x its draft, is outside it, #2674); a token "
+            "count, 2U in and its 1 MiB output limit; a regex search, 2 x 3U in "
+            "and its output limit at a file of U MB."
         )
     )
     encode_bytes: int = Field(

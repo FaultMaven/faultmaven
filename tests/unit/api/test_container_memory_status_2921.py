@@ -162,14 +162,15 @@ def two_cores(tmp_path, monkeypatch):
 def test_the_worked_figures_at_ten_mb_one_process_two_cores(two_cores):
     status = container_memory_status(_settings())
 
-    # 1,536 + 4,992 + 1,024 + 2,048 + 1,088 + 12,288 MiB.
-    assert status.pools_bytes + status.encode_bytes == 22_976 * MIB
+    # 1,536 + 4,992 + 1,024 + 2,048 + 2 x 618.00004 + 12,288 MiB; a search's
+    # limit is 64 MiB, its text (30 MiB) and 4 x its output limit (30 MiB of
+    # text, 10 Mi + 1 lines at 10 bytes of prefix each, and 1 MiB).
+    assert status.pools_bytes + status.encode_bytes == 24_247_271_504
     # 2 x 5 + 2 x (2 x 30 + 61) + 4 x (2 x 0.76 + 10) + 2 x (2 x 10 + 1)
-    # + 2 x (2 x 30 + 141) MiB: 742.10 MiB, the gate's texts 2 x 2 x 400,000
-    # bytes each; a search's output 4 x 10 Mi characters, 10 Mi + 1 lines at 10
-    # bytes of prefix each, and 1 MiB.
-    assert status.buffers_bytes == 778_151_956
-    assert status.job_caps_bytes == 22_976 * MIB + 778_151_956
+    # + 2 x (2 x 30 + 131) MiB: 722.10 MiB, the gate's texts 2 x 2 x 400,000
+    # bytes each.
+    assert status.buffers_bytes == 757_180_436
+    assert status.job_caps_bytes == 24_247_271_504 + 757_180_436
     assert (status.serving_processes, status.upload_limit_mb, status.tier1_slots) == (
         1,
         10,
@@ -179,13 +180,13 @@ def test_the_worked_figures_at_ten_mb_one_process_two_cores(two_cores):
     assert status.encode_without_host_lock_bytes == 12 * GIB
 
 
-def test_each_further_upload_mb_adds_772_mib(two_cores):
+def test_each_further_upload_mb_adds_784_mib(two_cores):
     at_10 = container_memory_status(_settings(upload_mb=10))
     at_11 = container_memory_status(_settings(upload_mb=11))
 
-    # Caps 2 x 64 + 2 x 240 + 2 x 48 = 704 MiB; buffers 2 x (6 + 6) + 2 x 2
-    # + 2 x (6 + 4 + 10) = 68 MiB.
-    assert at_11.job_caps_bytes - at_10.job_caps_bytes == 772 * MIB
+    # Caps 2 x 64 + 2 x 240 + 2 x (3 + 4 x (3 + 10)) = 718 MiB; buffers
+    # 2 x (6 + 6) + 2 x 2 + 2 x (6 + 3 + 10) = 66 MiB.
+    assert at_11.job_caps_bytes - at_10.job_caps_bytes == 784 * MIB
 
 
 def test_a_second_serving_process_adds_its_pools_buffers_and_the_supervisor(
@@ -194,8 +195,12 @@ def test_a_second_serving_process_adds_its_pools_buffers_and_the_supervisor(
     one = container_memory_status(_settings(workers=1))
     two = container_memory_status(_settings(workers=2))
 
-    # One process's pools, 10,688 MiB, and its buffers; the encode stays once.
-    assert two.job_caps_bytes - one.job_caps_bytes == 10_688 * MIB + 778_151_956
+    # One process's pools, 9,600 MiB and 2 x 618.00004 MiB, and its buffers;
+    # the encode stays once.
+    assert (
+        two.job_caps_bytes - one.job_caps_bytes
+        == 24_247_271_504 - 12_288 * MIB + 757_180_436
+    )
     assert two.unbounded_terms == ["api", "supervisor", "encode_buffers"]
     assert two.encode_without_host_lock_bytes == 24 * GIB
     assert container_memory_status(_settings(reload=True)).unbounded_terms == [

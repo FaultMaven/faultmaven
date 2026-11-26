@@ -320,13 +320,15 @@ class TestSymptomClassRefusals:
     def test_short_containers_render_exactly_as_before(self):
         """Seven items, an unsorted mapping and four levels render whole, as on
         ``e1451bc85``. Mutation: cap the items, sort the keys, or stop at a depth
-        (``reprlib``'s ``maxlist``/``maxlevel``), and this fails."""
+        (``reprlib``'s ``maxlist``/``maxlevel``), and this fails. A document
+        nested this deep is refused whole since #2674; the renderer is still
+        given such a value."""
         content = _with(
             {
                 "symptom_class": "[[a, b, c, d, e, f, g], {b: 1, a: 2}, [[[[a]]], {b: [c]}]]"
             }
         )
-        assert _errors(content, "symptom_class") == [
+        assert _shared_errors(content, "symptom_class") == [
             "symptom_class items must be strings: ['a', 'b', 'c', 'd', 'e', 'f', 'g']",
             "symptom_class items must be strings: {'b': 1, 'a': 2}",
             "symptom_class items must be strings: [[[['a']]], {'b': ['c']}]",

@@ -2428,9 +2428,11 @@ TREE_THRESHOLD_ALLOWLIST = {
     ): "window membership: which heartbeat ticks fell between two readings",
     (
         "tests/unit/modules/agent/tools/test_search_file_regex_worker_2686.py",
-        "worker_ticks >= 3",
+        "worker_ticks >= _UNBROKEN_TICKS",
     ): "a COUNT of event-loop turns, as the gate's: zero when the model's "
-    "regex runs inline however fast the machine, never zero in its worker",
+    "regex runs inline however fast the machine; in its worker, a tenth of "
+    "the turns an unbroken loop takes across a search that runs to its CPU "
+    "deadline, which load can only lengthen",
     (
         "tests/unit/modules/agent/tools/test_search_file_regex_worker_2686.py",
         "started < t < finished",

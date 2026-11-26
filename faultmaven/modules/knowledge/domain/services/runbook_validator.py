@@ -82,8 +82,7 @@ from faultmaven.modules.knowledge.taxonomy import (
     vocabulary,
 )
 from faultmaven.utils.frontmatter import (
-    ANCHOR_REFUSAL,
-    FrontmatterAnchorRefused,
+    FrontmatterRefused,
     load_frontmatter_yaml,
     match_frontmatter,
     parse_frontmatter,
@@ -1038,8 +1037,8 @@ class RunbookValidator:
         # Gate 1: YAML frontmatter metadata
         try:
             metadata = self._extract_metadata(content)
-        except FrontmatterAnchorRefused:
-            errors.append(ANCHOR_REFUSAL)
+        except FrontmatterRefused as refused:
+            errors.append(str(refused))
         else:
             if metadata is None:
                 errors.append("No YAML frontmatter found")
@@ -1084,15 +1083,16 @@ class RunbookValidator:
             return None
         try:
             loaded = load_frontmatter_yaml(match.group(1))
-        except (MemoryError, FrontmatterAnchorRefused):
+        except (MemoryError, FrontmatterRefused):
             # The memory limit's own end (exit 3, the 422 ruled 2026-11-15),
-            # never a verdict about the frontmatter; an anchor or alias has its
-            # own refusal (#2674).
+            # never a verdict about the frontmatter; an anchor, alias or nesting
+            # past the bound has its own refusal (#2674).
             raise
         except Exception:
             # Unparseable frontmatter, whatever PyYAML raised, as
-            # ``parse_frontmatter`` treats it: a syntax error, nesting deep
-            # enough to exhaust its recursion (#2838), or a constructor's own
+            # ``parse_frontmatter`` treats it: a syntax error (nesting deep
+            # enough to exhaust PyYAML's recursion, #2838, is refused by depth
+            # first since #2674), or a constructor's own
             # error on a scalar it resolved (``last_updated: 2026-11-31`` is a
             # timestamp with no such day, ``x: !!bool abc`` a bool with no
             # such value).

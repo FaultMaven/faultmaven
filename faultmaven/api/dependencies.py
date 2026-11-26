@@ -146,7 +146,8 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + slots * tier1_memory
         + gate.GATE_SLOTS * gate.GATE_MEMORY_BYTES
         + count.TOKEN_COUNT_SLOTS * count.TOKEN_COUNT_MEMORY_BYTES
-        + search.SEARCH_SLOTS * search.search_memory_limit(u)
+        # A U MB file's text: at most 3U bytes of UTF-8 and U + 1 lines.
+        + search.SEARCH_SLOTS * search.search_memory_limit(3 * u, u + 1)
     )
     gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
     buffers = w * (
@@ -154,8 +155,7 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + slots * (2 * 3 * u + tier1_output)
         + gate.GATE_SLOTS * (gate_texts_in + gate.GATE_OUTPUT_LIMIT_BYTES)
         + count.TOKEN_COUNT_SLOTS * (2 * u + count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
-        # A U MB file's text: at most U Mi characters and U + 1 lines.
-        + search.SEARCH_SLOTS * (2 * 3 * u + search.search_output_limit(u, u + 1))
+        + search.SEARCH_SLOTS * (2 * 3 * u + search.search_output_limit(3 * u, u + 1))
     )
     encode = index_slot.ENCODE_MEMORY_BYTES
     caps = pools + buffers + encode

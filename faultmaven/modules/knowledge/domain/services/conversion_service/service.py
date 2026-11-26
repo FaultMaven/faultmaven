@@ -152,6 +152,7 @@ from faultmaven.providers.tenancy.factory import (
 )
 from faultmaven.utils.exception_name import exception_log_name
 from faultmaven.utils.frontmatter import (
+    FrontmatterRefused,
     load_frontmatter_yaml,
     load_post,
     match_frontmatter,
@@ -1070,6 +1071,20 @@ class ConversionService:
             failure_mode.title = await sanitize_item_title(
                 self._sanitizer, failure_mode.title
             )
+
+    async def _refuse_stale_draft(self, draft_id: str, refusal: str) -> None:
+        """A draft that passed the gate before ``refusal`` existed fails it
+        now: its row says so, so it is not offered for verify again (#2674)."""
+        async with self._db_session_factory() as session:
+            await session.execute(
+                update(ConversionDraftModel)
+                .where(
+                    ConversionDraftModel.id == draft_id,
+                    ConversionDraftModel.status == DraftStatus.DRAFT.value,
+                )
+                .values(validation_passed=False, validation_errors=[refusal])
+            )
+            await session.commit()
 
     async def _scrub_content_title(self, content: str) -> Optional[str]:
         """``content`` with its frontmatter ``title`` redacted, or ``None``.
@@ -2216,14 +2231,16 @@ class ConversionService:
             scope = job.scope
 
         # The verified frontmatter, written into the draft's text (#1950). The
-        # validation gate passed, so the frontmatter parses. This text can be a
-        # few characters longer than the draft (``status: verified``, the
-        # verifier's name); the edit bound does not apply to it, because the
-        # user was allowed to save the text it grows from (see
-        # ``faultmaven.modules.knowledge.draft_content``). Its frontmatter loads
-        # with no anchor or alias (``load_post``, #2674), so nothing in it is
-        # expanded; the gate refused any, so only a draft stored before that
-        # refusal can fail the load here.
+        # validation gate passed, so the frontmatter parses. This text can be
+        # longer than the draft (``status: verified``, the verifier's name, and
+        # ``frontmatter.dumps`` re-emits flow values in block style: up to about
+        # 4.5x, a ``~`` in a list's list re-emitted as ``  - null``); the edit
+        # bound does not apply to it, because the user was allowed to save the
+        # text it grows from (see ``faultmaven.modules.knowledge.draft_content``).
+        # No load accepts an anchor, alias or nesting past three levels
+        # (``load_post``, #2674), which would grow it without bound; the gate
+        # refused them, so only a draft stored before that refusal can fail the
+        # load here, and is refused as the gate would refuse it.
         import frontmatter
 
         from faultmaven.utils.frontmatter import extract_frontmatter_metadata
@@ -2242,10 +2259,13 @@ class ConversionService:
             # unchanged.
             post.metadata["scope"] = scope
             content = frontmatter.dumps(post)
-        except Exception:
+        except Exception as e:
             # The draft's own check answers first, as it did before this text
             # was made; then this failure.
             await aenforce_runbook_security(read_content, principal=user_id)
+            if isinstance(e, FrontmatterRefused):
+                await self._refuse_stale_draft(draft_id, str(e))
+                raise ValidationException(str(e)) from None
             raise
 
         # A body holding a credential is not published (#2012), checked on the

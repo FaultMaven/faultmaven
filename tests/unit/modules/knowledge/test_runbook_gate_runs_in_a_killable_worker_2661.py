@@ -73,6 +73,7 @@ from faultmaven.modules.knowledge.exceptions import (
     GateUnavailable,
     RunbookQualityError,
 )
+from faultmaven.utils.frontmatter import DEPTH_REFUSAL
 from tests.runbook_samples import valid_runbook
 from tests.unit.modules.knowledge import gate_stubs
 from tests.utils import regex_only_sanitizer
@@ -1008,18 +1009,17 @@ def test_a_call_stops_at_its_first_refusal():
 
 
 def test_deeply_nested_frontmatter_is_refused_as_unparseable():
-    """1.8 KB of nested flow sequences exhausts PyYAML's recursion. It gets
-    the refusal any frontmatter the parser refuses gets, never an exception
-    (in a worker, an exit 1 and a retryable 503 for a fixed input)."""
+    """1.8 KB of nested flow sequences exhausted PyYAML's recursion. It gets a
+    refusal, never an exception (in a worker, an exit 1 and a retryable 503 for
+    a fixed input): since #2674 the depth's own, from the parse events."""
     nested = "---\na: " + "[" * 900 + "]" * 900 + "\n---\n# T\n"
-    malformed = "---\na: [\n---\n# T\n"
 
     v, _ = runbook_validator.validate_and_score(nested)
     with pytest.raises(RunbookQualityError) as refused:
         runbook_validator.enforce_runbook_quality(nested)
 
-    assert v.errors == runbook_validator.validate_and_score(malformed)[0].errors
-    assert "No YAML frontmatter found" in refused.value.errors
+    assert DEPTH_REFUSAL in v.errors
+    assert DEPTH_REFUSAL in refused.value.errors
 
 
 # ---------------------------------------------------------------------------

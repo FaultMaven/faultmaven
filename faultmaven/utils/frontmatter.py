@@ -17,38 +17,70 @@ from faultmaven.utils.exception_name import exception_log_name
 
 logger = logging.getLogger(__name__)
 
-#: The gate's refusal of a frontmatter anchor or alias (#2674).
+#: The deepest nesting a frontmatter block may have: the top-level mapping is 1
+#: and a field's list 2, which is the deepest every shipped runbook's
+#: frontmatter reaches (91 in ``resources/knowledge/pack``, 99 in the kb
+#: toolkit, measured 2026-11-26); one more level lets a list item that is
+#: itself a list get its field's own refusal. ``frontmatter.dumps`` re-emits a
+#: nested flow sequence one indent per level, so verify's re-emission grows
+#: with the nesting (an 81,504-character draft published 12 MB, #2674).
+MAX_FRONTMATTER_DEPTH = 3
+
+#: The gate's refusals of what no frontmatter load accepts (#2674).
 ANCHOR_REFUSAL = (
     "YAML anchors and aliases (&name, *name) are not allowed in runbook "
     "frontmatter; write each value out in full"
 )
+DEPTH_REFUSAL = (
+    f"Runbook frontmatter may nest at most {MAX_FRONTMATTER_DEPTH} levels "
+    "(a field, its list, a list inside it); write deeper values out flat"
+)
+
+#: libyaml's loader where the C extension is built, as python-frontmatter
+#: used; the pure loader only where it is absent.
+_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
-class FrontmatterAnchorRefused(yaml.YAMLError):
-    """A frontmatter anchor or alias, refused as it is composed, before any
-    value is built: an alias names a shared value whose string form grows
-    with every level of aliases, so a few hundred characters could stall the
-    process that expands it (#2674)."""
+class FrontmatterRefused(yaml.YAMLError):
+    """Frontmatter no load accepts, refused from its parse events before any
+    value is built: a value whose re-emission or string form the author's
+    few characters could make enormous (#2674)."""
 
 
-class _NoAnchorLoader(yaml.SafeLoader):
-    """``yaml.SafeLoader`` that refuses every anchor and alias."""
+class FrontmatterAnchorRefused(FrontmatterRefused):
+    """An anchor or alias: an alias names a shared value whose string form
+    grows with every level of aliases."""
 
-    def compose_node(self, parent: Any, index: Any) -> Any:
-        event = self.peek_event()
+
+class FrontmatterTooDeep(FrontmatterRefused):
+    """Nesting past ``MAX_FRONTMATTER_DEPTH``."""
+
+
+def _refuse_unbounded(text: str) -> None:
+    """Raise ``FrontmatterRefused`` at the first anchor, alias or level past
+    ``MAX_FRONTMATTER_DEPTH`` among ``text``'s parse events."""
+    depth = 0
+    for event in yaml.parse(text, Loader=_LOADER):
         if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None):
             raise FrontmatterAnchorRefused(ANCHOR_REFUSAL)
-        return super().compose_node(parent, index)
+        if isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+            depth += 1
+            if depth > MAX_FRONTMATTER_DEPTH:
+                raise FrontmatterTooDeep(DEPTH_REFUSAL)
+        elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
+            depth -= 1
 
 
 def load_frontmatter_yaml(text: str) -> Any:
     """A frontmatter block's YAML, loaded as ``yaml.safe_load`` loads it but
-    refusing any anchor or alias (``FrontmatterAnchorRefused``): every
-    frontmatter load in the codebase goes through here or :func:`load_post`."""
-    return yaml.load(text, Loader=_NoAnchorLoader)  # noqa: S506 - a safe loader
+    refusing any anchor, alias or nesting past ``MAX_FRONTMATTER_DEPTH``
+    (``FrontmatterRefused``): every frontmatter load in the codebase goes
+    through here or :func:`load_post`."""
+    _refuse_unbounded(text)
+    return yaml.load(text, Loader=_LOADER)  # noqa: S506 - a safe loader
 
 
-class _NoAnchorHandler(YAMLHandler):
+class _BoundedHandler(YAMLHandler):
     """python-frontmatter's YAML handler, loading with :func:`load_frontmatter_yaml`."""
 
     def load(self, fm: str, **kwargs: object) -> Any:
@@ -57,8 +89,11 @@ class _NoAnchorHandler(YAMLHandler):
 
 def load_post(content: str) -> Post:
     """``frontmatter.loads(content)`` with :func:`load_frontmatter_yaml` as its
-    loader, so a post never holds an aliased value."""
-    return _post_loads(content, handler=_NoAnchorHandler())
+    YAML loader. The handler is passed only when it detects its format, as
+    ``frontmatter.loads`` chooses one: forced on a text that does not open with
+    ``---`` (a leading BOM), it would split a body rule as frontmatter."""
+    handler = _BoundedHandler()
+    return _post_loads(content, handler=handler if handler.detect(content) else None)
 
 
 # Scalar fields: extracted as-is (str conversion)

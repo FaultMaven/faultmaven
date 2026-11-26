@@ -2756,7 +2756,7 @@
         "description": "The jobs' address-space caps beside the container's memory limit (#2921).\n\nThe bounded terms of Principle 14's worst-overlap formula (*Container\nmemory*): every slot of every worker pool held at once, each job at its\n``RLIMIT_AS``, with the buffers its serving process holds for it, and the KB\nencode, once, as while the host lock holds. Caps, not resident use.\nReported, never refused.",
         "properties": {
           "buffers_bytes": {
-            "description": "serving_processes x each pool's slots x its job's buffers, U the upload limit: preparation, its output limit; Tier 1, 2 x 3U in and its output limit; the gate, 2 x two texts at the draft bound (4 bytes a character) in and its output limit; a token count, 2U in and its 1 MiB output limit; a regex search, 2 x 3U in and its output limit at a file of U MB.",
+            "description": "serving_processes x each pool's slots x its job's buffers, U the upload limit: preparation, its output limit; Tier 1, 2 x 3U in and its output limit; the gate, 2 x two texts at the draft bound (4 bytes a character) in and its output limit (the text verify publishes, re-emitted up to about 4.5x its draft, is outside it, #2674); a token count, 2U in and its 1 MiB output limit; a regex search, 2 x 3U in and its output limit at a file of U MB.",
             "title": "Buffers Bytes",
             "type": "integer"
           },

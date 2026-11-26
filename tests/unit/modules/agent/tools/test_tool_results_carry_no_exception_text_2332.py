@@ -48,15 +48,9 @@ _SEARCH_FILE = "faultmaven/modules/agent/tools/search_file_worker.py"
 _ALLOWED: dict[tuple[str, str, str, str], str] = {
     (
         _SEARCH_FILE,
-        "regex_lines",
-        "re.error",
-        "[{'line': 0, 'content': f'Invalid regex: {e}'}]",
-    ): _MODEL_ARGUMENT,
-    (
-        _SEARCH_FILE,
-        "regex_excerpts",
-        "re.error",
-        "[{'error': f'Invalid regex pattern: {e}'}]",
+        "_compile",
+        "PATTERN_ERRORS",
+        "str(e)",
     ): _MODEL_ARGUMENT,
     **{
         (_RECLASSIFY, "execute_with_context", arm, shown): _TYPED_ARM

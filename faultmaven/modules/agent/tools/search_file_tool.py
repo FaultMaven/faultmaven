@@ -53,11 +53,14 @@ MAX_RESULTS_CEILING = 200
 
 # The regex search runs in a ``search_file_worker`` per search, never here: the
 # model writes the pattern (Principle 14, #2686). Measured 2026-11-26 in the
-# worker over 10 MiB of text with a pattern matching every line (``""``), the
-# costliest legitimate search, for excerpts: 140-character log lines took 0.73 s
-# and 167 MiB of address space, 40-character CSV lines 1.95 s and 255 MiB, 120
-# U+FFFD a line (3.3 Mi characters) 0.54 s and 111 MiB; count format, at most
-# 0.37 s and 135 MiB. At 1 MiB the same searches took 39-47 MiB.
+# worker over a 10 MiB file with a pattern matching every line (``""``), the
+# costliest legitimate search, whose one merged window is the whole file: for
+# excerpts, 140-character ASCII log lines took 0.40 s and 79 MiB of address
+# space (an answer of 10.5 MiB), lines of 40 astral characters (2.55 Mi
+# characters) 0.59 s and 79 MiB (10.4 MiB), 8-character lines 2.76 s and
+# 103 MiB (18.9 MiB), one-letter lines 14.1 s and 207 MiB (53.9 MiB); count
+# format, at most 4.1 s and 19 MiB. A search's memory is its file's text and
+# its answer, held as text and again as bytes.
 
 #: Regex searches at once in each serving process, under ``FairSlots`` keyed by
 #: the user who asked (#2645).
@@ -66,23 +69,31 @@ SEARCH_SLOTS = 2
 #: How long a search waits for a slot before the model is told to retry.
 SEARCH_SLOT_WAIT_SECONDS = 10.0
 
-#: Each step's bound: spawn to ``ready`` (the worker imports ``re``, ``json``
-#: and ``worker_process``: 0.09 s), each transfer (at most 30 MiB of UTF-8 at
-#: the 10 MB upload limit, 3 bytes a byte of the file), and the work, 5x the
-#: slowest search above. The model is told its pattern did not finish within
-#: the work bound.
-SEARCH_PHASES = worker_process.Phases(start=5.0, request=5.0, work=10.0, result=5.0)
+#: The work's CPU-time deadline (``ITIMER_PROF`` in the worker, as the runbook
+#: gate's), so a pattern gets the same verdict under any load: 5x the slowest
+#: search above but the one-letter lines, which can reach it. The model is told
+#: its pattern did not finish within it.
+SEARCH_WORK_CPU_SECONDS = 15.0
 
-#: ``RLIMIT_CPU`` past the work bound: the imports and 1 s of slack, so the
-#: wall bound ends a search first unless the CPU limit's signal is reached.
+#: Each step's bound: spawn to ``ready`` (the worker imports ``re``, ``json``
+#: and ``worker_process``: 0.07-0.09 s), each transfer (at most 30 MiB of UTF-8
+#: at the 10 MB upload limit, 3 bytes a byte of the file), and the work's wall
+#: backstop, the CPU deadline at half a core: past it the search is load's,
+#: answered as unavailable, not the pattern's.
+SEARCH_PHASES = worker_process.Phases(
+    start=5.0, request=5.0, work=2 * SEARCH_WORK_CPU_SECONDS, result=5.0
+)
+
+#: ``RLIMIT_CPU`` past the CPU deadline: the imports and 1 s of slack, so the
+#: deadline's timer ends a search first unless it failed.
 SEARCH_CPU_SLACK_SECONDS = 2
 
-#: ``RLIMIT_AS``: the start, and twice the steepest measured growth (22 MiB a
-#: Mi characters for CSV lines, 24 for U+FFFD lines) a Mi characters of the
-#: file: 544 MiB at 10 Mi. Shorter lines with a pattern matching most of them
-#: are told the search is too large (1 MiB of one-letter lines took 263 MiB).
+#: ``RLIMIT_AS``: a start (64 MiB; the worker's own is under 20), the text once
+#: and four times the output limit, as text, its writer and the two byte copies
+#: the answer is sent as. 1.2-1.5x each measurement above: 120, 158, 120 and
+#: 298 MiB.
 SEARCH_MEMORY_BASE_MIB = 64
-SEARCH_MEMORY_MIB_PER_MB = 48
+SEARCH_MEMORY_OUTPUT_COPIES = 4
 
 #: What the parent reads past the result's texts: its head (at most
 #: ``MAX_RESULTS_CEILING`` results' numbers) and the forwarded log records.
@@ -96,17 +107,22 @@ _SEARCH_WORKER = search_file_worker.__name__
 _search_slots_state: tuple | None = None
 
 
-def search_memory_limit(chars: int) -> int:
-    """``RLIMIT_AS`` of a search over a text of ``chars`` characters."""
-    per_mb = SEARCH_MEMORY_MIB_PER_MB * chars / _MIB
-    return (SEARCH_MEMORY_BASE_MIB + math.ceil(per_mb)) * _MIB
+def search_output_limit(text_bytes: int, lines: int) -> int:
+    """What a search over ``text_bytes`` of UTF-8 in ``lines`` lines may
+    answer: merged windows do not overlap, so each line at most once, with its
+    number prefix; and the base."""
+    return text_bytes + lines * (len(str(lines)) + 2) + SEARCH_OUTPUT_BASE_BYTES
 
 
-def search_output_limit(chars: int, lines: int) -> int:
-    """What a search over a text of ``chars`` characters in ``lines`` lines may
-    answer: merged windows do not overlap, so each line at most once, at 4 bytes
-    of UTF-8 a character, with its number prefix; and the base."""
-    return 4 * chars + lines * (len(str(lines)) + 2) + SEARCH_OUTPUT_BASE_BYTES
+def search_memory_limit(text_bytes: int, lines: int) -> int:
+    """``RLIMIT_AS`` of a search over ``text_bytes`` of UTF-8 in ``lines``
+    lines."""
+    output = search_output_limit(text_bytes, lines)
+    return (
+        SEARCH_MEMORY_BASE_MIB * _MIB
+        + text_bytes
+        + SEARCH_MEMORY_OUTPUT_COPIES * output
+    )
 
 
 @dataclass(frozen=True)
@@ -395,7 +411,8 @@ class SearchFileTool(AgentTool):
         # Resolve effective max_results: LLM override → format default → instance default
         requested_max = params.get("max_results")
         if requested_max is not None:
-            effective_max_results = min(int(requested_max), MAX_RESULTS_CEILING)
+            # At least 1: a zero or negative cap sliced off the end (#3116).
+            effective_max_results = max(1, min(int(requested_max), MAX_RESULTS_CEILING))
         elif output_format == "count":
             # Count mode defaults to ceiling — completeness over detail
             effective_max_results = MAX_RESULTS_CEILING
@@ -800,7 +817,7 @@ class SearchFileTool(AgentTool):
                     }
                 )
 
-        merged = merge_overlapping(matches)
+        merged = merge_overlapping(matches, lines)
         if merged:
             return merged
 
@@ -824,7 +841,7 @@ class SearchFileTool(AgentTool):
                                 "partial_match": True,
                             }
                         )
-            return merge_overlapping(partial_matches)
+            return merge_overlapping(partial_matches, lines)
 
         return []
 
@@ -857,6 +874,7 @@ class SearchFileTool(AgentTool):
                 "use a keyword search."
             )
         lines = content.count("\n") + 1
+        text_bytes = len(content.encode("utf-8", "surrogatepass"))
         try:
             end = await worker_process.run(
                 _SEARCH_WORKER,
@@ -865,10 +883,12 @@ class SearchFileTool(AgentTool):
                     "format": output_format,
                     "context_lines": self.context_lines,
                     "max_results": max_results,
+                    "work_cpu_seconds": SEARCH_WORK_CPU_SECONDS,
                 },
-                memory_bytes=search_memory_limit(len(content)),
-                cpu_seconds=math.ceil(SEARCH_PHASES.work) + SEARCH_CPU_SLACK_SECONDS,
-                output_limit_bytes=search_output_limit(len(content), lines),
+                memory_bytes=search_memory_limit(text_bytes, lines),
+                cpu_seconds=math.ceil(SEARCH_WORK_CPU_SECONDS)
+                + SEARCH_CPU_SLACK_SECONDS,
+                output_limit_bytes=search_output_limit(text_bytes, lines),
                 phases=SEARCH_PHASES,
                 parts=(content,),
             )
@@ -881,12 +901,14 @@ class SearchFileTool(AgentTool):
             end = worker_process.WorkerEnd()
         finally:
             slots.release(*slot_key)
-        if end.code == -signal.SIGXCPU or (end.timed_out and end.phase == "work"):
-            logger.warning("search_file: a regex search ran past its bound")
+        if end.code in (-signal.SIGPROF, -signal.SIGXCPU):
+            # Its CPU deadline, or RLIMIT_CPU if the timer failed: the
+            # pattern's cost alone, whatever the load.
+            logger.warning("search_file: a regex search ran past its CPU deadline")
             return _search_error(
-                f"The pattern did not finish within {SEARCH_PHASES.work:g} seconds "
-                "over this file; use a simpler pattern (no nested quantifiers) or "
-                "a keyword search."
+                f"The pattern did not finish within {SEARCH_WORK_CPU_SECONDS:g} "
+                "seconds of CPU over this file; use a simpler pattern (no nested "
+                "quantifiers) or a keyword search."
             )
         if end.code == worker_process.OUT_OF_MEMORY_EXIT:
             logger.warning("search_file: a regex search passed its memory or output")

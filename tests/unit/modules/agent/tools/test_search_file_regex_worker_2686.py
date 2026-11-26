@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import signal
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -38,8 +40,15 @@ _ORACLE = json.loads(
 #: The issue's pattern: nested quantifiers, exponential over ``a…a!``.
 _CATASTROPHIC = "(a+)+$"
 
-#: A bound the test can wait for; the production bound is 10 s.
+#: A CPU deadline the test can wait for; the production deadline is larger.
 _TEST_WORK_SECONDS = 1.0
+
+#: The heartbeat's sleep. A loop never held for long ticks about
+#: ``_TEST_WORK_SECONDS / _BEAT`` times across a search that runs to its CPU
+#: deadline (which takes at least that long in wall time); a tenth of that is
+#: the count asserted, so a loaded runner still meets it.
+_BEAT = 0.005
+_UNBROKEN_TICKS = int(_TEST_WORK_SECONDS / _BEAT) // 10
 
 
 def _context(user_id: str = "user_1") -> ToolContext:
@@ -83,17 +92,28 @@ def _hostile_file(n: int) -> str:
 
 @pytest.fixture
 def test_sized_bound(monkeypatch):
-    phases = search_file_tool.SEARCH_PHASES
-    monkeypatch.setattr(
-        search_file_tool,
-        "SEARCH_PHASES",
-        worker_process.Phases(
-            start=phases.start,
-            request=phases.request,
-            work=_TEST_WORK_SECONDS,
-            result=phases.result,
-        ),
-    )
+    monkeypatch.setattr(search_file_tool, "SEARCH_WORK_CPU_SECONDS", _TEST_WORK_SECONDS)
+
+
+@pytest.fixture
+def worker_ends(monkeypatch):
+    """How each search's worker ended, and its PID."""
+    ends, pids = [], []
+    real_run, real_spawn = worker_process.run, asyncio.create_subprocess_exec
+
+    async def run(*args, **kwargs):
+        end = await real_run(*args, **kwargs)
+        ends.append(end)
+        return end
+
+    async def spawn(*args, **kwargs):
+        proc = await real_spawn(*args, **kwargs)
+        pids.append(proc.pid)
+        return proc
+
+    monkeypatch.setattr(worker_process, "run", run)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    return ends, pids
 
 
 async def _all_slots_free() -> bool:
@@ -176,7 +196,7 @@ async def _ticks_during(call) -> tuple[int, object]:
             ticks.append(time.perf_counter())
             if stop.is_set():
                 return
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(_BEAT)
 
     beat = asyncio.create_task(heartbeat())
     await asyncio.sleep(0.02)
@@ -192,15 +212,16 @@ async def _ticks_during(call) -> tuple[int, object]:
 
 @pytest.mark.parametrize("output_format", ["excerpts", "count"])
 async def test_a_catastrophic_pattern_stops_at_its_bound_off_the_loop(
-    test_sized_bound, output_format
+    test_sized_bound, worker_ends, output_format
 ):
-    """The inline search is the positive control: ``main``'s search on the
-    loop, at a size it finishes (each two more ``a`` cost it about 4x). The
-    worker gets 40, which no search finishes, and the test-sized work bound:
-    the loop runs throughout, and the search ends at the bound."""
+    """The inline search is the positive control: the search on the loop, at
+    a size it finishes (each two more ``a`` cost it about 4x). The worker gets
+    40, which no search finishes, and the test-sized CPU deadline: the loop
+    ticks throughout, and the search ends at that deadline, not at the
+    ``RLIMIT_CPU`` backstop or the wall bound."""
 
     async def inline():
-        return regex_excerpts(_hostile_file(22), _CATASTROPHIC, 3)
+        return regex_excerpts(_hostile_file(22), _CATASTROPHIC, 3, 20)
 
     async def in_worker():
         return await _tool(_hostile_file(40)).execute_with_context(
@@ -217,11 +238,32 @@ async def test_a_catastrophic_pattern_stops_at_its_bound_off_the_loop(
     worker_ticks, result = await _ticks_during(in_worker)
 
     assert inline_ticks == 0, "positive control: the loop ran during the inline search"
-    assert worker_ticks >= 3, "the loop did not run while the worker searched"
+    assert worker_ticks >= _UNBROKEN_TICKS, "the loop was held during the search"
+    (end,) = worker_ends[0]
+    assert end.code == -signal.SIGPROF, end
     assert result.success is False
     assert result.error == (
-        "The pattern did not finish within 1 seconds over this file; use a "
-        "simpler pattern (no nested quantifiers) or a keyword search."
+        "The pattern did not finish within 1 seconds of CPU over this file; use "
+        "a simpler pattern (no nested quantifiers) or a keyword search."
+    )
+    assert await _all_slots_free()
+
+
+async def test_past_the_wall_backstop_the_search_is_unavailable(monkeypatch):
+    """Under CPU load the wall bound can end a search first: that is load, not
+    the pattern, so the model is not told its pattern is catastrophic."""
+    phases = search_file_tool.SEARCH_PHASES
+    monkeypatch.setattr(
+        search_file_tool,
+        "SEARCH_PHASES",
+        worker_process.Phases(phases.start, phases.request, 0.5, phases.result),
+    )
+
+    result = await _regex_call(_hostile_file(40), _CATASTROPHIC)
+
+    assert result.success is False and result.timed_out is False
+    assert result.error == (
+        "Regex search is unavailable right now; use a keyword search."
     )
     assert await _all_slots_free()
 
@@ -259,16 +301,20 @@ async def test_the_bounded_time_error_is_no_timeout_so_nothing_is_vectorized(
 
 
 async def test_no_pattern_runs_in_this_process(monkeypatch):
-    """The pattern reaches ``re`` only in the worker: here, ``re.compile`` of
-    it raises, and the search still answers."""
-    real_compile = re.compile
+    """The pattern reaches ``re`` only in the worker: here, compiling it by
+    ``re.compile`` or by any ``re`` function (``re._compile``) raises, and the
+    search still answers."""
     pattern = r"db-pool\s+timeout"
 
-    def refuse(p, *args, **kwargs):
-        assert p != pattern, "the model's pattern was compiled in the API process"
-        return real_compile(p, *args, **kwargs)
+    def refusing(real):
+        def refuse(p, *args, **kwargs):
+            assert p != pattern, "the model's pattern was compiled in the API process"
+            return real(p, *args, **kwargs)
 
-    monkeypatch.setattr(re, "compile", refuse)
+        return refuse
+
+    monkeypatch.setattr(re, "compile", refusing(re.compile))
+    monkeypatch.setattr(re, "_compile", refusing(re._compile))
     result = await _tool(_ORACLE["content"]).execute_with_context(
         params={"evidence_id": "ev_abc", "query": pattern, "search_type": "regex"},
         context=_context(),
@@ -287,21 +333,72 @@ def _regex_call(content: str = "INFO a\nERROR b\n", query: str = "ERROR"):
     )
 
 
-async def test_a_file_too_dense_for_its_memory_limit_is_too_large():
-    # 1 MiB of one-letter lines, every line matched: measured at 263 MiB, past
-    # the 112 MiB this file's limit gives.
-    result = await _regex_call("a\n" * (512 * 1024), "a")
+async def test_a_search_past_its_memory_limit_is_too_large(monkeypatch, worker_ends):
+    # A limit below what the worker holds once bounded: the 2 MiB excerpt its
+    # one merged window needs is a new mapping it cannot make.
+    monkeypatch.setattr(search_file_tool, "search_memory_limit", lambda *a: 1)
+
+    result = await _regex_call(("INFO " * 20 + "\n") * 20_000, "INFO")
 
     assert result.success is False and result.timed_out is False
     assert result.error == (
         "The pattern matched more of this file than one search can hold; use a "
         "narrower pattern or a keyword search."
     )
+    assert worker_ends[0][0].code == worker_process.OUT_OF_MEMORY_EXIT
     assert await _all_slots_free()
 
 
+@pytest.mark.parametrize(
+    "pattern, raised",
+    [("a{4294967296}", "OverflowError"), ("(" * 1000 + ")" * 1000, "RecursionError")],
+    ids=["repeat-past-its-range", "groups-past-the-recursion-limit"],
+)
+@pytest.mark.parametrize("output_format", ["excerpts", "count"])
+async def test_a_pattern_re_cannot_build_is_invalid_not_an_outage(
+    pattern, raised, output_format, caplog
+):
+    with pytest.raises(Exception) as compiled:
+        re.compile(pattern)
+    assert type(compiled.value).__name__ == raised
+
+    result = await _tool("INFO a\n").execute_with_context(
+        params={
+            "evidence_id": "ev_abc",
+            "query": pattern,
+            "search_type": "regex",
+            "output_format": output_format,
+        },
+        context=_context(),
+    )
+
+    assert result.success is True
+    assert "Invalid regex" in json.dumps(result.data)
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize("requested", [0, -1, -5])
+@pytest.mark.parametrize("search_type", ["regex", "keyword"])
+async def test_a_cap_below_one_returns_at_most_one_result(requested, search_type):
+    """A zero or negative ``max_results`` sliced from the end: ``-1`` returned
+    every result but the last (#3116, review item 9)."""
+    result = await _tool(_ORACLE["content"]).execute_with_context(
+        params={
+            "evidence_id": "ev_abc",
+            "query": "ERROR",
+            "search_type": search_type,
+            "output_format": "count",
+            "max_results": requested,
+        },
+        context=_context(),
+    )
+
+    assert result.data["results_count"] == 1
+    assert result.data["match_count"] == 12 and result.data["truncated"] is True
+
+
 async def test_an_answer_past_the_output_limit_is_too_large(monkeypatch):
-    monkeypatch.setattr(search_file_tool, "search_output_limit", lambda c, n: 64)
+    monkeypatch.setattr(search_file_tool, "search_output_limit", lambda *a: 64)
 
     result = await _regex_call()
 
@@ -344,7 +441,9 @@ async def test_no_free_slot_within_the_wait_is_busy(monkeypatch):
     assert await _all_slots_free()
 
 
-async def test_a_cancelled_search_frees_its_slot_and_its_worker(test_sized_bound):
+async def test_a_cancelled_search_frees_its_slot_and_its_worker(
+    test_sized_bound, worker_ends
+):
     search = asyncio.create_task(
         _tool(_hostile_file(40)).execute_with_context(
             params={
@@ -355,11 +454,16 @@ async def test_a_cancelled_search_frees_its_slot_and_its_worker(test_sized_bound
             context=_context(),
         )
     )
+    _ends, pids = worker_ends
+    while not pids:
+        await asyncio.sleep(0.01)
     await asyncio.sleep(0.3)
+    assert Path(f"/proc/{pids[0]}").exists(), "the worker ended before the cancel"
     search.cancel()
     with pytest.raises(asyncio.CancelledError):
         await search
 
+    assert not Path(f"/proc/{pids[0]}").exists(), "the worker outlived the search"
     assert await _all_slots_free()
 
 

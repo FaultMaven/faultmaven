@@ -1,4 +1,5 @@
-"""No frontmatter load accepts a YAML anchor or alias (#2674, #3116 A).
+"""No frontmatter load accepts a YAML anchor or alias, or nesting past three
+levels (#2674, #3116 A).
 
 ``yaml.safe_load`` keeps an alias as a shared reference, so a few hundred
 characters describe a value whose string form is enormous: the reviewer's
@@ -6,6 +7,10 @@ runbook, six levels of ten-fold aliases under ``service``, passed the gate and
 then built a 5.2M-character string on the event loop. Every frontmatter load
 now refuses an anchor or alias as it is composed, before any value is built:
 the gate with its own message, every other load as unparseable frontmatter.
+Nesting is bounded too: ``frontmatter.dumps`` re-emits a nested flow sequence
+one indent per level, so an 81,504-character draft of sequences 200 deep, each
+with a sibling at every level, passed the gate and published 3,313,586
+characters at ``82d3830d7``.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
+from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -37,9 +43,13 @@ from faultmaven.modules.knowledge.domain.services.runbook_gate import (
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
+from faultmaven.utils import frontmatter as frontmatter_utils
 from faultmaven.utils.frontmatter import (
     ANCHOR_REFUSAL,
+    DEPTH_REFUSAL,
+    MAX_FRONTMATTER_DEPTH,
     FrontmatterAnchorRefused,
+    FrontmatterTooDeep,
     extract_frontmatter_metadata,
     load_frontmatter_yaml,
     load_post,
@@ -68,6 +78,17 @@ def _bomb(title: str = "Alias Bomb In The Service Field") -> str:
     return valid_runbook(title).replace(
         "service: postgresql\n", "\n".join(levels) + "\nservice: *l5\n", 1
     )
+
+
+def _nested(depth: int = 200, total: int = 81_504) -> str:
+    """Flow sequences ``depth`` deep with a sibling at every level, as many as
+    fit a draft of ``total`` characters (the body padded to it)."""
+    item = "[" * depth + "a" + ", b]" * depth
+    base = valid_runbook("Nested Flow Sequences In Frontmatter")
+    count = (total - len(base) - 8) // (len(item) + 2)
+    line = "x: [" + ", ".join([item] * count) + "]\n"
+    draft = base.replace("status: draft\n", "status: draft\n" + line, 1)
+    return draft + "\n" + "z" * (total - len(draft) - 1)
 
 
 @pytest.fixture
@@ -117,6 +138,41 @@ def test_an_anchor_or_alias_is_refused(text):
 )
 def test_text_that_only_looks_like_an_anchor_loads_as_before(text):
     assert load_frontmatter_yaml(text) == yaml.safe_load(text)
+
+
+@pytest.mark.parametrize(
+    "text, refused",
+    [
+        ("a: [[x]]", False),
+        ("a: [[[x]]]", True),
+        ("a: {b: [x]}", False),
+        ("a: {b: {c: x}}", False),
+        ("a: {b: {c: [x]}}", True),
+        ("- [[x]]", False),
+        ("- [[[x]]]", True),
+    ],
+)
+def test_nesting_past_the_declared_depth_is_refused(text, refused):
+    assert MAX_FRONTMATTER_DEPTH == 3
+    if refused:
+        with pytest.raises(FrontmatterTooDeep, match="at most 3 levels"):
+            load_frontmatter_yaml(text)
+    else:
+        assert load_frontmatter_yaml(text) == yaml.safe_load(text)
+
+
+def test_the_loads_are_libyamls_where_it_is_built():
+    """The pure-Python loader is about 10x slower, on the event loop."""
+    if hasattr(yaml, "CSafeLoader"):
+        assert frontmatter_utils._LOADER is yaml.CSafeLoader
+
+
+def test_a_text_that_does_not_open_with_the_delimiter_loads_as_before():
+    """Forcing the handler on a text with a leading BOM split a body rule as
+    frontmatter; the handler is passed only when it detects its format."""
+    bom = "\ufeff" + valid_runbook() + "\n---\n\nkey: from the body\n"
+    assert load_post(bom).metadata == frontmatter.loads(bom).metadata == {}
+    assert load_post(bom).content == frontmatter.loads(bom).content
 
 
 def test_every_shipped_frontmatter_loads_as_before():
@@ -184,11 +240,26 @@ async def test_the_scan_imports_the_bomb_refused_and_unexpanded(
     assert row["service"] is None and row["domain"] is None
 
 
-async def test_verify_of_a_stale_bomb_draft_publishes_nothing(
-    session_factory, tmp_path, monkeypatch
+def test_the_gate_refuses_the_nested_draft_it_passed():
+    draft = _nested()
+    assert len(draft) == 81_504
+
+    errors = RunbookValidator().validate_content(draft).errors
+
+    assert DEPTH_REFUSAL in errors and "No YAML frontmatter found" not in errors
+
+
+@pytest.mark.parametrize("draft", ["bomb", "nested"])
+async def test_verify_of_a_stale_refused_draft_is_a_422_and_publishes_nothing(
+    session_factory, tmp_path, monkeypatch, draft
 ):
     """Verify refuses a draft that failed the gate first (``validation_passed``),
-    so its load is reached only by a draft stored before anchors were refused."""
+    so its load is reached only by a draft stored before the refusals existed:
+    refused as the gate refuses it, its row's verdict cleared."""
+    content, refusal = {
+        "bomb": (_bomb(), ANCHOR_REFUSAL),
+        "nested": (_nested(), DEPTH_REFUSAL),
+    }[draft]
     pod = _Replica(tmp_path, session_factory, _ingesting(session_factory))
     monkeypatch.chdir(pod.root)
     created = await pod.service.create_runbook_from_template(**TEMPLATE)
@@ -197,15 +268,18 @@ async def test_verify_of_a_stale_bomb_draft_publishes_nothing(
         await session.execute(
             update(ConversionDraftModel)
             .where(ConversionDraftModel.id == did)
-            .values(content=_bomb(), validation_passed=True)
+            .values(content=content, validation_passed=True)
         )
         await session.commit()
 
-    with pytest.raises(FrontmatterAnchorRefused):
+    with pytest.raises(ValidationException) as refused:
         await pod.service.verify_draft(cid, did, "u1")
 
+    assert str(refused.value) == refusal
     pod.service._knowledge_service.ingest_runbook.assert_not_awaited()
-    assert (await _row(session_factory, did)).status == "draft"
+    row = await _row(session_factory, did)
+    assert (row.status, row.validation_passed) == ("draft", False)
+    assert row.validation_errors == [refusal]
 
 
 async def test_a_verified_draft_reloads_through_the_loader(

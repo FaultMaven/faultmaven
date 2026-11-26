@@ -1,4 +1,39 @@
 {
+ "amended": [
+  {
+   "params": {
+    "evidence_id": "ev_abc",
+    "query": "db-pool cache"
+   },
+   "why": "review item 4: a merged window's excerpt is its own line_start..line_end (main showed only the later window's lines): lines 4-17, lines 18-38, lines 39-52"
+  },
+  {
+   "params": {
+    "evidence_id": "ev_abc",
+    "query": "10\\.0\\.\\d+\\.5\\b",
+    "search_type": "regex"
+   },
+   "why": "review item 4: a merged window's excerpt is its own line_start..line_end (main showed only the later window's lines): lines 2-10"
+  },
+  {
+   "params": {
+    "evidence_id": "ev_abc",
+    "max_results": 3,
+    "query": "ERROR|WARN",
+    "search_type": "regex"
+   },
+   "why": "review item 4: a merged window's excerpt is its own line_start..line_end (main showed only the later window's lines): lines 2-61"
+  },
+  {
+   "params": {
+    "evidence_id": "ev_abc",
+    "max_results": 0,
+    "query": "ERROR",
+    "search_type": "regex"
+   },
+   "why": "review item 9: a cap below 1 is floored at 1 (main returned no results and the vocabulary)"
+  }
+ ],
  "captured_at": "bc2beae558e371c5a9a86c361920ccd4baf4c22f",
  "cases": [
   {
@@ -113,7 +148,7 @@
      "query": "db-pool cache",
      "results": [
       {
-       "excerpt": "11: 2026-11-20T10:00:11Z ERROR connection refused to cache:6379 (attempt 11)\n12: 2026-11-20T10:00:12Z INFO handled GET /api/v1/cases/12 in 36ms\n13: 2026-11-20T10:00:13Z INFO handled GET /api/v1/cases/13 in 39ms\n14: 2026-11-20T10:00:14Z ERROR db-pool timeout after 30s host=10.0.14.5 user=svc_api\n15: 2026-11-20T10:00:15Z WARN retrying request id=req-0015 upstream=10.0.0.15\n16: 2026-11-20T10:00:16Z INFO handled GET /api/v1/cases/16 in 48ms\n17: 2026-11-20T10:00:17Z INFO handled GET /api/v1/cases/17 in 51ms",
+       "excerpt": "4: 2026-11-20T10:00:04Z INFO handled GET /api/v1/cases/4 in 12ms\n5: 2026-11-20T10:00:05Z WARN retrying request id=req-0005 upstream=10.0.0.5\n6: 2026-11-20T10:00:06Z INFO handled GET /api/v1/cases/6 in 18ms\n7: 2026-11-20T10:00:07Z ERROR db-pool timeout after 30s host=10.0.7.5 user=svc_api\n8: 2026-11-20T10:00:08Z INFO handled GET /api/v1/cases/8 in 24ms\n9: 2026-11-20T10:00:09Z INFO handled GET /api/v1/cases/9 in 27ms\n10: 2026-11-20T10:00:10Z WARN retrying request id=req-0010 upstream=10.0.0.10\n11: 2026-11-20T10:00:11Z ERROR connection refused to cache:6379 (attempt 11)\n12: 2026-11-20T10:00:12Z INFO handled GET /api/v1/cases/12 in 36ms\n13: 2026-11-20T10:00:13Z INFO handled GET /api/v1/cases/13 in 39ms\n14: 2026-11-20T10:00:14Z ERROR db-pool timeout after 30s host=10.0.14.5 user=svc_api\n15: 2026-11-20T10:00:15Z WARN retrying request id=req-0015 upstream=10.0.0.15\n16: 2026-11-20T10:00:16Z INFO handled GET /api/v1/cases/16 in 48ms\n17: 2026-11-20T10:00:17Z INFO handled GET /api/v1/cases/17 in 51ms",
        "line_end": 17,
        "line_start": 4,
        "matched_keywords": [
@@ -123,7 +158,7 @@
        "relevance": 0.5
       },
       {
-       "excerpt": "32: 2026-11-20T10:00:32Z INFO handled GET /api/v1/cases/32 in 96ms\n33: 2026-11-20T10:00:33Z ERROR connection refused to cache:6379 (attempt 33)\n34: 2026-11-20T10:00:34Z INFO handled GET /api/v1/cases/34 in 102ms\n35: 2026-11-20T10:00:35Z ERROR db-pool timeout after 30s host=10.0.35.5 user=svc_api\n36: 2026-11-20T10:00:36Z INFO handled GET /api/v1/cases/36 in 108ms\n37: 2026-11-20T10:00:37Z INFO handled GET /api/v1/cases/37 in 111ms\n38: 2026-11-20T10:00:38Z INFO handled GET /api/v1/cases/38 in 114ms",
+       "excerpt": "18: 2026-11-20T10:00:18Z INFO handled GET /api/v1/cases/18 in 54ms\n19: 2026-11-20T10:00:19Z INFO handled GET /api/v1/cases/19 in 57ms\n20: 2026-11-20T10:00:20Z WARN retrying request id=req-0020 upstream=10.0.0.20\n21: 2026-11-20T10:00:21Z ERROR db-pool timeout after 30s host=10.0.21.5 user=svc_api\n22: 2026-11-20T10:00:22Z ERROR connection refused to cache:6379 (attempt 22)\n23: 2026-11-20T10:00:23Z INFO handled GET /api/v1/cases/23 in 69ms\n24: 2026-11-20T10:00:24Z INFO handled GET /api/v1/cases/24 in 72ms\n25: 2026-11-20T10:00:25Z WARN retrying request id=req-0025 upstream=10.0.0.25\n26: 2026-11-20T10:00:26Z INFO handled GET /api/v1/cases/26 in 78ms\n27: 2026-11-20T10:00:27Z INFO handled GET /api/v1/cases/27 in 81ms\n28: 2026-11-20T10:00:28Z ERROR db-pool timeout after 30s host=10.0.28.5 user=svc_api\n29: 2026-11-20T10:00:29Z INFO handled GET /api/v1/cases/29 in 87ms\n30: 2026-11-20T10:00:30Z WARN retrying request id=req-0030 upstream=10.0.0.30\n31: 2026-11-20T10:00:31Z INFO handled GET /api/v1/cases/31 in 93ms\n32: 2026-11-20T10:00:32Z INFO handled GET /api/v1/cases/32 in 96ms\n33: 2026-11-20T10:00:33Z ERROR connection refused to cache:6379 (attempt 33)\n34: 2026-11-20T10:00:34Z INFO handled GET /api/v1/cases/34 in 102ms\n35: 2026-11-20T10:00:35Z ERROR db-pool timeout after 30s host=10.0.35.5 user=svc_api\n36: 2026-11-20T10:00:36Z INFO handled GET /api/v1/cases/36 in 108ms\n37: 2026-11-20T10:00:37Z INFO handled GET /api/v1/cases/37 in 111ms\n38: 2026-11-20T10:00:38Z INFO handled GET /api/v1/cases/38 in 114ms",
        "line_end": 38,
        "line_start": 18,
        "matched_keywords": [
@@ -133,7 +168,7 @@
        "relevance": 0.5
       },
       {
-       "excerpt": "46: 2026-11-20T10:00:46Z INFO handled GET /api/v1/cases/46 in 138ms\n47: 2026-11-20T10:00:47Z INFO handled GET /api/v1/cases/47 in 141ms\n48: 2026-11-20T10:00:48Z INFO handled GET /api/v1/cases/48 in 144ms\n49: 2026-11-20T10:00:49Z ERROR db-pool timeout after 30s host=10.0.49.5 user=svc_api\n50: 2026-11-20T10:00:50Z WARN retrying request id=req-0050 upstream=10.0.0.50\n51: 2026-11-20T10:00:51Z INFO handled GET /api/v1/cases/51 in 153ms\n52: 2026-11-20T10:00:52Z INFO handled GET /api/v1/cases/52 in 156ms",
+       "excerpt": "39: 2026-11-20T10:00:39Z INFO handled GET /api/v1/cases/39 in 117ms\n40: 2026-11-20T10:00:40Z WARN retrying request id=req-0040 upstream=10.0.0.40\n41: 2026-11-20T10:00:41Z INFO handled GET /api/v1/cases/41 in 123ms\n42: 2026-11-20T10:00:42Z ERROR db-pool timeout after 30s host=10.0.42.5 user=svc_api\n43: 2026-11-20T10:00:43Z INFO handled GET /api/v1/cases/43 in 129ms\n44: 2026-11-20T10:00:44Z ERROR connection refused to cache:6379 (attempt 44)\n45: 2026-11-20T10:00:45Z WARN retrying request id=req-0045 upstream=10.0.0.45\n46: 2026-11-20T10:00:46Z INFO handled GET /api/v1/cases/46 in 138ms\n47: 2026-11-20T10:00:47Z INFO handled GET /api/v1/cases/47 in 141ms\n48: 2026-11-20T10:00:48Z INFO handled GET /api/v1/cases/48 in 144ms\n49: 2026-11-20T10:00:49Z ERROR db-pool timeout after 30s host=10.0.49.5 user=svc_api\n50: 2026-11-20T10:00:50Z WARN retrying request id=req-0050 upstream=10.0.0.50\n51: 2026-11-20T10:00:51Z INFO handled GET /api/v1/cases/51 in 153ms\n52: 2026-11-20T10:00:52Z INFO handled GET /api/v1/cases/52 in 156ms",
        "line_end": 52,
        "line_start": 39,
        "matched_keywords": [
@@ -260,7 +295,7 @@
      "query": "10\\.0\\.\\d+\\.5\\b",
      "results": [
       {
-       "excerpt": "4: 2026-11-20T10:00:04Z INFO handled GET /api/v1/cases/4 in 12ms\n5: 2026-11-20T10:00:05Z WARN retrying request id=req-0005 upstream=10.0.0.5\n6: 2026-11-20T10:00:06Z INFO handled GET /api/v1/cases/6 in 18ms\n7: 2026-11-20T10:00:07Z ERROR db-pool timeout after 30s host=10.0.7.5 user=svc_api\n8: 2026-11-20T10:00:08Z INFO handled GET /api/v1/cases/8 in 24ms\n9: 2026-11-20T10:00:09Z INFO handled GET /api/v1/cases/9 in 27ms\n10: 2026-11-20T10:00:10Z WARN retrying request id=req-0010 upstream=10.0.0.10",
+       "excerpt": "2: 2026-11-20T10:00:02Z INFO handled GET /api/v1/cases/2 in 6ms\n3: 2026-11-20T10:00:03Z INFO handled GET /api/v1/cases/3 in 9ms\n4: 2026-11-20T10:00:04Z INFO handled GET /api/v1/cases/4 in 12ms\n5: 2026-11-20T10:00:05Z WARN retrying request id=req-0005 upstream=10.0.0.5\n6: 2026-11-20T10:00:06Z INFO handled GET /api/v1/cases/6 in 18ms\n7: 2026-11-20T10:00:07Z ERROR db-pool timeout after 30s host=10.0.7.5 user=svc_api\n8: 2026-11-20T10:00:08Z INFO handled GET /api/v1/cases/8 in 24ms\n9: 2026-11-20T10:00:09Z INFO handled GET /api/v1/cases/9 in 27ms\n10: 2026-11-20T10:00:10Z WARN retrying request id=req-0010 upstream=10.0.0.10",
        "line_end": 10,
        "line_start": 2,
        "match_line": 5,
@@ -377,7 +412,7 @@
      "query": "ERROR|WARN",
      "results": [
       {
-       "excerpt": "57: 2026-11-20T10:00:57Z INFO handled GET /api/v1/cases/57 in 171ms\n58: 2026-11-20T10:00:58Z INFO handled GET /api/v1/cases/58 in 174ms\n59: 2026-11-20T10:00:59Z INFO handled GET /api/v1/cases/59 in 177ms\n60: 2026-11-20T10:00:00Z WARN retrying request id=req-0060 upstream=10.0.0.60\n61: ",
+       "excerpt": "2: 2026-11-20T10:00:02Z INFO handled GET /api/v1/cases/2 in 6ms\n3: 2026-11-20T10:00:03Z INFO handled GET /api/v1/cases/3 in 9ms\n4: 2026-11-20T10:00:04Z INFO handled GET /api/v1/cases/4 in 12ms\n5: 2026-11-20T10:00:05Z WARN retrying request id=req-0005 upstream=10.0.0.5\n6: 2026-11-20T10:00:06Z INFO handled GET /api/v1/cases/6 in 18ms\n7: 2026-11-20T10:00:07Z ERROR db-pool timeout after 30s host=10.0.7.5 user=svc_api\n8: 2026-11-20T10:00:08Z INFO handled GET /api/v1/cases/8 in 24ms\n9: 2026-11-20T10:00:09Z INFO handled GET /api/v1/cases/9 in 27ms\n10: 2026-11-20T10:00:10Z WARN retrying request id=req-0010 upstream=10.0.0.10\n11: 2026-11-20T10:00:11Z ERROR connection refused to cache:6379 (attempt 11)\n12: 2026-11-20T10:00:12Z INFO handled GET /api/v1/cases/12 in 36ms\n13: 2026-11-20T10:00:13Z INFO handled GET /api/v1/cases/13 in 39ms\n14: 2026-11-20T10:00:14Z ERROR db-pool timeout after 30s host=10.0.14.5 user=svc_api\n15: 2026-11-20T10:00:15Z WARN retrying request id=req-0015 upstream=10.0.0.15\n16: 2026-11-20T10:00:16Z INFO handled GET /api/v1/cases/16 in 48ms\n17: 2026-11-20T10:00:17Z INFO handled GET /api/v1/cases/17 in 51ms\n18: 2026-11-20T10:00:18Z INFO handled GET /api/v1/cases/18 in 54ms\n19: 2026-11-20T10:00:19Z INFO handled GET /api/v1/cases/19 in 57ms\n20: 2026-11-20T10:00:20Z WARN retrying request id=req-0020 upstream=10.0.0.20\n21: 2026-11-20T10:00:21Z ERROR db-pool timeout after 30s host=10.0.21.5 user=svc_api\n22: 2026-11-20T10:00:22Z ERROR connection refused to cache:6379 (attempt 22)\n23: 2026-11-20T10:00:23Z INFO handled GET /api/v1/cases/23 in 69ms\n24: 2026-11-20T10:00:24Z INFO handled GET /api/v1/cases/24 in 72ms\n25: 2026-11-20T10:00:25Z WARN retrying request id=req-0025 upstream=10.0.0.25\n26: 2026-11-20T10:00:26Z INFO handled GET /api/v1/cases/26 in 78ms\n27: 2026-11-20T10:00:27Z INFO handled GET /api/v1/cases/27 in 81ms\n28: 2026-11-20T10:00:28Z ERROR db-pool timeout after 30s host=10.0.28.5 user=svc_api\n29: 2026-11-20T10:00:29Z INFO handled GET /api/v1/cases/29 in 87ms\n30: 2026-11-20T10:00:30Z WARN retrying request id=req-0030 upstream=10.0.0.30\n31: 2026-11-20T10:00:31Z INFO handled GET /api/v1/cases/31 in 93ms\n32: 2026-11-20T10:00:32Z INFO handled GET /api/v1/cases/32 in 96ms\n33: 2026-11-20T10:00:33Z ERROR connection refused to cache:6379 (attempt 33)\n34: 2026-11-20T10:00:34Z INFO handled GET /api/v1/cases/34 in 102ms\n35: 2026-11-20T10:00:35Z ERROR db-pool timeout after 30s host=10.0.35.5 user=svc_api\n36: 2026-11-20T10:00:36Z INFO handled GET /api/v1/cases/36 in 108ms\n37: 2026-11-20T10:00:37Z INFO handled GET /api/v1/cases/37 in 111ms\n38: 2026-11-20T10:00:38Z INFO handled GET /api/v1/cases/38 in 114ms\n39: 2026-11-20T10:00:39Z INFO handled GET /api/v1/cases/39 in 117ms\n40: 2026-11-20T10:00:40Z WARN retrying request id=req-0040 upstream=10.0.0.40\n41: 2026-11-20T10:00:41Z INFO handled GET /api/v1/cases/41 in 123ms\n42: 2026-11-20T10:00:42Z ERROR db-pool timeout after 30s host=10.0.42.5 user=svc_api\n43: 2026-11-20T10:00:43Z INFO handled GET /api/v1/cases/43 in 129ms\n44: 2026-11-20T10:00:44Z ERROR connection refused to cache:6379 (attempt 44)\n45: 2026-11-20T10:00:45Z WARN retrying request id=req-0045 upstream=10.0.0.45\n46: 2026-11-20T10:00:46Z INFO handled GET /api/v1/cases/46 in 138ms\n47: 2026-11-20T10:00:47Z INFO handled GET /api/v1/cases/47 in 141ms\n48: 2026-11-20T10:00:48Z INFO handled GET /api/v1/cases/48 in 144ms\n49: 2026-11-20T10:00:49Z ERROR db-pool timeout after 30s host=10.0.49.5 user=svc_api\n50: 2026-11-20T10:00:50Z WARN retrying request id=req-0050 upstream=10.0.0.50\n51: 2026-11-20T10:00:51Z INFO handled GET /api/v1/cases/51 in 153ms\n52: 2026-11-20T10:00:52Z INFO handled GET /api/v1/cases/52 in 156ms\n53: 2026-11-20T10:00:53Z INFO handled GET /api/v1/cases/53 in 159ms\n54: 2026-11-20T10:00:54Z INFO handled GET /api/v1/cases/54 in 162ms\n55: 2026-11-20T10:00:55Z WARN retrying request id=req-0055 upstream=10.0.0.55\n56: 2026-11-20T10:00:56Z ERROR db-pool timeout after 30s host=10.0.56.5 user=svc_api\n57: 2026-11-20T10:00:57Z INFO handled GET /api/v1/cases/57 in 171ms\n58: 2026-11-20T10:00:58Z INFO handled GET /api/v1/cases/58 in 174ms\n59: 2026-11-20T10:00:59Z INFO handled GET /api/v1/cases/59 in 177ms\n60: 2026-11-20T10:00:00Z WARN retrying request id=req-0060 upstream=10.0.0.60\n61: ",
        "line_end": 61,
        "line_start": 2,
        "match_line": 5,
@@ -716,56 +751,20 @@
      "label": "app.log",
      "output_format": "excerpts",
      "query": "ERROR",
-     "results": [],
-     "results_count": 0,
+     "results": [
+      {
+       "excerpt": "4: 2026-11-20T10:00:04Z INFO handled GET /api/v1/cases/4 in 12ms\n5: 2026-11-20T10:00:05Z WARN retrying request id=req-0005 upstream=10.0.0.5\n6: 2026-11-20T10:00:06Z INFO handled GET /api/v1/cases/6 in 18ms\n7: 2026-11-20T10:00:07Z ERROR db-pool timeout after 30s host=10.0.7.5 user=svc_api\n8: 2026-11-20T10:00:08Z INFO handled GET /api/v1/cases/8 in 24ms\n9: 2026-11-20T10:00:09Z INFO handled GET /api/v1/cases/9 in 27ms\n10: 2026-11-20T10:00:10Z WARN retrying request id=req-0010 upstream=10.0.0.10\n11: 2026-11-20T10:00:11Z ERROR connection refused to cache:6379 (attempt 11)\n12: 2026-11-20T10:00:12Z INFO handled GET /api/v1/cases/12 in 36ms\n13: 2026-11-20T10:00:13Z INFO handled GET /api/v1/cases/13 in 39ms\n14: 2026-11-20T10:00:14Z ERROR db-pool timeout after 30s host=10.0.14.5 user=svc_api\n15: 2026-11-20T10:00:15Z WARN retrying request id=req-0015 upstream=10.0.0.15\n16: 2026-11-20T10:00:16Z INFO handled GET /api/v1/cases/16 in 48ms\n17: 2026-11-20T10:00:17Z INFO handled GET /api/v1/cases/17 in 51ms",
+       "line_end": 17,
+       "line_start": 4,
+       "match_line": 7,
+       "relevance": 0
+      }
+     ],
+     "results_count": 1,
      "search_type": "regex",
-     "suggestion": "No matches found. File contains these terms: cache:6379, 10.0.0.5, 10.0.7.5, 10.0.0.10, 10.0.14.5, 10.0.0.15, 10.0.0.20, 10.0.21.5, 10.0.0.25, 10.0.28.5",
-     "total_matches": 0,
-     "truncated": false,
-     "vocabulary": {
-      "frequent_tokens": [
-       "timeout",
-       "30s",
-       "host",
-       "user",
-       "connection",
-       "refused",
-       "cache",
-       "attempt"
-      ],
-      "patterns": [
-       "cache:6379",
-       "10.0.0.5",
-       "10.0.7.5",
-       "10.0.0.10",
-       "10.0.14.5",
-       "10.0.0.15",
-       "10.0.0.20",
-       "10.0.21.5",
-       "10.0.0.25",
-       "10.0.28.5",
-       "10.0.0.30",
-       "10.0.35.5",
-       "10.0.0.40",
-       "10.0.42.5",
-       "10.0.0.45",
-       "10.0.49.5",
-       "10.0.0.50",
-       "10.0.0.55",
-       "10.0.56.5",
-       "10.0.0.60",
-       "/api/v1/cases/1",
-       "/api/v1/cases/2",
-       "/api/v1/cases/3",
-       "/api/v1/cases/4",
-       "/api/v1/cases/6",
-       "/api/v1/cases/8",
-       "/api/v1/cases/9",
-       "/api/v1/cases/12",
-       "/api/v1/cases/13",
-       "/api/v1/cases/16"
-      ]
-     }
+     "total_matches": 4,
+     "truncated": true,
+     "truncation_note": "Showing 1 of 4 matches. Results are capped \u2014 use output_format='count' for counting/aggregation queries."
     },
     "error": null,
     "success": true,
