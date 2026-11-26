@@ -53,6 +53,12 @@ IDEMPOTENCY_REQUEST_IN_PROGRESS = "IDEMPOTENCY_REQUEST_IN_PROGRESS"
 #: tell the two apart.
 IDEMPOTENCY_REPLAYED_HEADER = "X-Idempotency-Replayed"
 
+#: Redis prefixes: middleware entries and claims, turn and KB claims (#2958).
+IDEMPOTENCY_ENTRY_PREFIX = "idempotency:"
+IDEMPOTENCY_CLAIM_PREFIX = "idem-inflight:"
+TURN_CLAIM_PREFIX = "turn-inflight:"
+KB_CLAIM_PREFIX = "kb-inflight:"
+
 
 def is_valid_idempotency_key(key: str) -> bool:
     """Whether ``key`` is inside the grammar above.

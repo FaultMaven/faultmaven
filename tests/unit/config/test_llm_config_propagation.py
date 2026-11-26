@@ -40,7 +40,7 @@ def _reset_version():
 @pytest.mark.asyncio
 async def test_read_version_absent_is_zero(fake_redis):
     assert await cfg._read_config_version(fake_redis) == 0
-    await fake_redis.set(cfg._CONFIG_VERSION_KEY, 7)
+    await fake_redis.set(cfg.CONFIG_VERSION_KEY, 7)
     assert await cfg._read_config_version(fake_redis) == 7
 
 
@@ -82,7 +82,7 @@ async def test_watcher_reloads_when_version_advances(fake_redis, monkeypatch):
     await asyncio.sleep(0.03)  # let it seed from version 0
     assert reloads == []  # nothing to do yet
 
-    await fake_redis.incr(cfg._CONFIG_VERSION_KEY)  # another replica wrote config
+    await fake_redis.incr(cfg.CONFIG_VERSION_KEY)  # another replica wrote config
     await asyncio.sleep(0.05)  # let a poll observe the bump
 
     task.cancel()

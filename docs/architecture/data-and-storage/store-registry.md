@@ -30,7 +30,7 @@ one row; an in-process cache that holds tenant data is one row.
 caches that hold no tenant data, work-in-flight registries, and components that
 are composed but never written. The Slack agent's stores belong to that
 repository: its two SQLite files and the `faultmaven_slack` PostgreSQL database
-(`faultmaven/cli/wipe_deployment.py:116`; [Deployment Wipe](../../operations/deployment-wipe.md)).
+(`faultmaven/cli/wipe_deployment.py:120-122`; [Deployment Wipe](../../operations/deployment-wipe.md)).
 
 ## Columns
 
@@ -49,7 +49,7 @@ repository: its two SQLite files and the `faultmaven_slack` PostgreSQL database
 Redis families name the key as written to Redis. On a standalone deployment
 the Redis rows live in the API process's in-process FakeRedis and end with it;
 `fm-wipe-deployment` reports that keyspace as nothing durable to wipe
-(`faultmaven/cli/wipe_deployment.py:966-974`).
+(`faultmaven/cli/wipe_deployment.py:990-997`).
 
 ## What each store holds
 
@@ -98,25 +98,25 @@ the Redis rows live in the API process's in-process FakeRedis and end with it;
 | **KB vectors** | document: an authored one's vectors are deleted best effort after its row; a leftover chunk is never served (every read is row-checked) and the authored-orphan sweep removes it where an operator arms it; a built-in one's vectors go at the next pack-loading bootstrap | by the chunk's `enterprise_id` stamp: `not built` | cleared | none |
 | **Evidence objects** | case: every object under the case's prefix, sidecars included, before the row | by the key's `{enterprise_id}/` prefix: `not built` | cleared | none built in `infrastructure/storage/`; a bucket lifecycle policy is the operator's. An unlinked orphan older than `ORPHAN_FILE_TTL_HOURS` is swept where `ORPHAN_CLEANUP_ENABLED` (default off) |
 | **Redis `session:`, `sessions:user:`, `client_index:`** | user: `DELETE /sessions/{session_id}` deletes one session | through the user row: `not built` | cleared | `SESSION_TIMEOUT_MINUTES` (default 30) past the last write; an index lives as long as its newest session |
-| **Redis `session:case_seq:`** | none | through the user row: `not built` | cleared, under `session:` (the wipe's `case_seq:` prefix matches none of these keys) | 48 h |
+| **Redis `session:case_seq:`** | none | through the user row: `not built` | cleared, under `session:` | 48 h |
 | **Redis `session:session:…:current_case_id`** | case: erased by the case delete | through the case row: `not built` | cleared, under `session:` | 24 h |
 | **Redis `idempotency:`** | case: every entry whose request acted on the case, as its route declared, not every case it mentions, through `idempotency:case:{case_id}`, erased by the case delete; one cached after the eraser read the index, or under an index Redis lost, is a [residual](../../operations/case-deletion.md#residuals); user: none | no stamp to reach it by: `not built` | cleared, the indexes with it | 1 h; an index, 1 h past its newest entry |
 | **Redis `sso:state:`, `sso:login:`** | consumed once | none needed: bounded by its TTL | cleared | 600 s and 60 s |
-| **Redis `oauth:code:`, `oauth:claim:`** | claimed once | none needed: bounded by its TTL | `oauth:code:` cleared; `oauth:claim:` left, reported under no known prefix | `OAUTH_CODE_EXPIRY_SECONDS` (default 600); a claim inherits its code's remaining TTL |
+| **Redis `oauth:code:`, `oauth:claim:`** | claimed once | none needed: bounded by its TTL | cleared | `OAUTH_CODE_EXPIRY_SECONDS` (default 600); a claim inherits its code's remaining TTL |
 | **Redis `password_reset:`** | none | none needed: bounded by its TTL | cleared | 1 h |
-| **Redis `redaction:registry:{case_id}`** | case: erased by the case delete | through the case row: `not built` | cleared | 7 days, re-armed on every write |
-| **Redis `redaction:pseudonym_key_fingerprint`** | none; deleted by hand when the key is rotated | not tenant data | cleared | none |
+| **Redis `redaction:registry:{case_id}`** | case: erased by the case delete | through the case row: `not built` | cleared, under `redaction:registry:` | 7 days, re-armed on every write |
+| **Redis `redaction:pseudonym_key_fingerprint`** | none; deleted by hand when the key is rotated | not tenant data | cleared, by its exact name | none |
 | **Redis token revocations** | none | through the user row: `not built` | cleared (the configured prefix) | a token id: the token's remaining life; a user watermark: the longest token lifetime plus the mint-basis carry and the final stamp's clock allowance (rounded up to 1 s) |
 | **Redis `<preset>:rl:`** | none | none needed: bounded by its TTL | cleared, for all three namespaces (`faultmaven_dev`, `faultmaven_prod`, `faultmaven_staging`) | the limit's window plus 60 s |
 | **Redis `<preset>:dedup:`** | none | none needed: bounded by its TTL | cleared, for all three namespaces | the endpoint's TTL (default 30 s) |
-| **Redis `case-inflight:`, `case-deleting:`** | the tombstone is removed when its delete is refused or fails | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 30 s after the holder's last renewal (every 10 s), plus a 5 s key margin for the lease |
-| **Redis `turn-inflight:`** | released once the turn is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | the turn's response bound plus 30 s |
-| **Redis `kb-inflight:`** | released once the request is answered | by the key's enterprise id: `not built`; bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
-| **Redis `idem-inflight:`** | released once the request is answered, or, best effort, by a request cancelled before its route ran (a shutdown's anyio scope cancel can cut that release short; the claim then lapses at its TTL) | none needed: bounded by its TTL | left, reported under no known prefix | 60 s, renewed every 20 s while the request runs |
+| **Redis `case-inflight:`, `case-deleting:`** | the tombstone is removed when its delete is refused or fails | by the key's enterprise id: `not built`; bounded by its TTL | cleared; a lease holder still renewing rewrites its lease and fails `--verify`, while a tombstone stays gone | 30 s after the holder's last renewal (every 10 s), plus a 5 s key margin for the lease |
+| **Redis `turn-inflight:`** | released once the turn is answered | by the key's enterprise id: `not built`; bounded by its TTL | cleared; never renewed, so it stays gone | the turn's response bound plus 30 s |
+| **Redis `kb-inflight:`** | released once the request is answered | by the key's enterprise id: `not built`; bounded by its TTL | cleared; renewed only while held, so it stays gone | 60 s, renewed every 20 s while the request runs |
+| **Redis `idem-inflight:`** | released once the request is answered, or, best effort, by a request cancelled before its route ran (a shutdown's anyio scope cancel can cut that release short; the claim then lapses at its TTL) | none needed: bounded by its TTL | cleared; renewed only while held, so it stays gone | 60 s, renewed every 20 s while the request runs |
 | **Redis `job:`** | no writer | — | left, reported under no known prefix | 24 h, were one written |
 | **Redis `lock:report_generation:case:`** | no writer | — | left, reported under no known prefix | 300 s, were one written |
-| **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix | none |
-| **Redis `faultmaven:llm_config:version`** | none | not tenant data | left, reported under no known prefix | none |
+| **Redis `auth:`** | user: the account's keys | no stamp to reach it by: `not built` | left, reported under no known prefix: nothing boots the Redis user store (fm#1647), so another application's `auth:` keys are never deleted | none |
+| **Redis `faultmaven:llm_config:version`** | none | not tenant data | cleared, by its exact name; a live replica then stops reloading until the counter passes its applied version or it restarts | none |
 | **Trace store** | case and conversion: purged by their tags before the case delete and the draft and document deletes, with the residuals in [Case deletion](../../operations/case-deletion.md#residuals) | by the `enterprise_id` tag: `not built`, and no retention bound covers it | not covered by `fm-wipe-deployment`; `fm-purge-traces` deletes by start time | none: no bound can be verified through Opik's API (#2700), so content stays refused (#2616 K0, #2669). Content written before #2669 stays until an operator runs `fm-purge-traces` ([runbook](../../operations/case-deletion.md#purging-the-traces-written-before-2698)) |
 | **Trace SDK's local buffer** | replayed to the backend when a delete runs on that pod, and only then purgeable there | as the trace store | not covered: pending #2616 | none: a parked trace otherwise replays at the monitor's next ping once the backend is back: within the SDK's default interval when the backend URL has no path (the form checked live), and in effect never under any other form: #2573 |
 | **LLM response cache** | none, a stated exclusion ([ruling on #2624](https://github.com/FaultMaven/faultmaven/issues/2624#issuecomment-6719598372)): entries outlive a case delete, at most 1,000 per replica, evicted oldest first, or until the process ends. No request asks for a deleted case id again, and an eraser would need a cross-replica broadcast for memory nothing can read | no stamp to reach it by; ends with the process | ends with the process | none: eviction is by count only |
@@ -147,7 +147,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 - Tenant retirement: `cli/personal_tenant.py:59-60`;
   `docs/operations/sso-org-provisioning.md:535-537`.
 - Wipe: [Deployment Wipe](../../operations/deployment-wipe.md#the-database-drop-and-recreate-never-delete);
-  `cli/wipe_deployment.py:128-129`, `:198-219`, `:420-457`.
+  `cli/wipe_deployment.py:134-135`, `:204-225`, `:440-477`.
 - Retention, `token_revocations`: `modules/auth/infrastructure/stores/token_revocation_store.py:268-277`,
   `:319-334`; `cleanup_expired` (`:532-536`) has no caller in `faultmaven/`.
 
@@ -184,7 +184,7 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `KnowledgeVectorStore._mark_written` after every write the store makes and read
   by the term-index lookup (`KnowledgeVectorStore._corpus_term_stats`). It holds no
   tenant data and ends with the collection: the deployment wipe deletes the
-  collection (`cli/wipe_deployment.py:721`).
+  collection (`cli/wipe_deployment.py:740`).
 - Delete: `modules/knowledge/domain/services/knowledge_service.py:599-640`, `:747-751`;
   `bootstrap/kb_orphan_sweep.py:1-18`; `bootstrap/kb_init.py:713`.
 
@@ -202,32 +202,34 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
 
 ### Redis families
 
-- The wipe's prefixes: `cli/wipe_deployment.py:226-284`; a key under none of them is
-  reported and never fails `--verify`: `cli/wipe_deployment.py:992-1006`.
-- Auth sessions: `modules/auth/infrastructure/stores/redis_session_store.py:44-51`,
-  `:93-96`, `:136`, `:185`; `container/providers/infrastructure.py:454-467`;
+- The wipe's namespaces: `cli/wipe_deployment.py:228-304`, each fixed spelling
+  imported from the module its writer builds from, and the two exact keys
+  matched and deleted by equality (`:889-896`, `:1080-1084`); a key under none of
+  them is reported and never fails `--verify`: `cli/wipe_deployment.py:1016-1029`.
+- Auth sessions: `modules/auth/infrastructure/stores/redis_session_store.py:34-37`, `:47-62`,
+  `:106-110`, `:196-203`; `container/providers/infrastructure.py:454-467`;
   `config/settings.py` (`SessionSettings.timeout_minutes`); `modules/auth/domain/services/auth_session_service.py:351-366`, `:544-551`;
   `modules/auth/api/session.py:670-716`.
 - Case number counters: `modules/case/domain/services/case_service.py:244-248`;
-  the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:205-212`.
+  the store's prefix: `modules/auth/infrastructure/stores/redis_session_store.py:223-230`.
 - Session pointers: `modules/case/domain/services/case_erasure.py:14-31`;
   `modules/case/domain/services/case_service.py:323-327`, `:783-787`.
-- `idempotency:`: `api/middleware/idempotency.py:242-243`, `:967-984`, `:1020-1048`, `:794-802`.
+- `idempotency:`: `config/idempotency_key.py:57`; `api/middleware/idempotency.py:238-240`, `:963-980`, `:1016-1044`, `:790-798`.
   Delete, case: a route declares the case its request acts on
-  (`api/middleware/idempotency.py:169-234`, read at `:413-427`): the case router
+  (`api/middleware/idempotency.py:204-230`, read at `:409-423`): the case router
   by its `{case_id}` path (`modules/case/api/routes/router.py:27`), the create
   route by the new case (`modules/case/api/routes/cases.py:487`), the report
   routes by `case_id` and by the report's case (`modules/report/api/routes.py:364`,
   `:965`). Case search answers many cases and is `never_replayed` (`main.py:229-234`).
   The entry joins that case's index in its own MULTI/EXEC, with the prune
-  (`api/middleware/idempotency.py:1041-1048`). `IdempotencyReplayEraser`
-  (`:1107-1154`) reads the index's members scored after now, then unlinks and
+  (`api/middleware/idempotency.py:1037-1044`). `IdempotencyReplayEraser`
+  (`:1103-1150`) reads the index's members scored after now, then unlinks and
   unindexes each batch in one MULTI/EXEC, so a member cached after the read stays
   indexed for a later delete and a failed batch leaves the rest indexed for the
   retry. A stale member is skipped: its entry expired by the index's own record,
   and its key, which names no case, may since hold another case's entry. That
-  line is approximate. A score is taken before its write commits (`:1044`,
-  executed at `:1048`), so it falls short of the entry's expiry by the write's
+  line is approximate. A score is taken before its write commits (`:1040`,
+  executed at `:1044`), so it falls short of the entry's expiry by the write's
   commit delay: the eraser skips an entry of the case in that last interval,
   which outlives the delete by at most the delay. Clocks out of step between
   replicas move the line by their skew, either way: a writer clock behind the
@@ -243,8 +245,8 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   does; an eviction or a failover can lose an index while its entries survive.
 - SSO: `modules/auth/infrastructure/stores/sso_ephemeral_store.py:19-47`;
   `modules/auth/domain/services/sso_login_service.py:117`, `:121`.
-- OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:87-103`,
-  `:117-119`, `:178-182`; `container/providers/services.py:1040-1055`, `:1494-1501`;
+- OAuth: `modules/auth/infrastructure/repositories/oauth_code_repository.py:17-19`, `:91-107`,
+  `:121-123`, `:182-186`; `container/providers/services.py:1040-1055`, `:1494-1501`;
   `config/settings.py` (`AuthSettings.oauth_code_expiry_seconds`).
 - `password_reset:`: `modules/auth/domain/services/user_service.py:123`, `:460-462`;
   `modules/auth/domain/services/jwt_token_generator.py:67`.
@@ -259,10 +261,13 @@ Citations only. Paths are relative to `faultmaven/` unless they start with
   `api/middleware/rate_limiting.py:161`; `config/protection.py:75-82`.
 - Deduplication: `api/middleware/deduplication.py:100`, `:409-414`; `config/protection.py:588`, `:751`.
 - Case lease and tombstone: `infrastructure/concurrency/inflight.py:55-62`, `:76-93`,
-  `:124-129`; [Case deletion](../../operations/case-deletion.md#work-in-flight-holds-a-delete-off-2096).
-- `turn-inflight:`: `modules/case/api/turn_idempotency.py:91-108`.
-- `kb-inflight:`: `modules/knowledge/api/request_idempotency.py:66-67`, `:155-160`, `:196-202`.
-- `idem-inflight:`: `api/middleware/idempotency.py:175-181`, `:460-476`.
+  `:121-123`, `:132-137`; [Case deletion](../../operations/case-deletion.md#work-in-flight-holds-a-delete-off-2096).
+- `turn-inflight:`: `config/idempotency_key.py:59`; `modules/case/api/turn_idempotency.py:90-111`, never renewed: `:264-268`.
+- `kb-inflight:`: `config/idempotency_key.py:60`; `modules/knowledge/api/request_idempotency.py:70-71`, `:165-170`, `:206-212`.
+- `idem-inflight:`: `config/idempotency_key.py:58`; `api/middleware/idempotency.py:174-177`, `:456-472`.
+- Renewal after a wipe: a lease holder rewrites a lease it finds gone
+  (`infrastructure/concurrency/inflight.py:376-378`); a tombstone, `kb-inflight:` and
+  `idem-inflight:` renew only a key still held (`infrastructure/concurrency/owned_claim.py:48-55`, `:108-109`).
 - `job:`: `infrastructure/jobs/job_service.py:51-52`; `bootstrap/composition.py:591`;
   no caller of `create_job` in `faultmaven/`.
 - `lock:report_generation:case:`: `infrastructure/concurrency/report_lock_manager.py:51`;

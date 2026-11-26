@@ -51,6 +51,7 @@ from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_PATTERN,
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REPLAYED_HEADER,
+    KB_CLAIM_PREFIX,
 )
 from faultmaven.infrastructure.concurrency.owned_claim import (
     ClaimHeld,
@@ -164,7 +165,7 @@ def redis_of(request: Optional[Request]) -> Any:
 def claim_name(key: KbReceiptKey) -> str:
     """The claim's Redis key: the receipt's own key, prefixed."""
     return (
-        f"kb-inflight:{key.enterprise_id}:{key.author_id}:{key.route_name}:"
+        f"{KB_CLAIM_PREFIX}{key.enterprise_id}:{key.author_id}:{key.route_name}:"
         f"{key.idempotency_key}"
     )
 

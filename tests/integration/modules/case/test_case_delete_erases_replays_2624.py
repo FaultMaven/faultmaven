@@ -23,14 +23,13 @@ import pytest
 from fastapi import FastAPI
 
 from faultmaven.api.middleware import idempotency
-from faultmaven.api.middleware.idempotency import (
-    KEY_PREFIX,
-    IdempotencyMiddleware,
-    case_index_key,
-)
+from faultmaven.api.middleware.idempotency import IdempotencyMiddleware, case_index_key
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.config.constants import STANDALONE_ENTERPRISE_ID
-from faultmaven.config.idempotency_key import IDEMPOTENCY_REPLAYED_HEADER
+from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_ENTRY_PREFIX,
+    IDEMPOTENCY_REPLAYED_HEADER,
+)
 from faultmaven.config.settings import get_settings
 from faultmaven.config.tenant_context import set_current_enterprise_id
 from faultmaven.container.providers.services import create_case_service
@@ -168,8 +167,8 @@ async def test_an_overlapping_keyed_create_creates_one_case(world, monkeypatch):
     case_id = first.json()["case_id"]
     assert len(created) == 1
     assert _replayed(retry) and retry.json()["case_id"] == case_id
-    (index,) = await world.fake.keys(f"{KEY_PREFIX}case:*")
-    assert index == case_index_key(KEY_PREFIX, case_id)
+    (index,) = await world.fake.keys(f"{IDEMPOTENCY_ENTRY_PREFIX}case:*")
+    assert index == case_index_key(IDEMPOTENCY_ENTRY_PREFIX, case_id)
     assert len(await world.fake.zrange(index, 0, -1)) == 1
 
 

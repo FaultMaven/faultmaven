@@ -45,6 +45,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_CLAIM_PREFIX,
+    IDEMPOTENCY_ENTRY_PREFIX,
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REPLAYED_HEADER,
     IDEMPOTENCY_REQUEST_IN_PROGRESS,
@@ -166,14 +168,8 @@ MAX_FINGERPRINTED_BODY_BYTES = 256 * 1024
 # Not a hex digest, so it can never collide with a real fingerprint.
 UNFINGERPRINTED_BODY = "body-unfingerprinted"
 
-#: Where the replay entries live, and their per-case indexes beside them.
-KEY_PREFIX = "idempotency:"
-
 #: How many entries one ``UNLINK`` of the case delete names.
 ERASE_BATCH = 500
-
-#: Where the in-flight claims live, one per entry key (#2655).
-CLAIM_PREFIX = "idem-inflight:"
 
 #: The claim's lease, as the KB requests' (``request_idempotency``): renewed
 #: every third of it while the route runs, and lapsing within it after the
@@ -241,7 +237,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.redis_client = redis_client
         self.ttl_seconds = 3600  # 1 hour TTL for idempotency keys
-        self.key_prefix = KEY_PREFIX
+        self.key_prefix = IDEMPOTENCY_ENTRY_PREFIX
         # (policy object, derived replay-exclusion set). policy_for returns a
         # stable object per declaration, so this is an identity check on the hot
         # path rather than a rebuild of the set on every POST.
@@ -457,7 +453,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         the in-progress 409 once the wait is spent, or when Redis fails a
         lookup under the claim or a waiter's read or claim.
         """
-        name = CLAIM_PREFIX + cache_key[len(self.key_prefix) :]
+        name = IDEMPOTENCY_CLAIM_PREFIX + cache_key[len(self.key_prefix) :]
         loop = asyncio.get_running_loop()
         deadline: Optional[float] = None
         while True:
@@ -1134,7 +1130,7 @@ class IdempotencyReplayEraser:
 
     store_name = "idempotency_replays"
 
-    def __init__(self, redis_client: Any, key_prefix: str = KEY_PREFIX):
+    def __init__(self, redis_client: Any, key_prefix: str = IDEMPOTENCY_ENTRY_PREFIX):
         self.redis_client = redis_client
         self.key_prefix = key_prefix
 

@@ -16,8 +16,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-_STATE_PREFIX = "sso:state:"
-_LOGIN_PREFIX = "sso:login:"
+STATE_PREFIX = "sso:state:"
+LOGIN_PREFIX = "sso:login:"
 
 
 class SSOEphemeralStore:
@@ -34,21 +34,21 @@ class SSOEphemeralStore:
 
     async def put_state(self, state: str, payload: dict, ttl_seconds: int) -> None:
         """Store the login ``state`` payload under a TTL (single-use)."""
-        await self._put(_STATE_PREFIX + state, payload, ttl_seconds)
+        await self._put(STATE_PREFIX + state, payload, ttl_seconds)
 
     async def consume_state(self, state: str) -> dict | None:
         """Atomically fetch-and-delete the ``state`` payload, or None if absent."""
-        return await self._consume(_STATE_PREFIX + state)
+        return await self._consume(STATE_PREFIX + state)
 
     # -- completion code (callback -> dashboard hand-off) ------------------- #
 
     async def put_login(self, code: str, payload: dict, ttl_seconds: int) -> None:
         """Store the completion ``code`` payload under a TTL (single-use)."""
-        await self._put(_LOGIN_PREFIX + code, payload, ttl_seconds)
+        await self._put(LOGIN_PREFIX + code, payload, ttl_seconds)
 
     async def consume_login(self, code: str) -> dict | None:
         """Atomically fetch-and-delete the completion payload, or None if absent."""
-        return await self._consume(_LOGIN_PREFIX + code)
+        return await self._consume(LOGIN_PREFIX + code)
 
     # -- internals ---------------------------------------------------------- #
 

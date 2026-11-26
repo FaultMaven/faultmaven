@@ -282,7 +282,7 @@ async def test_a_mismatched_confirm_target_wipes_nothing(monkeypatch, capsys):
 def test_known_prefixes_are_counted_per_namespace():
     prefixes = ("session:", "revoked:token:", "sso:state:")
     counts, unmatched = wd.classify_redis_keys(
-        ["session:a", "session:b", "revoked:token:jti:x", "sso:state:s"], prefixes
+        ["session:a", "session:b", "revoked:token:jti:x", "sso:state:s"], (prefixes, ())
     )
     assert counts["session:"] == 2
     assert counts["revoked:token:"] == 1
@@ -293,28 +293,56 @@ def test_known_prefixes_are_counted_per_namespace():
 def test_keys_outside_every_known_prefix_are_reported_not_dropped():
     """The scoped wipe leaves these behind, so they must be visible. Silently
     counting them as swept is how an incomplete wipe reads as a clean one."""
-    counts, unmatched = wd.classify_redis_keys(["celery:task:1", "session:a"])
+    counts, unmatched = wd.classify_redis_keys(
+        ["celery:task:1", "session:a"], wd.redis_namespaces(_Settings())
+    )
     assert unmatched == ["celery:task:1"]
     assert counts["session:"] == 1
 
 
-def test_the_prefix_set_covers_every_namespace_the_app_writes():
-    """These are the live keyspaces found in the code. A namespace missing here
-    is one the scoped wipe silently leaves behind."""
-    prefixes = wd.redis_prefixes(_Settings())
+def test_the_prefix_set_holds_each_defining_modules_constant():
+    """Each family's spelling comes from the module its writer builds from
+    (#2958); a namespace missing here is one the scoped wipe leaves behind."""
+    from faultmaven.config import idempotency_key, llm_config_overrides
+    from faultmaven.infrastructure.concurrency import inflight
+    from faultmaven.infrastructure.security import pseudonym_key
+    from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+    from faultmaven.modules.auth.domain.services import user_service
+    from faultmaven.modules.auth.infrastructure.repositories import (
+        oauth_code_repository as oauth,
+    )
+    from faultmaven.modules.auth.infrastructure.stores import (
+        redis_session_store as sessions,
+    )
+    from faultmaven.modules.auth.infrastructure.stores import sso_ephemeral_store
+
+    prefixes, exact = wd.redis_namespaces(_Settings())
     for prefix in (
-        "session:",
-        "client_index:",  # the session store's own index
-        "sessions:user:",  # the session store's per-user index
-        "idempotency:",
-        "sso:state:",
-        "sso:login:",
-        "oauth:code:",
-        "password_reset:",
-        "case_seq:",
-        "redaction:",
+        sessions.SESSION_PREFIX,
+        sessions.CLIENT_INDEX_PREFIX,
+        sessions.USER_INDEX_PREFIX,
+        idempotency_key.IDEMPOTENCY_ENTRY_PREFIX,
+        idempotency_key.IDEMPOTENCY_CLAIM_PREFIX,
+        idempotency_key.TURN_CLAIM_PREFIX,
+        idempotency_key.KB_CLAIM_PREFIX,
+        sso_ephemeral_store.STATE_PREFIX,
+        sso_ephemeral_store.LOGIN_PREFIX,
+        oauth.CODE_PREFIX,
+        oauth.CLAIM_PREFIX,
+        user_service.RESET_TOKEN_PREFIX,
+        inflight.LEASE_PREFIX,
+        inflight.TOMBSTONE_PREFIX,
+        CaseRedactionContext.REDIS_KEY_PREFIX + ":",
     ):
         assert prefix in prefixes, f"{prefix} is written by the app but not swept"
+    assert set(exact) == {
+        llm_config_overrides.CONFIG_VERSION_KEY,
+        pseudonym_key.AGREEMENT_REDIS_KEY,
+    }
+    assert "case_seq:" not in prefixes, "case_seq keys land under session:"
+    # No process boots the Redis user store (fm#1647), so another app's
+    # ``auth:`` keys on a shared Redis are never swept.
+    assert not any(p.startswith("auth:") for p in prefixes), prefixes
 
 
 def test_the_revocation_prefix_comes_from_settings_not_a_literal():
@@ -323,7 +351,7 @@ def test_the_revocation_prefix_comes_from_settings_not_a_literal():
     watermark through a "successful" wipe."""
     settings = _Settings()
     settings.security.token_revocation_prefix = "custom:revoked:"
-    prefixes = wd.redis_prefixes(settings)
+    prefixes, _exact = wd.redis_namespaces(settings)
     assert "custom:revoked:" in prefixes
     assert "revoked:token:" not in prefixes
 
@@ -331,7 +359,7 @@ def test_the_revocation_prefix_comes_from_settings_not_a_literal():
 def test_the_protection_namespaces_are_included():
     """Rate-limit and dedup keys are built from the protection presets'
     redis_key_prefix, not a literal."""
-    prefixes = wd.redis_prefixes(_Settings())
+    prefixes, _exact = wd.redis_namespaces(_Settings())
     assert any(p.endswith(":rl") for p in prefixes), prefixes
     assert any(p.endswith(":dedup") for p in prefixes), prefixes
 
@@ -345,7 +373,7 @@ def test_every_preset_protection_namespace_is_included_not_just_the_resolved_one
     """
     from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
 
-    prefixes = wd.redis_prefixes(_Settings())
+    prefixes, _exact = wd.redis_namespaces(_Settings())
     for key_prefix in ALL_REDIS_KEY_PREFIXES:
         assert f"{key_prefix}:rl" in prefixes, prefixes
         assert f"{key_prefix}:dedup" in prefixes, prefixes
@@ -380,7 +408,7 @@ def test_production_rate_limit_keys_classify_under_any_resolved_environment(
         "faultmaven_staging:rl:global:10.244.1.7",
         "faultmaven_staging:dedup:xyz789",
     ]
-    _counts, unmatched = wd.classify_redis_keys(observed, wd.redis_prefixes(settings))
+    _counts, unmatched = wd.classify_redis_keys(observed, wd.redis_namespaces(settings))
 
     assert unmatched == [], (
         "protection keys written under a different ENVIRONMENT must still be "
@@ -427,7 +455,8 @@ def test_unrelated_third_party_keys_are_still_reported_as_unknown():
     """The widened prefix set must not swallow keys FaultMaven never wrote —
     otherwise 'no residue' stops meaning anything."""
     _counts, unmatched = wd.classify_redis_keys(
-        ["celery:task:1", "faultmaven_prod:rl:global:1"], wd.redis_prefixes(_Settings())
+        ["celery:task:1", "faultmaven_prod:rl:global:1"],
+        wd.redis_namespaces(_Settings()),
     )
     assert unmatched == ["celery:task:1"]
 

@@ -14,6 +14,10 @@ from typing import Dict, Optional
 
 from faultmaven.modules.auth.contracts import IOAuthCodeRepository, OAuthCodeDTO
 
+#: Redis prefixes: codes, and their single-use claims (#2958).
+CODE_PREFIX = "oauth:code:"
+CLAIM_PREFIX = "oauth:claim:"
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,7 +88,7 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
 
     def __init__(self, redis_client):
         self.redis = redis_client
-        self._key_prefix = "oauth:code:"
+        self._key_prefix = CODE_PREFIX
         # A DISTINCT namespace, not a suffix on the code key.
         #
         # `_make_key` is not injective if a derived key shares its prefix:
@@ -94,7 +98,7 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         # -> AttributeError -> 500 on an unauthenticated endpoint. Separate
         # prefixes make that unreachable by construction: nothing `_make_key`
         # can produce starts with `oauth:claim:`.
-        self._claim_prefix = "oauth:claim:"
+        self._claim_prefix = CLAIM_PREFIX
 
     def _make_key(self, code: str) -> str:
         return f"{self._key_prefix}{code}"

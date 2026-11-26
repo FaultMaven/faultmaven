@@ -118,6 +118,10 @@ class Kind(enum.Enum):
     MUST_FINISH = "must_finish"
 
 
+#: Redis prefixes: a case's in-flight leases, and its delete tombstone (#2958).
+LEASE_PREFIX = "case-inflight:"
+TOMBSTONE_PREFIX = "case-deleting:"
+
 _TRACKED: Dict["asyncio.Task[Any]", Tuple[str, Kind]] = {}
 _RELEASES: Set["asyncio.Task[None]"] = set()
 _LEASES: Dict[CaseKey, "_CaseLease"] = {}
@@ -126,11 +130,11 @@ _REPORTED: Set[str] = set()
 
 
 def lease_key(case: CaseKey) -> str:
-    return f"case-inflight:{case[0]}:{case[1]}"
+    return f"{LEASE_PREFIX}{case[0]}:{case[1]}"
 
 
 def tombstone_key(case: CaseKey) -> str:
-    return f"case-deleting:{case[0]}:{case[1]}"
+    return f"{TOMBSTONE_PREFIX}{case[0]}:{case[1]}"
 
 
 def track(
