@@ -1456,8 +1456,9 @@ _CODE_ENUMS = {"NoticeCode": NoticeCode, "OfferCode": OfferCode}
 
 def _recorded(function: ast.AST, where: str) -> tuple[set[str], list[str]]:
     """The codes ``function`` records (``record_decision(m, <Enum>.<X>,
-    ...)``), by value, and one problem per call whose code is not such a
-    literal."""
+    ...)``, or ``code=<Enum>.<X>``), by value, and one problem per call whose
+    code is not such a literal: a ``*args`` or ``**kwargs`` that may hold
+    it included."""
     codes: set[str] = set()
     problems = []
     for node in ast.walk(function):
@@ -1467,7 +1468,12 @@ def _recorded(function: ast.AST, where: str) -> tuple[set[str], list[str]]:
             == "record_decision"
         ):
             continue
-        code = node.args[1] if len(node.args) > 1 else None
+        if any(isinstance(arg, ast.Starred) for arg in node.args):
+            code = None
+        elif len(node.args) > 1:
+            code = node.args[1]
+        else:
+            code = next((k.value for k in node.keywords if k.arg == "code"), None)
         enum = getattr(getattr(code, "value", None), "id", None)
         if not isinstance(code, ast.Attribute) or enum not in _CODE_ENUMS:
             problems.append(f"{where}:{node.lineno}: a code that is not a literal")
@@ -1564,6 +1570,24 @@ def _decided_recorders(tree: ast.AST, path: str) -> tuple[set, list[str]]:
     found: set = set()
     problems: list[str] = []
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            problems += [
+                f"{path}:{node.lineno}: record_decision imported as {alias.asname}"
+                for alias in node.names
+                if alias.name == "record_decision"
+                and alias.asname not in (None, "record_decision")
+            ]
+            continue
+        name = getattr(node, "id", None) or getattr(node, "attr", None)
+        if (
+            name == "record_decision"
+            and isinstance(getattr(node, "ctx", None), ast.Load)
+            and not (
+                isinstance(parents.get(node), ast.Call) and parents[node].func is node
+            )
+        ):
+            problems.append(f"{path}:{node.lineno}: record_decision, not called")
+            continue
         if not (
             isinstance(node, ast.Call)
             and getattr(node.func, "id", getattr(node.func, "attr", None))
@@ -1622,11 +1646,42 @@ def test_every_function_recording_a_decided_key_is_a_cycle_source():
             "def decide(m, code):\n    record_decision(m, code)",
             f"{_ME}probe.py::decide:2: a code that is not a literal",
         ),
+        (
+            "def decide(m, *a):\n    record_decision(m, *a)",
+            f"{_ME}probe.py::decide:2: a code that is not a literal",
+        ),
+        (
+            "def decide(m, **k):\n    record_decision(m, **k)",
+            f"{_ME}probe.py::decide:2: a code that is not a literal",
+        ),
+        (
+            "def decide(m):\n    record_decision(m, code=OfferCode.FALSE_ALARM_CLOSE)",
+            f"{_ME}probe.py::decide: records a DECIDED_FROM key, neither a cycle "
+            "source nor a declared exclusion",
+        ),
+        (
+            "from x import record_decision as rd\ndef decide(m):\n"
+            "    rd(m, OfferCode.FALSE_ALARM_CLOSE)",
+            f"{_ME}probe.py:1: record_decision imported as rd",
+        ),
+        (
+            "def decide(m):\n    rd = record_decision\n"
+            "    rd(m, OfferCode.FALSE_ALARM_CLOSE)",
+            f"{_ME}probe.py:2: record_decision, not called",
+        ),
+        (
+            "import functools\ndef decide(m):\n"
+            "    functools.partial(record_decision, m)(OfferCode.FALSE_ALARM_CLOSE)",
+            f"{_ME}probe.py:3: record_decision, not called",
+        ),
     ],
 )
 def test_a_recorder_outside_the_table_fails_the_scan(source, problem):
-    """A positive control: a synthetic recorder of a decided key, or of a code
-    the scan cannot read, outside ``CYCLE_SOURCES``."""
+    """A positive control per case: a synthetic recorder of a decided key
+    (positional or ``code=``), a code the scan cannot read (a name,
+    ``*args``, ``**kwargs``), and ``record_decision`` under another name (an
+    aliased import, an assignment, ``functools.partial``), outside
+    ``CYCLE_SOURCES``."""
     found, problems = _decided_recorders(ast.parse(source), _ME + "probe.py")
     assert problem in _undeclared_deciders(found, problems)
 
