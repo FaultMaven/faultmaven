@@ -115,6 +115,15 @@ LOW_CONFIDENCE_RETIREMENT_LIKELIHOOD = 0.3
 SUPPORT_LIKELIHOOD_STEP = 0.15
 REFUTE_LIKELIHOOD_STEP = 0.20
 
+# A likelihood move of this much or more is progress, and a model lowering this
+# much or more retires past a self-hedged REFUTES hold.
+LIKELIHOOD_PROGRESS_STEP = 0.05
+
+
+def _moves_a_step(delta: float) -> bool:
+    # Float subtraction puts an exact 0.05 move (0.30 - 0.25) just under 0.05.
+    return delta >= LIKELIHOOD_PROGRESS_STEP - 1e-9
+
 
 #: Recorded when an anti-anchoring retirement removes a hypothesis that was
 #: linked to evidence on some axis. Byte-identical to the string this mechanism
@@ -464,7 +473,7 @@ class HypothesisManager:
         hypothesis.last_updated_turn = turn
 
         # Check if this represents progress
-        if abs(new_likelihood - old_likelihood) >= 0.05:  # 5% threshold
+        if _moves_a_step(abs(new_likelihood - old_likelihood)):
             hypothesis.last_progress_at_turn = turn
             hypothesis.iterations_without_progress = 0
         else:
@@ -530,12 +539,12 @@ class HypothesisManager:
             )
             hypothesis_likelihood_capped_no_evidence_total.inc()
         hypothesis.likelihood = capped
-        lowered = capped <= old_likelihood - 0.05
+        lowered = _moves_a_step(old_likelihood - capped)
         # Progress is judged on the APPLIED value (consistent with
         # update_likelihood_from_evidence): a capped re-request of the same
         # over-cap number is a no-op, not progress — it must not reset the
         # stagnation/decay counters.
-        if abs(capped - old_likelihood) >= 0.05:  # 5% threshold
+        if _moves_a_step(abs(capped - old_likelihood)):
             hypothesis.last_updated_turn = current_turn
             hypothesis.last_progress_at_turn = current_turn
             hypothesis.iterations_without_progress = 0
