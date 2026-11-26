@@ -63,6 +63,7 @@ async def test_save_and_reload_bumps_shared_version(fake_redis, monkeypatch):
     import faultmaven.infrastructure.persistence.llm_config_repository as repo
 
     monkeypatch.setattr(repo, "set_overrides", _fake_set_overrides)
+    cfg._last_applied_version = 0  # the watcher's seed from the absent key
 
     await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
 
@@ -155,12 +156,13 @@ async def test_save_and_reload_warns_and_skips_bump_when_redis_unavailable(
         return None
 
     monkeypatch.setattr(repo, "set_overrides", _fake_set_overrides)
+    cfg._last_applied_version = 0  # the watcher's seed from the absent key
 
     with caplog.at_level(logging.WARNING):
         await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
 
     assert reloaded == [True]  # local apply was NOT blocked
-    assert cfg._last_applied_version is None  # bump skipped — no fake counter recorded
+    assert cfg._last_applied_version == 0  # bump skipped — no fake counter recorded
     assert await cfg._read_config_version(fake_redis) == 0  # fake counter untouched
     assert any(
         "could not bump" in r.message.lower() for r in caplog.records

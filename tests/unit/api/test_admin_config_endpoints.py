@@ -353,6 +353,29 @@ class TestGetLLMConfig:
         assert result.config_sources["openai_api_key"] == "env-default"
 
     @pytest.mark.asyncio
+    async def test_a_failed_override_read_in_cloud_answers_500(
+        self, mock_admin_user, mock_llm_provider, mock_settings
+    ):
+        """An unread store is not one with no overrides: the route answers its
+        500, never every key `env-default` (#2987)."""
+        mock_settings.is_cloud = True
+
+        with (
+            patch(SETTINGS_PATCH, return_value=mock_settings),
+            patch(
+                "faultmaven.infrastructure.persistence.llm_config_repository.get_all_overrides",
+                new=AsyncMock(side_effect=ConnectionError("db down")),
+            ),
+            pytest.raises(HTTPException) as raised,
+        ):
+            await get_llm_config(
+                current_user=mock_admin_user, llm_provider=mock_llm_provider
+            )
+
+        assert raised.value.status_code == 500
+        assert raised.value.detail == "Failed to get LLM configuration"
+
+    @pytest.mark.asyncio
     async def test_provider_details_structure(
         self, mock_admin_user, mock_llm_provider, mock_settings
     ):

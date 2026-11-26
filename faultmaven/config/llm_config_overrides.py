@@ -12,7 +12,8 @@ runtime-safe settings is the documented Phase-2 breadth follow-on.
 Usage:
     from faultmaven.config.llm_config_overrides import apply_overrides_to_settings
 
-    # After get_settings() returns, apply DB overrides
+    # After get_settings() returns, apply DB overrides. A failed read raises:
+    # it is never read as "no overrides" (#2987).
     settings = get_settings()
     await apply_overrides_to_settings(settings)
 """
@@ -39,8 +40,11 @@ CONFIG_VERSION_KEY = "faultmaven:llm_config:version"
 # it is the per-replica high-water mark compared against the shared Redis value.
 _last_applied_version: Optional[int] = None
 
-# The newest generation a reload has taken; only that reload installs (#2320).
+# The newest generation a reload has taken, and the newest one installed: a
+# reload installs only when it is newer than the installed one (#2320), so a
+# reload that fails blocks no other (#2987).
 _reload_generation = 0
+_installed_generation = 0
 
 # Maps override keys to (settings attribute path, type converter)
 # Only keys in this map are accepted — prevents arbitrary setting injection.
@@ -89,21 +93,16 @@ async def get_config_source_map(is_cloud: bool) -> dict[str, str]:
     (cloud only); otherwise it's 'env-default' (.env / seed). Standalone has no
     DB overrides, so every key is 'env-default'. This lives in the config layer
     (not the API route) so the read of the infrastructure repository does not
-    cross the API → infrastructure architecture boundary.
+    cross the API → infrastructure architecture boundary. Under cloud a failed
+    read raises: an unread store is not one with no overrides (#2987).
     """
     db_overrides: dict[str, str] = {}
     if is_cloud:
-        try:
-            from faultmaven.infrastructure.persistence.llm_config_repository import (
-                get_all_overrides,
-            )
+        from faultmaven.infrastructure.persistence.llm_config_repository import (
+            get_all_overrides,
+        )
 
-            db_overrides = await get_all_overrides()
-        except Exception as e:  # DB may be unavailable; treat as no overrides
-            logger.debug(
-                "Could not read config overrides for provenance: "
-                f"{exception_log_name(e)}"
-            )
+        db_overrides = await get_all_overrides()
 
     return {
         key: ("admin-override" if key in db_overrides else "env-default")
@@ -115,18 +114,14 @@ async def apply_overrides_to_settings(settings) -> None:
     """Read overrides from DB and apply them to the LLM settings object.
 
     Uses object.__setattr__ to bypass pydantic frozen model validation.
-    Only applies keys listed in _ALLOWED_OVERRIDES.
+    Only applies keys listed in _ALLOWED_OVERRIDES. A failed read raises, so no
+    caller installs env-only settings over the operator's (#2987).
     """
-    try:
-        from faultmaven.infrastructure.persistence.llm_config_repository import (
-            get_all_overrides,
-        )
+    from faultmaven.infrastructure.persistence.llm_config_repository import (
+        get_all_overrides,
+    )
 
-        overrides = await get_all_overrides()
-    except Exception as e:
-        # DB may not be ready (first startup, migrations pending)
-        logger.debug(f"Could not read LLM config overrides: {exception_log_name(e)}")
-        return
+    overrides = await get_all_overrides()
 
     if not overrides:
         return
@@ -168,28 +163,30 @@ async def reload_llm_config() -> None:
     Call after writing new overrides to the database. This:
     1. Builds fresh settings from the env vars, off the singleton
     2. Re-reads overrides from DB and applies them to those settings
-    3. Installs them as the singleton, in one step, unless a later reload has
-       started since step 1: the reload that started last installs, so an older
-       override read that returns last never overwrites a newer one
+    3. Installs them as the singleton, in one step, unless a reload that
+       started later has already installed: an older override read that
+       returns last never overwrites a newer one
     4. Resets the provider registry (forces re-initialization)
 
     Until step 3 every reader, the router's per-call timeout included, sees the
     previous settings, never the env-only ones the override read awaits on; a
-    build that raises leaves them installed (#2320). Steps 3 and 4 run with no
-    await between them. The registry re-initializes lazily on the next request.
+    build or an override read that raises leaves them installed (#2320, #2987)
+    and blocks no other reload. The check and steps 3 and 4 run with no await
+    between them. The registry re-initializes lazily on the next request.
     """
     from faultmaven.config.settings import build_settings, install_settings
     from faultmaven.infrastructure.llm.providers.registry import reset_registry
 
-    global _reload_generation
+    global _reload_generation, _installed_generation
     settings = build_settings()
     _reload_generation += 1
     generation = _reload_generation
     await apply_overrides_to_settings(settings)
 
-    if generation != _reload_generation:
+    if generation <= _installed_generation:
         logger.debug("LLM config reload superseded by a newer reload")
         return
+    _installed_generation = generation
     install_settings(settings)
     # Reset registry so it picks up the updated settings
     reset_registry()
@@ -252,34 +249,60 @@ async def save_and_reload(
     This is the single entry point for config writes — API routes should
     call this instead of importing the repository directly.
 
-    After applying locally, the shared Redis config version is bumped so every
+    Once the write lands, the shared Redis config version is bumped so every
     OTHER cloud replica's watcher (``watch_config_version``) observes the change
-    and reloads too. The bump is best-effort: if Redis is unreachable the local
-    write still takes effect on this replica; other replicas would then lag until
-    their next restart, which is logged as a warning.
+    and reloads too, even when the local reload raises or the save is
+    cancelled: the stored value is the configuration, the bump is shielded, and
+    the reload's error is re-raised after it (#2987). The bump is best-effort:
+    if Redis is unreachable the other replicas lag until their next restart,
+    and, when the local reload failed too, so does this one; both are logged
+    as a warning.
     """
     from faultmaven.infrastructure.persistence.llm_config_repository import (
         set_overrides,
     )
 
+    mark = _last_applied_version
     await set_overrides(overrides, user_id=user_id)
-    await reload_llm_config()
+    reloaded = False
+    try:
+        await reload_llm_config()
+        reloaded = True
+    finally:
+        await asyncio.shield(_bump_config_version(reloaded, mark))
 
-    # Propagate to other replicas by bumping the shared version. Record the new
-    # value locally so THIS replica's watcher does not redundantly reload. The
-    # client is transient (config writes are rare) and closed after use so it
-    # does not leak a connection pool — unlike the watcher's long-lived client.
+
+async def _bump_config_version(reloaded: bool, mark: Optional[int]) -> None:
+    """Bump the shared config version so the other replicas reload.
+
+    Records the new value locally only when this replica's reload succeeded
+    and the new value is exactly one above ``mark``, the version this replica
+    held before the save, so THIS replica's watcher does not redundantly
+    reload. Otherwise the mark stays, and the watcher reloads: a failed reload
+    is retried, and another replica's write that bumped in between is applied.
+    The client is transient (config writes are rare) and closed after use so
+    it does not leak a connection pool — unlike the watcher's long-lived
+    client.
+    """
     global _last_applied_version
     try:
         redis = await _get_redis()
         try:
-            _last_applied_version = int(await redis.incr(CONFIG_VERSION_KEY))
+            version = int(await redis.incr(CONFIG_VERSION_KEY))
         finally:
             await _aclose(redis)
+        if reloaded and mark is not None and version == mark + 1:
+            _last_applied_version = version
     except Exception as e:
         logger.warning(
-            "Applied config locally but could not bump the shared config "
-            "version; other replicas may serve stale config until restart: %s",
+            "Saved config but could not bump the shared config version; other "
+            "replicas may serve stale config until restart%s: %s",
+            (
+                ""
+                if reloaded
+                else ", and this replica kept its previous settings too, until "
+                "the next config write or restart"
+            ),
             exception_log_name(e),
         )
 

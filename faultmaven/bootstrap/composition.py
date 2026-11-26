@@ -326,7 +326,9 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
                     watch_config_version()
                 )
             except Exception as e:
-                logger.debug(f"Config overrides skipped: {exception_log_name(e)}")
+                logger.warning(
+                    f"Could not apply LLM config overrides: {exception_log_name(e)}"
+                )
                 # Overrides outrank the environment, so a pod that cannot
                 # apply them serves another configuration: refused where the
                 # deployment must not degrade (#3003).
