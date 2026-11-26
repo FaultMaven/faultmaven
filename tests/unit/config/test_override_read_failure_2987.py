@@ -206,6 +206,22 @@ async def test_a_save_whose_reload_succeeds_records_its_own_bump(
     assert cfg._last_applied_version == 1
 
 
+async def test_a_save_with_an_unseeded_mark_bumps_and_records_nothing(
+    shared_redis, monkeypatch, caplog
+):
+    """No watcher seeded the mark (it exited, or never started): the bump
+    still lands, the mark stays unseeded, and nothing warns."""
+    monkeypatch.setattr(cfg, "_last_applied_version", None)
+    monkeypatch.setattr(cfg, "reload_llm_config", AsyncMock())
+    caplog.set_level(logging.WARNING, logger=cfg.__name__)
+
+    await cfg.save_and_reload({"openai_model": "gpt-4o"}, user_id="u1")
+
+    assert await cfg._read_config_version(shared_redis) == 1
+    assert cfg._last_applied_version is None
+    assert caplog.records == []
+
+
 async def test_a_bump_that_includes_another_replicas_write_leaves_the_mark(
     shared_redis, monkeypatch
 ):
