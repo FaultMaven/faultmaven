@@ -66,8 +66,11 @@ decaying after the deciders ran: ``turn:offer:turn_request_ready_on_a_decaying_l
 ``turn:offer:turn_model_proposal_closure_on_a_decaying_leg``. Each offer's
 summary now names no root, as the record holds none and as the reply already
 said; the rest of each entry is unchanged. ``render_all`` on a ``git
-archive`` extract of 519a45875 reproduced the stored oracle, and no other
-entry differed on the branch.
+archive`` extract of 519a45875 reproduced the stored oracle (equal as JSON),
+and no other entry differed on the branch. The three are written with sorted
+keys, as the file's other turn entries are; a whole ``sort_keys`` dump would
+reorder the keys of every entry an earlier stage edited by hand (198), so
+the rest of the file is left byte for byte.
 """
 
 from __future__ import annotations

@@ -1077,8 +1077,11 @@ terminal_summary_total = Counter(
 # when a saved record first carries it (#2689: after the save commits; the
 # record keeps the turn it was first read), and the carried verdict stands.
 # The window deciders read the carried verdicts (#3046 S3a-2), so an
-# ``attempts.window`` disagreement is the fresh read the record overrides;
-# the deciders that still derive fresh switch at S3d (#3053).
+# ``attempts.window`` disagreement is the fresh read the record overrides.
+# The in-cycle deciders derive fresh by design, the record's declared sources
+# (#3053 S3d-3), so a ``narration.<code>`` count is a decision the record
+# disagrees with: in the four ruled cases it is expected, and outside them it
+# is worth reading.
 # ``attempts.window.disconfirmation`` is no disagreement: a FAILED window
 # that took a later disconfirmation pair, once (#2728). Labelled by field
 # only: never a case, user or tenant.

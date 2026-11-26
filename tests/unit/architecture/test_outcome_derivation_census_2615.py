@@ -372,15 +372,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     # it is derived outside the cycle's record: the readiness gates' own
     # building blocks (``_cause_identified``, the documented-but-unapplied
     # fix that ``derive_closure_reason`` reads), the resolve's truth surface
-    # (written at the resolve transition, which folds its own record), M5's
-    # licence (the apply step, before the cycle's record; the deciders' leg
-    # keeps the recompute's flag, ruling of 2026-11-26 (3)) and the offer
-    # record's lapse rule (read at each lapse point, before the fold).
+    # (written at the resolve transition, which folds its own record) and the
+    # offer record's lapse rule (read at each lapse point, before the fold).
+    # M5's licence is a cycle source (``CYCLE_SOURCES``).
     (_TT, "_cause_identified"): {"cause_identification_leg": 1},
     (_TT, "_fix_documented_not_applied"): {"_cause_identified": 1},
     (_TT, "finalize_resolution_truth_surface"): {"cause_identification_leg": 1},
-    (_SG, "solution_licence_leg"): {"cause_identification_leg": 1},
-    (_SG, "_solution_cause_validated"): {"solution_licence_leg": 1},
     (_OFFERS, "_premise_gone"): {"cause_identification_leg": 1},
     (_TT, "shown_milestones"): {"_mitigation_verified": 1},
     # The engine. ``assess_closure_readiness`` is passed, not called, to
@@ -390,10 +387,6 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
         "closure_verdict": 1,
     },
     (_ME + "hypothesis_updates.py", "_refutation_grounds"): {"failed_fix_of": 1},
-    (_SG, "_apply_stage_gate_side_effects"): {
-        "closure_verdict": 1,
-        "mitigation_closure_line": 1,
-    },
     # #3046 S3a-2: the pair before and after the re-dating, off the fresh
     # read, or the guard could never fire; the verdict is the carried view's.
     (_SG, "_date_to_the_report"): {"fix_windows": 2},
@@ -818,6 +811,7 @@ class Source(NamedTuple):
 _RECHECK = (_TRANSITIONS, "TransitionManager._recheck_resolve_request")
 _MODEL = (_TRANSITIONS, "TransitionManager._apply_model_proposal")
 _BACKSTOP = (_PROPOSALS, "_maybe_propose_confirmed_resolution")
+_DEFERRED = (_PROPOSALS, "_maybe_propose_deferred_close")
 _RCC = _INV + "causal_graph/rcc.py"
 
 #: (path, qualname) -> the in-cycle decider's derivations, what it decides,
@@ -844,7 +838,7 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
         "step 2, the model's proposal through readiness: MODEL_PROPOSAL by "
         "composer, or RESOLUTION_NEEDS_INFO and PENDING_CHECK",
     ),
-    (_PROPOSALS, "_maybe_propose_deferred_close"): Source(
+    _DEFERRED: Source(
         {
             "assess_closure_readiness": 1,
             "cause_identification_leg": 1,
@@ -861,6 +855,24 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
             "resolution_record_lines": 1,
         },
         "the backstop: BACKSTOP_RESOLVE, or PENDING_CHECK while a check holds it",
+    ),
+    (_SG, "_apply_stage_gate_side_effects"): Source(
+        {"closure_verdict": 1, "mitigation_closure_line": 1},
+        "the apply step's stage-gate side effects: RCA_INFEASIBLE_CLOSE on a "
+        "mitigation of an infeasible root-cause analysis, with the "
+        "mitigation's closure line",
+    ),
+    (_SG, "_solution_cause_validated"): Source(
+        {"solution_licence_leg": 1},
+        "M5's licence, read in the apply step before the cycle's record; the "
+        "leg keeps the recompute's flag (ruling of 2026-11-26 (3)). It gates "
+        "the deferred proposer",
+        serves=(_DEFERRED,),
+    ),
+    (_SG, "solution_licence_leg"): Source(
+        {"cause_identification_leg": 1},
+        "the leg M5's licence reads (``_solution_cause_validated``)",
+        serves=(_DEFERRED,),
     ),
     (_TRANSITIONS, "declined_resolution_reask"): Source(
         {"declined_resolve_entry": 1, "pending_symptom_check": 1},
@@ -1530,7 +1542,7 @@ def test_the_cycle_sources_hold_the_tables_pins():
     view (``CARRIED_VIEW_SITES``)."""
     assert _cycle_source_problems() == []
     recording = [k for k in CYCLE_SOURCES if _recorded(_function(*k), "")[0]]
-    assert len(recording) == 4, "premise: the four code-recording deciders"
+    assert len(recording) == 5, "premise: the five code-recording deciders"
     assert {"readiness", "confirmation", "closure"} <= _composers(_function(*_MODEL))
 
 

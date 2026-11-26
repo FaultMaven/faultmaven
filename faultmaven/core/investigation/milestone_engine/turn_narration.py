@@ -15,7 +15,8 @@ cases (``offers.RULED_CASES``). The request text of the need the record
 holds the resolution for is read once, through the narrators' text accessor
 (``content_by_id``), and the content the confirmation and the closure
 proposal name once (``resolution_content``); both are handed to the renderers
-that state them. It runs once per
+that state them. The record it rendered from goes to the reply
+(``NARRATED_RECORD_KEY``). It runs once per
 turn, in ``_finalize_turn``, before the turn record copies the notices. A
 statement-revision replay's offers are narrated there too: a turn that
 replays never leaves at a step-0 exit, so it always reaches it.
@@ -77,6 +78,12 @@ NARRATION_CONFLICTS_KEY = "narration_conflicts"
 #: reads what it states (``narration.statement.offer_stated``) against the
 #: record the outcome statement compares.
 OUTCOME_STATED_KEY = "outcome_stated"
+
+#: The record the narration rendered the cycle's offers from (``_outcome``:
+#: the stored record, else its in-memory fold, else None), turn-local, popped
+#: by ``_compose_turn_reply``: the reply's met-request confirmation states the
+#: same record as the offer's summary (#3053 S3d-3).
+NARRATED_RECORD_KEY = "narrated_record"
 
 #: The unbound re-check lines this narration told, as ``(line, ids)`` pairs,
 #: for ``mark_told`` once the turn record is created (#2555).
@@ -327,6 +334,7 @@ def narrate_turn(case: Any, metadata: dict) -> None:
     only from a stored record; their lines go to ``UNBOUND_TOLD_KEY``."""
     log = metadata.get(DECISIONS_KEY) or []
     outcome = _outcome(case, metadata, log)
+    metadata[NARRATED_RECORD_KEY] = outcome
     stored = bool(metadata.get(OUTCOME_WRITTEN_KEY)) and outcome is not None
     if stored:
         # An offer that lapsed in its cycle showed nothing: not compared.

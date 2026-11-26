@@ -11,10 +11,10 @@ fixed-text templates left as they are, listed).
   (``offers.narrated_params``), per decision; a disagreement is counted; the
   four ruled cases (``offers.RULED_CASES``) render the decision, and each is a
   disagreement, so each is counted.
-- Q1: the met request's confirmation in the reply reads the cycle's stored
-  record, else the statement's fold (counted once), else its decision; no
-  decider folds, so a turn whose folds all raise counts at most the prompt's
-  fold and the statement's.
+- Q1: the met request's confirmation in the reply reads the record the
+  narration rendered from (the cycle's stored record, else the narration's
+  fold), else its decision; no decider folds, so a turn whose folds all raise
+  counts at most the prompt's fold and the statement's.
 - MECE: the record's IDENTIFICATION_CONTESTED verdict and its contested roots
   are one computation; the deciders' leg keeps the recompute's flag.
 - Q6: the summary gate's offer and enforcement halves are one predicate, and
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -46,6 +47,7 @@ from faultmaven.core.investigation.milestone_engine.cause_state import (
 )
 from faultmaven.core.investigation.milestone_engine.terminal_replies import (
     _closed_suggestions,
+    resolution_confirmation_params,
     resolution_content,
 )
 from faultmaven.core.investigation.milestone_engine.terminal_turns import (
@@ -58,8 +60,10 @@ from faultmaven.core.investigation.milestone_engine.turn_completion import (
     _ready_confirmation,
 )
 from faultmaven.core.investigation.milestone_engine.turn_narration import (
+    NARRATED_RECORD_KEY,
     OUTCOME_WRITTEN_KEY,
     _disagreements,
+    narrate_turn,
 )
 from faultmaven.core.investigation.narration.codes import (
     DECIDED_FROM,
@@ -445,30 +449,37 @@ def _request_ready():
     return case, metadata, entry["params"]
 
 
-def test_the_reply_states_the_cycles_stored_record():
-    """The cycle's record, read as written, and the content read at reply
-    time: the reopen chip's rendering of the same record."""
+def _narrated(case, metadata):
+    """What the narration hands the reply: the record it rendered from."""
+    narrate_turn(case, metadata)
+    return metadata.pop(NARRATED_RECORD_KEY)
+
+
+def test_the_reply_states_the_record_the_narration_rendered_from():
+    """The cycle's stored record, handed over by the narration, and the
+    content read at reply time; nothing folds."""
     case, metadata, _params = _request_ready()
-    record = case.progress.outcome
-    _edited(record, "resolution", statement="- the stored record's line")
+    _edited(case.progress.outcome, "resolution", statement="- the stored line")
     with patch.object(outcome_module, "compute_case_outcome") as fold:
-        params = _ready_confirmation(case, metadata, None)
+        record = _narrated(case, metadata)
+        params = _ready_confirmation(case, metadata, record)
     fold.assert_not_called()
-    assert params["record_lines"] == "- the stored record's line"
-    assert "- the stored record's line" in confirmation_message(params)
+    assert record is case.progress.outcome
+    assert params["record_lines"] == "- the stored line"
+    assert case.offer_record.open.summary == confirmation_message(params)
 
 
-def test_a_failed_write_reads_the_statements_fold_and_else_the_decision():
-    """Q1's order: the statement's fold when the cycle's write failed, and
+def test_a_failed_write_reads_the_narrations_fold_and_else_the_decision():
+    """Q1's order: the narration's fold when the cycle's write failed, and
     the decision's leg and record lines when that fold failed too."""
     case, metadata, params = _request_ready()
     metadata[OUTCOME_WRITTEN_KEY] = False
-    folded = case.progress.outcome.model_copy(deep=True)
-    _edited(folded, "resolution", statement="- the fold's line")
-    assert _ready_confirmation(case, metadata, folded)["record_lines"] == (
-        "- the fold's line"
-    )
     _edited(case.progress.outcome, "resolution", statement="- a stale line")
+    record = _narrated(case, metadata)
+    assert record is not case.progress.outcome, "premise: the narration's fold"
+    assert _ready_confirmation(case, metadata, record)["record_lines"] == (
+        record.resolution.statement
+    )
     decided = _ready_confirmation(case, metadata, None)
     assert decided["record_lines"] == params["record_lines"]
     assert decided["identification_leg"] == params["identification_leg"]
@@ -486,7 +497,7 @@ def test_a_record_not_confirmed_leaves_the_reply_the_decisions():
         reason=ResolutionReason.DOCUMENTATION_GAPS,
         statement="",
     )
-    reply = _ready_confirmation(case, metadata, None)
+    reply = _ready_confirmation(case, metadata, _narrated(case, metadata))
     assert reply["record_lines"] == params["record_lines"] != ""
     assert reply == narrated_params(
         OfferCode.REQUEST_READY,
@@ -496,6 +507,46 @@ def test_a_record_not_confirmed_leaves_the_reply_the_decisions():
         resolution_content(case),
         _text(case),
     )
+    assert case.offer_record.open.summary == confirmation_message(reply)
+
+
+def test_a_met_request_with_no_decision_states_the_record(caplog):
+    """The flag set without its ``REQUEST_READY`` decision: the confirmation
+    is the record's, and the anomaly is logged; nothing raises."""
+    case, metadata, _params = _request_ready()
+    metadata[DECISIONS_KEY] = []
+    record = case.progress.outcome
+    with caplog.at_level(logging.ERROR, logger=turn_completion.__name__):
+        params = _ready_confirmation(case, metadata, record)
+    chip = resolution_confirmation_params(case, record)
+    assert {key: params[key] for key in chip} == chip
+    assert params["record_lines"] == record.resolution.statement
+    assert "no decision" in caplog.text
+
+
+def test_a_met_request_with_no_decision_and_no_record_omits_it(caplog):
+    case, metadata, _params = _request_ready()
+    metadata[DECISIONS_KEY] = []
+    with caplog.at_level(logging.ERROR, logger=turn_completion.__name__):
+        assert _ready_confirmation(case, metadata, None) is None
+    assert "no decision and no record" in caplog.text
+
+
+def test_with_no_baseline_and_a_failed_write_the_summary_and_reply_agree(
+    monkeypatch,
+):
+    """Review item 4: no turn-start record and a failed cycle write. The
+    narration renders the offer's summary from its in-memory fold, and the
+    reply states the same record (the decision's leg, decayed, is not it)."""
+    case = golden._wc_leg_case(confirmed=True)
+    case.offer_record = remember_resolve_request(case, ["the check"])
+    case.progress.outcome = None
+    monkeypatch.setattr(
+        turn_application, "record_case_outcome", lambda _case, *, at: False
+    )
+    texts = golden._whole_turn(case, _DSU())
+    assert "- **Root cause**: no root cause on record" in texts["summary"]
+    assert texts["summary"] in texts["reply"]
 
 
 @pytest.mark.parametrize(
@@ -577,8 +628,13 @@ def _ready_turn(monkeypatch, *, baseline: bool, prompt_fold: bool) -> dict:
 
 @pytest.mark.parametrize(
     ("baseline", "prompt_fold", "counted"),
-    [(True, True, 2), (True, False, 1), (False, False, 0)],
-    ids=["through_process_turn", "reply_path_with_baseline", "no_baseline"],
+    [(True, True, 2), (False, True, 1), (True, False, 1), (False, False, 0)],
+    ids=[
+        "through_process_turn",
+        "through_process_turn_no_baseline",
+        "reply_path_with_baseline",
+        "reply_path_no_baseline",
+    ],
 )
 def test_a_turn_whose_folds_raise_counts_only_the_prompt_and_the_statement(
     monkeypatch, narration_counts, baseline, prompt_fold, counted

@@ -1205,9 +1205,10 @@ written*, as amended by #2811, ruled 2026-11-15):
   it has a working conclusion) fold on every assembly that builds them,
   whether or not the template shows them. The cycle's resolve confirmations
   (the met request's and the model's) fold nothing of their own (#3053
-  S3d-3): the narration renders them from the cycle's record, and the reply
-  renders the met request's from the cycle's stored record, else the outcome
-  statement's fold, else its decision; the closed reply reads the closure the
+  S3d-3): the narration renders them from the cycle's record (the stored
+  one, else its own fold), and the reply renders the met request's from the
+  record the narration rendered from, else its decision, so the reply and the
+  offer's summary state one source; the closed reply reads the closure the
   terminal transition wrote and folds only when that write failed. The reopen chip folds it once per reply (#3053
   S3d-2): its verdict and every record fact its confirmation and its
   refusal's ask state (the needs-info request's ask, its "Root cause" line
