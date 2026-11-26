@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # change propagate to ALL cloud replicas, not just the one that served the
 # write. Standalone never writes config (the PUT route 403s), so this is inert
 # there. See ``watch_config_version`` and ``save_and_reload``.
-_CONFIG_VERSION_KEY = "faultmaven:llm_config:version"
+CONFIG_VERSION_KEY = "faultmaven:llm_config:version"
 
 # The config version this process has already applied. Process-local on purpose:
 # it is the per-replica high-water mark compared against the shared Redis value.
@@ -229,7 +229,7 @@ async def _get_redis():
 
 async def _read_config_version(redis) -> int:
     """Read the shared config version (0 if never written / key absent)."""
-    raw = await redis.get(_CONFIG_VERSION_KEY)
+    raw = await redis.get(CONFIG_VERSION_KEY)
     return int(raw) if raw else 0
 
 
@@ -273,7 +273,7 @@ async def save_and_reload(
     try:
         redis = await _get_redis()
         try:
-            _last_applied_version = int(await redis.incr(_CONFIG_VERSION_KEY))
+            _last_applied_version = int(await redis.incr(CONFIG_VERSION_KEY))
         finally:
             await _aclose(redis)
     except Exception as e:

@@ -293,28 +293,56 @@ def test_known_prefixes_are_counted_per_namespace():
 def test_keys_outside_every_known_prefix_are_reported_not_dropped():
     """The scoped wipe leaves these behind, so they must be visible. Silently
     counting them as swept is how an incomplete wipe reads as a clean one."""
-    counts, unmatched = wd.classify_redis_keys(["celery:task:1", "session:a"])
+    counts, unmatched = wd.classify_redis_keys(
+        ["celery:task:1", "session:a"], wd.redis_prefixes(_Settings())
+    )
     assert unmatched == ["celery:task:1"]
     assert counts["session:"] == 1
 
 
-def test_the_prefix_set_covers_every_namespace_the_app_writes():
-    """These are the live keyspaces found in the code. A namespace missing here
-    is one the scoped wipe silently leaves behind."""
+def test_the_prefix_set_holds_each_defining_modules_constant():
+    """Each family's spelling comes from the module its writer builds from
+    (#2958); a namespace missing here is one the scoped wipe leaves behind."""
+    from faultmaven.config import idempotency_key, llm_config_overrides
+    from faultmaven.infrastructure.auth import user_store
+    from faultmaven.infrastructure.concurrency import inflight
+    from faultmaven.infrastructure.security import pseudonym_key
+    from faultmaven.infrastructure.security.case_redaction import CaseRedactionContext
+    from faultmaven.modules.auth.domain.services import user_service
+    from faultmaven.modules.auth.infrastructure.repositories import (
+        oauth_code_repository as oauth,
+    )
+    from faultmaven.modules.auth.infrastructure.stores import (
+        redis_session_store as sessions,
+    )
+    from faultmaven.modules.auth.infrastructure.stores import sso_ephemeral_store
+
     prefixes = wd.redis_prefixes(_Settings())
     for prefix in (
-        "session:",
-        "client_index:",  # the session store's own index
-        "sessions:user:",  # the session store's per-user index
-        "idempotency:",
-        "sso:state:",
-        "sso:login:",
-        "oauth:code:",
-        "password_reset:",
-        "case_seq:",
-        "redaction:",
+        sessions.SESSION_PREFIX,
+        sessions.CLIENT_INDEX_PREFIX,
+        sessions.USER_INDEX_PREFIX,
+        idempotency_key.IDEMPOTENCY_ENTRY_PREFIX,
+        idempotency_key.IDEMPOTENCY_CLAIM_PREFIX,
+        idempotency_key.TURN_CLAIM_PREFIX,
+        idempotency_key.KB_CLAIM_PREFIX,
+        sso_ephemeral_store.STATE_PREFIX,
+        sso_ephemeral_store.LOGIN_PREFIX,
+        oauth.CODE_PREFIX,
+        oauth.CLAIM_PREFIX,
+        user_store.USER_PREFIX,
+        user_store.USERNAME_PREFIX,
+        user_store.EMAIL_PREFIX,
+        user_store.USER_LIST_KEY,
+        user_service.RESET_TOKEN_PREFIX,
+        inflight.LEASE_PREFIX,
+        inflight.TOMBSTONE_PREFIX,
+        llm_config_overrides.CONFIG_VERSION_KEY,
+        CaseRedactionContext.REDIS_KEY_PREFIX,
+        pseudonym_key.AGREEMENT_REDIS_KEY,
     ):
         assert prefix in prefixes, f"{prefix} is written by the app but not swept"
+    assert "case_seq:" not in prefixes, "case_seq keys land under session:"
 
 
 def test_the_revocation_prefix_comes_from_settings_not_a_literal():

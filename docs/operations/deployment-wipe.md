@@ -326,9 +326,14 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
 ## Notes
 
 - **Redis is scoped by default.** `--wipe` deletes keys under FaultMaven's known
-  prefixes — `session:`, `client_index:`, `sessions:user:`, `idempotency:`,
-  `sso:state:`, `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`,
-  `redaction:`, the configured token-revocation prefix, and **every**
+  prefixes — `session:` (the per-user case sequence included), `client_index:`,
+  `sessions:user:`, `idempotency:`, `idem-inflight:`, `turn-inflight:`,
+  `kb-inflight:`, `sso:state:`, `sso:login:`, `oauth:code:`, `oauth:claim:`,
+  `auth:user:`, `auth:username:`, `auth:email:`, `auth:user_list`,
+  `password_reset:`, `case-inflight:`, `case-deleting:`,
+  `faultmaven:llm_config:version`, `redaction:registry`,
+  `redaction:pseudonym_key_fingerprint`, the configured token-revocation prefix
+  (skipped when blank, since an empty prefix would match every key), and **every**
   protection preset's `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev`,
   `faultmaven_prod` *and* `faultmaven_staging`) —
   and *reports* the count of keys under any other prefix rather than silently
@@ -349,17 +354,23 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
   Use `--redis-all-keys` only if that logical Redis database is FaultMaven's
   alone.
 
-  FaultMaven also writes families the scoped wipe does not list. Each is left,
-  reported as under no known FaultMaven prefix, and never fails `--verify`:
+  Each fixed prefix is imported from the module its writer builds its keys
+  from, so the list cannot drift from the writers; a new writer that exports no
+  constant is still not caught. The protection `:rl`/`:dedup` suffixes stay
+  spelled both in the wipe and in the protection middleware.
 
-  - `case-deleting:` (the delete's tombstone) expires 30 s, and `case-inflight:`
-    (the case lease) 35 s, after its holder's last renewal;
-  - `turn-inflight:` expires at the turn's response bound plus 30 s, and
-    `kb-inflight:` and `idem-inflight:` 60 s after their last renewal;
-  - `oauth:claim:` expires with its authorization code (`OAUTH_CODE_EXPIRY_SECONDS`);
-  - `auth:` (the Redis user store, composed only when the database user store
-    is not) and `faultmaven:llm_config:version` have no TTL;
-  - `job:` and `lock:report_generation:case:` have no writer today.
+  Two consequences of sweeping the short-lived families:
+
+  - a straggler still renewing a lease (`case-inflight:`, `turn-inflight:`,
+    `kb-inflight:`, `idem-inflight:`) or a delete's tombstone (`case-deleting:`)
+    rewrites its key, and `--verify` then fails: scale the API to 0 first;
+  - deleting `faultmaven:llm_config:version` under a live replica stops its
+    config reloads: it reloads only when the shared counter exceeds the version
+    it applied, so it waits until the restarted counter passes that or the
+    replica restarts.
+
+  `job:` and `lock:report_generation:case:` have no writer today and are not
+  listed.
 
   The [store registry](../architecture/data-and-storage/store-registry.md)
   holds each family's row.

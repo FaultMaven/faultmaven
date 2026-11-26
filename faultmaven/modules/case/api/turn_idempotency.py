@@ -68,6 +68,7 @@ from pydantic import ValidationError
 from faultmaven.config.idempotency_key import (
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REPLAY_UNAVAILABLE,
+    TURN_CLAIM_PREFIX,
 )
 from faultmaven.infrastructure.concurrency.owned_claim import (
     ClaimHeld,
@@ -105,7 +106,7 @@ def claim_ttl_seconds(response_bound_seconds: float) -> int:
 def claim_name(case: Case, author_id: str, idempotency_key: str) -> str:
     """The claim's Redis key: the receipt's own key, prefixed."""
     return (
-        f"turn-inflight:{case.enterprise_id}:{case.case_id}:"
+        f"{TURN_CLAIM_PREFIX}{case.enterprise_id}:{case.case_id}:"
         f"{author_id}:{idempotency_key}"
     )
 

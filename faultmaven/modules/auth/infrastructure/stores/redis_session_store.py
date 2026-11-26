@@ -31,6 +31,11 @@ from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
+#: Redis prefixes: sessions, per-client index, per-user index (#2958).
+SESSION_PREFIX = "session:"
+CLIENT_INDEX_PREFIX = "client_index:"
+USER_INDEX_PREFIX = "sessions:user:"
+
 #: Compare-and-delete: delete the key only while it still holds the value.
 _DELETE_IF_HOLDS = """
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -99,10 +104,10 @@ class RedisSessionStore(ISessionStore):
             )
         self.redis_client = redis_client
         self.session_ttl_seconds = session_ttl_seconds
-        self.prefix = "session:"
+        self.prefix = SESSION_PREFIX
         #: Outside ``prefix``: ``get``/``set`` take caller-supplied session ids
         #: under it, and ``delete_keys_holding`` scans it.
-        self.user_index_prefix = "sessions:user:"
+        self.user_index_prefix = USER_INDEX_PREFIX
 
     def _user_index_key(self, user_id: str) -> str:
         """The set holding the ids of ``user_id``'s sessions."""
@@ -173,7 +178,7 @@ class RedisSessionStore(ISessionStore):
     ) -> Optional[str]:
         """Find session ID by user_id and client_id combination."""
         try:
-            client_index_key = f"client_index:{user_id}:{client_id}"
+            client_index_key = f"{CLIENT_INDEX_PREFIX}{user_id}:{client_id}"
             session_id = await self.redis_client.get(client_index_key)
 
             if session_id:
@@ -193,7 +198,7 @@ class RedisSessionStore(ISessionStore):
     ) -> None:
         """Create or update client index entry."""
         try:
-            client_index_key = f"client_index:{user_id}:{client_id}"
+            client_index_key = f"{CLIENT_INDEX_PREFIX}{user_id}:{client_id}"
             pipe = self.redis_client.pipeline()
             pipe.set(client_index_key, session_id, ex=ttl)
             await pipe.execute()
@@ -207,7 +212,7 @@ class RedisSessionStore(ISessionStore):
     async def remove_client_index(self, user_id: str, client_id: str) -> None:
         """Remove client index entry."""
         try:
-            client_index_key = f"client_index:{user_id}:{client_id}"
+            client_index_key = f"{CLIENT_INDEX_PREFIX}{user_id}:{client_id}"
             await self.redis_client.delete(client_index_key)
         except Exception as e:
             logger.warning(

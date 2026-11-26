@@ -224,43 +224,64 @@ MUST_BE_SEEDED = frozenset(
 #: ``python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance``.
 INFORMATIONAL = frozenset({"knowledge_items"})
 
-#: Redis key namespaces with a fixed spelling. The configurable ones (the
-#: token-revocation prefix and every protection preset's ``rl``/``dedup`` pair)
-#: are added by :func:`redis_prefixes` — the set must be COMPLETE, because
-#: ``--verify`` treats any surviving key as residue: a namespace missing here is
-#: one the scoped wipe leaves behind and the verification then refuses forever.
-_FIXED_REDIS_PREFIXES = (
-    "session:",  # RedisSessionStore
-    "client_index:",  # RedisSessionStore's own per-client index
-    "sessions:user:",  # RedisSessionStore's per-user session index
-    "idempotency:",  # IdempotencyMiddleware
-    "sso:state:",  # SSOEphemeralStore (login CSRF)
-    "sso:login:",  # SSOEphemeralStore (completion code)
-    "oauth:code:",  # OAuthCodeRepository
-    "password_reset:",  # UserService reset tokens
-    "case_seq:",  # CaseService per-user daily sequence
-    "redaction:",  # case redaction registries + pseudonym-key fingerprint agreement
-)
-
 
 def redis_prefixes(settings) -> tuple[str, ...]:
     """Every Redis namespace this deployment writes, including configurable ones.
 
-    Two cannot be hardcoded without going stale against configuration:
+    ``--verify`` treats any surviving key as residue, so a namespace missing here
+    is one the scoped wipe leaves behind. Every fixed spelling is imported from
+    the one module its writer builds its keys from (#2958). Two are configured:
 
     * the token-revocation prefix is ``settings.security.token_revocation_prefix``
       (the container passes it to the store), so a deployment that overrides it
-      would otherwise keep every revocation watermark through a "successful" wipe;
+      would otherwise keep every revocation watermark through a "successful"
+      wipe. A blank one is skipped: ``""*`` would match every key;
     * the rate-limit and dedup namespaces come from the protection presets'
       ``redis_key_prefix``. **Every** preset's namespaces are included, not the
       one the current ``ENVIRONMENT`` selects — see below.
     """
-    prefixes = list(_FIXED_REDIS_PREFIXES)
+    from faultmaven.config import idempotency_key, llm_config_overrides
+    from faultmaven.infrastructure.auth import user_store
+    from faultmaven.infrastructure.concurrency import inflight
+    from faultmaven.infrastructure.security import case_redaction, pseudonym_key
+    from faultmaven.modules.auth.domain.services import user_service
+    from faultmaven.modules.auth.infrastructure.repositories import (
+        oauth_code_repository,
+    )
+    from faultmaven.modules.auth.infrastructure.stores import (
+        redis_session_store,
+        sso_ephemeral_store,
+    )
+
+    prefixes = [
+        redis_session_store.SESSION_PREFIX,
+        redis_session_store.CLIENT_INDEX_PREFIX,
+        redis_session_store.USER_INDEX_PREFIX,
+        idempotency_key.IDEMPOTENCY_ENTRY_PREFIX,
+        idempotency_key.IDEMPOTENCY_CLAIM_PREFIX,
+        idempotency_key.TURN_CLAIM_PREFIX,
+        idempotency_key.KB_CLAIM_PREFIX,
+        sso_ephemeral_store.STATE_PREFIX,
+        sso_ephemeral_store.LOGIN_PREFIX,
+        oauth_code_repository.CODE_PREFIX,
+        oauth_code_repository.CLAIM_PREFIX,
+        user_store.USER_PREFIX,
+        user_store.USERNAME_PREFIX,
+        user_store.EMAIL_PREFIX,
+        user_store.USER_LIST_KEY,
+        user_service.RESET_TOKEN_PREFIX,
+        inflight.LEASE_PREFIX,
+        inflight.TOMBSTONE_PREFIX,
+        llm_config_overrides.CONFIG_VERSION_KEY,
+        case_redaction.CaseRedactionContext.REDIS_KEY_PREFIX,
+        pseudonym_key.AGREEMENT_REDIS_KEY,
+    ]
 
     revocation = getattr(
         getattr(settings, "security", None), "token_revocation_prefix", None
     )
-    prefixes.append(revocation or "revoked:token:")
+    if revocation:
+        prefixes.append(revocation)
 
     # Deliberately NOT discriminated by ``ENVIRONMENT``, even though
     # ``setup_protection_middleware`` picks exactly one preset. The keys on the
@@ -861,7 +882,7 @@ async def _scan_keys(client, pattern: str = "*") -> list[str]:
 
 
 def classify_redis_keys(
-    keys: list[str], prefixes: tuple[str, ...] = _FIXED_REDIS_PREFIXES
+    keys: list[str], prefixes: tuple[str, ...]
 ) -> tuple[dict[str, int], list[str]]:
     """Split keys into per-prefix counts and the ones matching no known prefix.
 

@@ -18,15 +18,15 @@ from fastapi.responses import JSONResponse
 
 from faultmaven.api.middleware import idempotency
 from faultmaven.api.middleware.idempotency import (
-    CLAIM_PREFIX,
     CLAIM_TTL_SECONDS,
     IN_PROGRESS_DETAIL,
-    KEY_PREFIX,
     IdempotencyMiddleware,
     case_index_key,
     declare_replay_case,
 )
 from faultmaven.config.idempotency_key import (
+    IDEMPOTENCY_CLAIM_PREFIX,
+    IDEMPOTENCY_ENTRY_PREFIX,
     IDEMPOTENCY_KEY_REUSE,
     IDEMPOTENCY_REQUEST_IN_PROGRESS,
 )
@@ -117,7 +117,7 @@ def _replayed(response) -> bool:
 
 
 async def _claims(fake):
-    return await fake.keys(f"{CLAIM_PREFIX}*")
+    return await fake.keys(f"{IDEMPOTENCY_CLAIM_PREFIX}*")
 
 
 async def _overlap(rig, client, second_body=None):
@@ -143,7 +143,8 @@ async def test_an_overlapping_duplicate_replays_the_first_answer(rig):
     assert len(rig.runs) == 1
     assert await _claims(rig.fake) == []
     # One execution, so the key is indexed under one case, once.
-    assert len(await rig.fake.zrange(case_index_key(KEY_PREFIX, CASE), 0, -1)) == 1
+    index = case_index_key(IDEMPOTENCY_ENTRY_PREFIX, CASE)
+    assert len(await rig.fake.zrange(index, 0, -1)) == 1
 
 
 async def test_a_duplicate_runs_once_after_a_non_2xx_holder(rig):
@@ -301,7 +302,7 @@ async def test_the_claim_is_released_on_every_answer(rig, monkeypatch, status):
     release = OwnedClaim.release
 
     async def watched_release(claim):
-        at_release.append(sorted(await rig.fake.keys(f"{KEY_PREFIX}*")))
+        at_release.append(sorted(await rig.fake.keys(f"{IDEMPOTENCY_ENTRY_PREFIX}*")))
         await release(claim)
 
     monkeypatch.setattr(OwnedClaim, "release", watched_release)
@@ -312,7 +313,10 @@ async def test_the_claim_is_released_on_every_answer(rig, monkeypatch, status):
     assert await _claims(rig.fake) == []
     written = at_release[0]
     if status == 201:
-        assert case_index_key(KEY_PREFIX, CASE) in written and len(written) == 2
+        assert (
+            case_index_key(IDEMPOTENCY_ENTRY_PREFIX, CASE) in written
+            and len(written) == 2
+        )
     else:
         assert written == []
 

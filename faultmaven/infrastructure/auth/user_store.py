@@ -50,6 +50,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Redis keys: users, the username and email indexes, the user list (#2958).
+USER_PREFIX = "auth:user:"
+USERNAME_PREFIX = "auth:username:"
+EMAIL_PREFIX = "auth:email:"
+USER_LIST_KEY = "auth:user_list"
+
 
 class RedisUserStore:
     """Redis-based user storage system
@@ -73,10 +79,10 @@ class RedisUserStore:
         self.redis = redis_client
 
         # Redis key patterns
-        self.user_key_pattern = "auth:user:{}"
-        self.username_key_pattern = "auth:username:{}"
-        self.email_key_pattern = "auth:email:{}"
-        self.user_list_key = "auth:user_list"
+        self.user_key_pattern = USER_PREFIX + "{}"
+        self.username_key_pattern = USERNAME_PREFIX + "{}"
+        self.email_key_pattern = EMAIL_PREFIX + "{}"
+        self.user_list_key = USER_LIST_KEY
 
         # Validation patterns
         self.email_pattern = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
