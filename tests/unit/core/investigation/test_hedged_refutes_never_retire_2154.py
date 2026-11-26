@@ -139,9 +139,10 @@ def test_a_prior_below_the_bar_still_retires_on_a_hedged_refutes():
     assert seen == [(0.05, HypothesisState.RETIRED)]
 
 
-def test_the_float_edge_reads_as_on_main():
-    """0.4 + 2 × 0.15 − 2 × 0.20 is 0.29999999999999993 in floats: below the
-    bar, with or without a hedged REFUTES beside the confident ones."""
+def test_the_float_edge_lands_on_the_bar():
+    """0.4 + 2 × 0.15 − 2 × 0.20 lands on 0.30, at the bar and not below it
+    (#3103). A hedged REFUTES beside the confident ones is held: the
+    confident-only formula is 0.30 too."""
     for extra in ((), (_HEDGED,)):
         manager, h = HypothesisManager(), _hypothesis(0.4)
         manager.link_evidence(h, "s1", _SUPPORTS, 1)
@@ -149,7 +150,7 @@ def test_the_float_edge_reads_as_on_main():
 
         _refutes(manager, h, _CONFIDENT, _CONFIDENT, *extra, turn=2)
 
-        assert h.state == HypothesisState.RETIRED
+        assert h.state == HypothesisState.ACTIVE
 
 
 def test_hedged_links_re_emitted_confident_retire():

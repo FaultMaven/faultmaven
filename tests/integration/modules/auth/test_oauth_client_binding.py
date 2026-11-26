@@ -641,7 +641,9 @@ async def test_an_unusable_refresh_token_is_refused_not_a_500(env, path, token):
             ),
         )
         assert response.status_code == 400, response.text
-        assert response.json()["error"] == "invalid_grant"
+        # #2974: a body that is not text is refused before the grant is read.
+        expected = "invalid_request" if token == SURROGATE else "invalid_grant"
+        assert response.json()["error"] == expected
     else:
         response = await env.client.post(REFRESH, **_raw_json(refresh_token=token))
         assert response.status_code == 401, response.text
