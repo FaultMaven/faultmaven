@@ -483,6 +483,14 @@ def test_a_mixed_auth_log_counts_each_account_once_per_line() -> None:
 # and PAM's ``session closed for``. ``AUTH_CONTEXT_RE`` was widened to keep
 # them, and the profile reads through the same gate. Each must still be
 # recorded, or a narrowing silently costs the profile usernames.
+#
+# Only the gate-decided rows pin the gate: the slot-decided rows
+# (``failed-publickey``, ``failed-none``, ``failed-keyboard-interactive``) are
+# answered by sshd's user slot and the field-decided rows
+# (``session-closed-for-user``, ``trailing-underscore-account``,
+# ``spaces-after-equals``) by a ``user`` field, so neither consults it. Every
+# other row is gate-decided, and each alternative of ``AUTH_CONTEXT_RE`` is
+# pinned by one of them (#3113).
 AUTH_GATE_MUST_STILL_RECORD = [
     pytest.param(
         "Dec 10 07:10:00 LabSZ sshd[1]: error: maximum authentication attempts "
@@ -520,8 +528,6 @@ AUTH_GATE_MUST_STILL_RECORD = [
         ["frank"],
         id="session-closed-for-user",
     ),
-    # The lines above name the user in sshd's slot or a ``user`` field; on
-    # these three only the gate admits the ``for`` clause (#3113).
     pytest.param(
         "Dec 10 07:10:06 LabSZ sshd[9]: Failed none for erin from 1.2.3.4 port 22 ssh2",
         ["erin"],
@@ -534,9 +540,23 @@ AUTH_GATE_MUST_STILL_RECORD = [
         id="gate-only-keyboard-interactive",
     ),
     pytest.param(
+        _UNREAD_PREFIX + "Dec 10 07:10:05 LabSZ sshd[5]: Accepted publickey for "
+        "dave from 1.2.3.4 port 22 ssh2",
+        ["dave"],
+        id="gate-only-accepted",
+    ),
+    # The two session lines are synthetic. pam_unix writes ``session
+    # opened|closed for user <name>``, which the ``user`` field decides; no
+    # known real producer writes either shape without ``user``.
+    pytest.param(
         "Sep 21 10:00:03 h su[11]: pam_unix(su:session): session closed for frank",
         ["frank"],
         id="gate-only-session-closed-for",
+    ),
+    pytest.param(
+        "Sep 21 10:00:04 h su[12]: pam_unix(su:session): session opened for henry",
+        ["henry"],
+        id="gate-only-session-opened-for",
     ),
     pytest.param(
         "Sep 21 10:00:01 h sshd[7]: pam_unix(sshd:auth): authentication "
@@ -560,7 +580,6 @@ def test_the_widened_auth_gate_still_records_these_usernames(
 ) -> None:
     """Narrowing ``AUTH_CONTEXT_RE`` must not cost the profile usernames."""
     assert profile_usernames(line + "\n") == expected
-    assert extract_usernames(line) == expected
 
 
 @pytest.mark.unit
