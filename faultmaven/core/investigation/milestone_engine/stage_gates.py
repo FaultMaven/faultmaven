@@ -2477,10 +2477,11 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
     with one line, without an accepted mitigation, against a different one
     already recorded, and ``proceed_unmitigated`` against a verified one; a
     restatement is absorbed. ``declared_stable`` also stamps
-    ``completed_at_turn``: it says the symptom is relieved. On a verified
-    record it is recorded beside the verdict, silently: it settles nothing,
-    so it adds no ``mitigation_disposed``. Returns whether it settled the
-    mitigation."""
+    ``completed_at_turn``: it says the symptom is relieved. On a record
+    already settled (``MitigationRecord.settled``, read before the write:
+    verified) it is recorded beside the verdict, silently: it settles
+    nothing, so it adds no ``mitigation_disposed``. Returns whether it
+    settled the mitigation."""
     from .statement_revision import emission_turn
 
     record = case.progress.mitigation
@@ -2503,7 +2504,7 @@ def _register_disposition(case: Case, value: str, metadata: dict[str, Any]) -> b
         )
         return False
     turn = emission_turn(case, metadata)
-    settles = not record.verified
+    settles = not record.settled
     record.disposition, record.disposition_at_turn = value, turn
     # Read by the verify refusal's line when no outcome can be (#2636).
     record_decision(metadata, NoticeCode.MITIGATION_DISPOSED, value=value)

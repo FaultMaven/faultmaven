@@ -253,8 +253,10 @@ def narration_outcome(case: "Case") -> CaseOutcome:
     assembly may return instead (which, called alone, folds once per
     call). The resolve confirmation folds it once per call, and the closed
     reply when the terminal write failed (S2b-2b). The reopen chip folds it
-    once per reply, and decides, confirms and refuses from that fold (#3053
-    S3d-2); a fold that raises fails closed, counted once."""
+    once per reply: its verdict and every record fact its confirmation and
+    refusal state come from that fold, the content they name (the cause
+    re-check's names, the held check's text) from beside it (#3053 S3d-2); a
+    fold that raises fails closed, counted once."""
     return compute_case_outcome(case.progress.outcome, case, at=WritePoint.NARRATION)
 
 

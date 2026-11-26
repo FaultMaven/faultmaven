@@ -31,7 +31,7 @@ Module level is ``<module>``. Three tables:
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
   ``completed_milestones``, ``solution_verified``, its alias property
   ``resolution_complete`` (no reader today), a mitigation's ``verified`` and
-  ``closure_reason``. ``verified`` has no receiver heuristic: all 13 reads
+  ``closure_reason``. ``verified`` has no receiver heuristic: all 12 reads
   today are ``MitigationRecord.verified``, and a future reader of another
   ``verified`` gets a row with its reason.
 * ``ENTRY_CALLERS`` (pin 5): every reference to an entry in ``ENTRIES``: the
@@ -617,7 +617,7 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_ME + "milestone_inference.py", "_milestone_already_recorded"): {"verified": 1},
     (_SG, "_apply_stage_gate_side_effects"): {"closure_reason": 1},
     (_SG, "_apply_stage_gate_signals"): {"verified": 1},
-    (_SG, "_register_disposition"): {"verified": 2},
+    (_SG, "_register_disposition"): {"verified": 1},
     (_SG, "justification_skipped"): {"solution_verified": 1},
     # #2811 S2b-2b: the closed reply when no record can be read (the
     # terminal write failed and the fold raised): the reason's line alone.
@@ -670,7 +670,8 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_PROGRESS, "InvestigationProgress.solution_ordering"): {"solution_verified": 1},
     (_PROGRESS, "MitigationRecord._verified_requires_accepted"): {"verified": 2},
     # The one statement of when a mitigation is settled (#3053 Q2): the stage,
-    # ``cause_assurance.mitigation_settled`` and the monitor read it.
+    # ``cause_assurance.mitigation_settled``, the monitor and the disposition
+    # writer read it.
     (_PROGRESS, "MitigationRecord.settled"): {"verified": 1},
     (_CASE + "domain/services/case_service.py", "CaseService.close_case"): {
         "closure_reason": 1

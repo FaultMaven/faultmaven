@@ -411,25 +411,35 @@ _NO_LONGER_STANDS = (
 
 
 def _kept_chips(case) -> list:
-    """The case's reopen and close chips, which a refused or failed chip
-    reply keeps: Slack has no other way to close, and its close chip is
-    built only beside this one (#2222). None when the projection raises."""
+    """The case's reopen and close chips, which a refused chip reply keeps:
+    Slack has no other way to close, and its close chip is built only beside
+    this one (#2222). Empty when the case has no reopen chip."""
+    projection = project_offers(case)
+    if projection.reopen_chip is None:
+        return []
+    return [projection.reopen_chip, projection.close_chip]
+
+
+def _fail_closed(case) -> tuple[str, list]:
+    """The chip's reply when the record cannot be read this turn (#3053 Q11):
+    the ruled line, with the case's chips, empty when the projection raises
+    too."""
     try:
-        projection = project_offers(case)
-        if projection.reopen_chip is None:
-            return []
-        return [projection.reopen_chip, projection.close_chip]
+        chips = _kept_chips(case)
     except Exception:  # noqa: BLE001 — the reply stands without its chips
         logger.exception("Case %s: the reply's chips could not be built", case.case_id)
-        return []
+        chips = []
+    return RECORD_UNREADABLE_LINE, chips
 
 
 def _chip_refusal(case, outcome, held) -> tuple[str, list]:
-    """The reopen chip's refusal and its chips, from the record folded for
-    the reply (#3053 S3d-2): the record's readiness ask (``record_params``
-    for ``RESOLUTION_NEEDS_INFO``), with ``held``, the held check's content
-    read by its id, and the cause re-check's names (``cause_recheck_names``)
-    under that gap. A held check with no text fails closed, counted once."""
+    """The reopen chip's refusal and its chips (#3053 S3d-2): the record's
+    readiness ask (``record_params`` for ``RESOLUTION_NEEDS_INFO``), every
+    record fact from the fold the chip decided on, and the content the ask
+    names read beside it: ``held``, the held check's content by its id, and
+    under that gap the cause re-check's names (``cause_recheck_names``, which
+    reads the latest fix window outside the fold). A held check with no text
+    fails closed, counted once."""
     resolution = outcome.resolution
     if resolution.reason == ResolutionReason.PENDING_CHECK:
         # The confirmation stands; a check the agent asked for after the fix
@@ -441,7 +451,7 @@ def _chip_refusal(case, outcome, held) -> tuple[str, list]:
                 resolution.pending_check_need_id,
             )
             count_unreadable_record()
-            return RECORD_UNREADABLE_LINE, _kept_chips(case)
+            return _fail_closed(case)
         params = record_params(OfferCode.RESOLUTION_NEEDS_INFO, {}, outcome, held.text)
         return render_offer(OfferCode.RESOLUTION_NEEDS_INFO, params), _kept_chips(case)
     names = (
@@ -469,10 +479,12 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
     #3053 S3d-2): the offer is made only when the record's resolution verdict
     is READY, the bar step 2 applies to the model's proposal, and not while
     the problem statement is on hold (a revision awaiting the user, when no
-    transition is proposed). The confirmation and the refusal's ask render
-    from that same fold. Otherwise nothing is opened or recorded, and the
-    reply says why; when the fold raises, or the held check's text cannot be
-    read, it says the record could not be read, counted once.
+    transition is proposed). The verdict and every record fact the
+    confirmation and the refusal's ask state come from that same fold; the
+    content they name is read beside it (``_chip_refusal``). Otherwise nothing
+    is opened or recorded, and the reply says why; when the fold raises, or
+    the held check's text cannot be read, it says the record could not be
+    read, counted once.
     """
     if problem_on_hold(case):
         agent_response = (
@@ -495,7 +507,7 @@ def _resolve_on_reopen_chip(*, case, upload_report, user_message):
 
     outcome = _reply_outcome(case)
     if outcome is None:
-        agent_response, follow_ups = RECORD_UNREADABLE_LINE, _kept_chips(case)
+        agent_response, follow_ups = _fail_closed(case)
     elif outcome.resolution.verdict != ResolutionVerdict.READY:
         logger.info(
             f"Reopen chip for case {case.case_id} refused: resolution readiness "

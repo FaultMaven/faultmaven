@@ -32,6 +32,9 @@ from faultmaven.core.investigation.milestone_engine import (
     terminal_replies,
 )
 from faultmaven.core.investigation.milestone_engine import transition_turns as tt
+from faultmaven.core.investigation.milestone_engine.stage_gates import (
+    _register_disposition,
+)
 from faultmaven.core.investigation.offer_projection import project_offers
 from faultmaven.core.investigation.outcome import narration_outcome
 from faultmaven.core.investigation.problem_status import problem_on_hold
@@ -50,6 +53,7 @@ from faultmaven.modules.case.contracts import (
     WritePoint,
 )
 from faultmaven.modules.case.domain.models.progress import (
+    MitigationRecord,
     investigation_stage,
     mitigation_settled_of,
 )
@@ -125,6 +129,38 @@ def test_a_bound_relapse_leaves_settled_and_the_stage_out_of_mitigation(name):
     assert (fold.settled, fold.verified) == (True, False)
     assert case.progress.mitigation.settled is True
     assert case.progress.current_stage is not InvestigationStage.MITIGATION
+
+
+def _disposing(verified: bool):
+    case = settled.CASES[
+        "verified:no_solution" if verified else "accepted:no_solution"
+    ]()
+    return case, {"milestones_completed": []}
+
+
+@pytest.mark.parametrize("value", ["declared_stable", "proceed_unmitigated"])
+def test_a_disposition_on_an_unsettled_mitigation_settles_it(value):
+    case, metadata = _disposing(verified=False)
+    assert _register_disposition(case, value, metadata) is True
+    assert case.progress.mitigation.disposition == value
+    assert metadata["milestones_completed"] == ["mitigation_disposed"]
+    assert case.progress.current_stage is not InvestigationStage.MITIGATION
+
+
+def test_a_declaration_on_a_verified_mitigation_settles_nothing():
+    case, metadata = _disposing(verified=True)
+    assert _register_disposition(case, "declared_stable", metadata) is False
+    assert case.progress.mitigation.disposition == "declared_stable"
+    assert metadata["milestones_completed"] == []
+
+
+def test_the_disposition_writer_reads_the_one_rule(monkeypatch):
+    """Whether a disposition settles is ``MitigationRecord.settled`` read
+    before the write, not a copy of the rule."""
+    case, metadata = _disposing(verified=False)
+    monkeypatch.setattr(MitigationRecord, "settled", property(lambda _self: True))
+    assert _register_disposition(case, "declared_stable", metadata) is False
+    assert metadata["milestones_completed"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +304,32 @@ def test_the_failed_reply_keeps_the_declined_cases_chips(monkeypatch, counted):
     assert reply["suggested_follow_ups"] == _kept(case)
 
 
-def test_a_failed_reply_whose_chips_cannot_be_built_carries_none(monkeypatch, counted):
-    case = chips.build("ready:declined")
-    monkeypatch.setattr(terminal_replies, "narration_outcome", _raise)
+@pytest.mark.parametrize("failure", ["fold", "held_check_text"])
+def test_a_failed_reply_whose_chips_cannot_be_built_carries_none(
+    monkeypatch, counted, failure
+):
+    """The guard is the fail-closed path's alone: the ruled reply stands
+    without its chips."""
+    if failure == "fold":
+        case = chips.build("ready:declined")
+        monkeypatch.setattr(terminal_replies, "narration_outcome", _raise)
+    else:
+        case = chips.build("refused:pending_check_declined")
+        monkeypatch.setattr(tt, "content_by_id", lambda _case, _id: None)
     monkeypatch.setattr(tt, "project_offers", _raise)
     reply = chips.chip(case)
     assert reply["agent_response"] == tt.RECORD_UNREADABLE_LINE
     assert reply["suggested_follow_ups"] == []
+    assert counted == [WritePoint.NARRATION]
+
+
+def test_a_pending_check_refusal_lets_a_projection_failure_through(monkeypatch):
+    """The normal refusal builds its chips as ``main`` did: a projection
+    that raises propagates."""
+    case = chips.build("refused:pending_check_declined")
+    monkeypatch.setattr(tt, "project_offers", _raise)
+    with pytest.raises(RuntimeError, match="probe"):
+        chips.chip(case)
 
 
 def test_a_held_check_with_no_text_fails_closed_counted_once(monkeypatch, counted):
