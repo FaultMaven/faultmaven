@@ -328,7 +328,7 @@ async def embed_texts_or_raise(
             (``infrastructure.index_slot``): the encode runs in a worker from
             that slot, one at a time per host. None (evidence vectorization)
             takes a ticket on the evidence slot, one encode at a time per
-            process, in this process, its bound sized by bytes. Either way
+            host, in this process, its bound sized by bytes. Either way
             the bound also covers the guard bounds of the encodes queued ahead.
 
     There is no opt-out. #953 asked whether the boot repair path should stay
