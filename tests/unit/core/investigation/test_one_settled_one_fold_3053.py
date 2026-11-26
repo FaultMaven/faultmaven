@@ -5,9 +5,10 @@ Q2: when a mitigation is settled is stated once (``mitigation_settled_of``,
 ``MitigationRecord.settled``); the stage, the operator list,
 ``cause_assurance.mitigation_settled`` and the monitor read it, and each says
 what it said on ``main`` (``settled_oracle_3053.json``). Q3: the hold set is
-``PROBLEM_ON_HOLD``. Q11: the reopen chip decides, confirms and refuses from
-one fold of the record, its replies byte for byte ``main``'s
-(``reopen_chip_oracle_3053.json``), and fails closed when the fold raises. Q1:
+``PROBLEM_ON_HOLD``. Q11: the reopen chip takes its verdict and every record
+fact from one fold of the record (the content the ask names is read beside
+it), its replies byte for byte ``main``'s (``reopen_chip_oracle_3053.json``),
+and fails closed when the fold raises. Q1:
 a verifying turn whose same-cycle mint fails still accepts cause work.
 
 The Q2 and Q3 property tests fail on ``main`` only by ``ImportError`` (the
@@ -231,7 +232,7 @@ def folds(monkeypatch) -> list:
 
 @pytest.mark.parametrize("name", sorted(chips.CASES))
 def test_the_chip_folds_once_per_reply(folds, name):
-    """One fold decides, confirms and refuses; none on hold."""
+    """One fold gives the verdict and every record fact; none on hold."""
     case = chips.build(name)
     folds.clear()
     chips.chip(case)

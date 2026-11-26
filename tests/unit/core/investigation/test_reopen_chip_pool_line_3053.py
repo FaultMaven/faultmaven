@@ -4,9 +4,10 @@ does (#3053 S3d-1, stage S3d of #2615), and the whole refusal is the fold's
 
 S3d-1: the refusal stated the decide-time message, built with no cause, so its
 ask lacked the pool-empty line (approved copy item 5, #2811 S2c-1b) the
-needs-info request shows for the same case. S3d-2: the chip decides and
-narrates from one fold (``terminal_replies._reply_outcome``), every refusal
-included; a fold that raises fails closed with the ruled reply.
+needs-info request shows for the same case. S3d-2: the chip takes its verdict
+and every record fact from one fold (``terminal_replies._reply_outcome``),
+every refusal included, the content the ask names read beside it; a fold that
+raises fails closed with the ruled reply.
 """
 
 from __future__ import annotations
@@ -139,7 +140,7 @@ DISAGREEING = {
 @pytest.mark.parametrize("name", list(DISAGREEING))
 def test_a_disagreeing_fold_gives_the_whole_refusal(monkeypatch, folds, name):
     """The record's reason, missing items, gaps and cause, not the fresh
-    readiness's: the refusal is the fold's ask, from one fold."""
+    readiness's: the refusal states the fold's record facts, from one fold."""
     case = POOL_EMPTY[PoolEmptyReason.NO_CAUSE]()
     outcome = narration_outcome(case)
     resolution = outcome.resolution.model_copy(update=DISAGREEING[name])
@@ -175,7 +176,8 @@ def test_a_pending_check_the_fold_holds_no_text_for_fails_closed(monkeypatch, fo
 @pytest.mark.parametrize("name", list(NO_ROOT_CAUSE_ASK), ids=str)
 def test_a_refusal_with_no_root_cause_ask_is_todays_from_one_fold(folds, name):
     """FIX_FAILED, FIX_OFF_CAUSE and a documentation-gaps ask carrying the
-    cause re-check's names: byte-equal to today's refusal, from one fold."""
+    cause re-check's names: byte-equal to today's refusal, its record facts
+    from one fold."""
     case = NO_ROOT_CAUSE_ASK[name]()
     readiness = assess_resolution_readiness(case)
     assert "root cause" not in readiness.missing, "premise"
