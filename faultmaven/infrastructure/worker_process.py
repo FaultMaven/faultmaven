@@ -266,12 +266,13 @@ async def _frames(
 #: preparation (whose ``json.loads`` decodes its line the same way) can receive
 #: one at their limit, which their 12 and 13 cover. A search's file text cannot
 #: carry one, decoded with ``errors="replace"``
-#: (``_resolve_evidence_content``); its invalid-pattern message, quoting the
-#: model's pattern raw, can, but is one line, never near the limit. A token
-#: count's answer is two integers. Callers that parse the parts add theirs
-#: (``*_ANSWER_HOLD``); an answer the worker's code cannot write is its defect,
-#: outside these. The widths are CPython's, measured on 3.11.15 (the image's):
-#: 7.0 and 8.0.
+#: (``_resolve_evidence_content``); its invalid-pattern message, ``re``'s error
+#: text (``search_file_worker._compile``), can carry one character of the
+#: pattern raw but is short; a longer quote, a group name, is ``repr``-escaped.
+#: A token count's answer is two integers. Callers that parse the parts add
+#: theirs (``*_ANSWER_HOLD``); an answer the worker's code cannot write is its
+#: defect, outside these. The widths are CPython's, measured on 3.11.15 (the
+#: image's): 7.0 and 8.0.
 PHASED_ANSWER_HOLD = 7
 
 
