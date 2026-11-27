@@ -107,9 +107,10 @@ SEARCH_OUTPUT_BASE_BYTES = 1024 * 1024
 #: file text is decoded with ``errors="replace"``
 #: (``_resolve_evidence_content``), and the invalid-pattern message is ``re``'s
 #: error text (``search_file_worker._compile``, prefixed in ``regex_lines``),
-#: which can carry one character of the pattern raw and is short; a longer
-#: quote, a group name, is ``repr``-escaped. Measured on CPython 3.11.15: 7.0.
-#: What ``_regex_in_worker`` does with the answer after its slot's release is
+#: which can carry raw characters of the pattern only in a fragment that does
+#: not grow with the pattern; a quote that grows with it, a group name, is
+#: ``repr``-escaped, so ASCII. Measured on CPython 3.11.15: 7.0. What
+#: ``_regex_in_worker`` does with the answer after its slot's release is
 #: outside the term (#3128). An answer ``answer_parts`` cannot write is outside
 #: it.
 SEARCH_ANSWER_HOLD = worker_process.PHASED_ANSWER_HOLD
