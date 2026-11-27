@@ -415,7 +415,7 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     },
     (_SG, "licence_leg_ids"): {"_cause_pool": 1},
     (_SG, "licence_subject"): {"_pool_legs": 1},
-    (_SG, "standing_fix_action"): {
+    (_SG, "fix_standing"): {
         "fix_application_turn": 1,
         "interception_relief": 1,
     },
@@ -1087,7 +1087,7 @@ CARRIED_VIEW_SITES: dict[tuple[str, str], int] = {
     (_SG, "_date_to_the_report"): 1,
     (_SG, "_flag_absence_inside_a_failed_fix_window"): 1,
     (_SG, "_flag_unbound_post_fix_rows"): 1,
-    (_SG, "standing_fix_action"): 1,
+    (_SG, "fix_standing"): 1,
     (_CB + "fix_verification_block.py", "build_fix_verification_block"): 1,
     (_CB + "causal_graph_block.py", "fix_confirmed"): 1,
     # The mint names the FAILED windows a failed write did not mint.

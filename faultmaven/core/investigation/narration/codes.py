@@ -173,12 +173,19 @@ CONTEXT_ONLY = frozenset(
 #: notice, the later decision's params replacing the earlier's.
 AGGREGATED = frozenset({NoticeCode.SOLUTION_OFFER_WITHDRAWN})
 
+#: Deduplicated by code and one param (#3120): a fix decided twice in one turn
+#: (a replayed bundle's and the live one) renders one notice, the later
+#: decision's params replacing the earlier's.
+KEYED_BY = {NoticeCode.FAILED_FIX_NOT_REREGISTERED: "action_id"}
+
 
 def decision_key(code: str, params: dict) -> str:
     """What a decision is deduplicated by: its code, and its params unless the
-    code is deduplicated by code alone."""
+    code is deduplicated by code alone or by one param."""
     if code in AGGREGATED:
         return str(code)
+    if code in KEYED_BY:
+        return f"{code}:{params[KEYED_BY[code]]}"
     return f"{code}:{json.dumps(params, sort_keys=True, default=str)}"
 
 

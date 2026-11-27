@@ -96,6 +96,23 @@ PREPARATION_CPU_SECONDS = EXTRACTION_TIMEOUT_SECONDS + 10
 #: fault, not the document's: a server error.
 PREPARATION_OUTPUT_LIMIT_BYTES = 5 * 1024 * 1024
 
+#: The parent's hold of an answer per byte of its output limit (#3122). The
+#: answer is one frame line, whose bytes stay alive while ``json.loads``
+#: decodes it to 4 bytes a character (1 + 4) and builds its strings,
+#: over-allocated by a quarter and widened from 2 to 4 bytes at an astral
+#: character past an escape: (2 + 4) x 1.25. Its worst, ``extracted_text``
+#: holding a BMP character, an escape, then an astral one, is 12.5 on CPython
+#: 3.11.15, so 13. The collections users grow are capped: ``warnings`` at the
+#: three ``prepare`` appends (``preparation.py:569``, ``:620``, ``:659``),
+#: ``redactions`` one per secret type (``preparation.py:218``), and pages named
+#: at 10 (``preparation.py:46``); ``source_metadata``'s keys are fixed
+#: (``preparation.py:258``). A lone surrogate adds the copy ``surrogatepass``'s
+#: error makes of the line while it decodes, 8 in all, within it. The answer
+#: ``_run_worker`` returns outlives its slot; held after the release, it is
+#: outside the term (#3128). An answer ``preparation`` cannot write is outside
+#: it.
+PREPARATION_ANSWER_HOLD = 13
+
 #: The stage the worker runs, by reference. Always this value: tests point it at
 #: a stage of their own, and no input of a request reaches it.
 _PREPARATION_STAGE = "faultmaven.modules.knowledge.domain.services.preparation:prepare"

@@ -257,6 +257,26 @@ async def _frames(
     return frame["result"]
 
 
+#: The most this process holds, per byte of the output limit, while ``_parts``
+#: reads an answer (#3122): its bytes (1), and the decode's 2-byte buffer (2)
+#: widening into a 4-byte one (4) at an astral character, both alive while it
+#: copies: 7 for an answer with no lone surrogate. A part with a lone surrogate
+#: holds up to 8: ``surrogatepass``'s ``UnicodeDecodeError`` copies that part,
+#: never the others, since each part is decoded alone (1). Tier 1 and
+#: preparation (whose ``json.loads`` decodes its line the same way) can receive
+#: one at their limit, which their 12 and 13 cover. A search's file text cannot
+#: carry one, decoded with ``errors="replace"``
+#: (``_resolve_evidence_content``); its invalid-pattern message, ``re``'s error
+#: text (``search_file_worker._compile``), can carry raw characters of the
+#: pattern only in a fragment that does not grow with the pattern; a quote that
+#: grows with it, a group name, is ``repr``-escaped, so ASCII. A token count's
+#: answer is two integers. Callers that parse the parts add theirs
+#: (``*_ANSWER_HOLD``); an answer the worker's code cannot write is its defect,
+#: outside these. The widths are CPython's, measured on 3.11.15 (the image's):
+#: 7.0 and 8.0.
+PHASED_ANSWER_HOLD = 7
+
+
 async def _parts(
     proc: "asyncio.subprocess.Process", seen: Dict[str, Any], output_limit_bytes: int
 ) -> Optional[list]:

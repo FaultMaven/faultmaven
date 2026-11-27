@@ -540,13 +540,14 @@ def _mitigation_block_line(case) -> str:
     "build, state",
     [
         (_one_turn_with_a_span, "problem still present at turn 7"),
-        (_still_present, "problem seen again at turn 7"),
+        (_still_present, "problem still present at turn 7"),
     ],
     ids=["one-turn", "persistence-alone"],
 )
 def test_the_fix_verification_block_reads_one_turn_as_still_present(build, state):
     """The ``<fix_verification>`` block's mitigation line reads r == p as the
-    closure line and the statement do (#3053 S3d-6), never "seen again"."""
+    closure line and the statement do (#3053 S3d-6), and a persistence with no
+    relief as the statement does (#3120): never "seen again"."""
     assert _mitigation_block_line(build()) == (f"Mitigation: executed turn 6: {state}")
 
 
@@ -611,7 +612,7 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
             f"{_RELIEVED} 7), and the data it cites covers about 30 minutes",
             {"RELIEF"},
         ),
-        (_still_present, "the problem was seen again at turn 7", {"NO_RELIEF"}),
+        (_still_present, _STILL_7, {"NO_RELIEF"}),
         (
             _declared_one_turn,
             f"{MITIGATION_DECLARED} (turn 8); {_STILL_7}",
@@ -660,8 +661,9 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
     ],
 )
 def test_each_other_closure_line_shape_is_unchanged(build, line, kinds):
-    """S3d-6 changes only the r == p clause: every other shape's line reads
-    as before (a relapse's claims drop the no-relief fact, review item 1),
+    """S3d-6 changes only the r == p clause, and #3120 a persistence with no
+    relief, which reads as it: every other shape's line reads as before (a
+    relapse's claims drop the no-relief fact, review item 1),
     and the declaration and the proceed beside an r == p keep their copy and
     place."""
     case = build()
