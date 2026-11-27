@@ -106,7 +106,10 @@ PREPARATION_OUTPUT_LIMIT_BYTES = 5 * 1024 * 1024
 #: three ``prepare`` appends (``preparation.py:569``, ``:620``, ``:659``),
 #: ``redactions`` one per secret type (``preparation.py:218``), and pages named
 #: at 10 (``preparation.py:46``); ``source_metadata``'s keys are fixed
-#: (``preparation.py:258``). An answer ``preparation`` cannot write is outside
+#: (``preparation.py:258``). A lone surrogate adds the copy ``surrogatepass``'s
+#: error makes of the line while it decodes, 8 in all, within it. The answer
+#: ``_run_worker`` returns outlives its slot; held after the release, it is
+#: outside the term (#3128). An answer ``preparation`` cannot write is outside
 #: it.
 PREPARATION_ANSWER_HOLD = 13
 

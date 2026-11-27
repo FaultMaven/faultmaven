@@ -145,8 +145,9 @@ GATE_OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024
 #: a template of at least 19 characters (``runbook_validator.py:1166``), and
 #: those listing a user's values stop at ten and one more
 #: (``_capped_refusals``, ``runbook_validator.py:553``): a list of 20-character
-#: errors, each with an astral character, holds 5.7. An answer
-#: ``validation_worker`` cannot write is outside it.
+#: errors, each with an astral character, holds 5.7. What ``_run``'s callers do
+#: with the parsed answer after its slot's release is outside the term (#3128).
+#: An answer ``validation_worker`` cannot write is outside it.
 GATE_ANSWER_HOLD = 9
 
 #: The principal of a check no user asked for: an ingest with no owner, as the

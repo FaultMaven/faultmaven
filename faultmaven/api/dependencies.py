@@ -153,7 +153,8 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
     )
     gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
     # Each answer as the serving process holds it reading and parsing it: its
-    # output limit times the caller's ``*_ANSWER_HOLD`` (#3122).
+    # output limit times the caller's ``*_ANSWER_HOLD`` (#3122). One held after
+    # its slot's release is outside it (#3128).
     search_out = search.search_output_limit(3 * u, u + 1)
     buffers = w * (
         prep.PREPARATION_SLOTS

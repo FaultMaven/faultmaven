@@ -8,8 +8,9 @@ astral one, so the decode widens twice and a parse's string builder widens at
 its over-allocated size) and sized to the output limit; it is read through the
 real reader and parsed as the caller parses it, under ``tracemalloc``. The hold
 is that peak less the same path's over an empty answer: above the constant
-less one, at most the constant, and more than the output limit once, which is
-what the status counted before.
+less one, at most the constant plus ``TRACE_SLACK_BYTES``, and more than the
+output limit once, which is what the status counted before. Tier 1 and
+preparation, which can receive a lone surrogate, are also read with one.
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ BMP, ASTRAL = "€", "\U0001f600"
 #: What the read and parse of an empty answer may peak at: the reader's
 #: frames and objects, never the answer's.
 EMPTY_PEAK_BYTES = 64 * 1024
+
+#: Room above the constant for allocations not the reader's: ``tracemalloc``
+#: counts every thread's (an xdist worker's IO thread), and its filters apply
+#: to snapshots, never to the peak, so they cannot be filtered out of it.
+TRACE_SLACK_BYTES = 64 * 1024
 
 
 def _frame(frame: dict) -> bytes:
@@ -98,6 +104,15 @@ def _fit(stream: Callable[[int], bytes], room: int) -> bytes:
 
 def _steer(n: int) -> str:
     return BMP + "x" * n + "\n" + ASTRAL
+
+
+def _steer_surrogate(n: int) -> str:
+    """As ``_steer``, with a lone surrogate, which ``surrogatepass`` decodes
+    by copying the input."""
+    return BMP + "\ud800" + "x" * n + "\n" + ASTRAL
+
+
+SHAPES = {"plain": _steer, "lone surrogate": _steer_surrogate}
 
 
 def _reader(text: str) -> bytes:
@@ -183,16 +198,23 @@ CALLERS = {
 }
 
 
-@pytest.mark.parametrize("caller", list(CALLERS))
-def test_the_worst_answer_at_the_limit_is_held_within_the_callers_constant(caller):
+@pytest.mark.parametrize(
+    "caller, shape",
+    [(caller, "plain") for caller in CALLERS]
+    + [("tier1", "lone surrogate"), ("preparation", "lone surrogate")],
+)
+def test_the_worst_answer_at_the_limit_is_held_within_the_callers_constant(
+    caller, shape
+):
     hold, limit, writer, read, received, parse = CALLERS[caller]
+    steer = SHAPES[shape]
     empty = _peak(writer(""), limit, read, received, parse)
-    worst = _fit(lambda n: writer(_steer(n)), limit - received)
+    worst = _fit(lambda n: writer(steer(n)), limit - received)
 
     held = _peak(worst, limit, read, received, parse) - empty
 
     assert empty < EMPTY_PEAK_BYTES
-    assert (hold - 1) * limit < held <= hold * limit
+    assert (hold - 1) * limit < held <= hold * limit + TRACE_SLACK_BYTES
     assert held > limit  # the status's term before #3122: the limit once
 
 
