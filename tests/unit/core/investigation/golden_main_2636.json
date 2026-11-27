@@ -368,7 +368,7 @@
     "SYSTEM: Post-fix row(s) <ev:0> name nothing they re-check that binds, so they confirm and disconfirm nothing. Set rechecks — symptom rows: one of <ev:1>; causal_absence rows: none supports the root cause alone yet."
   ],
   "cycle:failed_fix_named_again": [
-    "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed or a later fix followed it. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
+    "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
   ],
   "cycle:licence_withdrawn_once_it_holds": [
     "SYSTEM: 'solution_accepted' was not registered: <act:0> was withdrawn while its root cause was not established, and a withdrawn fix does not register by its ACTION_ID. If the user carried it out, re-propose it, with its description unchanged, as a SolutionToAdd and set solution_accepted with accepted_action_ref new_index_N naming it. The user's report is recorded: <act:0> is on record as carried out at turn 5 (see <user_changes>); it counts as a fix only once it is registered as one."

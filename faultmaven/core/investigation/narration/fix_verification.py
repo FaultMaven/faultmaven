@@ -194,9 +194,9 @@ def _attempt_lines(attempts, content, fresh) -> list[str]:
         acted = ", ".join(a.target_ids) or "no node recorded"
         if a.kind == "interception":
             relief, present = a.relief_turn, a.present_turn
-            if present is not None and present == relief:
+            if present is not None and relief in (None, present):
                 state = f"problem still present at turn {present}"
-            elif present is not None and (relief is None or present > relief):
+            elif present is not None and present > relief:
                 state = f"problem seen again at turn {present}"
             elif relief is not None:
                 state = f"problem seen gone at turn {relief}"

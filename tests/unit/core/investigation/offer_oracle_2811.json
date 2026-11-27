@@ -2106,7 +2106,7 @@
       "narration_conflicts": []
     },
     "notices": [
-      "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed or a later fix followed it. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
+      "SYSTEM: 'solution_accepted' was not registered again: SOLUTION <act:0> is registered, and its fix window failed. If the user re-applied it, re-propose it as a SolutionToAdd and set accepted_action_ref new_index_N naming it."
     ],
     "prose": {}
   },

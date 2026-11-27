@@ -596,18 +596,9 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
     after its latest relief or in that relief's turn, or after it with no
     relief (#2036 D2.3; one turn cannot order the two, #3053 S3d-6). After a
     failure the same fix applied again is a new attempt."""
-    from faultmaven.core.investigation.cause_assurance import (
-        FIX_FAILED,
-        attempt_window,
-        carried_fix_windows,
-        fix_application_turn,
-        interception_relief,
-    )
-
     identity = fix_identity(description)
     if not identity:
         return None
-    latest = fix_application_turn(case)
     for action in reversed(case.proposed_actions):
         if (
             action.action_type != InvestigationActionType.SOLUTION
@@ -616,25 +607,45 @@ def standing_fix_action(case: Case, description: Optional[str]) -> Any:
             continue
         if action.state == "pending":
             return action
-        if action.state != "accepted" or action.accepted_in_turn is None:
-            continue
-        window = attempt_window(case, action)
-        if window is not None:
-            # A remediation stands while its window is the latest one and has
-            # not FAILED: a later interception does not end it.
-            if window.state != FIX_FAILED and (
-                window.fix_turn == carried_fix_windows(case)[-1].fix_turn
-            ):
-                return action
-            continue
-        # An interception opens no window: the latest attempt, it stands until
-        # the problem is seen present after its latest relief or in its turn,
-        # or after it with none.
-        if action.accepted_in_turn == latest:
-            relief, present = interception_relief(case, action.accepted_in_turn)
-            if present is None or (relief is not None and present < relief):
-                return action
+        if action.state == "accepted" and fix_standing(case, action)[0] is None:
+            return action
     return None
+
+
+def fix_standing(case: Case, action: Any) -> tuple[Optional[str], dict[str, int]]:
+    """Whether an accepted SOLUTION stands, the verdict ``standing_fix_action``
+    keeps a fix by: ``(None, {})``, or why not with the turns the notice states
+    (#3120): ``undated``, ``window_failed``, ``later_fix``, ``relapse`` (present
+    after its latest relief), ``still_present`` (with no relief, or in its turn)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        FIX_FAILED,
+        attempt_window,
+        carried_fix_windows,
+        fix_application_turn,
+        interception_relief,
+    )
+
+    if action.accepted_in_turn is None:
+        return "undated", {}
+    window = attempt_window(case, action)
+    if window is not None:
+        # A remediation: a later interception does not end it.
+        if window.state == FIX_FAILED:
+            return "window_failed", {}
+        if window.fix_turn != carried_fix_windows(case)[-1].fix_turn:
+            return "later_fix", {}
+        return None, {}
+    # An interception opens no window: the latest attempt, it stands until the
+    # problem is seen present after its latest relief or in its turn, or after
+    # it with none.
+    if action.accepted_in_turn != fix_application_turn(case):
+        return "later_fix", {}
+    relief, present = interception_relief(case, action.accepted_in_turn)
+    if present is None or (relief is not None and present < relief):
+        return None, {}
+    if relief is None or present == relief:
+        return "still_present", {"present": present}
+    return "relapse", {"relief": relief, "present": present}
 
 
 def _newest_fix_bearer(
@@ -1237,12 +1248,15 @@ def _license_holds(case: Case, metadata: dict[str, Any]) -> bool:
 
 def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
     """A registered fix named again but not re-sent, that identity no longer
-    keeps (its window failed, or a later fix followed): it may be re-applied."""
-    if standing_fix_action(case, bearer.description) is not bearer:
+    keeps: it may be re-applied, told why (``fix_standing``, #3120)."""
+    reason, turns = fix_standing(case, bearer)
+    if reason is not None:
         record_decision(
             metadata,
             NoticeCode.FAILED_FIX_NOT_REREGISTERED,
             action_id=bearer.action_id,
+            variant=reason,
+            **turns,
         )
 
 
@@ -1601,7 +1615,7 @@ def _bearer_registers(
     - pending registers;
     - accepted is a re-assertion, absorbed: silently while identity keeps
       the registered fix, with ``_note_failed_fix``'s "is registered …
-      re-propose it" line once its window failed or a later fix followed it —
+      re-propose it" line once it no longer stands (``fix_standing``) —
       live or ``carried`` alike (a carried re-run of a failed fix whose
       re-send an earlier bundle downgraded is a report, never silence, #2256);
     - superseded registers only while the M5 license holds now (the mint

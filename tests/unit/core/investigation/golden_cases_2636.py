@@ -114,6 +114,12 @@ stored. No other entry's render differed.
 came to be" (no row on record showing a mechanism that produces it again) in
 place of "nothing renews it" and "why it arose". No other entry's render
 differed.
+
+#3053 S3d-7 (#3120) re-rendered one B1c entry by hand, the same way:
+``cycle:failed_fix_named_again``, equal to the stored entry on ``main`` at
+``d08615584``; on the S3d-7 branch the notice states the one reason its
+decider holds, "its fix window failed", in place of "its fix window failed or
+a later fix followed it". No other entry's render differed.
 """
 
 import asyncio
