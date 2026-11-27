@@ -335,8 +335,9 @@ async def test_a_relapsed_verdict_is_not_listed_as_a_milestone_reached():
 
 
 async def test_a_bound_relapse_after_the_declaration_drops_the_reason():
-    """Declared at 7, seen again at 9: the generic reason, its reply carrying
-    both facts. A relief at 11 restores ``mitigation_sufficient``."""
+    """Declared at 7, present at 9 with no relief (still present, #3120): the
+    generic reason, its reply carrying both facts. A relief at 11 restores
+    ``mitigation_sufficient``."""
     case, shown = _mitigation(attempt=6)
     _declared(case, 7)
     assert derive_closure_reason(case) is _SUFFICIENT, "premise"
@@ -347,9 +348,10 @@ async def test_a_bound_relapse_after_the_declaration_drops_the_reason():
     reply = _terminal_confirmation_response(closed)
     assert reply == (
         f"{_CLOSED_REPLIES[ClosureReason.CLOSED_INSUFFICIENT_EVIDENCE]} You reported "
-        "the mitigation stable (turn 7); the problem was seen again at turn 9."
+        "the mitigation stable (turn 7); the problem was still present after the "
+        "mitigation (turn 9)."
     )
-    assert "You reported the mitigation stable (turn 7); the problem was seen " in (
+    assert "You reported the mitigation stable (turn 7); the problem was still " in (
         _section(await _report(closed), "## Mitigation Status")
     )
 

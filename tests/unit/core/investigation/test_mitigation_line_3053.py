@@ -612,7 +612,7 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
             f"{_RELIEVED} 7), and the data it cites covers about 30 minutes",
             {"RELIEF"},
         ),
-        (_still_present, "the problem was seen again at turn 7", {"NO_RELIEF"}),
+        (_still_present, _STILL_7, {"NO_RELIEF"}),
         (
             _declared_one_turn,
             f"{MITIGATION_DECLARED} (turn 8); {_STILL_7}",
@@ -661,8 +661,9 @@ _RELIEVED = f"{MITIGATION_RELIEVED} (turn"
     ],
 )
 def test_each_other_closure_line_shape_is_unchanged(build, line, kinds):
-    """S3d-6 changes only the r == p clause: every other shape's line reads
-    as before (a relapse's claims drop the no-relief fact, review item 1),
+    """S3d-6 changes only the r == p clause, and #3120 a persistence with no
+    relief, which reads as it: every other shape's line reads as before (a
+    relapse's claims drop the no-relief fact, review item 1),
     and the declaration and the proceed beside an r == p keep their copy and
     place."""
     case = build()

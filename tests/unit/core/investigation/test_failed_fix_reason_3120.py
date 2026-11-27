@@ -196,19 +196,20 @@ async def test_the_attempt_line_reads_no_relief_as_still_present():
 
 
 async def test_a_carried_and_a_live_decision_on_one_fix_render_one_line():
-    """A replayed bundle decides the relapse; the live turn, after a later
-    fix, decides ``later_fix``. The fix gets one notice, the later reason."""
+    """A replayed bundle decides the relapse; the live apply, after a later
+    fix, decides ``later_fix`` into its own metadata, which the turn folds in
+    as ``turn_application`` does. The fix gets one notice, the later reason."""
     eng = _engine()
     case, _description = await SHAPES["relapse"][0]()
     bearer = _bearer(case, _RESTART)
-    bundle: dict = {}
-    stage_gates._bearer_registers(case, bearer, bundle, carried=True, licensed=True)
-    await _run(eng, case, 9, _ROOT_FIX, _ROOT_ID)
     meta: dict = {}
-    stage_gates.merge_system_notices(meta, bundle)
-    stage_gates.merge_decisions(meta, bundle)
+    stage_gates._bearer_registers(case, bearer, meta, carried=True, licensed=True)
+    await _run(eng, case, 9, _ROOT_FIX, _ROOT_ID)
+    live: dict = {}
+    stage_gates._bearer_registers(case, bearer, live, carried=False)
 
-    stage_gates._bearer_registers(case, bearer, meta, carried=False)
+    stage_gates.merge_system_notices(meta, live)
+    stage_gates.merge_decisions(meta, live)
 
     (line,) = narrated(case, meta)
     assert "is registered, and a later fix followed it." in line

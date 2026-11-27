@@ -456,9 +456,10 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
     declaration, the bound relief (with the relief row's data window when
     ``mitigation_observation`` dates one), the problem seen again, the
     stall's proceed; with none of them, that no bound re-check is on record,
-    or, for an attempt with no turn, that none can be tied to it. A relief and
-    a persistence in one turn is the problem still present, as the outcome
-    statement reads it (#3053 S3d-6, F2): the record cannot order them.
+    or, for an attempt with no turn, that none can be tied to it. A persistence
+    with no relief, or a relief and a persistence in one turn, is the problem
+    still present, as the outcome statement reads it (#3053 S3d-6, F2: the
+    record cannot order the two; #3120).
     The word for the user's declaration is "stable", and "stabilized" is
     never used: the line states the record, not a verdict."""
     seen = mitigation_observation(case)
@@ -467,14 +468,15 @@ def mitigation_closure_line(case: "Case") -> Optional[str]:
     clauses = []
     if seen.disposition == DECLARED_STABLE:
         clauses.append(MITIGATION_DECLARED + at_turn(seen.disposition_turn))
-    same_turn = seen.relief_turn is not None and seen.relief_turn == seen.present_turn
-    if seen.relief_turn is not None and not same_turn:
+    relief, present = seen.relief_turn, seen.present_turn
+    still = present is not None and relief in (None, present)
+    if seen.relief_turn is not None and not still:
         later = " and a later fix" if seen.fix_before_relief else ""
         clause = f"{MITIGATION_RELIEVED}{later} (turn {seen.relief_turn})"
         if seen.span is not None:
             clause += f", and the data it cites covers {_span_words(seen.span)}"
         clauses.append(clause)
-    if same_turn:
+    if still:
         clauses.append(f"{MITIGATION_STILL_PRESENT} (turn {seen.present_turn})")
     elif seen.present_turn is not None:
         clauses.append(
