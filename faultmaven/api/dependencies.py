@@ -121,7 +121,8 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
 
     Principle 14, *Container memory*: per serving process, every pool's slots
     at their ``RLIMIT_AS`` plus the buffers the process holds per job, Tier 1's
-    input at its worst (3 *U*); the KB encode once per container. *U* is in
+    input at its worst (3 *U*) and each answer at its caller's hold; the KB
+    encode once per container, its buffers unbounded. *U* is in
     MiB, as the body-size limit counts it. Tier 1's slots are read as in force;
     a regex search's limits scale with its file, at most *U*.
     """
@@ -151,12 +152,19 @@ def container_memory_status(settings: Any) -> ContainerMemoryStatus:
         + search.SEARCH_SLOTS * search.search_memory_limit(3 * u, u, u + 1)
     )
     gate_texts_in = 2 * 2 * DRAFT_CONTENT_MAX_CHARS * 4
+    # Each answer as the serving process holds it reading and parsing it: its
+    # output limit times the caller's ``*_ANSWER_HOLD`` (#3122).
+    search_out = search.search_output_limit(3 * u, u + 1)
     buffers = w * (
-        prep.PREPARATION_SLOTS * prep.PREPARATION_OUTPUT_LIMIT_BYTES
-        + slots * (2 * 3 * u + tier1_output)
-        + gate.GATE_SLOTS * (gate_texts_in + gate.GATE_OUTPUT_LIMIT_BYTES)
-        + count.TOKEN_COUNT_SLOTS * (2 * u + count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
-        + search.SEARCH_SLOTS * (2 * 3 * u + search.search_output_limit(3 * u, u + 1))
+        prep.PREPARATION_SLOTS
+        * prep.PREPARATION_ANSWER_HOLD
+        * prep.PREPARATION_OUTPUT_LIMIT_BYTES
+        + slots * (2 * 3 * u + tier1.TIER1_ANSWER_HOLD * tier1_output)
+        + gate.GATE_SLOTS
+        * (gate_texts_in + gate.GATE_ANSWER_HOLD * gate.GATE_OUTPUT_LIMIT_BYTES)
+        + count.TOKEN_COUNT_SLOTS
+        * (2 * u + count.TOKEN_COUNT_ANSWER_HOLD * count.TOKEN_COUNT_OUTPUT_LIMIT_BYTES)
+        + search.SEARCH_SLOTS * (2 * 3 * u + search.SEARCH_ANSWER_HOLD * search_out)
     )
     encode = index_slot.ENCODE_MEMORY_BYTES
     caps = pools + buffers + encode

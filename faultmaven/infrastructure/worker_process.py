@@ -257,6 +257,15 @@ async def _frames(
     return frame["result"]
 
 
+#: The most this process holds, per byte of the output limit, while ``_parts``
+#: reads an answer (#3122): its bytes (1), and the decode's 2-byte buffer (2)
+#: widening into a 4-byte one (4) at an astral character, both alive while it
+#: copies. Callers that parse the parts add theirs (``*_ANSWER_HOLD``); an
+#: answer the worker's code cannot write is its defect, outside these. The
+#: widths are CPython's, measured on 3.11.15 (the image's): 7.0.
+PHASED_ANSWER_HOLD = 7
+
+
 async def _parts(
     proc: "asyncio.subprocess.Process", seen: Dict[str, Any], output_limit_bytes: int
 ) -> Optional[list]:

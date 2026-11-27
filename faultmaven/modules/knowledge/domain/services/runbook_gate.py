@@ -135,6 +135,20 @@ GATE_MEMORY_BYTES = 256 * 1024 * 1024
 #: with one-word Statements, an error each), 4x that plus 1 MiB of log records.
 GATE_OUTPUT_LIMIT_BYTES = 10 * 1024 * 1024
 
+#: The parent's hold of an answer per byte of its output limit (#3122): the
+#: answer is ``json.dumps`` ASCII (``validation_worker.timed``), so its part is
+#: 1 byte a byte once read, and ``json.loads`` builds each string
+#: over-allocated by a quarter, widening from 2 to 4 bytes at an astral
+#: character: 1 + (2 + 4) x 1.25. Its worst, one error echoing a value that
+#: escapes a BMP character, then an astral one, is 8.5 on CPython 3.11.15, so
+#: 9. The errors and warnings users grow are uncapped in count, but each holds
+#: a template of at least 19 characters (``runbook_validator.py:1166``), and
+#: those listing a user's values stop at ten and one more
+#: (``_capped_refusals``, ``runbook_validator.py:553``): a list of 20-character
+#: errors, each with an astral character, holds 5.7. An answer
+#: ``validation_worker`` cannot write is outside it.
+GATE_ANSWER_HOLD = 9
+
 #: The principal of a check no user asked for: an ingest with no owner, as the
 #: pack's runbooks have. They share one slot key, so they wait behind users'
 #: checks as one principal does.

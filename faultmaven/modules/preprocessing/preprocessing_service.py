@@ -106,6 +106,23 @@ TIER1_MEMORY_MIB_PER_MB = 240
 TIER1_OUTPUT_BASE_MIB = 1
 TIER1_OUTPUT_MIB_PER_MB = 6
 
+#: The parent's hold of an answer per byte of its output limit (#3122): the
+#: parts at up to 4 bytes a character (4), beside ``ExtractResult.from_json``
+#: of the first, whose string builder over-allocates by a quarter and, at an
+#: astral character past an escape, widens its 2-byte buffer into a 4-byte one
+#: beside it: (2 + 4) x 1.25. Its worst, a ``search_map`` holding a BMP
+#: character, an escape, then an astral one, is 11.5 on CPython 3.11.15, so 12.
+#: The ``file_meta`` collections users grow are capped: severities by
+#: ``SEVERITY_WEIGHTS`` (``logs_extractor.py:91``), ``top``'s breakdown at 4
+#: keys (``command_output_extractor.py:165``), and names joined from 10 at most
+#: (``config_extractor.py:285``, ``metrics_extractor.py:191``,
+#: ``source_code_extractor.py:177``). Stated exceptions, uncapped and not
+#: assumed: ``exception_types`` (``error_report_extractor.py:117``), iostat's
+#: device lists (``command_output_extractor.py:928-930``) and the metrics
+#: ``anomalies``, 10 per metric (``metrics_extractor.py:194``, ``:735``). An
+#: answer ``extraction_worker`` cannot write is outside it.
+TIER1_ANSWER_HOLD = 12
+
 #: The worker module. Always this value: tests point it at one of their own.
 _EXTRACTION_WORKER = extraction_worker.__name__
 

@@ -105,6 +105,11 @@ TOKEN_COUNT_MEMORY_BYTES = 1024 * 1024 * 1024
 #: What the parent reads from a count worker: its count.
 TOKEN_COUNT_OUTPUT_LIMIT_BYTES = 1024 * 1024
 
+#: The parent's hold of an answer per byte of its output limit (#3122): the
+#: reader's, since ``token_count_worker`` writes two integers and the count
+#: drops any other answer, an off-shape one its defect.
+TOKEN_COUNT_ANSWER_HOLD = worker_process.PHASED_ANSWER_HOLD
+
 #: Each step of a count: spawn to ``ready`` (0.3-0.4 s measured), each
 #: transfer, and the work: loading the tokenizer (1.0-1.1 s) and counting 10 MB
 #: of pack text (4.3 s at 2 CPUs), with an order of magnitude of headroom.
