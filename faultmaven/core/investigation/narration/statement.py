@@ -390,17 +390,15 @@ def _readiness(params: dict, attempts) -> set:
 def _rca_close(params: dict, attempts) -> set:
     """Each mitigation fact the close's closure line states, so a replayed
     close does not state it twice (#3053 S3d-4); a persistence not marked
-    before the relief is, with no relief on the line, the problem still
-    present, and after a relief the relief and the relapse; a relief and a
-    persistence in one turn is the problem still present."""
+    before the relief is, after a relief, the relief and the relapse; with no
+    relief, or a relief in its turn, the line states it still present (#3120)."""
     line = params.get("closure_line") or ""
     relieved = MITIGATION_RELIEVED in line
     again = MITIGATION_SEEN_AGAIN in line and MITIGATION_BEFORE_RELIEF not in line
     said = {
         OutcomeChange.MITIGATION_RELIEF: relieved,
         OutcomeChange.MITIGATION_RELAPSE: relieved and again,
-        OutcomeChange.MITIGATION_NO_RELIEF: (again and not relieved)
-        or MITIGATION_STILL_PRESENT in line,
+        OutcomeChange.MITIGATION_NO_RELIEF: MITIGATION_STILL_PRESENT in line,
         OutcomeChange.MITIGATION_DECLARED: MITIGATION_DECLARED in line,
         OutcomeChange.MITIGATION_PROCEEDED: MITIGATION_PROCEEDED in line,
     }

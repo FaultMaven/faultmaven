@@ -194,9 +194,9 @@ def _attempt_lines(attempts, content, fresh) -> list[str]:
         acted = ", ".join(a.target_ids) or "no node recorded"
         if a.kind == "interception":
             relief, present = a.relief_turn, a.present_turn
-            if present is not None and present == relief:
+            if present is not None and relief in (None, present):
                 state = f"problem still present at turn {present}"
-            elif present is not None and (relief is None or present > relief):
+            elif present is not None and present > relief:
                 state = f"problem seen again at turn {present}"
             elif relief is not None:
                 state = f"problem seen gone at turn {relief}"
@@ -280,8 +280,9 @@ def _leg_lines(outcome, attempts, fresh) -> list[str]:
 def _mitigation_lines(outcome: CaseOutcome, fresh) -> list[str]:
     """The mitigation's attempt, what the problem did after it, and the rows a
     re-check can name (#2100); a holding relief is named with the ask for
-    ``mitigation_verified`` when the gate would accept it (#2602), and a relief
-    and a persistence in one turn is the problem still present (#3053 S3d-6)."""
+    ``mitigation_verified`` when the gate would accept it (#2602), and a
+    persistence with no relief or in the relief's turn is the problem still
+    present (#3053 S3d-6, #3120)."""
     seen = outcome.mitigation
     relief, present = seen.relief_turn, seen.present_turn
     unregistered = []
@@ -293,7 +294,7 @@ def _mitigation_lines(outcome: CaseOutcome, fresh) -> list[str]:
                 "but unregistered: send mitigation_verified to record it"
             ]
     elif present is not None:
-        seen_as = "still present" if present == relief else "seen again"
+        seen_as = "still present" if relief in (None, present) else "seen again"
         state = f"problem {seen_as} at turn {present}"
     else:
         state = "not yet re-checked"

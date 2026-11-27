@@ -589,13 +589,29 @@ def unbound_lines(
     return lines
 
 
+#: Why the fix no longer stands, by ``fix_standing``'s reason (#3120), or
+#: ``no_identity``: it stands, but a blank description keeps nothing.
+_FAILED_FIX_REASONS = {
+    "window_failed": "its fix window failed",
+    "later_fix": "a later fix followed it",
+    "relapse": (
+        "the problem was seen again at turn {present}, after its relief "
+        "(turn {relief})"
+    ),
+    "still_present": "the problem was still present after it (turn {present})",
+    "undated": "it no longer stands",
+    "no_identity": "it has no description it can be kept by",
+}
+
+
 @_renders(NoticeCode.FAILED_FIX_NOT_REREGISTERED)
 def _failed_fix(params: dict, outcome, log) -> list:
+    reason = _FAILED_FIX_REASONS[params["variant"]].format(**params)
     return [
         f"SYSTEM: 'solution_accepted' was not registered again: SOLUTION "
-        f"{params['action_id']} is registered, and its fix window failed or a "
-        "later fix followed it. If the user re-applied it, re-propose it as a "
-        "SolutionToAdd and set accepted_action_ref new_index_N naming it."
+        f"{params['action_id']} is registered, and {reason}. If the user "
+        "re-applied it, re-propose it as a SolutionToAdd and set "
+        "accepted_action_ref new_index_N naming it."
     ]
 
 

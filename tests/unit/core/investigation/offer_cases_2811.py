@@ -71,6 +71,12 @@ and no other entry differed on the branch. The three are written with sorted
 keys, as the file's other turn entries are; a whole ``sort_keys`` dump would
 reorder the keys of the 100 ``prompt:`` entries that are out of sorted order,
 so the rest of the file is left byte for byte.
+
+#3053 S3d-7 (#3120) re-rendered ``turn:cycle:failed_fix_named_again`` by hand:
+it equalled the stored entry on ``main`` at d08615584, and on the S3d-7
+branch, which is stored with sorted keys, its notice states "its fix window
+failed" in place of "its fix window failed or a later fix followed it". No
+other entry's render differed.
 """
 
 from __future__ import annotations
