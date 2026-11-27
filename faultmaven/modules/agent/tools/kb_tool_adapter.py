@@ -15,7 +15,12 @@ from typing import Any, Dict
 
 from faultmaven.core.investigation.kb_tool_citations import kb_qa_entry
 from faultmaven.exceptions import RawModelContentRefused
-from faultmaven.models.interfaces import AdmitParents, ToolResult, require_admit
+from faultmaven.models.interfaces import (
+    KB_QUERY_MAX_CHARS,
+    AdmitParents,
+    ToolResult,
+    require_admit,
+)
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext, tool_failure
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
@@ -58,7 +63,7 @@ class KBToolAdapter(AgentTool):
             "Search the knowledge base for runbooks, best practices, and documented "
             "procedures. Returns the most relevant results from all sources you have "
             "access to: global documentation, your personal runbooks, and your team's "
-            "shared procedures."
+            f"shared procedures. At most {KB_QUERY_MAX_CHARS} characters."
         )
 
     @property
@@ -85,6 +90,21 @@ class KBToolAdapter(AgentTool):
         question = params.get("question", "").strip()
         if not question:
             return ToolResult(success=False, data=None, error="No question provided")
+
+        if len(question) > KB_QUERY_MAX_CHARS:
+            # Refused before any call: the store would refuse it too, and the
+            # generic arm below would call that a retrieval failure (#3116 B1).
+            return ToolResult(
+                success=False,
+                data=None,
+                error=(
+                    f"Knowledge base query not run: the question is "
+                    f"{len(question)} characters and the limit is "
+                    f"{KB_QUERY_MAX_CHARS}. Ask one focused question (a symptom, "
+                    "an error message, a component), not pasted output. This "
+                    "says nothing about what the knowledge base holds."
+                ),
+            )
 
         if context.kb_scope_filter is None:
             # No scope was resolved for this case. Searching anyway would need a

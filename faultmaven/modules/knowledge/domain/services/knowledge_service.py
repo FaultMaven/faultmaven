@@ -73,6 +73,7 @@ from faultmaven.models.exceptions import (
     is_knowledge_store_unavailable,
 )
 from faultmaven.models.interfaces import (
+    KB_QUERY_MAX_CHARS,
     IKnowledgeVectorStore,
     ILLMProvider,
     ISanitizer,
@@ -575,7 +576,11 @@ class KnowledgeService:
             if not query or not query.strip():
                 raise ValueError("Query cannot be empty")
 
-            sanitized_query = await self._sanitizer.asanitize(query)
+            # Cut to the store's limit: the sanitizer's placeholders can
+            # lengthen a caller's bounded query past it (#3116 B1).
+            sanitized_query = (await self._sanitizer.asanitize(query))[
+                :KB_QUERY_MAX_CHARS
+            ]
 
             try:
                 # Search via vector store interface if available

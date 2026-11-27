@@ -63,8 +63,9 @@ from faultmaven.infrastructure.knowledge.admission import admitted_hits, read_de
 from faultmaven.infrastructure.vector_similarity import (
     cosine_from_chroma_distance,
 )
-from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.exceptions import KnowledgeBaseError, KnowledgeQueryTooLong
 from faultmaven.models.interfaces import (
+    KB_QUERY_MAX_CHARS,
     AdmitParents,
     IKnowledgeVectorStore,
     require_admit,
@@ -97,14 +98,17 @@ MAX_TERM_INDEX_CHUNKS = 50_000
 # Patterns that indicate identifier-like tokens — these benefit most from
 # exact keyword matching because embeddings often miss them. Kept as the
 # FALLBACK for when no term index is available; ``IDENTIFIER_DF_RATIO`` is the
-# primary test wherever corpus statistics exist.
+# primary test wherever corpus statistics exist. Read only as a yes/no. The
+# lookbehinds start a search only at the start of a run of the leading class,
+# which keeps the code, service and dotted patterns linear (#2721) and gives the
+# same yes/no: a match inside a run also matches from the run's start.
 IDENTIFIER_PATTERNS = [
-    re.compile(r"[A-Z]{2,}[-_]\d+"),  # Error codes: ERR-500, SQLSTATE-42000
+    re.compile(r"(?<![A-Z])[A-Z]{2,}[-_]\d+"),  # Error codes: ERR-500, SQLSTATE-42000
     re.compile(r"\d{3,}"),  # Status codes: 503, 404
-    re.compile(r"[a-z]+-[a-z]+-[a-z]+"),  # Service names: payment-gateway-svc
+    re.compile(r"(?<![a-z])[a-z]+-[a-z]+-[a-z]+"),  # Service names: payment-gateway-svc
     re.compile(r"[A-Z][a-z]+[A-Z]"),  # CamelCase: CrashLoopBackOff
     re.compile(r"/[a-z/_-]+"),  # File paths: /var/log/syslog
-    re.compile(r"\w+\.\w+\.\w+"),  # Dotted names: java.lang.OutOfMemoryError
+    re.compile(r"(?<!\w)\w+\.\w+\.\w+"),  # Dotted names: java.lang.OutOfMemoryError
 ]
 
 # Scope tier ordering for tiebreaking (lower = higher priority)
@@ -922,9 +926,13 @@ class KnowledgeVectorStore(BaseExternalClient, IKnowledgeVectorStore):
             Top-k admitted results sorted by reranked score.
 
         Raises:
+            KnowledgeQueryTooLong: ``query`` is longer than
+                ``KB_QUERY_MAX_CHARS``, before anything else runs.
             TypeError: ``admit`` is not callable, before any ChromaDB call.
             Whatever :meth:`search` and ``admit`` raise.
         """
+        if len(query) > KB_QUERY_MAX_CHARS:
+            raise KnowledgeQueryTooLong(len(query), KB_QUERY_MAX_CHARS)
         require_admit(admit, reader="KnowledgeVectorStore.hybrid_search")
         self._require_kb_filter_present(collection_name, where)
 

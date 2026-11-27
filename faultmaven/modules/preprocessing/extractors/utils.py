@@ -55,6 +55,10 @@ _MIN_CONTENT_LENGTH = 10
 # end-of-range value while keeping the scan cost bounded.
 _HEAD_SCAN_LINES = 10
 _TAIL_SCAN_LINES = 100
+#: Each scanned line is read to here and no further (Principle 14, #3116 B1):
+#: the patterns' cost is flat past it however long a line is. Over 2,388
+#: sim-rendered uploads every match ended within 202 characters.
+COVERAGE_LINE_SCAN_MAX_CHARS = 2048
 
 
 # The three line endings a log file actually carries. ``str.split("\n")``
@@ -484,7 +488,8 @@ def extract_time_range_ts(
     """Return ``(start_ts, end_ts, source)`` from *content*.
 
     Scans the first ``_HEAD_SCAN_LINES`` lines and walks backwards through
-    the trailing ``_TAIL_SCAN_LINES`` lines, returning the first parseable
+    the trailing ``_TAIL_SCAN_LINES`` lines, each read to
+    ``COVERAGE_LINE_SCAN_MAX_CHARS``, returning the first parseable
     timestamp from each end. Walking backwards (rather than capping at the
     last 10 lines) means a small amount of trailing blank/whitespace
     content does not collapse the end-of-range value to ``None`` —
@@ -520,7 +525,7 @@ def extract_time_range_ts(
     head_match_idx: int | None = None
     for i, line in enumerate(head):
         ts, src = _extract_timestamp_with_source(
-            line, allow_bare_epoch=allow_bare_epoch
+            line[:COVERAGE_LINE_SCAN_MAX_CHARS], allow_bare_epoch=allow_bare_epoch
         )
         if ts:
             first_ts = ts
@@ -551,7 +556,7 @@ def extract_time_range_ts(
         # the other and reports a span built from one real parse and one
         # integer.
         last_ts, tail_src = _extract_timestamp_with_source(
-            line, allow_bare_epoch=allow_bare_epoch
+            line[:COVERAGE_LINE_SCAN_MAX_CHARS], allow_bare_epoch=allow_bare_epoch
         )
         if last_ts:
             # If the head never matched, fall back to the tail's pattern
