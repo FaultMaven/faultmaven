@@ -540,13 +540,14 @@ def _mitigation_block_line(case) -> str:
     "build, state",
     [
         (_one_turn_with_a_span, "problem still present at turn 7"),
-        (_still_present, "problem seen again at turn 7"),
+        (_still_present, "problem still present at turn 7"),
     ],
     ids=["one-turn", "persistence-alone"],
 )
 def test_the_fix_verification_block_reads_one_turn_as_still_present(build, state):
     """The ``<fix_verification>`` block's mitigation line reads r == p as the
-    closure line and the statement do (#3053 S3d-6), never "seen again"."""
+    closure line and the statement do (#3053 S3d-6), and a persistence with no
+    relief as the statement does (#3120): never "seen again"."""
     assert _mitigation_block_line(build()) == (f"Mitigation: executed turn 6: {state}")
 
 

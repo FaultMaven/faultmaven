@@ -1953,8 +1953,8 @@ class ResponseApplier:
                 # new offer never supersedes itself.
                 #
                 # The same fix restated is not a new offer (#2105): it keeps
-                # the standing action (the pending offer, or the latest fix
-                # while its window has not failed), mints none and supersedes
+                # the standing action (the pending offer, or an accepted fix
+                # that stands by ``fix_standing``), mints none and supersedes
                 # nothing, so the fix the user ran never reads as superseded
                 # and its copy never as a second fix. The Solution row above
                 # is still minted (#1136).

@@ -24,6 +24,7 @@ from faultmaven.core.investigation.narration.codes import (
     AGGREGATED,
     CONTEXT_ONLY,
     DECISIONS_KEY,
+    KEYED_BY,
     NoticeCode,
     OfferCode,
     decision_key,
@@ -1021,8 +1022,8 @@ def record_decision(
     code the facts its text states, as its decider read them (A4).
 
     Deduplicated by code and params (by code alone for an ``AGGREGATED``
-    code, whose later decision's params replace the earlier's, its token
-    keeping its place). A notice code holds its place in ``system_notices``
+    code, by code and one param for a ``KEYED_BY`` one, whose later
+    decision's params replace the earlier's, its token keeping its place). A notice code holds its place in ``system_notices``
     with a token the narration step replaces (A10), so order and ``prepend``
     are as the text's were; a context-only code writes none.
 
@@ -1038,7 +1039,7 @@ def record_decision(
             return
     for entry in log:
         if entry["key"] == key:
-            if code in AGGREGATED:
+            if code in AGGREGATED or code in KEYED_BY:
                 entry["params"] = params
             return
     token = None
@@ -1051,12 +1052,13 @@ def record_decision(
 def merge_decisions(metadata: dict[str, Any], incoming: dict[str, Any]) -> None:
     """Fold another accumulator's decision log into ``metadata``'s (A1), beside
     ``merge_system_notices``, which carries the tokens. ``incoming`` is the
-    later writer: an ``AGGREGATED`` decision both hold takes its params."""
+    later writer: an ``AGGREGATED`` or ``KEYED_BY`` decision both hold takes
+    its params."""
     log = metadata.setdefault(DECISIONS_KEY, [])
     known = {entry["key"]: entry for entry in log}
     for entry in incoming.get(DECISIONS_KEY) or []:
         if entry["key"] in known:
-            if entry["code"] in AGGREGATED:
+            if entry["code"] in AGGREGATED or entry["code"] in KEYED_BY:
                 known[entry["key"]]["params"] = dict(entry["params"])
             continue
         copied = {**entry, "params": dict(entry["params"])}
@@ -1248,16 +1250,18 @@ def _license_holds(case: Case, metadata: dict[str, Any]) -> bool:
 
 def _note_failed_fix(case: Case, bearer: Any, metadata: dict[str, Any]) -> None:
     """A registered fix named again but not re-sent, that identity no longer
-    keeps: it may be re-applied, told why (``fix_standing``, #3120)."""
+    keeps: it may be re-applied, told why (``fix_standing``, #3120). One it
+    calls standing is kept by no identity: its description is blank."""
+    if standing_fix_action(case, bearer.description) is bearer:
+        return
     reason, turns = fix_standing(case, bearer)
-    if reason is not None:
-        record_decision(
-            metadata,
-            NoticeCode.FAILED_FIX_NOT_REREGISTERED,
-            action_id=bearer.action_id,
-            variant=reason,
-            **turns,
-        )
+    record_decision(
+        metadata,
+        NoticeCode.FAILED_FIX_NOT_REREGISTERED,
+        action_id=bearer.action_id,
+        variant=reason or "no_identity",
+        **turns,
+    )
 
 
 def _report_justified(case: Case, metadata: dict[str, Any]) -> bool:
@@ -1615,7 +1619,7 @@ def _bearer_registers(
     - pending registers;
     - accepted is a re-assertion, absorbed: silently while identity keeps
       the registered fix, with ``_note_failed_fix``'s "is registered …
-      re-propose it" line once it no longer stands (``fix_standing``) —
+      re-propose it" line, stating why, once identity no longer keeps it —
       live or ``carried`` alike (a carried re-run of a failed fix whose
       re-send an earlier bundle downgraded is a report, never silence, #2256);
     - superseded registers only while the M5 license holds now (the mint

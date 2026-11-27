@@ -7,7 +7,8 @@ or a later fix followed it" for every case, though an interception has no
 window and stops standing when the problem is seen again after its relief, in
 the relief's turn, or with no relief (#3117). The clause is now the reason
 ``fix_standing``, the verdict ``standing_fix_action`` keeps a fix by, holds
-for the bearer.
+for the bearer, or ``no_identity`` for a blank description, which
+``standing_fix_action`` keeps by no identity; one notice per fix in a turn.
 
 ``standing_fix_action`` itself is unchanged: ``standing_fix_oracle_3120.json``
 holds what it returned for each shape on ``main`` at d08615584, captured by
@@ -192,3 +193,38 @@ async def test_the_attempt_line_reads_no_relief_as_still_present():
         if "executed turn" in ln
     ]
     assert line.endswith("(cannot confirm the cause): problem still present at turn 7")
+
+
+async def test_a_carried_and_a_live_decision_on_one_fix_render_one_line():
+    """A replayed bundle decides the relapse; the live turn, after a later
+    fix, decides ``later_fix``. The fix gets one notice, the later reason."""
+    eng = _engine()
+    case, _description = await SHAPES["relapse"][0]()
+    bearer = _bearer(case, _RESTART)
+    bundle: dict = {}
+    stage_gates._bearer_registers(case, bearer, bundle, carried=True, licensed=True)
+    await _run(eng, case, 9, _ROOT_FIX, _ROOT_ID)
+    meta: dict = {}
+    stage_gates.merge_system_notices(meta, bundle)
+    stage_gates.merge_decisions(meta, bundle)
+
+    stage_gates._bearer_registers(case, bearer, meta, carried=False)
+
+    (line,) = narrated(case, meta)
+    assert "is registered, and a later fix followed it." in line
+
+
+@pytest.mark.parametrize("blank", ["", "  \t"], ids=["empty", "whitespace"])
+async def test_a_blank_description_is_told_it_keeps_nothing(blank):
+    """A blank identity keeps nothing (``standing_fix_action``), so the bearer
+    is told to re-propose, as on ``main``, though its own verdict stands."""
+    case, description = await _root_fix()
+    bearer = _bearer(case, description)
+    bearer.description = blank
+    assert stage_gates.fix_standing(case, bearer) == (None, {}), "premise"
+    meta: dict = {}
+
+    stage_gates._note_failed_fix(case, bearer, meta)
+
+    (line,) = narrated(case, meta)
+    assert "is registered, and it has no description it can be kept by." in line

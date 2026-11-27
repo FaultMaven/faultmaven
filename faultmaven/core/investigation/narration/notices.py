@@ -589,7 +589,8 @@ def unbound_lines(
     return lines
 
 
-#: Why the fix no longer stands, by ``fix_standing``'s reason (#3120).
+#: Why the fix no longer stands, by ``fix_standing``'s reason (#3120), or
+#: ``no_identity``: it stands, but a blank description keeps nothing.
 _FAILED_FIX_REASONS = {
     "window_failed": "its fix window failed",
     "later_fix": "a later fix followed it",
@@ -599,6 +600,7 @@ _FAILED_FIX_REASONS = {
     ),
     "still_present": "the problem was still present after it (turn {present})",
     "undated": "it no longer stands",
+    "no_identity": "it has no description it can be kept by",
 }
 
 

@@ -280,8 +280,9 @@ def _leg_lines(outcome, attempts, fresh) -> list[str]:
 def _mitigation_lines(outcome: CaseOutcome, fresh) -> list[str]:
     """The mitigation's attempt, what the problem did after it, and the rows a
     re-check can name (#2100); a holding relief is named with the ask for
-    ``mitigation_verified`` when the gate would accept it (#2602), and a relief
-    and a persistence in one turn is the problem still present (#3053 S3d-6)."""
+    ``mitigation_verified`` when the gate would accept it (#2602), and a
+    persistence with no relief or in the relief's turn is the problem still
+    present (#3053 S3d-6, #3120)."""
     seen = outcome.mitigation
     relief, present = seen.relief_turn, seen.present_turn
     unregistered = []
@@ -293,7 +294,7 @@ def _mitigation_lines(outcome: CaseOutcome, fresh) -> list[str]:
                 "but unregistered: send mitigation_verified to record it"
             ]
     elif present is not None:
-        seen_as = "still present" if present == relief else "seen again"
+        seen_as = "still present" if relief in (None, present) else "seen again"
         state = f"problem {seen_as} at turn {present}"
     else:
         state = "not yet re-checked"
