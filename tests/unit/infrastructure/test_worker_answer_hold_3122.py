@@ -108,7 +108,7 @@ def _steer(n: int) -> str:
 
 def _steer_surrogate(n: int) -> str:
     """As ``_steer``, with a lone surrogate, which ``surrogatepass`` decodes
-    by copying the input."""
+    by copying the part that holds it."""
     return BMP + "\ud800" + "x" * n + "\n" + ASTRAL
 
 

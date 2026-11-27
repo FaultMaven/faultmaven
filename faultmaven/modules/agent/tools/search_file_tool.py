@@ -102,12 +102,15 @@ SEARCH_OUTPUT_BASE_BYTES = 1024 * 1024
 #: The parent's hold of an answer per byte of its output limit (#3122): the
 #: reader's 7, since what ``read_answer`` adds, the head's parse, is at most
 #: ``MAX_RESULTS_CEILING`` results' numbers, while the parts, at most 4 bytes a
-#: byte, are alive; the texts it re-seats are the parts themselves. No lone
-#: surrogate makes it the reader's 8: the text is decoded with
-#: ``errors="replace"`` (``_resolve_evidence_content``). Measured on CPython
-#: 3.11.15: 7.0. What ``_regex_in_worker`` does with the answer after its
-#: slot's release is outside the term (#3128). An answer ``answer_parts``
-#: cannot write is outside it.
+#: byte, are alive; the texts it re-seats are the parts themselves. No part
+#: near the limit holds a lone surrogate, which would make the reader's 8: the
+#: file text is decoded with ``errors="replace"``
+#: (``_resolve_evidence_content``), and the invalid-pattern message, which
+#: quotes the model's pattern raw (``search_file_worker.regex_lines``), is one
+#: line, its copy that line's. Measured on CPython 3.11.15: 7.0. What
+#: ``_regex_in_worker`` does with the answer after its slot's release is
+#: outside the term (#3128). An answer ``answer_parts`` cannot write is outside
+#: it.
 SEARCH_ANSWER_HOLD = worker_process.PHASED_ANSWER_HOLD
 
 _MIB = 1024 * 1024

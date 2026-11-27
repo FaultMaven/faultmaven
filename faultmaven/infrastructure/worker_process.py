@@ -260,15 +260,18 @@ async def _frames(
 #: The most this process holds, per byte of the output limit, while ``_parts``
 #: reads an answer (#3122): its bytes (1), and the decode's 2-byte buffer (2)
 #: widening into a 4-byte one (4) at an astral character, both alive while it
-#: copies: 7 for an answer with no lone surrogate. One with a lone surrogate
-#: holds 8: ``surrogatepass``'s ``UnicodeDecodeError`` copies the input (1)
-#: while the decode runs. Tier 1 and preparation (whose ``json.loads`` decodes
-#: its line the same way) can receive one, which their 12 and 13 cover; a
-#: search cannot, its text decoded with ``errors="replace"``
-#: (``_resolve_evidence_content``), nor a token count, whose answer is two
-#: integers. Callers that parse the parts add theirs (``*_ANSWER_HOLD``); an
-#: answer the worker's code cannot write is its defect, outside these. The
-#: widths are CPython's, measured on 3.11.15 (the image's): 7.0 and 8.0.
+#: copies: 7 for an answer with no lone surrogate. A part with a lone surrogate
+#: holds up to 8: ``surrogatepass``'s ``UnicodeDecodeError`` copies that part,
+#: never the others, since each part is decoded alone (1). Tier 1 and
+#: preparation (whose ``json.loads`` decodes its line the same way) can receive
+#: one at their limit, which their 12 and 13 cover. A search's file text cannot
+#: carry one, decoded with ``errors="replace"``
+#: (``_resolve_evidence_content``); its invalid-pattern message, quoting the
+#: model's pattern raw, can, but is one line, never near the limit. A token
+#: count's answer is two integers. Callers that parse the parts add theirs
+#: (``*_ANSWER_HOLD``); an answer the worker's code cannot write is its defect,
+#: outside these. The widths are CPython's, measured on 3.11.15 (the image's):
+#: 7.0 and 8.0.
 PHASED_ANSWER_HOLD = 7
 
 
