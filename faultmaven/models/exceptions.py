@@ -94,6 +94,20 @@ def is_knowledge_store_unavailable(exc: BaseException) -> bool:
     )
 
 
+class KnowledgeQueryTooLong(ValueError):
+    """A KB hybrid search refused before it ran: the query is longer than
+    ``KB_QUERY_MAX_CHARS`` (``models.interfaces``, Principle 14). Says nothing
+    about what the knowledge base holds."""
+
+    def __init__(self, length: int, limit: int) -> None:
+        super().__init__(
+            f"Knowledge base query of {length} characters refused: the limit "
+            f"is {limit}"
+        )
+        self.length = length
+        self.limit = limit
+
+
 class IndexAdmissionRefused(FaultMavenError):
     """A KB document refused before anything is written: indexing it would not
     fit the request window (#2055, ``infrastructure.index_slot``).

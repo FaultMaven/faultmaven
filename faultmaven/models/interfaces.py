@@ -497,6 +497,14 @@ def require_admit(admit: Any, *, reader: str) -> None:
         )
 
 
+#: The longest query :meth:`IKnowledgeVectorStore.hybrid_search` runs its
+#: identifier patterns over (Principle 14, #3116 B1): the longest bounded
+#: caller's text, a conclusion's ``max_length``, and twice
+#: ``POST /knowledge/search``'s 500. A longer one is refused
+#: (:class:`~faultmaven.models.exceptions.KnowledgeQueryTooLong`).
+KB_QUERY_MAX_CHARS = 1000
+
+
 class IKnowledgeVectorStore(ABC):
     """The knowledge-base vector store: one shared collection, every KB scope.
 
@@ -584,6 +592,8 @@ class IKnowledgeVectorStore(ABC):
             absolute cosine.
 
         Raises:
+            KnowledgeQueryTooLong: ``query`` is longer than
+                :data:`KB_QUERY_MAX_CHARS`, before any store call.
             As :meth:`search`.
         """
         pass
