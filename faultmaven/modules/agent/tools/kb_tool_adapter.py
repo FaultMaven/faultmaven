@@ -63,7 +63,7 @@ class KBToolAdapter(AgentTool):
             "Search the knowledge base for runbooks, best practices, and documented "
             "procedures. Returns the most relevant results from all sources you have "
             "access to: global documentation, your personal runbooks, and your team's "
-            f"shared procedures. At most {KB_QUERY_MAX_CHARS} characters."
+            "shared procedures."
         )
 
     @property
@@ -75,7 +75,8 @@ class KBToolAdapter(AgentTool):
                     "type": "string",
                     "description": (
                         "A focused question about troubleshooting, best practices, "
-                        "procedures, or known solutions."
+                        "procedures, or known solutions. At most "
+                        f"{KB_QUERY_MAX_CHARS} characters."
                     ),
                 },
             },

@@ -55,10 +55,16 @@ _MIN_CONTENT_LENGTH = 10
 # end-of-range value while keeping the scan cost bounded.
 _HEAD_SCAN_LINES = 10
 _TAIL_SCAN_LINES = 100
-#: Each scanned line is read to here and no further (Principle 14, #3116 B1):
-#: the patterns' cost is flat past it however long a line is. Over 2,388
+#: A scanned line longer than this plus ``_COVERAGE_MATCH_MARGIN`` is read in
+#: two windows, its first and its last this many characters (Principle 14,
+#: #3116 B1), so the patterns' cost is flat past it however long a line is. A
+#: timestamp only in the middle of a longer line is not found. Over 2,388
 #: sim-rendered uploads every match ended within 202 characters.
 COVERAGE_LINE_SCAN_MAX_CHARS = 2048
+#: Read past each window so a match crossing its edge is whole and no ``\b``
+#: matches at the cut: over twice a syslog stamp with its weekday and year (24
+#: characters), the longest ``_TS_PATTERNS`` match with single spaces.
+_COVERAGE_MATCH_MARGIN = 64
 
 
 # The three line endings a log file actually carries. ``str.split("\n")``
@@ -339,8 +345,24 @@ _SYSLOG_MONTHS = {
 }
 
 
+def _window_search(pat: re.Pattern[str], line: str, window: int) -> re.Match | None:
+    """``pat``'s first match starting in ``line``'s first ``window``
+    characters, else its first ending in the last ``window``; each part is read
+    with ``_COVERAGE_MATCH_MARGIN`` more. The whole line when that is no longer."""
+    span = window + _COVERAGE_MATCH_MARGIN
+    if len(line) <= span:
+        return pat.search(line)
+    m = pat.search(line, 0, span)
+    if m and m.start() < window:
+        return m
+    for m in pat.finditer(line, len(line) - span):
+        if m.end() > len(line) - window:
+            return m
+    return None
+
+
 def _extract_timestamp_with_source(
-    line: str, *, allow_bare_epoch: bool = True
+    line: str, *, allow_bare_epoch: bool = True, window: int | None = None
 ) -> tuple[datetime | None, str | None]:
     """Extract the first recognisable timestamp and its pattern name from *line*.
 
@@ -352,11 +374,15 @@ def _extract_timestamp_with_source(
     (see ``_BARE_INTEGER_PATTERNS``). Callers that know the content is not a
     timestamped stream pass it so a config's ordinary numbers are not read as
     dates.
+
+    ``window``: each pattern reads only ``line``'s two ends
+    (:func:`_window_search`), in the same priority order. ``None`` reads it
+    whole.
     """
     for name, pat in _TS_PATTERNS:
         if not allow_bare_epoch and name in _BARE_INTEGER_PATTERNS:
             continue
-        m = pat.search(line)
+        m = pat.search(line) if window is None else _window_search(pat, line, window)
         if not m:
             continue
         try:
@@ -488,9 +514,10 @@ def extract_time_range_ts(
     """Return ``(start_ts, end_ts, source)`` from *content*.
 
     Scans the first ``_HEAD_SCAN_LINES`` lines and walks backwards through
-    the trailing ``_TAIL_SCAN_LINES`` lines, each read to
-    ``COVERAGE_LINE_SCAN_MAX_CHARS``, returning the first parseable
-    timestamp from each end. Walking backwards (rather than capping at the
+    the trailing ``_TAIL_SCAN_LINES`` lines, a line longer than
+    ``COVERAGE_LINE_SCAN_MAX_CHARS`` read at its two ends only, returning the
+    first parseable timestamp from each end. Only those lines are split off
+    the content. Walking backwards (rather than capping at the
     last 10 lines) means a small amount of trailing blank/whitespace
     content does not collapse the end-of-range value to ``None`` —
     real-world log files re-emitted by tooling routinely carry a few
@@ -517,15 +544,17 @@ def extract_time_range_ts(
     returned. See ``CoverageMetadata.source`` in
     ``core/preprocessing/evidence_metadata.py``.
     """
-    lines = content.split("\n")
-    head = lines[:_HEAD_SCAN_LINES]
+    # Split off only the lines scanned, never the whole upload (#3116 B1).
+    head = content.split("\n", _HEAD_SCAN_LINES)[:_HEAD_SCAN_LINES]
 
     first_ts: datetime | None = None
     source: str | None = None
     head_match_idx: int | None = None
     for i, line in enumerate(head):
         ts, src = _extract_timestamp_with_source(
-            line[:COVERAGE_LINE_SCAN_MAX_CHARS], allow_bare_epoch=allow_bare_epoch
+            line,
+            allow_bare_epoch=allow_bare_epoch,
+            window=COVERAGE_LINE_SCAN_MAX_CHARS,
         )
         if ts:
             first_ts = ts
@@ -548,15 +577,19 @@ def extract_time_range_ts(
     # this implicitly via the disjoint head/tail slicing; with
     # walk-backward semantics we need an explicit floor.
     tail_floor = (head_match_idx + 1) if head_match_idx is not None else 0
-    tail_start = max(tail_floor, len(lines) - _TAIL_SCAN_LINES)
+    line_count = content.count("\n") + 1
+    tail_count = line_count - max(tail_floor, line_count - _TAIL_SCAN_LINES)
+    tail = content.rsplit("\n", _TAIL_SCAN_LINES)[-tail_count:] if tail_count else []
     last_ts: datetime | None = None
-    for line in reversed(lines[tail_start:]):
+    for line in reversed(tail):
         # Not ``extract_timestamp`` — the tail has to honour the same gating as
         # the head, or a config suppressed at one end still acquires a bound at
         # the other and reports a span built from one real parse and one
         # integer.
         last_ts, tail_src = _extract_timestamp_with_source(
-            line[:COVERAGE_LINE_SCAN_MAX_CHARS], allow_bare_epoch=allow_bare_epoch
+            line,
+            allow_bare_epoch=allow_bare_epoch,
+            window=COVERAGE_LINE_SCAN_MAX_CHARS,
         )
         if last_ts:
             # If the head never matched, fall back to the tail's pattern

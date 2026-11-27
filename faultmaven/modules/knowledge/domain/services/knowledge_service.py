@@ -466,6 +466,22 @@ def _token_position(lowered: str, token: str) -> int:
     return match.start() if match else -1
 
 
+def _cut_to_query_limit(query: str) -> str:
+    """``query`` within ``KB_QUERY_MAX_CHARS``, cut back to the last whitespace
+    at or before it so no word or redaction placeholder is split; a hard cut
+    when that leaves nothing. The sanitizer's placeholders can lengthen a caller's
+    bounded query past the limit (#3116 B1)."""
+    if len(query) <= KB_QUERY_MAX_CHARS:
+        return query
+    head = query[: KB_QUERY_MAX_CHARS + 1]
+    space = max(head.rfind(c) for c in " \t\r\n")
+    cut = (head[:space].rstrip() if space > 0 else "") or query[:KB_QUERY_MAX_CHARS]
+    logger.debug(
+        f"KB query cut to the limit: query_len={len(query)} cut_len={len(cut)}"
+    )
+    return cut
+
+
 class KnowledgeService:
     """Knowledge service using interface dependencies"""
 
@@ -576,11 +592,9 @@ class KnowledgeService:
             if not query or not query.strip():
                 raise ValueError("Query cannot be empty")
 
-            # Cut to the store's limit: the sanitizer's placeholders can
-            # lengthen a caller's bounded query past it (#3116 B1).
-            sanitized_query = (await self._sanitizer.asanitize(query))[
-                :KB_QUERY_MAX_CHARS
-            ]
+            sanitized_query = _cut_to_query_limit(
+                await self._sanitizer.asanitize(query)
+            )
 
             try:
                 # Search via vector store interface if available

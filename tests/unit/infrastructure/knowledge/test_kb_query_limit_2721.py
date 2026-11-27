@@ -12,6 +12,7 @@ each linear with the same yes/no answer.
 from __future__ import annotations
 
 import itertools
+import logging
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -45,8 +46,9 @@ pytestmark = [pytest.mark.unit]
 
 _EMBEDDER = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
 
-#: Growth windows are ``small``, ``8*small`` and ``64*small`` with no
-#: escalation, so the one window measured tops out at the limit.
+#: Growth windows are ``small``, ``8*small`` and ``64*small``. The first tops
+#: out at the limit; one too small to decide on a noisy runner moves up past
+#: it, where the patterns are the same.
 STEP = 8
 SMALL = KB_QUERY_MAX_CHARS // STEP**2
 
@@ -59,9 +61,10 @@ MAIN_PATTERNS = [
     (5, r"\w+\.\w+\.\w+", "aA_.- ", 7),
 ]
 
-#: A run of one character, quadratic under a pattern before the fix; ``"a "``
-#: many tokens, for the tokenizer split and the per-token scoring.
-SHAPES = ["A", "a", "_", "a "]
+#: A run of one character, quadratic under a pattern before the fix; ``"abc "``
+#: many tokens, each long enough to be scored, for the tokenizer split and the
+#: per-token scoring.
+SHAPES = ["A", "a", "_", "abc "]
 
 
 def _payload(unit: str, n: int) -> str:
@@ -95,26 +98,24 @@ def test_the_window_tops_out_at_the_limit():
 
 
 @pytest.mark.parametrize("unit", SHAPES)
-def test_keyword_extraction_is_linear_up_to_the_limit(unit):
+def test_keyword_extraction_is_linear(unit):
     assert_linear_growth(
         lambda q: KnowledgeVectorStore._extract_search_keywords(q, stats=None),
         lambda n: _payload(unit, n),
         small=SMALL,
         step=STEP,
-        max_escalations=0,
         undecided_repeats=2,
         label=f"_extract_search_keywords over {unit!r} * n",
     )
 
 
 @pytest.mark.parametrize("unit", SHAPES)
-def test_the_identifier_test_is_linear_up_to_the_limit(unit):
+def test_the_identifier_test_is_linear(unit):
     assert_linear_growth(
         lambda q: KnowledgeVectorStore._query_has_identifier(q, [], None),
         lambda n: _payload(unit, n),
         small=SMALL,
         step=STEP,
-        max_escalations=0,
         undecided_repeats=2,
         label=f"_query_has_identifier over {unit!r} * n",
     )
@@ -202,12 +203,13 @@ async def test_kb_qa_runs_a_question_at_the_limit():
     wrapped.answer.assert_awaited_once()
 
 
-def test_kb_qa_states_the_limit_to_the_model():
+def test_kb_qa_states_the_limit_on_its_question():
     adapter = KBToolAdapter(MagicMock(), admit=admit_every_parent)
-    assert f"At most {KB_QUERY_MAX_CHARS} characters." in adapter.description
+    question = adapter.parameters_schema["properties"]["question"]["description"]
+    assert question.endswith(f"At most {KB_QUERY_MAX_CHARS} characters.")
 
 
-async def test_search_knowledge_cuts_a_query_the_sanitizer_lengthened():
+def _service(sanitized: str):
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (
         KnowledgeService,
     )
@@ -218,12 +220,41 @@ async def test_search_knowledge_cuts_a_query_the_sanitizer_lengthened():
         return_value=MagicMock(__enter__=lambda s: s, __exit__=lambda *a: None)
     )
     service = KnowledgeService(
-        sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q + q)),
+        sanitizer=MagicMock(asanitize=AsyncMock(return_value=sanitized)),
         tracer=tracer,
         vector_store=store,
         db_session_factory=MagicMock(),
     )
+    return service, store
 
-    await service.search_knowledge("x" * SYMPTOM_QUERY_MAX_CHARS * 2)
 
-    assert store.hybrid_search.await_args.kwargs["query"] == "x" * KB_QUERY_MAX_CHARS
+@pytest.mark.parametrize(
+    "sanitized, sent",
+    [
+        # A placeholder across the limit is dropped whole, not split.
+        ("a" * 990 + " <EMAIL_ADDRESS> tail", "a" * 990),
+        ("a" * 995 + " " * 10 + "b" * 10, "a" * 995),
+        # No whitespace to cut back to: a hard cut.
+        ("a" * (KB_QUERY_MAX_CHARS + 50), "a" * KB_QUERY_MAX_CHARS),
+        (" " + "a" * KB_QUERY_MAX_CHARS, " " + "a" * (KB_QUERY_MAX_CHARS - 1)),
+        ("a" * KB_QUERY_MAX_CHARS, "a" * KB_QUERY_MAX_CHARS),
+    ],
+)
+async def test_search_knowledge_cuts_a_lengthened_query_at_whitespace(
+    sanitized, sent, caplog
+):
+    service, store = _service(sanitized)
+
+    with caplog.at_level(logging.DEBUG):
+        await service.search_knowledge("the caller's query")
+
+    assert store.hybrid_search.await_args.kwargs["query"] == sent
+    cut = [r.getMessage() for r in caplog.records if "cut to the limit" in r.message]
+    assert cut == (
+        []
+        if sent == sanitized
+        else [
+            f"KB query cut to the limit: query_len={len(sanitized)} "
+            f"cut_len={len(sent)}"
+        ]
+    )
