@@ -613,7 +613,8 @@ def _sanitize_title_content(content: str) -> str:
 
     # Remove phone numbers (basic patterns)
     content = re.sub(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", "[phone]", content)
-    content = re.sub(r"\b\(\d{3}\)\s*\d{3}[-.]?\d{4}\b", "[phone]", content)
+    # No ``\b`` before ``(``: it needed a word character there (#3135)
+    content = re.sub(r"\(\d{3}\)\s*\d{3}[-.]?\d{4}\b", "[phone]", content)
 
     # Remove IP addresses
     content = re.sub(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "[ip]", content)

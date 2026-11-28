@@ -280,14 +280,15 @@ def test_a_cut_through_whitespace_free_text_leaves_no_token_part(value, needles)
 
 
 def test_a_cut_through_unicode_whitespace_lands_on_it():
-    """No-break spaces separate the words: the cut is back to one of them,
-    not a hard cut through the address."""
-    prose = ("the service restarts under load " * 400)[: 2 * LIMIT]
-    raws = [
-        prose[: LIMIT - offset] + "ops.team@example.com " + prose
-        for offset in range(1, 22)
-    ]
-    assert _leaked(raws, ["ops.team"]) == []
+    """Pure no-break-space prose: the short read is cut back to the no-break
+    space before the address (``str.isspace``), not emptied for want of an
+    ASCII space, and no part of the address is kept."""
+    prose = "the\u00a0service\u00a0restarts\u00a0under\u00a0load\u00a0" * 400
+    for offset in range(1, 20):
+        head = prose[: LIMIT - offset - 1]
+        raw = f"{head}\u00a0ops.team@example.com\u00a0{prose}"
+        assert _redact_title_source(raw, SANITIZER) == head, offset
+        assert "ops.team" not in _scrub_title_source(raw, SANITIZER), offset
 
 
 def test_a_message_is_scrubbed_whole_never_cut_before_redaction():
@@ -400,6 +401,20 @@ def test_adjacent_emails_are_each_marked():
 def test_a_pipe_is_not_part_of_a_top_level_domain():
     """``main``'s class ``[A-Z|a-z]`` admitted a literal ``|``."""
     assert _sanitize_title_content("me@host.c|m") == "me@host.c|m"
+
+
+@pytest.mark.parametrize(
+    "text, marked",
+    [
+        ("call (555) 123-4567 now", "call [phone] now"),
+        ('{"tel":"(555)123-4567"}', '{"tel":"[phone]"}'),
+        ("x(555) 123-4567", "x[phone]"),
+    ],
+)
+def test_a_parenthesized_phone_is_marked_after_any_character(text, marked):
+    """``main``'s pattern began ``\\b\\(`` and so needed a word character
+    before the ``(``: the first two came back unchanged."""
+    assert _sanitize_title_content(text) == marked
 
 
 # --- Growth -----------------------------------------------------------------
