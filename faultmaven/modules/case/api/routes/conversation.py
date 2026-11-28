@@ -371,7 +371,7 @@ async def resume_case_in_session(
         # Without this, naming SOMEONE ELSE'S session id retargets their
         # `session:{id}:current_case_id` pointer at a case of the caller's
         # choosing: a write to another user's session state, which nothing
-        # licenses (no production path reads the pointer, a turn names its
+        # licenses (no production path picks a case by the pointer, a turn names its
         # case, #3131; the write is refused for what it is) — and the write
         # lands before any of this route's failure paths, so the pre-fix 404
         # never prevented it.

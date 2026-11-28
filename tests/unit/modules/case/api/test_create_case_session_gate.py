@@ -8,7 +8,7 @@ which writes `session:{session_id}:current_case_id`.
 
 So naming somebody else's session id retargeted their current-case pointer at a
 case of the caller's choosing: a write to someone else's session state, which
-nothing licenses (no production path reads the pointer, #3131) — the same write
+nothing licenses (no production path picks a case by the pointer, #3131) — the same write
 the resume route was fixed for, reached through a different parameter.
 
 The write is inside the service, BEFORE `repository.save`, so it lands ahead of
