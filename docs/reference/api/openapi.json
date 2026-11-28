@@ -8079,7 +8079,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "16.4.0"
+    "version": "16.5.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8435,6 +8435,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "`x-error-code: DATABASE_UNAVAILABLE`: the database could not be reached or did not answer in time, the case read included; a retry after `Retry-After` seconds is safe (the access may already be recorded). A 503 without that code is another dependency's.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds; sent with `DATABASE_UNAVAILABLE`.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "DATABASE_UNAVAILABLE",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -8524,6 +8541,23 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "`x-error-code: DATABASE_UNAVAILABLE`: the database could not be reached or did not answer in time, the case read included; a retry after `Retry-After` seconds is safe (the access may already be recorded). A 503 without that code is another dependency's.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds; sent with `DATABASE_UNAVAILABLE`.",
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "x-error-code": {
+                "description": "DATABASE_UNAVAILABLE",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [

@@ -553,3 +553,46 @@ class TestTranscriptReadFailuresAreErrors:
             "Please retry shortly."
         )
         audit_repo.record_access.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestTheCaseReadFailingIsNotAnAbsence:
+    """#2996: ``get_case`` answered a failed read as "no such case", so the
+    operator was told 404 for an existing case during an outage."""
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_a_database_timeout_on_the_case_read_is_503(
+        self, audit_repo, grant_repo, path
+    ):
+        client = TestTranscriptReadFailuresAreErrors._client(
+            audit_repo, grant_repo, DatabaseTimeout()
+        )
+
+        resp = client.get(path)
+
+        assert resp.status_code == 503
+        assert resp.headers["x-error-code"] == "DATABASE_UNAVAILABLE"
+        assert resp.headers["retry-after"] == "5"
+        # Recorded before the read, as for every content read.
+        audit_repo.record_access.assert_awaited_once()
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_a_missing_case_is_still_404(self, audit_repo, grant_repo, path):
+        client = TestTranscriptReadFailuresAreErrors._client(
+            audit_repo, grant_repo, None
+        )
+
+        resp = client.get(path)
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Case not found"
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_the_503_is_declared(self, path):
+        app = FastAPI()
+        app.include_router(router)
+        template = path.replace(CASE_ID, "{case_id}")
+
+        declared = app.openapi()["paths"][template]["get"]["responses"]["503"]
+
+        assert set(declared["headers"]) == {"x-error-code", "Retry-After"}

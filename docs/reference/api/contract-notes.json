@@ -1,6 +1,12 @@
 {
-  "contractVersion": "16.4.0",
+  "contractVersion": "16.5.0",
   "entries": [
+    {
+      "body": "The case read behind both (`CaseService.get_case`) answered every failure as\n\"no such case\", so an operator was told an existing case did not exist. It now\nraises: a database timeout or an unreachable database is the request\nboundary's 503 (15.15.0), any other failure of the read a 500. A missing case\nis still 404, and the access-audit row is still written before the read.\n\nMINOR: a failure's status moves from 404 to 503 or 500, and a response is\nnewly declared; no request that succeeded answers differently.",
+      "level": "MINOR",
+      "title": "`GET /admin/cases/{case_id}` and `GET /admin/cases/{case_id}/messages` answer a database timeout or outage on their case read **503** `DATABASE_UNAVAILABLE` with `Retry-After: 5`, not 404 \"Case not found\" (#2996); both now declare that 503.",
+      "version": "16.5.0"
+    },
     {
       "body": "The store reported a Redis outage as a builtin `ConnectionError`, which no\nroute recognised, so each answered 500. It now reports its contract's\n`SessionStoreException`, which the heartbeat and the two ownership checks\nanswer themselves and the app answers for the login, registration and SSO\nexchange routes: `detail` \"Session store temporarily unavailable\" (the\nownership checks keep \"Session service unavailable\"). `Retry-After: 5` is sent\non each, but a retry cannot succeed on two: `/auth/sso/exchange`, whose\nsingle-use code is already spent, so the user signs in again; and\n`/auth/register` and `/auth/dev-register`, whose account already exists, so a\nretry gets 409. The resume route's session-pointer write still answers 500 on\na store failure, as before.\n\nAn unconfigured store, on the heartbeat, is now 503 \"Session service\nunavailable\" with no `Retry-After` (it was 500), as the two ownership checks\nalready answered it; a retry cannot change it.\n\nMINOR: only a failure's status moves, from 500 to 503; no request that\nsucceeded answers differently. The first-party heartbeat caller (copilot-ui,\nshared by the dashboard) swallows any non-OK answer.",
       "level": "MINOR",

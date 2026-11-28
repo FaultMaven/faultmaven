@@ -310,8 +310,9 @@ async def test_an_unshare_from_a_team_the_case_is_not_shared_with_is_unlabelled(
     ],
 )
 async def test_a_failed_lookup_is_never_the_cases_404(world, method, template, body):
-    """``get_case`` answers None for a repository failure; a gate on it said
-    the case was gone, and a client closes a case on CASE_NOT_FOUND."""
+    """``get_case`` answered None for a repository failure (until #2996); a
+    gate on it said the case was gone, and a client closes a case on
+    CASE_NOT_FOUND."""
     world.repository.fail_reads = True
 
     answer = await world.call(method, template, body, as_user=DRIVER)

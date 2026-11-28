@@ -403,9 +403,9 @@ class Hypothesis(BaseModel):
 
         ``max_length`` here would be a HYDRATION constraint, not just a write
         one: both repositories build ``Hypothesis(**row)`` straight from the
-        Text column inside ``get_case``'s blanket ``except`` that raises
-        ``RepositoryException``, so a single over-length legacy row would make
-        the whole CASE unloadable — not a truncated reason, a dead case. The
+        Text column inside the repository ``get``'s blanket ``except`` that
+        raises ``RepositoryException``, so a single over-length legacy row
+        would make the whole CASE unloadable — not a truncated reason, a dead case. The
         user-retire path has written this field unbounded since 2026-04-09
         (``d10d34e1d``), so such rows can exist in any deployment. (
         ``refutation_reason`` can safely carry ``max_length`` because its only

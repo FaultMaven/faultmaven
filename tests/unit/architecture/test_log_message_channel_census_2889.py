@@ -77,8 +77,9 @@ comprehension's targets over a tracked name are tracked in its element;
 iterating alone reads nothing.
 
 **Safe forms**: a call in :data:`SAFE_CALLS` (``exception_log_name(e)``,
-``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)`` and
-``counts_against_breaker(e)``, which return a ``bool``,
+``type(e)``, ``len(result.stderr)``, ``_arrived_cancelled(e)``,
+``counts_against_breaker(e)`` and ``is_database_unavailable(e)``, which return a
+``bool``,
 ``describe_request_body(exc.body)``, a body's type and size,
 ``_provider_codes(e)``, a first-party status and a pattern-checked code, ...);
 ``refusal_text(e)`` (:data:`CLI_SAFE_CALLS`), which returns an audited
@@ -204,6 +205,7 @@ SAFE_CALLS = frozenset(
         "describe_request_body",
         "_provider_codes",
         "counts_against_breaker",
+        "is_database_unavailable",
     }
 )
 

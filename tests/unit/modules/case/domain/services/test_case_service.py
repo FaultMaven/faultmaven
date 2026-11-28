@@ -770,10 +770,9 @@ class TestTheLinkGatesTheCase:
 class TestAnOutageIsNotAnAbsence:
     """A repository failure must not answer 404 (#1408 review).
 
-    The gate cannot resolve through ``get_case``: that wraps everything in
-    ``except Exception: return None``, so a DB blip is indistinguishable from
-    "no such case" and the route would tell the caller a case that exists and
-    is reachable is gone — the half-success-as-absence shape #1390 was about.
+    A DB blip that read as "no such case" would tell the caller a case that
+    exists and is reachable is gone — the half-success-as-absence shape #1390
+    was about.
     """
 
     @pytest.mark.asyncio

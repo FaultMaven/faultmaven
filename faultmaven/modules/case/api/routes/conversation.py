@@ -1438,9 +1438,9 @@ async def reclassify_evidence(
     # it. Not a refusal here — the service keeps this route's refusal shapes
     # (404 absent, 403 not the driver) — only the fact the service cannot
     # resolve for itself.
-    # Through ``require_case``, not ``get_case``: that answers None for a
-    # repository failure too, and the reclassifier would then refuse a reader
-    # with the absent case's ``CASE_NOT_FOUND`` (#2806).
+    # Through ``require_case``: a repository failure propagates, so the
+    # reclassifier never refuses a reader with the absent case's
+    # ``CASE_NOT_FOUND`` (#2806).
     caller_reads_case = False
     if case_service is not None:
         try:

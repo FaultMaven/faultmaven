@@ -19,13 +19,14 @@ raised type and ``str(exc)`` rather than a wrapped HTTP response shape; HTTP
 translation happens at the app boundary.
 """
 
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import DatabaseTimeout, ValidationException
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.cases import generate_case_title
@@ -327,3 +328,60 @@ class TestTerminalCases:
 
         assert result.title != "Case-260101-7"
         service.update_case.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestAFailedVerificationReadAnswersTheTitle:
+    """#2996: the re-read after the write raises on a failure, and ``None``
+    means absent or refused. The title is saved either way, so the route
+    answers it, never 500 "Failed to persist generated title", and never logs
+    it verified."""
+
+    @staticmethod
+    async def _generate_with_read(read, mock_request, mock_response, mock_user):
+        case = _make_case()
+        case.inquiry.proposed_problem_statement = (
+            "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+        )
+        service = _service_for(case, _conversation(user_turns=1))
+        service.get_case = read
+        result = await _generate(
+            service, mock_request, mock_response, mock_user, case.case_id
+        )
+        assert result.title == case.title
+        service.update_case.assert_awaited_once()
+        read.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure,level",
+        [
+            pytest.param(DatabaseTimeout(), logging.WARNING, id="database"),
+            pytest.param(RuntimeError("bug"), logging.ERROR, id="fault"),
+        ],
+    )
+    async def test_a_failed_read_answers_the_title(
+        self, mock_request, mock_response, mock_user, caplog, failure, level
+    ):
+        """WARNING for the database's failure, ERROR for anything else."""
+        with caplog.at_level(logging.WARNING):
+            await self._generate_with_read(
+                AsyncMock(side_effect=failure), mock_request, mock_response, mock_user
+            )
+
+        assert [r.levelno for r in caplog.records if "verification" in r.message] == [
+            level
+        ]
+        assert type(failure).__name__ in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_absent_case_on_the_read_is_unverified(
+        self, mock_request, mock_response, mock_user, caplog
+    ):
+        with caplog.at_level(logging.INFO):
+            await self._generate_with_read(
+                AsyncMock(return_value=None), mock_request, mock_response, mock_user
+            )
+
+        assert "Title persistence unverified" in caplog.text
+        assert "Title persistence verified" not in caplog.text
