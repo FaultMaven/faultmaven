@@ -674,7 +674,7 @@ if _is_debug_enabled(settings=_debug_settings):
         envelope an absent one does. A failed case read or access decision
         raises instead (#2996): a database timeout answers 503. So, as on every
         route gated by ``require_case``, while the caller's team or share lookup
-        fails a non-creator gets 503 for an existing case and ``case not found``
+        fails a non-creator gets a 5xx for an existing case and ``case not found``
         for an absent one: the strict gate's one existence signal.
 
         Never raises on serialization; absent graph returns empty collections.

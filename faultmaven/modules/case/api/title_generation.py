@@ -1177,8 +1177,8 @@ async def _generate_and_persist_title(
             # The title is saved; only its check failed, so the answer is the
             # title, never "Failed to persist generated title" (#2996). A
             # failure that is not the database's is a fault: ERROR.
-            log = logger.warning if is_database_unavailable(e) else logger.error
-            log(
+            logger.log(
+                logging.WARNING if is_database_unavailable(e) else logging.ERROR,
                 f"Title verification read failed for case {case_id}: "
                 f"{exception_log_name(e)}",
                 extra={"case_id": case_id},

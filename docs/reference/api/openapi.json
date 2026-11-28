@@ -8442,7 +8442,7 @@
               "Retry-After": {
                 "description": "Seconds; sent with `DATABASE_UNAVAILABLE`.",
                 "schema": {
-                  "type": "string"
+                  "type": "integer"
                 }
               },
               "x-error-code": {
@@ -8548,7 +8548,7 @@
               "Retry-After": {
                 "description": "Seconds; sent with `DATABASE_UNAVAILABLE`.",
                 "schema": {
-                  "type": "string"
+                  "type": "integer"
                 }
               },
               "x-error-code": {

@@ -355,7 +355,7 @@ _CONTENT_UNAVAILABLE_RESPONSE: dict = {
             },
             "Retry-After": {
                 "description": f"Seconds; sent with `{DATABASE_UNAVAILABLE}`.",
-                "schema": {"type": "string"},
+                "schema": {"type": "integer"},
             },
         },
     },
