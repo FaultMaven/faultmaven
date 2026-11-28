@@ -352,11 +352,11 @@ Both data types have numeric ID patterns that can look similar. Rules:
   - `(traceId|trace_id)["\s:]+[a-f0-9]{32}` — OpenTelemetry trace IDs
   - `(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}` — span IDs
   - `"(serviceName|service\.name)"` — service mesh identifier
-  - `"operationName".*"spans":\s*\[` — Jaeger structure
+  - `(?m)^(?>.*?"operationName").*"spans":\s*\[` — Jaeger structure (from the first `"operationName"` on a line only, so the line is read once)
 - Otherwise, **profiling wins** if ≥1 of four patterns match:
   - `\bncalls\s+tottime\s+percall\s+cumtime` — cProfile header
-  - `[\w\.]+(?:;[\w\.]+)+\s+\d+` — flame-graph syntax
-  - `\d+\s+calls?\s+in\s+[\d\.]+\s+seconds` — profiling summary
+  - `[\w.];[\w.]+\s+\d+` — flame-graph syntax (a `foo;bar;baz 123` chain matches exactly where its last two frames do)
+  - `\d\s+calls?\s+in\s+[\d\.]+\s+seconds` — profiling summary
   - `filename:lineno\(function\)` — cProfile format
 
 Confidence: TRACE_DATA at 0.95+boost, PROFILING_DATA at 0.92+boost.
