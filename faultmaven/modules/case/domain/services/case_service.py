@@ -435,34 +435,35 @@ class CaseService(CaseDriverMixin, ICaseService):
             programming error.
 
         Returns:
-            Case object if found and accessible, None otherwise
+            The case, or ``None`` exactly when it does not exist or the caller
+            may not access it. A failure to read the case, or to decide access
+            (the caller's teams or the cases shared to them included), raises
+            and never yields the case (#2996).
         """
         if not case_id or not case_id.strip():
             return None
 
-        try:
-            case = await self.repository.get(case_id)
-            if not case:
-                return None
-
-            # Access control (ADR-020 D2, through the one resolver
-            # ``_may_access``): a READ admits the creator ∪ shared-to-my-teams
-            # (ADR-013 §D4), the single-case gate transitively guarding
-            # reports, exports, analytics and messages. A WRITE narrows it to
-            # the effective driver (investigation) or the creator
-            # (governance). Inside one enterprise nothing else stands between
-            # two accounts — the tenant admits both rows — so these flags are
-            # the whole of the write boundary.
-            if not await self._may_access(
-                case, user_id, driver_only=driver_only, creator_only=creator_only
-            ):
-                return None
-
-            return case
-
-        except Exception as e:
-            logger.error(f"Failed to get case {case_id}: {exception_log_name(e)}")
+        case = await self.repository.get(case_id)
+        if not case:
             return None
+
+        # Access control (ADR-020 D2, through the one resolver ``_may_access``):
+        # a READ admits the creator ∪ shared-to-my-teams (ADR-013 §D4), the
+        # single-case gate transitively guarding reports, exports, analytics and
+        # messages. A WRITE narrows it to the effective driver (investigation)
+        # or the creator (governance). Inside one enterprise nothing else stands
+        # between two accounts — the tenant admits both rows — so these flags
+        # are the whole of the write boundary.
+        if not await self._may_access(
+            case,
+            user_id,
+            driver_only=driver_only,
+            creator_only=creator_only,
+            strict=True,
+        ):
+            return None
+
+        return case
 
     async def _may_access(
         self,
@@ -484,13 +485,12 @@ class CaseService(CaseDriverMixin, ICaseService):
           never depends on the release hooks (D3).
 
         A falsy ``user_id`` admits (an internal caller with no principal); every
-        route passes the authenticated caller. Extracted from :meth:`get_case`
-        so a caller that must NOT swallow infrastructure failures can apply the
-        same rule (see :meth:`require_case`).
+        route passes the authenticated caller. :meth:`get_case` and
+        :meth:`require_case` both decide through it.
 
-        ``strict`` is for a gate: a failure resolving the shared-to-my-teams arm
-        raises instead of collapsing it to owner-only (see
-        :meth:`_resolve_shared_case_ids`).
+        ``strict`` is for a single-case decision (both of those pass it): a
+        failure resolving the shared-to-my-teams arm raises instead of
+        collapsing it to owner-only (see :meth:`_resolve_shared_case_ids`).
         """
         if driver_only and creator_only:
             raise ValueError("driver_only and creator_only are exclusive")
@@ -546,15 +546,13 @@ class CaseService(CaseDriverMixin, ICaseService):
         - the caller reads it but the write is the creator's
           (``creator_only``): ``AuthorizationError``, 403.
 
-        Not via ``get_case``: that wraps everything in ``except Exception:
-        return None``, so a repository outage would be indistinguishable from
-        "no such case" and a gate built on it would answer 404 for a case that
-        exists — the half-success-as-absence shape #1390 was about. Here a
-        repository failure propagates and the caller answers 5xx, and so does a
-        failure resolving the caller's teams or the cases shared to them
-        (``strict``): the listing collapses that arm to owner-only, which only
-        shows less, but here an empty arm is a claim — "no such case" to a
-        teammate, or "not the driver" to the driver.
+        A repository failure propagates and the caller answers 5xx, never 404
+        for a case that exists (the half-success-as-absence shape #1390 was
+        about), and so does a failure resolving the caller's teams or the cases
+        shared to them (``strict``): the listing collapses that arm to
+        owner-only, which only shows less, but here an empty arm is a claim —
+        "no such case" to a teammate, or "not the driver" to the driver.
+        :meth:`get_case` raises on the same failures (#2996).
 
         ``driver_only`` / ``creator_only`` mean what they mean on
         :meth:`get_case`.
@@ -789,22 +787,23 @@ class CaseService(CaseDriverMixin, ICaseService):
         try:
             # Try to get existing case for session if not forcing new
             if not force_new and self.session_store:
+                existing_case_id = None
                 try:
                     existing_case_id = await self.session_store.get(
                         session_pointer_key(session_id)
                     )
-                    if existing_case_id:
-                        # Verify case still exists and is accessible
-                        case = await self.get_case(existing_case_id, user_id)
-                        if case:
-                            logger.debug(
-                                f"Using existing case {existing_case_id} for session {session_id}"
-                            )
-                            return existing_case_id
                 except Exception as e:
                     logger.warning(
                         f"Failed to get existing case for session: {exception_log_name(e)}"
                     )
+                # Verify the case still exists and is accessible. Outside the
+                # store's ``except``: a failed case read raises, since it is
+                # not an absent case and must not create a new one (#2996).
+                if existing_case_id and await self.get_case(existing_case_id, user_id):
+                    logger.debug(
+                        f"Using existing case {existing_case_id} for session {session_id}"
+                    )
+                    return existing_case_id
 
             # Create new case - pass title as-is to trigger auto-generation when None
             case = await self.create_case(
@@ -868,16 +867,15 @@ class CaseService(CaseDriverMixin, ICaseService):
             # another route, the Slack agent or an ``fm-*`` CLI.
             #
             # It also replaces the existence check rather than adding to it:
-            # ``get_case`` loads the case and answers both questions, so the
-            # pair used to be two full loads of the same row per resume.
+            # ``require_case`` loads the case and answers both questions, so
+            # the pair used to be two full loads of the same row per resume.
             #
             # DRIVER only. The link writes ``cases.last_activity`` and moves
             # the session's current-case pointer: a resume is an investigation
             # write, the driver's (ADR-020 D2), matching the turn's own gate.
             #
-            # NOT via ``get_case``: that swallows every exception into ``None``,
-            # so a repository outage would raise ``NotFoundError`` here and the
-            # route would answer 404 for a case that exists and is reachable.
+            # A repository outage raises, not ``NotFoundError``, so the route
+            # never answers 404 for a case that exists and is reachable.
             await self.require_case(case_id, user_id, driver_only=True)
 
             # Update last activity timestamp via repository

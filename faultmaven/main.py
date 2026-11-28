@@ -673,8 +673,9 @@ if _is_debug_enabled(settings=_debug_settings):
         A case the caller may not read answers the same ``case not found``
         envelope an absent one does, so the refusal is not an existence oracle.
 
-        Best-effort: never raises on serialization; absent graph returns empty
-        collections. Registered only where the debug router mounts — which is
+        Never raises on serialization; absent graph returns empty collections.
+        A failed case read is not "case not found": it raises, so a database
+        timeout answers 503 (#2996). Registered only where the debug router mounts — which is
         `ENVIRONMENT=development`, or ANY environment including production when
         ENABLE_DEBUG_ENDPOINTS is set. It is not production-free (#1493).
         """

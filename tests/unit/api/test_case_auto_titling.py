@@ -35,7 +35,7 @@ from faultmaven.config.tenant_context import (
     get_current_enterprise_id,
     set_current_enterprise_id,
 )
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import DatabaseTimeout, ValidationException
 from faultmaven.models.api_models import TurnResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.conversation import submit_turn
@@ -274,6 +274,26 @@ class TestAutoTitleTask:
         )
 
         service.update_case.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_case_read_never_escapes_the_task(self, caplog):
+        """``get_case`` raises on a failed read now (#2996); this boundary still
+        swallows it, logged by class, and writes no title."""
+        service = _service_for(_make_case())
+        service.get_case = AsyncMock(side_effect=DatabaseTimeout())
+
+        with caplog.at_level(logging.WARNING):
+            await _auto_title_case_if_default(
+                case_id="case_000000000000",
+                user_id="user_123",
+                case_service=service,
+                llm_provider=None,
+                sanitizer=SANITIZER,
+                redis_client=None,
+            )
+
+        service.update_case.assert_not_awaited()
+        assert any("DatabaseTimeout" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_a_failing_write_never_escapes_the_task(self):

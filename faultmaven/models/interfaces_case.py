@@ -276,16 +276,25 @@ class ICaseService(ABC):
 
     @abstractmethod
     async def get_case(
-        self, case_id: str, user_id: Optional[str] = None
+        self,
+        case_id: str,
+        user_id: Optional[str] = None,
+        *,
+        driver_only: bool = False,
+        creator_only: bool = False,
     ) -> Optional[Case]:
         """Get a case with optional access control.
 
         Args:
             case_id: Case identifier
             user_id: Optional user ID for access control
+            driver_only: Admit only the case's effective driver (ADR-020 D2)
+            creator_only: Admit only the creator (ADR-020 D2)
 
         Returns:
-            Case object if found and accessible, None otherwise
+            The case, or ``None`` exactly when it does not exist or the caller
+            may not access it. A failure to read the case or to decide access
+            raises (#2996).
         """
         pass
 

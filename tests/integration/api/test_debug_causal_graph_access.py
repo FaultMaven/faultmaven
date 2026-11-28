@@ -19,15 +19,18 @@ A ``TestClient`` gives every request a portal loop of its own.
 """
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
+from faultmaven.exceptions import DatabaseTimeout
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.case.domain.models.case import Case
 from faultmaven.modules.case.domain.models.lifecycle import CaseState
 from faultmaven.modules.case.domain.models.problem import InquiryData
+from faultmaven.modules.case.domain.services.case_service import CaseService
 
 DEBUG_PATH = "/debug/cases/{case_id}/causal-graph"
 
@@ -159,3 +162,18 @@ async def test_a_stranger_gets_the_answer_an_absent_case_gets(app, case_service)
 
     # And the check was actually delegated rather than re-derived here.
     assert case_service.calls[0] == (CASE_ID, STRANGER)
+
+
+@pytest.mark.integration
+async def test_a_database_timeout_on_the_case_read_is_503(app):
+    """#2996: the read's failure answered ``case not found`` for a case that
+    exists. Through the real service, over a repository that times out."""
+    app.state.case_service = CaseService(
+        case_repository=AsyncMock(get=AsyncMock(side_effect=DatabaseTimeout()))
+    )
+
+    async with _as(app, OWNER) as client:
+        response = await client.get(f"/debug/cases/{CASE_ID}/causal-graph")
+
+    assert response.status_code == 503, response.text[:300]
+    assert response.headers["x-error-code"] == "DATABASE_UNAVAILABLE"

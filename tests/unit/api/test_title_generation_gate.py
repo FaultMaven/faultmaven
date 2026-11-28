@@ -19,13 +19,14 @@ raised type and ``str(exc)`` rather than a wrapped HTTP response shape; HTTP
 translation happens at the app boundary.
 """
 
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.exceptions import ValidationException
+from faultmaven.exceptions import DatabaseTimeout, ValidationException
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.api.routes.cases import generate_case_title
@@ -327,3 +328,33 @@ class TestTerminalCases:
 
         assert result.title != "Case-260101-7"
         service.update_case.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestAFailedVerificationReadAnswersTheTitle:
+    @pytest.mark.asyncio
+    async def test_the_persisted_title_is_answered(
+        self, mock_request, mock_response, mock_user, caplog
+    ):
+        """#2996: the re-read after the write now raises on a failure. The title
+        is saved, so the route answers it (as when the read answered ``None``),
+        never 500 "Failed to persist generated title"."""
+        case = _make_case()
+        case.inquiry.proposed_problem_statement = (
+            "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+        )
+        service = _service_for(case, _conversation(user_turns=1))
+        service.get_case = AsyncMock(side_effect=DatabaseTimeout())
+
+        with caplog.at_level(logging.WARNING):
+            result = await _generate(
+                service, mock_request, mock_response, mock_user, case.case_id
+            )
+
+        assert result.title == case.title
+        service.update_case.assert_awaited_once()
+        service.get_case.assert_awaited_once()
+        assert any(
+            r.levelno == logging.WARNING and "DatabaseTimeout" in r.getMessage()
+            for r in caplog.records
+        )

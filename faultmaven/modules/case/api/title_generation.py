@@ -26,6 +26,7 @@ from fastapi import HTTPException, status
 from faultmaven.core.investigation.turn_budget import AUTO_TITLE_TIMEOUT_SECONDS
 from faultmaven.exceptions import (
     AuthorizationError,
+    DatabaseTimeout,
     NotFoundError,
     RawModelContentRefused,
     ServiceException,
@@ -1169,7 +1170,17 @@ async def _generate_and_persist_title(
             )
 
         # Verify persistence by re-fetching the case from database
-        verification_case = await case_service.get_case(case_id, user_id)
+        try:
+            verification_case = await case_service.get_case(case_id, user_id)
+        except Exception as e:
+            # The title is saved; only its check failed, so the answer is the
+            # title, never "Failed to persist generated title" (#2996).
+            logger.warning(
+                f"Title verification read failed for case {case_id}: "
+                f"{exception_log_name(e)}",
+                extra={"case_id": case_id},
+            )
+            return generated_title, title_source, len(user_message_content or "")
         if verification_case and verification_case.title != generated_title:
             logger.error(
                 f"Title persistence verification failed for case {case_id}: "
@@ -1319,6 +1330,12 @@ async def _auto_title_case_if_default(
         logger.debug(
             f"Auto-titling skipped for case {case_id}: {exception_log_name(e)}",
             extra={"case_id": case_id},
+        )
+    except DatabaseTimeout as e:
+        # A ``TimeoutError``, but the database's, not this bound's (#2996).
+        logger.warning(
+            f"Auto-titling failed for case {case_id}: {exception_log_name(e)}",
+            extra={"case_id": case_id, "error_type": type(e).__name__},
         )
     except asyncio.TimeoutError:
         logger.warning(
