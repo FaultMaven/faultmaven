@@ -386,8 +386,9 @@ async def create_case(
         #
         # Without this, naming SOMEONE ELSE'S session id retargets their
         # `session:{id}:current_case_id` pointer at a case of the caller's
-        # choosing: the owner's next turn either lands in the caller's case (if
-        # they can reach it) or silently abandons the case they were working.
+        # choosing: a write to another user's session state, which nothing
+        # licenses (no production path picks a case by the pointer, a turn names its
+        # case, #3131; the write is refused for what it is).
         # That is the identical defect fixed one route over on
         # `POST /cases/sessions/{id}/resume/{case_id}`, reached through a
         # different parameter — the session id arrives in the request body

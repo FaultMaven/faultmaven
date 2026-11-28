@@ -370,10 +370,11 @@ async def resume_case_in_session(
         # ── 2. The session ───────────────────────────────────────────────
         # Without this, naming SOMEONE ELSE'S session id retargets their
         # `session:{id}:current_case_id` pointer at a case of the caller's
-        # choosing: the owner's next turn either lands in the caller's case (if
-        # they can reach it) or silently abandons the case they were working —
-        # and the write lands before any of this route's failure paths, so the
-        # pre-fix 404 never prevented it.
+        # choosing: a write to another user's session state, which nothing
+        # licenses (no production path picks a case by the pointer, a turn names its
+        # case, #3131; the write is refused for what it is) — and the write
+        # lands before any of this route's failure paths, so the pre-fix 404
+        # never prevented it.
         #
         # Ordered AFTER the case gate on purpose. Both answer 404, so neither
         # ordering leaks anything; but the two-enterprise probe drives this
