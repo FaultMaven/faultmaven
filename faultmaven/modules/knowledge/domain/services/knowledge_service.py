@@ -70,6 +70,7 @@ from faultmaven.models.exceptions import (
     EmbedderUnavailable,
     IndexAdmissionRefused,
     KnowledgeBaseError,
+    KnowledgeQueryTooLong,
     is_knowledge_store_unavailable,
 )
 from faultmaven.models.interfaces import (
@@ -582,6 +583,8 @@ class KnowledgeService:
 
         Raises:
             ValueError: If query is empty or invalid
+            KnowledgeQueryTooLong: ``query`` is longer than
+                ``KB_QUERY_MAX_CHARS``, refused before the sanitizer runs.
             KnowledgeBaseError: The store or the admission check could not
                 run; never an empty result.
         """
@@ -591,6 +594,10 @@ class KnowledgeService:
             # Validate and sanitize query
             if not query or not query.strip():
                 raise ValueError("Query cannot be empty")
+            # Refused raw, not cut: a cut could split a secret before the
+            # sanitizer reads it. Every caller sends at most 1,000 (#3116 B3).
+            if len(query) > KB_QUERY_MAX_CHARS:
+                raise KnowledgeQueryTooLong(len(query), KB_QUERY_MAX_CHARS)
 
             sanitized_query = _cut_to_query_limit(
                 await self._sanitizer.asanitize(query)

@@ -258,3 +258,29 @@ async def test_search_knowledge_cuts_a_lengthened_query_at_whitespace(
             f"cut_len={len(sent)}"
         ]
     )
+
+
+@pytest.mark.parametrize("over", [1, 10_000])
+async def test_search_knowledge_refuses_a_longer_raw_query_before_sanitizing(over):
+    """Refused, never cut: a cut could split a secret before the sanitizer
+    reads it (#3116 B3)."""
+    service, store = _service("unused")
+
+    with pytest.raises(KnowledgeQueryTooLong) as refused:
+        await service.search_knowledge("a" * (KB_QUERY_MAX_CHARS + over))
+
+    assert (refused.value.length, refused.value.limit) == (
+        KB_QUERY_MAX_CHARS + over,
+        KB_QUERY_MAX_CHARS,
+    )
+    service._sanitizer.asanitize.assert_not_awaited()
+    store.hybrid_search.assert_not_awaited()
+
+
+async def test_search_knowledge_sanitizes_a_raw_query_at_the_limit():
+    service, store = _service("sanitized")
+
+    await service.search_knowledge("a" * KB_QUERY_MAX_CHARS)
+
+    service._sanitizer.asanitize.assert_awaited_once_with("a" * KB_QUERY_MAX_CHARS)
+    assert store.hybrid_search.await_args.kwargs["query"] == "sanitized"

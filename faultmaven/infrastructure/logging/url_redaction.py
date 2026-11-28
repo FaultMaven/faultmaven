@@ -444,6 +444,94 @@ def redact_log_line_bytes(data: bytes) -> bytes:
         return _redact_headers(text, ensure_ascii=True).encode("utf-8", errors)
 
 
+#: The longest rendered record written as rendered (#3116 B3, Principle 14);
+#: redaction can lengthen it up to 3x (``://? `` becomes ``://?<redacted> ``).
+#: A longer one is never redacted or written: ``_over_limit_record`` replaces it,
+#: but for its frames, redacted whole before their cut (``_cut_frames``) at a
+#: cost linear in their length, which the recursion limit and the exception
+#: group cap set, not this limit.
+LOG_LINE_MAX_CHARS = 65_536
+#: What the replacement keeps: the message, the context the shared processors
+#: stamp, each cut to ``_KEPT_MAX``, and the frames. A value that is not text
+#: is its type's name: its text (a repr) would bypass the rules the renderer's
+#: own form meets, a nested header pair's or an exception's class chain.
+_CONTEXT_KEYS = (
+    "timestamp", "level", "logger", "correlation_id", "request_id", "user_id",
+    "trace_id", "span_id", "claimed_session_id", "claimed_case_id", "agent_phase",
+)  # fmt: skip
+_FRAME_KEYS = ("frames", "stack")
+_KEPT_KEYS = ("event", *_CONTEXT_KEYS, *_FRAME_KEYS)
+_KEPT_MAX, _EVENT_MAX, _EVENT_BACK_OFF, _FRAMES_TAIL = 256, 1024, 128, 4096
+#: structlog's ``stack_info`` block opens with this line; its frames are
+#: indented, so the first line after it that is not is the exception's header.
+_STACK_INFO = "Stack (most recent call last):"
+_UNINDENTED = re.compile(r"\n(?=\S)")
+
+
+def _cut_event(text: str) -> str:
+    """The first ``_EVENT_MAX`` characters, back to the last whitespace within
+    ``_EVENT_BACK_OFF`` of the cut (the partial token is dropped), else hard."""
+    if len(text) <= _EVENT_MAX:
+        return text
+    for i in range(_EVENT_MAX - 1, _EVENT_MAX - 1 - _EVENT_BACK_OFF, -1):
+        if text[i].isspace():
+            return text[:i]
+    return text[:_EVENT_MAX]
+
+
+def _first_line(text: str, start: int = 0) -> str:
+    end = text.find("\n", start, start + _KEPT_MAX)
+    return text[start : end if end >= 0 else start + _KEPT_MAX]
+
+
+def _cut_frames(text: str) -> str:
+    """``text`` redacted whole (a credential's name may sit before the cut),
+    then its class-header line (and after a ``stack_info`` block, the
+    exception's: the first line not indented), each at most ``_KEPT_MAX``, and
+    the last ``_FRAMES_TAIL`` characters, from the first line start in them."""
+    text = redact_log_line(text)
+    if len(text) <= _FRAMES_TAIL:
+        return text
+    heads = [_first_line(text)]
+    exception = _UNINDENTED.search(text) if text.startswith(_STACK_INFO) else None
+    if exception:
+        heads.append(_first_line(text, exception.end()))
+    tail = text[-_FRAMES_TAIL:]
+    if text[-_FRAMES_TAIL - 1] != "\n":
+        start = tail.find("\n")
+        tail = tail[start + 1 :] if start >= 0 else ""
+    return "\n".join([*heads, tail])
+
+
+def _over_limit_record(kept: dict, chars: int, frames: bool) -> dict:
+    """The record written in place of a line over ``LOG_LINE_MAX_CHARS``
+    (``chars`` long): ``kept``'s values cut, ``log_line_cut`` and
+    ``log_line_chars``, every other field dropped. ``frames`` False drops the
+    frames too (``frames_cut``)."""
+    record: dict = {}
+    for key, value in kept.items():
+        text = value if isinstance(value, str) else type(value).__name__
+        if key == "event":
+            record[key] = _cut_event(text)
+        elif key not in _FRAME_KEYS:
+            record[key] = text[:_KEPT_MAX]
+        elif not frames or len(text) > _FRAMES_TAIL:
+            record["frames_cut"] = True
+            if frames:
+                record[key] = _cut_frames(text)
+        else:
+            record[key] = text
+    return {**record, "log_line_cut": True, "log_line_chars": chars}
+
+
+def _redacted(rendered: Any) -> Any:
+    if isinstance(rendered, str):
+        return redact_log_line(rendered)
+    if isinstance(rendered, bytes):
+        return redact_log_line_bytes(rendered)
+    return rendered
+
+
 def redacting_renderer(renderer: Callable) -> Callable:
     """Wrap a structlog renderer so its output passes `redact_log_line`.
 
@@ -451,15 +539,31 @@ def redacting_renderer(renderer: Callable) -> Callable:
     the jobs and alembic alike, so the rule holds for JSON and console output,
     and for foreign stdlib records as well as native structlog events — they
     converge on the same formatter.
+
+    A line over ``LOG_LINE_MAX_CHARS`` is replaced by ``_over_limit_record``,
+    rendered by the same renderer (a JSON line stays JSON), then redacted; no
+    text of the line past a cut is written. The kept values are read before
+    rendering, since the console renderer pops them. The limit bounds the
+    rendered record: redaction can lengthen a line at or under it up to 3x, as
+    it did before the limit. A replacement still over
+    the limit (frames whose escapes multiply them) is rendered without its
+    frames, which bounds it: 3,840 kept characters, at most 12 each rendered.
     """
 
     def render(logger, method_name, event_dict):
+        kept = {key: event_dict[key] for key in _KEPT_KEYS if key in event_dict}
         rendered = renderer(logger, method_name, event_dict)
-        if isinstance(rendered, str):
-            return redact_log_line(rendered)
-        if isinstance(rendered, bytes):
-            return redact_log_line_bytes(rendered)
-        return rendered
+        if (
+            not isinstance(rendered, (str, bytes))
+            or len(rendered) <= LOG_LINE_MAX_CHARS
+        ):
+            return _redacted(rendered)
+        for frames in (True, False):
+            record = _over_limit_record(kept, len(rendered), frames)
+            line = _redacted(renderer(logger, method_name, record))
+            if len(line) <= LOG_LINE_MAX_CHARS:
+                break
+        return line
 
     # The standard unwrap convention, so anything inspecting the chain can
     # still see WHICH renderer is installed. That LOG_FORMAT reaches the right
