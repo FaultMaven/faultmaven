@@ -18,6 +18,7 @@ the "disclosure gate" section below.
 
 import asyncio
 import logging
+import os
 import re
 from typing import List, Optional
 
@@ -421,6 +422,13 @@ MAX_USER_MESSAGES_FOR_CONTEXT = 12  # Cap message count to reduce noise
 MIN_MESSAGE_WORD_COUNT = 3  # Filter out very short messages like "ok", "thanks"
 CONTEXT_MESSAGE_LIMIT = 10  # Number of recent messages to fetch for context
 
+# The title source's input limits (#3135, Principle 14): of a source that
+# ``_scrub_title_source`` reads, a title or its prompt is built from at most the
+# first TITLE_SOURCE_MAX_CHARS, and the scrub reads at most the first
+# TITLE_SOURCE_REDACT_WINDOW.
+TITLE_SOURCE_MAX_CHARS = 4_000
+TITLE_SOURCE_REDACT_WINDOW = 2 * TITLE_SOURCE_MAX_CHARS
+
 # =============================================================================
 # Helper Functions for Title Generation
 # =============================================================================
@@ -594,9 +602,13 @@ def _sanitize_title_content(content: str) -> str:
         return ""
 
     # Basic content hygiene - remove common PII patterns
-    # Remove email addresses
+    # Remove email addresses. The local part's run is read once, possessively,
+    # and marked only when a domain follows it (#3135): the backtracking form
+    # rescanned a dotted run from every position in it.
     content = re.sub(
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[email]", content
+        r"\b[A-Za-z0-9._%+-]++(@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)?",
+        lambda m: "[email]" if m.group(1) else m.group(0),
+        content,
     )
 
     # Remove phone numbers (basic patterns)
@@ -680,21 +692,52 @@ def _type_marker(match: re.Match) -> str:
     return f"[{match.group(0)[1:-1].rsplit('_', 1)[0].lower()}]"
 
 
+def _cut_at_whitespace(text: str, limit: int) -> str:
+    """``text`` within ``limit`` characters, cut back to its last whitespace
+    (a hard cut when the kept part holds none)."""
+    if len(text) <= limit:
+        return text
+    kept = text[:limit]
+    end = max(map(kept.rfind, " \t\n\r"))
+    return kept[:end] if end > 0 else kept
+
+
 def _redact_title_source(text: Optional[str], sanitizer) -> str:
     """Step 1 of :func:`_scrub_title_source`: the sanitizer's regex half on the
-    RAW source, placeholders still in."""
+    RAW source, placeholders still in, within the source's limits (#3135).
+
+    A source of at most ``TITLE_SOURCE_MAX_CHARS`` is redacted whole. A longer
+    one is redacted twice, cut at whitespace to ``TITLE_SOURCE_MAX_CHARS`` and
+    to ``TITLE_SOURCE_REDACT_WINDOW``, and only the prefix the two agree on is
+    kept, cut back to a whitespace where they part. A span is detectable only
+    whole (#1967): one the shorter cut splits is whole in the longer read, so
+    the two part at its start and no fragment of it is kept.
+    """
     raw = (text or "").strip()
     if not raw:
         return ""
     if sanitizer is None:
         raise _gate_unavailable("source", "no_sanitizer", len(raw))
-    try:
-        redacted = sanitizer.apply_regex_redaction(raw, {})
-    except Exception as e:  # fail closed on ANY failure
-        raise _gate_unavailable("source", type(e).__name__, len(raw)) from None
-    if not isinstance(redacted, str):
-        raise _gate_unavailable("source", "non_text_result", len(raw))
-    return redacted
+
+    def redact(source: str) -> str:
+        try:
+            redacted = sanitizer.apply_regex_redaction(source, {})
+        except Exception as e:  # fail closed on ANY failure
+            raise _gate_unavailable("source", type(e).__name__, len(raw)) from None
+        if not isinstance(redacted, str):
+            raise _gate_unavailable("source", "non_text_result", len(raw))
+        return redacted
+
+    if len(raw) <= TITLE_SOURCE_MAX_CHARS:
+        return redact(raw)
+    short = redact(_cut_at_whitespace(raw, TITLE_SOURCE_MAX_CHARS))
+    agreed = os.path.commonprefix(
+        [short, redact(_cut_at_whitespace(raw, TITLE_SOURCE_REDACT_WINDOW))]
+    )
+    if len(agreed) == len(short):
+        return short
+    end = max(map(agreed.rfind, " \t\n\r"))
+    return agreed[:end] if end > 0 else ""
 
 
 def _scrub_title_source(text: Optional[str], sanitizer) -> str:
@@ -847,7 +890,10 @@ def _extract_user_signals_from_context(context_text: str, sanitizer) -> str:
             # Extract meaningful description as user content
             user_content = line.split("Description:", 1)[-1].strip()
 
-        # Validate and dedupe user content
+        # Validate and dedupe user content, each message within the window the
+        # scrub reads (#3135)
+        if user_content:
+            user_content = _cut_at_whitespace(user_content, TITLE_SOURCE_REDACT_WINDOW)
         if (
             user_content
             and len(user_content.split())
