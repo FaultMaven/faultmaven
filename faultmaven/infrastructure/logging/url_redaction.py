@@ -446,7 +446,10 @@ def redact_log_line_bytes(data: bytes) -> bytes:
 
 #: The longest rendered record written as rendered (#3116 B3, Principle 14);
 #: redaction can lengthen it up to 3x (``://? `` becomes ``://?<redacted> ``).
-#: A longer one is never redacted or written: ``_over_limit_record`` replaces it.
+#: A longer one is never redacted or written: ``_over_limit_record`` replaces it,
+#: but for its frames, redacted whole before their cut (``_cut_frames``) at a
+#: cost linear in their length, which the recursion limit and the exception
+#: group cap set, not this limit.
 LOG_LINE_MAX_CHARS = 65_536
 #: What the replacement keeps: the message, the context the shared processors
 #: stamp, each cut to ``_KEPT_MAX``, and the frames. A value that is not text

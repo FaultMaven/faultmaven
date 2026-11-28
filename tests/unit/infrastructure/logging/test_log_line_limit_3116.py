@@ -2,9 +2,10 @@
 
 Principle 14 lets ``redact_log_line`` run inline on every record only under a
 declared input limit and a growth test over it. A record rendered over the
-limit is never redacted or written: a replacement record (its kept keys cut,
-``log_line_cut``, ``log_line_chars``) is rendered by the same renderer, then
-redacted, so no text past a cut reaches the output and a JSON line stays JSON.
+limit is never redacted or written, but for its frames, redacted whole before
+their cut: a replacement record (its kept keys cut, ``log_line_cut``,
+``log_line_chars``) is rendered by the same renderer, then redacted, so no
+text past a cut reaches the output and a JSON line stays JSON.
 A line at or under the limit renders as on ``main``.
 """
 
@@ -20,6 +21,7 @@ import pytest
 from faultmaven.infrastructure.logging.config import build_log_formatter
 from faultmaven.infrastructure.logging.url_redaction import (
     LOG_LINE_MAX_CHARS,
+    _cut_frames,
     redact_log_line,
     redact_log_line_bytes,
     redacting_renderer,
@@ -344,4 +346,26 @@ def test_redact_log_line_is_linear_up_to_the_limit(payload_at, arm):
         max_escalations=0,
         undecided_repeats=2,
         label=f"the {arm} arm",
+    )
+
+
+#: Frames shapes: a traceback's lines, and credential blocks the redactor
+#: blanks. Their length is set by the recursion limit and the group cap, not
+#: by ``LOG_LINE_MAX_CHARS``, so the window runs past it.
+FRAMES = {
+    "traceback": '  File "/app/a.py", line 10, in f\n    return g(x)\n           ^^^^\n',
+    "credential blocks": "  Authorization: Bearer x\n      tok\n",
+}
+
+
+@pytest.mark.performance
+@pytest.mark.parametrize("unit", FRAMES.values(), ids=FRAMES.keys())
+def test_the_frames_cut_is_linear_past_the_limit(unit):
+    assert_linear_growth(
+        _cut_frames,
+        lambda n: "RecursionError:\n" + _runs(unit, n),
+        small=LOG_LINE_MAX_CHARS // STEP,
+        step=STEP,
+        undecided_repeats=2,
+        label="_cut_frames",
     )
