@@ -13,7 +13,7 @@ from faultmaven.core.investigation.causal_graph.disconfirmation import (
 )
 from faultmaven.core.investigation.causal_graph.projection import (
     any_chain_root_validated,
-    held_open_root_ids,
+    identification_is_held_open,
     identified_root_ids,
     project_hypothesis_states_from_roots,
 )
@@ -386,9 +386,7 @@ def _recompute_cause_state_from_chain(
     # why is open holds identification at CANDIDATES, like the MECE contest.
     identified = identified_root_ids(case)
     root_identified = bool(identified)
-    p.cause_identification_held_open = bool(held_open_root_ids(case)) and not (
-        root_identified
-    )
+    p.cause_identification_held_open = identification_is_held_open(case)
     # The evidence-grounded VERIFIED SYMPTOM is the anchor for cause
     # identification: IDENTIFIED requires ``symptom_verified``. A validated chain
     # root WITHOUT a verified symptom is held at CANDIDATES (never flapped to

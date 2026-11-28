@@ -16,6 +16,9 @@ import inspect
 import pytest
 
 from faultmaven.core.investigation.cause_assurance import pending_symptom_check
+from faultmaven.core.investigation.milestone_engine.cause_state import (
+    _recompute_cause_state_from_chain,
+)
 from faultmaven.core.investigation.narration.fix_verification import (
     CLOSE_TAG,
     OPEN_TAG,
@@ -42,13 +45,19 @@ from faultmaven.core.investigation.terminal_transitions import (
     assess_resolution_readiness,
 )
 from faultmaven.modules.case.contracts import (
+    CausalNode,
     EvidenceCategory,
     EvidenceNeed,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
     InvestigationActionType,
     MitigationRecord,
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeType,
     ProblemStatus,
     ProposedAction,
 )
@@ -107,6 +116,35 @@ def _case(stage: str = "treatment", *, cause=True, problem=False, persists=False
             created_at_turn=4,
         )
     )
+    return case
+
+
+def hold_open(case):
+    """A second standing root its hypothesis marked not terminal
+    (``root_terminal`` False: something will produce it again) beside the
+    case's count-held cause, so identification is held open (#2036) while
+    the cause re-check stays bound; the cause recompute then stores it, as a
+    cycle does (#3053 S3d-5)."""
+    node = CausalNode(
+        node_id="cn_00000000a11e",
+        statement="a nightly job rewrites the unit file",
+        node_type=NodeType.ROOT,
+        generated_at_turn=2,
+        metadata={"root_terminal": False},
+    )
+    case.causal_nodes[node.node_id] = node
+    case.hypotheses["hyp_00000000a11e"] = Hypothesis(
+        hypothesis_id="hyp_00000000a11e",
+        statement="a nightly job rewrites the unit file",
+        category=HypothesisCategory.CONFIG,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="r",
+        root_node_id=node.node_id,
+        generated_at_turn=2,
+    )
+    _recompute_cause_state_from_chain(case)
+    assert case.progress.cause_identification_held_open, "premise: held open"
     return case
 
 
@@ -257,7 +295,7 @@ def test_the_problem_checked_before_the_cause_is_shown_checked():
 def test_a_cause_re_check_that_does_not_count_says_why(hold, reason):
     case = _case("treatment")
     if hold == "held open":
-        case.progress.cause_identification_held_open = True
+        hold_open(case)
     else:
         for node in case.causal_nodes.values():
             node.metadata["root_attached_turn"] = 5
@@ -274,8 +312,7 @@ def test_a_cause_re_check_that_does_not_count_says_why(hold, reason):
 
 
 def test_pending_re_checks_overflow_like_every_list():
-    case = _case("treatment")
-    case.progress.cause_identification_held_open = True
+    case = hold_open(_case("treatment"))
     for turn in range(5, 11):
         bound_row(case, EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE, turn=turn)
     assert "held open) (+1 more)\n" in build_fix_verification_block(case)

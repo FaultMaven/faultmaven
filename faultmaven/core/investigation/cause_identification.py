@@ -5,12 +5,39 @@ cause-identification gate (the resolution gate, M5, the offer record's lapse
 rule, the outcome record) can import it at module level (#2636).
 """
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from faultmaven.modules.case.contracts import CauseState, WorkingConclusion
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
+
+#: Whether identification is held open, as the computation of the outcome
+#: running in this context folds it (``seed_identification_held_open``, #3053
+#: S3d-5), keyed by ``id(case)`` and held with its case; None outside one.
+#: ``cause_assurance._outcome_computation`` opens and resets it with its memo.
+HELD_OPEN_SEED: ContextVar[dict | None] = ContextVar("held_open_seed", default=None)
+
+
+def seed_identification_held_open(case: "Case", held_open: bool) -> None:
+    """Hold ``held_open`` as whether the case's identification is held open
+    for the rest of the computation of the outcome running: its two readers
+    of the held-open state (``cause_identification_leg`` and
+    ``cause_assurance.cause_recheck_status``) read it there in place of the
+    stored flag, so every section of the record reads the fold's one
+    derivation."""
+    seeds = HELD_OPEN_SEED.get()
+    if seeds is not None:
+        seeds[id(case)] = (case, held_open)
+
+
+def seeded_identification_held_open(case: "Case") -> "bool | None":
+    """The held-open value the computation of the outcome running seeded for
+    ``case``, or None outside one (the reader then reads the stored flag)."""
+    seeded = (HELD_OPEN_SEED.get() or {}).get(id(case))
+    return seeded[1] if seeded is not None else None
+
 
 # Likelihood at or above which a ``working_conclusion`` counts as a known cause
 # (the proxy fallback in ``cause_identification_leg`` below). This is the
@@ -86,7 +113,12 @@ def cause_identification_leg(
     # Nor while it is held on an open root (#2036): the chain has validated a
     # cause whose why is unanswered, so a conclusion or a likelihood naming that
     # cause would assert as the root what the chain says is not yet the root.
-    if getattr(case.progress, "cause_identification_held_open", False):
+    # Inside a computation of the outcome, as that computation folds it; outside
+    # one, the cause recompute's stored flag (#3053 S3d-5).
+    held_open = seeded_identification_held_open(case)
+    if held_open is None:
+        held_open = getattr(case.progress, "cause_identification_held_open", False)
+    if held_open:
         return None
 
     if case.root_cause_conclusion and getattr(

@@ -63,6 +63,16 @@ def held_open_root_ids(case: Case) -> set[str]:
     }
 
 
+def identification_is_held_open(case: Case) -> bool:
+    """Whether cause identification is held open (#2036): a held-open root
+    stands (``held_open_root_ids``) and no root is identified
+    (``identified_root_ids``). The one derivation (#3053 S3d-5): the cause
+    recompute stores it (``cause_identification_held_open``), and the case
+    outcome record's fold computes it for ``identification_held_open`` and
+    the HELD_OPEN verdict."""
+    return bool(held_open_root_ids(case)) and not identified_root_ids(case)
+
+
 class HypothesisProjection(NamedTuple):
     """What :func:`project_hypothesis_states_from_roots` settled this call.
 

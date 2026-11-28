@@ -37,6 +37,9 @@ from faultmaven.core.investigation import outcome as outcome_module
 from faultmaven.core.investigation.causal_graph.clusters import (
     mece_contested_root_ids,
 )
+from faultmaven.core.investigation.causal_graph.projection import (
+    identification_is_held_open,
+)
 from faultmaven.core.investigation.cause_assurance import cause_pool_empty_reason
 from faultmaven.core.investigation.milestone_engine import (
     turn_application,
@@ -710,8 +713,9 @@ def _verdicts_agree(case) -> bool:
     """The fresh MECE verdict and the flag-read one give the same reason."""
     fresh = mece_contested_root_ids(case)
     flagged = {"flag"} if case.progress.cause_identification_contested else set()
-    return cause_pool_empty_reason(case, contested=fresh) == (
-        cause_pool_empty_reason(case, contested=flagged)
+    held_open = identification_is_held_open(case)
+    return cause_pool_empty_reason(case, contested=fresh, held_open=held_open) == (
+        cause_pool_empty_reason(case, contested=flagged, held_open=held_open)
     )
 
 

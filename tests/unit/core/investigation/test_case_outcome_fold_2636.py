@@ -22,6 +22,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
+from faultmaven.core.investigation.causal_graph.clusters import (
+    mece_contested_root_ids,
+)
+from faultmaven.core.investigation.causal_graph.projection import (
+    identification_is_held_open,
+)
 from faultmaven.core.investigation.causal_graph.pruning import attach_root
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
@@ -657,11 +663,22 @@ def _bare_case():
     return investigating_case(problem_status=ProblemStatus.VERIFIED, current_turn=4)
 
 
-def _fallen_case():
-    """The identified root recorded as the cause, then fallen: no longer
-    validated, with no other cause standing."""
+def _verdict_withdrawn_case():
+    """The identified root recorded as the cause, its terminal verdict then
+    withdrawn: still validated, so its why is open (``held_open_root_ids``)
+    and identification is held open (#2036), which the fold derives fresh
+    (#3053 S3d-5)."""
     case, root, _hyp = _identified_case()
     root.metadata = {}
+    return case, root
+
+
+def _fallen_case():
+    """The identified root recorded as the cause, then fallen: no longer
+    validated, with no other cause standing. Not validated, it holds no why
+    open, so nothing holds identification open."""
+    case, root = _verdict_withdrawn_case()
+    root.node_state = NodeState.INCONCLUSIVE
     return case, root
 
 
@@ -686,11 +703,61 @@ def _other_hypothesis(case):
 
 
 def _held_open(case):
-    case.progress.cause_identification_held_open = True
+    """A standing root its hypothesis marked not terminal (``root_terminal``
+    False: something will produce it again), refuted by nothing: its why is
+    open, so identification is held open while no root is identified
+    (#2036). The fold derives it fresh (#3053 S3d-5), so the stored flag is
+    not set: a recompute here would re-derive the case's other roots too."""
+    node = CausalNode(
+        node_id="cn_00000000a11e",
+        statement="a nightly job resets max_connections",
+        node_type=NodeType.ROOT,
+        generated_at_turn=3,
+        metadata={"root_terminal": False},
+    )
+    case.causal_nodes[node.node_id] = node
+    case.hypotheses["hyp_00000000a11e"] = Hypothesis(
+        hypothesis_id="hyp_00000000a11e",
+        statement="a nightly job resets max_connections",
+        category=HypothesisCategory.CONFIG,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="r",
+        root_node_id=node.node_id,
+        generated_at_turn=3,
+    )
+    assert identification_is_held_open(case), "premise: held open"
 
 
 def _contested(case):
-    case.progress.cause_identification_contested = True
+    """A MECE contest (#656): two VALIDATED distinct roots of standing
+    hypotheses (``mece_contested_root_ids``)."""
+    for i, statement in (
+        (1, "the connection pool is undersized"),
+        (2, "a firewall drops idle connections"),
+    ):
+        node_id, hyp_id = f"cn_00000000c0{i:02d}", f"hyp_00000000c0{i:02d}"
+        case.causal_nodes[node_id] = CausalNode(
+            node_id=node_id,
+            statement=statement,
+            node_type=NodeType.ROOT,
+            node_state=NodeState.VALIDATED,
+            validation_method=ValidationMethod.EMPIRICAL,
+            belief=0.9,
+            actionable=True,
+            generated_at_turn=3,
+        )
+        case.hypotheses[hyp_id] = Hypothesis(
+            hypothesis_id=hyp_id,
+            statement=statement,
+            category=HypothesisCategory.NETWORK,
+            state=HypothesisState.VALIDATED,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="r",
+            root_node_id=node_id,
+            generated_at_turn=3,
+        )
+    assert len(mece_contested_root_ids(case)) == 2, "premise: a contest"
 
 
 def _rootless(case):
@@ -709,8 +776,19 @@ def _rootless(case):
     ("build", "reason"),
     [
         (lambda: _identified_case()[0], None),
+        # HELD_OPEN is read first: over a real MECE contest beside the
+        # held-open root, and over the fallen leg's refusal of a root whose
+        # terminal verdict was withdrawn (#3053 S3d-5).
         (
             lambda: (c := _bare_case(), _held_open(c), _contested(c))[0],
+            PoolEmptyReason.HELD_OPEN,
+        ),
+        (
+            lambda: (
+                c := _verdict_withdrawn_case()[0],
+                _other_hypothesis(c),
+                _rootless(c),
+            )[0],
             PoolEmptyReason.HELD_OPEN,
         ),
         # IDENTIFICATION_CONTESTED reads the fold's MECE computation, not the
@@ -741,8 +819,9 @@ def test_each_way_the_confirmation_pool_comes_back_empty(build, reason):
     assert bool(cause.confirmation_root_ids) == (reason is None)
 
 
-def test_the_fallen_leg_stands_when_nothing_refuses_it():
-    case, root = _fallen_case()
+@pytest.mark.parametrize("build", [_verdict_withdrawn_case, _fallen_case])
+def test_the_fallen_leg_stands_when_nothing_refuses_it(build):
+    case, root = build()
     assert compute_case_outcome(
         None, case, at=WritePoint.CYCLE
     ).cause.confirmation_root_ids == [_ROOT_ID]

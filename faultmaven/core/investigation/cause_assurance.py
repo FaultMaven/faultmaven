@@ -33,6 +33,10 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
+from faultmaven.core.investigation.cause_identification import (
+    HELD_OPEN_SEED,
+    seeded_identification_held_open,
+)
 from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_bearing_rejected_total,
@@ -817,13 +821,16 @@ def _outcome_computation() -> Iterator[None]:
     ``fix_windows`` and ``_cause_pool`` build once per case (#2657), which
     holds because the computation does not mutate the case, and
     ``carried_fix_windows`` returns the list it folded
-    (``seed_carried_windows``, #3046 S3a-2). Reset in
-    ``finally``, so a computation that raises leaves no memo for a decider,
-    which builds as it always did."""
+    (``seed_carried_windows``, #3046 S3a-2), and the held-open readers the
+    value it folds (``cause_identification.HELD_OPEN_SEED``, #3053 S3d-5).
+    Reset in ``finally``, so a computation that raises leaves no memo for a
+    decider, which builds as it always did."""
     token = _COMPUTATION.set({})
+    seeds = HELD_OPEN_SEED.set({})
     try:
         yield
     finally:
+        HELD_OPEN_SEED.reset(seeds)
         _COMPUTATION.reset(token)
 
 
@@ -961,7 +968,7 @@ def _fallen_leg(case: "Case", fallen: set) -> tuple[frozenset, PoolEmptyReason |
 
 
 def cause_pool_empty_reason(
-    case: "Case", *, contested: Collection[str]
+    case: "Case", *, contested: Collection[str], held_open: bool
 ) -> PoolEmptyReason | None:
     """Why the confirmation pool (``_cause_pool``) is empty, or None while it
     is not: the first that holds of identification held open, the MECE
@@ -969,13 +976,14 @@ def cause_pool_empty_reason(
     VALIDATED hypotheses; else no cause at all (#2615, ``pool_empty_reason``).
     ``contested``: the MECE-contested roots, computed once by the record's
     fold (``mece_contested_root_ids``, #3053 S3d-3), so the contest verdict
-    and ``contested_root_ids`` are one derivation. Held open is the cause
-    recompute's stored flag."""
+    and ``contested_root_ids`` are one derivation. ``held_open``: whether
+    identification is held open, computed once by the same fold
+    (``identification_is_held_open``, #3053 S3d-5), so the HELD_OPEN verdict
+    and ``identification_held_open`` are one derivation."""
     confirmation, _window, hypotheses = _cause_pool(case)
     if confirmation:
         return None
-    progress = getattr(case, "progress", None)
-    if getattr(progress, "cause_identification_held_open", False):
+    if held_open:
         return PoolEmptyReason.HELD_OPEN
     if contested:
         return PoolEmptyReason.IDENTIFICATION_CONTESTED
@@ -1298,9 +1306,16 @@ def cause_recheck_status(
     The ``<fix_verification>`` block renders the second kind
     (``narration.rechecks``), so the model asks for what is missing, not for
     a re-check already on record (#1906 D7). A row bound only to a fix's
-    window is listed with ``uncited_recheck_why`` (#2557)."""
+    window is listed with ``uncited_recheck_why`` (#2557). Whether
+    identification is held open: inside a computation of the outcome, the
+    value that computation folds (``seeded_identification_held_open``, #3053
+    S3d-5); outside one, the cause recompute's stored flag, which the
+    in-cycle deciders read as the last recompute left it and the report
+    reads on a stored case."""
     subjects = subject_index(case) if subjects is None else subjects
-    held_open = getattr(case.progress, "cause_identification_held_open", False)
+    held_open = seeded_identification_held_open(case)
+    if held_open is None:
+        held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
