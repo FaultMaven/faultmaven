@@ -225,6 +225,11 @@ DERIVATIONS: dict[str, str] = {
     # record (``cause.held_open_root_ids``, ``cause.contested_root_ids``).
     "held_open_root_ids": _INV + "causal_graph/projection.py",
     "mece_contested_root_ids": _INV + "causal_graph/clusters.py",
+    # #3053 S3d-5: whether identification is held open, the one derivation
+    # the cause recompute stores and the record's fold computes; a switched
+    # reader takes the fold's value, never calls it (pin 3 as ruled
+    # 2026-11-28, amendment 2).
+    "identification_is_held_open": _INV + "causal_graph/projection.py",
     # #2811 S2b-2b: whether a cause is identified, which the resolve
     # confirmation reads off the record (``cause.identification_leg``), and
     # its two one-line wrappers.
@@ -326,6 +331,10 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_CA, "problem_leg_anchor"): {"confirming_window": 1},
     (_CA, "subject_index"): {"_cause_pool": 1},
     (_TT, "_resolution_confirmed"): {"has_resolution_confirmation": 1},
+    # #3053 S3d-5: the one held-open derivation, built on the held-open roots.
+    (_INV + "causal_graph/projection.py", "identification_is_held_open"): {
+        "held_open_root_ids": 1
+    },
     (_TT, "_suggest_resolve_params"): {
         "cause_identification_leg": 1,
         "resolution_record_lines": 1,
@@ -529,9 +538,12 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_bindable"): {"bindable_rows": 1, "uncited_recheck_why": 1},
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
+    # #3053 S3d-5: the fold's held-open value, seeded for every
+    # ``cause_recheck_status`` it reaches and passed to ``_cause``.
     (_OUTCOME, "compute_case_outcome"): {
         "cause_recheck_status": 1,
         "fix_windows": 1,
+        "identification_is_held_open": 1,
         "shown_milestones": 1,
     },
     (_OUTCOME, "narration_outcome"): {"compute_case_outcome": 1},
@@ -649,8 +661,9 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
         "closure_reason": 1
     },
     # #3053 S3d-5: the cause recompute's stored held-open flag
-    # (``cause_identification_held_open``), read raw.
-    (_CA, "cause_pool_empty_reason"): {"cause_identification_held_open": 1},
+    # (``cause_identification_held_open``), read raw by its declared inputs
+    # (``HELD_OPEN_FLAG_INPUTS``); the HELD_OPEN verdict and the record's
+    # ``identification_held_open`` read the fold's derivation instead.
     (_CA, "cause_recheck_status"): {"cause_identification_held_open": 1},
     (_CA, "confirming_polarity_rows"): {"cause_identification_held_open": 1},
     (_INV + "cause_identification.py", "cause_identification_leg"): {
@@ -662,7 +675,6 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     (_SG, "_withdraw_unlicensed_solution_offers"): {
         "cause_identification_held_open": 1
     },
-    (_OUTCOME, "_cause"): {"cause_identification_held_open": 1},
     (_MONITOR, "ProgressMonitor._held_open_pending_text"): {
         "cause_identification_held_open": 1
     },
@@ -702,6 +714,31 @@ MITIGATION_FLAG_INPUTS: dict[tuple[str, str], str] = {
     (_PROGRESS, "MitigationRecord.settled"): "the one settled rule, "
     "forward-only (ruling Q7): the stage, the monitor and mitigation_settled "
     "read it",
+}
+
+#: The rows of ``FIELD_READS`` that read the stored
+#: ``cause_identification_held_open`` (#3053 S3d-5, pin 3 as ruled
+#: 2026-11-28), permanent, each with why the stored flag is its input. The
+#: record's HELD_OPEN verdict and ``identification_held_open`` read the
+#: fold's derivation (``identification_is_held_open``) instead.
+HELD_OPEN_FLAG_INPUTS: dict[tuple[str, str], str] = {
+    (_CA, "cause_recheck_status"): "outside a fold: in-cycle deciders read the "
+    "last recompute's flag; the report reads a stored case. Inside a fold it "
+    "reads the fold's seeded value (seed_identification_held_open)",
+    (_CA, "confirming_polarity_rows"): "its one caller is the report, on a "
+    "stored case the last recompute wrote",
+    (_INV + "cause_identification.py", "cause_identification_leg"): "it reads "
+    "three recompute-written facts together; switching one gives a mixed read "
+    "(the record's identification_leg keeps it, a stated residual)",
+    (_ME + "response_application.py", "ResponseApplier._apply_investigation_updates"): (
+        "an in-cycle reader of the last recompute's flag, before the turn's "
+        "recompute; switching it changes in-cycle text"
+    ),
+    (_SG, "_withdraw_unlicensed_solution_offers"): "the withdrawal notice's "
+    "held_open, rendered only when no outcome can be read",
+    (_MONITOR, "ProgressMonitor._held_open_pending_text"): "an in-cycle reader "
+    "of the last recompute's flag (check_progress, step 5.9, after step 1's "
+    "recompute and before the final one and the cycle's record)",
 }
 
 #: (path, qualname) -> ({entry: calls}, what the caller answers or closes).
@@ -988,8 +1025,10 @@ CYCLE_SOURCES: dict[tuple[str, str], Source] = {
         serves=(_MODEL, _BACKSTOP),
     ),
     # The recompute writers log no code, so the typed-code pin cannot apply.
+    # #3053 S3d-5: the held-open roots' reference moved into the one
+    # derivation it stores (``identification_is_held_open``).
     (_ME + "cause_state.py", "_recompute_cause_state_from_chain"): Source(
-        {"held_open_root_ids": 1, "mece_contested_root_ids": 1},
+        {"identification_is_held_open": 1, "mece_contested_root_ids": 1},
         "the cause recompute, the cycle's last after every decider: writes "
         "cause_identification_contested and _held_open, which the deciders' "
         "identification leg reads (ruling of 2026-11-26 (3))",
@@ -1528,6 +1567,36 @@ def test_the_stored_flag_is_read_only_by_its_declared_inputs():
     reading = {key for key, counts in FIELD_READS.items() if "verified" in counts}
     assert set(MITIGATION_FLAG_INPUTS) == reading - set(RECORD_FIELD_READS)
     assert RECORD_FIELD_READS, "premise: the statement reads the record's verified"
+
+
+def test_the_held_open_flag_is_read_only_by_its_declared_inputs():
+    """Pin 3 for #3053 S3d-5: the stored ``cause_identification_held_open``
+    is read raw only by ``HELD_OPEN_FLAG_INPUTS``, which equals its
+    ``FIELD_READS`` rows: the baseline less the two readers the stage
+    switched (``cause_pool_empty_reason``, ``outcome._cause``)."""
+    reading = {
+        key
+        for key, counts in FIELD_READS.items()
+        if "cause_identification_held_open" in counts
+    }
+    assert reading == set(HELD_OPEN_FLAG_INPUTS)
+    assert {(_CA, "cause_pool_empty_reason"), (_OUTCOME, "_cause")}.isdisjoint(reading)
+    assert len(reading) == 6
+
+
+def test_the_held_open_derivation_has_the_writers_and_the_records_sites():
+    """Pin 3 for #3053 S3d-5: ``identification_is_held_open`` is referenced
+    by the cause recompute (its writer) and the record's fold, and nowhere
+    else; a switched reader takes the fold's value."""
+    sites = {
+        key
+        for key, counts in _DECLARED.items()
+        if "identification_is_held_open" in counts
+    }
+    assert sites == {
+        (_ME + "cause_state.py", "_recompute_cause_state_from_chain"),
+        (_OUTCOME, "compute_case_outcome"),
+    }
 
 
 _FLAG_PROBE = (_INV + "narration/probe.py", "decide")

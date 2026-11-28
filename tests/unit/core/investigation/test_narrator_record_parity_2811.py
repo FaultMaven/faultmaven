@@ -68,6 +68,7 @@ from faultmaven.modules.case.contracts import (
     InvestigationActionType,
     MitigationRecord,
     NeedState,
+    NodeState,
     PendingCheckReason,
     RecheckReason,
     RecheckWhy,
@@ -583,11 +584,10 @@ def test_each_declared_difference_is_shown_by_a_fixture():
 async def _held_open():
     from tests.unit.core.investigation.prompts.test_fix_verification_1906 import (
         _case,
+        hold_open,
     )
 
-    case = _case("treatment")
-    case.progress.cause_identification_held_open = True
-    return case
+    return hold_open(_case("treatment"))
 
 
 async def _posited_later():
@@ -703,6 +703,11 @@ async def _uncited(cited: bool):
     case, final, relief, _login, ttl = _mirror(cited=cited)
     _fixed(case, final)
     _recheck(case, (relief if cited else ttl).evidence_id)
+    if not cited:
+        # The recorded cause, its verdict citing nothing, no longer validated:
+        # validated, its open why would hold identification, which every
+        # re-check then reads first (#3053 S3d-5: the fold derives it fresh).
+        final.node_state = NodeState.INCONCLUSIVE
     return case
 
 

@@ -68,7 +68,10 @@ import logging
 from typing import TYPE_CHECKING, Callable, Optional
 
 from faultmaven.core.investigation.causal_graph.clusters import mece_contested_root_ids
-from faultmaven.core.investigation.causal_graph.projection import held_open_root_ids
+from faultmaven.core.investigation.causal_graph.projection import (
+    held_open_root_ids,
+    identification_is_held_open,
+)
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
     FIX_INTERCEPTION,
@@ -93,6 +96,7 @@ from faultmaven.core.investigation.cause_assurance import (
     off_cause_attempt,
     pending_symptom_check,
     seed_carried_windows,
+    seed_identification_held_open,
     subject_index,
     symptom_elimination_rows,
     unbound_post_fix_rows,
@@ -362,6 +366,11 @@ def compute_case_outcome(
     subject index, the fix windows and the cause pool once for the case
     (#2657); so nothing it calls may mutate the case."""
     with _outcome_computation():
+        # One derivation of whether identification is held open (#3053
+        # S3d-5): the cause section's verdict and flag, and every
+        # ``cause_recheck_status`` the fold reaches, read it.
+        held_open = identification_is_held_open(case)
+        seed_identification_held_open(case, held_open)
         at = WritePoint(at)
         mint = None
         if prior is None or at in MINTING_POINTS:
@@ -390,7 +399,7 @@ def compute_case_outcome(
                 verifying_row_ids=list(subjects.verifying),
                 statement=statement,
             ),
-            cause=_cause(case, subjects, status),
+            cause=_cause(case, subjects, status, held_open),
             attempts=attempts,
             demotions=list(prior.demotions) if prior is not None else [],
             resolution=_resolution(fold, status),
@@ -482,7 +491,9 @@ class _Fold:
         self.mint: Optional[FinalAt] = mint
 
 
-def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome:
+def _cause(
+    case: "Case", subjects: "SubjectIndex", status: list, held_open: bool
+) -> CauseOutcome:
     whys = [why for _row, why in status if why is not None]
     identified, held, fallen = _pool_legs(case)
     # One derivation of the MECE contest (#3053 S3d-3): the roots and
@@ -492,9 +503,9 @@ def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome
         identified_root_ids=sorted(identified),
         held_root_ids=sorted(held),
         fallen_root_ids=sorted(fallen),
-        # Derived fresh at the write, unlike ``pool_empty_reason``'s HELD_OPEN
-        # verdict and ``identification_held_open`` below. The prompt's
-        # recovery notes and working-conclusion NOTE read them (#2811 S2b-2a).
+        # Derived fresh at the write, like ``held_open`` (#3053 S3d-5). The
+        # prompt's recovery notes and working-conclusion NOTE read them
+        # (#2811 S2b-2a).
         held_open_root_ids=sorted(held_open_root_ids(case)),
         contested_root_ids=sorted(contested),
         confirmation_root_ids=sorted(subjects.pool_roots),
@@ -503,20 +514,22 @@ def _cause(case: "Case", subjects: "SubjectIndex", status: list) -> CauseOutcome
             for node_id, rows in subjects.citations.items()
             if rows
         },
-        # ``cause_pool_empty_reason`` is computed at the write, its
-        # IDENTIFICATION_CONTESTED verdict from ``contested`` above; only its
-        # HELD_OPEN verdict reads a flag the cause recompute wrote
-        # (``cause_identification_held_open``). ``identification_held_open``
-        # carries that flag, the withdrawal notice's variant (#2636), which
-        # the next prompt's readers also read. The turn's final recompute
-        # (#2636) re-derives it after every decider, so the cycle's record
-        # reads it agreeing with ``held_open_root_ids``; a replayed bundle's
-        # record reads it as that bundle left it, and a prompt folded after a
-        # pre-prompt hypothesis intent (retire or refute), which runs no
-        # recompute, can read it disagreeing.
-        pool_empty_reason=cause_pool_empty_reason(case, contested=contested),
+        # ``cause_pool_empty_reason`` is computed at the write: its
+        # IDENTIFICATION_CONTESTED verdict from ``contested`` above, its
+        # HELD_OPEN verdict from the fold's ``held_open``, which
+        # ``identification_held_open`` (the withdrawal notice's variant,
+        # #2636, which the next prompt's readers also read) carries too
+        # (#3053 S3d-5). So a fold that runs no recompute (a prompt folded
+        # after a pre-prompt retire or refute, a replayed bundle) reads both
+        # agreeing with ``held_open_root_ids``, whatever the stored flag says.
+        # ``cause_identification_leg`` still reads the recompute's flag, as
+        # the deciders do, so on such a fold the leg can disagree with
+        # ``identification_held_open``.
+        pool_empty_reason=cause_pool_empty_reason(
+            case, contested=contested, held_open=held_open
+        ),
         identification_leg=cause_identification_leg(case),
-        identification_held_open=bool(case.progress.cause_identification_held_open),
+        identification_held_open=held_open,
         recheck={
             e.evidence_id: why.reason if why is not None else RecheckReason.COUNTS
             for e, why in status

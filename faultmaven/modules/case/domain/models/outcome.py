@@ -269,11 +269,8 @@ class CauseOutcome(BaseModel):
         default=None,
         description=(
             "Why the confirmation pool is empty. IDENTIFICATION_CONTESTED "
-            "is read from ``contested_root_ids``' computation (#3053 S3d-3). "
-            "HELD_OPEN is the cause recompute's verdict, read from the "
-            "stored flag; ``held_open_root_ids`` is derived fresh at the "
-            "write, so after a pre-prompt hypothesis intent (retire or "
-            "refute) the two can disagree"
+            "is read from ``contested_root_ids``' computation (#3053 S3d-3), "
+            "HELD_OPEN from ``identification_held_open``'s (S3d-5)"
         ),
     )
     identification_leg: Optional[Literal["chain", "rcc", "working_conclusion"]] = Field(
@@ -286,12 +283,11 @@ class CauseOutcome(BaseModel):
     identification_held_open: bool = Field(
         default=False,
         description=(
-            "Identification is held open, as the cause recompute wrote it this "
-            "cycle (``progress.cause_identification_held_open``, #2036), like "
-            "``pool_empty_reason``. ``held_open_root_ids`` is derived fresh at "
-            "the write; the turn's final recompute (#2636) re-derives the "
-            "flags after every decider, so the cycle's record reads the three "
-            "together"
+            "Identification is held open (#2036): a root of "
+            "``held_open_root_ids`` stands and none is identified, derived "
+            "fresh at the write in the one computation ``pool_empty_reason``'s "
+            "HELD_OPEN reads (``identification_is_held_open``, #3053 S3d-5), "
+            "the one the cause recompute stores"
         ),
     )
     recheck: Dict[str, RecheckReason] = Field(

@@ -283,11 +283,13 @@ def test_the_withdrawal_variant_is_read_at_the_record():
     assert notices == oracle("withdrawn_once_the_cause_fell")
 
 
-def test_the_record_agrees_with_the_flag_its_readers_read():
-    """Review item 1: a held-open cause whose hypothesis a later step of the
-    cycle retires. No recompute has read the retirement, so the record's flag,
-    the pool's empty reason and the progress flag the next prompt reads agree,
-    and the withdrawal is the held-open variant."""
+def test_the_record_reads_the_held_open_roots_not_the_stale_flag():
+    """Review item 1, restated by #3053 S3d-5: a held-open cause whose
+    hypothesis a later step of the cycle retires. No recompute has read the
+    retirement, so the stored flag still says held open; the record derives
+    it fresh, so its flag and the pool's empty reason agree with its
+    held-open roots (none), and the withdrawal is the cause-fallen variant,
+    as when a recompute read the retirement."""
     from faultmaven.core.investigation.milestone_engine.stage_gates import (
         _withdraw_unlicensed_solution_offers,
     )
@@ -319,10 +321,11 @@ def test_the_record_agrees_with_the_flag_its_readers_read():
     hyp.state = HypothesisState.RETIRED
     notices = narrated(case, metadata)
     cause = case.progress.outcome.cause
-    assert case.progress.cause_identification_held_open is True
-    assert cause.pool_empty_reason == PoolEmptyReason.HELD_OPEN
-    assert cause.identification_held_open is True
-    assert notices == oracle("withdrawn_held_open_beside_a_retired_validated_root")
+    assert case.progress.cause_identification_held_open is True, "stale flag"
+    assert cause.held_open_root_ids == []
+    assert cause.pool_empty_reason != PoolEmptyReason.HELD_OPEN
+    assert cause.identification_held_open is False
+    assert notices == oracle("withdrawn_once_the_cause_fell")
 
 
 def test_a19_a_refusal_whose_hypothesis_a_later_step_retired():

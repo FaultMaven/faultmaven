@@ -22,6 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.core.investigation import outcome as outcome_module
+from faultmaven.core.investigation.causal_graph.projection import (
+    identification_is_held_open,
+)
 from faultmaven.core.investigation.causal_graph.pruning import attach_root
 from faultmaven.core.investigation.cause_assurance import (
     FIX_FAILED,
@@ -659,9 +662,12 @@ def _bare_case():
 
 def _fallen_case():
     """The identified root recorded as the cause, then fallen: no longer
-    validated, with no other cause standing."""
+    validated, with no other cause standing. Not validated, it holds no why
+    open (``held_open_root_ids``), so nothing holds identification open
+    (#3053 S3d-5: the fold derives it fresh)."""
     case, root, _hyp = _identified_case()
     root.metadata = {}
+    root.node_state = NodeState.INCONCLUSIVE
     return case, root
 
 
@@ -686,7 +692,30 @@ def _other_hypothesis(case):
 
 
 def _held_open(case):
-    case.progress.cause_identification_held_open = True
+    """A standing root its hypothesis marked not terminal (``root_terminal``
+    False: something will produce it again), refuted by nothing: its why is
+    open, so identification is held open while no root is identified
+    (#2036). The fold derives it fresh (#3053 S3d-5), so the stored flag is
+    not set: a recompute here would re-derive the case's other roots too."""
+    node = CausalNode(
+        node_id="cn_00000000a11e",
+        statement="a nightly job resets max_connections",
+        node_type=NodeType.ROOT,
+        generated_at_turn=3,
+        metadata={"root_terminal": False},
+    )
+    case.causal_nodes[node.node_id] = node
+    case.hypotheses["hyp_00000000a11e"] = Hypothesis(
+        hypothesis_id="hyp_00000000a11e",
+        statement="a nightly job resets max_connections",
+        category=HypothesisCategory.CONFIG,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="r",
+        root_node_id=node.node_id,
+        generated_at_turn=3,
+    )
+    assert identification_is_held_open(case), "premise: held open"
 
 
 def _contested(case):
