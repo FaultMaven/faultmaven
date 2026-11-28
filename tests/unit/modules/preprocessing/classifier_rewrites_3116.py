@@ -2,16 +2,20 @@
 
 ``DataClassifier.classify`` runs synchronously on the event loop over the first
 5,000 characters of an upload or a paste. Principle 14 lets it stay there only
-if its cost is linear in that sample. On ``main`` (``a2c02e8df``) eleven of its
-patterns rescanned a run from every position inside it: one long token (a
-base64 blob, a minified line, a hex dump) or a run of blank lines held the
-loop for up to 1.6 s. Each is rewritten to cost time linear in its input and
+if its cost is linear in that sample. On ``main`` (``a2c02e8df``) twelve of its
+patterns rescanned a run from every position inside it, or (iostat's) from
+every pair and triple of its header words: one long token (a base64 blob, a
+minified line, a hex dump) or a run of blank lines held the loop for up to
+1.6 s, a line of repeated iostat words for 4 s. Each is rewritten to cost time linear in its input and
 to answer as before: the same yes/no, or, for the prose pattern, the same
 ``findall`` count.
 
 ``REWRITES`` holds each pattern as ``main`` had it and as it is now, with the
-flags its site passes and the input bound it runs under (the email runs only
-behind the short-text gate's 1,500 characters).
+flags its site passes and the input bound it runs under. The rule path
+lowercases its sample after the cut, and ``İ`` lowercases to two code points,
+so its 5,000 characters reach 10,000 code points; the email runs only behind
+the short-text gate's 1,500 characters, so at most 3,000; the config hint reads
+its 5,000 characters as written.
 """
 
 from __future__ import annotations
@@ -23,7 +27,9 @@ from faultmaven.modules.preprocessing.classifier import DataClassifier
 
 M, I = re.MULTILINE, re.IGNORECASE
 SAMPLE = 5_000
-SHORT = DataClassifier._SHORT_TEXT_MAX_CHARS
+#: The bounds the patterns run under (see above).
+LOWERED = 2 * SAMPLE
+SHORT_LOWERED = 2 * DataClassifier._SHORT_TEXT_MAX_CHARS
 
 
 class Rewrite(NamedTuple):
@@ -50,7 +56,7 @@ REWRITES = {
         r"^\s*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+",
         r"^[^\S\n]*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+",
         M | I,
-        SAMPLE,
+        LOWERED,
         (NL, ("", "a 1 ")),
         ((("a", "1", ".", " ", "\t", "\n", "\r"), 7),),
     ),
@@ -58,7 +64,7 @@ REWRITES = {
         r"\w+\([^)]*\)\s+=\s+-?\d+",
         r"(?<![^)])(?>[^)]*?\w\()[^)]*+\)\s+=\s+-?\d+",
         M | I,
-        SAMPLE,
+        LOWERED,
         (("", "a("), ("", "a"), ("", "a() = ")),
         ((CALL, 7),),
     ),
@@ -66,7 +72,7 @@ REWRITES = {
         r"\w+\([^)]*\)\s+=\s+\w+",
         r"(?<![^)])(?>[^)]*?\w\()[^)]*+\)\s+=\s+\w+",
         M | I,
-        SAMPLE,
+        LOWERED,
         (("", "a("), ("", "1"), ("", "a() =")),
         ((CALL, 7),),
     ),
@@ -74,7 +80,7 @@ REWRITES = {
         r"[a-z_]+\s*[:=]",
         r"[a-z_]\s*[:=]",
         M,
-        SAMPLE,
+        SAMPLE,  # _validate_hint reads content[:5000], not lowercased
         (("", "a"), ("", "a "), ("", "_")),
         ((("a", "_", "A", " ", "\n", ":", "="), 7),),
     ),
@@ -82,7 +88,7 @@ REWRITES = {
         r'\w+{[\w="]+}',
         r'\w{[\w="]+}',
         M,
-        SAMPLE,
+        LOWERED,
         (("", "a_"), ("", "a{"), ("", 'a{"=')),
         ((("a", "{", "}", "=", '"', " ", "-"), 7),),
     ),
@@ -90,7 +96,7 @@ REWRITES = {
         r"^\s*(public|private|protected)\s+(class|interface|enum)",
         r"^[^\S\n]*(public|private|protected)\s+(class|interface|enum)",
         M,
-        SAMPLE,
+        LOWERED,
         (NL, ("", " \n")),
         ((("public", "class", " ", "\n", "\t", "\r", "x"), 7),),
     ),
@@ -98,7 +104,7 @@ REWRITES = {
         r"[A-Z][a-z]+\s+[a-z]+\s+[a-z]+",
         r"(?<![a-z])[A-Z][a-z]+\s+[a-z]+\s+[a-z]+",
         I,
-        SAMPLE,
+        LOWERED,
         (("", "a"), ("", "ab "), ("", "a\n")),
         (
             (("a", "b", " ", "\n", "1", "."), 8),
@@ -111,7 +117,7 @@ REWRITES = {
         r"\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b",
         r"(?<![\w._%+-])[.%+-]*+\w[\w._%+-]*+@[\w.-]+\.[A-Za-z]{2,}\b",
         0,
-        SHORT,
+        SHORT_LOWERED,
         (("", "a."), ("a@", "a."), ("", "a.a@"), ("", "_")),
         (
             (("a", "aa", ".", "%", "@", "_", "-"), 7),
@@ -122,15 +128,23 @@ REWRITES = {
         r'"operationName".*"spans":\s*\[',
         r'(?m)^(?>.*?"operationName").*"spans":\s*\[',
         I,
-        SAMPLE,
+        LOWERED,
         (("", '"operationname"'), NL),
         ((('"operationName"', '"spans":', "[", " ", "\n", "x", '"'), 7),),
+    ),
+    "iostat (COMMAND_OUTPUTS)": Rewrite(
+        r"Device.*tps.*kB_read/s.*kB_wrtn/s",
+        r"^(?>.*?Device)(?>.*?tps)(?>.*?kB_read/s).*kB_wrtn/s",
+        M | I,
+        LOWERED,
+        (("", "devicetps"), ("", "devicetpskb_read/s"), NL),
+        ((("Device", "tps", "kB_read/s", "kB_wrtn/s", " ", "\n", "\r"), 7),),
     ),
     "flame graph": Rewrite(
         r"[\w\.]+(?:;[\w\.]+)+\s+\d+",
         r"[\w.];[\w.]+\s+\d+",
         I,
-        SAMPLE,
+        LOWERED,
         (("", "a;"), ("", "a.;"), ("", "a"), ("", "a;a x")),
         ((("a", "1", ".", ";", " ", "\n"), 8),),
     ),
@@ -138,7 +152,7 @@ REWRITES = {
         r"\d+\s+calls?\s+in\s+[\d\.]+\s+seconds",
         r"\d\s+calls?\s+in\s+[\d\.]+\s+seconds",
         I,
-        SAMPLE,
+        LOWERED,
         (("", "1"), ("", "1 calls in ")),
         ((("1", ".", " ", "\n", "calls", " in ", "seconds"), 7),),
     ),

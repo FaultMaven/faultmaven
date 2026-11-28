@@ -58,14 +58,14 @@ def test_each_rewrite_is_linear_up_to_its_limit(name, shape):
 @pytest.mark.parametrize("name", REWRITES)
 def test_mains_form_is_super_linear_on_the_first_shape(name):
     """What "fails on ``main``" means for the pattern alone. The window tops
-    out at a quarter of the limit, where the quadratic already decides; one
-    step up if it does not."""
+    out at a sixteenth of the limit, where the quadratic already decides (and
+    iostat's quartic costs seconds above it); one step up if it does not."""
     rewrite = REWRITES[name]
     with pytest.raises(AssertionError, match="is the usual cause"):
         assert_linear_growth(
             answer(rewrite, rewrite.main),
             lambda n: payload(rewrite.shapes[0], n),
-            small=rewrite.limit // (4 * STEP**2),
+            small=max(rewrite.limit // (16 * STEP**2), 8),
             max_escalations=1,
             undecided_repeats=2,
             label=f"main's {name}",
@@ -85,9 +85,16 @@ _ENTRY = [
 ]
 
 
+@pytest.mark.performance
 @pytest.mark.parametrize("filename, source, shape", _ENTRY)
 def test_classify_is_linear_up_to_its_sample(filename, source, shape):
-    """Each read super-linear through ``main``'s classify (0.3-1.6 s at 4,992)."""
+    """Each read super-linear through ``main``'s classify (0.3-1.6 s at 4,992).
+
+    ``performance``: under coverage the tracer raises ``classify``'s fixed
+    cost past what the window's top size can show, and the call cannot decide.
+    ``benchmarks.yml`` runs it with ``--no-cov``; the per-pattern tests above
+    stay in the required jobs.
+    """
     dc = DataClassifier()
     assert_linear_growth(
         lambda text: dc.classify(filename, text, source_metadata=source),
@@ -127,25 +134,25 @@ class _Patterns:
         return self._run(re.finditer, pattern, string, flags)
 
 
-_TEST_DIR = pathlib.Path(__file__).parent
-#: The classifier's test modules; every string literal in them is an input.
-_CLASSIFIER_TESTS = [
-    "test_classification_failed_preview.py",
-    "test_classifier_fallback.py",
-    "test_classifier_page_capture.py",
-    "test_classifier_short_text_bounds.py",
-    "test_classifier_suggested_types.py",
-    "test_classify_and_extract.py",
-    "test_paste_shapes_2361.py",
-    "test_short_uncertain_upload_passthrough_2355.py",
-]
+_TESTS = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _classifier_tests() -> list[pathlib.Path]:
+    """Every test module that uses ``DataClassifier``: its literals are inputs."""
+    return [
+        path
+        for path in sorted(_TESTS.rglob("*.py"))
+        if "DataClassifier" in path.read_text(encoding="utf-8")
+    ]
 
 
 def _fixture_texts() -> list[str]:
+    modules = _classifier_tests()
+    assert len(modules) > 15, "the classifier's test modules were not found"
     texts = {
         node.value
-        for name in _CLASSIFIER_TESTS
-        for node in ast.walk(ast.parse((_TEST_DIR / name).read_text()))
+        for path in modules
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     texts |= {payload(shape, 400) for shape in _STRONG}

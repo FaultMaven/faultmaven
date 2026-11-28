@@ -18,14 +18,19 @@ here via source_metadata and handled with URL-based classification first,
 then source_type-aware confidence boosting.
 
 It runs on the event loop, so every pattern here costs time linear in the
-5,000-character sample (#3116 B2, Principle 14): none rescans a run from each
-position inside it. A leading run is one character where only a yes/no is
-read (``\\d\\s+calls?`` matches exactly where ``\\d+\\s+calls?`` does); a
-lookbehind starts a match only where its run starts, where the run is read
-(the email) or matches are counted (the prose pattern); ``^[^\\S\\n]*`` keeps
-a line's indent off the newlines after it; a ``(``-led call, the flame graph's
-chain and the trace's ``operationName`` are each tried once per ``)``, ``;``
-and line. Each answers as its earlier form did.
+sample (#3116 B2, Principle 14): the first 5,000 characters, up to 10,000 code
+points once lowercased (``İ`` lowers to two). No pattern rescans a run from
+each position inside it, except the key-value and numeric-column patterns'
+``(?m)^\\s*`` in ``_assess_short_text_ambiguity``, which rescan a run of blank
+lines but run only behind its gate (25 lines, 1,500 characters). A leading run
+is one character where only a yes/no is read (``\\d\\s+calls?`` matches exactly
+where ``\\d+\\s+calls?`` does); a lookbehind starts a match only where its run
+starts, where the run is read (the email) or matches are counted (the prose
+pattern); ``^[^\\S\\n]*`` keeps a line's indent off the newlines after it; a
+``(``-led call, the flame graph's chain and the trace's ``operationName`` are
+each tried once per ``)``, ``;`` and line; iostat's header words are each
+found once per line, the first of each in turn. Each answers as its earlier
+form did.
 
 Design Reference:
     docs/architecture/data-processing/data-classification-strategy.md
@@ -219,7 +224,7 @@ COMMAND_OUTPUTS: dict = {
         "type": DataType.COMMAND_OUTPUT,
         "patterns": [
             r"avg-cpu:\s+%user\s+%nice\s+%system",
-            r"Device.*tps.*kB_read/s.*kB_wrtn/s",
+            r"^(?>.*?Device)(?>.*?tps)(?>.*?kB_read/s).*kB_wrtn/s",
         ],
         "confidence": 0.95,
     },
