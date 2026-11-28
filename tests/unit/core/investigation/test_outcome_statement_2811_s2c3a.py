@@ -93,6 +93,7 @@ from faultmaven.modules.case.contracts import (
     ConfidenceLevel,
     EvidenceCategory,
     InvestigationActionType,
+    NodeState,
     PoolEmptyReason,
     ProblemStatus,
     ProposedAction,
@@ -537,6 +538,9 @@ def test_a_hold_ending_on_a_chain_leg_states_it_and_a_backstop_does_not():
         OutcomeChange.CAUSE_IDENTIFIED,
     ]
     backstop = _unidentified(case)
+    # Not validated, its root holds no why open, so the conclusion backstop
+    # stands (#3053 S3d-5: the fold derives the hold fresh).
+    backstop.causal_nodes[_ROOT_ID].node_state = NodeState.INCONCLUSIVE
     _rcc(backstop)
     now = _record(backstop, prior)
     assert now.cause.identification_leg == "rcc"

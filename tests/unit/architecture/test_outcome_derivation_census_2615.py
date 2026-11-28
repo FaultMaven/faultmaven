@@ -539,7 +539,8 @@ DERIVATION_SITES: dict[tuple[str, str], dict[str, int]] = {
     (_OUTCOME, "_unbound_rechecks"): {"unbound_post_fix_rows": 1},
     (_OUTCOME, "closure_outcome"): {"derive_closure_reason": 1},
     # #3053 S3d-5: the fold's held-open value, seeded for every
-    # ``cause_recheck_status`` it reaches and passed to ``_cause``.
+    # ``cause_recheck_status`` and ``cause_identification_leg`` it reaches and
+    # passed to ``_cause``.
     (_OUTCOME, "compute_case_outcome"): {
         "cause_recheck_status": 1,
         "fix_windows": 1,
@@ -724,12 +725,13 @@ MITIGATION_FLAG_INPUTS: dict[tuple[str, str], str] = {
 HELD_OPEN_FLAG_INPUTS: dict[tuple[str, str], str] = {
     (_CA, "cause_recheck_status"): "outside a fold: in-cycle deciders read the "
     "last recompute's flag; the report reads a stored case. Inside a fold it "
-    "reads the fold's seeded value (seed_identification_held_open)",
+    "reads the fold's seeded value (seeded_identification_held_open)",
     (_CA, "confirming_polarity_rows"): "its one caller is the report, on a "
     "stored case the last recompute wrote",
-    (_INV + "cause_identification.py", "cause_identification_leg"): "it reads "
-    "three recompute-written facts together; switching one gives a mixed read "
-    "(the record's identification_leg keeps it, a stated residual)",
+    (_INV + "cause_identification.py", "cause_identification_leg"): "outside a "
+    "fold: the in-cycle deciders (M5, readiness, the offer lapse) read the last "
+    "recompute's flag. Inside a fold it reads the fold's seeded value "
+    "(seeded_identification_held_open)",
     (_ME + "response_application.py", "ResponseApplier._apply_investigation_updates"): (
         "an in-cycle reader of the last recompute's flag, before the turn's "
         "recompute; switching it changes in-cycle text"

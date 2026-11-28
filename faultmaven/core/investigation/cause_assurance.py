@@ -33,6 +33,10 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
+from faultmaven.core.investigation.cause_identification import (
+    HELD_OPEN_SEED,
+    seeded_identification_held_open,
+)
 from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_bearing_rejected_total,
@@ -817,15 +821,16 @@ def _outcome_computation() -> Iterator[None]:
     ``fix_windows`` and ``_cause_pool`` build once per case (#2657), which
     holds because the computation does not mutate the case, and
     ``carried_fix_windows`` returns the list it folded
-    (``seed_carried_windows``, #3046 S3a-2), and ``cause_recheck_status``
-    the held-open value it folds (``seed_identification_held_open``, #3053
-    S3d-5). Reset in
-    ``finally``, so a computation that raises leaves no memo for a decider,
-    which builds as it always did."""
+    (``seed_carried_windows``, #3046 S3a-2), and the held-open readers the
+    value it folds (``cause_identification.HELD_OPEN_SEED``, #3053 S3d-5).
+    Reset in ``finally``, so a computation that raises leaves no memo for a
+    decider, which builds as it always did."""
     token = _COMPUTATION.set({})
+    seeds = HELD_OPEN_SEED.set({})
     try:
         yield
     finally:
+        HELD_OPEN_SEED.reset(seeds)
         _COMPUTATION.reset(token)
 
 
@@ -1303,18 +1308,14 @@ def cause_recheck_status(
     a re-check already on record (#1906 D7). A row bound only to a fix's
     window is listed with ``uncited_recheck_why`` (#2557). Whether
     identification is held open: inside a computation of the outcome, the
-    value that computation folds (``seed_identification_held_open``, #3053
+    value that computation folds (``seeded_identification_held_open``, #3053
     S3d-5); outside one, the cause recompute's stored flag, which the
     in-cycle deciders read as the last recompute left it and the report
     reads on a stored case."""
     subjects = subject_index(case) if subjects is None else subjects
-    memo = _COMPUTATION.get()
-    seeded = memo and memo.get(_memo_key(_HELD_OPEN_MEMO, case))
-    held_open = (
-        seeded[1]
-        if seeded
-        else getattr(case.progress, "cause_identification_held_open", False)
-    )
+    held_open = seeded_identification_held_open(case)
+    if held_open is None:
+        held_open = getattr(case.progress, "cause_identification_held_open", False)
     disconfirmation_ids = _disconfirmation_row_ids(case)
     last_disconfirm = latest_disconfirmation_turn(case)
     posited = _cause_posited_turn(case)
@@ -2142,9 +2143,6 @@ def _first_posited_turn(case: "Case", subjects, row, roots=None) -> int | None:
 #: The memo key of the carried windows a computation of the outcome seeds
 #: (``seed_carried_windows``).
 _CARRIED_MEMO = "carried_fix_windows"
-#: The memo key of whether identification is held open, as a computation of
-#: the outcome folds it (``seed_identification_held_open``).
-_HELD_OPEN_MEMO = "identification_held_open"
 
 
 def carried_fix_windows(
@@ -2176,17 +2174,6 @@ def seed_carried_windows(case: "Case", windows: list[FixWindow]) -> None:
     memo = _COMPUTATION.get()
     if memo is not None:
         memo[_memo_key(_CARRIED_MEMO, case)] = (case, windows)
-
-
-def seed_identification_held_open(case: "Case", held_open: bool) -> None:
-    """Hold ``held_open`` as whether the case's identification is held open
-    for the rest of the computation of the outcome running
-    (``_outcome_computation``): ``cause_recheck_status`` reads it there in
-    place of the stored flag, so every section of the record reads the
-    fold's one derivation (#3053 S3d-5)."""
-    memo = _COMPUTATION.get()
-    if memo is not None:
-        memo[_memo_key(_HELD_OPEN_MEMO, case)] = (case, held_open)
 
 
 def carry_verdicts(

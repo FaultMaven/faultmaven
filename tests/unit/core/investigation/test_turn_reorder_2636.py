@@ -289,7 +289,12 @@ def test_the_record_reads_the_held_open_roots_not_the_stale_flag():
     retirement, so the stored flag still says held open; the record derives
     it fresh, so its flag and the pool's empty reason agree with its
     held-open roots (none), and the withdrawal is the cause-fallen variant,
-    as when a recompute read the retirement."""
+    as when a recompute read the retirement. This fixture's CYCLE write
+    follows no recompute, a state no production cycle reaches: every
+    INVESTIGATING cycle runs step 1's recompute and, gated on it, the final
+    one (``turn_application.py:417``); a terminal case leaves the turn before
+    any hypothesis intent (``engine.py:770``); an INQUIRY case holds no
+    hypotheses. It pins the fold alone."""
     from faultmaven.core.investigation.milestone_engine.stage_gates import (
         _withdraw_unlicensed_solution_offers,
     )

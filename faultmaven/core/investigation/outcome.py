@@ -96,13 +96,15 @@ from faultmaven.core.investigation.cause_assurance import (
     off_cause_attempt,
     pending_symptom_check,
     seed_carried_windows,
-    seed_identification_held_open,
     subject_index,
     symptom_elimination_rows,
     unbound_post_fix_rows,
     uncited_recheck_why,
 )
-from faultmaven.core.investigation.cause_identification import cause_identification_leg
+from faultmaven.core.investigation.cause_identification import (
+    cause_identification_leg,
+    seed_identification_held_open,
+)
 from faultmaven.core.investigation.lifecycle_metrics import (
     case_outcome_conflicts_total,
     case_outcome_write_failures_total,
@@ -368,7 +370,8 @@ def compute_case_outcome(
     with _outcome_computation():
         # One derivation of whether identification is held open (#3053
         # S3d-5): the cause section's verdict and flag, and every
-        # ``cause_recheck_status`` the fold reaches, read it.
+        # ``cause_recheck_status`` and ``cause_identification_leg`` the fold
+        # reaches, read it.
         held_open = identification_is_held_open(case)
         seed_identification_held_open(case, held_open)
         at = WritePoint(at)
@@ -521,10 +524,8 @@ def _cause(
         # #2636, which the next prompt's readers also read) carries too
         # (#3053 S3d-5). So a fold that runs no recompute (a prompt folded
         # after a pre-prompt retire or refute, a replayed bundle) reads both
-        # agreeing with ``held_open_root_ids``, whatever the stored flag says.
-        # ``cause_identification_leg`` still reads the recompute's flag, as
-        # the deciders do, so on such a fold the leg can disagree with
-        # ``identification_held_open``.
+        # agreeing with ``held_open_root_ids``, whatever the stored flag says,
+        # and so does ``identification_leg`` (the fold's seed).
         pool_empty_reason=cause_pool_empty_reason(
             case, contested=contested, held_open=held_open
         ),
