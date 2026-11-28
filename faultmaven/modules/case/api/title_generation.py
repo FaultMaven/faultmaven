@@ -692,14 +692,13 @@ def _type_marker(match: re.Match) -> str:
     return f"[{match.group(0)[1:-1].rsplit('_', 1)[0].lower()}]"
 
 
-def _cut_at_whitespace(text: str, limit: int) -> str:
-    """``text`` within ``limit`` characters, cut back to its last whitespace
-    (a hard cut when the kept part holds none)."""
-    if len(text) <= limit:
-        return text
-    kept = text[:limit]
-    end = max(map(kept.rfind, " \t\n\r"))
-    return kept[:end] if end > 0 else kept
+def _before_last_whitespace(text: str) -> str:
+    """``text`` up to its last whitespace (``str.isspace``), the partial token
+    after it dropped; ``""`` when it holds none."""
+    for end in range(len(text) - 1, -1, -1):
+        if text[end].isspace():
+            return text[:end]
+    return ""
 
 
 def _redact_title_source(text: Optional[str], sanitizer) -> str:
@@ -707,11 +706,14 @@ def _redact_title_source(text: Optional[str], sanitizer) -> str:
     RAW source, placeholders still in, within the source's limits (#3135).
 
     A source of at most ``TITLE_SOURCE_MAX_CHARS`` is redacted whole. A longer
-    one is redacted twice, cut at whitespace to ``TITLE_SOURCE_MAX_CHARS`` and
-    to ``TITLE_SOURCE_REDACT_WINDOW``, and only the prefix the two agree on is
-    kept, cut back to a whitespace where they part. A span is detectable only
-    whole (#1967): one the shorter cut splits is whole in the longer read, so
-    the two part at its start and no fragment of it is kept.
+    one is redacted twice: its first ``TITLE_SOURCE_MAX_CHARS`` characters, a
+    token the cut splits dropped, and its first ``TITLE_SOURCE_REDACT_WINDOW``,
+    a hard cut. Only the prefix the two agree on is kept, cut back to a
+    whitespace where they part. A span is detectable only whole (#1967): one
+    the shorter read splits is whole in the longer read when it ends within the
+    window, so the two part at its start and no fragment of it is kept. The
+    cuts drop a split token because the step-3 patterns (email, phone) see
+    only the text kept.
     """
     raw = (text or "").strip()
     if not raw:
@@ -730,14 +732,12 @@ def _redact_title_source(text: Optional[str], sanitizer) -> str:
 
     if len(raw) <= TITLE_SOURCE_MAX_CHARS:
         return redact(raw)
-    short = redact(_cut_at_whitespace(raw, TITLE_SOURCE_MAX_CHARS))
-    agreed = os.path.commonprefix(
-        [short, redact(_cut_at_whitespace(raw, TITLE_SOURCE_REDACT_WINDOW))]
-    )
-    if len(agreed) == len(short):
-        return short
-    end = max(map(agreed.rfind, " \t\n\r"))
-    return agreed[:end] if end > 0 else ""
+    head = raw[:TITLE_SOURCE_MAX_CHARS]
+    if not raw[TITLE_SOURCE_MAX_CHARS].isspace():
+        head = _before_last_whitespace(head)
+    short = redact(head) if head else ""
+    agreed = os.path.commonprefix([short, redact(raw[:TITLE_SOURCE_REDACT_WINDOW])])
+    return short if agreed == short else _before_last_whitespace(agreed)
 
 
 def _scrub_title_source(text: Optional[str], sanitizer) -> str:
@@ -890,10 +890,7 @@ def _extract_user_signals_from_context(context_text: str, sanitizer) -> str:
             # Extract meaningful description as user content
             user_content = line.split("Description:", 1)[-1].strip()
 
-        # Validate and dedupe user content, each message within the window the
-        # scrub reads (#3135)
-        if user_content:
-            user_content = _cut_at_whitespace(user_content, TITLE_SOURCE_REDACT_WINDOW)
+        # Validate and dedupe user content
         if (
             user_content
             and len(user_content.split())
@@ -1123,9 +1120,11 @@ async def _generate_and_persist_title(
     # regardless of how little the user typed. Otherwise require
     # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file summaries +
     # chat) so we don't ask the LLM to title an empty case. This is the *only*
-    # gate; see the constants block for why turn count is no longer one.
+    # gate; see the constants block for why turn count is no longer one. An
+    # empty substance refuses whatever the statement says: the prompt would
+    # otherwise be built from the raw context (#3135).
     has_problem_statement = _has_problem_statement(case, sanitizer)
-    if (
+    if not user_message_content or (
         not has_problem_statement
         and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
     ):
