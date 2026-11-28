@@ -808,11 +808,12 @@ class TestLinkReportsTheWriteItMade:
     success.
 
     `get_or_create_case_for_session` reads `session:{id}:current_case_id` to
-    decide which case a session is working. The store write used to be a
+    decide which case a session is working (nothing in production calls it
+    today; a turn names its case). The store write used to be a
     `logger.warning` inside its own try/except followed by an unconditional
-    `return True`, so a refused write answered "Case resumed in session" and the
-    caller's next turn opened a brand-new case — the mirror of the 404-on-success
-    bug this lane fixed.
+    `return True`, so a refused write answered "Case resumed in session" for a
+    link that was never made — the mirror of the 404-on-success bug this lane
+    fixed.
     """
 
     @pytest.mark.asyncio
