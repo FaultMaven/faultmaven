@@ -12,7 +12,9 @@ reaches a title (#1967). A case whose scrubbed substance is empty is refused,
 so no prompt is built from its raw context.
 
 ``_sanitize_title_content``'s email pattern no longer rescans a dotted run from
-every position in it, and its class no longer admits a literal ``|``.
+every position in it, and its class no longer admits a literal ``|``. Its
+parenthesized-phone pattern no longer needs a word character before the ``(``.
+Both are intended differences from ``main``.
 """
 
 from __future__ import annotations
