@@ -493,32 +493,40 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             if not analyzer_results:
                 return text
 
-            # Step 2: Build indexed replacements from analyzer results.
-            # Sort by start position descending so we can replace right-to-left
-            # without invalidating earlier offsets.
-            sorted_results = sorted(
-                analyzer_results, key=lambda r: r["start"], reverse=True
+            # Step 2: one pass over the spans, linear in the text and their
+            # count (#3116 B3). By start, the longest first at an equal start;
+            # a span overlapping the region before it joins that region, typed
+            # by the region's first span, and the region's whole text is its
+            # registry value. A span missing a key or with a non-integer offset
+            # is the analyzer's error (below); an offset outside the text is
+            # clamped to it, and an empty span replaces nothing. Regions are
+            # registered in descending start order, as the per-span splice did.
+            spans = sorted(
+                (
+                    (max(0, r["start"]), min(r["end"], len(text)), r["entity_type"])
+                    for r in analyzer_results
+                ),
+                key=lambda span: (span[0], -span[1]),
             )
-
-            result = text
-            for entity in sorted_results:
-                start = entity["start"]
-                end = entity["end"]
-                entity_type = entity["entity_type"]
-                original_value = text[start:end]
-
-                # Get or create hashed placeholder via shared registry
-                if entity_type not in entity_registry:
-                    entity_registry[entity_type] = {}
-                type_map = entity_registry[entity_type]
-                if original_value not in type_map:
-                    type_map[original_value] = self._hashed_placeholder(
-                        entity_type, original_value
-                    )
-
-                result = result[:start] + type_map[original_value] + result[end:]
-
-            return result
+            regions: List[List[Any]] = []
+            for start, end, entity_type in spans:
+                if regions and start < regions[-1][1]:
+                    regions[-1][1] = max(regions[-1][1], end)
+                elif start < end:
+                    regions.append([start, end, entity_type])
+            for region in reversed(regions):
+                start, end, entity_type = region
+                value = text[start:end]
+                type_map = entity_registry.setdefault(entity_type, {})
+                if value not in type_map:
+                    type_map[value] = self._hashed_placeholder(entity_type, value)
+                region.append(type_map[value])
+            pieces, position = [], 0
+            for start, end, _entity_type, placeholder in regions:
+                pieces += (text[position:start], placeholder)
+                position = end
+            pieces.append(text[position:])
+            return "".join(pieces)
 
         except Exception as e:
             self.logger.warning(f"Presidio K8s service error: {exception_log_name(e)}")
