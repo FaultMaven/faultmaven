@@ -1,11 +1,11 @@
 """A rendered log line has a declared limit, ``LOG_LINE_MAX_CHARS`` (#3116 B3).
 
 Principle 14 lets ``redact_log_line`` run inline on every record only under a
-declared input limit and a growth test over it. A line over the limit is never
-redacted or written: a replacement record (its kept keys cut, ``log_line_cut``,
-``log_line_chars``) is rendered by the same renderer, then redacted, so no
-text past a cut reaches the output and a JSON line stays JSON. A line at or
-under the limit renders as on ``main``.
+declared input limit and a growth test over it. A record rendered over the
+limit is never redacted or written: a replacement record (its kept keys cut,
+``log_line_cut``, ``log_line_chars``) is rendered by the same renderer, then
+redacted, so no text past a cut reaches the output and a JSON line stays JSON.
+A line at or under the limit renders as on ``main``.
 """
 
 from __future__ import annotations
@@ -175,6 +175,55 @@ def test_a_deep_recursion_keeps_bounded_frames(source):
     assert len(console) <= LOG_LINE_MAX_CHARS
 
 
+NOT_TEXT = {
+    "nested header pair": (
+        {"value": "Bearer SECRETX", "name": "Authorization"},
+        "dict",
+    ),
+    "exception in a list": ([ValueError("EXCSECRET")], "list"),
+}
+
+
+@pytest.mark.parametrize("value, kind", NOT_TEXT.values(), ids=NOT_TEXT.keys())
+@pytest.mark.parametrize("source", SOURCES)
+@pytest.mark.parametrize("mode", MODES)
+def test_a_kept_value_that_is_not_text_is_its_type_name(mode, source, value, kind):
+    """Its repr would carry what the renderer's own form redacts or names by
+    class: a value-first header pair, an exception's message."""
+    line = _format(mode, _record(source, "x", request_id=value, detail=FILLER))
+
+    assert "SECRETX" not in line and "EXCSECRET" not in line
+    assert _fields(mode, line)["request_id"] == kind
+
+
+#: A caller's frames: a credential header, then deeper-indented lines that are
+#: its value, which reach past the 4,096-character tail.
+HEADER_FRAMES = "RuntimeError:\n  Authorization:\n" + "      tok FRAMESECRET\n" * 3500
+
+
+@pytest.mark.parametrize("source", SOURCES)
+@pytest.mark.parametrize("mode", MODES)
+def test_the_frames_are_redacted_before_their_tail_is_taken(mode, source):
+    line = _format(mode, _record(source, "x", frames=HEADER_FRAMES))
+
+    assert "log_line_cut" in line and "RuntimeError:" in line
+    assert "FRAMESECRET" not in line
+
+
+@pytest.mark.parametrize("source", SOURCES)
+def test_console_keeps_the_exceptions_header_after_stack_info(source):
+    """``stack_info`` comes first in the console's ``stack``; the exception's
+    class header is kept with it."""
+    record = _record(source, "boom", _recursion(), stack_info=True)
+    if source == "stdlib":
+        record.stack_info = "Stack (most recent call last):"
+
+    line = _format("console", record)
+
+    assert "\nStack (most recent call last):\nRecursionError:\n" in line
+    assert len(line) <= LOG_LINE_MAX_CHARS
+
+
 ASTRAL = "\U0001f600" * 300
 QUERIES = "https://h.example/?a=1&b=2 " * 12 + "://? " * 10
 
@@ -261,24 +310,38 @@ STEP = 8
 SMALL = LOG_LINE_MAX_CHARS // STEP**2
 
 
+def _runs(unit: str, n: int) -> str:
+    return (unit * (n // len(unit) + 1))[:n]
+
+
+GROWTH = {
+    "urls": lambda n: _runs("see https://h.example/p?q=1 ", n),
+    "headers": lambda n: _runs("Authorization: Bearer x\n", n),
+    "colons": lambda n: _runs(":", n),
+    "separators": lambda n: _runs("a://", n),
+    "objects": lambda n: _runs('{"event": "cookie: x", "k": "https://h/?a=1"} ', n),
+    # One JSON object, so the decoded path runs, on a value that grows.
+    "a json line": lambda n: json.dumps(
+        {"event": _runs("cookie: x, https://h/?a=1 ", n), "level": "info"}
+    ),
+}
+
+
 @pytest.mark.performance
-@pytest.mark.parametrize(
-    "unit",
-    [
-        "see https://h.example/p?q=1 ",
-        "Authorization: Bearer x\n",
-        ":",
-        "a://",
-        '{"event": "cookie: x", "k": "https://h/?a=1"} ',
-    ],
-)
-def test_redact_log_line_is_linear_up_to_the_limit(unit):
+@pytest.mark.parametrize("arm", ["str", "bytes"])
+@pytest.mark.parametrize("payload_at", GROWTH.values(), ids=GROWTH.keys())
+def test_redact_log_line_is_linear_up_to_the_limit(payload_at, arm):
+    by_arm = {
+        "str": (redact_log_line, payload_at),
+        "bytes": (redact_log_line_bytes, lambda n: payload_at(n).encode()),
+    }
+    fn, payload = by_arm[arm]
     assert_linear_growth(
-        redact_log_line,
-        lambda n: (unit * (n // len(unit) + 1))[:n],
+        fn,
+        payload,
         small=SMALL,
         step=STEP,
         max_escalations=0,
         undecided_repeats=2,
-        label=f"redact_log_line over {unit!r} runs",
+        label=f"the {arm} arm",
     )

@@ -191,12 +191,22 @@ def test_an_offset_outside_the_text_is_clamped_and_an_empty_span_skipped():
     assert set(registry) == {"PERSON", "X"}
 
 
+MALFORMED = {
+    "missing key": {"start": 3, "entity_type": "PERSON"},
+    "bool offset": _span(True, 4),
+    "bool end": _span(1, True),
+    "float offset": _span(1.0, 4),
+}
+
+
+@pytest.mark.parametrize("bad", MALFORMED.values(), ids=MALFORMED.keys())
 @pytest.mark.parametrize("fail_open", [True, False])
-def test_a_span_missing_a_key_is_the_analyzers_error(fail_open):
-    """Fail-open passes the text on unredacted by Presidio; fail-closed
-    refuses (the posture's existing behaviour)."""
+def test_a_malformed_span_is_the_analyzers_error(fail_open, bad):
+    """A missing key, or an offset that is not an int. Fail-open passes the
+    text on unredacted by Presidio; fail-closed refuses (the posture's
+    existing behaviour)."""
     sanitizer = _sanitizer(fail_open=fail_open)
-    spans = [_span(0, 2), {"start": 3, "entity_type": "PERSON"}]
+    spans = [_span(0, 2), bad]
     if fail_open:
         assert _apply(sanitizer, "abcdef", spans)[0] == "abcdef"
     else:

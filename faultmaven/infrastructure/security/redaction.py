@@ -497,16 +497,19 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # count (#3116 B3). By start, the longest first at an equal start;
             # a span overlapping the region before it joins that region, typed
             # by the region's first span, and the region's whole text is its
-            # registry value. A span missing a key or with a non-integer offset
-            # is the analyzer's error (below); an offset outside the text is
-            # clamped to it, and an empty span replaces nothing. Regions are
-            # registered in descending start order, as the per-span splice did.
+            # registry value. A span missing a key, or with an offset that is
+            # not an int (a float or a bool included), is the analyzer's error
+            # (below); an offset outside the text is clamped to it, and an
+            # empty span replaces nothing. Regions are registered in
+            # descending start order, as the per-span splice did.
+            def clamped(r: Dict[str, Any]) -> tuple:
+                start, end = r["start"], r["end"]
+                if type(start) is not int or type(end) is not int:
+                    raise TypeError("a Presidio span offset is not an int")
+                return max(0, start), min(end, len(text)), r["entity_type"]
+
             spans = sorted(
-                (
-                    (max(0, r["start"]), min(r["end"], len(text)), r["entity_type"])
-                    for r in analyzer_results
-                ),
-                key=lambda span: (span[0], -span[1]),
+                map(clamped, analyzer_results), key=lambda span: (span[0], -span[1])
             )
             regions: List[List[Any]] = []
             for start, end, entity_type in spans:

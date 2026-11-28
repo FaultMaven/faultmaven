@@ -4,8 +4,8 @@
 stored structural index of at most ``MAX_STORED_EXTRACT_CHARS``. Its encodes
 are native code that releases the interpreter lock; the split around them
 holds it, so Principle 14 asks for a growth test over that limit. Measured
-before this test, each shape grew about 4x per 4x, at worst 0.66 s at 64 KiB
-(``ab\\n`` runs), with the event loop's lag 6-12 ms.
+before this test, each shape grew about 4x per 4x, at most about 0.9 s a call
+at 64 KiB (``ab\\n`` runs), with the event loop's lag 6-12 ms.
 """
 
 from __future__ import annotations
