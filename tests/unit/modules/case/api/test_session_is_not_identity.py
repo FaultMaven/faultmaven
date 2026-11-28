@@ -288,8 +288,9 @@ async def test_every_session_addressed_case_route_refuses_a_foreign_session(
 
     Both of these routes write ``session:{id}:current_case_id``, so an
     authenticated caller naming somebody else's session retargets that session
-    at a case of the caller's choosing — the owner's next turn then lands in
-    the caller's case or abandons their own. The case service here refuses
+    at a case of the caller's choosing — a write to someone else's session
+    state, refused for what it is (no production path reads the pointer,
+    #3131). The case service here refuses
     nothing, so a route that answers 2xx has no session gate at all.
     """
     probe = FOREIGN_SESSION_PROBES[(method, path)]

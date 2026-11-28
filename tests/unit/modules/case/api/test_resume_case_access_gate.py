@@ -262,8 +262,9 @@ async def test_refuses_a_session_that_is_not_the_callers(
 ):
     """The half the service cannot see.
 
-    Naming another user's session retargets their current-case pointer; their
-    next turn then lands in the caller's case or abandons their own.
+    Naming another user's session retargets their current-case pointer: a
+    write to someone else's session state, refused for what it is (no
+    production path reads the pointer, #3131).
     """
     service = _make_case_service(owner_or_shared_case_service)
     app = build_app(session=_session(user_id="somebody-else"), case_service=service)
