@@ -116,16 +116,16 @@ TIER1_OUTPUT_MIB_PER_MB = 6
 #: ``SEVERITY_WEIGHTS`` (``logs_extractor.py:91``), ``top``'s breakdown at 4
 #: keys (``command_output_extractor.py:165``), and names joined from 10 at most
 #: (``config_extractor.py:285``, ``metrics_extractor.py:191``,
-#: ``source_code_extractor.py:177``). Stated exceptions, uncapped and not
-#: assumed: ``exception_types`` (``error_report_extractor.py:117``), iostat's
+#: ``source_code_extractor.py:177``). Three are bounded only by the output
+#: limit: ``exception_types`` (``error_report_extractor.py:117``), iostat's
 #: device lists (``command_output_extractor.py:928-930``) and the metrics
-#: ``anomalies``, 10 per metric (``metrics_extractor.py:194``, ``:735``). A
+#: ``anomalies``, 10 per metric (``metrics_extractor.py:194``, ``:735``); the
+#: densest such answers measured hold at most 7.1 a byte (#3127), within it. A
 #: lone surrogate costs the reader up to 8 (``PHASED_ANSWER_HOLD``), within it. An
 #: answer held after its slot's release is outside the term (#3128): Phase 2's
 #: retry keeps the first while another slot runs
 #: (``_dispatch_with_optional_retry``), and ``_cap_stored_extract`` parses one
-#: with no slot held. An answer ``extraction_worker`` cannot write is outside
-#: it.
+#: with no slot held. An answer ``extraction_worker`` cannot write is outside it.
 TIER1_ANSWER_HOLD = 12
 
 #: The worker module. Always this value: tests point it at one of their own.

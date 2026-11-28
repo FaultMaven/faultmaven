@@ -269,7 +269,7 @@ async def _frames(
 #: (``_resolve_evidence_content``); its invalid-pattern message, ``re``'s error
 #: text (``search_file_worker._compile``), can carry raw characters of the
 #: pattern only in a fragment that does not grow with the pattern; a quote that
-#: grows with it, a group name, is ``repr``-escaped, so ASCII. A token count's
+#: grows with it, a group name, is ``repr``-escaped: no lone surrogate. A token count's
 #: answer is two integers. Callers that parse the parts add theirs
 #: (``*_ANSWER_HOLD``); an answer the worker's code cannot write is its defect,
 #: outside these. The widths are CPython's, measured on 3.11.15 (the image's):
