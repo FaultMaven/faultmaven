@@ -31,7 +31,9 @@ Module level is ``<module>``. Three tables:
 * ``FIELD_READS``: every attribute Load of a field in ``FIELDS``:
   ``completed_milestones``, ``solution_verified``, its alias property
   ``resolution_complete`` (no reader today), a mitigation's ``verified`` and
-  ``closure_reason``. ``verified`` has no receiver heuristic: of the 11
+  ``closure_reason`` and ``cause_identification_held_open`` (#3053 S3d-5:
+  the cause recompute's stored held-open flag). ``verified`` has no
+  receiver heuristic: of the 11
   reads today, 10 are the stored ``MitigationRecord.verified`` and one the
   record's ``MitigationOutcome.verified``, and a future reader of another
   ``verified`` gets a row with its reason. Two declared tables classify
@@ -241,6 +243,9 @@ FIELDS: dict[str, tuple[str, str]] = {
     "resolution_complete": (_PROGRESS, "InvestigationProgress"),
     "verified": (_PROGRESS, "MitigationRecord"),
     "closure_reason": (_CASE + "domain/models/case.py", "Case"),
+    # #3053 S3d-5 (pin 3 as ruled 2026-11-28): the cause recompute's stored
+    # held-open flag.
+    "cause_identification_held_open": (_PROGRESS, "InvestigationProgress"),
 }
 
 #: The progress inputs the record reads from (``problem.status``,
@@ -642,6 +647,24 @@ FIELD_READS: dict[tuple[str, str], dict[str, int]] = {
     # The report, by ``getattr(case, "closure_reason", None)``.
     (_REPORT, "ReportGenerationService._generate_closure_summary"): {
         "closure_reason": 1
+    },
+    # #3053 S3d-5: the cause recompute's stored held-open flag
+    # (``cause_identification_held_open``), read raw.
+    (_CA, "cause_pool_empty_reason"): {"cause_identification_held_open": 1},
+    (_CA, "cause_recheck_status"): {"cause_identification_held_open": 1},
+    (_CA, "confirming_polarity_rows"): {"cause_identification_held_open": 1},
+    (_INV + "cause_identification.py", "cause_identification_leg"): {
+        "cause_identification_held_open": 1
+    },
+    (_ME + "response_application.py", "ResponseApplier._apply_investigation_updates"): {
+        "cause_identification_held_open": 1
+    },
+    (_SG, "_withdraw_unlicensed_solution_offers"): {
+        "cause_identification_held_open": 1
+    },
+    (_OUTCOME, "_cause"): {"cause_identification_held_open": 1},
+    (_MONITOR, "ProgressMonitor._held_open_pending_text"): {
+        "cause_identification_held_open": 1
     },
 }
 
