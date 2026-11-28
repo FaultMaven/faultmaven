@@ -17,6 +17,21 @@ every attachment (file uploads and pasted text). Page captures are detected
 here via source_metadata and handled with URL-based classification first,
 then source_type-aware confidence boosting.
 
+It runs on the event loop, so every pattern here costs time linear in the
+sample (#3116 B2, Principle 14): the first 5,000 characters, up to 10,000 code
+points once lowercased (``İ`` lowers to two). No pattern rescans a run from
+each position inside it, except the key-value and numeric-column patterns'
+``(?m)^\\s*`` in ``_assess_short_text_ambiguity``, which rescan a run of blank
+lines but run only behind its gate (25 lines, 1,500 characters). A leading run
+is one character where only a yes/no is read (``\\d\\s+calls?`` matches exactly
+where ``\\d+\\s+calls?`` does); a lookbehind starts a match only where its run
+starts, where the run is read (the email) or matches are counted (the prose
+pattern); ``^[^\\S\\n]*`` keeps a line's indent off the newlines after it; a
+``(``-led call, the flame graph's chain and the trace's ``operationName`` are
+each tried once per ``)``, ``;`` and line; iostat's header words are each
+found once per line, the first of each in turn. Each answers as its earlier
+form did.
+
 Design Reference:
     docs/architecture/data-processing/data-classification-strategy.md
 """
@@ -193,7 +208,7 @@ COMMAND_OUTPUTS: dict = {
         "type": DataType.COMMAND_OUTPUT,
         "patterns": [
             r"USER\s+PID\s+%CPU\s+%MEM\s+VSZ\s+RSS",
-            r"^\s*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+",
+            r"^[^\S\n]*[\w\-]+\s+\d+\s+[\d\.]+\s+[\d\.]+",
         ],
         "confidence": 0.90,
     },
@@ -209,7 +224,7 @@ COMMAND_OUTPUTS: dict = {
         "type": DataType.COMMAND_OUTPUT,
         "patterns": [
             r"avg-cpu:\s+%user\s+%nice\s+%system",
-            r"Device.*tps.*kB_read/s.*kB_wrtn/s",
+            r"^(?>.*?Device)(?>.*?tps)(?>.*?kB_read/s).*kB_wrtn/s",
         ],
         "confidence": 0.95,
     },
@@ -268,7 +283,7 @@ COMMAND_OUTPUTS: dict = {
     "strace": {
         "type": DataType.LOGS_AND_ERRORS,
         "patterns": [
-            r"\w+\([^)]*\)\s+=\s+-?\d+",
+            r"(?<![^)])(?>[^)]*?\w\()[^)]*+\)\s+=\s+-?\d+",
             r"<\d+\.\d+>",
             r"SIGTERM|SIGKILL|SIGSEGV",
         ],
@@ -277,7 +292,7 @@ COMMAND_OUTPUTS: dict = {
     "ltrace": {
         "type": DataType.LOGS_AND_ERRORS,
         "patterns": [
-            r"\w+\([^)]*\)\s+=\s+\w+",
+            r"(?<![^)])(?>[^)]*?\w\()[^)]*+\)\s+=\s+\w+",
             r"<\d+\.\d+>",
         ],
         "confidence": 0.90,
@@ -429,7 +444,7 @@ class DataClassifier:
             if ext in [".yaml", ".yml", ".json", ".toml", ".ini", ".env", ".config"]:
                 return True
             # Check content for config patterns
-            return bool(re.search(r"[a-z_]+\s*[:=]", sample, re.MULTILINE))
+            return bool(re.search(r"[a-z_]\s*[:=]", sample, re.MULTILINE))
 
         if hint == DataType.SOURCE_CODE:
             # Should have code-like patterns — ext set must match rule-path set at line 754
@@ -763,7 +778,7 @@ class DataClassifier:
         metrics_patterns = [
             r"timestamp[,\t]",  # CSV with timestamp column
             r'\btimestamp["\']?\s*[:,]',  # JSON with timestamp field
-            r'\w+{[\w="]+}',  # Prometheus format: metric{label="value"}
+            r'\w{[\w="]+}',  # Prometheus format: metric{label="value"}
             r"^\d+\.\d+\s+\d+",  # Unix timestamp + value
             r"\b(cpu|memory|latency|response_time|throughput|error_rate)\b",  # Common metric names
             r"\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}",  # ISO timestamp
@@ -854,7 +869,7 @@ class DataClassifier:
         code_patterns = [
             r"\b(function|def|class|import|package|interface)\s+\w+",
             r"\b(const|let|var)\s+\w+\s*=",
-            r"^\s*(public|private|protected)\s+(class|interface|enum)",
+            r"^[^\S\n]*(public|private|protected)\s+(class|interface|enum)",
         ]
 
         code_score = sum(1 for p in code_patterns if re.search(p, sample, re.MULTILINE))
@@ -914,7 +929,7 @@ class DataClassifier:
         # Prose patterns (indicate documentation)
         prose_patterns = [
             r"\b(the|and|for|with|that|this|from|which)\b",  # Common prose words
-            r"[A-Z][a-z]+\s+[a-z]+\s+[a-z]+",  # Sentence structure
+            r"(?<![a-z])[A-Z][a-z]+\s+[a-z]+\s+[a-z]+",  # Sentence structure
             r"\.\s+[A-Z]",  # Sentence boundaries
         ]
 
@@ -1156,7 +1171,9 @@ class DataClassifier:
         # Email address — communication metadata, often appears in operational
         # docs but doesn't strongly belong to any single data type. Counted as
         # its own category (UNSTRUCTURED_TEXT) so it pushes the breadth count.
-        if re.search(r"\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b", sample):
+        if re.search(
+            r"(?<![\w._%+-])[.%+-]*+\w[\w._%+-]*+@[\w.-]+\.[A-Za-z]{2,}\b", sample
+        ):
             categories.setdefault(DataType.UNSTRUCTURED_TEXT, "email")
 
         # Software artifact tag like "v2.3.8" or "tag: v1.0" — suggests
@@ -1237,7 +1254,7 @@ class DataClassifier:
             r'(traceId|trace_id)["\s:]+[a-f0-9]{32}',  # OpenTelemetry 32-char hex
             r'(spanId|span_id|parentId)["\s:]+[a-f0-9]{16,}',
             r'"(serviceName|service\.name)"',
-            r'"operationName".*"spans":\s*\[',
+            r'(?m)^(?>.*?"operationName").*"spans":\s*\[',  # the first one per line
         ]
         trace_score = sum(
             1 for p in trace_patterns if re.search(p, sample, re.IGNORECASE)
@@ -1252,8 +1269,8 @@ class DataClassifier:
 
         profiling_patterns = [
             r"\bncalls\s+tottime\s+percall\s+cumtime",  # cProfile header
-            r"[\w\.]+(?:;[\w\.]+)+\s+\d+",  # Flame graph: foo;bar;baz 123
-            r"\d+\s+calls?\s+in\s+[\d\.]+\s+seconds",  # Profiling summary
+            r"[\w.];[\w.]+\s+\d+",  # Flame graph: foo;bar;baz 123 (its last two frames)
+            r"\d\s+calls?\s+in\s+[\d\.]+\s+seconds",  # Profiling summary
             r"filename:lineno\(function\)",  # cProfile format
         ]
         profiling_score = sum(
