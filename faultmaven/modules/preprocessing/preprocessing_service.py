@@ -120,7 +120,7 @@ TIER1_OUTPUT_MIB_PER_MB = 6
 #: limit: ``exception_types`` (``error_report_extractor.py:117``), iostat's
 #: device lists (``command_output_extractor.py:928-930``) and the metrics
 #: ``anomalies``, 10 per metric (``metrics_extractor.py:194``, ``:735``); the
-#: densest such answers found (metrics regions) hold 8.4 a byte (#3127), within it. A
+#: densest, regions with every value at its costliest, hold 8.5 a byte (#3127). A
 #: lone surrogate costs the reader up to 8 (``PHASED_ANSWER_HOLD``), within it. An
 #: answer held after its slot's release is outside the term (#3128): Phase 2's
 #: retry keeps the first while another slot runs
