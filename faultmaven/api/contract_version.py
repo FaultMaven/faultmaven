@@ -157,8 +157,8 @@ CONTRACT_CHANGES: tuple[ContractChange, ...] = (
             "`GET /admin/cases/{case_id}` and `GET "
             "/admin/cases/{case_id}/messages` answer a database timeout or "
             "outage on their case read **503** `DATABASE_UNAVAILABLE` with "
-            '`Retry-After: 5`, not 404 "Case not found" (#2996). No schema '
-            "moves."
+            '`Retry-After: 5`, not 404 "Case not found" (#2996); both now '
+            "declare that 503."
         ),
         body=r"""The case read behind both (`CaseService.get_case`) answered every failure as
 "no such case", so an operator was told an existing case did not exist. It now
@@ -166,8 +166,8 @@ raises: a database timeout or an unreachable database is the request
 boundary's 503 (15.15.0), any other failure of the read a 500. A missing case
 is still 404, and the access-audit row is still written before the read.
 
-MINOR: a failure's status moves from 404 to 503 or 500; no request that
-succeeded answers differently.""",
+MINOR: a failure's status moves from 404 to 503 or 500, and a response is
+newly declared; no request that succeeded answers differently.""",
     ),
     ContractChange(
         version="16.4.0",

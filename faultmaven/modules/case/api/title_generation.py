@@ -32,6 +32,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ServiceUnavailableException,
     ValidationException,
+    is_database_unavailable,
 )
 from faultmaven.infrastructure.llm.dispatch import (
     route_model_call,
@@ -1174,14 +1175,24 @@ async def _generate_and_persist_title(
             verification_case = await case_service.get_case(case_id, user_id)
         except Exception as e:
             # The title is saved; only its check failed, so the answer is the
-            # title, never "Failed to persist generated title" (#2996).
-            logger.warning(
+            # title, never "Failed to persist generated title" (#2996). A
+            # failure that is not the database's is a fault: ERROR.
+            log = logger.warning if is_database_unavailable(e) else logger.error
+            log(
                 f"Title verification read failed for case {case_id}: "
                 f"{exception_log_name(e)}",
                 extra={"case_id": case_id},
             )
             return generated_title, title_source, len(user_message_content or "")
-        if verification_case and verification_case.title != generated_title:
+        if verification_case is None:
+            # Deleted, or no longer the caller's, since the write: unverified.
+            logger.warning(
+                f"Title persistence unverified for case {case_id}: the case "
+                "was absent or refused on the re-read",
+                extra={"case_id": case_id},
+            )
+            return generated_title, title_source, len(user_message_content or "")
+        if verification_case.title != generated_title:
             logger.error(
                 f"Title persistence verification failed for case {case_id}: "
                 f"expected_len={len(generated_title)}, "

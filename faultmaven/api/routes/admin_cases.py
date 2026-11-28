@@ -37,6 +37,7 @@ from typing import List, Literal, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.requests import Request
 
+from faultmaven.api.exception_handlers import DATABASE_UNAVAILABLE
 from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.operator_audit import (
     get_operator_audit_repository,
@@ -337,7 +338,35 @@ def _project_case_metadata(metadata: List[CaseMetadata]) -> List[AdminCaseMetada
     return rows
 
 
-@router.get("/cases/{case_id}", response_model=AdminCaseContentResponse)
+#: Both content reads' database 503 (#2996): the case read failing is not the
+#: missing case's 404.
+_CONTENT_UNAVAILABLE_RESPONSE: dict = {
+    503: {
+        "description": (
+            f"`x-error-code: {DATABASE_UNAVAILABLE}`: the database could not be "
+            "reached or did not answer in time, the case read included; a retry "
+            "after `Retry-After` seconds is safe (the access may already be "
+            "recorded). A 503 without that code is another dependency's."
+        ),
+        "headers": {
+            "x-error-code": {
+                "description": DATABASE_UNAVAILABLE,
+                "schema": {"type": "string"},
+            },
+            "Retry-After": {
+                "description": f"Seconds; sent with `{DATABASE_UNAVAILABLE}`.",
+                "schema": {"type": "string"},
+            },
+        },
+    },
+}
+
+
+@router.get(
+    "/cases/{case_id}",
+    response_model=AdminCaseContentResponse,
+    responses=_CONTENT_UNAVAILABLE_RESPONSE,
+)
 async def open_case_content(
     case_id: str,
     current_user: AuthenticatedUser = Depends(require_platform_admin),
@@ -412,7 +441,7 @@ _TRANSCRIPT_NOT_FOUND_RESPONSE: dict = {
 @router.get(
     "/cases/{case_id}/messages",
     response_model=AdminCaseMessagesResponse,
-    responses=_TRANSCRIPT_NOT_FOUND_RESPONSE,
+    responses={**_TRANSCRIPT_NOT_FOUND_RESPONSE, **_CONTENT_UNAVAILABLE_RESPONSE},
 )
 async def open_case_transcript(
     case_id: str,

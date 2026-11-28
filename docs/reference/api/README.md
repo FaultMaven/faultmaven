@@ -153,6 +153,7 @@ user-facing route.
 
 - `200` — Successful Response ([`AdminCaseContentResponse`](#admincasecontentresponse))
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — `x-error-code: DATABASE_UNAVAILABLE`: the database could not be reached or did not answer in time, the case read included; a retry after `Retry-After` seconds is safe (the access may already be recorded). A 503 without that code is another dependency's.
 
 ---
 
@@ -183,6 +184,7 @@ across different rules would let one of them drift.
 - `200` — Successful Response ([`AdminCaseMessagesResponse`](#admincasemessagesresponse))
 - `404` — The case does not exist or the operator's read scope cannot see it. Carries `x-error-code: CASE_NOT_FOUND` when the case was deleted after the existence check, and no `x-error-code` otherwise.
 - `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `503` — `x-error-code: DATABASE_UNAVAILABLE`: the database could not be reached or did not answer in time, the case read included; a retry after `Retry-After` seconds is safe (the access may already be recorded). A 503 without that code is another dependency's.
 
 ---
 

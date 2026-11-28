@@ -220,7 +220,7 @@ class TestAutoTitleTask:
         assert _is_default_case_title(case.title)
 
     @pytest.mark.asyncio
-    async def test_a_titler_that_stops_answering_loses_rather_than_delays(self):
+    async def test_a_titler_that_stops_answering_loses_rather_than_delays(self, caplog):
         """The attempt sits on the turn's critical path, so it must be bounded.
 
         Without the timeout a hung provider would hold a turn's answer open for
@@ -244,6 +244,7 @@ class TestAutoTitleTask:
                 "faultmaven.modules.case.api.title_generation.AUTO_TITLE_TIMEOUT_SECONDS",
                 0.05,
             ),
+            caplog.at_level(logging.WARNING),
         ):
             await asyncio.wait_for(
                 _auto_title_case_if_default(
@@ -258,6 +259,11 @@ class TestAutoTitleTask:
             )
 
         assert _is_default_case_title(case.title)
+        # Its own bound, not a fault: never the clause a ``DatabaseTimeout``
+        # (also a ``TimeoutError``) takes (#2996).
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("timed out" in m for m in messages), messages
+        assert not any("failed" in m for m in messages), messages
 
     @pytest.mark.asyncio
     async def test_a_missing_case_is_not_an_error(self):

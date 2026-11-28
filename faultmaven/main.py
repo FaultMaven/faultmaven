@@ -671,11 +671,14 @@ if _is_debug_enabled(settings=_debug_settings):
         surface probe; closed here.
 
         A case the caller may not read answers the same ``case not found``
-        envelope an absent one does, so the refusal is not an existence oracle.
+        envelope an absent one does. A failed case read or access decision
+        raises instead (#2996): a database timeout answers 503. So, as on every
+        route gated by ``require_case``, while the caller's team or share lookup
+        fails a non-creator gets 503 for an existing case and ``case not found``
+        for an absent one: the strict gate's one existence signal.
 
         Never raises on serialization; absent graph returns empty collections.
-        A failed case read is not "case not found": it raises, so a database
-        timeout answers 503 (#2996). Registered only where the debug router mounts — which is
+        Registered only where the debug router mounts — which is
         `ENVIRONMENT=development`, or ANY environment including production when
         ENABLE_DEBUG_ENDPOINTS is set. It is not production-free (#1493).
         """

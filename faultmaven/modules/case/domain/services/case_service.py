@@ -1263,7 +1263,8 @@ class CaseService(CaseDriverMixin, ICaseService):
     async def _resolve_user_team_ids(
         self, user_id: Optional[str], *, strict: bool = False
     ) -> List[str]:
-        """The team ids a principal belongs to; ``[]`` when unwired or on error.
+        """The team ids a principal belongs to; ``[]`` when unwired or, outside
+        ``strict``, on error.
 
         Gateway for the read paths (allowlist + team facet) so a request that
         needs both resolves membership once. The share path checks membership
@@ -1305,9 +1306,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         repository, the principal belongs to no teams, or the request carries no
         organization. ``team_ids`` may be passed pre-resolved by a caller that
         already fetched membership (the team-filter path) to avoid a second
-        lookup. Degrades gracefully on any resolution error: the owner arm still
-        works, so a share-lookup failure narrows visibility (fail-closed) rather
-        than leaking.
+        lookup. Outside ``strict``, degrades gracefully on any resolution
+        error: the owner arm still works, so a share-lookup failure narrows
+        visibility (fail-closed) rather than leaking.
 
         The enterprise comes from the request-bound tenant context — the same
         value the case write path stamps and RLS scopes to — so a share row
@@ -1327,8 +1328,9 @@ class CaseService(CaseDriverMixin, ICaseService):
         degrade, is ``api/v1/auth_dependencies.require_actor_enterprise``; both
         decide through the same ``usable_tenant_id`` predicate.
 
-        ``strict`` (a single-case gate, :meth:`require_case`): a team or share
-        lookup that FAILS propagates instead. On a listing an empty arm only
+        ``strict`` (a single-case decision, :meth:`get_case` and
+        :meth:`require_case`): a team or share lookup that FAILS propagates
+        instead. On a listing an empty arm only
         shows less; on a gate it is the claim "no such case" or "not the
         driver", which a client acts on (#2806, the #944 rule). A tenantless
         context still collapses: the request front door refuses one before any

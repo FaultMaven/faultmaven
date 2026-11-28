@@ -586,3 +586,13 @@ class TestTheCaseReadFailingIsNotAnAbsence:
 
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Case not found"
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_the_503_is_declared(self, path):
+        app = FastAPI()
+        app.include_router(router)
+        template = path.replace(CASE_ID, "{case_id}")
+
+        declared = app.openapi()["paths"][template]["get"]["responses"]["503"]
+
+        assert set(declared["headers"]) == {"x-error-code", "Retry-After"}
