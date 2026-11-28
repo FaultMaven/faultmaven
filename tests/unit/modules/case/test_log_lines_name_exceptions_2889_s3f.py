@@ -431,8 +431,9 @@ async def test_an_unanswered_commit_carries_its_frames(lines):
 
 async def _persist_title(monkeypatch, failure: BaseException):
     """``_generate_and_persist_title`` called with its generation stubbed (a
-    titleable case, an LLM title that passes the disclosure gate) and a case
-    service whose title write raises ``failure``."""
+    titleable case: a statement and a non-empty substance, #3135; an LLM title
+    that passes the disclosure gate) and a case service whose title write
+    raises ``failure``."""
 
     async def _title(*_args, **_kwargs):
         return "Checkout API returns 502s", "llm"
@@ -444,6 +445,9 @@ async def _persist_title(monkeypatch, failure: BaseException):
         return SimpleNamespace(save=AsyncMock())
 
     monkeypatch.setattr(title_generation, "_has_problem_statement", lambda *a: True)
+    monkeypatch.setattr(
+        title_generation, "_titleable_substance", lambda *a: "Checkout API 502s"
+    )
     monkeypatch.setattr(title_generation, "_generate_title_with_llm", _title)
     monkeypatch.setattr(title_generation, "_passes_disclosure_gate", _passes)
     monkeypatch.setattr(title_generation, "load_case_redaction", _redaction)

@@ -18,6 +18,7 @@ the "disclosure gate" section below.
 
 import asyncio
 import logging
+import os
 import re
 from typing import List, Optional
 
@@ -421,6 +422,13 @@ MAX_USER_MESSAGES_FOR_CONTEXT = 12  # Cap message count to reduce noise
 MIN_MESSAGE_WORD_COUNT = 3  # Filter out very short messages like "ok", "thanks"
 CONTEXT_MESSAGE_LIMIT = 10  # Number of recent messages to fetch for context
 
+# The title source's input limits (#3135, Principle 14): of a source that
+# ``_scrub_title_source`` reads, a title or its prompt is built from at most the
+# first TITLE_SOURCE_MAX_CHARS, and the scrub reads at most the first
+# TITLE_SOURCE_REDACT_WINDOW.
+TITLE_SOURCE_MAX_CHARS = 4_000
+TITLE_SOURCE_REDACT_WINDOW = 2 * TITLE_SOURCE_MAX_CHARS
+
 # =============================================================================
 # Helper Functions for Title Generation
 # =============================================================================
@@ -594,14 +602,19 @@ def _sanitize_title_content(content: str) -> str:
         return ""
 
     # Basic content hygiene - remove common PII patterns
-    # Remove email addresses
+    # Remove email addresses. The local part's run is read once, possessively,
+    # and marked only when a domain follows it (#3135): the backtracking form
+    # rescanned a dotted run from every position in it.
     content = re.sub(
-        r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "[email]", content
+        r"\b[A-Za-z0-9._%+-]++(@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b)?",
+        lambda m: "[email]" if m.group(1) else m.group(0),
+        content,
     )
 
     # Remove phone numbers (basic patterns)
     content = re.sub(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", "[phone]", content)
-    content = re.sub(r"\b\(\d{3}\)\s*\d{3}[-.]?\d{4}\b", "[phone]", content)
+    # No ``\b`` before ``(``: it needed a word character there (#3135)
+    content = re.sub(r"\(\d{3}\)\s*\d{3}[-.]?\d{4}\b", "[phone]", content)
 
     # Remove IP addresses
     content = re.sub(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", "[ip]", content)
@@ -680,21 +693,52 @@ def _type_marker(match: re.Match) -> str:
     return f"[{match.group(0)[1:-1].rsplit('_', 1)[0].lower()}]"
 
 
+def _before_last_whitespace(text: str) -> str:
+    """``text`` up to its last whitespace (``str.isspace``), the partial token
+    after it dropped; ``""`` when it holds none."""
+    for end in range(len(text) - 1, -1, -1):
+        if text[end].isspace():
+            return text[:end]
+    return ""
+
+
 def _redact_title_source(text: Optional[str], sanitizer) -> str:
     """Step 1 of :func:`_scrub_title_source`: the sanitizer's regex half on the
-    RAW source, placeholders still in."""
+    RAW source, placeholders still in, within the source's limits (#3135).
+
+    A source of at most ``TITLE_SOURCE_MAX_CHARS`` is redacted whole. A longer
+    one is redacted twice: its first ``TITLE_SOURCE_MAX_CHARS`` characters, a
+    token the cut splits dropped, and its first ``TITLE_SOURCE_REDACT_WINDOW``,
+    a hard cut. Only the prefix the two agree on is kept, cut back to a
+    whitespace where they part. A span is detectable only whole (#1967): one
+    the shorter read splits is whole in the longer read when it ends within the
+    window, so the two part at its start and no fragment of it is kept. The
+    cuts drop a split token because the step-3 patterns (email, phone) see
+    only the text kept.
+    """
     raw = (text or "").strip()
     if not raw:
         return ""
     if sanitizer is None:
         raise _gate_unavailable("source", "no_sanitizer", len(raw))
-    try:
-        redacted = sanitizer.apply_regex_redaction(raw, {})
-    except Exception as e:  # fail closed on ANY failure
-        raise _gate_unavailable("source", type(e).__name__, len(raw)) from None
-    if not isinstance(redacted, str):
-        raise _gate_unavailable("source", "non_text_result", len(raw))
-    return redacted
+
+    def redact(source: str) -> str:
+        try:
+            redacted = sanitizer.apply_regex_redaction(source, {})
+        except Exception as e:  # fail closed on ANY failure
+            raise _gate_unavailable("source", type(e).__name__, len(raw)) from None
+        if not isinstance(redacted, str):
+            raise _gate_unavailable("source", "non_text_result", len(raw))
+        return redacted
+
+    if len(raw) <= TITLE_SOURCE_MAX_CHARS:
+        return redact(raw)
+    head = raw[:TITLE_SOURCE_MAX_CHARS]
+    if not raw[TITLE_SOURCE_MAX_CHARS].isspace():
+        head = _before_last_whitespace(head)
+    short = redact(head) if head else ""
+    agreed = os.path.commonprefix([short, redact(raw[:TITLE_SOURCE_REDACT_WINDOW])])
+    return short if agreed == short else _before_last_whitespace(agreed)
 
 
 def _scrub_title_source(text: Optional[str], sanitizer) -> str:
@@ -1077,9 +1121,11 @@ async def _generate_and_persist_title(
     # regardless of how little the user typed. Otherwise require
     # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file summaries +
     # chat) so we don't ask the LLM to title an empty case. This is the *only*
-    # gate; see the constants block for why turn count is no longer one.
+    # gate; see the constants block for why turn count is no longer one. An
+    # empty substance refuses whatever the statement says: the prompt would
+    # otherwise be built from the raw context (#3135).
     has_problem_statement = _has_problem_statement(case, sanitizer)
-    if (
+    if not user_message_content or (
         not has_problem_statement
         and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
     ):
